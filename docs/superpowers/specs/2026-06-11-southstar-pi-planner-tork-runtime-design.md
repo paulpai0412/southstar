@@ -42,10 +42,15 @@ MVP 必須包含：
 - Approval gate。
 - Tork Docker execution。
 - `TaskEnvelope` 載入。
+- `HarnessDefinition` 載入，支援 `pi-agent`、`codex` 與後續 custom runner。
 - Task root session。
 - Subagent execution，第一版可為 0 或 1 個 subagent。
 - Artifact schema validation。
+- Evaluator module，包含 schema validation、quality rubric 與 repair decision。
 - Repair loop。
+- Session checkpoint、fork、rollback、clone interface。
+- Structured progress events and steering events。
+- Execution signals and workflow learning records。
 - SessionStore、MemoryStore、ArtifactStore、VaultStore interface。
 - SQLite encrypted vault。
 - MCP registry 與 scoped grants。
@@ -77,6 +82,38 @@ pi-web / Southstar UI
 
 Pi Agent 是 planner 與 orchestrator-facing LLM。Codex 不再是主 orchestrator；Codex 是可被編排的 worker agent type。Pi、Codex 與後續 agent 都透過 `AgentDefinition` 進入 task container。
 
+## Video-Derived Architecture Requirements
+
+兩支參考影片導出的核心方向是：Southstar 不是單一 agent UI，而是一個 agent operating system。設計必須服務「編排 + swarm」與「碎片時間控制 asynchronous workflows」兩個場景。
+
+### Managed Agents / Agent OS
+
+從「多 Agent 協作架構」影片萃取出的 requirement：
+
+- Agent must be stateless templates. `AgentDefinition` 描述 agent 是誰，包括 model、prompt、tools、MCP、skills、harness；agent 本身不保存工作記憶。
+- Session must be dynamic execution state. `SessionStore` 保存當次 root/subagent execution 的 transcript、checkpoint、fork、rollback 與 clone lineage。
+- Memory must be mounted into session. `MemoryStore` 只作為 scoped context source，不長在 agent template 上，也不覆蓋 artifact truth。
+- Worker containers must be disposable. 每個 worker/container 可以隨時建立、銷毀、重建；state 從 SQLite stores 與 task envelope materialize。
+- Coordinator does not do all work. Pi planner/root supervisor 負責拆任務、派活、監控、修正與彙整，不應把所有 domain work 塞進單一 long-context agent。
+- Harness must be explicit. Worker 啟動時必須明確指定 `harness`，例如 `pi-agent`、`codex`、`claude-code` 或 custom runner。
+- Session checkpoint must be a scheduling primitive. Orchestrator 可以從「某個 agent 最聰明的 checkpoint」fork/clone 新 session，讓後續 task 從乾淨、有效的 context 開始。
+- Multi-model routing is required. 不同 task node 可選不同 model/harness，以改善 cost、latency 與 token efficiency。
+- Evaluator is first-class. 影片提到實作缺結果評估；Southstar 將 evaluator 作為 root session gate 的正式模組，而不是只靠 raw LLM output。
+- Fast sandbox is future-critical. Docker/Tork 是 MVP；CubeSandbox 或 remote sandbox 後續作為 `SandboxProvider` 接入，用於降低高併發 worker 冷啟成本。
+
+### Voice / Fragmented-Time Workflow
+
+從「語音 Agent」影片萃取出的 requirement：
+
+- Voice is a task controller, not just input. MVP 不做完整 ASR/TTS，但 API 必須支援文字與語音等價的 command/steering event。
+- Workflow execution is asynchronous. 使用者可以下達一步任務，workflow 在背景拆 task、跑 DAG、更新狀態，結果回到 UI。
+- Progress must be structured. Agent runner 要產生短、可唸出、可通知的 `progress.commentary`，不是只有 raw logs。
+- Steering must be interruptible. 使用者可在 workflow running 時插入修正，root session 判斷是否 steer current subagent、restart node、rollback checkpoint 或 re-plan。
+- Mobile/vehicle UI needs compressed state. Workflow canvas 要有 mobile-friendly summary：running nodes、blocked nodes、next approval、latest artifact、safe actions。
+- Generative UI should be schema-driven. Planner/root session 不直接輸出任意 UI；它輸出 `uiSummary` / `runStatusCard` / `taskProgressCard` 等 structured view model。
+- Runtime should manage multiple active tasks. Dashboard 不能只假設單一 run；需要 multi-run queue、notification 與 focus mode。
+- Learning loop is required. 成功/失敗信號、repair 次數、模型/agent 表現、operator steering 都要形成 `execution_signals`，供 planner 下次選 workflow、agent、model、harness。
+
 ## Manifest Pair
 
 ### SouthstarManifest
@@ -94,9 +131,16 @@ workflow
 tasks
 rootSessionPolicy
 agentDefinitions
+harnessDefinitions
+environmentDefinitions
 artifactSchemas
+evaluators
 approvalPolicy
 retryPolicy
+checkpointPolicy
+progressPolicy
+steeringPolicy
+learningPolicy
 memoryPlan
 vaultLeases
 mcpGrants
@@ -108,6 +152,7 @@ executorBindings
 ```text
 agentId
 agentType                  pi | codex | claude | custom
+harnessRef
 role
 model
 systemPrompt
@@ -121,6 +166,32 @@ containerProfileRef
 timeoutPolicy
 repairPolicy
 ```
+
+### HarnessDefinition
+
+`HarnessDefinition` describes how an agent is actually run inside a worker container. It is separate from `AgentDefinition` so the same role can switch between Pi Agent, Codex, Claude-style runners, or custom domain runners without changing workflow semantics.
+
+Core fields:
+
+```text
+harnessId
+harnessType                pi-agent | codex | claude-code | custom
+entrypoint
+capabilities
+inputProtocol              task-envelope | stdin-json | http | mcp
+eventProtocol              southstar-events | sse | jsonl
+sessionAdapter
+toolAdapter
+supportsCheckpoint
+supportsSteering
+supportsProgressCommentary
+```
+
+Rules:
+
+- `AgentDefinition` chooses `harnessRef`; Tork still only sees container image and runner command.
+- Harness owns agent-specific protocol translation; Southstar owns manifest, stores, evaluator, vault and MCP policy.
+- Harness output must be normalized into Southstar runtime events and artifact contracts.
 
 ### TorkManifest
 
@@ -235,6 +306,8 @@ runId
 taskId
 rootSession
 agentDefinitions
+harnessDefinitions
+evaluatorDefinitions
 prompt
 skills
 memoryRefs
@@ -242,7 +315,10 @@ vaultLeaseRefs
 mcpServers
 allowedMcpTools
 artifactSchema
+checkpointPolicy
 repairPolicy
+progressPolicy
+steeringPolicy
 callback
 ```
 
@@ -254,9 +330,14 @@ Root session 是 task supervisor，不是一般 worker。它負責：
 - 收集 subagent output。
 - 驗證 artifact schema。
 - 驗證 artifact policy。
+- 執行 evaluator rubric 與 domain self-check。
 - 不合格時產生 repair prompt。
 - 要求 subagent 修正。
+- 依 checkpoint policy 產生 checkpoint、fork、rollback 或 clone。
+- 發出 structured progress commentary。
+- 接收 steering event，決定 steer、restart、rollback 或 re-plan。
 - 合格後寫入 ArtifactStore。
+- 寫入 execution signals。
 - 回報 Southstar runtime event。
 
 這是 Claude-style subagent 模型的 Southstar runtime extension。Claude Agent SDK 的 subagent 概念是 parent agent 啟動 isolated subagent，subagent 最終結果回到 parent；SessionStore 可保留 transcript。Southstar 在此模型上增加 artifact gate、repair loop、durable stores、executor event projection 與 UI approval，因為 Southstar 是 workflow runtime，不只是單次 agent conversation。
@@ -268,6 +349,50 @@ MVP 規則：
 - Root session 必須產出 validated artifact。
 - Artifact invalid 時最多依 `repairPolicy.maxAttempts` 修正。
 - 修正耗盡後 task 進入 failed 或 quarantined。
+- Root session 必須能建立至少一個 checkpoint。
+- Root session 必須輸出 progress events，供 desktop/mobile/voice UI 使用。
+- Steering event 可被記錄；MVP 可只支援文字 steering，語音等價事件留接口。
+
+## Evaluator
+
+Evaluator 是 root session artifact gate 的正式模組，用來補足單純 schema validation 的不足。它不取代 domain worker，也不直接修改 artifact；它只產生 validation result、quality result 與 repair decision。
+
+Evaluator inputs:
+
+```text
+taskEnvelope
+subagentOutput
+artifactJson
+artifactSchema
+domainRubric
+priorRepairAttempts
+executionSignals
+```
+
+Evaluator outputs:
+
+```text
+status                 passed | repairable | failed_terminal
+schemaErrors
+qualityFindings
+repairPrompt
+confidence
+signals
+```
+
+MVP evaluator layers:
+
+- Schema validator：檢查 required fields、type、enum、artifact kind。
+- Rubric validator：檢查 domain-specific quality criteria，例如軟工流程中的 test evidence、patch summary、risk notes。
+- Policy validator：檢查 vault/MCP/SSH/redaction/security constraints。
+- Repair decision：決定要求 subagent 修正、rollback checkpoint、retry task 或 quarantine。
+
+Rules:
+
+- Evaluator result 必須寫入 SQLite。
+- Root session 只能交回 `passed` artifact 給 orchestrator。
+- `repairable` 必須產生 bounded repair prompt。
+- `failed_terminal` 不能被 root session 靜默吞掉，必須進 runtime event 與 UI。
 
 ## Stores
 
@@ -291,16 +416,22 @@ workflow_tasks
 task_envelopes
 session_records
 session_entries
+session_checkpoints
 memory_items
 memory_deltas
 artifact_records
 artifact_blobs
+evaluator_results
 vault_secrets
 vault_leases
 mcp_servers
 mcp_grants
 executor_bindings
 executor_events
+progress_events
+steering_events
+execution_signals
+workflow_learnings
 runtime_events
 ```
 
@@ -591,6 +722,9 @@ Southstar Dashboard
   Workflow Canvas
   Agent Definitions
   Runtime Monitor
+  Mobile Run Summary
+  Progress Commentary
+  Steering Controls
   Task Detail Drawer
   Artifact Viewer
   Sessions and Memory
@@ -660,6 +794,52 @@ MVP read-only。後續可加入局部編輯與 prompt-to-patch。
 - artifact validation result。
 - repair loop count。
 - executor binding。
+- latest progress commentary。
+- pending steering or approval action。
+
+### Mobile Run Summary
+
+Mobile/voice-first UI 不顯示完整桌面 canvas，而顯示壓縮狀態：
+
+- run status。
+- currently running nodes。
+- blocked nodes。
+- next approval。
+- latest artifact summary。
+- latest progress commentary。
+- safe actions: approve, steer, retry, cancel。
+
+這個 view model 由 Southstar API 產生，不由 LLM 直接輸出任意 HTML。
+
+### Progress Commentary
+
+Progress commentary 是短、結構化、可通知、可由 TTS 朗讀的狀態事件。它不是 raw log。
+
+```text
+progressId
+runId
+taskId
+severity                  info | warning | blocked | done
+summary
+details
+suggestedAction
+createdAt
+```
+
+### Steering Controls
+
+Steering 是 running workflow 的使用者介入事件。MVP 支援文字 steering；語音 steering 在 API 層等價為文字 command。
+
+Steering actions:
+
+- add instruction。
+- correct direction。
+- pause current node。
+- retry current node。
+- rollback to checkpoint。
+- request re-plan。
+
+Root session 必須把 steering event 寫入 SQLite，並決定是否立即影響 subagent、等待當前 task 完成、rollback checkpoint 或交回 planner 重排。
 
 ### Task Detail Drawer
 
@@ -755,16 +935,23 @@ GET  /api/southstar/runs/:runId
 GET  /api/southstar/runs/:runId/graph
 GET  /api/southstar/runs/:runId/events
 GET  /api/southstar/runs/:runId/tasks
+GET  /api/southstar/runs/:runId/mobile-summary
+POST /api/southstar/runs/:runId/steer
+POST /api/southstar/runs/:runId/checkpoints/:checkpointId/rollback
 
 GET  /api/southstar/tasks/:taskId
 GET  /api/southstar/tasks/:taskId/artifacts
 GET  /api/southstar/tasks/:taskId/sessions
 GET  /api/southstar/tasks/:taskId/executor
+GET  /api/southstar/tasks/:taskId/progress
+GET  /api/southstar/tasks/:taskId/evaluator-results
 POST /api/southstar/tasks/:taskId/cancel
 POST /api/southstar/tasks/:taskId/retry
 
 GET  /api/southstar/vault/leases
 GET  /api/southstar/mcp/grants
+GET  /api/southstar/signals
+GET  /api/southstar/learnings
 
 GET  /api/southstar/executor/tork/jobs/:jobId
 GET  /api/southstar/executor/tork/tasks/:taskId/logs
@@ -786,9 +973,12 @@ src/v2/
   executor/
   sessions/
   stores/
+  evaluators/
+  harness/
   vault/
   mcp/
   agent-runner/
+  signals/
   ui-api/
 ```
 
@@ -841,6 +1031,12 @@ MVP 測試分層：
 - Prompt refine revision tests。
 - Vault lease redaction tests。
 - MCP grant policy tests。
+- HarnessDefinition validation tests。
+- Session checkpoint/fork/rollback tests。
+- Evaluator schema/rubric/policy tests。
+- Progress commentary event tests。
+- Steering event routing tests。
+- Execution signal and learning record tests。
 - Tork manifest shape tests。
 - Executor binding projection tests。
 - TaskEnvelope load tests。
@@ -859,6 +1055,9 @@ Phase 1：v2 contracts
 - `SouthstarManifest` schema。
 - `TorkManifest` schema。
 - `TaskEnvelope` schema。
+- `HarnessDefinition` schema。
+- `EvaluatorDefinition` schema。
+- `ProgressEvent` and `SteeringEvent` schema。
 - Local v2 SQLite schema。
 
 Phase 2：Pi planner loop
@@ -869,6 +1068,7 @@ Phase 2：Pi planner loop
 - Repair invalid output。
 - Save draft revision。
 - Prompt refine。
+- Use workflow learnings and execution signals as planner context.
 
 Phase 3：Tork executor integration
 
@@ -881,11 +1081,16 @@ Phase 3：Tork executor integration
 Phase 4：Agent runner
 
 - Load envelope。
+- Resolve harness definition。
 - Create root session。
 - Run agent/subagent。
-- Validate artifact。
+- Create checkpoint。
+- Validate artifact through evaluator。
 - Repair loop。
+- Emit progress commentary。
+- Accept steering event。
 - Persist sessions/artifacts/events into SQLite。
+- Persist evaluator results and execution signals into SQLite。
 - Clean up ephemeral staging paths。
 
 Phase 5：Single UI
@@ -894,6 +1099,9 @@ Phase 5：Single UI
 - Workflow Canvas。
 - Agent Definitions。
 - Runtime Monitor。
+- Mobile Run Summary。
+- Progress Commentary。
+- Steering Controls。
 - Task Detail。
 - Executor Ops。
 - Vault/MCP Review。
@@ -917,6 +1125,12 @@ Phase 6：Legacy retirement
 - Southstar records executor binding and normalized executor events.
 - Task root session produces a validated artifact.
 - Invalid artifact triggers repair loop.
+- HarnessDefinition is resolved before agent execution and normalized events are emitted regardless of harness type.
+- Evaluator records schema, rubric and policy results before a task can complete.
+- Root session creates checkpoints and supports rollback to a checkpoint.
+- Progress commentary events are available separately from executor logs.
+- Steering events can be recorded during a running workflow and routed to root session policy.
+- Execution signals and workflow learnings are written to SQLite for future planner context.
 - Session reuse supports same-session resume, fork from checkpoint and summary injection with explicit scope.
 - Memory reuse happens through scoped retrieval snapshots and memory delta approval, not full-store agent access.
 - Runtime monitor updates from Southstar v2 SQLite projection.
@@ -939,3 +1153,5 @@ Phase 6：Legacy retirement
 - Claude Agent SDK subagents: https://code.claude.com/docs/en/agent-sdk/subagents
 - Claude Agent SDK skills: https://code.claude.com/docs/en/agent-sdk/skills
 - Claude Agent SDK MCP: https://code.claude.com/docs/en/agent-sdk/mcp
+- YouTube reference, Managed Agents / multi-agent architecture: https://www.youtube.com/watch?v=4kgkYAGPuD0
+- YouTube reference, voice agent / fragmented-time workflow: https://www.youtube.com/watch?v=K0FyAVlsGis
