@@ -1,0 +1,44 @@
+workflow:
+  id: issue_to_done
+  version: "1.0"
+
+  roles:
+    issue_worker:
+      run_mode: background_child
+      agent: build
+      model: gpt-5
+      load_skills:
+        - tdd
+      artifact: worker_result
+      timeout_seconds: 7200
+      retry_policy:
+        max_attempts: 2
+        backoff_seconds:
+          - 30
+          - 120
+
+    acceptance_checker:
+      run_mode: background_child
+      agent: review
+      model: gpt-5
+      load_skills:
+        - review-work
+      artifact: acceptance_packet
+      timeout_seconds: 3600
+
+  stages:
+    implementation:
+      lifecycle_state: running
+      role: issue_worker
+      on_success: acceptance
+      on_blocked: quarantined
+      on_failed_retryable: implementation
+      on_failed_terminal: failed
+
+    acceptance:
+      lifecycle_state: verifying
+      role: acceptance_checker
+      on_pass: completed
+      on_success: completed
+      on_fail_retryable: implementation
+      on_fail_terminal: failed

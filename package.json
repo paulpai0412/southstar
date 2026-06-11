@@ -1,0 +1,51 @@
+{
+  "name": "@southstar/runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "southstar": "src/cli/entrypoint.ts"
+  },
+  "engines": {
+    "node": ">=22.22.2"
+  },
+  "scripts": {
+    "test": "tsx tests/index.test.ts",
+    "southstar": "tsx src/cli/entrypoint.ts"
+  },
+  "c8": {
+    "all": true,
+    "include": [
+      "src/runtime/**/*.ts",
+      "src/adapters/**/*.ts",
+      "src/cli/**/*.ts",
+      "src/config/**/*.ts",
+      "src/intake/**/*.ts",
+      "src/types/**/*.ts"
+    ],
+    "exclude": [
+      "tests/**",
+      "coverage/**"
+    ],
+    "reporter": [
+      "text",
+      "json-summary",
+      "lcov"
+    ],
+    "reports-dir": "coverage",
+    "check-coverage": true,
+    "lines": 85,
+    "branches": 85,
+    "functions": 85,
+    "statements": 85
+  },
+  "optionalDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.78.0",
+    "@openai/codex-sdk": "^0.135.0",
+    "@opencode-ai/sdk": "^1.15.12"
+  },
+  "devDependencies": {
+    "c8": "^11.0.0",
+    "tsx": "^4.22.4"
+  }
+}

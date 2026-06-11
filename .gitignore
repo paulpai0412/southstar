@@ -1,0 +1,10 @@
+node_modules/
+npm-debug.log*
+.DS_Store
+/coverage/
+.worktrees/
+.git-local/
+.git.invalid-*/
+.agents/
+.codex/
+.superpowers/

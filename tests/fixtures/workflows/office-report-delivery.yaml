@@ -1,0 +1,110 @@
+workflow:
+  id: office_report_delivery
+  version: "1.0"
+  domain: office_automation
+  artifact_schemas:
+    spreadsheet_report:
+      required_fields:
+        - summary
+        - workbook_path
+        - data_sources
+    review_packet:
+      required_fields:
+        - summary
+        - review_notes
+        - retryable
+    approval_packet:
+      required_fields:
+        - summary
+        - approved
+    email_delivery_result:
+      required_fields:
+        - summary
+        - recipient_count
+        - confirmed_delivery
+  event_mappings:
+    manager_approved:
+      runtime_event: gate_result
+      status: pass
+    email_sent:
+      runtime_event: effect_result
+      effect_type: send_email
+  effects:
+    send_email:
+      adapter: email
+      retryable: true
+    archive_document:
+      adapter: document_store
+      retryable: true
+  projection_targets:
+    delivery_log:
+      adapter: local_report
+    office_dashboard:
+      adapter: local_report
+  roles:
+    data_collector:
+      run_mode: background_child
+      agent: analyst
+      load_skills:
+        - spreadsheets
+      artifact: spreadsheet_report
+      timeout_seconds: 3600
+      retry_policy:
+        max_attempts: 2
+        backoff_seconds:
+          - 60
+    reviewer:
+      run_mode: background_child
+      agent: reviewer
+      load_skills:
+        - documents
+      artifact: review_packet
+      timeout_seconds: 1800
+      retry_policy:
+        max_attempts: 2
+        backoff_seconds:
+          - 60
+    manager_approval:
+      run_mode: manual_gate
+      agent: manager
+      load_skills:
+        - approval-gate
+      artifact: approval_packet
+      timeout_seconds: 86400
+    mailer:
+      run_mode: background_child
+      agent: office-automation
+      load_skills:
+        - email-delivery
+      artifact: email_delivery_result
+      timeout_seconds: 900
+      retry_policy:
+        max_attempts: 3
+        backoff_seconds:
+          - 60
+          - 300
+  stages:
+    collect_data:
+      lifecycle_state: running
+      role: data_collector
+      on_success: assemble_review
+      on_failed_retryable: collect_data
+      on_failed_terminal: failed
+    assemble_review:
+      lifecycle_state: verifying
+      role: reviewer
+      on_success: manager_review
+      on_fail_retryable: collect_data
+      on_fail_terminal: failed
+    manager_review:
+      lifecycle_state: verified
+      role: manager_approval
+      on_pass: send_email
+      on_fail_retryable: collect_data
+      on_fail_terminal: failed
+    send_email:
+      lifecycle_state: releasing
+      role: mailer
+      on_success: completed
+      on_blocked_transient: verified
+      on_failed_terminal: failed

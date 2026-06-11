@@ -1,0 +1,80 @@
+schema_version: "1.1"
+
+project:
+  name: vocab1
+  root: /home/timmypai/apps/vocab1
+
+runtime:
+  db_path: .northstar/runtime/control-plane.sqlite3
+  host_adapter: opencode
+  development_capacity: 1
+  release_capacity: 1
+  heartbeat_interval_seconds: 30
+  lease_timeout_seconds: 180
+  child_timeout_seconds: 7200
+  watch_lock_stale_seconds: 120
+  max_recovery_attempts: 2
+  auto_release: false
+  session_scope: stage_root
+
+workflow:
+  package: northstar/workflows/issue-to-pr-release
+  id: issue_to_pr_release
+  version: "1.0"
+  domain: software_development
+
+workflow_overrides:
+  roles:
+    implementation_agent:
+      agent: codex-gpt-5.3
+      model: gpt-5.3
+      load_skills:
+        - tdd
+        - playwright
+      run_mode: background_child
+      timeout_seconds: 3600
+      retry_policy:
+        max_attempts: 2
+        backoff_seconds:
+          - 15
+          - 60
+
+github:
+  repo: owner/name
+  intake:
+    enabled: true
+    label: northstar:ready
+  sync:
+    enabled: true
+    retry_backoff_seconds:
+      - 30
+      - 120
+      - 600
+  project:
+    enabled: false
+
+git:
+  base_branch: main
+  worktrees_dir: .northstar/runtime/worktrees
+  sync_worktree_dir: .northstar/runtime/sync-worktrees/main
+
+cleanup:
+  completed_worktrees: archive
+  keep_last: 5
+  failed_or_quarantined: keep
+
+policy:
+  github_sync_blocks_lifecycle: false
+  quarantine_requires_operator: true
+
+credentials:
+  github:
+    token_env: GITHUB_TOKEN
+    allow_gh_token_fallback: true
+  host_sdk:
+    codex:
+      mode: sdk_default
+    opencode:
+      mode: sdk_default
+    pi:
+      mode: sdk_default

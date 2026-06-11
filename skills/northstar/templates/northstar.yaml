@@ -1,0 +1,65 @@
+schema_version: "1.1"
+
+project:
+  name: __PROJECT_NAME__
+  root: "__PROJECT_ROOT__"
+
+runtime:
+  db_path: .northstar/runtime/control-plane.sqlite3
+  host_adapter: codex
+  development_capacity: 1
+  release_capacity: 1
+  heartbeat_interval_seconds: 30
+  lease_timeout_seconds: 600
+  child_timeout_seconds: 7200
+  watch_lock_stale_seconds: 120
+  max_recovery_attempts: 2
+  auto_release: true
+  session_scope: stage_root
+
+workflow:
+  package: builtin
+  id: issue_to_pr_release
+  version: "2.0"
+  domain: software_development
+  path: .northstar/workflows/issue-to-pr-release.yaml
+
+github:
+  repo: __GITHUB_REPO__
+  intake:
+    enabled: true
+    label: northstar:ready
+  sync:
+    enabled: true
+    retry_backoff_seconds:
+      - 30
+      - 120
+      - 600
+  project:
+    enabled: false
+
+git:
+  base_branch: __BASE_BRANCH__
+  worktrees_dir: .northstar/runtime/worktrees
+  sync_worktree_dir: .northstar/runtime/sync-worktrees/main
+
+cleanup:
+  completed_worktrees: archive
+  keep_last: 5
+  failed_or_quarantined: keep
+
+credentials:
+  github:
+    token_env: GITHUB_TOKEN
+    allow_gh_token_fallback: true
+  host_sdk:
+    codex:
+      mode: sdk_default
+    opencode:
+      mode: sdk_default
+    pi:
+      mode: sdk_default
+
+policy:
+  github_sync_blocks_lifecycle: false
+  quarantine_requires_operator: true

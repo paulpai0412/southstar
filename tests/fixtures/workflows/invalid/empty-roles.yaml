@@ -1,0 +1,9 @@
+workflow:
+  id: invalid_fixture
+  version: "1.0"
+  roles:
+  stages:
+    implementation:
+      lifecycle_state: running
+      role: worker
+      on_success: completed
