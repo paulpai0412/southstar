@@ -22,6 +22,7 @@ await import("./operations-dashboard.test.ts");
 await import("./pi-web-dashboard-renderer.test.ts");
 await import("./local-api.test.ts");
 await import("./dynamic-expansion-api.test.ts");
+await import("./server-api.test.ts");
 await import("./planner.test.ts");
 await import("./pi-sdk-harness.test.ts");
 await import("./tork-client.test.ts");
