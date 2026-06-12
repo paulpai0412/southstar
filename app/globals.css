@@ -1,0 +1,86 @@
+:root {
+  --ss-bg: #f7f9fc;
+  --ss-rail: #071827;
+  --ss-panel: #ffffff;
+  --ss-panel-soft: #f2f6fb;
+  --ss-border: #dbe3ee;
+  --ss-border-strong: #b7c3d3;
+  --ss-text: #162033;
+  --ss-muted: #64748b;
+  --ss-blue: #2563eb;
+  --ss-cyan: #0891b2;
+  --ss-green: #16a34a;
+  --ss-amber: #d97706;
+  --ss-red: #dc2626;
+  --ss-radius: 8px;
+  --ss-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+  background: var(--ss-bg);
+  color: var(--ss-text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+.ss-app-shell {
+  min-height: 100dvh;
+  display: grid;
+  grid-template-columns: 172px minmax(0, 1fr);
+}
+
+.ss-rail {
+  background: var(--ss-rail);
+  color: white;
+  padding: 16px 12px;
+}
+
+.ss-brand {
+  font-weight: 700;
+  margin-bottom: 24px;
+}
+
+.ss-rail nav {
+  display: grid;
+  gap: 8px;
+}
+
+.ss-rail a {
+  color: #d7e5f8;
+  font-size: 13px;
+  padding: 9px 10px;
+  border-radius: var(--ss-radius);
+}
+
+.ss-workspace {
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr);
+}
+
+.ss-topbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid var(--ss-border);
+  background: var(--ss-panel);
+  padding: 0 18px;
+}
+
+.ss-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--ss-muted);
+}
