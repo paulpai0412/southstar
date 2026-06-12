@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { executeV2Command, parseV2Command } from "../../src/v2/cli.ts";
+import { executeV2Command, main, parseV2Command } from "../../src/v2/cli.ts";
+import type { CliRuntimeClient } from "../../src/v2/cli-client.ts";
 import { formatRunStatusSummary } from "../../src/v2/cli-format.ts";
 import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
 import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
@@ -26,11 +27,22 @@ test("parses phase 1.5 CLI commands", () => {
   });
 });
 
-test("server-backed phase 1.5 CLI commands fail closed until operation routes are complete", async () => {
+test("server-backed phase 1.5 CLI commands execute through the runtime client", async () => {
   const db = openSouthstarDb(":memory:");
+  const calls: string[] = [];
+  const runtimeClient = {
+    runGoal: async () => envelope("run-goal", { runId: "run-1" }, calls),
+    getRun: async () => envelope("status", { runId: "run-1" }, calls),
+    listTasks: async () => envelope("tasks", [], calls),
+    getTask: async () => envelope("task", { id: "task-1" }, calls),
+    listArtifacts: async () => envelope("artifacts", [], calls),
+    listSessions: async () => envelope("sessions", [], calls),
+    listMemory: async () => envelope("memory", [], calls),
+    listLogs: async () => envelope("logs", [], calls),
+    voiceCommand: async () => envelope("voice-command", { transcript: "approve" }, calls),
+  } as unknown as CliRuntimeClient;
 
   const commands = [
-    ["serve"],
     ["run-goal", "--goal", "Add calc sum"],
     ["wait", "--run-id", "run-1"],
     ["tasks", "--run-id", "run-1"],
@@ -44,11 +56,31 @@ test("server-backed phase 1.5 CLI commands fail closed until operation routes ar
 
   for (const argv of commands) {
     const parsed = parseV2Command(argv);
-    const expected = parsed.command === "serve"
-      ? /serve is implemented by src\/v2\/server entrypoint task/
-      : new RegExp(`${parsed.command} requires Southstar runtime server route implementation`);
-    await assert.rejects(() => executeV2Command(parsed, { db }), expected);
+    const result = await executeV2Command(parsed, { db, runtimeClient });
+    assert.notEqual(result.kind, "serve");
   }
+  assert.deepEqual(calls, ["run-goal", "status", "tasks", "task", "artifacts", "sessions", "memory", "logs", "voice-command"]);
+});
+
+test("serve command fails closed because it belongs to the runtime server entrypoint", async () => {
+  const db = openSouthstarDb(":memory:");
+
+  await assert.rejects(
+    () => executeV2Command(parseV2Command(["serve"]), { db }),
+    /serve is implemented by src\/v2\/server entrypoint task/,
+  );
+});
+
+test("existing status CLI command keeps local SQLite fallback when no runtime client is injected", async () => {
+  const db = openSouthstarDb(":memory:");
+  const writes: string[] = [];
+  const exitCode = await main(["status", "--run-id", "run-missing"], {
+    db,
+    write: (text) => writes.push(text),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(JSON.parse(writes[0]!).result.canvas.status, "unknown");
 });
 
 test("formats run status summary for CLI diagnostics", () => {
@@ -68,3 +100,8 @@ test("loads runtime server URL for CLI clients", () => {
   assert.equal(loadSouthstarEnv({}).serverUrl, "http://127.0.0.1:3100");
   assert.equal(loadSouthstarEnv({ SOUTHSTAR_SERVER_URL: "http://127.0.0.1:3999" }).serverUrl, "http://127.0.0.1:3999");
 });
+
+function envelope<T>(kind: string, result: T, calls: string[]) {
+  calls.push(kind);
+  return { ok: true as const, kind, result };
+}

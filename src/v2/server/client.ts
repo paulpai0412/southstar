@@ -5,6 +5,9 @@ export type RuntimeServerClient = ReturnType<typeof createRuntimeServerClient>;
 export function createRuntimeServerClient(input: { baseUrl: string }) {
   const baseUrl = input.baseUrl.replace(/\/$/, "");
   return {
+    runGoal(body: { goalPrompt: string }) {
+      return post(`${baseUrl}/api/v2/run-goal`, body);
+    },
     createPlannerDraft(body: { goalPrompt: string }) {
       return post(`${baseUrl}/api/v2/planner/drafts`, body);
     },
@@ -18,8 +21,38 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
       const after = body.afterSequence ?? 0;
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/events?after=${encodeURIComponent(String(after))}`);
     },
+    listTasks(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/tasks`);
+    },
+    getTask(body: { runId: string; taskId: string }) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}`);
+    },
+    listArtifacts(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/artifacts`);
+    },
+    listSessions(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/sessions`);
+    },
+    listMemory(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/memory`);
+    },
+    listLogs(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/logs`);
+    },
+    listApprovals(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/approvals`);
+    },
+    decideApproval(body: { runId: string; approvalId: string; decision: "approved" | "rejected"; reason: string }) {
+      return post(
+        `${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/approvals/${encodeURIComponent(body.approvalId)}/decision`,
+        { decision: body.decision, reason: body.reason },
+      );
+    },
     steerRun(body: { runId: string; message: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/steering`, { message: body.message });
+    },
+    voiceCommand(body: { runId: string; transcript: string }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/voice-command`, { transcript: body.transcript });
     },
     getTaskEnvelope(body: { runId: string; taskId: string }) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/envelope`);

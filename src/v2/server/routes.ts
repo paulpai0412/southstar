@@ -6,6 +6,10 @@ import {
   getTaskEnvelope,
   steerRun,
 } from "../ui-api/local-api.ts";
+import { buildTaskDetailModel } from "../ui-api/read-models.ts";
+import { listHistoryForRun } from "../stores/history-store.ts";
+import { listResources } from "../stores/resource-store.ts";
+import { decideApproval } from "../approvals/service.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import { readRunEventsSince, toSseFrame } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
@@ -13,6 +17,22 @@ import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 export async function handleRuntimeRoute(context: RuntimeServerContext, request: Request): Promise<Response> {
   const url = new URL(request.url);
   try {
+    if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
+      const body = await readJsonBody<{ goalPrompt?: string }>(request);
+      if (!body.goalPrompt) throw new Error("goalPrompt is required");
+      const draft = await createPlannerDraft(context.db, {
+        goalPrompt: body.goalPrompt,
+        plannerClient: context.plannerClient,
+      });
+      const run = await createRunFromDraft(context.db, {
+        draftId: draft.draftId,
+        executorProvider: context.executorProvider,
+        callbackUrl: `${requiredServerUrl(context)}/api/v2/tork/callback`,
+        runRoot: context.runRoot,
+      });
+      return json("run-goal", { draft, ...run });
+    }
+
     if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
       const body = await readJsonBody<{ goalPrompt?: string }>(request);
       if (!body.goalPrompt) throw new Error("goalPrompt is required");
@@ -62,6 +82,63 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       return json("status", getRunStatus(context.db, decodeURIComponent(runMatch[1]!)));
     }
 
+    const tasksMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/tasks$/);
+    if (request.method === "GET" && tasksMatch) {
+      const runId = decodeURIComponent(tasksMatch[1]!);
+      const rows = context.db.prepare("select * from workflow_tasks where run_id = ? order by sort_order").all(runId);
+      return json("tasks", rows);
+    }
+
+    const taskMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/tasks\/([^/]+)$/);
+    if (request.method === "GET" && taskMatch) {
+      const runId = decodeURIComponent(taskMatch[1]!);
+      const taskId = decodeURIComponent(taskMatch[2]!);
+      const task = buildTaskDetailModel(context.db, runId, taskId);
+      if (!task) throw new Error(`task not found: ${runId}/${taskId}`);
+      return json("task", task);
+    }
+
+    const resourceMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/(artifacts|sessions|memory|logs)$/);
+    if (request.method === "GET" && resourceMatch) {
+      const runId = decodeURIComponent(resourceMatch[1]!);
+      const kind = resourceMatch[2]!;
+      if (kind === "logs") return json("logs", listHistoryForRun(context.db, runId));
+      if (kind === "sessions") {
+        return json("sessions", [
+          ...listResources(context.db, { resourceType: "session" }),
+          ...listResources(context.db, { resourceType: "session_checkpoint" }),
+        ].filter((resource) => resource.runId === runId));
+      }
+      if (kind === "memory") {
+        return json("memory", [
+          ...listResources(context.db, { resourceType: "memory_item" }),
+          ...listResources(context.db, { resourceType: "memory_delta" }),
+        ].filter((resource) => resource.runId === runId));
+      }
+      const resourceType = kind === "artifacts" ? "artifact" : "memory_item";
+      return json(kind, listResources(context.db, { resourceType }).filter((resource) => resource.runId === runId));
+    }
+
+    const approvalsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/approvals$/);
+    if (request.method === "GET" && approvalsMatch) {
+      const runId = decodeURIComponent(approvalsMatch[1]!);
+      return json("approvals", listResources(context.db, { resourceType: "approval" }).filter((resource) => resource.runId === runId));
+    }
+
+    const approvalDecisionMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/approvals\/([^/]+)\/decision$/);
+    if (request.method === "POST" && approvalDecisionMatch) {
+      const body = await readJsonBody<{ decision?: "approved" | "rejected"; reason?: string }>(request);
+      if (body.decision !== "approved" && body.decision !== "rejected") throw new Error("decision must be approved or rejected");
+      if (!body.reason) throw new Error("reason is required");
+      return json("approval-decision", decideApproval(context.db, {
+        runId: decodeURIComponent(approvalDecisionMatch[1]!),
+        approvalId: decodeURIComponent(approvalDecisionMatch[2]!),
+        decision: body.decision,
+        actorType: "user",
+        reason: body.reason,
+      }));
+    }
+
     const steerMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/steering$/);
     if (request.method === "POST" && steerMatch) {
       const body = await readJsonBody<{ message?: string }>(request);
@@ -70,6 +147,19 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         runId: decodeURIComponent(steerMatch[1]!),
         message: body.message,
       }));
+    }
+
+    const voiceMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/voice-command$/);
+    if (request.method === "POST" && voiceMatch) {
+      const body = await readJsonBody<{ transcript?: string }>(request);
+      if (!body.transcript) throw new Error("transcript is required");
+      return json("voice-command", {
+        transcript: body.transcript,
+        event: steerRun(context.db, {
+          runId: decodeURIComponent(voiceMatch[1]!),
+          message: body.transcript,
+        }),
+      });
     }
 
     const envelopeMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/tasks\/([^/]+)\/envelope$/);

@@ -8,8 +8,9 @@ import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts
 import { createRuntimeServerClient } from "../../src/v2/server/client.ts";
 import type { ExecutorProvider, ExecutorSubmitRequest } from "../../src/v2/executor/provider.ts";
 import type { PiPlannerClient } from "../../src/v2/planner/types.ts";
+import { createApprovalRequest } from "../../src/v2/approvals/service.ts";
 import { listHistoryForRun } from "../../src/v2/stores/history-store.ts";
-import { listResources } from "../../src/v2/stores/resource-store.ts";
+import { listResources, proposeMemoryDelta } from "../../src/v2/stores/resource-store.ts";
 import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
 
 test("runtime server exposes plan, run, status, steering, task envelope, and callback APIs", async () => {
@@ -59,6 +60,57 @@ test("runtime server exposes plan, run, status, steering, task envelope, and cal
     assert.deepEqual(callback.result, { accepted: true });
     assert.equal(listResources(db, { resourceType: "artifact", status: "accepted" }).length, 1);
     assert.equal(listHistoryForRun(db, run.result.runId).some((event) => event.eventType === "subagent.completed"), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("runtime server supports run-goal, voice-command, and read routes", async () => {
+  const db = openSouthstarDb(join(mkdtempSync(join(tmpdir(), "southstar-server-run-goal-")), "db.sqlite3"));
+  const submissions: ExecutorSubmitRequest[] = [];
+  const server = await createSouthstarRuntimeServer({
+    host: "127.0.0.1",
+    port: 0,
+    db,
+    plannerClient: plannerClient(),
+    executorProvider: executorProvider(submissions),
+  });
+
+  try {
+    const client = createRuntimeServerClient({ baseUrl: server.url });
+    const runGoal = await client.runGoal({ goalPrompt: "Add calc sum" });
+    const runId = runGoal.result.runId;
+    assert.match(runId, /^run-/);
+    assert.equal(submissions[0]?.callbackUrl, `${server.url}/api/v2/tork/callback`);
+    const memoryDelta = proposeMemoryDelta(db, runId, { preference: "minimal changes" });
+    assert.equal((await client.listTasks(runId)).kind, "tasks");
+    assert.equal((await client.listArtifacts(runId)).kind, "artifacts");
+    assert.equal((await client.listSessions(runId)).kind, "sessions");
+    const memory = await client.listMemory(runId);
+    assert.equal(memory.kind, "memory");
+    assert.equal((memory.result as Array<{ resourceType: string; id: string }>).some((resource) => {
+      return resource.resourceType === "memory_delta" && resource.id === memoryDelta.id;
+    }), true);
+    assert.equal((await client.listLogs(runId)).kind, "logs");
+    const approval = createApprovalRequest(db, {
+      runId,
+      actionType: "voiceCommand",
+      riskTags: ["secret-access"],
+      title: "Review voice command",
+      payload: { transcript: "access secrets" },
+    });
+    assert.equal((await client.listApprovals(runId)).kind, "approvals");
+    const decision = await client.decideApproval({
+      runId,
+      approvalId: approval.id,
+      decision: "approved",
+      reason: "operator approved in server test",
+    });
+    const voice = await client.voiceCommand({ runId, transcript: "low risk: keep changes minimal" });
+    assert.equal(decision.kind, "approval-decision");
+    assert.equal(voice.kind, "voice-command");
+    assert.equal(listHistoryForRun(db, runId).some((event) => event.eventType === "steering.received"), true);
+    assert.equal(listHistoryForRun(db, runId).some((event) => event.eventType === "approval.decided"), true);
   } finally {
     await server.close();
   }
