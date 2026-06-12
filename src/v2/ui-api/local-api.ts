@@ -13,11 +13,12 @@ import {
   upsertRuntimeResource,
   validateWorkflowRevision,
 } from "../stores/resource-store.ts";
-import { createWorkflowRun } from "../stores/run-store.ts";
+import { createWorkflowRun, updateExecutionProjection } from "../stores/run-store.ts";
 import { createWorkflowTask } from "../stores/task-store.ts";
 import { appendHistoryEvent } from "../stores/history-store.ts";
-import { buildTorkJobProjection } from "../executor/tork-projection.ts";
 import type { TorkClient, TorkSubmitResult } from "../executor/tork-client.ts";
+import type { ExecutorProvider, ExecutorSubmitResult } from "../executor/provider.ts";
+import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
 import { buildTaskEnvelope } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
@@ -102,7 +103,8 @@ export async function revisePlannerDraft(db: SouthstarDb, input: {
 
 export async function createRunFromDraft(db: SouthstarDb, input: {
   draftId: string;
-  torkClient: Pick<TorkClient, "submit">;
+  executorProvider?: ExecutorProvider;
+  torkClient?: Pick<TorkClient, "submit">;
   runRoot?: string;
   callbackUrl?: string;
   harnessEndpoint?: string;
@@ -115,18 +117,14 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     runRoot: input.runRoot,
     harnessEndpoint: input.harnessEndpoint,
   });
-  const projection = buildTorkJobProjection(projectedWorkflow, {
-    callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
-    envelopeBasePath: "/southstar-runs",
-    runId,
-  });
+  const executorProvider = resolveExecutorProvider(input);
   createWorkflowRun(db, {
     id: runId,
     status: "running",
     domain: inferDomain(workflow),
     goalPrompt: workflow.goalPrompt,
     workflowManifestJson: JSON.stringify(workflow),
-    executionProjectionJson: JSON.stringify(projection),
+    executionProjectionJson: JSON.stringify(null),
     snapshotJson: JSON.stringify({ activeTaskIds: workflow.tasks.map((task) => task.id) }),
     runtimeContextJson: JSON.stringify({ draftId: input.draftId }),
     metricsJson: JSON.stringify({}),
@@ -149,22 +147,39 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     actorType: "orchestrator",
     payload: { draftId: input.draftId, workflowId: bundle.workflow.workflowId },
   });
-  const tork = await input.torkClient.submit(projection);
+  const executorSubmission = await executorProvider.submit({
+    runId,
+    workflow: projectedWorkflow,
+    callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
+    envelopeBasePath: "/southstar-runs",
+  });
+  updateExecutionProjection(db, runId, JSON.stringify(executorSubmission.executionProjection ?? null));
+  const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);
   upsertRuntimeResource(db, {
     id: `executor-${runId}`,
     resourceType: "executor_binding",
     resourceKey: `executor-${runId}`,
     runId,
     scope: "executor",
-    status: tork.status,
-    title: "Tork job",
-    payload: { executorType: "tork", torkJobId: tork.jobId, projectionFingerprint: projection.fingerprint },
+    status: executorSubmission.status,
+    title: `${executorSubmission.executorType} job`,
+    payload: {
+      executorType: executorSubmission.executorType,
+      externalJobId: executorSubmission.externalJobId,
+      ...(executorSubmission.providerPayload ?? {}),
+      ...(executorSubmission.projectionFingerprint ? { projectionFingerprint: executorSubmission.projectionFingerprint } : {}),
+    },
   });
   appendHistoryEvent(db, {
     runId,
     eventType: "executor.submitted",
     actorType: "orchestrator",
-    payload: { torkJobId: tork.jobId, status: tork.status },
+    payload: {
+      executorType: executorSubmission.executorType,
+      externalJobId: executorSubmission.externalJobId,
+      ...(executorSubmission.providerPayload ?? {}),
+      status: executorSubmission.status,
+    },
   });
   return { runId, tork };
 }
@@ -172,7 +187,8 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
 export async function expandWorkflowRun(db: SouthstarDb, input: {
   runId: string;
   request: WorkflowRevisionRequest;
-  torkClient: Pick<TorkClient, "submit">;
+  executorProvider?: ExecutorProvider;
+  torkClient?: Pick<TorkClient, "submit">;
   runRoot?: string;
   callbackUrl?: string;
   harnessEndpoint?: string;
@@ -212,12 +228,14 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
       harnessEndpoint: input.harnessEndpoint,
     },
   );
-  const projection = buildTorkJobProjection(projectedWorkflow, {
+  const executorProvider = resolveExecutorProvider(input);
+  const executorSubmission = await executorProvider.submit({
+    runId: input.runId,
+    workflow: projectedWorkflow,
     callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
     envelopeBasePath: "/southstar-runs",
-    runId: input.runId,
   });
-  const tork = await input.torkClient.submit(projection);
+  const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);
   upsertRuntimeResource(db, {
     id: `executor-${input.runId}-${input.request.revisionId}`,
     resourceType: "executor_binding",
@@ -225,22 +243,43 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
     runId: input.runId,
     scope: "executor",
     status: tork.status,
-    title: "Tork dynamic expansion job",
+    title: `${executorSubmission.executorType} dynamic expansion job`,
     payload: {
-      executorType: "tork",
-      torkJobId: tork.jobId,
+      executorType: executorSubmission.executorType,
+      externalJobId: executorSubmission.externalJobId,
+      ...(executorSubmission.providerPayload ?? {}),
       revisionId: input.request.revisionId,
       taskIds: revision.newTaskIds,
-      projectionFingerprint: projection.fingerprint,
+      ...(executorSubmission.projectionFingerprint ? { projectionFingerprint: executorSubmission.projectionFingerprint } : {}),
     },
   });
   appendHistoryEvent(db, {
     runId: input.runId,
     eventType: "executor.submitted",
     actorType: "orchestrator",
-    payload: { torkJobId: tork.jobId, status: tork.status, revisionId: input.request.revisionId, taskIds: revision.newTaskIds },
+    payload: {
+      executorType: executorSubmission.executorType,
+      externalJobId: executorSubmission.externalJobId,
+      ...(executorSubmission.providerPayload ?? {}),
+      status: executorSubmission.status,
+      revisionId: input.request.revisionId,
+      taskIds: revision.newTaskIds,
+    },
   });
   return { ...revision, tork };
+}
+
+function resolveExecutorProvider(input: {
+  executorProvider?: ExecutorProvider;
+  torkClient?: Pick<TorkClient, "submit">;
+}): ExecutorProvider {
+  if (input.executorProvider) return input.executorProvider;
+  if (input.torkClient) return new TorkExecutorProvider({ torkClient: input.torkClient });
+  throw new Error("createRunFromDraft requires executorProvider or torkClient");
+}
+
+function torkSubmitResultFromExecutorSubmission(submission: ExecutorSubmitResult): TorkSubmitResult {
+  return { jobId: submission.externalJobId, status: submission.status };
 }
 
 function normalizeRevisionRuntimeExecution(request: WorkflowRevisionRequest): WorkflowRevisionRequest {

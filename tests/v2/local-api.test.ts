@@ -15,6 +15,7 @@ import {
 } from "../../src/v2/ui-api/local-api.ts";
 import type { PiPlannerClient } from "../../src/v2/planner/types.ts";
 import type { TorkClient } from "../../src/v2/executor/tork-client.ts";
+import type { ExecutorProvider } from "../../src/v2/executor/provider.ts";
 
 test("creates planner draft resource from validated Pi planner output", async () => {
   const db = openSouthstarDb(":memory:");
@@ -86,6 +87,42 @@ test("creates a distinct run id when the same planner draft is executed again", 
   assert.notEqual(second.runId, first.runId);
   assert.match(second.runId, /^run-wf-software-mvp-/);
   assert.deepEqual(getRunStatus(db, second.runId).runtime.executorJobIds, ["job-2"]);
+});
+
+test("durably creates run and tasks before submitting through executor provider", async () => {
+  const db = openSouthstarDb(":memory:");
+  const draft = await createPlannerDraft(db, {
+    goalPrompt: "implement calc sum",
+    plannerClient: plannerClient(),
+  });
+  const executorProvider: ExecutorProvider = {
+    executorType: "tork",
+    submit: async ({ runId }) => {
+      const runRow = db.prepare("select id from workflow_runs where id = ?").get(runId);
+      const taskRow = db.prepare("select id from workflow_tasks where run_id = ? and id = ?")
+        .get(runId, "task-implement");
+
+      assert.equal((runRow as { id?: string } | undefined)?.id, runId);
+      assert.equal((taskRow as { id?: string } | undefined)?.id, "task-implement");
+
+      return {
+        executorType: "tork",
+        externalJobId: "job-provider-1",
+        status: "queued",
+        executionProjection: { executor: "tork" },
+      };
+    },
+  };
+
+  const run = await createRunFromDraft(db, {
+    draftId: draft.draftId,
+    executorProvider,
+  });
+
+  assert.equal(run.runId, "run-wf-software-mvp");
+  assert.equal(run.tork.jobId, "job-provider-1");
+  assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
+  assert.deepEqual(getRunStatus(db, run.runId).runtime.executorJobIds, ["job-provider-1"]);
 });
 
 test("steers run and builds task envelope with approved memory", async () => {

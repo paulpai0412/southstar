@@ -5,6 +5,7 @@ await import("./runtime-store.test.ts");
 await import("./metrics-store.test.ts");
 await import("./quantitative-gates.test.ts");
 await import("./tork-projection.test.ts");
+await import("./executor-provider.test.ts");
 await import("./task-envelope.test.ts");
 await import("./materializer.test.ts");
 await import("./container-runner.test.ts");

@@ -1,0 +1,51 @@
+import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+
+export type ExecutorType = "tork";
+
+export type ExecutorSubmitRequest = {
+  runId: string;
+  workflow: SouthstarWorkflowManifest;
+  callbackUrl?: string;
+  envelopeBasePath?: string;
+};
+
+export type ExecutorSubmitResult = {
+  executorType: ExecutorType;
+  externalJobId: string;
+  status: string;
+  projectionFingerprint?: string;
+  executionProjection?: unknown;
+  providerPayload?: Record<string, unknown>;
+};
+
+export type ExecutorStatusRequest = {
+  externalJobId: string;
+  runId?: string;
+};
+
+export type ExecutorStatusResult = {
+  executorType: ExecutorType;
+  externalJobId: string;
+  status: string;
+  providerPayload?: Record<string, unknown>;
+};
+
+export type ExecutorCancelRequest = {
+  externalJobId: string;
+  runId?: string;
+  reason?: string;
+};
+
+export type ExecutorCancelResult = {
+  executorType: ExecutorType;
+  externalJobId: string;
+  status: "cancelled" | "cancelling" | "not_supported";
+  providerPayload?: Record<string, unknown>;
+};
+
+export type ExecutorProvider = {
+  readonly executorType: ExecutorType;
+  submit(request: ExecutorSubmitRequest): Promise<ExecutorSubmitResult>;
+  status?(request: ExecutorStatusRequest): Promise<ExecutorStatusResult>;
+  cancel?(request: ExecutorCancelRequest): Promise<ExecutorCancelResult>;
+};

@@ -55,6 +55,11 @@ export function updateWorkflowManifest(db: SouthstarDb, runId: string, workflowM
     .run(workflowManifestJson, new Date().toISOString(), runId);
 }
 
+export function updateExecutionProjection(db: SouthstarDb, runId: string, executionProjectionJson: string): void {
+  db.prepare("update workflow_runs set execution_projection_json = ?, updated_at = ? where id = ?")
+    .run(executionProjectionJson, new Date().toISOString(), runId);
+}
+
 type WorkflowRunRow = {
   id: string;
   status: string;
