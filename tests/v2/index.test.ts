@@ -30,4 +30,5 @@ await import("./tork-client.test.ts");
 await import("./tork-callback.test.ts");
 await import("./env.test.ts");
 await import("./cli.test.ts");
+await import("./cli-operations.test.ts");
 await import("./real-e2e-env.test.ts");

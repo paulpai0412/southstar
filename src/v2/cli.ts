@@ -19,7 +19,17 @@ export type V2Command =
   | { command: "run"; draftId: string }
   | { command: "status"; runId: string }
   | { command: "steer"; runId: string; message: string }
-  | { command: "task-envelope"; runId: string; taskId: string };
+  | { command: "task-envelope"; runId: string; taskId: string }
+  | { command: "serve" }
+  | { command: "run-goal"; goal: string }
+  | { command: "wait"; runId: string }
+  | { command: "tasks"; runId: string }
+  | { command: "task"; runId: string; taskId: string }
+  | { command: "artifacts"; runId: string }
+  | { command: "sessions"; runId: string }
+  | { command: "memory"; runId: string }
+  | { command: "logs"; runId: string }
+  | { command: "voice-command"; runId: string; transcript: string };
 
 export type V2CliDependencies = {
   db: SouthstarDb;
@@ -49,6 +59,26 @@ export function parseV2Command(argv: string[]): V2Command {
       return { command, runId: requireFlag(args, "--run-id"), message: requireFlag(args, "--message") };
     case "task-envelope":
       return { command, runId: requireFlag(args, "--run-id"), taskId: requireFlag(args, "--task-id") };
+    case "serve":
+      return { command };
+    case "run-goal":
+      return { command, goal: requireFlag(args, "--goal") };
+    case "wait":
+      return { command, runId: requireFlag(args, "--run-id") };
+    case "tasks":
+      return { command, runId: requireFlag(args, "--run-id") };
+    case "task":
+      return { command, runId: requireFlag(args, "--run-id"), taskId: requireFlag(args, "--task-id") };
+    case "artifacts":
+      return { command, runId: requireFlag(args, "--run-id") };
+    case "sessions":
+      return { command, runId: requireFlag(args, "--run-id") };
+    case "memory":
+      return { command, runId: requireFlag(args, "--run-id") };
+    case "logs":
+      return { command, runId: requireFlag(args, "--run-id") };
+    case "voice-command":
+      return { command, runId: requireFlag(args, "--run-id"), transcript: requireFlag(args, "--transcript") };
     default:
       throw new Error(`Unknown southstar:v2 command: ${command ?? "(missing)"}`);
   }
@@ -96,6 +126,18 @@ export async function executeV2Command(
         kind: "task-envelope",
         result: getTaskEnvelope(dependencies.db, { runId: command.runId, taskId: command.taskId }),
       };
+    case "serve":
+      throw new Error("serve is implemented by src/v2/server entrypoint task");
+    case "run-goal":
+    case "wait":
+    case "tasks":
+    case "task":
+    case "artifacts":
+    case "sessions":
+    case "memory":
+    case "logs":
+    case "voice-command":
+      throw new Error(`${command.command} requires Southstar runtime server route implementation`);
   }
 }
 
