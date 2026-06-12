@@ -4,13 +4,17 @@
   "private": true,
   "type": "module",
   "bin": {
-    "southstar": "src/cli/entrypoint.ts"
+    "southstar": "src/cli/entrypoint.ts",
+    "southstar-agent-runner": "src/v2/agent-runner/cli.ts"
   },
   "engines": {
     "node": ">=22.22.2"
   },
   "scripts": {
     "test": "tsx tests/index.test.ts",
+    "test:v2": "tsx tests/v2/index.test.ts",
+    "test:e2e:real": "tsx tests/e2e-real/index.test.ts",
+    "southstar:v2": "tsx src/v2/cli.ts",
     "southstar": "tsx src/cli/entrypoint.ts"
   },
   "c8": {
@@ -40,12 +44,13 @@
     "statements": 85
   },
   "optionalDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.78.0",
+    "@earendil-works/pi-coding-agent": "^0.78.1",
     "@openai/codex-sdk": "^0.135.0",
     "@opencode-ai/sdk": "^1.15.12"
   },
   "devDependencies": {
     "c8": "^11.0.0",
-    "tsx": "^4.22.4"
+    "tsx": "^4.22.4",
+    "typescript": "^6.0.3"
   }
 }

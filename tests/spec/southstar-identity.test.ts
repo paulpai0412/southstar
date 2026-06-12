@@ -11,7 +11,10 @@ const configPath = join(repoRoot, "tests/fixtures/southstar/config/.southstar.ya
 test("package identity is Southstar only", async () => {
   const pkg = JSON.parse(await readFile(join(repoRoot, "package.json"), "utf8"));
   assert.equal(pkg.name, "@southstar/runtime");
-  assert.deepEqual(pkg.bin, { southstar: "src/cli/entrypoint.ts" });
+  assert.deepEqual(pkg.bin, {
+    southstar: "src/cli/entrypoint.ts",
+    "southstar-agent-runner": "src/v2/agent-runner/cli.ts",
+  });
   assert.equal(pkg.scripts.southstar, "tsx src/cli/entrypoint.ts");
   assert.equal(pkg.scripts.northstar, undefined);
 });

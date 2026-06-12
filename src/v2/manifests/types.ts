@@ -1,0 +1,136 @@
+export type HarnessKind = "pi-agent" | "codex" | "claude-code" | "custom";
+
+export type TaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+
+export type HarnessDefinition = {
+  id: string;
+  kind: HarnessKind;
+  entrypoint: string;
+  image: string;
+  capabilities: string[];
+  inputProtocol: "task-envelope-v1";
+  eventProtocol: "southstar-events-v1";
+  supportsCheckpoint: boolean;
+  supportsSteering: boolean;
+  supportsProgress: boolean;
+};
+
+export type TaskExecutionSpec = {
+  engine: "tork";
+  image: string;
+  command: string[];
+  env: Record<string, string>;
+  mounts: Array<{ source: string; target: string; readonly: boolean }>;
+  timeoutSeconds: number;
+  infraRetry: { maxAttempts: number };
+};
+
+export type WorkflowTaskDefinition = {
+  id: string;
+  name: string;
+  domain: "software" | "research" | "data-analysis" | "general";
+  dependsOn: string[];
+  execution: TaskExecutionSpec;
+  rootSession: {
+    validator: "schema-evaluator-v1";
+    maxRepairAttempts: number;
+  };
+  subagents: Array<{
+    id: string;
+    harnessId: string;
+    prompt: string;
+    requiredArtifacts: string[];
+  }>;
+};
+
+export type EvaluatorDefinition = {
+  id: string;
+  kind: "schema" | "rubric" | "policy";
+  artifactTypes: string[];
+  requiredFields: string[];
+};
+
+export type McpServerDefinition = {
+  id: string;
+  command: string;
+  args: string[];
+  envKeys: string[];
+};
+
+export type McpGrantDefinition = {
+  taskId: string;
+  serverId: string;
+  allowedTools: string[];
+};
+
+export type VaultLeaseDefinition = {
+  taskId: string;
+  secretRef: string;
+  mountAs: "env" | "file";
+  ttlSeconds: number;
+};
+
+export type SouthstarWorkflowManifest = {
+  schemaVersion: "southstar.v2";
+  workflowId: string;
+  title: string;
+  goalPrompt: string;
+  tasks: WorkflowTaskDefinition[];
+  harnessDefinitions: HarnessDefinition[];
+  evaluators: EvaluatorDefinition[];
+  memoryPolicy: {
+    retrievalLimit: number;
+    writeRequiresApproval: boolean;
+  };
+  vaultPolicy: {
+    leaseTtlSeconds: number;
+    mountMode: "ephemeral-file" | "env";
+  };
+  mcpServers: McpServerDefinition[];
+  mcpGrants: McpGrantDefinition[];
+  progressPolicy: {
+    firstEventWithinSeconds: number;
+    minEventsPerLongTask: number;
+  };
+  steeringPolicy: {
+    enabled: boolean;
+    acceptedSignals: Array<"pause" | "resume" | "revise-prompt" | "repair">;
+  };
+  learningPolicy: {
+    recordMemoryDeltas: boolean;
+    recordWorkflowLearnings: boolean;
+  };
+};
+
+export type PlanBundle = {
+  workflow: SouthstarWorkflowManifest;
+  executionProjection?: {
+    executor: "tork";
+    job: unknown;
+    fingerprint: string;
+  };
+  plannerTrace: {
+    model: string;
+    promptHash: string;
+    generatedAt: string;
+  };
+};
+
+export type WorkflowRevisionRequest = {
+  revisionId: string;
+  baseRevisionId: string;
+  runId: string;
+  actorType: "planner" | "root-session" | "review-agent" | "orchestrator";
+  reason: string;
+  addTasks: WorkflowTaskDefinition[];
+  removeTaskIds: string[];
+  dependencyChanges: Array<{ taskId: string; dependsOn: string[] }>;
+  idempotencyKey: string;
+};
+
+export type WorkflowRevisionResult = {
+  workflow: SouthstarWorkflowManifest;
+  revisionId: string;
+  manifestFingerprint: string;
+  newTaskIds: string[];
+};
