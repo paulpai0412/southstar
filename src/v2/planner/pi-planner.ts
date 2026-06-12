@@ -53,6 +53,7 @@ export function buildPlannerPrompt(context: PlannerContext): string {
     "Dependencies must be: planner [], implementer [planner], root-validator [implementer], summary [root-validator].",
     "Each task must include id, name, dependsOn, harnessId, and execution.command.",
     "Set implementer harnessId to pi. Other tasks may use codex.",
+    "Set implementer skillRefs to [\"software.calc-cli\"].",
     "execution.command should be a short instruction string for the subagent, not shell code.",
     "The implementer instruction must mention editing /workspace/repo, calc sum <numbers...>, tests, README, and artifact fields summary/commandsRun/testResults/risks.",
     `Schema version: ${context.schemaVersion}.`,
@@ -230,6 +231,7 @@ function canonicalizeCompactTask(task: Record<string, unknown>, index: number, g
       infraRetry: { maxAttempts: 1 },
     },
     rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
+    skillRefs: skillRefsForTask(task.skillRefs, taskId),
     subagents: [{
       id: `${taskId}-subagent`,
       harnessId,
@@ -273,6 +275,7 @@ function canonicalizeWorkflowTaskLike(task: Record<string, unknown>, index: numb
       infraRetry: { maxAttempts: maxAttempts(execution.infraRetry) },
     },
     rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: repairAttempts(task.rootSession) },
+    skillRefs: skillRefsForTask(task.skillRefs, taskId),
     subagents: subagents.length ? subagents : [{
       id: `${taskId}-subagent`,
       harnessId: stringValue(task.harnessId) ?? "pi",
@@ -378,6 +381,12 @@ function maxAttempts(value: unknown): number {
 function repairAttempts(value: unknown): number {
   if (!isRecord(value)) return 2;
   return numberValue(value.maxRepairAttempts) ?? 2;
+}
+
+function skillRefsForTask(value: unknown, taskId: string): string[] {
+  const refs = stringArray(value);
+  if (/implement/i.test(taskId)) refs.push("software.calc-cli");
+  return [...new Set(refs)];
 }
 
 function domainValue(value: unknown): WorkflowTaskDefinition["domain"] {

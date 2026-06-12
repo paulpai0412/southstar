@@ -1,4 +1,5 @@
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
+import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 
 export type MemorySnapshot = {
   items: Array<{ id: string; body: unknown }>;
@@ -23,6 +24,7 @@ export type TaskEnvelopeInput = {
   memorySnapshot: MemorySnapshot;
   vaultLeases: VaultLeaseInput[];
   mcpGrants: McpGrantInput[];
+  skills?: ResolvedSkillSnapshot[];
 };
 
 export type TaskEnvelope = {
@@ -37,6 +39,7 @@ export type TaskEnvelope = {
   };
   subagents: WorkflowTaskDefinition["subagents"];
   memory: MemorySnapshot;
+  skills: ResolvedSkillSnapshot[];
   vaultLeases: Array<Omit<VaultLeaseInput, "secretValue">>;
   mcpGrants: McpGrantInput[];
   artifactContracts: string[];
@@ -66,6 +69,7 @@ export function buildTaskEnvelope(workflow: SouthstarWorkflowManifest, input: Ta
     },
     subagents: task.subagents,
     memory: input.memorySnapshot,
+    skills: input.skills ?? [],
     vaultLeases: input.vaultLeases.map((lease) => ({
       leaseRef: lease.leaseRef,
       mountAs: lease.mountAs,

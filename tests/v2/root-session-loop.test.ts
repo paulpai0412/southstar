@@ -132,9 +132,11 @@ function envelope(): TaskEnvelope {
     rootSession: { id: "session-root", validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
     subagents: [{ id: "impl", harnessId: "codex", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
     memory: { items: [], capturedAt: "now" },
+    skills: [],
     vaultLeases: [],
     mcpGrants: [],
     artifactContracts: ["implementation-report"],
+    artifactContract: { artifactTypes: ["implementation-report"], requiredFields: ["summary", "commandsRun"] },
   };
 }
 

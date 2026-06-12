@@ -126,6 +126,7 @@ test("planner canonicalizes compact Pi workflow output into a PlanBundle", async
 test("planner canonicalizes Pi canonical-like workflow output with schema drift", async () => {
   const malformed = validBundle();
   Object.assign(malformed.workflow.tasks[0], { domain: "planning" });
+  malformed.workflow.tasks[0].skillRefs = ["software.readme"];
   malformed.workflow.tasks[0].execution.image = "docker.io/library/node:22-bookworm";
   malformed.workflow.tasks[0].execution.command = ["southstar-agent-runner", "run", "--task", "task-implement"];
   (malformed.workflow.tasks[0].execution.mounts as unknown[]) = [{
@@ -152,6 +153,7 @@ test("planner canonicalizes Pi canonical-like workflow output with schema drift"
     target: "/workspace",
     readonly: false,
   }]);
+  assert.deepEqual(bundle.workflow.tasks[0].skillRefs, ["software.readme", "software.calc-cli"]);
   assert.equal(Array.isArray(bundle.workflow.harnessDefinitions), true);
 });
 

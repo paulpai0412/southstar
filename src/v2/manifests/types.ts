@@ -35,6 +35,7 @@ export type WorkflowTaskDefinition = {
     validator: "schema-evaluator-v1";
     maxRepairAttempts: number;
   };
+  skillRefs?: string[];
   subagents: Array<{
     id: string;
     harnessId: string;

@@ -51,8 +51,10 @@ function minimalEnvelope(): TaskEnvelope {
     rootSession: { id: "session-1", validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
     subagents: [],
     memory: { items: [], capturedAt: "now" },
+    skills: [],
     vaultLeases: [],
     mcpGrants: [],
     artifactContracts: [],
+    artifactContract: { artifactTypes: [], requiredFields: [] },
   };
 }

@@ -7,6 +7,7 @@ import { generatePlanBundle } from "../planner/pi-planner.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import {
   applyWorkflowExpansion,
+  getResourceByKey,
   listResources,
   requestWorkflowRevision,
   retrieveApprovedMemory,
@@ -22,6 +23,8 @@ import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
 import { buildTaskEnvelope } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
+import { resolveSkillSnapshots } from "../skills/resolver.ts";
+import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import {
   buildExecutorOpsModel,
   buildRuntimeMonitorModel,
@@ -112,11 +115,6 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
   const bundle = readDraftBundle(db, input.draftId);
   const workflow = normalizeWorkflowRuntimeExecution(bundle.workflow);
   const runId = allocateRunId(db, bundle.workflow.workflowId);
-  const projectedWorkflow = await materializedWorkflowForExecution(db, workflow, {
-    runId,
-    runRoot: input.runRoot,
-    harnessEndpoint: input.harnessEndpoint,
-  });
   const executorProvider = resolveExecutorProvider(input);
   createWorkflowRun(db, {
     id: runId,
@@ -146,6 +144,11 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     eventType: "run.created",
     actorType: "orchestrator",
     payload: { draftId: input.draftId, workflowId: bundle.workflow.workflowId },
+  });
+  const projectedWorkflow = await materializedWorkflowForExecution(db, workflow, {
+    runId,
+    runRoot: input.runRoot,
+    harnessEndpoint: input.harnessEndpoint,
   });
   const executorSubmission = await executorProvider.submit({
     runId,
@@ -331,6 +334,8 @@ export function getTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId:
   const workflow = readRunWorkflow(db, input.runId);
   const task = buildTaskDetailModel(db, input.runId, input.taskId);
   if (!task) throw new Error(`unknown task: ${input.taskId}`);
+  const taskDefinition = workflow.tasks.find((candidate) => candidate.id === input.taskId);
+  if (!taskDefinition) throw new Error(`unknown task: ${input.taskId}`);
   const vaultLeases = listResources(db, { resourceType: "vault_lease" })
     .filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId)
     .map((resource) => ({
@@ -350,6 +355,7 @@ export function getTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId:
     memorySnapshot: retrieveApprovedMemory(db, inferDomain(workflow), workflow.memoryPolicy.retrievalLimit),
     vaultLeases,
     mcpGrants,
+    skills: resolveTaskSkills(db, input.runId, taskDefinition),
   });
 }
 
@@ -403,6 +409,7 @@ async function materializedWorkflowForExecution(
       mcpGrants: workflow.mcpGrants
         .filter((grant) => grant.taskId === task.id)
         .map((grant) => ({ serverId: grant.serverId, allowedTools: grant.allowedTools })),
+      skills: resolveTaskSkills(db, input.runId, task),
     });
     const materialization = await materializeTaskEnvelope(envelope, { runRoot: input.runRoot });
     const runRoot = input.runRoot ?? "/tmp/southstar-runs";
@@ -434,6 +441,23 @@ async function materializedWorkflowForExecution(
     });
   }
   return { ...workflow, tasks };
+}
+
+function resolveTaskSkills(db: SouthstarDb, runId: string, task: SouthstarWorkflowManifest["tasks"][number]): ResolvedSkillSnapshot[] {
+  const skillRefs = task.skillRefs ?? [];
+  return skillRefs.map((skillRef) => {
+    const resourceKey = `${runId}:${task.id}:${skillRef}`;
+    const existing = getResourceByKey(db, "skill_snapshot", resourceKey);
+    if (existing?.status === "resolved") {
+      return existing.payload as ResolvedSkillSnapshot;
+    }
+    const [snapshot] = resolveSkillSnapshots(db, {
+      runId,
+      taskId: task.id,
+      skillRefs: [skillRef],
+    });
+    return snapshot;
+  });
 }
 
 function isImplementerTask(taskId: string): boolean {

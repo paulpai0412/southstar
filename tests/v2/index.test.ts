@@ -8,6 +8,7 @@ await import("./tork-projection.test.ts");
 await import("./executor-provider.test.ts");
 await import("./task-envelope.test.ts");
 await import("./materializer.test.ts");
+await import("./skills.test.ts");
 await import("./container-runner.test.ts");
 await import("./agent-runner-cli.test.ts");
 await import("./root-session.test.ts");

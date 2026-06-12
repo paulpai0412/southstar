@@ -64,6 +64,11 @@ test("creates run from draft, submits Tork projection, and exposes status", asyn
     readonly: true,
   });
   assert.equal(JSON.parse(await readFile(join(runRoot, run.runId, "task-implement", "envelope.json"), "utf8")).task.id, "task-implement");
+  assert.equal(
+    JSON.parse(await readFile(join(runRoot, run.runId, "task-implement", "envelope.json"), "utf8")).skills[0]?.skillId,
+    "software.calc-cli",
+  );
+  assert.equal(listResources(db, { resourceType: "skill_snapshot", status: "resolved" }).length, 1);
   assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
   assert.deepEqual(getRunStatus(db, run.runId).canvas.nodes.map((node) => node.id), ["task-implement"]);
   assert.deepEqual(getRunStatus(db, run.runId).runtime.executorJobIds, ["job-1"]);
@@ -143,6 +148,7 @@ test("steers run and builds task envelope with approved memory", async () => {
 
   assert.equal(listHistoryForRun(db, run.runId).some((event) => event.eventType === "steering.received"), true);
   assert.equal(envelope.task.id, "task-implement");
+  assert.equal(envelope.skills[0]?.skillId, "software.calc-cli");
   assert.deepEqual(envelope.memory.items[0].body, { preference: "minimal" });
 });
 
@@ -169,6 +175,7 @@ function plannerClient(): PiPlannerClient {
             infraRetry: { maxAttempts: 1 },
           },
           rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
+          skillRefs: ["software.calc-cli"],
           subagents: [{ id: "impl", harnessId: "codex", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
         }],
         harnessDefinitions: [{
