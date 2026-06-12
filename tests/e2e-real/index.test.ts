@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import test from "node:test";
 import { loadRealE2EEnv } from "./env.ts";
 import { runMvpSoftwareChangeScenario } from "./scenarios/mvp-software-change.ts";
@@ -8,10 +9,18 @@ import { runApprovalPolicyRealScenario } from "./scenarios/approval-policy-real.
 import { runCliRunGoalRealScenario } from "./scenarios/cli-run-goal-real.ts";
 import { runSkillSnapshotRealScenario } from "./scenarios/skill-snapshot-real.ts";
 import { runUiApiRunGoalRealScenario } from "./scenarios/ui-api-run-goal-real.ts";
+import { runUiBrowserOperationsScenario } from "./scenarios/ui-browser-operations.ts";
 import { runVoiceCommandPolicyScenario } from "./scenarios/voice-command-policy.ts";
-import { assertNoDurableSouthstarFolders, assertSqliteEvidence, createScenarioContext } from "./scenarios/harness.ts";
+import {
+  assertNoDurableSouthstarFolders,
+  assertSqliteEvidence,
+  collectPhase15RuntimeTimings,
+  createScenarioContext,
+  findForbiddenDurableFolders,
+} from "./scenarios/harness.ts";
 import { getRunStatus } from "../../src/v2/ui-api/local-api.ts";
 import { assertPhase1QuantitativeGates } from "../../src/v2/quality/phase1-gates.ts";
+import { assertPhase15QuantitativeGates } from "../../src/v2/quality/phase15-gates.ts";
 
 test("Phase 1 real E2E suite", async () => {
   const e2eStartedAt = Date.now();
@@ -24,7 +33,26 @@ test("Phase 1 real E2E suite", async () => {
   await runSkillSnapshotRealScenario(env, phase15Api.runId);
   await runVoiceCommandPolicyScenario(env, phase15Api.runId);
   await runApprovalPolicyRealScenario(env, phase15Api.runId);
-  await runCliRunGoalRealScenario(env);
+  const phase15Cli = await runCliRunGoalRealScenario(env);
+  const phase15Browser = await runUiBrowserOperationsScenario(env);
+  const gateContext = createScenarioContext(env);
+  const runtimeTimings = collectPhase15RuntimeTimings(gateContext.db, phase15Api.runId);
+  const phase15GateResult = assertPhase15QuantitativeGates(gateContext.db, {
+    runId: phase15Api.runId,
+    serverStartMs: phase15Api.timings.serverStartMs,
+    plannerMs: runtimeTimings.plannerMs,
+    validationMs: runtimeTimings.validationMs,
+    torkSubmitMs: runtimeTimings.torkSubmitMs,
+    firstClientEventMs: runtimeTimings.firstClientEventMs,
+    uiEventVisibilityMs: phase15Browser.timings.uiEventVisibilityMs,
+    modeToggleMs: phase15Browser.timings.modeToggleMs,
+    apiRunGoalCompletionMs: phase15Api.timings.apiRunGoalCompletionMs,
+    cliRunGoalCompletionMs: phase15Cli.timings.cliRunGoalCompletionMs,
+    browserScenarioMs: phase15Browser.timings.browserScenarioMs,
+    durableFolderFindings: findForbiddenDurableFolders(process.cwd()),
+  });
+  assert.equal(phase15GateResult.ok, true, phase15GateResult.failures.join("\n"));
+  console.log("phase15 quantitative gates passed");
   const context = createScenarioContext(env);
   assertSqliteEvidence(context.db);
   assertNoDurableSouthstarFolders(process.cwd());
