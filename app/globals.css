@@ -84,3 +84,151 @@ select {
   place-items: center;
   color: var(--ss-muted);
 }
+
+.ss-grid {
+  display: grid;
+  grid-template-columns: 280px minmax(420px, 1fr) 320px;
+  gap: 10px;
+  padding: 10px;
+}
+
+.ss-panel {
+  background: var(--ss-panel);
+  border: 1px solid var(--ss-border);
+  border-radius: var(--ss-radius);
+  padding: 12px;
+  min-height: 180px;
+}
+
+.ss-panel header,
+.ss-topbar,
+.ss-actions,
+.ss-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ss-panel h2 {
+  font-size: 14px;
+  margin: 0;
+}
+
+.ss-planner textarea {
+  width: 100%;
+  min-height: 110px;
+  margin: 12px 0;
+  border: 1px solid var(--ss-border);
+  border-radius: var(--ss-radius);
+  padding: 10px;
+  resize: vertical;
+}
+
+.ss-actions {
+  flex-wrap: wrap;
+}
+
+.ss-actions button,
+.ss-toggle button {
+  border: 1px solid var(--ss-border);
+  background: var(--ss-panel-soft);
+  color: var(--ss-text);
+  border-radius: 6px;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.ss-actions button:first-child,
+.ss-toggle button[aria-pressed="true"] {
+  background: var(--ss-blue);
+  border-color: var(--ss-blue);
+  color: white;
+}
+
+.ss-timeline {
+  padding-left: 18px;
+  color: var(--ss-muted);
+  font-size: 12px;
+}
+
+.ss-timeline li {
+  margin-top: 8px;
+}
+
+.ss-timeline strong {
+  color: var(--ss-text);
+  margin-right: 8px;
+}
+
+.ss-dag {
+  min-height: 420px;
+  background-image: radial-gradient(var(--ss-border) 1px, transparent 1px);
+  background-size: 18px 18px;
+  display: grid;
+  align-content: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.ss-node {
+  width: 220px;
+  border: 1px solid var(--ss-border-strong);
+  background: white;
+  border-radius: var(--ss-radius);
+  padding: 12px;
+  display: flex;
+  justify-content: space-between;
+}
+
+.ss-node-completed {
+  border-color: var(--ss-green);
+}
+
+.ss-node-running {
+  border-color: var(--ss-blue);
+}
+
+.ss-node-pending {
+  border-color: var(--ss-amber);
+}
+
+.ss-runtime table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.ss-runtime td {
+  border-bottom: 1px solid var(--ss-border);
+  padding: 8px 0;
+}
+
+.ss-ops-panels {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  padding: 0 10px 10px;
+}
+
+.ss-small-panel {
+  min-height: 140px;
+}
+
+@media (max-width: 1100px) {
+  .ss-app-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .ss-rail {
+    display: none;
+  }
+
+  .ss-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ss-ops-panels {
+    grid-template-columns: 1fr;
+  }
+}
