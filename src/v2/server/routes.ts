@@ -7,6 +7,7 @@ import {
   steerRun,
 } from "../ui-api/local-api.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
+import { readRunEventsSince, toSseFrame } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 
 export async function handleRuntimeRoute(context: RuntimeServerContext, request: Request): Promise<Response> {
@@ -30,6 +31,30 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         callbackUrl: `${requiredServerUrl(context)}/api/v2/tork/callback`,
         runRoot: context.runRoot,
       }));
+    }
+
+    const eventsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/events$/);
+    if (request.method === "GET" && eventsMatch) {
+      const after = Number(url.searchParams.get("after") ?? "0");
+      return json("events", readRunEventsSince(context.db, {
+        runId: decodeURIComponent(eventsMatch[1]!),
+        afterSequence: Number.isFinite(after) ? after : 0,
+      }));
+    }
+
+    const streamMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/events\/stream$/);
+    if (request.method === "GET" && streamMatch) {
+      const after = Number(url.searchParams.get("after") ?? "0");
+      const events = readRunEventsSince(context.db, {
+        runId: decodeURIComponent(streamMatch[1]!),
+        afterSequence: Number.isFinite(after) ? after : 0,
+      });
+      return new Response(events.map(toSseFrame).join(""), {
+        headers: {
+          "content-type": "text/event-stream",
+          "cache-control": "no-cache",
+        },
+      });
     }
 
     const runMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)$/);

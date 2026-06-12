@@ -14,6 +14,10 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     getRun(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}`);
     },
+    getRunEvents(body: { runId: string; afterSequence?: number }) {
+      const after = body.afterSequence ?? 0;
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/events?after=${encodeURIComponent(String(after))}`);
+    },
     steerRun(body: { runId: string; message: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/steering`, { message: body.message });
     },
