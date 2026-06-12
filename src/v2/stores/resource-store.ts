@@ -256,7 +256,7 @@ export function applyWorkflowExpansion(db: SouthstarDb, input: {
   }
 }
 
-function getResourceByKey(db: SouthstarDb, resourceType: string, resourceKey: string): RuntimeResourceRecord | null {
+export function getResourceByKey(db: SouthstarDb, resourceType: string, resourceKey: string): RuntimeResourceRecord | null {
   const row = db.prepare("select * from runtime_resources where resource_type = ? and resource_key = ?")
     .get(resourceType, resourceKey) as RuntimeResourceRow | undefined;
   return row ? mapResource(row) : null;

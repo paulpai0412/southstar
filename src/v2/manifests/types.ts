@@ -70,6 +70,20 @@ export type VaultLeaseDefinition = {
   ttlSeconds: number;
 };
 
+export type ApprovalPolicy = {
+  mode: "manual" | "auto" | "policy";
+  requiredApprovals: string[];
+  autoApprove?: {
+    plannerDraft?: boolean;
+    workflowRevision?: boolean;
+    memoryDelta?: boolean;
+    lowRiskArtifactGate?: boolean;
+    steering?: boolean;
+    voiceCommand?: boolean;
+  };
+  requireManualFor?: string[];
+};
+
 export type SouthstarWorkflowManifest = {
   schemaVersion: "southstar.v2";
   workflowId: string;
@@ -100,6 +114,7 @@ export type SouthstarWorkflowManifest = {
     recordMemoryDeltas: boolean;
     recordWorkflowLearnings: boolean;
   };
+  approvalPolicy?: ApprovalPolicy;
 };
 
 export type PlanBundle = {

@@ -15,6 +15,7 @@ await import("./root-session-loop.test.ts");
 await import("./signals.test.ts");
 await import("./evaluator.test.ts");
 await import("./progress.test.ts");
+await import("./approval-policy.test.ts");
 await import("./ui-read-models.test.ts");
 await import("./operations-dashboard.test.ts");
 await import("./pi-web-dashboard-renderer.test.ts");
