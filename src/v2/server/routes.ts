@@ -9,7 +9,9 @@ import {
 import { buildTaskDetailModel } from "../ui-api/read-models.ts";
 import { listHistoryForRun } from "../stores/history-store.ts";
 import { listResources } from "../stores/resource-store.ts";
-import { decideApproval } from "../approvals/service.ts";
+import { evaluateApprovalPolicy } from "../approvals/policy.ts";
+import { createApprovalRequest, decideApproval } from "../approvals/service.ts";
+import { appendRuntimeEvent } from "../signals/events.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import { readRunEventsSince, toSseFrame } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
@@ -27,7 +29,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       const run = await createRunFromDraft(context.db, {
         draftId: draft.draftId,
         executorProvider: context.executorProvider,
-        callbackUrl: `${requiredServerUrl(context)}/api/v2/tork/callback`,
+        callbackUrl: callbackUrl(context),
         runRoot: context.runRoot,
       });
       return json("run-goal", { draft, ...run });
@@ -48,7 +50,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       return json("run", await createRunFromDraft(context.db, {
         draftId: body.draftId,
         executorProvider: context.executorProvider,
-        callbackUrl: `${requiredServerUrl(context)}/api/v2/tork/callback`,
+        callbackUrl: callbackUrl(context),
         runRoot: context.runRoot,
       }));
     }
@@ -153,10 +155,29 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (request.method === "POST" && voiceMatch) {
       const body = await readJsonBody<{ transcript?: string }>(request);
       if (!body.transcript) throw new Error("transcript is required");
+      const runId = decodeURIComponent(voiceMatch[1]!);
+      appendRuntimeEvent(context.db, {
+        runId,
+        eventType: "voice.command_received",
+        actorType: "user",
+        payload: { transcript: body.transcript },
+      });
+      const riskTags = riskTagsForVoiceTranscript(body.transcript);
+      const policy = evaluateApprovalPolicy({ mode: "policy", actionType: "voiceCommand", riskTags });
+      const approval = policy.status === "pending"
+        ? createApprovalRequest(context.db, {
+          runId,
+          actionType: "voiceCommand",
+          riskTags,
+          title: "Review voice command",
+          payload: { transcript: body.transcript, policyReason: policy.reason },
+        })
+        : undefined;
       return json("voice-command", {
         transcript: body.transcript,
+        approval,
         event: steerRun(context.db, {
-          runId: decodeURIComponent(voiceMatch[1]!),
+          runId,
           message: body.transcript,
         }),
       });
@@ -188,6 +209,18 @@ async function readJsonBody<T>(request: Request): Promise<T> {
 function requiredServerUrl(context: RuntimeServerContext): string {
   if (!context.serverUrl) throw new Error("runtime server URL is not initialized");
   return context.serverUrl;
+}
+
+function callbackUrl(context: RuntimeServerContext): string {
+  return context.callbackUrl ?? `${requiredServerUrl(context)}/api/v2/tork/callback`;
+}
+
+function riskTagsForVoiceTranscript(transcript: string): string[] {
+  const normalized = transcript.toLowerCase();
+  const tags = new Set<string>();
+  if (/secret|vault|token|password|credential|金鑰|密鑰|憑證/.test(normalized)) tags.add("secret-access");
+  if (/external|webhook|send it|upload|外部|傳送/.test(normalized)) tags.add("external-write");
+  return tags.size === 0 ? ["low-risk"] : [...tags];
 }
 
 function validatedCallbackResult(context: RuntimeServerContext, body: unknown): TaskRunCallbackResult {

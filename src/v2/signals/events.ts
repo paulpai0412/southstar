@@ -7,6 +7,7 @@ export const RUNTIME_EVENT_TYPES = [
   "task.started",
   "progress.commentary",
   "steering.received",
+  "voice.command_received",
   "artifact.created",
   "evaluator.completed",
   "repair.requested",

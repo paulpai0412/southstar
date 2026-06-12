@@ -12,6 +12,7 @@ test("defines required runtime event types", () => {
     "task.started",
     "progress.commentary",
     "steering.received",
+    "voice.command_received",
     "artifact.created",
     "evaluator.completed",
     "repair.requested",

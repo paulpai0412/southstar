@@ -116,6 +116,18 @@ export function softwareGoalPrompt(repo: string): string {
   ].join("\n");
 }
 
+export function phase15OperationsGoalPrompt(repo: string): string {
+  return [
+    "在真實 fixture repo 中完成 Southstar Phase 1.5 operations workflow 測試：新增 CLI 指令 calc sum <numbers...>。",
+    "支援多數字輸入、錯誤訊息、測試、README 用法，並產出 implementation artifact。",
+    "workflow 必須拆成 planner、implementer、root validator、summary 四個任務；implementer 必須在 Docker/Tork task 中執行。",
+    "artifact 必須包含修改摘要、測試指令與結果、風險、後續建議。",
+    "請使用已核准的 software.calc-cli skill，保持最小改動，不新增 runtime dependency。",
+    "執行期間必須輸出 progress commentary，並保存 session、artifact、executor binding、skill snapshot 到 SQLite。",
+    `Fixture repo: ${repo}`,
+  ].join("\n");
+}
+
 export async function waitForTorkJob(baseUrl: string, jobId: string, timeoutMs = 15 * 60 * 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   const root = baseUrl.replace(/\/$/, "");
@@ -192,6 +204,67 @@ export function assertSqliteEvidence(db: SouthstarDb): void {
   }), true, "missing aggregate token/cost metrics");
 }
 
+export function assertNoE2eStaticManifestUsage(db: SouthstarDb, runId: string): void {
+  const row = db.prepare("select goal_prompt from workflow_runs where id = ?").get(runId) as { goal_prompt: string } | undefined;
+  assert.ok(row?.goal_prompt.includes("Fixture repo:"), "real E2E run must preserve fixture repo prompt");
+}
+
+export function assertPhase15SqliteEvidence(db: SouthstarDb, runId: string): void {
+  for (const eventType of [
+    "executor.submitted",
+    "progress.commentary",
+    "evaluator.completed",
+    "session.entry",
+  ]) {
+    assert.equal(count(db, "workflow_history", "run_id = ? and event_type = ?", [runId, eventType]) > 0, true, `missing ${eventType}`);
+  }
+  assert.equal(
+    count(db, "workflow_history", "run_id = ? and event_type = ?", [runId, "subagent.completed"]) >= 2,
+    true,
+    "missing subagent/root invocation evidence",
+  );
+  for (const [resourceType, status] of [
+    ["artifact", "accepted"],
+    ["executor_binding", "queued"],
+    ["skill_snapshot", "resolved"],
+  ] as const) {
+    assert.equal(
+      count(db, "runtime_resources", "run_id = ? and resource_type = ? and status = ?", [runId, resourceType, status]) > 0,
+      true,
+      `missing ${status} ${resourceType}`,
+    );
+  }
+}
+
+export function collectPhase15RuntimeTimings(db: SouthstarDb, runId: string): {
+  plannerMs: number;
+  validationMs: number;
+  torkSubmitMs: number;
+  firstClientEventMs: number;
+} {
+  return {
+    plannerMs: requireDuration(db, runId, "planner.manifest_generated"),
+    validationMs: requireDuration(db, runId, "manifest.validated"),
+    torkSubmitMs: requireDuration(db, runId, "executor.submitted"),
+    firstClientEventMs: requireDuration(db, runId, "progress.commentary"),
+  };
+}
+
+export function findForbiddenDurableFolders(projectRoot: string): string[] {
+  const forbidden = [
+    ".southstar/session",
+    ".southstar/sessions",
+    ".southstar/memory",
+    ".southstar/memories",
+    ".southstar/artifact",
+    ".southstar/artifacts",
+    ".southstar/vault",
+    ".southstar/executor",
+    ".southstar/skills",
+  ];
+  return forbidden.filter((path) => existsSync(join(projectRoot, path)));
+}
+
 export function assertNoDurableSouthstarFolders(root: string): void {
   const southstarRoot = join(root, ".southstar");
   if (!existsSync(southstarRoot)) return;
@@ -227,6 +300,20 @@ type SqlValue = string | number | bigint | Buffer | null;
 function count(db: SouthstarDb, table: string, where: string, args: SqlValue[] = []): number {
   const row = db.prepare(`select count(*) as count from ${table} where ${where}`).get(...args) as { count: number };
   return row.count;
+}
+
+function requireDuration(db: SouthstarDb, runId: string, eventType: string): number {
+  const row = db.prepare(`
+    select payload_json
+    from workflow_history
+    where run_id = ? and event_type = ?
+    order by sequence desc
+    limit 1
+  `).get(runId, eventType) as { payload_json: string } | undefined;
+  assert.ok(row, `missing timing event ${eventType}`);
+  const payload = JSON.parse(row.payload_json) as { durationMs?: unknown };
+  assert.equal(typeof payload.durationMs, "number", `${eventType} payload.durationMs must be recorded`);
+  return payload.durationMs;
 }
 
 function walk(root: string, visit: (path: string) => void): void {

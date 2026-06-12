@@ -6,6 +6,7 @@ export type RuntimeServerContext = {
   db: SouthstarDb;
   plannerClient: PiPlannerClient;
   executorProvider: ExecutorProvider;
+  callbackUrl?: string;
   serverUrl?: string;
   runRoot?: string;
 };
