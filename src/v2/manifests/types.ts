@@ -1,3 +1,14 @@
+import type {
+  AgentProfile,
+  ArtifactContract,
+  ContextPolicyDefinition,
+  EvaluatorPipelineDefinition,
+  MemoryPolicyDefinition,
+  RoleDefinition,
+  SessionPolicyDefinition,
+  WorkspacePolicyDefinition,
+} from "../domain-packs/types.ts";
+
 export type HarnessKind = "pi-agent" | "codex" | "claude-code" | "custom";
 
 export type TaskStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
@@ -90,6 +101,22 @@ export type SouthstarWorkflowManifest = {
   workflowId: string;
   title: string;
   goalPrompt: string;
+  domain?: string;
+  intent?: string;
+  domainPackRef?: { id: string; version: string; contentHash: string };
+  workflowGeneration?: {
+    planId: string;
+    generatorPolicyRef: string;
+    orchestrationSnapshotId: string;
+  };
+  roles?: RoleDefinition[];
+  agentProfiles?: AgentProfile[];
+  artifactContracts?: ArtifactContract[];
+  evaluatorPipelines?: EvaluatorPipelineDefinition[];
+  contextPolicies?: ContextPolicyDefinition[];
+  sessionPolicies?: SessionPolicyDefinition[];
+  memoryPolicies?: MemoryPolicyDefinition[];
+  workspacePolicies?: WorkspacePolicyDefinition[];
   tasks: WorkflowTaskDefinition[];
   harnessDefinitions: HarnessDefinition[];
   evaluators: EvaluatorDefinition[];
