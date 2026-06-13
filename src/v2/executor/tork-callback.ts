@@ -5,6 +5,7 @@ import { appendHistoryEvent } from "../stores/history-store.ts";
 import { upsertRuntimeResource } from "../stores/resource-store.ts";
 import { recomputeManagementMetrics, type ManagementMetrics } from "../stores/metrics-store.ts";
 import type { TaskRunnerEvent } from "../agent-runner/task-runner.ts";
+import { createSqliteSessionGraphProvider } from "../session-graph/sqlite-provider.ts";
 
 export type TaskRunCallbackResult = {
   runId: string;
@@ -56,26 +57,14 @@ export function ingestTaskRunResult(db: SouthstarDb, result: TaskRunCallbackResu
     });
 
     if (result.ok) {
-      const checkpointResourceId = `checkpoint-${result.runId}-${result.taskId}`;
-      upsertRuntimeResource(db, {
-        id: checkpointResourceId,
-        resourceType: "session_checkpoint",
-        resourceKey: checkpointResourceId,
+      createSqliteSessionGraphProvider(db).checkpoint({
+        sessionId: result.rootSessionId,
         runId: result.runId,
         taskId: result.taskId,
-        sessionId: result.rootSessionId,
-        scope: "task",
-        status: "created",
-        title: "Callback session checkpoint",
-        payload: { artifactResourceId, attempts: result.attempts },
-      });
-      appendHistoryEvent(db, {
-        runId: result.runId,
-        taskId: result.taskId,
-        sessionId: result.rootSessionId,
-        eventType: "checkpoint.created",
-        actorType: "orchestrator",
-        payload: { checkpointResourceId, artifactResourceId, attempts: result.attempts },
+        contextPacketId: `callback-${result.runId}-${result.taskId}`,
+        artifactRefs: [artifactResourceId],
+        transcriptSummary: "Accepted callback artifact.",
+        metrics: numericMetrics(result.metrics),
       });
     }
 
@@ -96,6 +85,12 @@ export function ingestTaskRunResult(db: SouthstarDb, result: TaskRunCallbackResu
     db.exec("rollback");
     throw error;
   }
+}
+
+function numericMetrics(metrics: Partial<ManagementMetrics>): Record<string, number> {
+  return Object.fromEntries(
+    Object.entries(metrics).filter((entry): entry is [string, number] => typeof entry[1] === "number" && Number.isFinite(entry[1])),
+  );
 }
 
 function cleanupTaskMaterialization(result: TaskRunCallbackResult): void {

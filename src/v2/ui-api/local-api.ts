@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { SouthstarDb } from "../stores/sqlite.ts";
 import type { DomainPack } from "../domain-packs/types.ts";
 import type { PlanBundle, SouthstarWorkflowManifest, TaskStatus, WorkflowRevisionRequest } from "../manifests/types.ts";
@@ -28,6 +29,9 @@ import { appendRuntimeEvent } from "../signals/events.ts";
 import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import { buildContextPacket, resolveArtifactContractRefs, resolveRoleProfile } from "../context/builder.ts";
+import { createSqliteSessionGraphProvider } from "../session-graph/sqlite-provider.ts";
+import { createGitWorkspaceSnapshotProvider } from "../workspace/git-provider.ts";
+import type { WorkspaceSnapshotRef } from "../workspace/types.ts";
 import { resolveSkillSnapshots } from "../skills/resolver.ts";
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import {
@@ -522,20 +526,40 @@ async function materializedWorkflowForExecution(
 ): Promise<SouthstarWorkflowManifest> {
   const tasks = [];
   const domainPack = domainPackForWorkflow(workflow);
+  const sessionGraph = createSqliteSessionGraphProvider(db);
+  const workspaceProvider = createGitWorkspaceSnapshotProvider();
   for (const task of workflow.tasks) {
-    const rootSessionId = `root-${input.runId}-${task.id}`;
     const runtimeTask = resolveRuntimeTaskProfile(workflow, domainPack, task);
+    const sessionNode = sessionGraph.createSession({
+      runId: input.runId,
+      taskId: task.id,
+      roleRef: runtimeTask.roleRef,
+      agentProfileRef: runtimeTask.agentProfileRef,
+    });
+    const rootSessionId = sessionNode.id;
+    const workspaceSnapshot = snapshotTaskWorkspace(workspaceProvider, task);
     const contextPacket = buildContextPacketForTask(db, workflow, domainPack, task, {
       runId: input.runId,
       rootSessionId,
       executionAttempt: 1,
       runtimeTask,
     });
+    const startCheckpoint = sessionGraph.checkpoint({
+      sessionId: rootSessionId,
+      runId: input.runId,
+      taskId: task.id,
+      contextPacketId: contextPacket.id,
+      artifactRefs: [],
+      transcriptSummary: "Task submitted to executor.",
+      metrics: {},
+    });
     const envelope = buildRuntimeTaskEnvelopeV2(db, workflow, domainPack, task, {
       runId: input.runId,
       rootSessionId,
+      baseCheckpointId: startCheckpoint.id,
       contextPacket,
       runtimeTask,
+      workspaceSnapshot,
     });
     const materialization = await materializeTaskEnvelope(envelope, { runRoot: input.runRoot });
     const runRoot = input.runRoot ?? "/tmp/southstar-runs";
@@ -680,8 +704,10 @@ function buildRuntimeTaskEnvelopeV2(
   input: {
     runId: string;
     rootSessionId: string;
+    baseCheckpointId?: string;
     contextPacket: ReturnType<typeof buildContextPacket>;
     runtimeTask: RuntimeTaskProfile;
+    workspaceSnapshot?: WorkspaceSnapshotRef;
   },
 ) {
   return buildTaskEnvelopeV2({
@@ -714,14 +740,29 @@ function buildRuntimeTaskEnvelopeV2(
       })),
     artifactContracts: input.runtimeTask.artifactContracts,
     evaluatorPipeline: input.runtimeTask.evaluatorPipeline,
-    session: { sessionId: input.rootSessionId, maxRepairAttempts: task.rootSession.maxRepairAttempts },
+    session: {
+      sessionId: input.rootSessionId,
+      baseCheckpointId: input.baseCheckpointId,
+      maxRepairAttempts: task.rootSession.maxRepairAttempts,
+    },
     workspace: {
       handle: {
-        repoRoot: task.execution.mounts[0]?.source ?? ".",
-        worktreePath: task.execution.mounts[0]?.source ?? ".",
+        repoRoot: input.workspaceSnapshot?.repoRoot ?? task.execution.mounts[0]?.source ?? ".",
+        worktreePath: input.workspaceSnapshot?.repoRoot ?? task.execution.mounts[0]?.source ?? ".",
       },
+      baseSnapshotRef: input.workspaceSnapshot,
     },
   });
+}
+
+function snapshotTaskWorkspace(
+  workspaceProvider: ReturnType<typeof createGitWorkspaceSnapshotProvider>,
+  task: SouthstarWorkflowManifest["tasks"][number],
+): WorkspaceSnapshotRef | undefined {
+  if (!task.workspacePolicyRef) return undefined;
+  const mount = task.execution.mounts.find((candidate) => !candidate.readonly && existsSync(join(candidate.source, ".git")));
+  if (!mount) return undefined;
+  return workspaceProvider.snapshot({ repoRoot: mount.source, reason: `task-start:${task.id}` });
 }
 
 function requiredDomainItem<T>(value: T | undefined, label: string): T {

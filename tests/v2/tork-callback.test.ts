@@ -48,7 +48,9 @@ test("Tork callback ingests container task result into durable SQLite state", ()
     "run.completed",
   ]);
   assert.equal(listResources(db, { resourceType: "artifact", status: "accepted" }).length, 1);
-  assert.equal(listResources(db, { resourceType: "session_checkpoint", status: "created" }).length, 1);
+  const checkpoints = listResources(db, { resourceType: "session_checkpoint", status: "created" });
+  assert.equal(checkpoints.length, 1);
+  assert.deepEqual((checkpoints[0]?.payload as { artifactRefs?: string[] }).artifactRefs, ["artifact-run-1-task-1-callback"]);
   assert.equal(JSON.parse(getWorkflowRun(db, "run-1")?.metricsJson ?? "{}").aggregate.tokens, 42);
   const task = db.prepare("select status, metrics_json from workflow_tasks where id = ?").get("task-1") as {
     status: string;

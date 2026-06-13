@@ -68,6 +68,8 @@ test("creates run from draft, submits Tork projection, and exposes status", asyn
   assert.equal(envelope.taskId, "understand-repo");
   assert.equal(envelope.skills[0]?.skillId, "software.calc-cli");
   assert.equal(listResources(db, { resourceType: "skill_snapshot", status: "resolved" }).length >= 3, true);
+  assert.equal(listResources(db, { resourceType: "session_node", status: "active" }).length, 4);
+  assert.equal(listResources(db, { resourceType: "session_checkpoint", status: "created" }).length, 4);
   assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
   assert.deepEqual(getRunStatus(db, run.runId).canvas.nodes.map((node) => node.id), [
     "understand-repo",

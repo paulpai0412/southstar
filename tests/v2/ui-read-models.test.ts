@@ -77,6 +77,26 @@ test("builds task, sessions-memory, vault-mcp, and executor models", () => {
     payload: { summary: "root session" },
   });
   upsertRuntimeResource(db, {
+    resourceType: "session_node",
+    resourceKey: "session-node-1",
+    runId: "run-1",
+    taskId: "task-1",
+    sessionId: "session-root",
+    scope: "session",
+    status: "active",
+    payload: { baseCheckpointId: "checkpoint-1" },
+  });
+  upsertRuntimeResource(db, {
+    resourceType: "recovery_decision",
+    resourceKey: "recovery-1",
+    runId: "run-1",
+    taskId: "task-1",
+    sessionId: "session-root",
+    scope: "session",
+    status: "recorded",
+    payload: { strategy: "fork-from-checkpoint" },
+  });
+  upsertRuntimeResource(db, {
     resourceType: "memory_item",
     resourceKey: "mem-1",
     runId: "run-1",
@@ -113,7 +133,11 @@ test("builds task, sessions-memory, vault-mcp, and executor models", () => {
   });
 
   assert.equal(buildTaskDetailModel(db, "run-1", "task-1")?.taskKey, "task-implement");
-  assert.equal(buildSessionsMemoryModel(db, "run-1").sessions.length, 1);
+  assert.deepEqual(buildSessionsMemoryModel(db, "run-1").sessions.map((resource) => resource.resourceType), [
+    "session",
+    "session_node",
+    "recovery_decision",
+  ]);
   assert.equal(buildSessionsMemoryModel(db, "run-1").memoryItems.length, 1);
   assert.equal(buildVaultMcpModel(db, "run-1").vaultLeases.length, 1);
   assert.equal(buildVaultMcpModel(db, "run-1").mcpGrants.length, 1);

@@ -6,7 +6,7 @@ import {
   getTaskEnvelope,
   steerRun,
 } from "../ui-api/local-api.ts";
-import { buildTaskDetailModel } from "../ui-api/read-models.ts";
+import { buildTaskDetailModel, sessionGraphResources } from "../ui-api/read-models.ts";
 import { listHistoryForRun } from "../stores/history-store.ts";
 import { listResources } from "../stores/resource-store.ts";
 import { evaluateApprovalPolicy } from "../approvals/policy.ts";
@@ -106,10 +106,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       const kind = resourceMatch[2]!;
       if (kind === "logs") return json("logs", listHistoryForRun(context.db, runId));
       if (kind === "sessions") {
-        return json("sessions", [
-          ...listResources(context.db, { resourceType: "session" }),
-          ...listResources(context.db, { resourceType: "session_checkpoint" }),
-        ].filter((resource) => resource.runId === runId));
+        return json("sessions", sessionGraphResources(context.db).filter((resource) => resource.runId === runId));
       }
       if (kind === "memory") {
         return json("memory", [
