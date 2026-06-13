@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import type { SouthstarDb } from "../stores/sqlite.ts";
+import type { DomainPack } from "../domain-packs/types.ts";
 import type { PlanBundle, SouthstarWorkflowManifest, TaskStatus, WorkflowRevisionRequest } from "../manifests/types.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
@@ -25,8 +26,9 @@ import type { TorkClient, TorkSubmitResult } from "../executor/tork-client.ts";
 import type { ExecutorProvider, ExecutorSubmitResult } from "../executor/provider.ts";
 import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
-import { buildTaskEnvelope } from "../agent-runner/task-envelope.ts";
+import { buildTaskEnvelope, type MemorySnapshot } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
+import { buildContextPacket, resolveArtifactContractRefs, resolveRoleProfile } from "../context/builder.ts";
 import { resolveSkillSnapshots } from "../skills/resolver.ts";
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import {
@@ -480,7 +482,7 @@ export function getTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId:
     runId: input.runId,
     taskId: input.taskId,
     rootSessionId: task.rootSessionId ?? `root-${input.runId}-${input.taskId}`,
-    memorySnapshot: retrieveApprovedMemory(db, inferDomain(workflow), workflow.memoryPolicy.retrievalLimit),
+    memorySnapshot: memorySnapshotForTask(db, workflow, input),
     vaultLeases,
     mcpGrants,
     skills: resolveTaskSkills(db, input.runId, taskDefinition),
@@ -526,13 +528,38 @@ async function materializedWorkflowForExecution(
   input: { runId: string; runRoot?: string; harnessEndpoint?: string },
 ): Promise<SouthstarWorkflowManifest> {
   const tasks = [];
+  const domainPack = domainPackForWorkflow(workflow);
   for (const task of workflow.tasks) {
     const rootSessionId = `root-${input.runId}-${task.id}`;
+    const roleProfile = resolveRoleProfile({
+      taskId: task.id,
+      roleRef: task.roleRef,
+      agentProfileRef: task.agentProfileRef,
+      roles: domainPack.roles,
+    });
+    const contextPacket = buildContextPacket(db, {
+      runId: input.runId,
+      taskId: task.id,
+      rootSessionId,
+      executionAttempt: 1,
+      goalPrompt: taskGoalPrompt(workflow, task),
+      domainPack,
+      roleRef: roleProfile.roleRef,
+      agentProfileRef: roleProfile.agentProfileRef,
+      artifactContractRefs: resolveArtifactContractRefs({
+        requiredArtifactRefs: task.requiredArtifactRefs,
+        subagentArtifactTypes: task.subagents.flatMap((subagent) => subagent.requiredArtifacts),
+        artifactContracts: domainPack.artifactContracts,
+      }),
+      priorArtifactRefs: task.dependsOn,
+      checkpointSummary: "No checkpoint materialized before initial task submission.",
+      workspaceSummary: `Task ${task.id} will run in ${task.domain} workspace scope.`,
+    });
     const envelope = buildTaskEnvelope(workflow, {
       runId: input.runId,
       taskId: task.id,
       rootSessionId,
-      memorySnapshot: retrieveApprovedMemory(db, task.domain, workflow.memoryPolicy.retrievalLimit),
+      memorySnapshot: memorySnapshotFromContextPacket(contextPacket),
       vaultLeases: [],
       mcpGrants: workflow.mcpGrants
         .filter((grant) => grant.taskId === task.id)
@@ -569,6 +596,59 @@ async function materializedWorkflowForExecution(
     });
   }
   return { ...workflow, tasks };
+}
+
+function domainPackForWorkflow(workflow: SouthstarWorkflowManifest): DomainPack {
+  return {
+    ...softwareDomainPack,
+    id: workflow.domain ?? softwareDomainPack.id,
+    version: workflow.domainPackRef?.version ?? softwareDomainPack.version,
+    roles: workflow.roles ?? softwareDomainPack.roles,
+    agentProfiles: workflow.agentProfiles ?? softwareDomainPack.agentProfiles,
+    artifactContracts: workflow.artifactContracts ?? softwareDomainPack.artifactContracts,
+    evaluatorPipelines: workflow.evaluatorPipelines ?? softwareDomainPack.evaluatorPipelines,
+    contextPolicies: workflow.contextPolicies ?? softwareDomainPack.contextPolicies,
+    sessionPolicies: workflow.sessionPolicies ?? softwareDomainPack.sessionPolicies,
+    memoryPolicies: workflow.memoryPolicies ?? softwareDomainPack.memoryPolicies,
+    workspacePolicies: workflow.workspacePolicies ?? softwareDomainPack.workspacePolicies,
+  };
+}
+
+function taskGoalPrompt(workflow: SouthstarWorkflowManifest, task: SouthstarWorkflowManifest["tasks"][number]): string {
+  const promptGoal = task.promptInputs?.goalPrompt;
+  if (typeof promptGoal === "string" && promptGoal.length > 0) return promptGoal;
+  return workflow.goalPrompt;
+}
+
+function memorySnapshotFromContextPacket(packet: ReturnType<typeof buildContextPacket>): MemorySnapshot {
+  return {
+    items: packet.selectedMemories.map((memory) => ({
+      id: memory.sourceRef ?? memory.id,
+      body: {
+        kind: memory.title,
+        text: memory.text,
+        sourceRef: memory.sourceRef,
+        contextBlockId: memory.id,
+        tokenEstimate: memory.tokenEstimate,
+      },
+    })),
+    capturedAt: new Date().toISOString(),
+  };
+}
+
+function memorySnapshotForTask(
+  db: SouthstarDb,
+  workflow: SouthstarWorkflowManifest,
+  input: { runId: string; taskId: string },
+): MemorySnapshot {
+  const row = db.prepare(`
+    select payload_json from runtime_resources
+    where resource_type = 'context_packet' and run_id = ? and task_id = ?
+    order by updated_at desc
+    limit 1
+  `).get(input.runId, input.taskId) as { payload_json: string } | undefined;
+  if (!row) return retrieveApprovedMemory(db, inferDomain(workflow), workflow.memoryPolicy.retrievalLimit);
+  return memorySnapshotFromContextPacket(JSON.parse(row.payload_json) as ReturnType<typeof buildContextPacket>);
 }
 
 function resolveTaskSkills(db: SouthstarDb, runId: string, task: SouthstarWorkflowManifest["tasks"][number]): ResolvedSkillSnapshot[] {

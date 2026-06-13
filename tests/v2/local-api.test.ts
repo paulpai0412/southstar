@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
 import { listHistoryForRun } from "../../src/v2/stores/history-store.ts";
-import { listResources, approveMemoryDelta, proposeMemoryDelta } from "../../src/v2/stores/resource-store.ts";
+import { listResources, upsertRuntimeResource } from "../../src/v2/stores/resource-store.ts";
 import {
   createPlannerDraft,
   createRunFromDraft,
@@ -137,6 +137,20 @@ test("durably creates run and tasks before submitting through executor provider"
 
 test("steers run and builds task envelope with approved memory", async () => {
   const db = openSouthstarDb(":memory:");
+  upsertRuntimeResource(db, {
+    resourceType: "memory_item",
+    resourceKey: "mem-local-api-minimal",
+    scope: "software",
+    status: "approved",
+    title: "Minimal preference",
+    payload: {
+      kind: "preference",
+      text: "minimal",
+      confidence: 0.9,
+      successScore: 0.9,
+      tags: ["software"],
+    },
+  });
   const draft = await createPlannerDraft(db, {
     goalPrompt: "implement calc sum",
     plannerClient: plannerClient(),
@@ -145,8 +159,6 @@ test("steers run and builds task envelope with approved memory", async () => {
     draftId: draft.draftId,
     torkClient: { submit: async () => ({ jobId: "job-1", status: "queued" }) } as TorkClient,
   });
-  const delta = proposeMemoryDelta(db, run.runId, { preference: "minimal" });
-  approveMemoryDelta(db, delta.id);
 
   steerRun(db, { runId: run.runId, message: "keep minimal" });
   const envelope = getTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
@@ -154,7 +166,13 @@ test("steers run and builds task envelope with approved memory", async () => {
   assert.equal(listHistoryForRun(db, run.runId).some((event) => event.eventType === "steering.received"), true);
   assert.equal(envelope.task.id, "implement-feature");
   assert.equal(envelope.skills[0]?.skillId, "software.calc-cli");
-  assert.deepEqual(envelope.memory.items[0].body, { preference: "minimal" });
+  assert.deepEqual(envelope.memory.items[0]?.body, {
+    kind: "preference",
+    text: "minimal",
+    sourceRef: "mem-local-api-minimal",
+    contextBlockId: "memory-preference",
+    tokenEstimate: 2,
+  });
 });
 
 function plannerClient(): PiPlannerClient {
