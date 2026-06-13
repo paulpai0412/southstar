@@ -43,7 +43,7 @@ test("expands a running workflow through workflow_revision and submits added tas
   assert.deepEqual(followUpJob.tasks[0].command, [
     "southstar-agent-runner",
     "--envelope",
-    "/southstar-runs/run-wf-software-mvp/task-follow-up-verification/envelope.json",
+    `/southstar-runs/${run.runId}/task-follow-up-verification/envelope.json`,
   ]);
   assert.deepEqual(followUpJob.tasks[0].mounts.at(-1), {
     source: runRoot,
@@ -80,7 +80,7 @@ function revisionRequest(runId: string): WorkflowRevisionRequest {
       id: "task-follow-up-verification",
       name: "Follow-up verification",
       domain: "software",
-      dependsOn: ["task-implement"],
+      dependsOn: ["implement-feature"],
       execution: {
         engine: "tork",
         image: "southstar/codex-agent:local",

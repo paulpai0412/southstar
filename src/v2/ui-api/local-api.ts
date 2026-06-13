@@ -3,8 +3,12 @@ import { existsSync } from "node:fs";
 import type { SouthstarDb } from "../stores/sqlite.ts";
 import type { PlanBundle, SouthstarWorkflowManifest, TaskStatus, WorkflowRevisionRequest } from "../manifests/types.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
-import { generatePlanBundleWithTimings } from "../planner/pi-planner.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
+import { softwareDomainPack } from "../domain-packs/software.ts";
+import { createDomainPackRegistry } from "../domain-packs/registry.ts";
+import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
+import { materializeGenerationPlan } from "../workflow-generator/materialize.ts";
+import type { OrchestrationSnapshot, WorkflowGenerationPlan } from "../workflow-generator/types.ts";
 import {
   applyWorkflowExpansion,
   getResourceByKey,
@@ -46,13 +50,16 @@ export async function createPlannerDraft(db: SouthstarDb, input: {
   goalPrompt: string;
   plannerClient: PiPlannerClient;
 }): Promise<PlannerDraftResult> {
-  const generated = await generatePlanBundleWithTimings(input.plannerClient, {
-    goalPrompt: input.goalPrompt,
-    schemaVersion: "southstar.v2",
-    availableHarnesses: ["pi", "codex", "claude-code", "custom"],
-  });
+  const generated = generateConstrainedPlannerBundle(input.goalPrompt);
   const bundle = generated.bundle;
   const draftId = `draft-${bundle.workflow.workflowId}`;
+  if ("generationPlan" in generated) {
+    persistGenerationResources(db, {
+      generationPlan: generated.generationPlan,
+      orchestrationSnapshot: generated.orchestrationSnapshot,
+      workflow: bundle.workflow,
+    });
+  }
   upsertRuntimeResource(db, {
     id: draftId,
     resourceType: "planner_draft",
@@ -71,6 +78,100 @@ export async function createPlannerDraft(db: SouthstarDb, input: {
   return { draftId, goalPrompt: input.goalPrompt, workflowId: bundle.workflow.workflowId };
 }
 
+function generateConstrainedPlannerBundle(goalPrompt: string): {
+  bundle: PlanBundle;
+  plannerMs: number;
+  validationMs: number;
+  generationPlan: WorkflowGenerationPlan;
+  orchestrationSnapshot: OrchestrationSnapshot;
+} {
+  const startedAt = Date.now();
+  const registry = createDomainPackRegistry([softwareDomainPack]);
+  const route = registry.route({ goalPrompt });
+  const generatedRunId = `draft-${route.domainPack.id}-${hash(goalPrompt).slice(0, 12)}`;
+  const generationPlan = generateConstrainedWorkflowPlan({
+    runId: generatedRunId,
+    goalPrompt,
+    domainPack: route.domainPack,
+    intentId: route.intent.id,
+  });
+  const workflow = materializeGenerationPlan({
+    plan: generationPlan,
+    domainPack: route.domainPack,
+    goalPrompt,
+  });
+  const orchestrationSnapshot: OrchestrationSnapshot = {
+    id: workflow.workflowGeneration?.orchestrationSnapshotId ?? `orch-${generationPlan.id}`,
+    runId: generatedRunId,
+    generationPlanId: generationPlan.id,
+    manifestFingerprint: hash(JSON.stringify(workflow)),
+    phaseStates: generationPlan.orchestration.phases.map((phase) => ({
+      phaseId: phase.id,
+      status: "pending",
+      taskResultRefs: [],
+      intermediateResultRefs: [],
+    })),
+    metrics: {
+      agentInvocations: generationPlan.tasks.length,
+      inputTokens: generationPlan.estimatedBudget.inputTokens,
+      outputTokens: generationPlan.estimatedBudget.outputTokens,
+      costMicrosUsd: generationPlan.estimatedBudget.costMicrosUsd,
+    },
+  };
+  return {
+    bundle: {
+      workflow,
+      plannerTrace: {
+        model: "southstar-constrained-generator",
+        promptHash: hash(goalPrompt),
+        generatedAt: new Date().toISOString(),
+      },
+    },
+    plannerMs: Date.now() - startedAt,
+    validationMs: 0,
+    generationPlan,
+    orchestrationSnapshot,
+  };
+}
+
+function persistGenerationResources(db: SouthstarDb, input: {
+  generationPlan: WorkflowGenerationPlan;
+  orchestrationSnapshot: OrchestrationSnapshot;
+  workflow: SouthstarWorkflowManifest;
+}): void {
+  upsertRuntimeResource(db, {
+    id: input.generationPlan.id,
+    resourceType: "workflow_generation_plan",
+    resourceKey: input.generationPlan.id,
+    scope: "workflow",
+    status: "validated",
+    title: "Workflow generation plan",
+    payload: input.generationPlan,
+    summary: {
+      domain: input.workflow.domain,
+      intent: input.workflow.intent,
+      taskCount: input.generationPlan.tasks.length,
+    },
+  });
+  upsertRuntimeResource(db, {
+    id: input.orchestrationSnapshot.id,
+    resourceType: "orchestration_snapshot",
+    resourceKey: input.orchestrationSnapshot.id,
+    scope: "workflow",
+    status: "created",
+    title: "Initial orchestration snapshot",
+    payload: input.orchestrationSnapshot,
+    summary: {
+      generationPlanId: input.generationPlan.id,
+      phaseCount: input.orchestrationSnapshot.phaseStates.length,
+    },
+  });
+}
+
+function hash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
 export async function revisePlannerDraft(db: SouthstarDb, input: {
   draftId: string;
   prompt: string;
@@ -83,17 +184,18 @@ export async function revisePlannerDraft(db: SouthstarDb, input: {
     "User revision prompt:",
     input.prompt,
   ].join("\n");
-  const generated = await generatePlanBundleWithTimings(input.plannerClient, {
-    goalPrompt: revisedGoal,
-    schemaVersion: "southstar.v2",
-    availableHarnesses: ["pi", "codex", "claude-code", "custom"],
-  });
+  const generated = generateConstrainedPlannerBundle(revisedGoal);
   const bundle = generated.bundle;
   const revisionHash = createHash("sha256")
     .update(`${input.draftId}:${input.prompt}:${bundle.workflow.workflowId}`)
     .digest("hex")
     .slice(0, 12);
   const draftId = `draft-${bundle.workflow.workflowId}-rev-${revisionHash}`;
+  persistGenerationResources(db, {
+    generationPlan: generated.generationPlan,
+    orchestrationSnapshot: generated.orchestrationSnapshot,
+    workflow: bundle.workflow,
+  });
   upsertRuntimeResource(db, {
     id: draftId,
     resourceType: "planner_draft",

@@ -50,27 +50,32 @@ test("creates run from draft, submits Tork projection, and exposes status", asyn
     } as TorkClient,
   });
 
-  assert.equal(run.runId, "run-wf-software-mvp");
+  assert.match(run.runId, /^run-wf-gen-/);
   assert.equal(submittedJobs.length, 1);
   const submitted = submittedJobs[0] as { tasks: Array<{ command: string[]; mounts: Array<{ source: string; target: string; readonly: boolean }> }> };
   assert.deepEqual(submitted.tasks[0].command, [
     "southstar-agent-runner",
     "--envelope",
-    "/southstar-runs/run-wf-software-mvp/task-implement/envelope.json",
+    `/southstar-runs/${run.runId}/understand-repo/envelope.json`,
   ]);
   assert.deepEqual(submitted.tasks[0].mounts.at(-1), {
     source: runRoot,
     target: "/southstar-runs",
     readonly: true,
   });
-  assert.equal(JSON.parse(await readFile(join(runRoot, run.runId, "task-implement", "envelope.json"), "utf8")).task.id, "task-implement");
+  assert.equal(JSON.parse(await readFile(join(runRoot, run.runId, "understand-repo", "envelope.json"), "utf8")).task.id, "understand-repo");
   assert.equal(
-    JSON.parse(await readFile(join(runRoot, run.runId, "task-implement", "envelope.json"), "utf8")).skills[0]?.skillId,
+    JSON.parse(await readFile(join(runRoot, run.runId, "understand-repo", "envelope.json"), "utf8")).skills[0]?.skillId,
     "software.calc-cli",
   );
-  assert.equal(listResources(db, { resourceType: "skill_snapshot", status: "resolved" }).length, 1);
+  assert.equal(listResources(db, { resourceType: "skill_snapshot", status: "resolved" }).length >= 3, true);
   assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
-  assert.deepEqual(getRunStatus(db, run.runId).canvas.nodes.map((node) => node.id), ["task-implement"]);
+  assert.deepEqual(getRunStatus(db, run.runId).canvas.nodes.map((node) => node.id), [
+    "understand-repo",
+    "implement-feature",
+    "verify-feature",
+    "summarize-completion",
+  ]);
   assert.deepEqual(getRunStatus(db, run.runId).runtime.executorJobIds, ["job-1"]);
 });
 
@@ -88,9 +93,9 @@ test("creates a distinct run id when the same planner draft is executed again", 
   const first = await createRunFromDraft(db, { draftId: draft.draftId, torkClient });
   const second = await createRunFromDraft(db, { draftId: draft.draftId, torkClient });
 
-  assert.equal(first.runId, "run-wf-software-mvp");
+  assert.match(first.runId, /^run-wf-gen-/);
   assert.notEqual(second.runId, first.runId);
-  assert.match(second.runId, /^run-wf-software-mvp-/);
+  assert.match(second.runId, /^run-wf-gen-/);
   assert.deepEqual(getRunStatus(db, second.runId).runtime.executorJobIds, ["job-2"]);
 });
 
@@ -105,10 +110,10 @@ test("durably creates run and tasks before submitting through executor provider"
     submit: async ({ runId }) => {
       const runRow = db.prepare("select id from workflow_runs where id = ?").get(runId);
       const taskRow = db.prepare("select id from workflow_tasks where run_id = ? and id = ?")
-        .get(runId, "task-implement");
+        .get(runId, "implement-feature");
 
       assert.equal((runRow as { id?: string } | undefined)?.id, runId);
-      assert.equal((taskRow as { id?: string } | undefined)?.id, "task-implement");
+      assert.equal((taskRow as { id?: string } | undefined)?.id, "implement-feature");
 
       return {
         executorType: "tork",
@@ -124,7 +129,7 @@ test("durably creates run and tasks before submitting through executor provider"
     executorProvider,
   });
 
-  assert.equal(run.runId, "run-wf-software-mvp");
+  assert.match(run.runId, /^run-wf-gen-/);
   assert.equal(run.tork.jobId, "job-provider-1");
   assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
   assert.deepEqual(getRunStatus(db, run.runId).runtime.executorJobIds, ["job-provider-1"]);
@@ -144,10 +149,10 @@ test("steers run and builds task envelope with approved memory", async () => {
   approveMemoryDelta(db, delta.id);
 
   steerRun(db, { runId: run.runId, message: "keep minimal" });
-  const envelope = getTaskEnvelope(db, { runId: run.runId, taskId: "task-implement" });
+  const envelope = getTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
 
   assert.equal(listHistoryForRun(db, run.runId).some((event) => event.eventType === "steering.received"), true);
-  assert.equal(envelope.task.id, "task-implement");
+  assert.equal(envelope.task.id, "implement-feature");
   assert.equal(envelope.skills[0]?.skillId, "software.calc-cli");
   assert.deepEqual(envelope.memory.items[0].body, { preference: "minimal" });
 });

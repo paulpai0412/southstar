@@ -40,7 +40,16 @@ export type WorkflowTaskDefinition = {
   id: string;
   name: string;
   domain: "software" | "research" | "data-analysis" | "general";
+  roleRef?: string;
+  agentProfileRef?: string;
   dependsOn: string[];
+  promptInputs?: Record<string, unknown>;
+  requiredArtifactRefs?: string[];
+  evaluatorPipelineRef?: string;
+  recoveryStrategyRefs?: string[];
+  contextPolicyRef?: string;
+  sessionPolicyRef?: string;
+  workspacePolicyRef?: string;
   execution: TaskExecutionSpec;
   rootSession: {
     validator: "schema-evaluator-v1";

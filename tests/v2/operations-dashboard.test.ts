@@ -30,9 +30,14 @@ test("builds the pi-web operations dashboard first-screen contract", async () =>
     "vault-mcp",
     "executor-ops",
   ]);
-  assert.equal(dashboard.plannerChat.drafts[0].id, "draft-wf-software-mvp");
-  assert.equal(dashboard.workflowCanvas.nodes[0].id, "task-implement");
-  assert.equal(dashboard.agentDefinitions.harnesses[0].id, "codex");
+  assert.match(dashboard.plannerChat.drafts[0].id, /^draft-wf-gen-/);
+  assert.deepEqual(dashboard.workflowCanvas.nodes.map((node) => node.id), [
+    "understand-repo",
+    "implement-feature",
+    "verify-feature",
+    "summarize-completion",
+  ]);
+  assert.equal(dashboard.agentDefinitions.harnesses.some((harness) => harness.id === "codex"), true);
   assert.equal(dashboard.executorOps.bindings[0].torkJobId, "job-1");
 });
 

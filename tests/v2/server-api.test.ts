@@ -31,10 +31,11 @@ test("runtime server exposes plan, run, status, steering, task envelope, and cal
     const run = await client.createRun({ draftId: draft.result.draftId });
     const status = await client.getRun(run.result.runId);
     const steering = await client.steerRun({ runId: run.result.runId, message: "Keep changes minimal" });
-    const envelope = await client.getTaskEnvelope({ runId: run.result.runId, taskId: "task-implement" });
+    const taskId = "implement-feature";
+    const envelope = await client.getTaskEnvelope({ runId: run.result.runId, taskId });
     const callback = await client.submitTorkCallback({
       runId: run.result.runId,
-      taskId: "task-implement",
+      taskId,
       rootSessionId: envelope.result.rootSession.id,
       ok: true,
       attempts: 1,
@@ -139,7 +140,8 @@ test("runtime server returns JSON errors and rejects unsafe callback payloads", 
     const draft = await client.createPlannerDraft({ goalPrompt: "Add calc sum" });
     const run = await client.createRun({ draftId: draft.result.draftId });
     const dangerousRoot = mkdtempSync(join(tmpdir(), "southstar-dangerous-root-"));
-    const dangerousTaskDir = join(dangerousRoot, run.result.runId, "task-implement");
+    const taskId = "implement-feature";
+    const dangerousTaskDir = join(dangerousRoot, run.result.runId, taskId);
     mkdirSync(dangerousTaskDir, { recursive: true });
     writeFileSync(join(dangerousTaskDir, "sentinel.txt"), "do not delete");
 
@@ -153,8 +155,8 @@ test("runtime server returns JSON errors and rejects unsafe callback payloads", 
     );
     await client.submitTorkCallback({
       runId: run.result.runId,
-      taskId: "task-implement",
-      rootSessionId: `root-${run.result.runId}-task-implement`,
+      taskId,
+      rootSessionId: `root-${run.result.runId}-${taskId}`,
       ok: true,
       attempts: 1,
       artifact: { summary: "done" },

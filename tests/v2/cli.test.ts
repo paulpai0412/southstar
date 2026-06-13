@@ -53,7 +53,7 @@ test("executes v2 CLI commands through the local runtime API", async () => {
     torkClient,
   });
   assert.equal(draft.kind, "planner-draft");
-  assert.equal(draft.result.draftId, "draft-wf-software-mvp");
+  assert.match(draft.result.draftId, /^draft-wf-gen-/);
 
   const run = await executeV2Command(parseV2Command(["run", "--draft-id", draft.result.draftId]), {
     db,
@@ -61,7 +61,7 @@ test("executes v2 CLI commands through the local runtime API", async () => {
     torkClient,
   });
   assert.equal(run.kind, "run");
-  assert.equal(run.result.runId, "run-wf-software-mvp");
+  assert.match(run.result.runId, /^run-wf-gen-/);
 
   const status = await executeV2Command(parseV2Command(["status", "--run-id", run.result.runId]), {
     db,
@@ -69,7 +69,12 @@ test("executes v2 CLI commands through the local runtime API", async () => {
     torkClient,
   });
   assert.equal(status.kind, "status");
-  assert.deepEqual(status.result.canvas.nodes.map((node) => node.id), ["task-implement"]);
+  assert.deepEqual(status.result.canvas.nodes.map((node) => node.id), [
+    "understand-repo",
+    "implement-feature",
+    "verify-feature",
+    "summarize-completion",
+  ]);
 });
 
 test("revises planner draft through CLI command", async () => {
@@ -95,7 +100,7 @@ test("revises planner draft through CLI command", async () => {
   });
 
   assert.equal(revised.kind, "planner-draft");
-  assert.match(revised.result.draftId, /^draft-wf-software-mvp-rev-/);
+  assert.match(revised.result.draftId, /^draft-wf-gen-.*-rev-/);
 });
 
 function plannerClientFor(goal: string): PiPlannerClient {
