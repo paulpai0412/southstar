@@ -63,11 +63,10 @@ test("creates run from draft, submits Tork projection, and exposes status", asyn
     target: "/southstar-runs",
     readonly: true,
   });
-  assert.equal(JSON.parse(await readFile(join(runRoot, run.runId, "understand-repo", "envelope.json"), "utf8")).task.id, "understand-repo");
-  assert.equal(
-    JSON.parse(await readFile(join(runRoot, run.runId, "understand-repo", "envelope.json"), "utf8")).skills[0]?.skillId,
-    "software.calc-cli",
-  );
+  const envelope = JSON.parse(await readFile(join(runRoot, run.runId, "understand-repo", "envelope.json"), "utf8"));
+  assert.equal(envelope.schemaVersion, "southstar.task-envelope.v2");
+  assert.equal(envelope.taskId, "understand-repo");
+  assert.equal(envelope.skills[0]?.skillId, "software.calc-cli");
   assert.equal(listResources(db, { resourceType: "skill_snapshot", status: "resolved" }).length >= 3, true);
   assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
   assert.deepEqual(getRunStatus(db, run.runId).canvas.nodes.map((node) => node.id), [
@@ -164,15 +163,12 @@ test("steers run and builds task envelope with approved memory", async () => {
   const envelope = getTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
 
   assert.equal(listHistoryForRun(db, run.runId).some((event) => event.eventType === "steering.received"), true);
-  assert.equal(envelope.task.id, "implement-feature");
+  assert.equal(envelope.schemaVersion, "southstar.task-envelope.v2");
+  assert.equal(envelope.taskId, "implement-feature");
+  assert.equal(envelope.agentProfile.id, "software-maker-pi");
   assert.equal(envelope.skills[0]?.skillId, "software.calc-cli");
-  assert.deepEqual(envelope.memory.items[0]?.body, {
-    kind: "preference",
-    text: "minimal",
-    sourceRef: "mem-local-api-minimal",
-    contextBlockId: "memory-preference",
-    tokenEstimate: 2,
-  });
+  assert.equal(envelope.contextPacket.selectedMemories[0]?.sourceRef, "mem-local-api-minimal");
+  assert.match(envelope.agentPrompt, /minimal/);
 });
 
 function plannerClient(): PiPlannerClient {

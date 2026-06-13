@@ -50,7 +50,9 @@ test("expands a running workflow through workflow_revision and submits added tas
     target: "/southstar-runs",
     readonly: true,
   });
-  assert.equal(JSON.parse(await readFile(join(runRoot, run.runId, "task-follow-up-verification", "envelope.json"), "utf8")).task.id, "task-follow-up-verification");
+  const envelope = JSON.parse(await readFile(join(runRoot, run.runId, "task-follow-up-verification", "envelope.json"), "utf8"));
+  assert.equal(envelope.schemaVersion, "southstar.task-envelope.v2");
+  assert.equal(envelope.taskId, "task-follow-up-verification");
   assert.equal(
     listHistoryForRun(db, run.runId).some((event) => event.eventType === "workflow.revision_requested"),
     true,

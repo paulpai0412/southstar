@@ -1,6 +1,6 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import type { TaskEnvelope } from "./task-envelope.ts";
+import type { AnyTaskEnvelope } from "./task-envelope.ts";
 
 export type TaskMaterializerOptions = {
   runRoot?: string;
@@ -14,15 +14,18 @@ export type TaskMaterialization = {
 const DEFAULT_RUN_ROOT = "/tmp/southstar-runs";
 
 export async function materializeTaskEnvelope(
-  envelope: TaskEnvelope,
+  envelope: AnyTaskEnvelope,
   options: TaskMaterializerOptions = {},
 ): Promise<TaskMaterialization> {
   const runRoot = options.runRoot ?? DEFAULT_RUN_ROOT;
   const runDir = resolveChildDir(runRoot, envelope.runId, "run id");
-  const taskDir = resolveChildDir(runDir, envelope.task.id, "task id");
+  const taskDir = resolveChildDir(runDir, envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id, "task id");
   const envelopePath = join(taskDir, "envelope.json");
   await mkdir(taskDir, { recursive: true });
   await writeFile(envelopePath, JSON.stringify(envelope, null, 2));
+  if (envelope.schemaVersion === "southstar.task-envelope.v2") {
+    await writeFile(join(taskDir, "context-packet.json"), JSON.stringify(envelope.contextPacket, null, 2));
+  }
   const skillsRoot = join(taskDir, "skills");
   for (const skill of envelope.skills ?? []) {
     const skillDir = resolveSkillDir(skillsRoot, skill.skillId);

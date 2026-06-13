@@ -3,7 +3,7 @@ import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "../harness
 import { createPiSdkAgentHarness } from "../harness/pi-sdk-harness.ts";
 import { createBuiltinAgentHarness } from "../harness/builtin-agent-harness.ts";
 import { runTaskEnvelope, type TaskRunResult } from "./task-runner.ts";
-import type { TaskEnvelope } from "./task-envelope.ts";
+import type { AnyTaskEnvelope } from "./task-envelope.ts";
 
 export async function runAgentRunnerCli(
   argv = process.argv.slice(2),
@@ -11,9 +11,9 @@ export async function runAgentRunnerCli(
 ): Promise<number> {
   try {
     const options = parseAgentRunnerArgs(argv);
-    const envelope = JSON.parse(await readFile(options.envelopePath, "utf8")) as TaskEnvelope;
+    const envelope = JSON.parse(await readFile(options.envelopePath, "utf8")) as AnyTaskEnvelope;
     const result = await runTaskEnvelope(envelope, createAgentHarness(options, envelope), {
-      requiredFields: options.requiredFields ?? envelope.artifactContract?.requiredFields ?? [],
+      requiredFields: options.requiredFields ?? requiredFieldsFromEnvelope(envelope),
     });
     result.materializationRoot = options.materializationRoot;
     if (options.resultPath) {
@@ -51,11 +51,18 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
   };
 }
 
-function createAgentHarness(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: TaskEnvelope): AgentHarness {
-  if (options.harnessKind === "builtin") return createBuiltinAgentHarness();
+function createAgentHarness(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope): AgentHarness {
+  const harnessKind = options.harnessKind ?? defaultHarnessKindFromEnvelope(envelope);
+  if (harnessKind === "builtin") return createBuiltinAgentHarness();
   return options.harnessEndpoint
     ? createHttpHarness(options.harnessEndpoint)
     : createPiSdkAgentHarness({ timeoutMs: options.harnessTimeoutMs ?? timeoutFromEnvelope(envelope) });
+}
+
+function defaultHarnessKindFromEnvelope(envelope: AnyTaskEnvelope): string | undefined {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return undefined;
+  if (envelope.harness.kind === "pi-agent" || envelope.agentProfile.provider === "pi") return "pi-sdk";
+  return "builtin";
 }
 
 function createHttpHarness(endpoint: string): AgentHarness {
@@ -98,9 +105,18 @@ function flagValue(argv: string[], flag: string): string | undefined {
   return value;
 }
 
-function timeoutFromEnvelope(envelope: TaskEnvelope): number {
-  const taskTimeoutMs = envelope.task.execution.timeoutSeconds * 1000;
+function timeoutFromEnvelope(envelope: AnyTaskEnvelope): number {
+  const taskTimeoutMs = envelope.schemaVersion === "southstar.task-envelope.v2"
+    ? (envelope.agentProfile.budgetPolicy.maxWallTimeSeconds ?? 180) * 1000
+    : envelope.task.execution.timeoutSeconds * 1000;
   return Math.min(180_000, Math.max(120_000, taskTimeoutMs - 30_000));
+}
+
+function requiredFieldsFromEnvelope(envelope: AnyTaskEnvelope): string[] {
+  if (envelope.schemaVersion === "southstar.task-envelope.v2") {
+    return [...new Set(envelope.artifactContracts.flatMap((contract) => contract.requiredFields))];
+  }
+  return envelope.artifactContract?.requiredFields ?? [];
 }
 
 function numberFromEnv(value: string | undefined): number | undefined {

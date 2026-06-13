@@ -109,7 +109,7 @@ function materializeHarnessDefinitions(domainPack: DomainPack): HarnessDefinitio
       entrypoint: "southstar-agent-runner",
       image: "southstar/pi-agent:local",
       capabilities: [domainPack.id],
-      inputProtocol: "task-envelope-v1",
+      inputProtocol: "task-envelope-v2",
       eventProtocol: "southstar-events-v1",
       supportsCheckpoint: true,
       supportsSteering: true,

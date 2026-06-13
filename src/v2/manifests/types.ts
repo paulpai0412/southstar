@@ -19,7 +19,7 @@ export type HarnessDefinition = {
   entrypoint: string;
   image: string;
   capabilities: string[];
-  inputProtocol: "task-envelope-v1";
+  inputProtocol: "task-envelope-v1" | "task-envelope-v2";
   eventProtocol: "southstar-events-v1";
   supportsCheckpoint: boolean;
   supportsSteering: boolean;

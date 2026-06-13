@@ -278,12 +278,63 @@ test("materialized task envelope only receives ContextPacket-selected memories",
     submit: async ({ runId, workflow }) => {
       for (const task of workflow.tasks) {
         const envelopePath = join(runRoot, runId, task.id, "envelope.json");
-        const envelope = JSON.parse(await readFile(envelopePath, "utf8")) as { memory: { items: Array<{ body: unknown }> } };
-        const serializedMemory = JSON.stringify(envelope.memory.items);
-        assert.match(serializedMemory, /Prefer tests around calc sum behavior/);
-        assert.doesNotMatch(serializedMemory, /unsupported memory reach/);
+        const envelope = JSON.parse(await readFile(envelopePath, "utf8")) as {
+          schemaVersion: string;
+          agentPrompt: string;
+          contextPacket: { selectedMemories: unknown[]; excludedCandidates: Array<{ reason: string }> };
+        };
+        assert.equal(envelope.schemaVersion, "southstar.task-envelope.v2");
+        assert.match(envelope.agentPrompt, /ContextPacket:/);
+        assert.match(envelope.agentPrompt, /Prefer tests around calc sum behavior/);
+        assert.doesNotMatch(envelope.agentPrompt, /unsupported memory reach/);
+        assert.equal(envelope.contextPacket.selectedMemories.length, 1);
+        assert.equal(envelope.contextPacket.excludedCandidates.some((candidate) => candidate.reason === "kind-mismatch"), true);
       }
       return { executorType: "tork", externalJobId: "job-context-envelope", status: "queued" };
+    },
+  };
+
+  await createRunFromDraft(db, { draftId: draft.draftId, executorProvider, runRoot });
+});
+
+test("materialized task routing follows resolved agent profile instead of task id", async () => {
+  const db = openSouthstarDb(":memory:");
+  const runRoot = await mkdtemp(join(tmpdir(), "southstar-context-routing-"));
+  const draft = await createPlannerDraft(db, {
+    goalPrompt: "implement calc sum",
+    plannerClient: { generate: async () => { throw new Error("not used"); } },
+  });
+  const workflowResource = db.prepare("select payload_json from runtime_resources where resource_type = 'planner_draft' and resource_key = ?")
+    .get(draft.draftId) as { payload_json: string };
+  const bundle = JSON.parse(workflowResource.payload_json) as { workflow: { tasks: Array<{ id: string; agentProfileRef?: string }> } };
+  const understandTask = bundle.workflow.tasks.find((task) => task.id === "understand-repo");
+  assert.ok(understandTask);
+  understandTask.agentProfileRef = "software-explorer-pi";
+  upsertRuntimeResource(db, {
+    resourceType: "planner_draft",
+    resourceKey: draft.draftId,
+    scope: "planner",
+    status: "validated",
+    title: "patched draft",
+    payload: bundle,
+  });
+
+  const executorProvider: ExecutorProvider = {
+    executorType: "tork",
+    submit: async ({ runId, workflow }) => {
+      const task = workflow.tasks.find((candidate) => candidate.id === "understand-repo");
+      assert.ok(task);
+      assert.equal(task.execution.env.SOUTHSTAR_HARNESS_KIND, undefined);
+      const envelopePath = join(runRoot, runId, task.id, "envelope.json");
+      const envelope = JSON.parse(await readFile(envelopePath, "utf8")) as {
+        agentProfile: { id: string; provider: string };
+        harness: { id: string; kind: string };
+      };
+      assert.equal(envelope.agentProfile.id, "software-explorer-pi");
+      assert.equal(envelope.agentProfile.provider, "pi");
+      assert.equal(envelope.harness.id, "pi");
+      assert.equal(envelope.harness.kind, "pi-agent");
+      return { executorType: "tork", externalJobId: "job-context-routing", status: "queued" };
     },
   };
 

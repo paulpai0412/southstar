@@ -15,7 +15,6 @@ import {
   getResourceByKey,
   listResources,
   requestWorkflowRevision,
-  retrieveApprovedMemory,
   upsertRuntimeResource,
   validateWorkflowRevision,
 } from "../stores/resource-store.ts";
@@ -26,7 +25,7 @@ import type { TorkClient, TorkSubmitResult } from "../executor/tork-client.ts";
 import type { ExecutorProvider, ExecutorSubmitResult } from "../executor/provider.ts";
 import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
-import { buildTaskEnvelope, type MemorySnapshot } from "../agent-runner/task-envelope.ts";
+import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import { buildContextPacket, resolveArtifactContractRefs, resolveRoleProfile } from "../context/builder.ts";
 import { resolveSkillSnapshots } from "../skills/resolver.ts";
@@ -466,26 +465,20 @@ export function getTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId:
   if (!task) throw new Error(`unknown task: ${input.taskId}`);
   const taskDefinition = workflow.tasks.find((candidate) => candidate.id === input.taskId);
   if (!taskDefinition) throw new Error(`unknown task: ${input.taskId}`);
-  const vaultLeases = listResources(db, { resourceType: "vault_lease" })
-    .filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId)
-    .map((resource) => ({
-      leaseRef: resource.resourceKey,
-      mountAs: ((resource.payload as { mountAs?: "env" | "file" }).mountAs ?? "file"),
-    }));
-  const mcpGrants = listResources(db, { resourceType: "mcp_grant" })
-    .filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId)
-    .map((resource) => ({
-      serverId: (resource.payload as { serverId?: string }).serverId ?? resource.resourceKey,
-      allowedTools: (resource.payload as { allowedTools?: string[] }).allowedTools ?? [],
-    }));
-  return buildTaskEnvelope(workflow, {
+  const domainPack = domainPackForWorkflow(workflow);
+  const rootSessionId = task.rootSessionId ?? `root-${input.runId}-${input.taskId}`;
+  const runtimeTask = resolveRuntimeTaskProfile(workflow, domainPack, taskDefinition);
+  const contextPacket = latestContextPacket(db, input) ?? buildContextPacketForTask(db, workflow, domainPack, taskDefinition, {
     runId: input.runId,
-    taskId: input.taskId,
-    rootSessionId: task.rootSessionId ?? `root-${input.runId}-${input.taskId}`,
-    memorySnapshot: memorySnapshotForTask(db, workflow, input),
-    vaultLeases,
-    mcpGrants,
-    skills: resolveTaskSkills(db, input.runId, taskDefinition),
+    rootSessionId,
+    executionAttempt: 1,
+    runtimeTask,
+  });
+  return buildRuntimeTaskEnvelopeV2(db, workflow, domainPack, taskDefinition, {
+    runId: input.runId,
+    rootSessionId,
+    contextPacket,
+    runtimeTask,
   });
 }
 
@@ -531,40 +524,18 @@ async function materializedWorkflowForExecution(
   const domainPack = domainPackForWorkflow(workflow);
   for (const task of workflow.tasks) {
     const rootSessionId = `root-${input.runId}-${task.id}`;
-    const roleProfile = resolveRoleProfile({
-      taskId: task.id,
-      roleRef: task.roleRef,
-      agentProfileRef: task.agentProfileRef,
-      roles: domainPack.roles,
-    });
-    const contextPacket = buildContextPacket(db, {
+    const runtimeTask = resolveRuntimeTaskProfile(workflow, domainPack, task);
+    const contextPacket = buildContextPacketForTask(db, workflow, domainPack, task, {
       runId: input.runId,
-      taskId: task.id,
       rootSessionId,
       executionAttempt: 1,
-      goalPrompt: taskGoalPrompt(workflow, task),
-      domainPack,
-      roleRef: roleProfile.roleRef,
-      agentProfileRef: roleProfile.agentProfileRef,
-      artifactContractRefs: resolveArtifactContractRefs({
-        requiredArtifactRefs: task.requiredArtifactRefs,
-        subagentArtifactTypes: task.subagents.flatMap((subagent) => subagent.requiredArtifacts),
-        artifactContracts: domainPack.artifactContracts,
-      }),
-      priorArtifactRefs: task.dependsOn,
-      checkpointSummary: "No checkpoint materialized before initial task submission.",
-      workspaceSummary: `Task ${task.id} will run in ${task.domain} workspace scope.`,
+      runtimeTask,
     });
-    const envelope = buildTaskEnvelope(workflow, {
+    const envelope = buildRuntimeTaskEnvelopeV2(db, workflow, domainPack, task, {
       runId: input.runId,
-      taskId: task.id,
       rootSessionId,
-      memorySnapshot: memorySnapshotFromContextPacket(contextPacket),
-      vaultLeases: [],
-      mcpGrants: workflow.mcpGrants
-        .filter((grant) => grant.taskId === task.id)
-        .map((grant) => ({ serverId: grant.serverId, allowedTools: grant.allowedTools })),
-      skills: resolveTaskSkills(db, input.runId, task),
+      contextPacket,
+      runtimeTask,
     });
     const materialization = await materializeTaskEnvelope(envelope, { runRoot: input.runRoot });
     const runRoot = input.runRoot ?? "/tmp/southstar-runs";
@@ -576,7 +547,7 @@ async function materializedWorkflowForExecution(
         env: {
           ...task.execution.env,
           ...(input.harnessEndpoint ? { SOUTHSTAR_HARNESS_ENDPOINT: input.harnessEndpoint } : {}),
-          ...(!isImplementerTask(task.id) ? { SOUTHSTAR_HARNESS_KIND: "builtin" } : {}),
+          ...runtimeHarnessEnv(runtimeTask.agentProfile),
           SOUTHSTAR_MATERIALIZATION_ROOT: input.runRoot ?? "/tmp/southstar-runs",
           ...(piAgentConfigMount ? {
             PI_CODING_AGENT_DIR: piAgentConfigMount.target,
@@ -620,35 +591,155 @@ function taskGoalPrompt(workflow: SouthstarWorkflowManifest, task: SouthstarWork
   return workflow.goalPrompt;
 }
 
-function memorySnapshotFromContextPacket(packet: ReturnType<typeof buildContextPacket>): MemorySnapshot {
+type RuntimeTaskProfile = {
+  roleRef: string;
+  agentProfileRef: string;
+  role: DomainPack["roles"][number];
+  agentProfile: DomainPack["agentProfiles"][number];
+  harness: SouthstarWorkflowManifest["harnessDefinitions"][number];
+  artifactContractRefs: string[];
+  artifactContracts: DomainPack["artifactContracts"];
+  evaluatorPipeline: DomainPack["evaluatorPipelines"][number];
+};
+
+function resolveRuntimeTaskProfile(
+  workflow: SouthstarWorkflowManifest,
+  domainPack: DomainPack,
+  task: SouthstarWorkflowManifest["tasks"][number],
+): RuntimeTaskProfile {
+  const roleProfile = resolveRoleProfile({
+    taskId: task.id,
+    roleRef: task.roleRef,
+    agentProfileRef: task.agentProfileRef,
+    roles: domainPack.roles,
+  });
+  const role = requiredDomainItem(domainPack.roles.find((candidate) => candidate.id === roleProfile.roleRef), `role ${roleProfile.roleRef}`);
+  const agentProfile = requiredDomainItem(
+    domainPack.agentProfiles.find((candidate) => candidate.id === roleProfile.agentProfileRef),
+    `agent profile ${roleProfile.agentProfileRef}`,
+  );
+  const artifactContractRefs = resolveArtifactContractRefs({
+    requiredArtifactRefs: task.requiredArtifactRefs,
+    subagentArtifactTypes: task.subagents.flatMap((subagent) => subagent.requiredArtifacts),
+    artifactContracts: domainPack.artifactContracts,
+  });
+  const artifactContracts = artifactContractRefs.map((artifactRef) =>
+    requiredDomainItem(domainPack.artifactContracts.find((candidate) => candidate.id === artifactRef), `artifact contract ${artifactRef}`)
+  );
+  const evaluatorPipeline = requiredDomainItem(
+    domainPack.evaluatorPipelines.find((candidate) => candidate.id === task.evaluatorPipelineRef)
+      ?? domainPack.evaluatorPipelines[0],
+    "evaluator pipeline",
+  );
+  const harness = requiredDomainItem(
+    workflow.harnessDefinitions.find((candidate) => candidate.id === agentProfile.harnessRef)
+      ?? workflow.harnessDefinitions.find((candidate) => candidate.id === task.subagents[0]?.harnessId)
+      ?? workflow.harnessDefinitions[0],
+    `harness ${agentProfile.harnessRef}`,
+  );
   return {
-    items: packet.selectedMemories.map((memory) => ({
-      id: memory.sourceRef ?? memory.id,
-      body: {
-        kind: memory.title,
-        text: memory.text,
-        sourceRef: memory.sourceRef,
-        contextBlockId: memory.id,
-        tokenEstimate: memory.tokenEstimate,
-      },
-    })),
-    capturedAt: new Date().toISOString(),
+    roleRef: roleProfile.roleRef,
+    agentProfileRef: roleProfile.agentProfileRef,
+    role,
+    agentProfile,
+    harness,
+    artifactContractRefs,
+    artifactContracts,
+    evaluatorPipeline,
   };
 }
 
-function memorySnapshotForTask(
+function buildContextPacketForTask(
   db: SouthstarDb,
   workflow: SouthstarWorkflowManifest,
+  domainPack: DomainPack,
+  task: SouthstarWorkflowManifest["tasks"][number],
+  input: { runId: string; rootSessionId: string; executionAttempt: number; runtimeTask: RuntimeTaskProfile },
+) {
+  return buildContextPacket(db, {
+    runId: input.runId,
+    taskId: task.id,
+    rootSessionId: input.rootSessionId,
+    executionAttempt: input.executionAttempt,
+    goalPrompt: taskGoalPrompt(workflow, task),
+    domainPack,
+    roleRef: input.runtimeTask.roleRef,
+    agentProfileRef: input.runtimeTask.agentProfileRef,
+    artifactContractRefs: input.runtimeTask.artifactContractRefs,
+    priorArtifactRefs: task.dependsOn,
+    checkpointSummary: "No checkpoint materialized before initial task submission.",
+    workspaceSummary: `Task ${task.id} will run in ${task.domain} workspace scope.`,
+  });
+}
+
+function buildRuntimeTaskEnvelopeV2(
+  db: SouthstarDb,
+  workflow: SouthstarWorkflowManifest,
+  _domainPack: DomainPack,
+  task: SouthstarWorkflowManifest["tasks"][number],
+  input: {
+    runId: string;
+    rootSessionId: string;
+    contextPacket: ReturnType<typeof buildContextPacket>;
+    runtimeTask: RuntimeTaskProfile;
+  },
+) {
+  return buildTaskEnvelopeV2({
+    runId: input.runId,
+    workflowId: workflow.workflowId,
+    taskId: task.id,
+    domain: task.domain,
+    intent: workflow.intent ?? "unknown",
+    role: input.runtimeTask.role,
+    agentProfile: input.runtimeTask.agentProfile,
+    harness: input.runtimeTask.harness,
+    contextPacket: input.contextPacket,
+    skills: resolveTaskSkills(db, input.runId, task),
+    mcpGrants: [
+      ...workflow.mcpGrants
+        .filter((grant) => grant.taskId === task.id)
+        .map((grant) => ({ serverId: grant.serverId, allowedTools: grant.allowedTools })),
+      ...listResources(db, { resourceType: "mcp_grant" })
+        .filter((resource) => resource.runId === input.runId && resource.taskId === task.id)
+        .map((resource) => ({
+          serverId: (resource.payload as { serverId?: string }).serverId ?? resource.resourceKey,
+          allowedTools: (resource.payload as { allowedTools?: string[] }).allowedTools ?? [],
+        })),
+    ],
+    vaultLeases: listResources(db, { resourceType: "vault_lease" })
+      .filter((resource) => resource.runId === input.runId && resource.taskId === task.id)
+      .map((resource) => ({
+        leaseRef: resource.resourceKey,
+        mountAs: ((resource.payload as { mountAs?: "env" | "file" }).mountAs ?? "file"),
+      })),
+    artifactContracts: input.runtimeTask.artifactContracts,
+    evaluatorPipeline: input.runtimeTask.evaluatorPipeline,
+    session: { sessionId: input.rootSessionId, maxRepairAttempts: task.rootSession.maxRepairAttempts },
+    workspace: {
+      handle: {
+        repoRoot: task.execution.mounts[0]?.source ?? ".",
+        worktreePath: task.execution.mounts[0]?.source ?? ".",
+      },
+    },
+  });
+}
+
+function requiredDomainItem<T>(value: T | undefined, label: string): T {
+  if (!value) throw new Error(`missing ${label}`);
+  return value;
+}
+
+function latestContextPacket(
+  db: SouthstarDb,
   input: { runId: string; taskId: string },
-): MemorySnapshot {
+): ReturnType<typeof buildContextPacket> | undefined {
   const row = db.prepare(`
     select payload_json from runtime_resources
     where resource_type = 'context_packet' and run_id = ? and task_id = ?
     order by updated_at desc
     limit 1
   `).get(input.runId, input.taskId) as { payload_json: string } | undefined;
-  if (!row) return retrieveApprovedMemory(db, inferDomain(workflow), workflow.memoryPolicy.retrievalLimit);
-  return memorySnapshotFromContextPacket(JSON.parse(row.payload_json) as ReturnType<typeof buildContextPacket>);
+  return row ? JSON.parse(row.payload_json) as ReturnType<typeof buildContextPacket> : undefined;
 }
 
 function resolveTaskSkills(db: SouthstarDb, runId: string, task: SouthstarWorkflowManifest["tasks"][number]): ResolvedSkillSnapshot[] {
@@ -668,8 +759,9 @@ function resolveTaskSkills(db: SouthstarDb, runId: string, task: SouthstarWorkfl
   });
 }
 
-function isImplementerTask(taskId: string): boolean {
-  return /implement/i.test(taskId);
+function runtimeHarnessEnv(agentProfile: DomainPack["agentProfiles"][number]): Record<string, string> {
+  if (agentProfile.provider === "pi" || agentProfile.harnessRef === "pi") return {};
+  return { SOUTHSTAR_HARNESS_KIND: "builtin" };
 }
 
 function getPiAgentConfigMount(): { source: string; target: string; readonly: boolean } | undefined {

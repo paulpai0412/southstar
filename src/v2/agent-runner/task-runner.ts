@@ -1,6 +1,6 @@
 import type { AgentHarness, HarnessRunResult } from "../harness/types.ts";
 import { evaluateArtifactGate } from "./root-session.ts";
-import type { TaskEnvelope } from "./task-envelope.ts";
+import type { AnyTaskEnvelope } from "./task-envelope.ts";
 
 export type TaskRunnerEvent = {
   eventType: string;
@@ -30,30 +30,35 @@ export type TaskRunResult = {
 };
 
 export async function runTaskEnvelope(
-  envelope: TaskEnvelope,
+  envelope: AnyTaskEnvelope,
   harness: AgentHarness,
   input: { requiredFields: string[] },
 ): Promise<TaskRunResult> {
+  const rootSessionId = envelopeRootSessionId(envelope);
+  const taskId = envelopeTaskId(envelope);
+  const maxRepairAttempts = envelopeMaxRepairAttempts(envelope);
   const events: TaskRunnerEvent[] = [{
     eventType: "session.entry",
     actorType: "root-session",
-    sessionId: envelope.rootSession.id,
+    sessionId: rootSessionId,
     payload: {
-      rootSessionId: envelope.rootSession.id,
-      taskId: envelope.task.id,
-      memoryItemCount: envelope.memory.items.length,
+      rootSessionId,
+      taskId,
+      memoryItemCount: envelope.schemaVersion === "southstar.task-envelope.v2"
+        ? envelope.contextPacket.selectedMemories.length
+        : envelope.memory.items.length,
     },
   }, {
     eventType: "task.started",
     actorType: "root-session",
-    sessionId: envelope.rootSession.id,
-    payload: { taskId: envelope.task.id, harnessId: harness.id },
+    sessionId: rootSessionId,
+    payload: { taskId, harnessId: harness.id },
   }];
   const metrics = emptyMetrics();
   let repairInstruction: string | undefined;
   let latestArtifact: Record<string, unknown> = {};
 
-  for (let attempt = 1; attempt <= envelope.rootSession.maxRepairAttempts; attempt++) {
+  for (let attempt = 1; attempt <= maxRepairAttempts; attempt++) {
     const harnessResult = await harness.run({ envelope, attempt, repairInstruction });
     addMetrics(metrics, harnessResult.metrics);
     latestArtifact = harnessResult.artifact;
@@ -61,14 +66,14 @@ export async function runTaskEnvelope(
       events.push({
         eventType: "progress.commentary",
         actorType: "subagent",
-        sessionId: envelope.rootSession.id,
+        sessionId: rootSessionId,
         payload: { message, attempt },
       });
     }
     events.push({
       eventType: "artifact.created",
       actorType: "subagent",
-      sessionId: envelope.rootSession.id,
+      sessionId: rootSessionId,
       payload: { attempt, artifact: harnessResult.artifact },
     });
 
@@ -76,25 +81,25 @@ export async function runTaskEnvelope(
       artifact: harnessResult.artifact,
       requiredFields: input.requiredFields,
       attempt,
-      maxRepairAttempts: envelope.rootSession.maxRepairAttempts,
+      maxRepairAttempts,
     });
     events.push({
       eventType: "evaluator.completed",
       actorType: "evaluator",
-      sessionId: envelope.rootSession.id,
+      sessionId: rootSessionId,
       payload: { ok: gate.ok, missingFields: gate.missingFields, attempt },
     });
     if (gate.ok) {
       events.push({
         eventType: "subagent.completed",
         actorType: "subagent",
-        sessionId: envelope.rootSession.id,
-        payload: { subagentIds: envelope.subagents.map((subagent) => subagent.id), attempt },
+        sessionId: rootSessionId,
+        payload: { subagentIds: envelopeSubagentIds(envelope), attempt },
       });
       return {
         runId: envelope.runId,
-        taskId: envelope.task.id,
-        rootSessionId: envelope.rootSession.id,
+        taskId,
+        rootSessionId,
         ok: true,
         attempts: attempt,
         artifact: latestArtifact,
@@ -107,7 +112,7 @@ export async function runTaskEnvelope(
       events.push({
         eventType: "repair.requested",
         actorType: "root-session",
-        sessionId: envelope.rootSession.id,
+        sessionId: rootSessionId,
         payload: { attempt, missingFields: gate.missingFields, repairInstruction },
       });
     }
@@ -115,14 +120,32 @@ export async function runTaskEnvelope(
 
   return {
     runId: envelope.runId,
-    taskId: envelope.task.id,
-    rootSessionId: envelope.rootSession.id,
+    taskId,
+    rootSessionId,
     ok: false,
-    attempts: envelope.rootSession.maxRepairAttempts,
+    attempts: maxRepairAttempts,
     artifact: latestArtifact,
     metrics,
     events,
   };
+}
+
+function envelopeTaskId(envelope: AnyTaskEnvelope): string {
+  return envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id;
+}
+
+function envelopeRootSessionId(envelope: AnyTaskEnvelope): string {
+  return envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.session.sessionId : envelope.rootSession.id;
+}
+
+function envelopeMaxRepairAttempts(envelope: AnyTaskEnvelope): number {
+  return envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.session.maxRepairAttempts ?? 1 : envelope.rootSession.maxRepairAttempts;
+}
+
+function envelopeSubagentIds(envelope: AnyTaskEnvelope): string[] {
+  return envelope.schemaVersion === "southstar.task-envelope.v2"
+    ? [envelope.agentProfile.id]
+    : envelope.subagents.map((subagent) => subagent.id);
 }
 
 function emptyMetrics(): TaskRunMetrics {

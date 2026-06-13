@@ -7,7 +7,7 @@ export function createBuiltinAgentHarness(): AgentHarness {
     id: "builtin-agent-harness",
     async run(input: HarnessRunInput): Promise<HarnessRunResult> {
       const startedAt = Date.now();
-      const role = input.envelope.task.id;
+      const role = input.envelope.schemaVersion === "southstar.task-envelope.v2" ? input.envelope.taskId : input.envelope.task.id;
       const repo = repoPath();
       const commandsRun: string[] = [];
       const testResults: unknown[] = [];
@@ -17,12 +17,22 @@ export function createBuiltinAgentHarness(): AgentHarness {
         testResults.push(runCommand(repo, "npm", ["run", "-s", "cli", "--", "sum", "1", "2", "3"], commandsRun));
       }
 
-      const memoryPreference = JSON.stringify(input.envelope.memory.items);
+      const memoryPreference = input.envelope.schemaVersion === "southstar.task-envelope.v2"
+        ? JSON.stringify(input.envelope.contextPacket.selectedMemories)
+        : JSON.stringify(input.envelope.memory.items);
       const artifact = {
         summary: summaryFor(role, memoryPreference),
+        filesToInspect: ["package.json", "README.md", "src"],
+        commandsToRun: ["npm test", "npm run -s cli -- sum 1 2 3"],
+        filesChanged: [],
         commandsRun,
         testResults,
+        checkerFindings: [],
+        artifactEvidence: { commandsRun, testResults },
+        acceptedArtifacts: [],
+        tests: testResults,
         risks: ["builtin harness validates the task contract in the container environment"],
+        followUps: [],
         followUpSuggestions: [],
       };
 

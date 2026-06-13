@@ -23,6 +23,14 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
 }
 
 function buildHarnessPrompt(input: HarnessRunInput): string {
+  if (input.envelope.schemaVersion === "southstar.task-envelope.v2") {
+    return [
+      input.envelope.agentPrompt,
+      "",
+      `Attempt: ${input.attempt}`,
+      input.repairInstruction ? `Repair instruction: ${input.repairInstruction}` : "",
+    ].filter(Boolean).join("\n");
+  }
   return [
     "You are a Southstar container agent running inside a Tork task.",
     "Execute the task described by the TaskEnvelope. Use the available Pi Agent tools as needed.",

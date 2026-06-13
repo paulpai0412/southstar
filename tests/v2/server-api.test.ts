@@ -36,7 +36,7 @@ test("runtime server exposes plan, run, status, steering, task envelope, and cal
     const callback = await client.submitTorkCallback({
       runId: run.result.runId,
       taskId,
-      rootSessionId: envelope.result.rootSession.id,
+      rootSessionId: envelope.result.session.sessionId,
       ok: true,
       attempts: 1,
       artifact: { summary: "done", commandsRun: ["npm test"], testResults: "passed", risks: [] },
@@ -44,7 +44,7 @@ test("runtime server exposes plan, run, status, steering, task envelope, and cal
       events: [{
         eventType: "subagent.completed",
         actorType: "subagent",
-        sessionId: envelope.result.rootSession.id,
+        sessionId: envelope.result.session.sessionId,
         payload: { ok: true },
       }],
     });
@@ -57,6 +57,8 @@ test("runtime server exposes plan, run, status, steering, task envelope, and cal
     assert.equal(status.result.canvas.runId, run.result.runId);
     assert.equal(steering.kind, "steering");
     assert.equal(envelope.kind, "task-envelope");
+    assert.equal(envelope.result.schemaVersion, "southstar.task-envelope.v2");
+    assert.equal(envelope.result.taskId, taskId);
     assert.equal(envelope.result.skills[0]?.skillId, "software.calc-cli");
     assert.deepEqual(callback.result, { accepted: true });
     assert.equal(listResources(db, { resourceType: "artifact", status: "accepted" }).length, 1);
