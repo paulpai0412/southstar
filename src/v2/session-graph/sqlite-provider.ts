@@ -59,7 +59,7 @@ export function createSqliteSessionGraphProvider(db: SouthstarDb): SessionGraphP
       return checkpoint;
     },
     fork(input) {
-      const checkpoint = requireCheckpoint(db, input.baseCheckpointId);
+      const checkpoint = requireCheckpointForRun(db, input.baseCheckpointId, input.runId);
       const parentSession = readSessionNode(db, checkpoint.sessionId);
       const fork = persistSessionNode(db, {
         id: `session-${randomUUID()}`,
@@ -82,7 +82,7 @@ export function createSqliteSessionGraphProvider(db: SouthstarDb): SessionGraphP
       return { ...fork, recoveryDecisionId: decision.id };
     },
     reset(input) {
-      const checkpoint = requireCheckpoint(db, input.baseCheckpointId);
+      const checkpoint = requireCheckpointForRun(db, input.baseCheckpointId, input.runId);
       const parentSession = readSessionNode(db, checkpoint.sessionId);
       const resetSession = persistSessionNode(db, {
         id: `session-${randomUUID()}`,
@@ -103,7 +103,7 @@ export function createSqliteSessionGraphProvider(db: SouthstarDb): SessionGraphP
       });
     },
     rollback(input) {
-      const checkpoint = requireCheckpoint(db, input.checkpointId);
+      const checkpoint = requireCheckpointForRun(db, input.checkpointId, input.runId);
       return persistRecoveryDecision(db, {
         id: `recovery-${randomUUID()}`,
         runId: input.runId,
@@ -195,6 +195,14 @@ function requireCheckpoint(db: SouthstarDb, checkpointId: string): SessionCheckp
   const resource = getResourceByKey(db, "session_checkpoint", checkpointId);
   if (!resource) throw new Error(`session checkpoint not found: ${checkpointId}`);
   return resource.payload as SessionCheckpoint;
+}
+
+function requireCheckpointForRun(db: SouthstarDb, checkpointId: string, runId: string): SessionCheckpoint {
+  const checkpoint = requireCheckpoint(db, checkpointId);
+  if (checkpoint.runId !== runId) {
+    throw new Error(`checkpoint ${checkpointId} does not belong to workflow run ${runId}`);
+  }
+  return checkpoint;
 }
 
 function readSessionNode(db: SouthstarDb, sessionId: string): SessionNode | undefined {

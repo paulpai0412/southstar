@@ -6,6 +6,11 @@ import { upsertRuntimeResource } from "../stores/resource-store.ts";
 import { recomputeManagementMetrics, type ManagementMetrics } from "../stores/metrics-store.ts";
 import type { TaskRunnerEvent } from "../agent-runner/task-runner.ts";
 import { createSqliteSessionGraphProvider } from "../session-graph/sqlite-provider.ts";
+import { softwareDomainPack } from "../domain-packs/software.ts";
+import type { ArtifactContract, EvaluatorPipelineDefinition } from "../domain-packs/types.ts";
+import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { runEvaluatorPipeline } from "../evaluators/pipeline.ts";
+import { evaluateStopCondition } from "../evaluators/stop-condition.ts";
 
 export type TaskRunCallbackResult = {
   runId: string;
@@ -55,6 +60,9 @@ export function ingestTaskRunResult(db: SouthstarDb, result: TaskRunCallbackResu
       actorType: "orchestrator",
       payload: { artifactResourceId, attempts: result.attempts, accepted: result.ok },
     });
+    if (result.ok) {
+      runTaskEvaluatorPipeline(db, result);
+    }
 
     if (result.ok) {
       createSqliteSessionGraphProvider(db).checkpoint({
@@ -71,12 +79,13 @@ export function ingestTaskRunResult(db: SouthstarDb, result: TaskRunCallbackResu
     updateTaskStatus(db, result.runId, result.taskId, result.ok ? "completed" : "failed");
     recomputeManagementMetrics(db, result.runId);
     if (allTasksTerminal(db, result.runId)) {
-      updateRunStatus(db, result.runId, allTasksPassed(db, result.runId) ? "passed" : "failed");
+      const stopConditionsPassed = !allTasksPassed(db, result.runId) || evaluateRunStopConditions(db, result.runId);
+      updateRunStatus(db, result.runId, allTasksPassed(db, result.runId) && stopConditionsPassed ? "passed" : "failed");
       appendHistoryEvent(db, {
         runId: result.runId,
         eventType: "run.completed",
         actorType: "orchestrator",
-        payload: { status: allTasksPassed(db, result.runId) ? "passed" : "failed" },
+        payload: { status: allTasksPassed(db, result.runId) && stopConditionsPassed ? "passed" : "failed" },
       });
     }
     db.exec("commit");
@@ -85,6 +94,77 @@ export function ingestTaskRunResult(db: SouthstarDb, result: TaskRunCallbackResu
     db.exec("rollback");
     throw error;
   }
+}
+
+function runTaskEvaluatorPipeline(db: SouthstarDb, result: TaskRunCallbackResult): void {
+  const workflow = readWorkflowManifest(db, result.runId);
+  if (!workflow) return;
+  const task = workflow.tasks.find((candidate) => candidate.id === result.taskId);
+  if (!task) return;
+  const pipeline = findEvaluatorPipeline(workflow, task.evaluatorPipelineRef);
+  if (!pipeline) return;
+  const artifactRef = evaluatorArtifactRef(pipeline) ?? task.requiredArtifactRefs[0] ?? task.subagents[0]?.requiredArtifacts[0];
+  const artifactContract = artifactRef ? findArtifactContract(workflow, artifactRef) : undefined;
+  if (!artifactContract) return;
+  runEvaluatorPipeline(db, {
+    runId: result.runId,
+    taskId: result.taskId,
+    pipeline,
+    artifactContract,
+    artifact: result.artifact,
+  });
+}
+
+function evaluateRunStopConditions(db: SouthstarDb, runId: string): boolean {
+  const workflow = readWorkflowManifest(db, runId);
+  if (!workflow) return true;
+  const stopConditionRefs = [...new Set(workflow.tasks.flatMap((task) => task.stopConditionRefs ?? []))];
+  if (stopConditionRefs.length === 0) return true;
+  const stopConditions = [
+    ...(workflow.stopConditions ?? []),
+    ...softwareDomainPack.stopConditions,
+  ];
+  return stopConditionRefs.every((stopConditionRef) => {
+    const stopCondition = stopConditions.find((candidate) => candidate.id === stopConditionRef);
+    if (!stopCondition) return false;
+    return evaluateStopCondition(db, {
+      runId,
+      stopConditionId: stopCondition.id,
+      requiredEvaluatorPipelineIds: stopCondition.evaluatorRefs,
+    }).ok;
+  });
+}
+
+function readWorkflowManifest(db: SouthstarDb, runId: string): SouthstarWorkflowManifest | undefined {
+  const row = db.prepare("select workflow_manifest_json from workflow_runs where id = ?")
+    .get(runId) as { workflow_manifest_json: string } | undefined;
+  if (!row) return undefined;
+  const parsed = JSON.parse(row.workflow_manifest_json) as Partial<SouthstarWorkflowManifest>;
+  return Array.isArray(parsed.tasks) ? parsed as SouthstarWorkflowManifest : undefined;
+}
+
+function findEvaluatorPipeline(
+  workflow: SouthstarWorkflowManifest,
+  pipelineRef: string,
+): EvaluatorPipelineDefinition | undefined {
+  return (workflow.evaluatorPipelines ?? []).find((candidate) => candidate.id === pipelineRef)
+    ?? softwareDomainPack.evaluatorPipelines.find((candidate) => candidate.id === pipelineRef);
+}
+
+function findArtifactContract(
+  workflow: SouthstarWorkflowManifest,
+  artifactRef: string,
+): ArtifactContract | undefined {
+  return (workflow.artifactContracts ?? []).find((candidate) => candidate.id === artifactRef)
+    ?? softwareDomainPack.artifactContracts.find((candidate) => candidate.id === artifactRef);
+}
+
+function evaluatorArtifactRef(pipeline: EvaluatorPipelineDefinition): string | undefined {
+  for (const evaluator of pipeline.evaluators) {
+    const artifactRef = evaluator.config.artifactRef;
+    if (typeof artifactRef === "string") return artifactRef;
+  }
+  return undefined;
 }
 
 function numericMetrics(metrics: Partial<ManagementMetrics>): Record<string, number> {

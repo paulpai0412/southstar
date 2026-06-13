@@ -56,6 +56,35 @@ test("session graph fails closed when workflow run is unknown", () => {
   }), /unknown workflow run/);
 });
 
+test("session graph rejects cross-run recovery from another run checkpoint", () => {
+  const db = openSouthstarDb(":memory:");
+  insertRun(db, "run-a");
+  insertRun(db, "run-b");
+  const graph = createSqliteSessionGraphProvider(db);
+  const session = graph.createSession({
+    runId: "run-a",
+    taskId: "implement-feature",
+    roleRef: "maker",
+    agentProfileRef: "software-maker-pi",
+  });
+  const checkpoint = graph.checkpoint({
+    sessionId: session.id,
+    runId: "run-a",
+    taskId: "implement-feature",
+    contextPacketId: "ctx-run-a-implement-feature",
+    artifactRefs: ["artifact-a"],
+    transcriptSummary: "run-a checkpoint",
+  });
+
+  assert.throws(() => graph.fork({
+    runId: "run-b",
+    taskId: "implement-feature",
+    baseCheckpointId: checkpoint.id,
+    reason: "should not cross run boundary",
+  }), /checkpoint .* does not belong to workflow run run-b/);
+  assert.equal(countForRun(db, "recovery_decision", "run-b"), 0);
+});
+
 function count(db: ReturnType<typeof openSouthstarDb>, type: string): number {
   const row = db.prepare("select count(*) as count from runtime_resources where resource_type = ?").get(type) as { count: number };
   return row.count;

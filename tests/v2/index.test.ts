@@ -22,6 +22,8 @@ await import("./session-graph.test.ts");
 await import("./workspace-snapshot.test.ts");
 await import("./signals.test.ts");
 await import("./evaluator.test.ts");
+await import("./evaluator-pipeline.test.ts");
+await import("./stop-condition.test.ts");
 await import("./progress.test.ts");
 await import("./approval-policy.test.ts");
 await import("./ui-read-models.test.ts");
