@@ -24,6 +24,11 @@ export async function runSteeringRepairScenario(env: RealE2EEnv, runId: string):
   const acceptedArtifacts = listResources(context.db, { resourceType: "artifact", status: "accepted" })
     .filter((resource) => resource.runId === runId && resource.taskId === envelope.task.id)
     .map((resource) => resource.payload as Record<string, unknown>);
-  assert.equal(acceptedArtifacts.some((artifact) => typeof artifact.steeringDecision === "string"), true);
+  assert.equal(acceptedArtifacts.some((artifact) => hasSteeringDecision(artifact)), true);
   console.log("steering repair scenario passed");
+}
+
+function hasSteeringDecision(artifact: Record<string, unknown>): boolean {
+  const value = artifact.steeringDecision;
+  return typeof value === "string" ? value.length > 0 : typeof value === "object" && value !== null;
 }

@@ -41,7 +41,7 @@ export async function runUiApiRunGoalRealScenario(env: RealE2EEnv): Promise<{ ru
     const result = await client.runGoal({ goalPrompt: phase15OperationsGoalPrompt(repo) });
     const runGoalSubmitMs = Date.now() - runGoalStartedAt;
     const runId = result.result.runId;
-    const externalJobId = result.result.executor.externalJobId;
+    const externalJobId = result.result.tork.jobId;
     await waitForTorkJob(env.torkBaseUrl, externalJobId);
     await waitForRunStatus(context.db, runId, ["passed", "completed"]);
     assertCalcSum(repo);

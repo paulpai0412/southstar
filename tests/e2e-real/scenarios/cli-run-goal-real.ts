@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { TorkExecutorProvider } from "../../../src/v2/executor/tork-provider.ts";
 import { createSouthstarRuntimeServer } from "../../../src/v2/server/http-server.ts";
 import type { RealE2EEnv } from "../env.ts";
@@ -13,6 +14,8 @@ import {
   waitForRunStatus,
   waitForTorkJob,
 } from "./harness.ts";
+
+const execFileAsync = promisify(execFile);
 
 export async function runCliRunGoalRealScenario(env: RealE2EEnv): Promise<{ runId: string; timings: { cliRunGoalCompletionMs: number } }> {
   const startedAt = Date.now();
@@ -32,7 +35,7 @@ export async function runCliRunGoalRealScenario(env: RealE2EEnv): Promise<{ runI
     }),
   });
   try {
-    const output = execFileSync("npm", ["run", "southstar:v2", "--", "run-goal", "--goal", phase15OperationsGoalPrompt(repo)], {
+    const { stdout: output } = await execFileAsync("npm", ["run", "southstar:v2", "--", "run-goal", "--goal", phase15OperationsGoalPrompt(repo)], {
       cwd: process.cwd(),
       env: {
         ...process.env,
@@ -42,13 +45,12 @@ export async function runCliRunGoalRealScenario(env: RealE2EEnv): Promise<{ runI
       },
       encoding: "utf8",
       timeout: 15 * 60 * 1000,
+      maxBuffer: 10 * 1024 * 1024,
     });
-    const match = output.match(/"runId":\s*"([^"]+)"/);
-    assert.ok(match, `CLI output did not include runId: ${output}`);
-    const runId = match[1]!;
-    const jobMatch = output.match(/"externalJobId":\s*"([^"]+)"/);
-    assert.ok(jobMatch, `CLI output did not include externalJobId: ${output}`);
-    await waitForTorkJob(env.torkBaseUrl, jobMatch[1]!);
+    const payload = parseCliJson(output);
+    const runId = payload.result.runId;
+    const jobId = payload.result.tork.jobId;
+    await waitForTorkJob(env.torkBaseUrl, jobId);
     await waitForRunStatus(context.db, runId, ["passed", "completed"]);
     assertCalcSum(repo);
     assertFixtureTests(repo);
@@ -58,4 +60,18 @@ export async function runCliRunGoalRealScenario(env: RealE2EEnv): Promise<{ runI
     await server.close();
     await callback.close();
   }
+}
+
+function parseCliJson(output: string): { result: { runId: string; tork: { jobId: string } } } {
+  const start = output.indexOf("{");
+  const end = output.lastIndexOf("}");
+  assert.ok(start >= 0 && end > start, `CLI output did not include JSON payload: ${output}`);
+  const payload = JSON.parse(output.slice(start, end + 1)) as {
+    result?: { runId?: unknown; tork?: { jobId?: unknown } };
+  };
+  const runId = payload.result?.runId;
+  const jobId = payload.result?.tork?.jobId;
+  if (typeof runId !== "string") throw new Error(`CLI output did not include runId: ${output}`);
+  if (typeof jobId !== "string") throw new Error(`CLI output did not include tork.jobId: ${output}`);
+  return { result: { runId, tork: { jobId } } };
 }

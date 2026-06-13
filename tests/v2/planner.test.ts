@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createPiSdkPlannerClient, generatePlanBundle, runPlannerRevisionLoop } from "../../src/v2/planner/pi-planner.ts";
+import {
+  createPiSdkPlannerClient,
+  generatePlanBundle,
+  generatePlanBundleWithTimings,
+  runPlannerRevisionLoop,
+} from "../../src/v2/planner/pi-planner.ts";
 import type { PiPlannerClient } from "../../src/v2/planner/types.ts";
 
 test("parses planner JSON output into a validated PlanBundle", async () => {
@@ -52,6 +57,28 @@ test("planner rejects non-JSON output", async () => {
     schemaVersion: "southstar.v2",
     availableHarnesses: ["codex"],
   }), /valid JSON object/);
+});
+
+test("planner retries abbreviated JSON and records cumulative timings", async () => {
+  const prompts: string[] = [];
+  const client: PiPlannerClient = {
+    generate: async (prompt) => {
+      prompts.push(prompt);
+      return prompts.length === 1 ? '{"workflow":{"tasks":[...]}}' : JSON.stringify(validBundle());
+    },
+  };
+
+  const result = await generatePlanBundleWithTimings(client, {
+    goalPrompt: "implement calc sum",
+    schemaVersion: "southstar.v2",
+    availableHarnesses: ["codex"],
+  });
+
+  assert.equal(result.bundle.workflow.workflowId, "wf-software-mvp");
+  assert.equal(prompts.length, 2);
+  assert.match(prompts[1], /Do not use ellipses/);
+  assert.equal(Number.isFinite(result.plannerMs), true);
+  assert.equal(Number.isFinite(result.validationMs), true);
 });
 
 test("planner canonicalizes compact Pi workflow output into a PlanBundle", async () => {

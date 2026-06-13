@@ -1,12 +1,16 @@
-import type { ApiEnvelope } from "./types.ts";
+import type { createPlannerDraft, createRunFromDraft } from "../ui-api/local-api.ts";
+import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 
 export type RuntimeServerClient = ReturnType<typeof createRuntimeServerClient>;
+type RunGoalResult = Awaited<ReturnType<typeof createRunFromDraft>> & {
+  draft: Awaited<ReturnType<typeof createPlannerDraft>>;
+};
 
 export function createRuntimeServerClient(input: { baseUrl: string }) {
   const baseUrl = input.baseUrl.replace(/\/$/, "");
   return {
     runGoal(body: { goalPrompt: string }) {
-      return post(`${baseUrl}/api/v2/run-goal`, body);
+      return post<RunGoalResult>(`${baseUrl}/api/v2/run-goal`, body);
     },
     createPlannerDraft(body: { goalPrompt: string }) {
       return post(`${baseUrl}/api/v2/planner/drafts`, body);
@@ -77,9 +81,12 @@ async function get<T = unknown>(url: string): Promise<ApiEnvelope<T>> {
 }
 
 async function readJson<T>(response: Response): Promise<ApiEnvelope<T>> {
-  const payload = await response.json() as ApiEnvelope<T> | { ok: false; error?: string };
-  if (!response.ok || payload.ok === false) {
-    throw new Error(payload.error ?? `request failed: ${response.status}`);
+  const payload = await response.json() as ApiEnvelope<T> | ApiErrorEnvelope;
+  if (payload.ok === false) {
+    throw new Error(payload.error);
+  }
+  if (!response.ok) {
+    throw new Error(`request failed: ${response.status}`);
   }
   return payload;
 }

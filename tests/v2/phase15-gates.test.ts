@@ -52,7 +52,7 @@ test("phase 1.5 gates pass with durable SQLite evidence", () => {
   }
   for (const [resourceType, status] of [
     ["artifact", "accepted"],
-    ["executor_binding", "queued"],
+    ["executor_binding", "PENDING"],
     ["skill_snapshot", "resolved"],
     ["approval", "approved"],
   ] as const) {

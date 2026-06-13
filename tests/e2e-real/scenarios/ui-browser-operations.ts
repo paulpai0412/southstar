@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
+import { once } from "node:events";
 import { chromium } from "playwright";
 import { TorkExecutorProvider } from "../../../src/v2/executor/tork-provider.ts";
 import { createSouthstarRuntimeServer } from "../../../src/v2/server/http-server.ts";
@@ -39,6 +40,7 @@ export async function runUiBrowserOperationsScenario(env: RealE2EEnv): Promise<{
   const next = spawn("npm", ["run", "web:dev"], {
     cwd: process.cwd(),
     env: { ...process.env, SOUTHSTAR_SERVER_URL: runtimeServer.url },
+    detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
@@ -49,14 +51,14 @@ export async function runUiBrowserOperationsScenario(env: RealE2EEnv): Promise<{
       await page.goto("http://localhost:3030", { waitUntil: "networkidle" });
       await page.getByLabel("planner input").fill(phase15OperationsGoalPrompt(repo));
       await page.getByRole("button", { name: "Send to Planner" }).click();
-      await page.getByText("Workflow Canvas").waitFor({ timeout: 120_000 });
+      await page.getByRole("heading", { name: "Workflow Canvas" }).waitFor({ timeout: 120_000 });
       await page.getByRole("button", { name: "Run" }).click();
       const eventVisibleStartedAt = Date.now();
-      await page.getByText("Runtime Monitor").waitFor({ timeout: 10_000 });
+      await page.getByRole("heading", { name: "Runtime Monitor" }).waitFor({ timeout: 10_000 });
       uiEventVisibilityMs = Date.now() - eventVisibleStartedAt;
       const toggleStartedAt = Date.now();
       await page.getByRole("button", { name: "Full" }).click();
-      await page.getByText("Agent Definitions").waitFor({ timeout: 3_000 });
+      await page.getByRole("heading", { name: "Agent Definitions" }).waitFor({ timeout: 3_000 });
       modeToggleMs = Date.now() - toggleStartedAt;
       await page.getByLabel("input mode").selectOption("voice");
       await page.getByLabel("planner input").fill("語音轉文字：低風險可自動 approve，請保持最小改動。");
@@ -77,10 +79,34 @@ export async function runUiBrowserOperationsScenario(env: RealE2EEnv): Promise<{
       },
     };
   } finally {
-    next.kill("SIGTERM");
+    await stopProcessGroup(next);
     await runtimeServer.close();
     await callback.close();
   }
+}
+
+async function stopProcessGroup(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const pid = child.pid;
+  if (!pid) return;
+  try {
+    process.kill(-pid, "SIGTERM");
+  } catch {
+    child.kill("SIGTERM");
+  }
+  if (await waitForExit(child, 5_000)) return;
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
+  }
+  await waitForExit(child, 2_000);
+}
+
+async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  const timeout = new Promise<false>((resolve) => setTimeout(() => resolve(false), timeoutMs));
+  return Promise.race([once(child, "exit").then(() => true), timeout]);
 }
 
 async function waitForHttp(url: string, timeoutMs: number): Promise<void> {

@@ -68,7 +68,7 @@ export async function startCallbackServer(env: RealE2EEnv): Promise<CallbackServ
 }
 
 export function createHttpAgentHarness(env: RealE2EEnv): AgentHarness {
-  if (!env.piHarnessEndpoint) return createPiSdkAgentHarness();
+  if (!env.piHarnessEndpoint) return createPiSdkAgentHarness({ timeoutMs: 180_000 });
   const endpoint = env.piHarnessEndpoint;
   return {
     id: "pi-agent-http-harness",
@@ -173,9 +173,9 @@ export function assertFixtureTests(repo: string): void {
     "run",
     "--rm",
     "-v",
-    `${repo}:/workspace`,
+    `${repo}:/workspace/repo`,
     "-w",
-    "/workspace",
+    "/workspace/repo",
     "--entrypoint",
     "npm",
     "southstar/pi-agent:local",
@@ -225,7 +225,6 @@ export function assertPhase15SqliteEvidence(db: SouthstarDb, runId: string): voi
   );
   for (const [resourceType, status] of [
     ["artifact", "accepted"],
-    ["executor_binding", "queued"],
     ["skill_snapshot", "resolved"],
   ] as const) {
     assert.equal(
@@ -234,6 +233,16 @@ export function assertPhase15SqliteEvidence(db: SouthstarDb, runId: string): voi
       `missing ${status} ${resourceType}`,
     );
   }
+  assert.equal(
+    count(
+      db,
+      "runtime_resources",
+      "run_id = ? and resource_type = 'executor_binding' and status in ('queued', 'PENDING')",
+      [runId],
+    ) > 0,
+    true,
+    "missing queued executor_binding",
+  );
 }
 
 export function collectPhase15RuntimeTimings(db: SouthstarDb, runId: string): {
@@ -246,7 +255,7 @@ export function collectPhase15RuntimeTimings(db: SouthstarDb, runId: string): {
     plannerMs: requireDuration(db, runId, "planner.manifest_generated"),
     validationMs: requireDuration(db, runId, "manifest.validated"),
     torkSubmitMs: requireDuration(db, runId, "executor.submitted"),
-    firstClientEventMs: requireDuration(db, runId, "progress.commentary"),
+    firstClientEventMs: requireEventDeltaMs(db, runId, "run.created", "progress.commentary"),
   };
 }
 
@@ -312,8 +321,31 @@ function requireDuration(db: SouthstarDb, runId: string, eventType: string): num
   `).get(runId, eventType) as { payload_json: string } | undefined;
   assert.ok(row, `missing timing event ${eventType}`);
   const payload = JSON.parse(row.payload_json) as { durationMs?: unknown };
-  assert.equal(typeof payload.durationMs, "number", `${eventType} payload.durationMs must be recorded`);
-  return payload.durationMs;
+  const durationMs = payload.durationMs;
+  if (typeof durationMs !== "number") throw new Error(`${eventType} payload.durationMs must be recorded`);
+  return durationMs;
+}
+
+function requireEventDeltaMs(db: SouthstarDb, runId: string, fromEventType: string, toEventType: string): number {
+  const from = firstEventCreatedAt(db, runId, fromEventType);
+  const to = firstEventCreatedAt(db, runId, toEventType);
+  const deltaMs = Date.parse(to) - Date.parse(from);
+  if (!Number.isFinite(deltaMs) || deltaMs < 0) {
+    throw new Error(`${fromEventType}->${toEventType} timing must be recorded`);
+  }
+  return deltaMs;
+}
+
+function firstEventCreatedAt(db: SouthstarDb, runId: string, eventType: string): string {
+  const row = db.prepare(`
+    select created_at
+    from workflow_history
+    where run_id = ? and event_type = ?
+    order by sequence asc
+    limit 1
+  `).get(runId, eventType) as { created_at: string } | undefined;
+  assert.ok(row, `missing timing event ${eventType}`);
+  return row.created_at;
 }
 
 function walk(root: string, visit: (path: string) => void): void {

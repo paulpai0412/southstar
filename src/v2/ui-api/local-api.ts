@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import type { SouthstarDb } from "../stores/sqlite.ts";
 import type { PlanBundle, SouthstarWorkflowManifest, TaskStatus, WorkflowRevisionRequest } from "../manifests/types.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
-import { generatePlanBundle } from "../planner/pi-planner.ts";
+import { generatePlanBundleWithTimings } from "../planner/pi-planner.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import {
   applyWorkflowExpansion,
@@ -46,11 +46,12 @@ export async function createPlannerDraft(db: SouthstarDb, input: {
   goalPrompt: string;
   plannerClient: PiPlannerClient;
 }): Promise<PlannerDraftResult> {
-  const bundle = await generatePlanBundle(input.plannerClient, {
+  const generated = await generatePlanBundleWithTimings(input.plannerClient, {
     goalPrompt: input.goalPrompt,
     schemaVersion: "southstar.v2",
     availableHarnesses: ["pi", "codex", "claude-code", "custom"],
   });
+  const bundle = generated.bundle;
   const draftId = `draft-${bundle.workflow.workflowId}`;
   upsertRuntimeResource(db, {
     id: draftId,
@@ -60,7 +61,12 @@ export async function createPlannerDraft(db: SouthstarDb, input: {
     status: "validated",
     title: bundle.workflow.title,
     payload: bundle,
-    summary: { goalPrompt: input.goalPrompt, workflowId: bundle.workflow.workflowId },
+    summary: {
+      goalPrompt: input.goalPrompt,
+      workflowId: bundle.workflow.workflowId,
+      plannerMs: generated.plannerMs,
+      validationMs: generated.validationMs,
+    },
   });
   return { draftId, goalPrompt: input.goalPrompt, workflowId: bundle.workflow.workflowId };
 }
@@ -77,11 +83,12 @@ export async function revisePlannerDraft(db: SouthstarDb, input: {
     "User revision prompt:",
     input.prompt,
   ].join("\n");
-  const bundle = await generatePlanBundle(input.plannerClient, {
+  const generated = await generatePlanBundleWithTimings(input.plannerClient, {
     goalPrompt: revisedGoal,
     schemaVersion: "southstar.v2",
     availableHarnesses: ["pi", "codex", "claude-code", "custom"],
   });
+  const bundle = generated.bundle;
   const revisionHash = createHash("sha256")
     .update(`${input.draftId}:${input.prompt}:${bundle.workflow.workflowId}`)
     .digest("hex")
@@ -99,6 +106,8 @@ export async function revisePlannerDraft(db: SouthstarDb, input: {
       previousDraftId: input.draftId,
       revisionPrompt: input.prompt,
       workflowId: bundle.workflow.workflowId,
+      plannerMs: generated.plannerMs,
+      validationMs: generated.validationMs,
     },
   });
   return { draftId, goalPrompt: revisedGoal, workflowId: bundle.workflow.workflowId };
@@ -113,6 +122,8 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
   harnessEndpoint?: string;
 }): Promise<{ runId: string; tork: TorkSubmitResult }> {
   const bundle = readDraftBundle(db, input.draftId);
+  const draftResource = getResourceByKey(db, "planner_draft", input.draftId);
+  const draftSummary = parseJsonObject(draftResource?.summary);
   const workflow = normalizeWorkflowRuntimeExecution(bundle.workflow);
   const runId = allocateRunId(db, bundle.workflow.workflowId);
   const executorProvider = resolveExecutorProvider(input);
@@ -141,6 +152,18 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
   });
   appendHistoryEvent(db, {
     runId,
+    eventType: "planner.manifest_generated",
+    actorType: "planner",
+    payload: { draftId: input.draftId, durationMs: numberValue(draftSummary.plannerMs) ?? 0 },
+  });
+  appendHistoryEvent(db, {
+    runId,
+    eventType: "manifest.validated",
+    actorType: "planner",
+    payload: { draftId: input.draftId, durationMs: numberValue(draftSummary.validationMs) ?? 0 },
+  });
+  appendHistoryEvent(db, {
+    runId,
     eventType: "run.created",
     actorType: "orchestrator",
     payload: { draftId: input.draftId, workflowId: bundle.workflow.workflowId },
@@ -150,12 +173,14 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     runRoot: input.runRoot,
     harnessEndpoint: input.harnessEndpoint,
   });
+  const executorSubmitStartedAt = Date.now();
   const executorSubmission = await executorProvider.submit({
     runId,
     workflow: projectedWorkflow,
     callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
     envelopeBasePath: "/southstar-runs",
   });
+  const executorSubmitMs = Date.now() - executorSubmitStartedAt;
   updateExecutionProjection(db, runId, JSON.stringify(executorSubmission.executionProjection ?? null));
   const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);
   upsertRuntimeResource(db, {
@@ -182,6 +207,7 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
       externalJobId: executorSubmission.externalJobId,
       ...(executorSubmission.providerPayload ?? {}),
       status: executorSubmission.status,
+      durationMs: executorSubmitMs,
     },
   });
   return { runId, tork };
@@ -473,6 +499,14 @@ function getPiAgentConfigMount(): { source: string; target: string; readonly: bo
 function readTaskStates(db: SouthstarDb, runId: string) {
   const rows = db.prepare("select id, status from workflow_tasks where run_id = ?").all(runId) as Array<{ id: string; status: TaskStatus }>;
   return Object.fromEntries(rows.map((row) => [row.id, row.status]));
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function workflowForAddedTasks(

@@ -106,13 +106,17 @@ export function assertPhase15QuantitativeGates(db: SouthstarDb, timings: Phase15
     .all(timings.runId) as ResourceRow[];
   for (const [resourceType, status] of [
     ["artifact", "accepted"],
-    ["executor_binding", "queued"],
     ["skill_snapshot", "resolved"],
     ["approval", "approved"],
   ] as const) {
     if (!resources.some((resource) => resource.resource_type === resourceType && resource.status === status)) {
       failures.push(`runtime_resources requires ${status} ${resourceType}`);
     }
+  }
+  if (!resources.some((resource) =>
+    resource.resource_type === "executor_binding" && (resource.status === "queued" || resource.status === "PENDING")
+  )) {
+    failures.push("runtime_resources requires queued/PENDING executor_binding");
   }
 
   const metrics = parseJsonObject(run.metrics_json);

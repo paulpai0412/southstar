@@ -15,13 +15,35 @@ export async function generatePlanBundle(
   client: PiPlannerClient,
   context: PlannerContext,
 ): Promise<PlanBundle> {
-  const raw = await client.generate(buildPlannerPrompt(context));
-  const parsed = parsePlanBundleJson(raw, context.goalPrompt);
-  const validation = validatePlanBundle(parsed);
-  if (!validation.ok) {
-    throw new Error(`Pi planner returned invalid PlanBundle: ${JSON.stringify(validation.issues)}`);
+  return (await generatePlanBundleWithTimings(client, context)).bundle;
+}
+
+export async function generatePlanBundleWithTimings(
+  client: PiPlannerClient,
+  context: PlannerContext,
+): Promise<{ bundle: PlanBundle; plannerMs: number; validationMs: number }> {
+  let prompt = buildPlannerPrompt(context);
+  let plannerMs = 0;
+  let validationMs = 0;
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const plannerStartedAt = Date.now();
+    const raw = await client.generate(prompt);
+    plannerMs += Date.now() - plannerStartedAt;
+    const validationStartedAt = Date.now();
+    try {
+      const parsed = parsePlanBundleJson(raw, context.goalPrompt);
+      const validation = validatePlanBundle(parsed);
+      validationMs += Date.now() - validationStartedAt;
+      if (validation.ok) return { bundle: parsed, plannerMs, validationMs };
+      lastError = new Error(`Pi planner returned invalid PlanBundle: ${JSON.stringify(validation.issues)}`);
+    } catch (error) {
+      validationMs += Date.now() - validationStartedAt;
+      lastError = error as Error;
+    }
+    prompt = buildPlannerRepairPrompt(context, raw, lastError.message);
   }
-  return parsed;
+  throw lastError ?? new Error("Pi planner failed to generate a PlanBundle");
 }
 
 export async function runPlannerRevisionLoop(
@@ -65,6 +87,18 @@ export function buildPlannerPrompt(context: PlannerContext): string {
   ].join("\n");
 }
 
+function buildPlannerRepairPrompt(context: PlannerContext, previousRaw: string, error: string): string {
+  return [
+    buildPlannerPrompt(context),
+    "",
+    "Your previous response could not be accepted.",
+    `Validation error: ${error}`,
+    "Return a complete JSON object only. Do not use ellipses, placeholders, markdown, comments, or abbreviated arrays.",
+    "Previous response:",
+    previousRaw.slice(0, 12_000),
+  ].join("\n");
+}
+
 export function createHttpPiPlannerClient(options: { endpoint: string; model?: string }): PiPlannerClient {
   return {
     async generate(prompt: string): Promise<string> {
@@ -101,7 +135,7 @@ export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}
   return {
     async generate(prompt: string): Promise<string> {
       const session = await (options.createSession ?? createDefaultPiSdkSession)();
-      return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 120_000);
+      return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000);
     },
   };
 }
@@ -419,28 +453,34 @@ async function runPromptAndCollectAssistantText(
 ): Promise<string> {
   let finalText = "";
   let unsubscribe: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const done = new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Pi SDK planner timed out after ${timeoutMs}ms`)), timeoutMs);
     const listener = (event: unknown) => {
       const text = assistantTextFromEvent(event);
       if (text) finalText = text;
       if (isRecord(event) && event.type === "agent_end") {
-        clearTimeout(timer);
         resolve(finalText);
       }
     };
     unsubscribe = session.subscribe?.(listener) ?? session.on?.(listener);
     if (!unsubscribe) {
-      clearTimeout(timer);
       reject(new Error("Pi SDK AgentSession must expose subscribe(listener)"));
     }
   });
-  try {
+  const promptAndDone = (async () => {
     await session.prompt(prompt);
-    const text = await done;
+    return done;
+  })();
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Pi SDK planner timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    const text = await Promise.race([promptAndDone, timeout]);
     if (!text.trim()) throw new Error("Pi SDK planner returned empty assistant text");
     return text;
   } finally {
+    if (timer) clearTimeout(timer);
+    promptAndDone.catch(() => undefined);
     unsubscribe?.();
   }
 }

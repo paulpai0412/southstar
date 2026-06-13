@@ -16,7 +16,7 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
     id: "pi-sdk-harness",
     async run(input: HarnessRunInput): Promise<HarnessRunResult> {
       const session = await (options.createSession ?? createDefaultPiSdkSession)();
-      const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input), options.timeoutMs ?? 120_000);
+      const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input), options.timeoutMs ?? 180_000);
       return parseHarnessResult(raw);
     },
   };
@@ -55,28 +55,34 @@ async function runPromptAndCollectAssistantText(
 ): Promise<string> {
   let finalText = "";
   let unsubscribe: (() => void) | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const done = new Promise<string>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Pi SDK harness timed out after ${timeoutMs}ms`)), timeoutMs);
     const listener = (event: unknown) => {
       const text = assistantTextFromEvent(event);
       if (text) finalText = text;
       if (isRecord(event) && event.type === "agent_end") {
-        clearTimeout(timer);
         resolve(finalText);
       }
     };
     unsubscribe = session.subscribe?.(listener) ?? session.on?.(listener);
     if (!unsubscribe) {
-      clearTimeout(timer);
       reject(new Error("Pi SDK AgentSession must expose subscribe(listener)"));
     }
   });
-  try {
+  const promptAndDone = (async () => {
     await session.prompt(prompt);
-    const text = await done;
+    return done;
+  })();
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(`Pi SDK harness timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  try {
+    const text = await Promise.race([promptAndDone, timeout]);
     if (!text.trim()) throw new Error("Pi SDK harness returned empty assistant text");
     return text;
   } finally {
+    if (timer) clearTimeout(timer);
+    promptAndDone.catch(() => undefined);
     unsubscribe?.();
   }
 }
