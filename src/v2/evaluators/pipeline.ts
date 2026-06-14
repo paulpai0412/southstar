@@ -26,6 +26,7 @@ export function runEvaluatorPipeline(db: SouthstarDb, input: EvaluatorPipelineRu
       findings.push({ field, message: `missing evidence field ${field}` });
     }
   }
+  findings.push(...failedCommandEvidenceFindings(input.artifact));
 
   const ok = findings.length === 0;
   const result: EvaluatorPipelineRunResult = {
@@ -71,4 +72,47 @@ function hasEvidenceValue(field: string, value: unknown): boolean {
   if (Array.isArray(value) && EMPTY_ARRAY_IS_EVIDENCE.has(field)) return true;
   if (Array.isArray(value)) return value.length > 0;
   return value !== undefined && value !== null && value !== "";
+}
+
+function failedCommandEvidenceFindings(artifact: Record<string, unknown>): Array<{ field: string; message: string }> {
+  const findings: Array<{ field: string; message: string }> = [];
+  collectFailedEvidence(artifact.testResults, "testResults", findings);
+  if (isRecord(artifact.artifactEvidence)) {
+    collectFailedEvidence(artifact.artifactEvidence.testResults, "artifactEvidence.testResults", findings);
+  }
+  collectFailedEvidence(artifact.tests, "tests", findings);
+  return findings;
+}
+
+function collectFailedEvidence(
+  value: unknown,
+  field: string,
+  findings: Array<{ field: string; message: string }>,
+): void {
+  if (!Array.isArray(value)) return;
+  value.forEach((entry, index) => {
+    if (!isRecord(entry) || !isFailedEvidence(entry)) return;
+    const command = typeof entry.command === "string" ? ` ${entry.command}` : "";
+    findings.push({
+      field,
+      message: `failed command evidence at ${field}[${index}]${command}`,
+    });
+  });
+}
+
+function isFailedEvidence(entry: Record<string, unknown>): boolean {
+  if (entry.passed === false || entry.ok === false) return true;
+  const status = typeof entry.status === "string" ? entry.status.toLowerCase() : "";
+  const result = typeof entry.result === "string" ? entry.result.toLowerCase() : "";
+  if (["fail", "failed", "error", "errored", "cancelled"].includes(status)) return true;
+  if (["fail", "failed", "error", "errored", "cancelled"].includes(result)) return true;
+  return isNonZeroNumber(entry.exitCode) || isNonZeroNumber(entry.code);
+}
+
+function isNonZeroNumber(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value !== 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

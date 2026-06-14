@@ -41,3 +41,38 @@ test("planner chat keeps voice transcript inside the planner surface", () => {
   assert.match(planner, /Steering/);
   assert.doesNotMatch(planner, /VoicePanel|Voice Command Panel/);
 });
+
+test("southstar UI controls are wired to runtime state instead of static demo data", () => {
+  const appShell = readFileSync(join(root, "components/southstar/AppShell.tsx"), "utf8");
+  const planner = readFileSync(join(root, "components/southstar/PlannerChat.tsx"), "utf8");
+  const canvas = readFileSync(join(root, "components/southstar/WorkflowCanvas.tsx"), "utf8");
+  const runtime = readFileSync(join(root, "components/southstar/RuntimeMonitor.tsx"), "utf8");
+  const taskDetail = readFileSync(join(root, "components/southstar/TaskDetail.tsx"), "utf8");
+
+  assert.match(appShell, /createSouthstarApiClient/);
+  assert.match(appShell, /currentRunId/);
+  assert.match(planner, /onCreateDraft/);
+  assert.match(planner, /onRunDraft/);
+  assert.match(planner, /value=\{goalPrompt\}/);
+  assert.doesNotMatch(planner, /<textarea[\s\S]*defaultValue=/);
+  assert.doesNotMatch(canvas, /const nodes = \[/);
+  assert.doesNotMatch(runtime, /implementer running tests/);
+  assert.doesNotMatch(taskDetail, /implementation-report/);
+});
+
+test("task detail exposes TaskEnvelopeV2 context evidence for selected runtime tasks", () => {
+  const appShell = readFileSync(join(root, "components/southstar/AppShell.tsx"), "utf8");
+  const apiClient = readFileSync(join(root, "lib/southstar/api-client.ts"), "utf8");
+  const taskDetail = readFileSync(join(root, "components/southstar/TaskDetail.tsx"), "utf8");
+  const types = readFileSync(join(root, "components/southstar/types.ts"), "utf8");
+
+  assert.match(apiClient, /getTaskEnvelope/);
+  assert.match(appShell, /selectedEnvelope/);
+  assert.match(appShell, /api\.getTaskEnvelope/);
+  assert.match(taskDetail, /TaskEnvelopeV2/);
+  assert.match(taskDetail, /ContextPacket/);
+  assert.match(taskDetail, /Memory Injection/);
+  assert.match(taskDetail, /Evaluator/);
+  assert.match(taskDetail, /Workspace/);
+  assert.match(types, /TaskEnvelopeEvidenceView/);
+});

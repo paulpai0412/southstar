@@ -19,6 +19,13 @@ import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 export async function handleRuntimeRoute(context: RuntimeServerContext, request: Request): Promise<Response> {
   const url = new URL(request.url);
   try {
+    if (request.method === "OPTIONS") {
+      return new Response(null, {
+        status: 204,
+        headers: corsHeaders(),
+      });
+    }
+
     if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
       const body = await readJsonBody<{ goalPrompt?: string }>(request);
       if (!body.goalPrompt) throw new Error("goalPrompt is required");
@@ -262,7 +269,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function json<T>(kind: string, result: T): Response {
   const envelope: ApiEnvelope<T> = { ok: true, kind, result };
   return new Response(JSON.stringify(envelope), {
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...corsHeaders(),
+    },
   });
 }
 
@@ -270,6 +280,17 @@ function errorResponse(error: string, status: number): Response {
   const envelope: ApiErrorEnvelope = { ok: false, error };
   return new Response(JSON.stringify(envelope), {
     status,
-    headers: { "content-type": "application/json" },
+    headers: {
+      "content-type": "application/json",
+      ...corsHeaders(),
+    },
   });
+}
+
+function corsHeaders(): Record<string, string> {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET,POST,OPTIONS",
+    "access-control-allow-headers": "content-type,authorization",
+  };
 }

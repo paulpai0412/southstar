@@ -179,6 +179,7 @@ select {
   padding: 12px;
   display: flex;
   justify-content: space-between;
+  text-align: left;
 }
 
 .ss-node-completed {
@@ -191,6 +192,16 @@ select {
 
 .ss-node-pending {
   border-color: var(--ss-amber);
+}
+
+.ss-node[aria-pressed="true"] {
+  outline: 2px solid var(--ss-blue);
+  outline-offset: 2px;
+}
+
+.ss-empty {
+  color: var(--ss-muted);
+  font-size: 12px;
 }
 
 .ss-runtime table {

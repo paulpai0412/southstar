@@ -46,6 +46,34 @@ test("software feature evaluator accepts complete evidence", () => {
   assert.equal(result.recoveryStrategy, undefined);
 });
 
+test("software feature evaluator rejects failed command evidence", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, minimalRun("run-eval-failed-tests"));
+  const result = runEvaluatorPipeline(db, {
+    runId: "run-eval-failed-tests",
+    taskId: "implement-feature",
+    pipeline: softwareDomainPack.evaluatorPipelines.find((pipeline) => pipeline.id === "software-feature-quality")!,
+    artifactContract: softwareDomainPack.artifactContracts.find((contract) => contract.id === "implementation_report")!,
+    artifact: {
+      summary: "claimed calc sum was implemented",
+      filesChanged: ["src/calc.ts"],
+      commandsRun: ["npm test", "npm run -s cli -- sum 1 2 3"],
+      testResults: [
+        { command: "npm test", status: "failed", exitCode: 1 },
+        { command: "npm run -s cli -- sum 1 2 3", status: "failed", exitCode: 1 },
+      ],
+      risks: [],
+      artifactEvidence: {
+        testResults: [{ command: "npm test", status: "failed", exitCode: 1 }],
+      },
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.recoveryStrategy, "rollback-workspace");
+  assert.ok(result.findings.some((finding) => finding.field === "testResults"));
+});
+
 test("software verification evaluator accepts explicit empty checker findings", () => {
   const db = openSouthstarDb(":memory:");
   createWorkflowRun(db, minimalRun("run-eval-checker-ok"));

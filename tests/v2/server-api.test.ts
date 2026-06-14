@@ -179,6 +179,43 @@ test("runtime server returns JSON errors and rejects unsafe callback payloads", 
   }
 });
 
+test("runtime server supports browser CORS for the Next UI client", async () => {
+  const db = openSouthstarDb(join(mkdtempSync(join(tmpdir(), "southstar-server-cors-")), "db.sqlite3"));
+  const server = await createSouthstarRuntimeServer({
+    host: "127.0.0.1",
+    port: 0,
+    db,
+    plannerClient: plannerClient(),
+    executorProvider: executorProvider([]),
+  });
+
+  try {
+    const preflight = await fetch(`${server.url}/api/v2/planner/drafts`, {
+      method: "OPTIONS",
+      headers: {
+        origin: "http://localhost:3030",
+        "access-control-request-method": "POST",
+      },
+    });
+    const draft = await fetch(`${server.url}/api/v2/planner/drafts`, {
+      method: "POST",
+      headers: {
+        origin: "http://localhost:3030",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ goalPrompt: "Add calc sum" }),
+    });
+
+    assert.equal(preflight.status, 204);
+    assert.equal(preflight.headers.get("access-control-allow-origin"), "*");
+    assert.match(preflight.headers.get("access-control-allow-methods") ?? "", /POST/);
+    assert.equal(draft.status, 200);
+    assert.equal(draft.headers.get("access-control-allow-origin"), "*");
+  } finally {
+    await server.close();
+  }
+});
+
 function plannerClient(): PiPlannerClient {
   return {
     async generate() {

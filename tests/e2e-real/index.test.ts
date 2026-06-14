@@ -11,6 +11,7 @@ import { runDomainPackDynamicWorkflowFeatureScenario } from "./scenarios/domain-
 import { runSkillSnapshotRealScenario } from "./scenarios/skill-snapshot-real.ts";
 import { runUiApiRunGoalRealScenario } from "./scenarios/ui-api-run-goal-real.ts";
 import { runUiBrowserOperationsScenario } from "./scenarios/ui-browser-operations.ts";
+import { runUiLoopEngineeringControlPlaneScenario } from "./scenarios/ui-loop-engineering-control-plane.ts";
 import { runVoiceCommandPolicyScenario } from "./scenarios/voice-command-policy.ts";
 import {
   assertNoDurableSouthstarFolders,
@@ -43,6 +44,7 @@ test("Phase 1 real E2E suite", async () => {
   await runVoiceCommandPolicyScenario(env, phase15Api.runId);
   await runApprovalPolicyRealScenario(env, phase15Api.runId);
   const phase15Cli = await runCliRunGoalRealScenario(env);
+  await runUiLoopEngineeringControlPlaneScenario(env);
   const phase15Browser = await runUiBrowserOperationsScenario(env);
   const gateContext = createScenarioContext(env);
   const runtimeTimings = collectPhase15RuntimeTimings(gateContext.db, phase15Api.runId);

@@ -133,6 +133,28 @@ export function phase15OperationsGoalPrompt(repo: string): string {
   ].join("\n");
 }
 
+export function uiControlPlaneGoalPrompt(repo: string): string {
+  return [
+    "在目前 fixture repo 新增 CLI 指令 sum <numbers...>。",
+    "要求：",
+    "1. 支援整數、負數、小數。",
+    "2. invalid input 要回傳非 0 exit code 並顯示 Invalid number: <value>。",
+    "3. 補 unit tests，至少涵蓋正數、負數、小數、invalid input。",
+    "4. 更新 README，包含正數、負數/小數、invalid input 三種用法。",
+    "5. 不新增 runtime dependency。",
+    "6. Southstar 必須自動判斷 domain/intent。",
+    "7. 必須依 software domain pack 動態產生 workflow DAG，不可固定四個 task。",
+    "8. 每個 task 必須解析 role、agent、model、skill、MCP、memory scope。",
+    "9. 每個 agent 執行前必須保存可追蹤 ContextPacket，並記錄 memory 為什麼注入或排除。",
+    "10. task 必須透過 Docker/Tork 執行；Tork 只當 executor，不掌握 workflow truth。",
+    "11. artifact 必須經 evaluator pipeline 驗收；驗收失敗時可 retry、fork session、rollback workspace、或要求 workflow revision。",
+    "12. session 必須有 checkpoint/fork/reset/rollback lineage 可查。",
+    "13. Git/worktree 必須用於 software workspace snapshot 或 rollback reference。",
+    "14. 只有 stop condition 通過，run 才能完成。",
+    `Fixture repo: ${repo}`,
+  ].join("\n");
+}
+
 export async function waitForTorkJob(baseUrl: string, jobId: string, timeoutMs = 15 * 60 * 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   const root = baseUrl.replace(/\/$/, "");

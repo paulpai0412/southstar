@@ -100,6 +100,73 @@ test("Pi SDK agent harness sends TaskEnvelopeV2 rendered agent prompt", async ()
   assert.doesNotMatch(prompts[0], /"schemaVersion":"southstar.task-envelope.v2"/);
 });
 
+test("Pi SDK agent harness runs mounted workspace tasks from /workspace/repo", async () => {
+  const prompts: string[] = [];
+  const sessionInputs: Array<{ cwd: string }> = [];
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async (input) => {
+      sessionInputs.push(input);
+      return {
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.push(listener);
+          return () => undefined;
+        },
+        prompt: async (prompt: string) => {
+          prompts.push(prompt);
+          listeners.forEach((listener) => listener({
+            type: "agent_end",
+            messages: [{
+              role: "assistant",
+              content: [{ type: "text", text: JSON.stringify({
+                artifact: { summary: "implemented", commandsRun: ["npm test"], risks: [] },
+                progress: ["used mounted workspace"],
+              }) }],
+            }],
+          }));
+        },
+      };
+    },
+  });
+
+  const env = envelopeV2();
+  env.skills = [{
+    skillId: "software.calc-cli",
+    version: "2026-06-12",
+    instructions: "Use the mounted repository.",
+    allowedTools: ["shell", "edit"],
+    requiredMounts: ["/workspace/repo"],
+    mcpRequirements: [],
+    artifactContracts: ["implementation_report"],
+    contentHash: "hash",
+    mountPath: "/southstar/skills/software.calc-cli",
+  }];
+
+  await harness.run({ envelope: env, attempt: 1 });
+
+  assert.equal(sessionInputs[0]?.cwd, "/workspace/repo");
+  assert.match(prompts[0], /Execution workspace: \/workspace\/repo/);
+  assert.match(prompts[0], /change directory to \/workspace\/repo/i);
+  assert.match(prompts[0], /Do not modify \/app/);
+});
+
+test("Pi SDK agent harness bounds session creation with the harness timeout", async () => {
+  const harness = createPiSdkAgentHarness({
+    timeoutMs: 5,
+    createSession: async () => new Promise(() => undefined),
+  });
+
+  const outcome = await Promise.race([
+    harness.run({ envelope: envelopeV2(), attempt: 1 }).then(
+      () => "resolved",
+      (error: unknown) => error instanceof Error ? error.message : String(error),
+    ),
+    new Promise<string>((resolve) => setTimeout(() => resolve("still-pending"), 25)),
+  ]);
+
+  assert.equal(outcome, "Pi SDK harness timed out while creating session after 5ms");
+});
+
 function envelope(): TaskEnvelope {
   return {
     schemaVersion: "southstar.task-envelope.v1",

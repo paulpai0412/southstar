@@ -7,7 +7,7 @@ export type PiSdkHarnessSession = {
 };
 
 export type PiSdkAgentHarnessOptions = {
-  createSession?: () => Promise<PiSdkHarnessSession>;
+  createSession?: (input: { cwd: string }) => Promise<PiSdkHarnessSession>;
   timeoutMs?: number;
 };
 
@@ -15,18 +15,44 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
   return {
     id: "pi-sdk-harness",
     async run(input: HarnessRunInput): Promise<HarnessRunResult> {
-      const session = await (options.createSession ?? createDefaultPiSdkSession)();
-      const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input), options.timeoutMs ?? 180_000);
+      const timeoutMs = options.timeoutMs ?? 180_000;
+      const cwd = harnessCwd(input.envelope);
+      const session = await createSessionWithTimeout(
+        options.createSession ?? createDefaultPiSdkSession,
+        { cwd },
+        timeoutMs,
+      );
+      const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input, cwd), timeoutMs);
       return parseHarnessResult(raw);
     },
   };
 }
 
-function buildHarnessPrompt(input: HarnessRunInput): string {
+async function createSessionWithTimeout(
+  createSession: (input: { cwd: string }) => Promise<PiSdkHarnessSession>,
+  input: { cwd: string },
+  timeoutMs: number,
+): Promise<PiSdkHarnessSession> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Pi SDK harness timed out while creating session after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([createSession(input), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+function buildHarnessPrompt(input: HarnessRunInput, cwd: string): string {
   if (input.envelope.schemaVersion === "southstar.task-envelope.v2") {
     return [
       input.envelope.agentPrompt,
       "",
+      ...workspaceDirective(cwd),
       `Attempt: ${input.attempt}`,
       input.repairInstruction ? `Repair instruction: ${input.repairInstruction}` : "",
     ].filter(Boolean).join("\n");
@@ -36,6 +62,7 @@ function buildHarnessPrompt(input: HarnessRunInput): string {
     "Execute the task described by the TaskEnvelope. Use the available Pi Agent tools as needed.",
     "Return exactly one JSON object with keys: artifact, progress, metrics.",
     "artifact must satisfy the required fields from artifactContract.",
+    ...workspaceDirective(cwd),
     `Attempt: ${input.attempt}`,
     input.repairInstruction ? `Repair instruction: ${input.repairInstruction}` : "",
     "TaskEnvelope:",
@@ -43,14 +70,30 @@ function buildHarnessPrompt(input: HarnessRunInput): string {
   ].filter(Boolean).join("\n");
 }
 
-async function createDefaultPiSdkSession(): Promise<PiSdkHarnessSession> {
+function harnessCwd(envelope: HarnessRunInput["envelope"]): string {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return process.cwd();
+  const requiredMounts = envelope.skills.flatMap((skill) => skill.requiredMounts);
+  if (requiredMounts.includes("/workspace/repo")) return "/workspace/repo";
+  return requiredMounts.find((mount) => mount.startsWith("/workspace/")) ?? process.cwd();
+}
+
+function workspaceDirective(cwd: string): string[] {
+  if (!cwd.startsWith("/workspace/")) return [];
+  return [
+    `Execution workspace: ${cwd}`,
+    `Before reading, editing, testing, or reporting files, change directory to ${cwd}.`,
+    `Edit and test only the mounted target repository under ${cwd}. Do not modify /app; /app is the Southstar runner image, not the target repository.`,
+  ];
+}
+
+async function createDefaultPiSdkSession(input: { cwd: string }): Promise<PiSdkHarnessSession> {
   const pi = await import("@earendil-works/pi-coding-agent");
   const result = await pi.createAgentSession({
-    cwd: process.cwd(),
+    cwd: input.cwd,
     sessionStartEvent: {
       mode: "sdk",
       source: "southstar-agent-runner",
-      cwd: process.cwd(),
+      cwd: input.cwd,
     } as never,
   });
   return result.session as unknown as PiSdkHarnessSession;

@@ -39,7 +39,11 @@ export async function runUiBrowserOperationsScenario(env: RealE2EEnv): Promise<{
   });
   const next = spawn("npm", ["run", "web:dev"], {
     cwd: process.cwd(),
-    env: { ...process.env, SOUTHSTAR_SERVER_URL: runtimeServer.url },
+    env: {
+      ...process.env,
+      SOUTHSTAR_SERVER_URL: runtimeServer.url,
+      NEXT_PUBLIC_SOUTHSTAR_SERVER_URL: runtimeServer.url,
+    },
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -51,7 +55,7 @@ export async function runUiBrowserOperationsScenario(env: RealE2EEnv): Promise<{
       await page.goto("http://localhost:3030", { waitUntil: "networkidle" });
       await page.getByLabel("planner input").fill(phase15OperationsGoalPrompt(repo));
       await page.getByRole("button", { name: "Send to Planner" }).click();
-      await page.getByRole("heading", { name: "Workflow Canvas" }).waitFor({ timeout: 120_000 });
+      await page.getByText(/Dynamic Workflow wf-/).waitFor({ timeout: 120_000 });
       await page.getByRole("button", { name: "Run" }).click();
       const eventVisibleStartedAt = Date.now();
       await page.getByRole("heading", { name: "Runtime Monitor" }).waitFor({ timeout: 10_000 });

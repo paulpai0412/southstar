@@ -1,4 +1,15 @@
-export function RuntimeMonitor() {
+import type { RuntimeMonitorView } from "./types";
+
+export function RuntimeMonitor(props: { model?: RuntimeMonitorView }) {
+  const rows = props.model ? [
+    ["run.status", props.model.status],
+    ["executor.jobs", props.model.executorJobIds.join(", ") || "none"],
+    ["running.tasks", props.model.runningTaskIds.join(", ") || "none"],
+    ["latest.progress", props.model.latestProgress ?? "none"],
+    ["latest.steering", props.model.latestSteering ?? "none"],
+  ] : [
+    ["runtime.status", "Waiting for run"],
+  ];
   return (
     <section className="ss-panel ss-runtime" data-panel="runtime-monitor" id="runtime-monitor">
       <header>
@@ -7,18 +18,12 @@ export function RuntimeMonitor() {
       </header>
       <table>
         <tbody>
-          <tr>
-            <td>executor.submitted</td>
-            <td>tork/job queued</td>
-          </tr>
-          <tr>
-            <td>progress.commentary</td>
-            <td>implementer running tests</td>
-          </tr>
-          <tr>
-            <td>evaluator.completed</td>
-            <td>root gate passed</td>
-          </tr>
+          {rows.map(([label, value]) => (
+            <tr key={label}>
+              <td>{label}</td>
+              <td>{value}</td>
+            </tr>
+          ))}
         </tbody>
       </table>
     </section>
