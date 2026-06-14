@@ -101,12 +101,21 @@ function collectFailedEvidence(
 }
 
 function isFailedEvidence(entry: Record<string, unknown>): boolean {
+  if (isExplicitlyPassedEvidence(entry)) return false;
   if (entry.passed === false || entry.ok === false) return true;
   const status = typeof entry.status === "string" ? entry.status.toLowerCase() : "";
   const result = typeof entry.result === "string" ? entry.result.toLowerCase() : "";
   if (["fail", "failed", "error", "errored", "cancelled"].includes(status)) return true;
   if (["fail", "failed", "error", "errored", "cancelled"].includes(result)) return true;
   return isNonZeroNumber(entry.exitCode) || isNonZeroNumber(entry.code);
+}
+
+function isExplicitlyPassedEvidence(entry: Record<string, unknown>): boolean {
+  if (entry.passed === true || entry.ok === true) return true;
+  const status = typeof entry.status === "string" ? entry.status.toLowerCase() : "";
+  const result = typeof entry.result === "string" ? entry.result.toLowerCase() : "";
+  return ["pass", "passed", "success", "succeeded", "ok"].includes(status)
+    || ["pass", "passed", "success", "succeeded", "ok"].includes(result);
 }
 
 function isNonZeroNumber(value: unknown): boolean {

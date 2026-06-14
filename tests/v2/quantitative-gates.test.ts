@@ -8,13 +8,76 @@ import { upsertRuntimeResource } from "../../src/v2/stores/resource-store.ts";
 import { assertPhase1QuantitativeGates } from "../../src/v2/quality/phase1-gates.ts";
 
 test("phase 1 quantitative gates verify durable evidence", () => {
+  const db = seedPassingPhase1GateDb();
+
+  const result = assertPhase1QuantitativeGates(db, {
+    runId: "run-1",
+    plannerMs: 1000,
+    validationMs: 100,
+    torkSubmitMs: 100,
+    e2eMs: 1000,
+    uiVisibilityMs: 100,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.failures, []);
+});
+
+test("phase 1 quantitative gates warn but pass when only full-suite wall clock exceeds target", () => {
+  const db = seedPassingPhase1GateDb();
+
+  const result = assertPhase1QuantitativeGates(db, {
+    runId: "run-1",
+    plannerMs: 1000,
+    validationMs: 100,
+    torkSubmitMs: 100,
+    e2eMs: 21 * 60 * 1000,
+    uiVisibilityMs: 100,
+  });
+
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.failures, []);
+  assert.match(result.warnings.join("\n"), /real E2E completion/);
+});
+
+test("phase 1 quantitative gates fail closed when evidence is missing", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-1",
+    status: "running",
+    domain: "software",
+    goalPrompt: "implement calc sum",
+    workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", tasks: [] }),
+    executionProjectionJson: JSON.stringify({ executor: "tork" }),
+    snapshotJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify({}),
+    metricsJson: JSON.stringify({}),
+  });
+
+  const result = assertPhase1QuantitativeGates(db, {
+    runId: "run-1",
+    plannerMs: 121_000,
+    validationMs: 3000,
+    torkSubmitMs: 11_000,
+    e2eMs: 16 * 60 * 1000,
+    uiVisibilityMs: 4000,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.failures.length > 5, true);
+});
+
+function seedPassingPhase1GateDb() {
   const db = openSouthstarDb(":memory:");
   createWorkflowRun(db, {
     id: "run-1",
     status: "passed",
     domain: "software",
     goalPrompt: "implement calc sum",
-    workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", tasks: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }] }),
+    workflowManifestJson: JSON.stringify({
+      schemaVersion: "southstar.v2",
+      tasks: [{ id: "a" }, { id: "b" }, { id: "c" }, { id: "d" }],
+    }),
     executionProjectionJson: JSON.stringify({ executor: "tork" }),
     snapshotJson: JSON.stringify({}),
     runtimeContextJson: JSON.stringify({}),
@@ -79,40 +142,5 @@ test("phase 1 quantitative gates verify durable evidence", () => {
     title: "Artifact",
     payload: {},
   });
-
-  assert.deepEqual(assertPhase1QuantitativeGates(db, {
-    runId: "run-1",
-    plannerMs: 1000,
-    validationMs: 100,
-    torkSubmitMs: 100,
-    e2eMs: 1000,
-    uiVisibilityMs: 100,
-  }), { ok: true, failures: [] });
-});
-
-test("phase 1 quantitative gates fail closed when evidence is missing", () => {
-  const db = openSouthstarDb(":memory:");
-  createWorkflowRun(db, {
-    id: "run-1",
-    status: "running",
-    domain: "software",
-    goalPrompt: "implement calc sum",
-    workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", tasks: [] }),
-    executionProjectionJson: JSON.stringify({ executor: "tork" }),
-    snapshotJson: JSON.stringify({}),
-    runtimeContextJson: JSON.stringify({}),
-    metricsJson: JSON.stringify({}),
-  });
-
-  const result = assertPhase1QuantitativeGates(db, {
-    runId: "run-1",
-    plannerMs: 121_000,
-    validationMs: 3000,
-    torkSubmitMs: 11_000,
-    e2eMs: 16 * 60 * 1000,
-    uiVisibilityMs: 4000,
-  });
-
-  assert.equal(result.ok, false);
-  assert.equal(result.failures.length > 5, true);
-});
+  return db;
+}

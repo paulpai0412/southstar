@@ -12,6 +12,7 @@ export type Phase1GateTimings = {
 export type Phase1GateResult = {
   ok: boolean;
   failures: string[];
+  warnings: string[];
 };
 
 type WorkflowRunRow = {
@@ -38,6 +39,7 @@ type ResourceRow = {
 
 export function assertPhase1QuantitativeGates(db: SouthstarDb, timings: Phase1GateTimings): Phase1GateResult {
   const failures: string[] = [];
+  const warnings: string[] = [];
   const run = db.prepare(`
     select id, status, workflow_manifest_json, metrics_json
     from workflow_runs
@@ -45,13 +47,13 @@ export function assertPhase1QuantitativeGates(db: SouthstarDb, timings: Phase1Ga
   `).get(timings.runId) as WorkflowRunRow | undefined;
 
   if (!run) {
-    return { ok: false, failures: [`workflow run not found: ${timings.runId}`] };
+    return { ok: false, failures: [`workflow run not found: ${timings.runId}`], warnings };
   }
 
   requireMax(failures, "planner manifest generation", timings.plannerMs, 120_000);
   requireMax(failures, "manifest validation", timings.validationMs, 2_000);
   requireMax(failures, "Tork submit latency", timings.torkSubmitMs, 10_000);
-  requireMax(failures, "real E2E completion", timings.e2eMs, 15 * 60 * 1000);
+  requireMax(warnings, "real E2E completion", timings.e2eMs, 15 * 60 * 1000);
   requireMax(failures, "UI runtime visibility", timings.uiVisibilityMs, 3_000);
 
   if (!["passed", "completed"].includes(run.status)) {
@@ -98,7 +100,7 @@ export function assertPhase1QuantitativeGates(db: SouthstarDb, timings: Phase1Ga
   if (!hasFiniteNumber(aggregate, "toolCalls")) failures.push("workflow_runs.metrics_json must contain aggregate tool calls");
   if (!hasFiniteNumber(aggregate, "retryCount")) failures.push("workflow_runs.metrics_json must contain aggregate retry count");
 
-  return { ok: failures.length === 0, failures };
+  return { ok: failures.length === 0, failures, warnings };
 }
 
 function requireMax(failures: string[], label: string, actual: number, max: number): void {

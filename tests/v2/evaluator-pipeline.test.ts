@@ -74,6 +74,33 @@ test("software feature evaluator rejects failed command evidence", () => {
   assert.ok(result.findings.some((finding) => finding.field === "testResults"));
 });
 
+test("software feature evaluator accepts expected non-zero invalid-input evidence when status passed", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, minimalRun("run-eval-invalid-input"));
+  const result = runEvaluatorPipeline(db, {
+    runId: "run-eval-invalid-input",
+    taskId: "implement-feature",
+    pipeline: softwareDomainPack.evaluatorPipelines.find((pipeline) => pipeline.id === "software-feature-quality")!,
+    artifactContract: softwareDomainPack.artifactContracts.find((contract) => contract.id === "implementation_report")!,
+    artifact: {
+      summary: "implemented calc sum",
+      filesChanged: ["src/calc.ts", "src/cli.ts", "test/calc.test.ts", "README.md"],
+      commandsRun: ["npm test", "npm run -s cli -- sum 1 nope 3"],
+      testResults: [
+        { command: "npm test", status: "passed", exitCode: 0 },
+        { command: "npm run -s cli -- sum 1 nope 3", status: "passed", output: "Invalid number: nope", exitCode: 1 },
+      ],
+      risks: [],
+      artifactEvidence: {
+        behaviorEvidence: ["invalid input prints Invalid number and exits non-zero"],
+      },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recoveryStrategy, undefined);
+});
+
 test("software verification evaluator accepts explicit empty checker findings", () => {
   const db = openSouthstarDb(":memory:");
   createWorkflowRun(db, minimalRun("run-eval-checker-ok"));

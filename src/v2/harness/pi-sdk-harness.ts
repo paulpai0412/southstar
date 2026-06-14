@@ -51,6 +51,7 @@ function buildHarnessPrompt(input: HarnessRunInput, cwd: string): string {
   if (input.envelope.schemaVersion === "southstar.task-envelope.v2") {
     return [
       input.envelope.agentPrompt,
+      ...resolvedSkillInstructions(input.envelope.skills),
       "",
       ...workspaceDirective(cwd),
       `Attempt: ${input.attempt}`,
@@ -68,6 +69,15 @@ function buildHarnessPrompt(input: HarnessRunInput, cwd: string): string {
     "TaskEnvelope:",
     JSON.stringify(input.envelope),
   ].filter(Boolean).join("\n");
+}
+
+function resolvedSkillInstructions(skills: Array<{ skillId: string; instructions: string }>): string[] {
+  if (skills.length === 0) return [];
+  return [
+    "",
+    "Resolved skill instructions:",
+    ...skills.map((skill) => `## ${skill.skillId}\n${skill.instructions.trim()}`),
+  ];
 }
 
 function harnessCwd(envelope: HarnessRunInput["envelope"]): string {

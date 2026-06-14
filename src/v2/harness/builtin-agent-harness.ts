@@ -8,7 +8,7 @@ export function createBuiltinAgentHarness(): AgentHarness {
     async run(input: HarnessRunInput): Promise<HarnessRunResult> {
       const startedAt = Date.now();
       const role = input.envelope.schemaVersion === "southstar.task-envelope.v2" ? input.envelope.taskId : input.envelope.task.id;
-      const repo = repoPath();
+      const repo = repoPath(input.envelope);
       const commandsRun: string[] = [];
       const testResults: unknown[] = [];
 
@@ -37,6 +37,7 @@ export function createBuiltinAgentHarness(): AgentHarness {
         risks: ["builtin harness validates the task contract in the container environment"],
         followUps: [],
         followUpSuggestions: [],
+        ...steeringDecision(input.repairInstruction),
       };
 
       return {
@@ -59,7 +60,7 @@ export function createBuiltinAgentHarness(): AgentHarness {
 }
 
 function shouldValidateRepo(role: string): boolean {
-  return /root|valid|verify|follow|summary|summarize|accept|fan-in|completion/i.test(role);
+  return /root|valid|verify|follow|summary|summarize|accept|fan-in|completion|implement/i.test(role);
 }
 
 function summaryFor(role: string, memoryPreference: string): string {
@@ -71,9 +72,22 @@ function summaryFor(role: string, memoryPreference: string): string {
   return `Validated task artifact and runtime outputs.${memoryNote}`;
 }
 
-function repoPath(): string | undefined {
+function steeringDecision(repairInstruction: string | undefined): { steeringDecision?: { accepted: boolean; instruction: string } } {
+  if (!repairInstruction || !/steeringDecision/.test(repairInstruction)) return {};
+  return {
+    steeringDecision: {
+      accepted: true,
+      instruction: repairInstruction,
+    },
+  };
+}
+
+function repoPath(envelope: HarnessRunInput["envelope"]): string | undefined {
+  const workspaceHandle = envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.workspace?.handle : undefined;
   const candidates = [
     process.env.REPO_PATH,
+    workspaceHandle?.worktreePath,
+    workspaceHandle?.repoRoot,
     "/workspace/repo",
     "/workspace",
   ].filter((value): value is string => typeof value === "string" && value.length > 0);

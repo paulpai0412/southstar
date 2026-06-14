@@ -148,6 +148,7 @@ test("Pi SDK agent harness runs mounted workspace tasks from /workspace/repo", a
   assert.match(prompts[0], /Execution workspace: \/workspace\/repo/);
   assert.match(prompts[0], /change directory to \/workspace\/repo/i);
   assert.match(prompts[0], /Do not modify \/app/);
+  assert.match(prompts[0], /Use the mounted repository\./);
 });
 
 test("Pi SDK agent harness bounds session creation with the harness timeout", async () => {

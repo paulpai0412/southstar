@@ -44,6 +44,27 @@ test("builtin harness summarizes accepted artifacts with test evidence", async (
   }
 });
 
+test("builtin harness uses TaskEnvelopeV2 workspace handle and repairs steering decision artifacts", async () => {
+  const repo = createCalcCliFixture();
+  const result = await createBuiltinAgentHarness().run({
+    envelope: {
+      ...envelope("implement-calc-command"),
+      workspace: {
+        handle: { repoRoot: repo, worktreePath: repo },
+      },
+    },
+    attempt: 2,
+    repairInstruction: "Artifact is missing required fields: steeringDecision.",
+  });
+
+  assert.ok(Array.isArray(result.artifact.commandsRun));
+  assert.equal((result.artifact.commandsRun as unknown[]).length >= 2, true);
+  assert.deepEqual(result.artifact.steeringDecision, {
+    accepted: true,
+    instruction: "Artifact is missing required fields: steeringDecision.",
+  });
+});
+
 function createCalcCliFixture(): string {
   const repo = mkdtempSync(join(tmpdir(), "southstar-builtin-harness-"));
   writeFileSync(join(repo, "package.json"), JSON.stringify({

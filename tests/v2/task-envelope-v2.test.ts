@@ -49,6 +49,7 @@ test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from Con
   assert.equal(envelope.workspace?.baseSnapshotRef?.provider, "git");
   assert.match(envelope.agentPrompt, /ContextPacket: ctx-env2/);
   assert.match(envelope.agentPrompt, /Task goal:\nImplement calc sum/);
+  assert.match(envelope.agentPrompt, /Southstar runtime owns workflow orchestration, session state, evaluator execution, and stop-condition decisions/);
   assert.match(envelope.agentPrompt, /Memory:\n- Prefer tests around calc sum behavior/);
   assert.match(envelope.agentPrompt, /Artifact contracts:\n- implementation_report/);
   assert.doesNotMatch(JSON.stringify(envelope), /do-not-leak/);

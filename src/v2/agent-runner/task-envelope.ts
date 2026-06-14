@@ -154,6 +154,7 @@ function renderContextPacketPrompt(
     input.role.responsibility,
     `Agent profile: ${input.agentProfile.id}`,
     input.agentProfile.model ? `Model: ${input.agentProfile.model}` : "",
+    "Southstar runtime owns workflow orchestration, session state, evaluator execution, and stop-condition decisions. Complete only this task's artifact and repository work; do not try to modify or operate Southstar runtime internals unless the task explicitly asks for runtime code changes.",
     "",
     "Task goal:",
     packet.taskGoal,
