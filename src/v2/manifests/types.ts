@@ -42,10 +42,13 @@ export type WorkflowTaskDefinition = {
   domain: "software" | "research" | "data-analysis" | "general";
   roleRef?: string;
   agentProfileRef?: string;
+  providerRef?: string;
+  model?: string;
   dependsOn: string[];
   promptInputs?: Record<string, unknown>;
   requiredArtifactRefs?: string[];
   evaluatorPipelineRef?: string;
+  stopConditionRefs?: string[];
   recoveryStrategyRefs?: string[];
   contextPolicyRef?: string;
   sessionPolicyRef?: string;
@@ -56,6 +59,8 @@ export type WorkflowTaskDefinition = {
     maxRepairAttempts: number;
   };
   skillRefs?: string[];
+  memoryScopeRefs?: string[];
+  mcpGrantRefs?: string[];
   subagents: Array<{
     id: string;
     harnessId: string;

@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runAgentRunnerCli } from "../../src/v2/agent-runner/cli.ts";
-import { parseAgentRunnerArgs } from "../../src/v2/agent-runner/cli.ts";
+import { parseAgentRunnerArgs, timeoutFromEnvelope } from "../../src/v2/agent-runner/cli.ts";
 import type { TaskEnvelope } from "../../src/v2/agent-runner/task-envelope.ts";
 
 test("agent runner CLI reads envelope, calls HTTP harness, and writes task result", async () => {
@@ -67,6 +67,13 @@ test("agent runner CLI args allow Pi SDK harness when HTTP endpoint is absent", 
   assert.equal(parsed.envelopePath, "/tmp/envelope.json");
   assert.equal(parsed.harnessEndpoint, undefined);
   assert.equal(parsed.harnessProvider, "pi-sdk");
+});
+
+test("agent runner harness timeout follows the task timeout budget", () => {
+  const longEnvelope = envelope();
+  longEnvelope.task.execution.timeoutSeconds = 900;
+
+  assert.equal(timeoutFromEnvelope(longEnvelope), 870_000);
 });
 
 function envelope(): TaskEnvelope {

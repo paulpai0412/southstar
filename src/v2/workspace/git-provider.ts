@@ -12,7 +12,8 @@ export function createGitWorkspaceSnapshotProvider(): WorkspaceSnapshotProvider 
       const trackedPatch = gitRaw(input.repoRoot, ["diff", "--binary", "HEAD"]);
       const untrackedFiles = gitRaw(input.repoRoot, ["ls-files", "--others", "--exclude-standard", "-z"])
         .split("\0")
-        .filter((entry) => entry.length > 0);
+        .filter((entry) => entry.length > 0)
+        .filter(shouldSnapshotUntrackedFile);
       const dirtyPatchRef = trackedPatch.length > 0 || untrackedFiles.length > 0
         ? writeDirtyBundle(input.repoRoot, commitSha, trackedPatch, untrackedFiles)
         : undefined;
@@ -84,6 +85,25 @@ function restoreDirtyBundle(repoRoot: string, dirtyPatchRef?: string): void {
   if (existsSync(untrackedRoot)) {
     cpSync(untrackedRoot, repoRoot, { recursive: true });
   }
+}
+
+const GENERATED_UNTRACKED_SEGMENTS = new Set([
+  ".cache",
+  ".git",
+  ".next",
+  ".nuxt",
+  ".pnpm",
+  ".turbo",
+  ".yarn",
+  "build",
+  "coverage",
+  "dist",
+  "node_modules",
+  "out",
+]);
+
+function shouldSnapshotUntrackedFile(file: string): boolean {
+  return !file.split("/").some((segment) => GENERATED_UNTRACKED_SEGMENTS.has(segment));
 }
 
 function safeWorktreeName(name: string): string {

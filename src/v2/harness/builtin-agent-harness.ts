@@ -20,6 +20,9 @@ export function createBuiltinAgentHarness(): AgentHarness {
       const memoryPreference = input.envelope.schemaVersion === "southstar.task-envelope.v2"
         ? JSON.stringify(input.envelope.contextPacket.selectedMemories)
         : JSON.stringify(input.envelope.memory.items);
+      const acceptedArtifacts = input.envelope.schemaVersion === "southstar.task-envelope.v2"
+        ? input.envelope.contextPacket.priorArtifacts.map((artifact) => artifact.sourceRef ?? artifact.id)
+        : [];
       const artifact = {
         summary: summaryFor(role, memoryPreference),
         filesToInspect: ["package.json", "README.md", "src"],
@@ -29,7 +32,7 @@ export function createBuiltinAgentHarness(): AgentHarness {
         testResults,
         checkerFindings: [],
         artifactEvidence: { commandsRun, testResults },
-        acceptedArtifacts: [],
+        acceptedArtifacts,
         tests: testResults,
         risks: ["builtin harness validates the task contract in the container environment"],
         followUps: [],
@@ -56,7 +59,7 @@ export function createBuiltinAgentHarness(): AgentHarness {
 }
 
 function shouldValidateRepo(role: string): boolean {
-  return /root|valid|verify|follow|summary/i.test(role);
+  return /root|valid|verify|follow|summary|summarize|accept|fan-in|completion/i.test(role);
 }
 
 function summaryFor(role: string, memoryPreference: string): string {

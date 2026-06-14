@@ -107,12 +107,27 @@ test("materializes generation plan into a Southstar manifest with domain metadat
   assert.deepEqual(manifest.memoryPolicies, softwareDomainPack.memoryPolicies);
   assert.deepEqual(manifest.workspacePolicies, softwareDomainPack.workspacePolicies);
   for (const task of manifest.tasks) {
+    const profile = softwareDomainPack.agentProfiles.find((candidate) => candidate.id === task.agentProfileRef);
+    assert.ok(profile, `missing profile for ${task.id}`);
     assert.equal(typeof task.roleRef, "string");
     assert.equal(typeof task.agentProfileRef, "string");
+    assert.equal((task as { providerRef?: string }).providerRef, profile.provider);
+    assert.equal((task as { model?: string }).model, profile.model);
+    assert.deepEqual(task.skillRefs, profile.skillRefs);
+    assert.deepEqual((task as { memoryScopeRefs?: string[] }).memoryScopeRefs, profile.memoryScopes);
+    assert.deepEqual((task as { mcpGrantRefs?: string[] }).mcpGrantRefs, profile.mcpGrantRefs);
     assert.equal(typeof task.evaluatorPipelineRef, "string");
+    if (task.roleRef === "checker" || task.roleRef === "summarizer") {
+      assert.deepEqual((task as { stopConditionRefs?: string[] }).stopConditionRefs, ["software-feature-complete"]);
+    }
     assert.equal(task.rootSession.validator, "schema-evaluator-v1");
     assert.equal(task.execution.engine, "tork");
     assert.equal(task.execution.command[0], "southstar-agent-runner");
+    assert.deepEqual(task.execution.mounts, [{
+      source: "/tmp/southstar-real-e2e/domain-pack-dynamic-feature",
+      target: "/workspace/repo",
+      readonly: false,
+    }]);
   }
 });
 

@@ -105,11 +105,11 @@ function flagValue(argv: string[], flag: string): string | undefined {
   return value;
 }
 
-function timeoutFromEnvelope(envelope: AnyTaskEnvelope): number {
+export function timeoutFromEnvelope(envelope: AnyTaskEnvelope): number {
   const taskTimeoutMs = envelope.schemaVersion === "southstar.task-envelope.v2"
     ? (envelope.agentProfile.budgetPolicy.maxWallTimeSeconds ?? 180) * 1000
     : envelope.task.execution.timeoutSeconds * 1000;
-  return Math.min(180_000, Math.max(120_000, taskTimeoutMs - 30_000));
+  return Math.max(120_000, taskTimeoutMs - 30_000);
 }
 
 function requiredFieldsFromEnvelope(envelope: AnyTaskEnvelope): string[] {

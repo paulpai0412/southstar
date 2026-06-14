@@ -6,6 +6,7 @@ import { createSouthstarRuntimeServer } from "../../../src/v2/server/http-server
 import type { RealE2EEnv } from "../env.ts";
 import {
   assertCalcSum,
+  assertDynamicWorkflowEvidence,
   assertFixtureTests,
   createScenarioContext,
   phase15OperationsGoalPrompt,
@@ -52,6 +53,7 @@ export async function runCliRunGoalRealScenario(env: RealE2EEnv): Promise<{ runI
     const jobId = payload.result.tork.jobId;
     await waitForTorkJob(env.torkBaseUrl, jobId);
     await waitForRunStatus(context.db, runId, ["passed", "completed"]);
+    assertDynamicWorkflowEvidence(context.db, runId);
     assertCalcSum(repo);
     assertFixtureTests(repo);
     console.log("phase15 cli run-goal scenario passed");

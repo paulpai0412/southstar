@@ -21,8 +21,9 @@ export async function runSteeringRepairScenario(env: RealE2EEnv, runId: string):
   assert.equal(events.includes("steering.received"), true);
   assert.equal(events.includes("repair.requested"), true);
   assert.equal(events.includes("evaluator.completed"), true);
+  const taskId = envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id;
   const acceptedArtifacts = listResources(context.db, { resourceType: "artifact", status: "accepted" })
-    .filter((resource) => resource.runId === runId && resource.taskId === envelope.task.id)
+    .filter((resource) => resource.runId === runId && resource.taskId === taskId)
     .map((resource) => resource.payload as Record<string, unknown>);
   assert.equal(acceptedArtifacts.some((artifact) => hasSteeringDecision(artifact)), true);
   console.log("steering repair scenario passed");

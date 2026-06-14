@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
@@ -32,8 +33,9 @@ test("creates planner draft resource from validated Pi planner output", async ()
 test("creates run from draft, submits Tork projection, and exposes status", async () => {
   const db = openSouthstarDb(":memory:");
   const runRoot = await mkdtemp(join(tmpdir(), "southstar-local-api-"));
+  const fixtureRepo = await createGitFixtureRepo();
   const draft = await createPlannerDraft(db, {
-    goalPrompt: "implement calc sum",
+    goalPrompt: `implement calc sum\nFixture repo: ${fixtureRepo}`,
     plannerClient: plannerClient(),
   });
   const submittedJobs: unknown[] = [];
@@ -68,6 +70,9 @@ test("creates run from draft, submits Tork projection, and exposes status", asyn
   assert.equal(envelope.taskId, "understand-repo");
   assert.equal(envelope.skills[0]?.skillId, "software.calc-cli");
   assert.equal(listResources(db, { resourceType: "skill_snapshot", status: "resolved" }).length >= 3, true);
+  assert.equal(countRunResources(db, run.runId, "workflow_generation_plan"), 1);
+  assert.equal(countRunResources(db, run.runId, "orchestration_snapshot"), 1);
+  assert.equal(countRunResources(db, run.runId, "workspace_snapshot") >= 1, true);
   assert.equal(listResources(db, { resourceType: "session_node", status: "active" }).length, 4);
   assert.equal(listResources(db, { resourceType: "session_checkpoint", status: "created" }).length, 4);
   assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
@@ -223,4 +228,22 @@ function plannerClient(): PiPlannerClient {
       plannerTrace: { model: "pi-agent", promptHash: "hash", generatedAt: "2026-06-11T00:00:00.000Z" },
     }),
   };
+}
+
+function countRunResources(db: ReturnType<typeof openSouthstarDb>, runId: string, resourceType: string): number {
+  const row = db.prepare("select count(*) as count from runtime_resources where run_id = ? and resource_type = ?")
+    .get(runId, resourceType) as { count: number };
+  return row.count;
+}
+
+async function createGitFixtureRepo(): Promise<string> {
+  const repo = await mkdtemp(join(tmpdir(), "southstar-local-api-fixture-"));
+  await mkdir(join(repo, "src"), { recursive: true });
+  await writeFile(join(repo, "src", "calc.ts"), "export function add(a: number, b: number): number { return a + b; }\n");
+  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["config", "user.email", "southstar@example.test"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["config", "user.name", "Southstar Test"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+  return repo;
 }

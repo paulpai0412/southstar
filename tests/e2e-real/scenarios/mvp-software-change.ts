@@ -6,6 +6,7 @@ import type { PlanBundle } from "../../../src/v2/manifests/types.ts";
 import type { RealE2EEnv } from "../env.ts";
 import {
   assertCalcSum,
+  assertDynamicWorkflowEvidence,
   assertFixtureTests,
   createScenarioContext,
   prepareSoftwareFixtureRepo,
@@ -52,6 +53,7 @@ export async function runMvpSoftwareChangeScenario(env: RealE2EEnv): Promise<Mvp
     await waitForTorkJob(env.torkBaseUrl, run.tork.jobId);
     await waitForRunStatus(context.db, run.runId, ["passed", "completed"]);
 
+    assertDynamicWorkflowEvidence(context.db, run.runId);
     assertCalcSum(repo);
     assertFixtureTests(repo);
     assert.equal(listResources(context.db, { resourceType: "executor_binding" }).some((resource) => resource.runId === run.runId), true);

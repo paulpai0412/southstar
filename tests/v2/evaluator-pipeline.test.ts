@@ -46,6 +46,27 @@ test("software feature evaluator accepts complete evidence", () => {
   assert.equal(result.recoveryStrategy, undefined);
 });
 
+test("software verification evaluator accepts explicit empty checker findings", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, minimalRun("run-eval-checker-ok"));
+  const result = runEvaluatorPipeline(db, {
+    runId: "run-eval-checker-ok",
+    taskId: "verify-feature",
+    pipeline: softwareDomainPack.evaluatorPipelines.find((pipeline) => pipeline.id === "software-verification-quality")!,
+    artifactContract: softwareDomainPack.artifactContracts.find((contract) => contract.id === "verification_report")!,
+    artifact: {
+      summary: "verified calc sum",
+      commandsRun: ["npm test", "npm run -s cli -- sum 1 2 3"],
+      testResults: [{ command: "npm test", status: "passed" }],
+      checkerFindings: [],
+      risks: [],
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.recoveryStrategy, undefined);
+});
+
 function minimalRun(id: string) {
   return {
     id,

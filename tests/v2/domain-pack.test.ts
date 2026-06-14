@@ -81,6 +81,19 @@ test("domain pack registry resolves software feature prompts by prompt intent hi
   assert.equal(routed.intent.id, "implement_feature");
 });
 
+test("domain pack registry keeps feature intent when recovery requirements mention failure", () => {
+  const registry = createDomainPackRegistry([softwareDomainPack]);
+  const routed = registry.route({
+    goalPrompt: [
+      "新增 CLI 指令 `calc sum <numbers...>`，支援多個數字輸入、負數、小數、無效輸入錯誤訊息。",
+      "驗收失敗時 RootSession 必須記錄 retry、fork session、rollback workspace 或 workflow revision。",
+    ].join("\n"),
+  });
+
+  assert.equal(routed.domainPack.id, "software");
+  assert.equal(routed.intent.id, "implement_feature");
+});
+
 test("domain pack registry resolves software bug prompts to fix_bug", () => {
   const registry = createDomainPackRegistry([softwareDomainPack]);
   const routed = registry.route({

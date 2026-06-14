@@ -5,7 +5,7 @@ import { recomputeManagementMetrics } from "../stores/metrics-store.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
 import { persistEvaluatorResult } from "../evaluators/runner.ts";
 import { recordProgressCommentary } from "../signals/progress.ts";
-import type { TaskEnvelope } from "./task-envelope.ts";
+import type { AnyTaskEnvelope } from "./task-envelope.ts";
 import type { AgentHarness } from "../harness/types.ts";
 
 export type ArtifactGateInput = {
@@ -39,7 +39,7 @@ export function evaluateArtifactGate(input: ArtifactGateInput): ArtifactGateResu
 }
 
 export type RootSessionTaskInput = {
-  envelope: TaskEnvelope;
+  envelope: AnyTaskEnvelope;
   harness: AgentHarness;
   requiredFields: string[];
 };
@@ -56,46 +56,47 @@ export async function runRootSessionTask(
   input: RootSessionTaskInput,
 ): Promise<RootSessionTaskResult> {
   const { envelope, harness, requiredFields } = input;
+  const runtime = normalizeRootSessionEnvelope(envelope);
   appendRuntimeEvent(db, {
     runId: envelope.runId,
-    taskId: envelope.task.id,
-    sessionId: envelope.rootSession.id,
+    taskId: runtime.taskId,
+    sessionId: runtime.rootSessionId,
     eventType: "session.entry",
     actorType: "root-session",
     payload: {
-      rootSessionId: envelope.rootSession.id,
-      taskId: envelope.task.id,
-      memoryItemCount: envelope.memory.items.length,
+      rootSessionId: runtime.rootSessionId,
+      taskId: runtime.taskId,
+      memoryItemCount: runtime.memoryItemCount,
     },
   });
   appendRuntimeEvent(db, {
     runId: envelope.runId,
-    taskId: envelope.task.id,
-    sessionId: envelope.rootSession.id,
+    taskId: runtime.taskId,
+    sessionId: runtime.rootSessionId,
     eventType: "task.started",
     actorType: "root-session",
-    payload: { taskId: envelope.task.id, harnessId: harness.id },
+    payload: { taskId: runtime.taskId, harnessId: harness.id },
   });
 
   let repairInstruction: string | undefined;
-  for (let attempt = 1; attempt <= envelope.rootSession.maxRepairAttempts; attempt++) {
+  for (let attempt = 1; attempt <= runtime.maxRepairAttempts; attempt++) {
     const harnessResult = await harness.run({ envelope, attempt, repairInstruction });
     for (const message of harnessResult.progress) {
       recordProgressCommentary(db, {
         runId: envelope.runId,
-        taskId: envelope.task.id,
-        sessionId: envelope.rootSession.id,
+        taskId: runtime.taskId,
+        sessionId: runtime.rootSessionId,
         message,
       });
     }
-    const artifactResourceId = `artifact-${envelope.runId}-${envelope.task.id}-attempt-${attempt}`;
+    const artifactResourceId = `artifact-${envelope.runId}-${runtime.taskId}-attempt-${attempt}`;
     upsertRuntimeResource(db, {
       id: artifactResourceId,
       resourceType: "artifact",
       resourceKey: artifactResourceId,
       runId: envelope.runId,
-      taskId: envelope.task.id,
-      sessionId: envelope.rootSession.id,
+      taskId: runtime.taskId,
+      sessionId: runtime.rootSessionId,
       scope: "task",
       status: "created",
       title: `Artifact attempt ${attempt}`,
@@ -104,8 +105,8 @@ export async function runRootSessionTask(
     });
     appendRuntimeEvent(db, {
       runId: envelope.runId,
-      taskId: envelope.task.id,
-      sessionId: envelope.rootSession.id,
+      taskId: runtime.taskId,
+      sessionId: runtime.rootSessionId,
       eventType: "artifact.created",
       actorType: "subagent",
       payload: { artifactResourceId, attempt },
@@ -115,44 +116,44 @@ export async function runRootSessionTask(
       artifact: harnessResult.artifact,
       requiredFields,
       attempt,
-      maxRepairAttempts: envelope.rootSession.maxRepairAttempts,
+      maxRepairAttempts: runtime.maxRepairAttempts,
     });
     persistEvaluatorResult(db, {
       runId: envelope.runId,
-      taskId: envelope.task.id,
+      taskId: runtime.taskId,
       ok: gate.ok,
       missingFields: gate.missingFields,
     });
     if (gate.ok) {
       appendRuntimeEvent(db, {
         runId: envelope.runId,
-        taskId: envelope.task.id,
-        sessionId: envelope.rootSession.id,
+        taskId: runtime.taskId,
+        sessionId: runtime.rootSessionId,
         eventType: "subagent.completed",
         actorType: "subagent",
-        payload: { subagentIds: envelope.subagents.map((subagent) => subagent.id), attempt },
+        payload: { subagentIds: runtime.subagentIds, attempt },
       });
       upsertRuntimeResource(db, {
         id: artifactResourceId,
         resourceType: "artifact",
         resourceKey: artifactResourceId,
         runId: envelope.runId,
-        taskId: envelope.task.id,
-        sessionId: envelope.rootSession.id,
+        taskId: runtime.taskId,
+        sessionId: runtime.rootSessionId,
         scope: "task",
         status: "accepted",
         title: `Accepted artifact attempt ${attempt}`,
         payload: harnessResult.artifact,
         metrics: harnessResult.metrics ?? {},
       });
-      const checkpointResourceId = `checkpoint-${envelope.runId}-${envelope.task.id}`;
+      const checkpointResourceId = `checkpoint-${envelope.runId}-${runtime.taskId}`;
       upsertRuntimeResource(db, {
         id: checkpointResourceId,
         resourceType: "session_checkpoint",
         resourceKey: checkpointResourceId,
         runId: envelope.runId,
-        taskId: envelope.task.id,
-        sessionId: envelope.rootSession.id,
+        taskId: runtime.taskId,
+        sessionId: runtime.rootSessionId,
         scope: "task",
         status: "created",
         title: "Root session checkpoint",
@@ -160,8 +161,8 @@ export async function runRootSessionTask(
       });
       appendRuntimeEvent(db, {
         runId: envelope.runId,
-        taskId: envelope.task.id,
-        sessionId: envelope.rootSession.id,
+        taskId: runtime.taskId,
+        sessionId: runtime.rootSessionId,
         eventType: "checkpoint.created",
         actorType: "root-session",
         payload: { checkpointResourceId, artifactResourceId, attempt },
@@ -174,8 +175,8 @@ export async function runRootSessionTask(
       repairInstruction = gate.repairInstruction;
       appendHistoryEvent(db, {
         runId: envelope.runId,
-        taskId: envelope.task.id,
-        sessionId: envelope.rootSession.id,
+        taskId: runtime.taskId,
+        sessionId: runtime.rootSessionId,
         eventType: "repair.requested",
         actorType: "root-session",
         payload: { attempt, missingFields: gate.missingFields, repairInstruction },
@@ -184,7 +185,32 @@ export async function runRootSessionTask(
   }
 
   recomputeManagementMetrics(db, envelope.runId);
-  return { ok: false, attempts: envelope.rootSession.maxRepairAttempts };
+  return { ok: false, attempts: runtime.maxRepairAttempts };
+}
+
+function normalizeRootSessionEnvelope(envelope: AnyTaskEnvelope): {
+  taskId: string;
+  rootSessionId: string;
+  maxRepairAttempts: number;
+  memoryItemCount: number;
+  subagentIds: string[];
+} {
+  if (envelope.schemaVersion === "southstar.task-envelope.v2") {
+    return {
+      taskId: envelope.taskId,
+      rootSessionId: envelope.session.sessionId,
+      maxRepairAttempts: envelope.session.maxRepairAttempts ?? 1,
+      memoryItemCount: envelope.contextPacket.selectedMemories.length,
+      subagentIds: [envelope.agentProfile.id],
+    };
+  }
+  return {
+    taskId: envelope.task.id,
+    rootSessionId: envelope.rootSession.id,
+    maxRepairAttempts: envelope.rootSession.maxRepairAttempts,
+    memoryItemCount: envelope.memory.items.length,
+    subagentIds: envelope.subagents.map((subagent) => subagent.id),
+  };
 }
 
 function hasValue(value: unknown): boolean {

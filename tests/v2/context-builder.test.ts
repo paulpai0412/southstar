@@ -297,6 +297,46 @@ test("materialized task envelope only receives ContextPacket-selected memories",
   await createRunFromDraft(db, { draftId: draft.draftId, executorProvider, runRoot });
 });
 
+test("materialized task envelope resolves agent profile skills and MCP grants", async () => {
+  const db = openSouthstarDb(":memory:");
+  const runRoot = await mkdtemp(join(tmpdir(), "southstar-context-grants-"));
+  const draft = await createPlannerDraft(db, {
+    goalPrompt: "implement calc sum with tests",
+    plannerClient: { generate: async () => { throw new Error("not used"); } },
+  });
+
+  const executorProvider: ExecutorProvider = {
+    executorType: "tork",
+    submit: async ({ runId, workflow }) => {
+      const task = workflow.tasks.find((candidate) => candidate.agentProfileRef === "software-maker-pi");
+      assert.ok(task);
+      const envelopePath = join(runRoot, runId, task.id, "envelope.json");
+      const envelope = JSON.parse(await readFile(envelopePath, "utf8")) as {
+        agentProfile: { id: string; model?: string; skillRefs: string[]; mcpGrantRefs: string[]; memoryScopes: string[] };
+        skills: Array<{ skillId: string }>;
+        mcpGrants: Array<{ serverId: string; allowedTools: string[] }>;
+        contextPacket: { agentProfileRef: string; skillInstructions: unknown[]; mcpGrantSummary: unknown[] };
+      };
+      assert.equal(envelope.agentProfile.id, "software-maker-pi");
+      assert.equal(envelope.agentProfile.model, "pi-agent-default");
+      assert.deepEqual(envelope.agentProfile.memoryScopes, ["software", "project"]);
+      assert.deepEqual(envelope.agentProfile.skillRefs, ["software.calc-cli"]);
+      assert.deepEqual(envelope.skills.map((skill) => skill.skillId), ["software.calc-cli"]);
+      assert.deepEqual(envelope.agentProfile.mcpGrantRefs, ["filesystem-workspace"]);
+      assert.deepEqual(envelope.mcpGrants, [{
+        serverId: "filesystem-workspace",
+        allowedTools: ["read", "search", "edit", "shell"],
+      }]);
+      assert.equal(envelope.contextPacket.agentProfileRef, "software-maker-pi");
+      assert.equal(envelope.contextPacket.skillInstructions.length, 1);
+      assert.equal(envelope.contextPacket.mcpGrantSummary.length, 1);
+      return { executorType: "tork", externalJobId: "job-context-grants", status: "queued" };
+    },
+  };
+
+  await createRunFromDraft(db, { draftId: draft.draftId, executorProvider, runRoot });
+});
+
 test("materialized task routing follows resolved agent profile instead of task id", async () => {
   const db = openSouthstarDb(":memory:");
   const runRoot = await mkdtemp(join(tmpdir(), "southstar-context-routing-"));

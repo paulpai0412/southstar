@@ -245,6 +245,7 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     runtimeContextJson: JSON.stringify({ draftId: input.draftId }),
     metricsJson: JSON.stringify({}),
   });
+  linkGenerationResourcesToRun(db, workflow, runId);
   workflow.tasks.forEach((task, index) => {
     createWorkflowTask(db, {
       id: task.id,
@@ -318,6 +319,43 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     },
   });
   return { runId, tork };
+}
+
+function linkGenerationResourcesToRun(db: SouthstarDb, workflow: SouthstarWorkflowManifest, runId: string): void {
+  linkExistingResourceToRun(db, {
+    resourceType: "workflow_generation_plan",
+    resourceKey: workflow.workflowGeneration?.planId,
+    runId,
+  });
+  linkExistingResourceToRun(db, {
+    resourceType: "orchestration_snapshot",
+    resourceKey: workflow.workflowGeneration?.orchestrationSnapshotId,
+    runId,
+  });
+}
+
+function linkExistingResourceToRun(
+  db: SouthstarDb,
+  input: { resourceType: string; resourceKey?: string; runId: string },
+): void {
+  if (!input.resourceKey) return;
+  const resource = getResourceByKey(db, input.resourceType, input.resourceKey);
+  if (!resource) return;
+  upsertRuntimeResource(db, {
+    id: resource.id,
+    resourceType: resource.resourceType,
+    resourceKey: resource.resourceKey,
+    runId: input.runId,
+    taskId: resource.taskId,
+    sessionId: resource.sessionId,
+    scope: resource.scope,
+    status: resource.status,
+    title: resource.title ?? undefined,
+    payload: resource.payload,
+    summary: resource.summary,
+    metrics: resource.metrics,
+    expiresAt: resource.expiresAt,
+  });
 }
 
 export async function expandWorkflowRun(db: SouthstarDb, input: {
@@ -538,6 +576,7 @@ async function materializedWorkflowForExecution(
     });
     const rootSessionId = sessionNode.id;
     const workspaceSnapshot = snapshotTaskWorkspace(workspaceProvider, task);
+    persistWorkspaceSnapshot(db, { runId: input.runId, taskId: task.id, workspaceSnapshot });
     const contextPacket = buildContextPacketForTask(db, workflow, domainPack, task, {
       runId: input.runId,
       rootSessionId,
@@ -722,6 +761,10 @@ function buildRuntimeTaskEnvelopeV2(
     contextPacket: input.contextPacket,
     skills: resolveTaskSkills(db, input.runId, task),
     mcpGrants: [
+      ...input.runtimeTask.agentProfile.mcpGrantRefs.map((grantRef) => ({
+        serverId: grantRef,
+        allowedTools: input.runtimeTask.agentProfile.toolPolicy.allowedTools,
+      })),
       ...workflow.mcpGrants
         .filter((grant) => grant.taskId === task.id)
         .map((grant) => ({ serverId: grant.serverId, allowedTools: grant.allowedTools })),
@@ -751,6 +794,30 @@ function buildRuntimeTaskEnvelopeV2(
         worktreePath: input.workspaceSnapshot?.repoRoot ?? task.execution.mounts[0]?.source ?? ".",
       },
       baseSnapshotRef: input.workspaceSnapshot,
+    },
+  });
+}
+
+function persistWorkspaceSnapshot(
+  db: SouthstarDb,
+  input: { runId: string; taskId: string; workspaceSnapshot?: WorkspaceSnapshotRef },
+): void {
+  if (!input.workspaceSnapshot) return;
+  upsertRuntimeResource(db, {
+    id: `workspace-snapshot-${input.runId}-${input.taskId}`,
+    resourceType: "workspace_snapshot",
+    resourceKey: `workspace-snapshot-${input.runId}-${input.taskId}`,
+    runId: input.runId,
+    taskId: input.taskId,
+    scope: "workspace",
+    status: "created",
+    title: "Workspace snapshot",
+    payload: input.workspaceSnapshot,
+    summary: {
+      provider: input.workspaceSnapshot.provider,
+      repoRoot: input.workspaceSnapshot.repoRoot,
+      commitSha: input.workspaceSnapshot.commitSha,
+      dirtyPatchRef: input.workspaceSnapshot.dirtyPatchRef,
     },
   });
 }

@@ -34,6 +34,7 @@ export async function runTaskEnvelope(
   harness: AgentHarness,
   input: { requiredFields: string[] },
 ): Promise<TaskRunResult> {
+  const startedAt = Date.now();
   const rootSessionId = envelopeRootSessionId(envelope);
   const taskId = envelopeTaskId(envelope);
   const maxRepairAttempts = envelopeMaxRepairAttempts(envelope);
@@ -103,7 +104,7 @@ export async function runTaskEnvelope(
         ok: true,
         attempts: attempt,
         artifact: latestArtifact,
-        metrics,
+        metrics: finalizeRuntimeMetrics(metrics, envelope, startedAt),
         events,
       };
     }
@@ -125,7 +126,7 @@ export async function runTaskEnvelope(
     ok: false,
     attempts: maxRepairAttempts,
     artifact: latestArtifact,
-    metrics,
+    metrics: finalizeRuntimeMetrics(metrics, envelope, startedAt),
     events,
   };
 }
@@ -159,6 +160,20 @@ function addMetrics(target: TaskRunMetrics, next: HarnessRunResult["metrics"]): 
   target.retryCount += numberValue(next.retryCount);
   target.tokens += numberValue(next.tokens);
   target.costMicrosUsd += numberValue(next.costMicrosUsd);
+}
+
+function finalizeRuntimeMetrics(metrics: TaskRunMetrics, envelope: AnyTaskEnvelope, startedAt: number): TaskRunMetrics {
+  const finalized = { ...metrics };
+  finalized.durationMs = Math.max(finalized.durationMs, Date.now() - startedAt, 1);
+  if (finalized.tokens <= 0) {
+    finalized.tokens = envelopeInputTokenEstimate(envelope);
+  }
+  return finalized;
+}
+
+function envelopeInputTokenEstimate(envelope: AnyTaskEnvelope): number {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return 0;
+  return Math.max(0, numberValue(envelope.contextPacket.tokenEstimate.total));
 }
 
 function numberValue(value: unknown): number {

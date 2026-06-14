@@ -7,6 +7,7 @@ import { runSteeringRepairScenario } from "./scenarios/steering-repair.ts";
 import { runDynamicDagExpansionScenario } from "./scenarios/dynamic-dag-expansion.ts";
 import { runApprovalPolicyRealScenario } from "./scenarios/approval-policy-real.ts";
 import { runCliRunGoalRealScenario } from "./scenarios/cli-run-goal-real.ts";
+import { runDomainPackDynamicWorkflowFeatureScenario } from "./scenarios/domain-pack-dynamic-workflow-feature.ts";
 import { runSkillSnapshotRealScenario } from "./scenarios/skill-snapshot-real.ts";
 import { runUiApiRunGoalRealScenario } from "./scenarios/ui-api-run-goal-real.ts";
 import { runUiBrowserOperationsScenario } from "./scenarios/ui-browser-operations.ts";
@@ -21,10 +22,18 @@ import {
 import { getRunStatus } from "../../src/v2/ui-api/local-api.ts";
 import { assertPhase1QuantitativeGates } from "../../src/v2/quality/phase1-gates.ts";
 import { assertPhase15QuantitativeGates } from "../../src/v2/quality/phase15-gates.ts";
+import { assertDomainPackDynamicQuantitativeGates } from "../../src/v2/quality/domain-pack-dynamic-gates.ts";
 
 test("Phase 1 real E2E suite", async () => {
   const e2eStartedAt = Date.now();
   const env = await loadRealE2EEnv();
+  const dynamicFeature = await runDomainPackDynamicWorkflowFeatureScenario(env);
+  const dynamicContext = createScenarioContext(env);
+  const dynamicGate = assertDomainPackDynamicQuantitativeGates(dynamicContext.db, {
+    runId: dynamicFeature.runId,
+    ...dynamicFeature.timings,
+  });
+  assert.equal(dynamicGate.ok, true, dynamicGate.failures.join("\n"));
   const mvp = await runMvpSoftwareChangeScenario(env);
   await runMemoryReuseScenario(env, mvp.runId);
   await runSteeringRepairScenario(env, mvp.runId);

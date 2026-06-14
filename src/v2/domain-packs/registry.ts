@@ -60,6 +60,9 @@ function routeByPrompt(domainPacks: DomainPack[], goalPrompt: string): PromptRou
 
 function routeIntent(domainPack: DomainPack, goalPrompt: string): IntentDefinition {
   const normalized = goalPrompt.toLowerCase();
+  if (domainPack.id === "software" && /(新增|實作|implement|feature|new cli|add (?:a |the )?(?:command|option|feature))/i.test(normalized)) {
+    return requiredIntent(domainPack, "implement_feature");
+  }
   if (domainPack.id === "software" && /(fix|bug|修正|失敗|failure)/i.test(normalized)) {
     return requiredIntent(domainPack, "fix_bug");
   }

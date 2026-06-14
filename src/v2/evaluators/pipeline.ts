@@ -22,7 +22,7 @@ export function runEvaluatorPipeline(db: SouthstarDb, input: EvaluatorPipelineRu
     .filter((field) => !hasRequiredValue(input.artifact[field]))
     .map((field) => ({ field, message: `missing required field ${field}` }));
   for (const field of input.artifactContract.evidenceFields) {
-    if (!hasEvidenceValue(input.artifact[field]) && !findings.some((finding) => finding.field === field)) {
+    if (!hasEvidenceValue(field, input.artifact[field]) && !findings.some((finding) => finding.field === field)) {
       findings.push({ field, message: `missing evidence field ${field}` });
     }
   }
@@ -65,7 +65,10 @@ function hasRequiredValue(value: unknown): boolean {
   return value !== undefined && value !== null && value !== "";
 }
 
-function hasEvidenceValue(value: unknown): boolean {
+const EMPTY_ARRAY_IS_EVIDENCE = new Set(["checkerFindings"]);
+
+function hasEvidenceValue(field: string, value: unknown): boolean {
+  if (Array.isArray(value) && EMPTY_ARRAY_IS_EVIDENCE.has(field)) return true;
   if (Array.isArray(value)) return value.length > 0;
   return value !== undefined && value !== null && value !== "";
 }

@@ -60,6 +60,21 @@ test("built-in catalog includes the software calc CLI skill", () => {
   assert.match(skill.instructions, /calc/i);
 });
 
+test("software calc CLI skill pins the npm argv contract used by real E2E", () => {
+  const skill = builtInSkillCatalog.resolve("software.calc-cli");
+
+  assert.match(skill.instructions, /npm run -s cli -- sum 1 2 3/);
+  assert.match(skill.instructions, /npm run -s cli -- sum -2 3\.5 4/);
+  assert.match(skill.instructions, /npm run -s cli -- sum 1 nope 3/);
+  assert.match(skill.instructions, /process\.argv\.slice\(2\).*starts with `sum`/s);
+  assert.match(skill.instructions, /Do not require.*`calc`.*argument/s);
+  assert.match(skill.instructions, /README.*negative/i);
+  assert.match(skill.instructions, /README.*decimal/i);
+  assert.match(skill.instructions, /README.*invalid/i);
+  assert.match(skill.instructions, /filesChanged/);
+  assert.match(skill.instructions, /artifactEvidence/);
+});
+
 test("task envelopes include resolved skills and default to an empty list", () => {
   const workflow = minimalWorkflow();
   const skills = [{

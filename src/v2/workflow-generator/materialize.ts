@@ -9,6 +9,7 @@ export type MaterializeGenerationPlanInput = {
 };
 
 export function materializeGenerationPlan(input: MaterializeGenerationPlanInput): SouthstarWorkflowManifest {
+  const workspaceMounts = fixtureRepoMounts(input.goalPrompt);
   return {
     schemaVersion: "southstar.v2",
     workflowId: `wf-${input.plan.id}`,
@@ -41,16 +42,23 @@ export function materializeGenerationPlan(input: MaterializeGenerationPlanInput)
           .find((stage) => stage.roleRef === task.roleRef)?.workspacePolicyRef ??
         input.domainPack.workspacePolicies[0]?.id ??
         "software-git-workspace";
+      const stopConditionRefs =
+        input.domainPack.workflowTemplates
+          .flatMap((template) => template.stages)
+          .find((stage) => stage.roleRef === task.roleRef)?.stopConditionRefs ?? [];
       return {
         id: task.id,
         name: humanize(task.id),
         domain: input.domainPack.id as WorkflowTaskDefinition["domain"],
         roleRef: task.roleRef,
         agentProfileRef: task.agentProfileRef,
+        providerRef: profile.provider,
+        model: profile.model,
         dependsOn: task.dependsOn,
         promptInputs: task.promptInputs,
         requiredArtifactRefs: task.requiredArtifactRefs,
         evaluatorPipelineRef: task.evaluatorPipelineRef,
+        stopConditionRefs,
         recoveryStrategyRefs: task.recoveryStrategyRefs,
         contextPolicyRef: profile.contextPolicyRef,
         sessionPolicyRef: profile.sessionPolicyRef,
@@ -60,7 +68,7 @@ export function materializeGenerationPlan(input: MaterializeGenerationPlanInput)
           image: "southstar/pi-agent:local",
           command: ["southstar-agent-runner"],
           env: {},
-          mounts: [],
+          mounts: workspaceMounts,
           timeoutSeconds: profile.budgetPolicy.maxWallTimeSeconds ?? 900,
           infraRetry: { maxAttempts: 1 },
         },
@@ -69,6 +77,8 @@ export function materializeGenerationPlan(input: MaterializeGenerationPlanInput)
           maxRepairAttempts: 2,
         },
         skillRefs: profile.skillRefs,
+        memoryScopeRefs: profile.memoryScopes,
+        mcpGrantRefs: profile.mcpGrantRefs,
         subagents: [{
           id: `${task.roleRef}-${task.id}`,
           harnessId: profile.harnessRef,
@@ -124,6 +134,13 @@ function humanize(id: string): string {
     .split("-")
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(" ");
+}
+
+function fixtureRepoMounts(goalPrompt: string): Array<{ source: string; target: string; readonly: boolean }> {
+  const match = goalPrompt.match(/Fixture repo:\s*(.+)\s*$/im);
+  const source = match?.[1]?.trim();
+  if (!source?.startsWith("/")) return [];
+  return [{ source, target: "/workspace/repo", readonly: false }];
 }
 
 function required<T>(value: T | undefined, message: string): T {

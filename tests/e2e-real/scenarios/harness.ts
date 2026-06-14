@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createServer, type IncomingMessage } from "node:http";
-import { cpSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
@@ -108,10 +108,13 @@ export function prepareSoftwareFixtureRepo(env: RealE2EEnv, name: string): strin
 export function softwareGoalPrompt(repo: string): string {
   return [
     "在真實 fixture repo 中完成一個小型軟工任務：新增 CLI 指令 calc sum <numbers...>。",
-    "支援多個數字輸入、錯誤訊息、測試、README 用法，並產出 implementation artifact。",
-    "artifact 必須包含修改摘要、測試指令與結果、風險、後續建議。",
-    "workflow 拆成 planner、implementer、root validator、summary 四個任務。",
-    "implementer 必須在 Docker/Tork task 中執行。",
+    "支援多個數字輸入、負數、小數、無效輸入錯誤訊息；同步更新單元測試與 README 用法。",
+    "Southstar 必須自動判斷 domain/intent，依 software domain pack 動態產生 workflow DAG，不可固定四個 task。",
+    "每個 task 必須解析 role、agent profile、model、skills、MCP grants、memory scope，並在 agent 執行前保存可追蹤 ContextPacket。",
+    "任務必須透過 Docker/Tork 執行；Tork 只能是 executor，不能保存 workflow truth。",
+    "產出 artifact 後必須由 evaluator pipeline 與 stop condition 驗收；若驗收失敗，RootSession 必須記錄 retry 或 fork/rollback/workflow revision recovery decision。",
+    "最後只有 stop condition 通過，run 才能標記 passed/completed。",
+    "artifact 必須包含修改摘要、filesChanged、commandsRun、testResults、risks、artifactEvidence。",
     `Fixture repo: ${repo}`,
   ].join("\n");
 }
@@ -119,9 +122,11 @@ export function softwareGoalPrompt(repo: string): string {
 export function phase15OperationsGoalPrompt(repo: string): string {
   return [
     "在真實 fixture repo 中完成 Southstar Phase 1.5 operations workflow 測試：新增 CLI 指令 calc sum <numbers...>。",
-    "支援多數字輸入、錯誤訊息、測試、README 用法，並產出 implementation artifact。",
-    "workflow 必須拆成 planner、implementer、root validator、summary 四個任務；implementer 必須在 Docker/Tork task 中執行。",
-    "artifact 必須包含修改摘要、測試指令與結果、風險、後續建議。",
+    "支援多數字輸入、負數、小數、無效輸入錯誤訊息、測試、README 用法，並產出 implementation artifact。",
+    "Southstar 必須自動判斷 domain/intent，依 software domain pack 動態產生 workflow DAG，不可固定四個 task。",
+    "每個 task 必須解析 role、agent profile、model、skills、MCP grants、memory scope，並在 agent 執行前保存可追蹤 ContextPacket。",
+    "task 必須經 Docker/Tork 執行；Tork 只當 executor，不掌握 workflow truth。",
+    "artifact 必須經 evaluator pipeline 與 stop condition 驗收，驗收失敗時 RootSession 必須記錄 retry 或 fork/rollback/workflow revision recovery decision。",
     "請使用已核准的 software.calc-cli skill，保持最小改動，不新增 runtime dependency。",
     "執行期間必須輸出 progress commentary，並保存 session、artifact、executor binding、skill snapshot 到 SQLite。",
     `Fixture repo: ${repo}`,
@@ -164,8 +169,12 @@ export async function waitForRunStatus(db: SouthstarDb, runId: string, statuses:
 }
 
 export function assertCalcSum(repo: string): void {
-  const output = run("npm", ["run", "cli", "--", "sum", "1", "2", "3"], repo);
-  assert.match(output, /6/);
+  const output = run("npm", ["run", "-s", "cli", "--", "sum", "1", "2", "3"], repo);
+  assert.match(output.trim(), /^6$/);
+  assert.match(run("npm", ["run", "-s", "cli", "--", "sum", "-2", "5", "0.5"], repo).trim(), /^3\.5$/);
+  assert.match(run("npm", ["run", "-s", "cli", "--", "sum", "-1", "-2.5"], repo).trim(), /^-3\.5$/);
+  assertInvalidInput(repo);
+  assertReadmeAndTestsDocumentCalcSum(repo);
 }
 
 export function assertFixtureTests(repo: string): void {
@@ -207,6 +216,98 @@ export function assertSqliteEvidence(db: SouthstarDb): void {
 export function assertNoE2eStaticManifestUsage(db: SouthstarDb, runId: string): void {
   const row = db.prepare("select goal_prompt from workflow_runs where id = ?").get(runId) as { goal_prompt: string } | undefined;
   assert.ok(row?.goal_prompt.includes("Fixture repo:"), "real E2E run must preserve fixture repo prompt");
+}
+
+export function assertDomainPackDynamicWorkflowEvidence(db: SouthstarDb, runId: string): void {
+  const row = db.prepare("select workflow_manifest_json from workflow_runs where id = ?").get(runId) as {
+    workflow_manifest_json: string;
+  } | undefined;
+  assert.ok(row, `missing workflow run ${runId}`);
+  const workflow = JSON.parse(row.workflow_manifest_json) as {
+    domain?: string;
+    intent?: string;
+    workflowGeneration?: { planId?: string; orchestrationSnapshotId?: string };
+    tasks?: Array<{
+      id?: string;
+      roleRef?: string;
+      agentProfileRef?: string;
+      providerRef?: string;
+      model?: string;
+      skillRefs?: string[];
+      memoryScopeRefs?: string[];
+      mcpGrantRefs?: string[];
+      evaluatorPipelineRef?: string;
+      contextPolicyRef?: string;
+      sessionPolicyRef?: string;
+      stopConditionRefs?: string[];
+      execution?: { engine?: string };
+    }>;
+  };
+  assert.equal(workflow.domain, "software");
+  assert.equal(workflow.intent, "implement_feature");
+  assert.ok(workflow.workflowGeneration?.planId, "workflow must be generated from domain pack");
+  assert.ok(workflow.workflowGeneration?.orchestrationSnapshotId, "workflow must include orchestration snapshot");
+  assert.ok((workflow.tasks?.length ?? 0) >= 5, "broad calc sum prompt should generate a dynamic multi-task DAG");
+  assert.notDeepEqual(workflow.tasks?.map((task) => task.id), ["planner", "implementer", "root-validator", "summary"]);
+  for (const task of workflow.tasks ?? []) {
+    assert.equal(typeof task.roleRef, "string", `missing roleRef for ${task.id}`);
+    assert.equal(typeof task.agentProfileRef, "string", `missing agentProfileRef for ${task.id}`);
+    assert.equal(typeof task.providerRef, "string", `missing providerRef for ${task.id}`);
+    assert.equal(typeof task.model, "string", `missing model for ${task.id}`);
+    assert.equal(Array.isArray(task.skillRefs), true, `missing skillRefs for ${task.id}`);
+    assert.equal(Array.isArray(task.memoryScopeRefs), true, `missing memoryScopeRefs for ${task.id}`);
+    assert.equal(Array.isArray(task.mcpGrantRefs), true, `missing mcpGrantRefs for ${task.id}`);
+    assert.equal(typeof task.evaluatorPipelineRef, "string", `missing evaluatorPipelineRef for ${task.id}`);
+    assert.equal(typeof task.contextPolicyRef, "string", `missing contextPolicyRef for ${task.id}`);
+    assert.equal(typeof task.sessionPolicyRef, "string", `missing sessionPolicyRef for ${task.id}`);
+    assert.equal(task.execution?.engine, "tork", `task ${task.id} must execute through Tork`);
+  }
+  const taskCount = workflow.tasks?.length ?? 0;
+  assertResourceCount(db, runId, "workflow_generation_plan", 1);
+  assertResourceCount(db, runId, "orchestration_snapshot", 1);
+  assertResourceCount(db, runId, "context_packet", taskCount);
+  assertResourceCount(db, runId, "memory_injection_trace", taskCount);
+  assertResourceCount(db, runId, "session_node", taskCount);
+  assertResourceCount(db, runId, "session_checkpoint", taskCount);
+  assertResourceCount(db, runId, "workspace_snapshot", 1);
+  assertResourceCount(db, runId, "evaluator_pipeline_result", 1);
+  assertResourceCount(db, runId, "stop_condition_result", 1);
+  if (hasFailedEvaluatorPipeline(db, runId)) {
+    assertResourceCount(db, runId, "recovery_decision", 1);
+  }
+
+  const stop = db.prepare(`
+    select status
+    from runtime_resources
+    where run_id = ? and resource_type = 'stop_condition_result'
+    order by created_at desc
+    limit 1
+  `).get(runId) as { status: string } | undefined;
+  assert.equal(stop?.status, "passed");
+}
+
+export function assertDynamicWorkflowEvidence(db: SouthstarDb, runId: string): void {
+  assertDomainPackDynamicWorkflowEvidence(db, runId);
+}
+
+export function assertTorkProjectionIsExecutorOnly(db: SouthstarDb, runId: string): void {
+  const row = db.prepare("select execution_projection_json from workflow_runs where id = ?").get(runId) as {
+    execution_projection_json: string;
+  } | undefined;
+  assert.ok(row, `missing workflow run ${runId}`);
+  for (const forbidden of [
+    "workflowGeneratorPolicies",
+    "memoryPolicies",
+    "sessionPolicies",
+    "contextPolicies",
+    "agentProfiles",
+    "roles",
+    "domainPackRef",
+    "workflowGeneration",
+  ]) {
+    assert.equal(row.execution_projection_json.includes(forbidden), false, `Tork projection leaked ${forbidden}`);
+  }
+  assert.match(row.execution_projection_json, /southstar-agent-runner/);
 }
 
 export function assertPhase15SqliteEvidence(db: SouthstarDb, runId: string): void {
@@ -311,6 +412,21 @@ function count(db: SouthstarDb, table: string, where: string, args: SqlValue[] =
   return row.count;
 }
 
+function assertResourceCount(db: SouthstarDb, runId: string, resourceType: string, minimum: number): void {
+  const actual = count(db, "runtime_resources", "run_id = ? and resource_type = ?", [runId, resourceType]);
+  assert.equal(actual >= minimum, true, `expected at least ${minimum} ${resourceType}, got ${actual}`);
+}
+
+function hasFailedEvaluatorPipeline(db: SouthstarDb, runId: string): boolean {
+  const row = db.prepare(`
+    select 1
+    from runtime_resources
+    where run_id = ? and resource_type = 'evaluator_pipeline_result' and status = 'failed'
+    limit 1
+  `).get(runId);
+  return Boolean(row);
+}
+
 function requireDuration(db: SouthstarDb, runId: string, eventType: string): number {
   const row = db.prepare(`
     select payload_json
@@ -346,6 +462,40 @@ function firstEventCreatedAt(db: SouthstarDb, runId: string, eventType: string):
   `).get(runId, eventType) as { created_at: string } | undefined;
   assert.ok(row, `missing timing event ${eventType}`);
   return row.created_at;
+}
+
+function assertInvalidInput(repo: string): void {
+  try {
+    run("npm", ["run", "-s", "cli", "--", "sum", "1", "not-a-number"], repo);
+  } catch (error) {
+    const failure = error as { stdout?: Buffer | string; stderr?: Buffer | string };
+    const output = `${failure.stdout ?? ""}\n${failure.stderr ?? ""}`;
+    assert.match(output, /invalid|number|Usage/i);
+    return;
+  }
+  throw new Error("calc sum invalid input must fail");
+}
+
+function assertReadmeAndTestsDocumentCalcSum(repo: string): void {
+  const readme = readFileSync(join(repo, "README.md"), "utf8");
+  assert.match(readme, /\bsum\b/i);
+  assert.match(readme, /negative|負數|-\d+(?:\.\d+)?/i);
+  assert.match(readme, /decimal|小數|\d+\.\d+/i);
+  assert.match(readme, /invalid|not-a-number|NaN|nope|oops/i);
+  const testSource = readTestSources(join(repo, "test"));
+  assert.match(testSource, /sum/i);
+  assert.match(testSource, /invalid|not-a-number|NaN|oops/i);
+}
+
+function readTestSources(testRoot: string): string {
+  const sources: string[] = [];
+  walk(testRoot, (path) => {
+    if (statSync(path).isFile() && /\.test\.ts$/.test(path)) {
+      sources.push(readFileSync(path, "utf8"));
+    }
+  });
+  assert.ok(sources.length > 0, "fixture must include at least one .test.ts file");
+  return sources.join("\n");
 }
 
 function walk(root: string, visit: (path: string) => void): void {
