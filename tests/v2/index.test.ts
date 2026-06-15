@@ -11,6 +11,8 @@ await import("./domain-pack-dynamic-gates.test.ts");
 await import("./tork-projection.test.ts");
 await import("./executor-provider.test.ts");
 await import("./executor-observability.test.ts");
+await import("./artifact-evidence-validator.test.ts");
+await import("./artifact-evidence-gates.test.ts");
 await import("./task-envelope.test.ts");
 await import("./task-envelope-v2.test.ts");
 await import("./context-builder.test.ts");

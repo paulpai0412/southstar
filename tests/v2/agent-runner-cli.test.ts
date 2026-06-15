@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { runAgentRunnerCli } from "../../src/v2/agent-runner/cli.ts";
 import { parseAgentRunnerArgs, timeoutFromEnvelope } from "../../src/v2/agent-runner/cli.ts";
-import type { TaskEnvelope } from "../../src/v2/agent-runner/task-envelope.ts";
+import type { TaskEnvelope, TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
 
 test("agent runner CLI reads envelope, calls HTTP harness, and writes task result", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-"));
@@ -61,6 +61,66 @@ test("agent runner CLI reads envelope, calls HTTP harness, and writes task resul
   }
 });
 
+test("agent runner CLI refreshes v2 context packet before harness run", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-refresh-"));
+  const envelopePath = join(root, "envelope-v2.json");
+  const resultPath = join(root, "result-v2.json");
+  await writeFile(envelopePath, JSON.stringify(envelopeV2()), "utf8");
+  let refreshCalls = 0;
+  let harnessCalls = 0;
+  const server = createServer(async (request, response) => {
+    const body = await readRequestBody(request);
+    if (request.method === "POST" && request.url === "/context-refresh") {
+      refreshCalls += 1;
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        upstreamContext: {
+          text: "Accepted upstream artifact artifact-plan-1: use minimal implementation",
+          artifactRefs: ["artifact-plan-1"],
+        },
+      }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/harness") {
+      harnessCalls += 1;
+      const payload = JSON.parse(body) as { envelope?: TaskEnvelopeV2 };
+      assert.equal(payload.envelope?.schemaVersion, "southstar.task-envelope.v2");
+      assert.equal(
+        payload.envelope?.contextPacket.priorArtifacts.some((artifact) =>
+          artifact.title === "Accepted upstream artifacts" && /artifact-plan-1/.test(artifact.text)
+        ),
+        true,
+      );
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ artifact: { summary: "done" }, progress: ["ok"], metrics: { tokens: 10 } }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end("not found");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    const rootUrl = `http://127.0.0.1:${address?.port}`;
+    const exitCode = await runAgentRunnerCli([
+      "--envelope",
+      envelopePath,
+      "--result",
+      resultPath,
+      "--harness-endpoint",
+      `${rootUrl}/harness`,
+      "--context-refresh-url",
+      `${rootUrl}/context-refresh`,
+    ]);
+    assert.equal(exitCode, 0);
+    assert.equal(refreshCalls, 1);
+    assert.equal(harnessCalls, 1);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("agent runner CLI args allow Pi SDK harness when HTTP endpoint is absent", () => {
   const parsed = parseAgentRunnerArgs(["--envelope", "/tmp/envelope.json"], {});
 
@@ -108,6 +168,101 @@ function envelope(): TaskEnvelope {
     artifactContract: {
       artifactTypes: ["implementation-report"],
       requiredFields: ["summary", "commandsRun", "risks"],
+    },
+  };
+}
+
+function envelopeV2(): TaskEnvelopeV2 {
+  return {
+    schemaVersion: "southstar.task-envelope.v2",
+    runId: "run-v2",
+    workflowId: "workflow-v2",
+    taskId: "task-v2",
+    domain: "software",
+    intent: "implement_feature",
+    role: {
+      id: "maker",
+      responsibility: "Implement the task.",
+      defaultAgentProfileRef: "software-maker-pi",
+      allowedAgentProfileRefs: ["software-maker-pi"],
+      artifactInputs: ["implementation_plan"],
+      artifactOutputs: ["implementation_report"],
+      stopAuthority: "none",
+    },
+    agentProfile: {
+      id: "software-maker-pi",
+      name: "Software Maker Pi",
+      provider: "pi",
+      model: "pi-agent-default",
+      harnessRef: "pi",
+      promptTemplateRef: "software-maker",
+      agentsMdRefs: [],
+      skillRefs: [],
+      mcpGrantRefs: [],
+      memoryScopes: ["software"],
+      contextPolicyRef: "software-context-default",
+      sessionPolicyRef: "software-session-default",
+      toolPolicy: { allowedTools: ["read"], deniedTools: [], requiresApprovalFor: [] },
+      budgetPolicy: { maxInputTokens: 4096, maxOutputTokens: 1024, maxWallTimeSeconds: 120 },
+    },
+    harness: {
+      id: "pi",
+      kind: "pi-agent",
+      entrypoint: "southstar-agent-runner",
+      image: "southstar/pi-agent:local",
+      capabilities: [],
+      inputProtocol: "task-envelope-v2",
+      eventProtocol: "southstar-events-v1",
+      supportsCheckpoint: true,
+      supportsSteering: true,
+      supportsProgress: true,
+    },
+    contextPacket: {
+      id: "context-v2",
+      runId: "run-v2",
+      taskId: "task-v2",
+      executionAttempt: 1,
+      roleRef: "maker",
+      agentProfileRef: "software-maker-pi",
+      taskGoal: "Implement feature",
+      roleInstruction: "Write code",
+      agentsMdBlocks: [],
+      artifactContracts: [],
+      selectedMemories: [],
+      priorArtifacts: [],
+      skillInstructions: [],
+      mcpGrantSummary: [],
+      forbiddenActions: [],
+      budget: { maxInputTokens: 4096, maxOutputTokens: 1024 },
+      tokenEstimate: { total: 100, bySourceType: {} },
+      excludedCandidates: [],
+    },
+    agentPrompt: "Implement feature",
+    skills: [],
+    mcpGrants: [],
+    vaultLeases: [],
+    artifactContracts: [
+      {
+        id: "implementation_report",
+        artifactType: "implementation-report",
+        requiredFields: ["summary"],
+        evidenceFields: ["testResults"],
+      },
+    ],
+    evaluatorPipeline: {
+      id: "software-feature-quality",
+      evaluators: [],
+      onFailure: { defaultStrategy: "retry-same-agent" },
+    },
+    session: {
+      sessionId: "session-v2",
+      maxRepairAttempts: 1,
+    },
+    workspace: {
+      handle: {
+        repoRoot: "/workspace/repo",
+        worktreePath: "/workspace/repo",
+      },
     },
   };
 }

@@ -25,6 +25,7 @@ export type RealScenarioContext = {
 
 export type CallbackServer = {
   url: string;
+  contextRefreshUrl: string;
   close(): Promise<void>;
 };
 
@@ -43,15 +44,35 @@ export async function startCallbackServer(env: RealE2EEnv): Promise<CallbackServ
   const db = openSouthstarDb(env.southstarDb);
   const server = createServer(async (request, response) => {
     try {
-      if (request.method !== "POST" || request.url !== "/api/v2/tork/callback") {
-        response.statusCode = 404;
-        response.end("not found");
+      if (request.method === "POST" && request.url === "/api/v2/tork/callback") {
+        const payload = JSON.parse(await readRequestBody(request)) as TaskRunCallbackResult;
+        ingestTaskRunResult(db, payload);
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ ok: true }));
         return;
       }
-      const payload = JSON.parse(await readRequestBody(request)) as TaskRunCallbackResult;
-      ingestTaskRunResult(db, payload);
-      response.setHeader("content-type", "application/json");
-      response.end(JSON.stringify({ ok: true }));
+
+      if (request.method === "POST" && request.url === "/api/v2/context/refresh") {
+        const payload = JSON.parse(await readRequestBody(request)) as { runId: string; taskId: string };
+        const row = db.prepare("select workflow_manifest_json from workflow_runs where id = ?")
+          .get(payload.runId) as { workflow_manifest_json: string } | undefined;
+        const workflow = row ? JSON.parse(row.workflow_manifest_json) as {
+          tasks?: Array<{ id: string; dependsOn?: string[] }>;
+        } : undefined;
+        const task = workflow?.tasks?.find((candidate) => candidate.id === payload.taskId);
+        const { buildRefreshedContextSummary } = await import("../../../src/v2/artifacts/context-refresh.ts");
+        const upstreamContext = buildRefreshedContextSummary(db, {
+          runId: payload.runId,
+          taskId: payload.taskId,
+          dependencyTaskIds: task?.dependsOn ?? [],
+        });
+        response.setHeader("content-type", "application/json");
+        response.end(JSON.stringify({ upstreamContext }));
+        return;
+      }
+
+      response.statusCode = 404;
+      response.end("not found");
     } catch (error) {
       response.statusCode = 500;
       response.end((error as Error).message);
@@ -63,6 +84,7 @@ export async function startCallbackServer(env: RealE2EEnv): Promise<CallbackServ
   const callbackHost = process.env.SOUTHSTAR_CALLBACK_HOST ?? "172.17.0.1";
   return {
     url: `http://${callbackHost}:${address.port}/api/v2/tork/callback`,
+    contextRefreshUrl: `http://${callbackHost}:${address.port}/api/v2/context/refresh`,
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
 }
@@ -115,6 +137,21 @@ export function softwareGoalPrompt(repo: string): string {
     "產出 artifact 後必須由 evaluator pipeline 與 stop condition 驗收；若驗收失敗，RootSession 必須記錄 retry 或 fork/rollback/workflow revision recovery decision。",
     "最後只有 stop condition 通過，run 才能標記 passed/completed。",
     "artifact 必須包含修改摘要、filesChanged、commandsRun、testResults、risks、artifactEvidence。",
+    `Fixture repo: ${repo}`,
+  ].join("\n");
+}
+
+export function artifactEvidenceValidatorGoalPrompt(repo: string): string {
+  return [
+    "在真實 fixture repo 中完成可驗證的軟工任務：新增 CLI 指令 calc sum <numbers...>。",
+    "這不是 smoke test；必須透過真實 Docker/Tork 執行每個 workflow task，並產出可驗收 artifact/evidence/validator resources。",
+    "功能要求：支援多個數字、負數、小數；invalid input 必須非 0 exit code 並顯示 Invalid number: <value>。",
+    "品質要求：更新單元測試與 README；不新增 runtime dependency；保持最小改動。",
+    "Artifact 要求：每個 task 必須產出 contract-valid artifact；implementation artifact 必須包含 summary、filesChanged、commandsRun、testResults、risks、artifactEvidence。",
+    "Evidence 要求：每個 accepted artifact 必須有 evidence_packet；implementation 必須有 file-diff、test-result、command-output evidence。",
+    "Validator 要求：每個 accepted artifact 必須有 typed validator_result；blocking validator 不可 failed。",
+    "Context 要求：downstream task 不可依賴 raw transcript 或盲目掃 workspace；必須使用 accepted upstream artifact/evidence summary。",
+    "量化驗收：run 必須 passed/completed；accepted artifact count 必須等於 evidence packet count；blocking validator failures 必須為 0；fixture repo 必須通過 npm test。",
     `Fixture repo: ${repo}`,
   ].join("\n");
 }
@@ -212,6 +249,69 @@ export function assertFixtureTests(repo: string): void {
     "southstar/pi-agent:local",
     "test",
   ], { cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+}
+
+export function assertArtifactEvidenceQuantitativeGates(db: SouthstarDb, runId: string): void {
+  const completedTasks = count(db, "workflow_tasks", "run_id = ? and status = 'completed'", [runId]);
+  assert.equal(completedTasks >= 4, true, `expected at least 4 completed tasks, got ${completedTasks}`);
+
+  const acceptedArtifacts = count(
+    db,
+    "runtime_resources",
+    "run_id = ? and resource_type = 'artifact' and status = 'accepted'",
+    [runId],
+  );
+  assert.equal(
+    acceptedArtifacts,
+    completedTasks,
+    `accepted artifact count ${acceptedArtifacts} must equal completed task count ${completedTasks}`,
+  );
+
+  const evidencePackets = count(
+    db,
+    "runtime_resources",
+    "run_id = ? and resource_type = 'evidence_packet' and status = 'complete'",
+    [runId],
+  );
+  assert.equal(
+    evidencePackets,
+    acceptedArtifacts,
+    `complete evidence packets ${evidencePackets} must equal accepted artifacts ${acceptedArtifacts}`,
+  );
+
+  const validatorRows = db.prepare(`
+    select payload_json from runtime_resources
+    where run_id = ? and resource_type = 'validator_result'
+  `).all(runId) as Array<{ payload_json: string }>;
+  const failedBlocking = validatorRows.filter((row) => {
+    const payload = JSON.parse(row.payload_json) as { blocking?: boolean; verdict?: string };
+    return payload.blocking === true && payload.verdict === "failed";
+  });
+  assert.equal(failedBlocking.length, 0, `blocking validator failures must be 0, got ${failedBlocking.length}`);
+
+  const oversized = db.prepare(`
+    select resource_type, resource_key, length(payload_json) as size
+    from runtime_resources
+    where run_id = ? and resource_type in ('artifact', 'evidence_packet', 'validator_result') and length(payload_json) > 50000
+  `).all(runId) as Array<{ resource_type: string; resource_key: string; size: number }>;
+  assert.deepEqual(oversized, [], `artifact/evidence/validator payloads exceed 50000 bytes: ${JSON.stringify(oversized)}`);
+
+  const readinessRows = db.prepare(`
+    select payload_json from runtime_resources
+    where run_id = ? and resource_type = 'downstream_readiness'
+  `).all(runId) as Array<{ payload_json: string }>;
+  for (const row of readinessRows) {
+    const payload = JSON.parse(row.payload_json) as { ready?: boolean; blockers?: unknown[] };
+    assert.equal(payload.ready, true, `downstream readiness must be true: ${row.payload_json}`);
+    assert.equal(payload.blockers?.length ?? 0, 0, `downstream readiness blockers must be empty: ${row.payload_json}`);
+  }
+
+  const stop = db.prepare(`
+    select status from runtime_resources
+    where run_id = ? and resource_type = 'stop_condition_result'
+    order by created_at desc limit 1
+  `).get(runId) as { status: string } | undefined;
+  assert.equal(stop?.status, "passed", "terminal stop condition must pass");
 }
 
 export function assertSqliteEvidence(db: SouthstarDb): void {

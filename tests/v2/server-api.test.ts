@@ -39,7 +39,14 @@ test("runtime server exposes plan, run, status, steering, task envelope, and cal
       rootSessionId: envelope.result.session.sessionId,
       ok: true,
       attempts: 1,
-      artifact: { summary: "done", commandsRun: ["npm test"], testResults: "passed", risks: [] },
+      artifact: {
+        summary: "done",
+        filesChanged: ["src/index.ts"],
+        commandsRun: ["npm test"],
+        testResults: [{ command: "npm test", status: "passed", output: "ok" }],
+        risks: [],
+        artifactEvidence: { testResults: [{ command: "npm test", status: "passed", output: "ok" }] },
+      },
       metrics: { tokens: 10, costUsd: 0.01, toolCalls: 1, retries: 0, durationMs: 100 },
       events: [{
         eventType: "subagent.completed",

@@ -2,7 +2,6 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SouthstarDb } from "../stores/sqlite.ts";
 import { appendHistoryEvent } from "../stores/history-store.ts";
-import { upsertRuntimeResource } from "../stores/resource-store.ts";
 import { recomputeManagementMetrics, type ManagementMetrics } from "../stores/metrics-store.ts";
 import type { TaskRunnerEvent } from "../agent-runner/task-runner.ts";
 import { createSqliteSessionGraphProvider } from "../session-graph/sqlite-provider.ts";
@@ -11,6 +10,9 @@ import type { ArtifactContract, EvaluatorPipelineDefinition } from "../domain-pa
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { runEvaluatorPipeline } from "../evaluators/pipeline.ts";
 import { evaluateStopCondition } from "../evaluators/stop-condition.ts";
+import { acceptTaskRunArtifact } from "../artifacts/acceptance.ts";
+import type { EvidenceKind } from "../artifacts/types.ts";
+import { computeDownstreamReadiness } from "../artifacts/downstream-readiness.ts";
 
 export type TaskRunCallbackResult = {
   runId: string;
@@ -38,33 +40,35 @@ export function ingestTaskRunResult(db: SouthstarDb, result: TaskRunCallbackResu
       });
     }
 
-    const artifactResourceId = `artifact-${result.runId}-${result.taskId}-callback`;
-    upsertRuntimeResource(db, {
-      id: artifactResourceId,
-      resourceType: "artifact",
-      resourceKey: artifactResourceId,
+    const acceptance = acceptTaskRunArtifact(db, {
       runId: result.runId,
       taskId: result.taskId,
-      sessionId: result.rootSessionId,
-      scope: "task",
-      status: result.ok ? "accepted" : "rejected",
-      title: result.ok ? "Accepted callback artifact" : "Rejected callback artifact",
-      payload: result.artifact,
+      rootSessionId: result.rootSessionId,
+      attempts: result.attempts,
+      producerAgentSpecRef: producerAgentSpecRef(db, result.runId, result.taskId),
+      artifactContract: taskArtifactContract(db, result.runId, result.taskId),
+      requiredEvidenceKinds: requiredEvidenceKindsForTask(db, result.runId, result.taskId),
+      artifact: result.artifact,
       metrics: result.metrics,
     });
+    const artifactResourceId = acceptance.artifactResourceId;
+
     appendHistoryEvent(db, {
       runId: result.runId,
       taskId: result.taskId,
       sessionId: result.rootSessionId,
       eventType: "artifact.created",
       actorType: "orchestrator",
-      payload: { artifactResourceId, attempts: result.attempts, accepted: result.ok },
+      payload: {
+        artifactResourceId,
+        attempts: result.attempts,
+        accepted: acceptance.accepted,
+        validatorResultIds: acceptance.validatorResultIds,
+        evidencePacketId: acceptance.evidencePacketId,
+      },
     });
-    if (result.ok) {
+    if (acceptance.accepted) {
       runTaskEvaluatorPipeline(db, result);
-    }
-
-    if (result.ok) {
       createSqliteSessionGraphProvider(db).checkpoint({
         sessionId: result.rootSessionId,
         runId: result.runId,
@@ -76,7 +80,8 @@ export function ingestTaskRunResult(db: SouthstarDb, result: TaskRunCallbackResu
       });
     }
 
-    updateTaskStatus(db, result.runId, result.taskId, result.ok ? "completed" : "failed");
+    updateTaskStatus(db, result.runId, result.taskId, acceptance.accepted ? "completed" : "failed");
+    refreshRunDownstreamReadiness(db, result.runId);
     recomputeManagementMetrics(db, result.runId);
     if (allTasksTerminal(db, result.runId)) {
       const stopConditionsPassed = !allTasksPassed(db, result.runId) || evaluateRunStopConditions(db, result.runId);
@@ -165,6 +170,63 @@ function evaluatorArtifactRef(pipeline: EvaluatorPipelineDefinition): string | u
     if (typeof artifactRef === "string") return artifactRef;
   }
   return undefined;
+}
+
+function refreshRunDownstreamReadiness(db: SouthstarDb, runId: string): void {
+  const workflow = readWorkflowManifest(db, runId);
+  if (!workflow) return;
+  for (const task of workflow.tasks) {
+    const taskStatus = db.prepare("select status from workflow_tasks where run_id = ? and id = ?")
+      .get(runId, task.id) as { status?: string } | undefined;
+    if (taskStatus?.status !== "completed") continue;
+    computeDownstreamReadiness(db, {
+      runId,
+      taskId: task.id,
+      dependencies: task.dependsOn.map((dependencyTaskId) => {
+        const dependencyTask = workflow.tasks.find((candidate) => candidate.id === dependencyTaskId);
+        const artifactContractRefs = dependencyTask?.requiredArtifactRefs
+          ?? dependencyTask?.subagents[0]?.requiredArtifacts
+          ?? [];
+        return {
+          taskId: dependencyTaskId,
+          artifactContractRefs,
+          workspaceStateRequired: Boolean(dependencyTask?.workspacePolicyRef),
+        };
+      }),
+    });
+  }
+}
+
+function producerAgentSpecRef(db: SouthstarDb, runId: string, taskId: string): string {
+  const workflow = readWorkflowManifest(db, runId);
+  const task = workflow?.tasks.find((candidate) => candidate.id === taskId);
+  return task?.agentProfileRef ?? task?.subagents[0]?.id ?? "unknown-agent";
+}
+
+function taskArtifactContract(db: SouthstarDb, runId: string, taskId: string): ArtifactContract {
+  const workflow = readWorkflowManifest(db, runId);
+  const task = workflow?.tasks.find((candidate) => candidate.id === taskId);
+  if (!workflow || !task) throw new Error(`missing workflow task ${runId}/${taskId}`);
+  const artifactRef = task.requiredArtifactRefs?.[0] ?? task.subagents[0]?.requiredArtifacts[0];
+  const contract = artifactRef ? findArtifactContract(workflow, artifactRef) : undefined;
+  if (!contract) throw new Error(`missing artifact contract for ${runId}/${taskId}`);
+  return contract;
+}
+
+function requiredEvidenceKindsForTask(db: SouthstarDb, runId: string, taskId: string): EvidenceKind[] {
+  const contract = taskArtifactContract(db, runId, taskId);
+  const kinds = new Set<EvidenceKind>();
+  for (const field of contract.evidenceFields) {
+    if (field === "filesChanged") kinds.add("file-diff");
+    if (field === "filesToInspect") kinds.add("workspace-snapshot");
+    if (field === "commandsRun" || field === "commandsToRun") kinds.add("command-output");
+    if (field === "testResults" || field === "tests" || field === "checkerFindings" || field === "artifactEvidence") {
+      kinds.add("test-result");
+    }
+    if (field === "acceptedArtifacts") kinds.add("artifact-ref");
+  }
+  if (kinds.size === 0) kinds.add("artifact-ref");
+  return [...kinds];
 }
 
 function numericMetrics(metrics: Partial<ManagementMetrics>): Record<string, number> {

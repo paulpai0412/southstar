@@ -14,6 +14,7 @@ import { runUiBrowserOperationsScenario } from "./scenarios/ui-browser-operation
 import { runUiLoopEngineeringControlPlaneScenario } from "./scenarios/ui-loop-engineering-control-plane.ts";
 import { runVoiceCommandPolicyScenario } from "./scenarios/voice-command-policy.ts";
 import { runExecutorObservabilityRealScenario } from "./scenarios/executor-observability-real.ts";
+import { runArtifactEvidenceValidatorRealScenario } from "./scenarios/artifact-evidence-validator-real.ts";
 import {
   assertNoDurableSouthstarFolders,
   assertSqliteEvidence,
@@ -25,12 +26,20 @@ import { getRunStatus } from "../../src/v2/ui-api/local-api.ts";
 import { assertPhase1QuantitativeGates } from "../../src/v2/quality/phase1-gates.ts";
 import { assertPhase15QuantitativeGates } from "../../src/v2/quality/phase15-gates.ts";
 import { assertDomainPackDynamicQuantitativeGates } from "../../src/v2/quality/domain-pack-dynamic-gates.ts";
+import { assertArtifactEvidenceGates } from "../../src/v2/quality/artifact-evidence-gates.ts";
 
 test("Phase 1 real E2E suite", async () => {
   const e2eStartedAt = Date.now();
   const env = await loadRealE2EEnv();
   const dynamicFeature = await runDomainPackDynamicWorkflowFeatureScenario(env);
   await runExecutorObservabilityRealScenario(env);
+  const artifactEvidence = await runArtifactEvidenceValidatorRealScenario(env);
+  const artifactEvidenceContext = createScenarioContext(env);
+  const artifactGate = assertArtifactEvidenceGates(artifactEvidenceContext.db, {
+    runId: artifactEvidence.runId,
+    minCompletedTasks: 4,
+  });
+  assert.equal(artifactGate.ok, true, artifactGate.failures.join("\n"));
   const dynamicContext = createScenarioContext(env);
   const dynamicGate = assertDomainPackDynamicQuantitativeGates(dynamicContext.db, {
     runId: dynamicFeature.runId,

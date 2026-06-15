@@ -228,6 +228,7 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
   runRoot?: string;
   callbackUrl?: string;
   harnessEndpoint?: string;
+  contextRefreshUrl?: string;
 }): Promise<{ runId: string; tork: TorkSubmitResult }> {
   const bundle = readDraftBundle(db, input.draftId);
   const draftResource = getResourceByKey(db, "planner_draft", input.draftId);
@@ -281,6 +282,7 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     runId,
     runRoot: input.runRoot,
     harnessEndpoint: input.harnessEndpoint,
+    contextRefreshUrl: input.contextRefreshUrl,
   });
   const executorSubmitStartedAt = Date.now();
   const executorSubmission = await executorProvider.submit({
@@ -364,6 +366,7 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
   runRoot?: string;
   callbackUrl?: string;
   harnessEndpoint?: string;
+  contextRefreshUrl?: string;
 }) {
   const workflow = readRunWorkflow(db, input.runId);
   requestWorkflowRevision(db, {
@@ -398,6 +401,7 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
       runId: input.runId,
       runRoot: input.runRoot,
       harnessEndpoint: input.harnessEndpoint,
+      contextRefreshUrl: input.contextRefreshUrl,
     },
   );
   const executorProvider = resolveExecutorProvider(input);
@@ -553,7 +557,7 @@ function inferDomain(workflow: SouthstarWorkflowManifest): string {
 async function materializedWorkflowForExecution(
   db: SouthstarDb,
   workflow: SouthstarWorkflowManifest,
-  input: { runId: string; runRoot?: string; harnessEndpoint?: string },
+  input: { runId: string; runRoot?: string; harnessEndpoint?: string; contextRefreshUrl?: string },
 ): Promise<SouthstarWorkflowManifest> {
   const tasks = [];
   const domainPack = domainPackForWorkflow(workflow);
@@ -603,6 +607,7 @@ async function materializedWorkflowForExecution(
         env: {
           ...task.execution.env,
           ...(input.harnessEndpoint ? { SOUTHSTAR_HARNESS_ENDPOINT: input.harnessEndpoint } : {}),
+          ...(input.contextRefreshUrl ? { SOUTHSTAR_CONTEXT_REFRESH_URL: input.contextRefreshUrl } : {}),
           ...runtimeHarnessEnv(runtimeTask.agentProfile),
           SOUTHSTAR_MATERIALIZATION_ROOT: input.runRoot ?? "/tmp/southstar-runs",
           ...(piAgentConfigMount ? {

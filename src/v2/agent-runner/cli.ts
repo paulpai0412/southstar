@@ -12,11 +12,14 @@ export async function runAgentRunnerCli(
   try {
     const options = parseAgentRunnerArgs(argv);
     const envelope = JSON.parse(await readFile(options.envelopePath, "utf8")) as AnyTaskEnvelope;
-    const stopHeartbeat = startHeartbeatLoop(options, envelope);
+    const refreshedEnvelope = options.contextRefreshUrl
+      ? await refreshEnvelopeContext(options.contextRefreshUrl, envelope)
+      : envelope;
+    const stopHeartbeat = startHeartbeatLoop(options, refreshedEnvelope);
     const result = await (async () => {
       try {
-        return await runTaskEnvelope(envelope, createAgentHarness(options, envelope), {
-          requiredFields: options.requiredFields ?? requiredFieldsFromEnvelope(envelope),
+        return await runTaskEnvelope(refreshedEnvelope, createAgentHarness(options, refreshedEnvelope), {
+          requiredFields: options.requiredFields ?? requiredFieldsFromEnvelope(refreshedEnvelope),
         });
       } finally {
         stopHeartbeat();
@@ -60,6 +63,7 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
     torkTaskId: flagValue(argv, "--tork-task-id") ?? env.SOUTHSTAR_TORK_TASK_ID ?? env.TORK_TASK_ID,
     materializationRoot: flagValue(argv, "--materialization-root") ?? env.SOUTHSTAR_MATERIALIZATION_ROOT,
     harnessTimeoutMs: numberFromEnv(flagValue(argv, "--harness-timeout-ms") ?? env.SOUTHSTAR_HARNESS_TIMEOUT_MS),
+    contextRefreshUrl: flagValue(argv, "--context-refresh-url") ?? env.SOUTHSTAR_CONTEXT_REFRESH_URL,
   };
 }
 
@@ -155,6 +159,45 @@ function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, en
     stopped = true;
     clearInterval(timer);
     void sendHeartbeat("shutdown", "agent runner shutting down");
+  };
+}
+
+async function refreshEnvelopeContext(url: string, envelope: AnyTaskEnvelope): Promise<AnyTaskEnvelope> {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return envelope;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ runId: envelope.runId, taskId: envelope.taskId }),
+  });
+  if (!response.ok) {
+    throw new Error(`context refresh failed: ${response.status} ${await response.text()}`);
+  }
+  const payload = await response.json() as {
+    upstreamContext?: {
+      text?: string;
+      artifactRefs?: string[];
+      evidencePacketRefs?: string[];
+      validatorResultRefs?: string[];
+    };
+  };
+  const text = payload.upstreamContext?.text?.trim();
+  if (!text) return envelope;
+  return {
+    ...envelope,
+    contextPacket: {
+      ...envelope.contextPacket,
+      priorArtifacts: [
+        ...envelope.contextPacket.priorArtifacts,
+        {
+          id: `upstream-${envelope.runId}-${envelope.taskId}`,
+          sourceType: "artifact",
+          title: "Accepted upstream artifacts",
+          text,
+          sourceRef: payload.upstreamContext?.artifactRefs?.join(","),
+          tokenEstimate: Math.max(1, Math.ceil(text.length / 4)),
+        },
+      ],
+    },
   };
 }
 
