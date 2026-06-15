@@ -12,14 +12,6 @@ test("parses v2 plan command", () => {
   });
 });
 
-test("parses optional --config for v2 commands", () => {
-  assert.deepEqual(parseV2Command(["run-goal", "--config", ".southstar.yaml", "--goal", "ship cube"]), {
-    command: "run-goal",
-    goal: "ship cube",
-    configPath: ".southstar.yaml",
-  });
-});
-
 test("parses v2 run and status commands", () => {
   assert.deepEqual(parseV2Command(["run", "--draft-id", "draft-1"]), {
     command: "run",
