@@ -163,14 +163,16 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
     const commandId = requiredPayloadString(request.providerPayload, "commandId");
     await this.sdkClient.killCommand({ sandboxId, commandId });
     await this.sdkClient.destroySandbox({ sandboxId });
-    const cleanup = nextCleanupPayload(request.providerPayload?.cleanup, { finalizerStatus: "destroyed" });
     return {
       executorType: this.executorType,
       externalJobId: request.externalJobId,
       status: "cancelled",
       providerPayload: {
         ...(request.providerPayload ?? {}),
-        cleanup,
+        cleanup: {
+          ...(request.providerPayload?.cleanup as Record<string, unknown> ?? {}),
+          finalizerStatus: "destroyed",
+        },
       },
     };
   }
@@ -199,7 +201,10 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
         status: "destroyed",
         providerPayload: {
           ...(request.providerPayload ?? {}),
-          cleanup: nextCleanupPayload(request.providerPayload?.cleanup, { finalizerStatus: "destroyed" }),
+          cleanup: {
+            ...(request.providerPayload?.cleanup as Record<string, unknown> ?? {}),
+            finalizerStatus: "destroyed",
+          },
         },
       };
     } catch (error) {
@@ -209,10 +214,11 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
         status: "retry_scheduled",
         providerPayload: {
           ...(request.providerPayload ?? {}),
-          cleanup: nextCleanupPayload(request.providerPayload?.cleanup, {
+          cleanup: {
+            ...(request.providerPayload?.cleanup as Record<string, unknown> ?? {}),
             finalizerStatus: "retry_scheduled",
             lastError: (error as Error).message,
-          }),
+          },
         },
       };
     }
@@ -281,26 +287,4 @@ function requiredPayloadString(payload: Record<string, unknown> | undefined, fie
     throw new Error(`CubeSandbox provider payload missing ${field}`);
   }
   return value;
-}
-
-function nextCleanupPayload(
-  cleanupPayload: unknown,
-  patch: { finalizerStatus: string; lastError?: string },
-): Record<string, unknown> {
-  const current = cleanupPayload as {
-    required?: unknown;
-    destroyOnCompletion?: unknown;
-    attempts?: unknown;
-    lastAttemptAt?: unknown;
-  } | undefined;
-  const attempts = typeof current?.attempts === "number" ? current.attempts + 1 : 1;
-  return {
-    ...(typeof cleanupPayload === "object" && cleanupPayload !== null ? cleanupPayload as Record<string, unknown> : {}),
-    required: typeof current?.required === "boolean" ? current.required : true,
-    destroyOnCompletion: typeof current?.destroyOnCompletion === "boolean" ? current.destroyOnCompletion : true,
-    attempts,
-    lastAttemptAt: new Date().toISOString(),
-    finalizerStatus: patch.finalizerStatus,
-    ...(patch.lastError ? { lastError: patch.lastError } : {}),
-  };
 }
