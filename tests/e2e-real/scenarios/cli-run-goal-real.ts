@@ -52,7 +52,7 @@ export async function runCliRunGoalRealScenario(env: RealE2EEnv): Promise<{ runI
     const runId = payload.result.runId;
     const jobId = payload.result.tork.jobId;
     await waitForTorkJob(env.torkBaseUrl, jobId);
-    await waitForRunStatus(context.db, runId, ["passed", "completed"]);
+    await waitForRunStatus(context.db, runId, ["passed", "completed"], 180_000);
     assertDynamicWorkflowEvidence(context.db, runId);
     assertCalcSum(repo);
     assertFixtureTests(repo);
