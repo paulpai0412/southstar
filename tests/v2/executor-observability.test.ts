@@ -7,6 +7,15 @@ import {
   validateExecutorBindingPayload,
   type ExecutorBindingPayload,
 } from "../../src/v2/executor/observability-types.ts";
+import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
+import { createWorkflowRun } from "../../src/v2/stores/run-store.ts";
+import { createWorkflowTask } from "../../src/v2/stores/task-store.ts";
+import { listHistoryForRun } from "../../src/v2/stores/history-store.ts";
+import {
+  createExecutorBinding,
+  listExecutorBindingsForRun,
+  updateExecutorBindingStatus,
+} from "../../src/v2/executor/bindings.ts";
 
 test("validates executor binding payload and preserves four-layer status fields", () => {
   const payload: ExecutorBindingPayload = {
@@ -66,4 +75,90 @@ test("classifies queue, heartbeat, and hard timeout separately", () => {
     queueTimeoutAt: "2026-06-15T00:20:00.000Z",
     hardTimeoutAt: "2026-06-15T00:04:00.000Z",
   }, now), ["hard-timeout"]);
+});
+
+test("creates one durable executor binding per task attempt with submitted history", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-bind",
+    status: "running",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  createWorkflowTask(db, {
+    id: "task-a",
+    runId: "run-bind",
+    taskKey: "task-a",
+    status: "pending",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+
+  const binding = createExecutorBinding(db, {
+    runId: "run-bind",
+    taskId: "task-a",
+    attemptId: "attempt-1",
+    torkJobId: "job-bind",
+    status: "submitted",
+    now: "2026-06-15T00:00:00.000Z",
+    queueTimeoutSeconds: 120,
+    hardTimeoutSeconds: 600,
+  });
+
+  assert.equal(binding.payload.southstarExecutorStatus, "submitted");
+  assert.equal(listExecutorBindingsForRun(db, "run-bind").length, 1);
+  assert.equal(listHistoryForRun(db, "run-bind").some((event) => event.eventType === "executor.submitted"), true);
+});
+
+test("updates executor binding status without creating duplicate binding resources", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-update",
+    status: "running",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  createWorkflowTask(db, {
+    id: "task-a",
+    runId: "run-update",
+    taskKey: "task-a",
+    status: "pending",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+  const binding = createExecutorBinding(db, {
+    runId: "run-update",
+    taskId: "task-a",
+    attemptId: "attempt-1",
+    torkJobId: "job-update",
+    status: "submitted",
+    now: "2026-06-15T00:00:00.000Z",
+    queueTimeoutSeconds: 120,
+    hardTimeoutSeconds: 600,
+  });
+
+  updateExecutorBindingStatus(db, {
+    bindingId: binding.id,
+    status: "running",
+    eventType: "executor.observed",
+    payloadPatch: {
+      torkObservedStatus: "RUNNING",
+      startedAt: "2026-06-15T00:00:10.000Z",
+    },
+  });
+
+  const bindings = listExecutorBindingsForRun(db, "run-update");
+  assert.equal(bindings.length, 1);
+  assert.equal(bindings[0]?.payload.southstarExecutorStatus, "running");
+  assert.equal(bindings[0]?.payload.torkObservedStatus, "RUNNING");
 });
