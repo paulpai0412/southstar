@@ -6,6 +6,7 @@ import { loadConfig, parseYamlSubset, readBootstrapEnv } from "../../src/config/
 
 const fixture = join(import.meta.dirname, "../fixtures/southstar/config/.southstar.yaml");
 const cubesandboxFixture = join(import.meta.dirname, "../fixtures/southstar/config/.southstar.cubesandbox.yaml");
+const cubesandboxDevEnvFixture = join(import.meta.dirname, "../fixtures/southstar/config/.southstar.cubesandbox.dev-env.yaml");
 
 test("loads Southstar config from .southstar.yaml shape", () => {
   const config = loadConfig(fixture, "/tmp/project-root-override");
@@ -37,6 +38,14 @@ test("loads cubesandbox fixture config from .southstar.yaml", () => {
   assert.equal(config.executor.cubesandbox?.apiUrl, "http://127.0.0.1:3000");
   assert.equal(config.executor.cubesandbox?.apiKeyRef, "cubesandbox-api-key");
   assert.equal(config.executor.cubesandbox?.templateId, "southstar-agent-template");
+});
+
+test("loads cubesandbox dev-env fixture with local forwarded API and bounded exception timeouts", () => {
+  const config = loadConfig(cubesandboxDevEnvFixture);
+  assert.equal(config.executor.provider, "cubesandbox");
+  assert.equal(config.executor.cubesandbox?.apiUrl, "http://127.0.0.1:13000");
+  assert.equal(config.executor.lifecycle.taskWallTimeoutSeconds, 15);
+  assert.equal(config.executor.lifecycle.callbackWaitTimeoutSeconds, 45);
 });
 
 test("allows only Southstar bootstrap env names", () => {
