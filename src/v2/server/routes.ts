@@ -1,4 +1,5 @@
 import { ingestTaskRunResult, type TaskRunCallbackResult } from "../executor/tork-callback.ts";
+import { recordExecutorHeartbeat } from "../executor/heartbeat.ts";
 import {
   createPlannerDraft,
   createRunFromDraft,
@@ -196,6 +197,23 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       return json("task-envelope", getTaskEnvelope(context.db, {
         runId: decodeURIComponent(envelopeMatch[1]!),
         taskId: decodeURIComponent(envelopeMatch[2]!),
+      }));
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/v2/executor/heartbeat") {
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      return json("executor-heartbeat", recordExecutorHeartbeat(context.db, {
+        runId: requiredString(body.runId, "runId"),
+        taskId: requiredString(body.taskId, "taskId"),
+        attemptId: requiredString(body.attemptId, "attemptId"),
+        executorType: "tork",
+        torkJobId: requiredString(body.torkJobId, "torkJobId"),
+        torkTaskId: typeof body.torkTaskId === "string" ? body.torkTaskId : undefined,
+        rootSessionId: requiredString(body.rootSessionId, "rootSessionId"),
+        heartbeatSeq: typeof body.heartbeatSeq === "number" && Number.isFinite(body.heartbeatSeq) ? body.heartbeatSeq : 1,
+        phase: requiredString(body.phase, "phase") as "booting" | "root-session-started" | "subagent-running" | "artifact-uploading" | "callback-sent" | "shutdown",
+        message: typeof body.message === "string" ? body.message : undefined,
+        observedAt: typeof body.observedAt === "string" ? body.observedAt : new Date().toISOString(),
       }));
     }
 

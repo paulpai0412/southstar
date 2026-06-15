@@ -12,9 +12,16 @@ export async function runAgentRunnerCli(
   try {
     const options = parseAgentRunnerArgs(argv);
     const envelope = JSON.parse(await readFile(options.envelopePath, "utf8")) as AnyTaskEnvelope;
-    const result = await runTaskEnvelope(envelope, createAgentHarness(options, envelope), {
-      requiredFields: options.requiredFields ?? requiredFieldsFromEnvelope(envelope),
-    });
+    const stopHeartbeat = startHeartbeatLoop(options, envelope);
+    const result = await (async () => {
+      try {
+        return await runTaskEnvelope(envelope, createAgentHarness(options, envelope), {
+          requiredFields: options.requiredFields ?? requiredFieldsFromEnvelope(envelope),
+        });
+      } finally {
+        stopHeartbeat();
+      }
+    })();
     result.materializationRoot = options.materializationRoot;
     if (options.resultPath) {
       await writeFile(options.resultPath, JSON.stringify(result, null, 2), "utf8");
@@ -46,6 +53,11 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
     requiredFields,
     resultPath: flagValue(argv, "--result") ?? env.SOUTHSTAR_RESULT_PATH,
     callbackUrl: flagValue(argv, "--callback-url") ?? env.SOUTHSTAR_CALLBACK_URL,
+    heartbeatUrl: flagValue(argv, "--heartbeat-url") ?? env.SOUTHSTAR_HEARTBEAT_URL,
+    heartbeatIntervalMs: numberFromEnv(flagValue(argv, "--heartbeat-interval-ms") ?? env.SOUTHSTAR_HEARTBEAT_INTERVAL_MS) ?? 10_000,
+    attemptId: flagValue(argv, "--attempt-id") ?? env.SOUTHSTAR_ATTEMPT_ID ?? "attempt-1",
+    torkJobId: flagValue(argv, "--tork-job-id") ?? env.SOUTHSTAR_TORK_JOB_ID ?? env.TORK_JOB_ID,
+    torkTaskId: flagValue(argv, "--tork-task-id") ?? env.SOUTHSTAR_TORK_TASK_ID ?? env.TORK_TASK_ID,
     materializationRoot: flagValue(argv, "--materialization-root") ?? env.SOUTHSTAR_MATERIALIZATION_ROOT,
     harnessTimeoutMs: numberFromEnv(flagValue(argv, "--harness-timeout-ms") ?? env.SOUTHSTAR_HARNESS_TIMEOUT_MS),
   };
@@ -96,6 +108,54 @@ async function postCallback(callbackUrl: string, result: TaskRunResult): Promise
   if (!response.ok) {
     throw new Error(`callback request failed: ${response.status} ${await response.text()}`);
   }
+}
+
+function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope): () => void {
+  if (!options.heartbeatUrl || !options.torkJobId) {
+    return () => undefined;
+  }
+
+  let seq = 0;
+  let stopped = false;
+
+  const sendHeartbeat = async (phase: string, message: string) => {
+    if (!options.heartbeatUrl || !options.torkJobId) return;
+    seq += 1;
+    try {
+      await fetch(options.heartbeatUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          runId: envelope.runId,
+          taskId: envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id,
+          attemptId: options.attemptId,
+          executorType: "tork",
+          torkJobId: options.torkJobId,
+          torkTaskId: options.torkTaskId,
+          rootSessionId: envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.session.sessionId : envelope.rootSession.id,
+          heartbeatSeq: seq,
+          phase,
+          message,
+          observedAt: new Date().toISOString(),
+        }),
+      });
+    } catch {
+      // Best-effort heartbeat; task execution remains authoritative.
+    }
+  };
+
+  void sendHeartbeat("booting", "agent runner booting");
+  const timer = setInterval(() => {
+    if (!stopped) {
+      void sendHeartbeat("subagent-running", "agent runner active");
+    }
+  }, options.heartbeatIntervalMs);
+
+  return () => {
+    stopped = true;
+    clearInterval(timer);
+    void sendHeartbeat("shutdown", "agent runner shutting down");
+  };
 }
 
 function flagValue(argv: string[], flag: string): string | undefined {

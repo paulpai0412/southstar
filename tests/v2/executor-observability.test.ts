@@ -16,6 +16,7 @@ import {
   listExecutorBindingsForRun,
   updateExecutorBindingStatus,
 } from "../../src/v2/executor/bindings.ts";
+import { recordExecutorHeartbeat } from "../../src/v2/executor/heartbeat.ts";
 
 test("validates executor binding payload and preserves four-layer status fields", () => {
   const payload: ExecutorBindingPayload = {
@@ -161,4 +162,58 @@ test("updates executor binding status without creating duplicate binding resourc
   assert.equal(bindings.length, 1);
   assert.equal(bindings[0]?.payload.southstarExecutorStatus, "running");
   assert.equal(bindings[0]?.payload.torkObservedStatus, "RUNNING");
+});
+
+test("records heartbeat as liveness only and does not complete workflow task", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-hb",
+    status: "running",
+    domain: "software",
+    goalPrompt: "heartbeat",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  createWorkflowTask(db, {
+    id: "task-hb",
+    runId: "run-hb",
+    taskKey: "task-hb",
+    status: "running",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+  createExecutorBinding(db, {
+    runId: "run-hb",
+    taskId: "task-hb",
+    attemptId: "attempt-1",
+    torkJobId: "job-hb",
+    status: "running",
+    now: "2026-06-15T00:00:00.000Z",
+    queueTimeoutSeconds: 120,
+    hardTimeoutSeconds: 600,
+  });
+
+  recordExecutorHeartbeat(db, {
+    runId: "run-hb",
+    taskId: "task-hb",
+    attemptId: "attempt-1",
+    executorType: "tork",
+    torkJobId: "job-hb",
+    rootSessionId: "root-run-hb-task-hb",
+    heartbeatSeq: 3,
+    phase: "subagent-running",
+    message: "still running",
+    observedAt: "2026-06-15T00:00:30.000Z",
+  });
+
+  const binding = listExecutorBindingsForRun(db, "run-hb")[0];
+  assert.equal(binding?.payload.heartbeatSeq, 3);
+  assert.equal(binding?.payload.runnerPhase, "subagent-running");
+  const task = db.prepare("select status from workflow_tasks where run_id = ? and id = ?")
+    .get("run-hb", "task-hb") as { status: string };
+  assert.equal(task.status, "running");
+  assert.equal(listHistoryForRun(db, "run-hb").filter((event) => event.eventType === "executor.heartbeat").length, 1);
 });
