@@ -1,13 +1,12 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { CubeSandboxRealE2EEnv } from "../env.ts";
-import { createCubeSandboxRealContext, ensureCubeSandboxApiReachable, pollUntil, writeEvidenceJson } from "./harness.ts";
+import { createCubeSandboxRealContext, pollUntil, writeEvidenceJson } from "./harness.ts";
 
 const TERMINAL_STATUSES = new Set(["completed", "failed", "cancelled"]);
 
 export async function runCubeSandboxRealCallbackMissing(env: CubeSandboxRealE2EEnv) {
   const context = createCubeSandboxRealContext(env);
-  await ensureCubeSandboxApiReachable(context);
   await context.executorManager.initialize();
 
   const callbackWaitTimeoutMs = context.config.executor.lifecycle.callbackWaitTimeoutSeconds * 1_000;

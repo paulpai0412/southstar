@@ -5,7 +5,6 @@ import type { CubeSandboxRealE2EEnv } from "../env.ts";
 import { assertCubeSandboxRealE2EGates } from "../quantitative-gates.ts";
 import {
   createCubeSandboxRealContext,
-  ensureCubeSandboxApiReachable,
   pollUntil,
   startCallbackProbeServer,
   writeEvidenceJson,
@@ -18,7 +17,6 @@ export async function runCubeSandboxRealHappyPath(env: CubeSandboxRealE2EEnv) {
   const context = createCubeSandboxRealContext(env);
   const configLoadMs = performance.now() - configStartedAt;
 
-  await ensureCubeSandboxApiReachable(context);
   const initStartedAt = performance.now();
   await context.executorManager.initialize();
   const health = await context.executorManager.health();

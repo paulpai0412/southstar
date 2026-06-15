@@ -23,31 +23,6 @@ export function createCubeSandboxRealContext(env: CubeSandboxRealE2EEnv) {
   });
 }
 
-export async function ensureCubeSandboxApiReachable(context: ReturnType<typeof createCubeSandboxRealContext>): Promise<void> {
-  if (context.config.executor.provider !== "cubesandbox") {
-    throw new Error(`CubeSandbox real E2E requires executor.provider=cubesandbox; got ${context.config.executor.provider}`);
-  }
-  const apiUrl = context.config.executor.cubesandbox?.apiUrl;
-  if (!apiUrl) {
-    throw new Error("CubeSandbox real E2E config missing executor.cubesandbox.api_url");
-  }
-  const healthUrl = `${apiUrl.replace(/\/$/, "")}/health`;
-  try {
-    const response = await fetch(healthUrl, {
-      method: "GET",
-      headers: { "x-api-key": "preflight" },
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-    }
-  } catch (error) {
-    throw new Error(
-      `CubeSandbox API unreachable at ${healthUrl}. Start CubeSandbox locally and ensure executor.cubesandbox.api_url is correct (dev-env often uses http://127.0.0.1:13000). Root error: ${(error as Error).message}`,
-    );
-  }
-}
-
 export async function startCallbackProbeServer(env: CubeSandboxRealE2EEnv): Promise<CallbackProbeServer> {
   let callback: { receivedAtMs: number; body: unknown } | undefined;
   let notify: ((value: { receivedAtMs: number; body: unknown }) => void) | undefined;
