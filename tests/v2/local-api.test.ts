@@ -75,7 +75,10 @@ test("creates run from draft, submits Tork projection, and exposes status", asyn
   assert.equal(countRunResources(db, run.runId, "workspace_snapshot") >= 1, true);
   assert.equal(listResources(db, { resourceType: "session_node", status: "active" }).length, 4);
   assert.equal(listResources(db, { resourceType: "session_checkpoint", status: "created" }).length, 4);
-  assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
+  const queuedBindings = listResources(db, { resourceType: "executor_binding", status: "queued" })
+    .filter((resource) => resource.runId === run.runId);
+  assert.equal(queuedBindings.length, getRunStatus(db, run.runId).canvas.nodes.length);
+  assert.equal(queuedBindings.every((resource) => typeof resource.taskId === "string" && resource.taskId.length > 0), true);
   assert.deepEqual(getRunStatus(db, run.runId).canvas.nodes.map((node) => node.id), [
     "understand-repo",
     "implement-feature",
@@ -137,7 +140,10 @@ test("durably creates run and tasks before submitting through executor provider"
 
   assert.match(run.runId, /^run-wf-gen-/);
   assert.equal(run.tork.jobId, "job-provider-1");
-  assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 1);
+  const queuedBindings = listResources(db, { resourceType: "executor_binding", status: "queued" })
+    .filter((resource) => resource.runId === run.runId);
+  assert.equal(queuedBindings.length, getRunStatus(db, run.runId).canvas.nodes.length);
+  assert.equal(queuedBindings.every((resource) => resource.payload && typeof (resource.payload as { torkJobId?: string }).torkJobId === "string"), true);
   assert.deepEqual(getRunStatus(db, run.runId).runtime.executorJobIds, ["job-provider-1"]);
 });
 

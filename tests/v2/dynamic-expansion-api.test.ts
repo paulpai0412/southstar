@@ -37,7 +37,10 @@ test("expands a running workflow through workflow_revision and submits added tas
 
   assert.deepEqual(result.newTaskIds, ["task-follow-up-verification"]);
   assert.equal(listResources(db, { resourceType: "workflow_revision", status: "applied" }).length, 1);
-  assert.equal(listResources(db, { resourceType: "executor_binding", status: "queued" }).length, 2);
+  const queuedBindings = listResources(db, { resourceType: "executor_binding", status: "queued" })
+    .filter((resource) => resource.runId === run.runId);
+  const totalTasks = (db.prepare("select count(*) as count from workflow_tasks where run_id = ?").get(run.runId) as { count: number }).count;
+  assert.equal(queuedBindings.length, totalTasks);
   assert.equal(submittedJobs.length, 2);
   const followUpJob = submittedJobs[1] as { tasks: Array<{ command: string[]; mounts: Array<{ source: string; target: string; readonly: boolean }> }> };
   assert.deepEqual(followUpJob.tasks[0].command, [

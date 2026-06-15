@@ -24,6 +24,7 @@ import { createWorkflowTask } from "../stores/task-store.ts";
 import { appendHistoryEvent } from "../stores/history-store.ts";
 import type { TorkClient, TorkSubmitResult } from "../executor/tork-client.ts";
 import type { ExecutorProvider, ExecutorSubmitResult } from "../executor/provider.ts";
+import { createExecutorBinding } from "../executor/bindings.ts";
 import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
 import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
@@ -291,21 +292,17 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
   const executorSubmitMs = Date.now() - executorSubmitStartedAt;
   updateExecutionProjection(db, runId, JSON.stringify(executorSubmission.executionProjection ?? null));
   const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);
-  upsertRuntimeResource(db, {
-    id: `executor-${runId}`,
-    resourceType: "executor_binding",
-    resourceKey: `executor-${runId}`,
-    runId,
-    scope: "executor",
-    status: executorSubmission.status,
-    title: `${executorSubmission.executorType} job`,
-    payload: {
-      executorType: executorSubmission.executorType,
-      externalJobId: executorSubmission.externalJobId,
-      ...(executorSubmission.providerPayload ?? {}),
-      ...(executorSubmission.projectionFingerprint ? { projectionFingerprint: executorSubmission.projectionFingerprint } : {}),
-    },
-  });
+  for (const task of projectedWorkflow.tasks) {
+    createExecutorBinding(db, {
+      runId,
+      taskId: task.id,
+      attemptId: "attempt-1",
+      torkJobId: executorSubmission.externalJobId,
+      status: executorSubmission.status === "queued" ? "queued" : "submitted",
+      queueTimeoutSeconds: 120,
+      hardTimeoutSeconds: task.execution.timeoutSeconds,
+    });
+  }
   appendHistoryEvent(db, {
     runId,
     eventType: "executor.submitted",
@@ -316,6 +313,7 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
       ...(executorSubmission.providerPayload ?? {}),
       status: executorSubmission.status,
       durationMs: executorSubmitMs,
+      taskCount: projectedWorkflow.tasks.length,
     },
   });
   return { runId, tork };
@@ -410,23 +408,17 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
     envelopeBasePath: "/southstar-runs",
   });
   const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);
-  upsertRuntimeResource(db, {
-    id: `executor-${input.runId}-${input.request.revisionId}`,
-    resourceType: "executor_binding",
-    resourceKey: `executor-${input.runId}-${input.request.revisionId}`,
-    runId: input.runId,
-    scope: "executor",
-    status: tork.status,
-    title: `${executorSubmission.executorType} dynamic expansion job`,
-    payload: {
-      executorType: executorSubmission.executorType,
-      externalJobId: executorSubmission.externalJobId,
-      ...(executorSubmission.providerPayload ?? {}),
-      revisionId: input.request.revisionId,
-      taskIds: revision.newTaskIds,
-      ...(executorSubmission.projectionFingerprint ? { projectionFingerprint: executorSubmission.projectionFingerprint } : {}),
-    },
-  });
+  for (const task of projectedWorkflow.tasks) {
+    createExecutorBinding(db, {
+      runId: input.runId,
+      taskId: task.id,
+      attemptId: "attempt-1",
+      torkJobId: executorSubmission.externalJobId,
+      status: tork.status === "queued" ? "queued" : "submitted",
+      queueTimeoutSeconds: 120,
+      hardTimeoutSeconds: task.execution.timeoutSeconds,
+    });
+  }
   appendHistoryEvent(db, {
     runId: input.runId,
     eventType: "executor.submitted",
@@ -438,6 +430,7 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
       status: executorSubmission.status,
       revisionId: input.request.revisionId,
       taskIds: revision.newTaskIds,
+      taskCount: projectedWorkflow.tasks.length,
     },
   });
   return { ...revision, tork };

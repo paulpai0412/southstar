@@ -27,10 +27,12 @@ export function buildRuntimeMonitorModel(db: SouthstarDb, runId: string) {
     status: run?.status ?? "unknown",
     latestProgress: latestProgress?.message,
     latestSteering: latestSteering?.message,
-    executorJobIds: executorBindings
-      .filter((binding) => binding.runId === runId)
-      .map((binding) => executorJobId(binding.payload))
-      .filter((jobId): jobId is string => typeof jobId === "string"),
+    executorJobIds: [...new Set(
+      executorBindings
+        .filter((binding) => binding.runId === runId)
+        .map((binding) => executorJobId(binding.payload))
+        .filter((jobId): jobId is string => typeof jobId === "string"),
+    )],
     runningTaskIds: listTasks(db, runId).filter((task) => task.status === "running").map((task) => task.id),
   };
 }
