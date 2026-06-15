@@ -39,7 +39,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       });
       const run = await createRunFromDraft(context.db, {
         draftId: draft.draftId,
-        executorProvider: context.executorProvider,
+        executorManager: context.executorManager,
+        executorProvider: resolveExecutorProvider(context),
         callbackUrl: callbackUrl(context),
         runRoot: context.runRoot,
       });
@@ -60,7 +61,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       if (!body.draftId) throw new Error("draftId is required");
       return json("run", await createRunFromDraft(context.db, {
         draftId: body.draftId,
-        executorProvider: context.executorProvider,
+        executorManager: context.executorManager,
+        executorProvider: resolveExecutorProvider(context),
         callbackUrl: callbackUrl(context),
         runRoot: context.runRoot,
       }));
@@ -217,6 +219,10 @@ async function readJsonBody<T>(request: Request): Promise<T> {
 function requiredServerUrl(context: RuntimeServerContext): string {
   if (!context.serverUrl) throw new Error("runtime server URL is not initialized");
   return context.serverUrl;
+}
+
+function resolveExecutorProvider(context: RuntimeServerContext) {
+  return context.executorManager?.provider ?? context.executorProvider;
 }
 
 function callbackUrl(context: RuntimeServerContext): string {

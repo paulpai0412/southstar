@@ -98,3 +98,30 @@ test("CubeSandbox provider creates sandbox and starts agent runner", async () =>
   assert.equal(cancelled?.status, "cancelled");
   assert.deepEqual(sdk.destroyed, ["sbx_1"]);
 });
+
+test("CubeSandbox provider reconcile destroys managed orphan sandboxes", async () => {
+  const sdk = client();
+  sdk.listSandboxes = async () => [
+    { sandboxId: "sbx_orphan_1", status: "running" },
+    { sandboxId: "sbx_orphan_2", status: "running" },
+  ];
+  const provider = new CubeSandboxExecutorProvider({
+    lifecycle,
+    sdkClient: sdk,
+    config: {
+      sdk: "e2b-compatible",
+      apiUrl: "http://cube",
+      apiKeyRef: "ref",
+      templateId: "tmpl",
+      defaultTimeoutSeconds: 900,
+      destroyOnCompletion: true,
+      hostMounts: [{ source: ".southstar/runs", target: "/southstar-runs", readonly: false }],
+    },
+  });
+
+  const reconciled = await provider.reconcile?.({ reason: "orphan-scan" });
+  assert.equal(reconciled?.reconciled, 2);
+  assert.equal(reconciled?.cleaned, 2);
+  assert.deepEqual(sdk.destroyed, ["sbx_orphan_1", "sbx_orphan_2"]);
+  assert.equal((reconciled?.providerPayload as { managedResidueCount?: number } | undefined)?.managedResidueCount, 0);
+});

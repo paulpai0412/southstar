@@ -215,12 +215,22 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
         ...(request.runId ? { runId: request.runId } : {}),
       },
     });
+    const failures: string[] = [];
+    let cleaned = 0;
+    for (const sandbox of sandboxes) {
+      try {
+        await this.sdkClient.destroySandbox({ sandboxId: sandbox.sandboxId });
+        cleaned += 1;
+      } catch (error) {
+        failures.push((error as Error).message);
+      }
+    }
     return {
       executorType: this.executorType,
       reconciled: sandboxes.length,
-      cleaned: 0,
-      failures: [],
-      providerPayload: { managedResidueCount: sandboxes.length },
+      cleaned,
+      failures,
+      providerPayload: { managedResidueCount: Math.max(0, sandboxes.length - cleaned) },
     };
   }
 

@@ -24,6 +24,7 @@ import { createWorkflowTask } from "../stores/task-store.ts";
 import { appendHistoryEvent } from "../stores/history-store.ts";
 import type { TorkClient, TorkSubmitResult } from "../executor/tork-client.ts";
 import type { ExecutorProvider, ExecutorSubmitResult } from "../executor/provider.ts";
+import type { ExecutorRuntimeManager } from "../executor/runtime-manager.ts";
 import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
 import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
@@ -222,6 +223,7 @@ export async function revisePlannerDraft(db: SouthstarDb, input: {
 
 export async function createRunFromDraft(db: SouthstarDb, input: {
   draftId: string;
+  executorManager?: ExecutorRuntimeManager;
   executorProvider?: ExecutorProvider;
   torkClient?: Pick<TorkClient, "submit">;
   runRoot?: string;
@@ -361,6 +363,7 @@ function linkExistingResourceToRun(
 export async function expandWorkflowRun(db: SouthstarDb, input: {
   runId: string;
   request: WorkflowRevisionRequest;
+  executorManager?: ExecutorRuntimeManager;
   executorProvider?: ExecutorProvider;
   torkClient?: Pick<TorkClient, "submit">;
   runRoot?: string;
@@ -444,12 +447,14 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
 }
 
 function resolveExecutorProvider(input: {
+  executorManager?: ExecutorRuntimeManager;
   executorProvider?: ExecutorProvider;
   torkClient?: Pick<TorkClient, "submit">;
 }): ExecutorProvider {
+  if (input.executorManager) return input.executorManager.provider;
   if (input.executorProvider) return input.executorProvider;
   if (input.torkClient) return new TorkExecutorProvider({ torkClient: input.torkClient });
-  throw new Error("createRunFromDraft requires executorProvider or torkClient");
+  throw new Error("createRunFromDraft requires executorManager, executorProvider, or torkClient");
 }
 
 function torkSubmitResultFromExecutorSubmission(submission: ExecutorSubmitResult): TorkSubmitResult {
