@@ -5,6 +5,7 @@ import { ALLOWED_BOOTSTRAP_ENV, validateRuntimeConfig } from "../../src/config/s
 import { loadConfig, parseYamlSubset, readBootstrapEnv } from "../../src/config/load-config.ts";
 
 const fixture = join(import.meta.dirname, "../fixtures/southstar/config/.southstar.yaml");
+const cubesandboxFixture = join(import.meta.dirname, "../fixtures/southstar/config/.southstar.cubesandbox.yaml");
 
 test("loads Southstar config from .southstar.yaml shape", () => {
   const config = loadConfig(fixture, "/tmp/project-root-override");
@@ -27,6 +28,15 @@ test("loads Southstar config from .southstar.yaml shape", () => {
   assert.equal(config.executor.lifecycle.cleanupMode, "strict");
   assert.equal(config.executor.tork?.baseUrl, "http://127.0.0.1:8000");
   assert.equal(config.executor.tork?.submitPath, "/jobs");
+});
+
+test("loads cubesandbox fixture config from .southstar.yaml", () => {
+  const config = loadConfig(cubesandboxFixture);
+  assert.equal(config.executor.provider, "cubesandbox");
+  assert.equal(config.executor.cubesandbox?.sdk, "e2b-compatible");
+  assert.equal(config.executor.cubesandbox?.apiUrl, "http://127.0.0.1:3000");
+  assert.equal(config.executor.cubesandbox?.apiKeyRef, "cubesandbox-api-key");
+  assert.equal(config.executor.cubesandbox?.templateId, "southstar-agent-template");
 });
 
 test("allows only Southstar bootstrap env names", () => {
