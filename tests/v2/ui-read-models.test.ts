@@ -123,6 +123,19 @@ test("builds task, sessions-memory, vault-mcp, and executor models", () => {
     payload: { serverId: "github", allowedTools: ["issues.read"] },
   });
   upsertRuntimeResource(db, {
+    resourceType: "executor_health",
+    resourceKey: "active",
+    scope: "executor",
+    status: "healthy",
+    payload: {
+      provider: "cubesandbox",
+      activeBindings: 1,
+      orphanBindings: 0,
+      cleanupFailures: 0,
+      capabilities: { status: true, cancel: true, logs: true, cleanup: true },
+    },
+  });
+  upsertRuntimeResource(db, {
     resourceType: "executor_binding",
     resourceKey: "binding-1",
     runId: "run-1",
@@ -141,7 +154,9 @@ test("builds task, sessions-memory, vault-mcp, and executor models", () => {
   assert.equal(buildSessionsMemoryModel(db, "run-1").memoryItems.length, 1);
   assert.equal(buildVaultMcpModel(db, "run-1").vaultLeases.length, 1);
   assert.equal(buildVaultMcpModel(db, "run-1").mcpGrants.length, 1);
-  assert.deepEqual(buildExecutorOpsModel(db, "run-1").bindings.map((binding) => binding.torkJobId), ["job-1"]);
+  const executorOps = buildExecutorOpsModel(db, "run-1");
+  assert.deepEqual(executorOps.bindings.map((binding) => binding.torkJobId), ["job-1"]);
+  assert.equal((executorOps.health as { provider?: string } | null)?.provider, "cubesandbox");
 });
 
 function seededDb() {

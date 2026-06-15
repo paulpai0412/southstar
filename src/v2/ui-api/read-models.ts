@@ -78,8 +78,11 @@ export function buildVaultMcpModel(db: SouthstarDb, runId: string) {
 }
 
 export function buildExecutorOpsModel(db: SouthstarDb, runId: string) {
+  const health = listResources(db, { resourceType: "executor_health" })
+    .find((resource) => resource.resourceKey === "active");
   return {
     runId,
+    health: health ? health.payload as Record<string, unknown> : null,
     bindings: listResources(db, { resourceType: "executor_binding" })
       .filter((resource) => resource.runId === runId)
       .map((resource) => ({
@@ -87,6 +90,7 @@ export function buildExecutorOpsModel(db: SouthstarDb, runId: string) {
         status: resource.status,
         taskId: resource.taskId,
         torkJobId: executorJobId(resource.payload),
+        payload: resource.payload as Record<string, unknown>,
       })),
   };
 }
