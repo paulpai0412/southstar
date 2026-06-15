@@ -10,7 +10,7 @@ import {
 import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
 import { createWorkflowRun } from "../../src/v2/stores/run-store.ts";
 import { createWorkflowTask } from "../../src/v2/stores/task-store.ts";
-import { listHistoryForRun } from "../../src/v2/stores/history-store.ts";
+import { appendHistoryEvent, listHistoryForRun } from "../../src/v2/stores/history-store.ts";
 import {
   createExecutorBinding,
   listExecutorBindingsForRun,
@@ -21,6 +21,8 @@ import { reconcileExecutorBindings } from "../../src/v2/executor/reconciler.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import type { RuntimeServerContext } from "../../src/v2/server/runtime-context.ts";
 import { buildExecutorOpsPageModel } from "../../src/v2/ui-api/page-models/executor.ts";
+import { upsertRuntimeResource } from "../../src/v2/stores/resource-store.ts";
+import { assertExecutorObservabilityGates } from "../../src/v2/quality/executor-observability-gates.ts";
 
 test("validates executor binding payload and preserves four-layer status fields", () => {
   const payload: ExecutorBindingPayload = {
@@ -454,4 +456,113 @@ test("executor ops page exposes workflow executor runner and evaluator status se
   assert.equal(model.selectedJob?.statusLayers.executorStatus, "running");
   assert.equal(model.selectedJob?.statusLayers.runnerStatus, "subagent-running");
   assert.equal(model.selectedJob?.statusLayers.evaluatorStatus, "pending");
+});
+
+test("executor observability gates pass when durable evidence exists", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-gate",
+    status: "running",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+
+  for (const taskId of ["heartbeat-success", "heartbeat-timeout", "callback-missing-orphan-check"]) {
+    createWorkflowTask(db, {
+      id: taskId,
+      runId: "run-gate",
+      taskKey: taskId,
+      status: "running",
+      sortOrder: 0,
+      dependsOn: [],
+    });
+    createExecutorBinding(db, {
+      runId: "run-gate",
+      taskId,
+      attemptId: "attempt-1",
+      torkJobId: `job-${taskId}`,
+      status: "running",
+      now: "2026-06-15T00:00:00.000Z",
+      queueTimeoutSeconds: 120,
+      hardTimeoutSeconds: 600,
+    });
+  }
+
+  for (let seq = 1; seq <= 3; seq += 1) {
+    recordExecutorHeartbeat(db, {
+      runId: "run-gate",
+      taskId: "heartbeat-success",
+      attemptId: "attempt-1",
+      executorType: "tork",
+      torkJobId: "job-heartbeat-success",
+      rootSessionId: "root-run-gate-heartbeat-success",
+      heartbeatSeq: seq,
+      phase: "subagent-running",
+      observedAt: `2026-06-15T00:00:${String(seq).padStart(2, "0")}.000Z`,
+    });
+  }
+
+  updateExecutorBindingStatus(db, {
+    bindingId: "executor-run-gate-heartbeat-timeout-attempt-1",
+    status: "heartbeat-lost",
+    eventType: "executor.heartbeat_lost",
+  });
+  updateExecutorBindingStatus(db, {
+    bindingId: "executor-run-gate-callback-missing-orphan-check-attempt-1",
+    status: "callback-missing",
+    eventType: "executor.callback_missing",
+  });
+
+  for (const key of ["a", "b", "c"]) {
+    upsertRuntimeResource(db, {
+      resourceType: "executor_reconcile_result",
+      resourceKey: `rec-${key}`,
+      runId: "run-gate",
+      scope: "executor",
+      status: "recorded",
+      payload: { key },
+    });
+  }
+
+  appendHistoryEvent(db, {
+    runId: "run-gate",
+    eventType: "executor.cancel_requested",
+    actorType: "user",
+    payload: { commandId: "cmd-1" },
+  });
+
+  const result = assertExecutorObservabilityGates(db, {
+    runId: "run-gate",
+    activeTorkJobCountAfterScenario: 0,
+  });
+  assert.equal(result.ok, true, result.failures.join("\n"));
+});
+
+test("executor observability gates fail closed when evidence is missing", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-gate-missing",
+    status: "running",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+
+  const result = assertExecutorObservabilityGates(db, {
+    runId: "run-gate-missing",
+    activeTorkJobCountAfterScenario: 1,
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.failures.some((failure) => failure.includes("expected >= 3 executor bindings")), true);
+  assert.equal(result.failures.some((failure) => failure.includes("expected 0 active Tork jobs")), true);
 });
