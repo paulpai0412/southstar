@@ -285,7 +285,7 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
   const executorSubmission = await executorProvider.submit({
     runId,
     workflow: projectedWorkflow,
-    callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
+    callbackUrl: input.callbackUrl ?? "/api/v2/executor/callback",
     envelopeBasePath: "/southstar-runs",
   });
   const executorSubmitMs = Date.now() - executorSubmitStartedAt;
@@ -406,7 +406,7 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
   const executorSubmission = await executorProvider.submit({
     runId: input.runId,
     workflow: projectedWorkflow,
-    callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
+    callbackUrl: input.callbackUrl ?? "/api/v2/executor/callback",
     envelopeBasePath: "/southstar-runs",
   });
   const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);

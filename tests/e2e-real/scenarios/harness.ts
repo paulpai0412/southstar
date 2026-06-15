@@ -43,7 +43,7 @@ export async function startCallbackServer(env: RealE2EEnv): Promise<CallbackServ
   const db = openSouthstarDb(env.southstarDb);
   const server = createServer(async (request, response) => {
     try {
-      if (request.method !== "POST" || request.url !== "/api/v2/tork/callback") {
+      if (request.method !== "POST" || request.url !== "/api/v2/executor/callback") {
         response.statusCode = 404;
         response.end("not found");
         return;
@@ -62,7 +62,7 @@ export async function startCallbackServer(env: RealE2EEnv): Promise<CallbackServ
   if (!address || typeof address === "string") throw new Error("callback server did not bind to a TCP port");
   const callbackHost = process.env.SOUTHSTAR_CALLBACK_HOST ?? "172.17.0.1";
   return {
-    url: `http://${callbackHost}:${address.port}/api/v2/tork/callback`,
+    url: `http://${callbackHost}:${address.port}/api/v2/executor/callback`,
     close: () => new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
   };
 }

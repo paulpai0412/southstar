@@ -31,7 +31,7 @@ test("expands a running workflow through workflow_revision and submits added tas
     runId: run.runId,
     request: revisionRequest(run.runId),
     runRoot,
-    callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
+    callbackUrl: "http://127.0.0.1:3000/api/v2/executor/callback",
     torkClient,
   });
 

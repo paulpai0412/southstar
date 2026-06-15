@@ -53,7 +53,7 @@ test("runtime server exposes plan, run, status, steering, task envelope, and cal
     assert.equal(run.kind, "run");
     assert.equal(server.host, "127.0.0.1");
     assert.equal(Number.isInteger(server.port), true);
-    assert.equal(submissions[0]?.callbackUrl, `${server.url}/api/v2/tork/callback`);
+    assert.equal(submissions[0]?.callbackUrl, `${server.url}/api/v2/executor/callback`);
     assert.equal(status.result.canvas.runId, run.result.runId);
     assert.equal(steering.kind, "steering");
     assert.equal(envelope.kind, "task-envelope");
@@ -84,7 +84,7 @@ test("runtime server supports run-goal, voice-command, and read routes", async (
     const runGoal = await client.runGoal({ goalPrompt: "Add calc sum" });
     const runId = runGoal.result.runId;
     assert.match(runId, /^run-/);
-    assert.equal(submissions[0]?.callbackUrl, `${server.url}/api/v2/tork/callback`);
+    assert.equal(submissions[0]?.callbackUrl, `${server.url}/api/v2/executor/callback`);
     const memoryDelta = proposeMemoryDelta(db, runId, { preference: "minimal changes" });
     assert.equal((await client.listTasks(runId)).kind, "tasks");
     assert.equal((await client.listArtifacts(runId)).kind, "artifacts");

@@ -81,8 +81,11 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     cancelRun(body: { runId: string; commandId: string; actor: { type: "user" | "system" | "root-session"; id?: string }; reason?: string; payload: Record<string, unknown> }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/cancel`, { commandId: body.commandId, actor: body.actor, reason: body.reason, payload: body.payload });
     },
+    submitExecutorCallback(body: unknown) {
+      return post(`${baseUrl}/api/v2/executor/callback`, body);
+    },
     submitTorkCallback(body: unknown) {
-      return post(`${baseUrl}/api/v2/tork/callback`, body);
+      return post(`${baseUrl}/api/v2/executor/callback`, body);
     },
   };
 }
