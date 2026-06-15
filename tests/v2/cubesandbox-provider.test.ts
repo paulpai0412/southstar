@@ -1,0 +1,100 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { CubeSandboxExecutorProvider } from "../../src/v2/executor/cubesandbox/provider.ts";
+import type { CubeSandboxSdkClient } from "../../src/v2/executor/cubesandbox/types.ts";
+
+function client(): CubeSandboxSdkClient & { destroyed: string[] } {
+  return {
+    destroyed: [],
+    async health() {},
+    async createSandbox(input) {
+      assert.equal(input.metadata.managedBy, "southstar");
+      assert.equal(input.templateId, "tmpl");
+      return { sandboxId: "sbx_1" };
+    },
+    async runCommand(input) {
+      assert.equal(input.sandboxId, "sbx_1");
+      assert.equal(input.command.includes("southstar-agent-runner"), true);
+      return { commandId: "cmd_1" };
+    },
+    async getSandbox() {
+      return { sandboxId: "sbx_1", status: "running" };
+    },
+    async getCommand() {
+      return { commandId: "cmd_1", status: "running" };
+    },
+    async killCommand() {},
+    async destroySandbox(input) {
+      this.destroyed.push(input.sandboxId);
+    },
+    async listSandboxes() {
+      return [];
+    },
+    async logs() {
+      return { text: "progress" };
+    },
+  };
+}
+
+const lifecycle = {
+  cleanupMode: "strict" as const,
+  healthCheckIntervalSeconds: 10,
+  reconcileIntervalSeconds: 30,
+  orphanScanIntervalSeconds: 30,
+  orphanGraceSeconds: 60,
+  shutdownGraceSeconds: 20,
+  maxRestartAttempts: 3,
+  maxCleanupAttempts: 5,
+  sdkCallTimeoutSeconds: 15,
+  sandboxCreateTimeoutSeconds: 60,
+  commandStartTimeoutSeconds: 30,
+  commandIdleTimeoutSeconds: 120,
+  taskWallTimeoutSeconds: 1800,
+  callbackWaitTimeoutSeconds: 30,
+  destroyTimeoutSeconds: 20,
+  lockTtlSeconds: 60,
+};
+
+test("CubeSandbox provider creates sandbox and starts agent runner", async () => {
+  const sdk = client();
+  const provider = new CubeSandboxExecutorProvider({
+    lifecycle,
+    sdkClient: sdk,
+    config: {
+      sdk: "e2b-compatible",
+      apiUrl: "http://cube",
+      apiKeyRef: "ref",
+      templateId: "tmpl",
+      defaultTimeoutSeconds: 900,
+      destroyOnCompletion: true,
+      hostMounts: [{ source: ".southstar/runs", target: "/southstar-runs", readonly: false }],
+    },
+  });
+  const result = await provider.submit({
+    runId: "run-1",
+    workflow: {
+      tasks: [{ id: "task-1" }],
+    } as never,
+    callbackUrl: "http://southstar/api/v2/executor/callback",
+    envelopeBasePath: "/southstar-runs",
+    attemptId: "attempt-1",
+  });
+
+  assert.equal(result.executorType, "cubesandbox");
+  assert.equal(result.externalJobId, "cube-exec-run-1-attempt-1");
+  assert.equal(result.providerPayload?.sandboxId, "sbx_1");
+  assert.equal(result.providerPayload?.commandId, "cmd_1");
+
+  const status = await provider.status?.({
+    externalJobId: result.externalJobId,
+    providerPayload: result.providerPayload,
+  });
+  assert.equal(status?.status, "running");
+
+  const cancelled = await provider.cancel?.({
+    externalJobId: result.externalJobId,
+    providerPayload: result.providerPayload,
+  });
+  assert.equal(cancelled?.status, "cancelled");
+  assert.deepEqual(sdk.destroyed, ["sbx_1"]);
+});
