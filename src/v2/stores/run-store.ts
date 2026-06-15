@@ -60,6 +60,13 @@ export function updateExecutionProjection(db: SouthstarDb, runId: string, execut
     .run(executionProjectionJson, new Date().toISOString(), runId);
 }
 
+export function updateWorkflowRunStatus(db: SouthstarDb, runId: string, status: string): boolean {
+  const completedAt = ["completed", "passed", "failed", "cancelled"].includes(status) ? new Date().toISOString() : null;
+  const result = db.prepare("update workflow_runs set status = ?, updated_at = ?, completed_at = coalesce(?, completed_at) where id = ?")
+    .run(status, new Date().toISOString(), completedAt, runId);
+  return result.changes > 0;
+}
+
 type WorkflowRunRow = {
   id: string;
   status: string;

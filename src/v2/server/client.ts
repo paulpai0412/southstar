@@ -61,6 +61,26 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     getTaskEnvelope(body: { runId: string; taskId: string }) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/envelope`);
     },
+    getUiPlanner(draftId?: string) {
+      const query = draftId ? `?draftId=${encodeURIComponent(draftId)}` : "";
+      return get(`${baseUrl}/api/v2/ui/planner${query}`);
+    },
+    getUiWorkflowCanvas(body: { runId: string; taskId?: string }) {
+      const task = body.taskId ? `&taskId=${encodeURIComponent(body.taskId)}` : "";
+      return get(`${baseUrl}/api/v2/ui/workflow-canvas?runId=${encodeURIComponent(body.runId)}${task}`);
+    },
+    getUiRuntimeMonitor(runId: string) {
+      return get(`${baseUrl}/api/v2/ui/runtime-monitor?runId=${encodeURIComponent(runId)}`);
+    },
+    pauseRun(body: { runId: string; commandId: string; actor: { type: "user" | "system" | "root-session"; id?: string }; reason?: string; payload: Record<string, unknown> }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/pause`, { commandId: body.commandId, actor: body.actor, reason: body.reason, payload: body.payload });
+    },
+    resumeRun(body: { runId: string; commandId: string; actor: { type: "user" | "system" | "root-session"; id?: string }; reason?: string; payload: Record<string, unknown> }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/resume`, { commandId: body.commandId, actor: body.actor, reason: body.reason, payload: body.payload });
+    },
+    cancelRun(body: { runId: string; commandId: string; actor: { type: "user" | "system" | "root-session"; id?: string }; reason?: string; payload: Record<string, unknown> }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/cancel`, { commandId: body.commandId, actor: body.actor, reason: body.reason, payload: body.payload });
+    },
     submitTorkCallback(body: unknown) {
       return post(`${baseUrl}/api/v2/tork/callback`, body);
     },

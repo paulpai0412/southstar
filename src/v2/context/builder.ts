@@ -138,10 +138,17 @@ export function buildContextPacket(db: SouthstarDb, input: BuildContextPacketInp
       contextPacketId: packet.id,
       included: includedTrace,
       excluded: excludedTrace,
+      decisionReason: memoryDecisionReason(candidates.length, includedTrace.length, excludedTrace.length),
       tokenEstimate: memoryTokenEstimate,
     },
   });
   return packet;
+}
+
+function memoryDecisionReason(candidateCount: number, includedCount: number, excludedCount: number): string {
+  if (candidateCount === 0) return "No approved memory candidates matched the query and memory scopes; zero memories injected.";
+  if (includedCount === 0) return "All approved memory candidates were excluded; see excluded trace reasons.";
+  return `${includedCount} approved memory candidate(s) injected; see included trace reasons.`;
 }
 
 function selectMemoryCandidates(

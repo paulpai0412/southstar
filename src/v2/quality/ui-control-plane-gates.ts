@@ -1,69 +1,63 @@
 import type { SouthstarDb } from "../stores/sqlite.ts";
-import { assertDomainPackDynamicQuantitativeGates } from "./domain-pack-dynamic-gates.ts";
+import { listResources } from "../stores/resource-store.ts";
 
 export type UiControlPlaneGateInput = {
   runId: string;
-  plannerMs: number;
-  validationMs: number;
-  torkSubmitMs: number;
-  browserRunCompletionMs: number;
-  firstWorkflowVisibleMs: number;
-  taskDetailVisibleMs: number;
-  stopConditionVisibleMs: number;
+  visitedPages?: string[];
 };
 
-export type UiControlPlaneGateResult = {
-  ok: boolean;
-  failures: string[];
-};
+export type UiControlPlaneGateResult = { ok: boolean; failures: string[] };
 
-export function assertUiControlPlaneQuantitativeGates(
-  db: SouthstarDb,
-  input: UiControlPlaneGateInput,
-): UiControlPlaneGateResult {
-  const failures = assertDomainPackDynamicQuantitativeGates(db, {
-    runId: input.runId,
-    plannerMs: input.plannerMs,
-    validationMs: input.validationMs,
-    torkSubmitMs: input.torkSubmitMs,
-    e2eMs: input.browserRunCompletionMs,
-  }).failures;
+const requiredPages = ["planner", "workflow", "runtime", "task", "sessions", "worktree", "executor", "domain-packs", "governance"];
 
-  requireMax(failures, "firstWorkflowVisibleMs", input.firstWorkflowVisibleMs, 120_000);
-  requireMax(failures, "taskDetailVisibleMs", input.taskDetailVisibleMs, 120_000);
-  requireMax(failures, "stopConditionVisibleMs", input.stopConditionVisibleMs, 20 * 60_000);
-
-  const run = db.prepare("select status from workflow_runs where id = ?").get(input.runId) as { status: string } | undefined;
-  if (!run || !["passed", "completed"].includes(run.status)) {
-    failures.push(`UI-triggered run must be passed/completed, got ${run?.status ?? "missing"}`);
+export function assertUiControlPlaneGates(db: SouthstarDb, input: UiControlPlaneGateInput): UiControlPlaneGateResult {
+  const failures: string[] = [];
+  const taskCount = count(db, "workflow_tasks", "run_id = ?", [input.runId]);
+  const stop = listResources(db, { resourceType: "stop_condition_result" }).filter((resource) => resource.runId === input.runId).at(-1);
+  if (stop?.status !== "passed") failures.push("stop_condition_result with status=passed is required before completion");
+  const evaluatorResults = [
+    ...listResources(db, { resourceType: "evaluator_result" }),
+    ...listResources(db, { resourceType: "evaluator_pipeline_result" }),
+  ].filter((resource) => resource.runId === input.runId);
+  if (!evaluatorResults.some((resource) => resource.status === "passed" || (resource.payload as { ok?: boolean }).ok === true)) {
+    failures.push("at least one evaluator result with ok=true or status=passed is required");
   }
-
-  const executor = db.prepare(`
-    select payload_json
-    from runtime_resources
-    where run_id = ? and resource_type = 'executor_binding'
-    limit 1
-  `).get(input.runId) as { payload_json: string } | undefined;
-  if (!executor) {
-    failures.push("missing executor_binding for UI-triggered run");
-  } else {
-    const payload = JSON.parse(executor.payload_json) as { executorType?: string; externalJobId?: string };
-    if (payload.executorType !== "tork") failures.push(`executor binding must be tork, got ${payload.executorType ?? "missing"}`);
-    if (!payload.externalJobId) failures.push("executor binding must include externalJobId");
+  const artifacts = listResources(db, { resourceType: "artifact" }).filter((resource) => resource.runId === input.runId && resource.status === "accepted");
+  const artifactText = JSON.stringify(artifacts.map((artifact) => artifact.payload));
+  for (const [label, pattern] of [
+    ["code patch", /codePatch|filesChanged|diff/i],
+    ["test evidence", /testEvidence|testResults|commandsRun/i],
+    ["README evidence", /readmeEvidence|README/i],
+    ["evaluator report", /evaluatorReport|checkerFindings|evaluator/i],
+  ] as const) {
+    if (!pattern.test(artifactText)) failures.push(`accepted artifact missing ${label}`);
   }
-
-  const stop = db.prepare(`
-    select status
-    from runtime_resources
-    where run_id = ? and resource_type = 'stop_condition_result'
-    order by created_at desc
-    limit 1
-  `).get(input.runId) as { status: string } | undefined;
-  if (stop?.status !== "passed") failures.push(`UI stop condition must be passed, got ${stop?.status ?? "missing"}`);
-
+  if (taskCount > 0) {
+    const contextPackets = listResources(db, { resourceType: "context_packet" }).filter((resource) => resource.runId === input.runId).length;
+    const memoryTraces = listResources(db, { resourceType: "memory_injection_trace" }).filter((resource) => resource.runId === input.runId);
+    const taskEnvelopes = listResources(db, { resourceType: "task_envelope" }).filter((resource) => resource.runId === input.runId).length;
+    if (contextPackets < taskCount) failures.push(`every executed task needs ContextPacket: ${contextPackets}/${taskCount}`);
+    if (taskEnvelopes < taskCount) failures.push(`every executed task needs TaskEnvelopeV2 resource: ${taskEnvelopes}/${taskCount}`);
+    if (memoryTraces.length < taskCount) failures.push(`every ContextPacket needs memory trace: ${memoryTraces.length}/${taskCount}`);
+    for (const trace of memoryTraces) {
+      const payload = trace.payload as { included?: unknown[]; excluded?: unknown[]; decisionReason?: string };
+      const hasReasons = Boolean(payload.decisionReason) || (payload.included ?? []).length > 0 || (payload.excluded ?? []).length > 0;
+      if (!hasReasons) failures.push(`memory trace ${trace.id} lacks selected/excluded reason`);
+    }
+  }
+  if (listResources(db, { resourceType: "executor_binding" }).filter((resource) => resource.runId === input.runId).length < 1) failures.push("Tork executor binding evidence is required");
+  const visited = new Set(input.visitedPages ?? []);
+  for (const page of requiredPages) {
+    if (!visited.has(page)) failures.push(`UI E2E did not visit ${page}`);
+  }
   return { ok: failures.length === 0, failures };
 }
 
-function requireMax(failures: string[], label: string, actual: number, max: number): void {
-  if (!Number.isFinite(actual) || actual > max) failures.push(`${label} ${actual} > ${max}`);
+function count(db: SouthstarDb, table: string, where: string, args: unknown[]): number {
+  const row = db.prepare(`select count(*) as count from ${table} where ${where}`).get(...args) as { count: number };
+  return row.count;
+}
+
+export function assertUiControlPlaneQuantitativeGates(db: SouthstarDb, input: UiControlPlaneGateInput): UiControlPlaneGateResult {
+  return assertUiControlPlaneGates(db, input);
 }

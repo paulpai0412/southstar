@@ -13,6 +13,7 @@ import { evaluateApprovalPolicy } from "../approvals/policy.ts";
 import { createApprovalRequest, decideApproval } from "../approvals/service.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
+import { handleUiRoute } from "./ui-routes.ts";
 import { readRunEventsSince, toSseFrame } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 
@@ -25,6 +26,9 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         headers: corsHeaders(),
       });
     }
+
+    const uiResponse = await handleUiRoute(context, request, url);
+    if (uiResponse) return uiResponse;
 
     if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
       const body = await readJsonBody<{ goalPrompt?: string }>(request);

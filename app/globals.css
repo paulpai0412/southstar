@@ -243,3 +243,31 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+.ss-shell { min-height: 100dvh; display: grid; grid-template-columns: 180px minmax(0, 1fr); background: #f7f9fc; color: #162033; }
+.ss-shell-rail { background: #071827; color: #fff; padding: 18px 12px; display: flex; flex-direction: column; gap: 16px; }
+.ss-shell-brand { font-weight: 700; font-size: 18px; }
+.ss-shell-rail nav { display: grid; gap: 8px; }
+.ss-shell-rail a { color: #d7e5f8; text-decoration: none; padding: 9px 10px; border-radius: 8px; font-size: 13px; }
+.ss-shell-main { min-width: 0; display: grid; grid-template-rows: auto 1fr auto; }
+.ss-shell-topbar { height: 56px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 18px; background: white; border-bottom: 1px solid #dbe3ee; }
+.ss-shell-content { min-width: 0; }
+.ss-shell-footer { padding: 10px 18px; border-top: 1px solid #dbe3ee; background: #fff; color: #5e6b7b; font-size: 12px; }
+.ss-panel { background: white; border: 1px solid #dbe3ee; border-radius: 8px; padding: 14px; min-width: 0; }
+.ss-page-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; padding: 14px; align-items: start; }
+.ss-planner-page { grid-template-columns: 310px minmax(0, 1fr) 380px; }
+.ss-planner-page textarea { width: 100%; min-height: 220px; border: 1px solid #dbe3ee; border-radius: 8px; padding: 10px; }
+.ss-tabs, .ss-actions { display: flex; gap: 6px; margin: 10px 0; flex-wrap: wrap; }
+.ss-button { border: 1px solid #bfd0e4; background: #f7f9fc; color: #162033; border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+.ss-button-danger { border-color: #ef9a9a; color: #9b1c1c; }
+.ss-status-badge { display: inline-flex; border-radius: 999px; background: #e7edf6; padding: 3px 8px; font-size: 12px; }
+.ss-data-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.ss-data-table th, .ss-data-table td { border-bottom: 1px solid #dbe3ee; padding: 6px 8px; text-align: left; }
+.ss-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.ss-metric-card { border: 1px solid #dbe3ee; border-radius: 8px; padding: 10px; display: grid; gap: 4px; }
+.ss-metric-card strong { font-size: 22px; }
+.ss-timeline { display: grid; gap: 8px; padding-left: 20px; }
+.ss-code-block { max-height: 420px; overflow: auto; background: #071827; color: #d7e5f8; border-radius: 8px; padding: 12px; font-size: 12px; }
+.ss-graph-canvas { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.ss-graph-node { border: 1px solid #bfd0e4; border-radius: 8px; background: #fff; padding: 10px; display: grid; gap: 6px; text-align: left; }
+@media (max-width: 1100px) { .ss-page-grid, .ss-planner-page { grid-template-columns: 1fr; } .ss-shell { grid-template-columns: 1fr; } .ss-shell-rail nav { grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); } }

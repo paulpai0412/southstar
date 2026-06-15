@@ -36,6 +36,37 @@ export class TorkClient {
     }
     return { jobId, status: payload.status ?? payload.state ?? "submitted" };
   }
+
+  async getJob(jobId: string): Promise<unknown> {
+    const response = await this.fetchJobEndpoint(jobId, ["", "/api/v1"]);
+    return await response.json() as unknown;
+  }
+
+  async cancelJob(jobId: string): Promise<void> {
+    const response = await this.fetchJobEndpoint(jobId, ["", "/api/v1"], { method: "DELETE" });
+    if (!response.ok) throw new Error(`Tork cancel failed: ${response.status} ${await response.text()}`);
+  }
+
+  async getJobLogs(jobId: string): Promise<string> {
+    const encoded = encodeURIComponent(jobId);
+    for (const prefix of ["", "/api/v1"]) {
+      const response = await fetch(`${this.baseUrl}${prefix}/jobs/${encoded}/logs`);
+      if (response.ok) return await response.text();
+      if (response.status !== 404) throw new Error(`Tork logs failed: ${response.status} ${await response.text()}`);
+    }
+    return "";
+  }
+
+  private async fetchJobEndpoint(jobId: string, prefixes: string[], init?: RequestInit): Promise<Response> {
+    const encoded = encodeURIComponent(jobId);
+    let last: Response | undefined;
+    for (const prefix of prefixes) {
+      const response = await fetch(`${this.baseUrl}${prefix}/jobs/${encoded}`, init);
+      if (response.ok || response.status !== 404) return response;
+      last = response;
+    }
+    throw new Error(`Tork job request failed: ${last?.status ?? 404} ${last ? await last.text() : "not found"}`);
+  }
 }
 
 function toTorkJobPayload(job: TorkJobProjection["job"]) {

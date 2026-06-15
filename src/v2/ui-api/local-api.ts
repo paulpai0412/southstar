@@ -749,7 +749,7 @@ function buildRuntimeTaskEnvelopeV2(
     workspaceSnapshot?: WorkspaceSnapshotRef;
   },
 ) {
-  return buildTaskEnvelopeV2({
+  const envelope = buildTaskEnvelopeV2({
     runId: input.runId,
     workflowId: workflow.workflowId,
     taskId: task.id,
@@ -796,6 +796,20 @@ function buildRuntimeTaskEnvelopeV2(
       baseSnapshotRef: input.workspaceSnapshot,
     },
   });
+  upsertRuntimeResource(db, {
+    id: `task-envelope-${input.runId}-${task.id}`,
+    resourceType: "task_envelope",
+    resourceKey: `task-envelope-${input.runId}-${task.id}`,
+    runId: input.runId,
+    taskId: task.id,
+    sessionId: input.rootSessionId,
+    scope: task.domain,
+    status: "created",
+    title: "TaskEnvelopeV2",
+    payload: envelope,
+    summary: { schemaVersion: envelope.schemaVersion, contextPacketId: envelope.contextPacket.id },
+  });
+  return envelope;
 }
 
 function persistWorkspaceSnapshot(

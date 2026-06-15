@@ -29,6 +29,41 @@ export function createSouthstarApiClient(input: { baseUrl: string }) {
     getTaskEnvelope(runId: string, taskId: string): Promise<TaskEnvelopeEvidenceView> {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/envelope`);
     },
+    getUiPlanner(draftId?: string): Promise<any> {
+      const query = draftId ? `?draftId=${encodeURIComponent(draftId)}` : "";
+      return get(`${baseUrl}/api/v2/ui/planner${query}`);
+    },
+    getUiWorkflowCanvas(runId: string, taskId?: string): Promise<any> {
+      const task = taskId ? `&taskId=${encodeURIComponent(taskId)}` : "";
+      return get(`${baseUrl}/api/v2/ui/workflow-canvas?runId=${encodeURIComponent(runId)}${task}`);
+    },
+    getUiRuntimeMonitor(runId: string): Promise<any> {
+      return get(`${baseUrl}/api/v2/ui/runtime-monitor?runId=${encodeURIComponent(runId)}`);
+    },
+    getUiTaskDetail(runId: string, taskId: string): Promise<any> {
+      return get(`${baseUrl}/api/v2/ui/task-detail?runId=${encodeURIComponent(runId)}&taskId=${encodeURIComponent(taskId)}`);
+    },
+    getUiSessionsMemory(runId?: string, sessionId?: string): Promise<any> {
+      const query = new URLSearchParams();
+      if (runId) query.set("runId", runId);
+      if (sessionId) query.set("sessionId", sessionId);
+      return get(`${baseUrl}/api/v2/ui/sessions-memory?${query.toString()}`);
+    },
+    getUiWorktree(runId?: string): Promise<any> {
+      return get(`${baseUrl}/api/v2/ui/worktree${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`);
+    },
+    getUiExecutor(jobId?: string): Promise<any> {
+      return get(`${baseUrl}/api/v2/ui/executor${jobId ? `?jobId=${encodeURIComponent(jobId)}` : ""}`);
+    },
+    getUiDomainPacks(domainPackId?: string): Promise<any> {
+      return get(`${baseUrl}/api/v2/ui/domain-packs${domainPackId ? `?domainPackId=${encodeURIComponent(domainPackId)}` : ""}`);
+    },
+    getUiGovernance(): Promise<any> {
+      return get(`${baseUrl}/api/v2/ui/governance`);
+    },
+    command(path: string, body: unknown): Promise<any> {
+      return post(`${baseUrl}${path}`, body);
+    },
     steer(runId: string, message: string): Promise<unknown> {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/steering`, { message });
     },
