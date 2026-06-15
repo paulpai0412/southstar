@@ -1,26 +1,39 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { SouthstarDb } from "../stores/sqlite.ts";
+import type { DomainPack } from "../domain-packs/types.ts";
 import type { PlanBundle, SouthstarWorkflowManifest, TaskStatus, WorkflowRevisionRequest } from "../manifests/types.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
-import { generatePlanBundle } from "../planner/pi-planner.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
+import { softwareDomainPack } from "../domain-packs/software.ts";
+import { createDomainPackRegistry } from "../domain-packs/registry.ts";
+import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
+import { materializeGenerationPlan } from "../workflow-generator/materialize.ts";
+import type { OrchestrationSnapshot, WorkflowGenerationPlan } from "../workflow-generator/types.ts";
 import {
   applyWorkflowExpansion,
+  getResourceByKey,
   listResources,
   requestWorkflowRevision,
-  retrieveApprovedMemory,
   upsertRuntimeResource,
   validateWorkflowRevision,
 } from "../stores/resource-store.ts";
-import { createWorkflowRun } from "../stores/run-store.ts";
+import { createWorkflowRun, updateExecutionProjection } from "../stores/run-store.ts";
 import { createWorkflowTask } from "../stores/task-store.ts";
 import { appendHistoryEvent } from "../stores/history-store.ts";
-import { buildTorkJobProjection } from "../executor/tork-projection.ts";
 import type { TorkClient, TorkSubmitResult } from "../executor/tork-client.ts";
+import type { ExecutorProvider, ExecutorSubmitResult } from "../executor/provider.ts";
+import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { appendRuntimeEvent } from "../signals/events.ts";
-import { buildTaskEnvelope } from "../agent-runner/task-envelope.ts";
+import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
+import { buildContextPacket, resolveArtifactContractRefs, resolveRoleProfile } from "../context/builder.ts";
+import { createSqliteSessionGraphProvider } from "../session-graph/sqlite-provider.ts";
+import { createGitWorkspaceSnapshotProvider } from "../workspace/git-provider.ts";
+import type { WorkspaceSnapshotRef } from "../workspace/types.ts";
+import { resolveSkillSnapshots } from "../skills/resolver.ts";
+import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import {
   buildExecutorOpsModel,
   buildRuntimeMonitorModel,
@@ -42,12 +55,16 @@ export async function createPlannerDraft(db: SouthstarDb, input: {
   goalPrompt: string;
   plannerClient: PiPlannerClient;
 }): Promise<PlannerDraftResult> {
-  const bundle = await generatePlanBundle(input.plannerClient, {
-    goalPrompt: input.goalPrompt,
-    schemaVersion: "southstar.v2",
-    availableHarnesses: ["pi", "codex", "claude-code", "custom"],
-  });
+  const generated = generateConstrainedPlannerBundle(input.goalPrompt);
+  const bundle = generated.bundle;
   const draftId = `draft-${bundle.workflow.workflowId}`;
+  if ("generationPlan" in generated) {
+    persistGenerationResources(db, {
+      generationPlan: generated.generationPlan,
+      orchestrationSnapshot: generated.orchestrationSnapshot,
+      workflow: bundle.workflow,
+    });
+  }
   upsertRuntimeResource(db, {
     id: draftId,
     resourceType: "planner_draft",
@@ -56,9 +73,108 @@ export async function createPlannerDraft(db: SouthstarDb, input: {
     status: "validated",
     title: bundle.workflow.title,
     payload: bundle,
-    summary: { goalPrompt: input.goalPrompt, workflowId: bundle.workflow.workflowId },
+    summary: {
+      goalPrompt: input.goalPrompt,
+      workflowId: bundle.workflow.workflowId,
+      plannerMs: generated.plannerMs,
+      validationMs: generated.validationMs,
+    },
   });
   return { draftId, goalPrompt: input.goalPrompt, workflowId: bundle.workflow.workflowId };
+}
+
+function generateConstrainedPlannerBundle(goalPrompt: string): {
+  bundle: PlanBundle;
+  plannerMs: number;
+  validationMs: number;
+  generationPlan: WorkflowGenerationPlan;
+  orchestrationSnapshot: OrchestrationSnapshot;
+} {
+  const startedAt = Date.now();
+  const registry = createDomainPackRegistry([softwareDomainPack]);
+  const route = registry.route({ goalPrompt });
+  const generatedRunId = `draft-${route.domainPack.id}-${hash(goalPrompt).slice(0, 12)}`;
+  const generationPlan = generateConstrainedWorkflowPlan({
+    runId: generatedRunId,
+    goalPrompt,
+    domainPack: route.domainPack,
+    intentId: route.intent.id,
+  });
+  const workflow = materializeGenerationPlan({
+    plan: generationPlan,
+    domainPack: route.domainPack,
+    goalPrompt,
+  });
+  const orchestrationSnapshot: OrchestrationSnapshot = {
+    id: workflow.workflowGeneration?.orchestrationSnapshotId ?? `orch-${generationPlan.id}`,
+    runId: generatedRunId,
+    generationPlanId: generationPlan.id,
+    manifestFingerprint: hash(JSON.stringify(workflow)),
+    phaseStates: generationPlan.orchestration.phases.map((phase) => ({
+      phaseId: phase.id,
+      status: "pending",
+      taskResultRefs: [],
+      intermediateResultRefs: [],
+    })),
+    metrics: {
+      agentInvocations: generationPlan.tasks.length,
+      inputTokens: generationPlan.estimatedBudget.inputTokens,
+      outputTokens: generationPlan.estimatedBudget.outputTokens,
+      costMicrosUsd: generationPlan.estimatedBudget.costMicrosUsd,
+    },
+  };
+  return {
+    bundle: {
+      workflow,
+      plannerTrace: {
+        model: "southstar-constrained-generator",
+        promptHash: hash(goalPrompt),
+        generatedAt: new Date().toISOString(),
+      },
+    },
+    plannerMs: Date.now() - startedAt,
+    validationMs: 0,
+    generationPlan,
+    orchestrationSnapshot,
+  };
+}
+
+function persistGenerationResources(db: SouthstarDb, input: {
+  generationPlan: WorkflowGenerationPlan;
+  orchestrationSnapshot: OrchestrationSnapshot;
+  workflow: SouthstarWorkflowManifest;
+}): void {
+  upsertRuntimeResource(db, {
+    id: input.generationPlan.id,
+    resourceType: "workflow_generation_plan",
+    resourceKey: input.generationPlan.id,
+    scope: "workflow",
+    status: "validated",
+    title: "Workflow generation plan",
+    payload: input.generationPlan,
+    summary: {
+      domain: input.workflow.domain,
+      intent: input.workflow.intent,
+      taskCount: input.generationPlan.tasks.length,
+    },
+  });
+  upsertRuntimeResource(db, {
+    id: input.orchestrationSnapshot.id,
+    resourceType: "orchestration_snapshot",
+    resourceKey: input.orchestrationSnapshot.id,
+    scope: "workflow",
+    status: "created",
+    title: "Initial orchestration snapshot",
+    payload: input.orchestrationSnapshot,
+    summary: {
+      generationPlanId: input.generationPlan.id,
+      phaseCount: input.orchestrationSnapshot.phaseStates.length,
+    },
+  });
+}
+
+function hash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 export async function revisePlannerDraft(db: SouthstarDb, input: {
@@ -73,16 +189,18 @@ export async function revisePlannerDraft(db: SouthstarDb, input: {
     "User revision prompt:",
     input.prompt,
   ].join("\n");
-  const bundle = await generatePlanBundle(input.plannerClient, {
-    goalPrompt: revisedGoal,
-    schemaVersion: "southstar.v2",
-    availableHarnesses: ["pi", "codex", "claude-code", "custom"],
-  });
+  const generated = generateConstrainedPlannerBundle(revisedGoal);
+  const bundle = generated.bundle;
   const revisionHash = createHash("sha256")
     .update(`${input.draftId}:${input.prompt}:${bundle.workflow.workflowId}`)
     .digest("hex")
     .slice(0, 12);
   const draftId = `draft-${bundle.workflow.workflowId}-rev-${revisionHash}`;
+  persistGenerationResources(db, {
+    generationPlan: generated.generationPlan,
+    orchestrationSnapshot: generated.orchestrationSnapshot,
+    workflow: bundle.workflow,
+  });
   upsertRuntimeResource(db, {
     id: draftId,
     resourceType: "planner_draft",
@@ -95,6 +213,8 @@ export async function revisePlannerDraft(db: SouthstarDb, input: {
       previousDraftId: input.draftId,
       revisionPrompt: input.prompt,
       workflowId: bundle.workflow.workflowId,
+      plannerMs: generated.plannerMs,
+      validationMs: generated.validationMs,
     },
   });
   return { draftId, goalPrompt: revisedGoal, workflowId: bundle.workflow.workflowId };
@@ -102,35 +222,30 @@ export async function revisePlannerDraft(db: SouthstarDb, input: {
 
 export async function createRunFromDraft(db: SouthstarDb, input: {
   draftId: string;
-  torkClient: Pick<TorkClient, "submit">;
+  executorProvider?: ExecutorProvider;
+  torkClient?: Pick<TorkClient, "submit">;
   runRoot?: string;
   callbackUrl?: string;
   harnessEndpoint?: string;
 }): Promise<{ runId: string; tork: TorkSubmitResult }> {
   const bundle = readDraftBundle(db, input.draftId);
+  const draftResource = getResourceByKey(db, "planner_draft", input.draftId);
+  const draftSummary = parseJsonObject(draftResource?.summary);
   const workflow = normalizeWorkflowRuntimeExecution(bundle.workflow);
   const runId = allocateRunId(db, bundle.workflow.workflowId);
-  const projectedWorkflow = await materializedWorkflowForExecution(db, workflow, {
-    runId,
-    runRoot: input.runRoot,
-    harnessEndpoint: input.harnessEndpoint,
-  });
-  const projection = buildTorkJobProjection(projectedWorkflow, {
-    callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
-    envelopeBasePath: "/southstar-runs",
-    runId,
-  });
+  const executorProvider = resolveExecutorProvider(input);
   createWorkflowRun(db, {
     id: runId,
     status: "running",
     domain: inferDomain(workflow),
     goalPrompt: workflow.goalPrompt,
     workflowManifestJson: JSON.stringify(workflow),
-    executionProjectionJson: JSON.stringify(projection),
+    executionProjectionJson: JSON.stringify(null),
     snapshotJson: JSON.stringify({ activeTaskIds: workflow.tasks.map((task) => task.id) }),
     runtimeContextJson: JSON.stringify({ draftId: input.draftId }),
     metricsJson: JSON.stringify({}),
   });
+  linkGenerationResourcesToRun(db, workflow, runId);
   workflow.tasks.forEach((task, index) => {
     createWorkflowTask(db, {
       id: task.id,
@@ -145,34 +260,109 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
   });
   appendHistoryEvent(db, {
     runId,
+    eventType: "planner.manifest_generated",
+    actorType: "planner",
+    payload: { draftId: input.draftId, durationMs: numberValue(draftSummary.plannerMs) ?? 0 },
+  });
+  appendHistoryEvent(db, {
+    runId,
+    eventType: "manifest.validated",
+    actorType: "planner",
+    payload: { draftId: input.draftId, durationMs: numberValue(draftSummary.validationMs) ?? 0 },
+  });
+  appendHistoryEvent(db, {
+    runId,
     eventType: "run.created",
     actorType: "orchestrator",
     payload: { draftId: input.draftId, workflowId: bundle.workflow.workflowId },
   });
-  const tork = await input.torkClient.submit(projection);
+  const projectedWorkflow = await materializedWorkflowForExecution(db, workflow, {
+    runId,
+    runRoot: input.runRoot,
+    harnessEndpoint: input.harnessEndpoint,
+  });
+  const executorSubmitStartedAt = Date.now();
+  const executorSubmission = await executorProvider.submit({
+    runId,
+    workflow: projectedWorkflow,
+    callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
+    envelopeBasePath: "/southstar-runs",
+  });
+  const executorSubmitMs = Date.now() - executorSubmitStartedAt;
+  updateExecutionProjection(db, runId, JSON.stringify(executorSubmission.executionProjection ?? null));
+  const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);
   upsertRuntimeResource(db, {
     id: `executor-${runId}`,
     resourceType: "executor_binding",
     resourceKey: `executor-${runId}`,
     runId,
     scope: "executor",
-    status: tork.status,
-    title: "Tork job",
-    payload: { executorType: "tork", torkJobId: tork.jobId, projectionFingerprint: projection.fingerprint },
+    status: executorSubmission.status,
+    title: `${executorSubmission.executorType} job`,
+    payload: {
+      executorType: executorSubmission.executorType,
+      externalJobId: executorSubmission.externalJobId,
+      ...(executorSubmission.providerPayload ?? {}),
+      ...(executorSubmission.projectionFingerprint ? { projectionFingerprint: executorSubmission.projectionFingerprint } : {}),
+    },
   });
   appendHistoryEvent(db, {
     runId,
     eventType: "executor.submitted",
     actorType: "orchestrator",
-    payload: { torkJobId: tork.jobId, status: tork.status },
+    payload: {
+      executorType: executorSubmission.executorType,
+      externalJobId: executorSubmission.externalJobId,
+      ...(executorSubmission.providerPayload ?? {}),
+      status: executorSubmission.status,
+      durationMs: executorSubmitMs,
+    },
   });
   return { runId, tork };
+}
+
+function linkGenerationResourcesToRun(db: SouthstarDb, workflow: SouthstarWorkflowManifest, runId: string): void {
+  linkExistingResourceToRun(db, {
+    resourceType: "workflow_generation_plan",
+    resourceKey: workflow.workflowGeneration?.planId,
+    runId,
+  });
+  linkExistingResourceToRun(db, {
+    resourceType: "orchestration_snapshot",
+    resourceKey: workflow.workflowGeneration?.orchestrationSnapshotId,
+    runId,
+  });
+}
+
+function linkExistingResourceToRun(
+  db: SouthstarDb,
+  input: { resourceType: string; resourceKey?: string; runId: string },
+): void {
+  if (!input.resourceKey) return;
+  const resource = getResourceByKey(db, input.resourceType, input.resourceKey);
+  if (!resource) return;
+  upsertRuntimeResource(db, {
+    id: resource.id,
+    resourceType: resource.resourceType,
+    resourceKey: resource.resourceKey,
+    runId: input.runId,
+    taskId: resource.taskId,
+    sessionId: resource.sessionId,
+    scope: resource.scope,
+    status: resource.status,
+    title: resource.title ?? undefined,
+    payload: resource.payload,
+    summary: resource.summary,
+    metrics: resource.metrics,
+    expiresAt: resource.expiresAt,
+  });
 }
 
 export async function expandWorkflowRun(db: SouthstarDb, input: {
   runId: string;
   request: WorkflowRevisionRequest;
-  torkClient: Pick<TorkClient, "submit">;
+  executorProvider?: ExecutorProvider;
+  torkClient?: Pick<TorkClient, "submit">;
   runRoot?: string;
   callbackUrl?: string;
   harnessEndpoint?: string;
@@ -212,12 +402,14 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
       harnessEndpoint: input.harnessEndpoint,
     },
   );
-  const projection = buildTorkJobProjection(projectedWorkflow, {
+  const executorProvider = resolveExecutorProvider(input);
+  const executorSubmission = await executorProvider.submit({
+    runId: input.runId,
+    workflow: projectedWorkflow,
     callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
     envelopeBasePath: "/southstar-runs",
-    runId: input.runId,
   });
-  const tork = await input.torkClient.submit(projection);
+  const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);
   upsertRuntimeResource(db, {
     id: `executor-${input.runId}-${input.request.revisionId}`,
     resourceType: "executor_binding",
@@ -225,22 +417,43 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
     runId: input.runId,
     scope: "executor",
     status: tork.status,
-    title: "Tork dynamic expansion job",
+    title: `${executorSubmission.executorType} dynamic expansion job`,
     payload: {
-      executorType: "tork",
-      torkJobId: tork.jobId,
+      executorType: executorSubmission.executorType,
+      externalJobId: executorSubmission.externalJobId,
+      ...(executorSubmission.providerPayload ?? {}),
       revisionId: input.request.revisionId,
       taskIds: revision.newTaskIds,
-      projectionFingerprint: projection.fingerprint,
+      ...(executorSubmission.projectionFingerprint ? { projectionFingerprint: executorSubmission.projectionFingerprint } : {}),
     },
   });
   appendHistoryEvent(db, {
     runId: input.runId,
     eventType: "executor.submitted",
     actorType: "orchestrator",
-    payload: { torkJobId: tork.jobId, status: tork.status, revisionId: input.request.revisionId, taskIds: revision.newTaskIds },
+    payload: {
+      executorType: executorSubmission.executorType,
+      externalJobId: executorSubmission.externalJobId,
+      ...(executorSubmission.providerPayload ?? {}),
+      status: executorSubmission.status,
+      revisionId: input.request.revisionId,
+      taskIds: revision.newTaskIds,
+    },
   });
   return { ...revision, tork };
+}
+
+function resolveExecutorProvider(input: {
+  executorProvider?: ExecutorProvider;
+  torkClient?: Pick<TorkClient, "submit">;
+}): ExecutorProvider {
+  if (input.executorProvider) return input.executorProvider;
+  if (input.torkClient) return new TorkExecutorProvider({ torkClient: input.torkClient });
+  throw new Error("createRunFromDraft requires executorProvider or torkClient");
+}
+
+function torkSubmitResultFromExecutorSubmission(submission: ExecutorSubmitResult): TorkSubmitResult {
+  return { jobId: submission.externalJobId, status: submission.status };
 }
 
 function normalizeRevisionRuntimeExecution(request: WorkflowRevisionRequest): WorkflowRevisionRequest {
@@ -292,25 +505,22 @@ export function getTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId:
   const workflow = readRunWorkflow(db, input.runId);
   const task = buildTaskDetailModel(db, input.runId, input.taskId);
   if (!task) throw new Error(`unknown task: ${input.taskId}`);
-  const vaultLeases = listResources(db, { resourceType: "vault_lease" })
-    .filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId)
-    .map((resource) => ({
-      leaseRef: resource.resourceKey,
-      mountAs: ((resource.payload as { mountAs?: "env" | "file" }).mountAs ?? "file"),
-    }));
-  const mcpGrants = listResources(db, { resourceType: "mcp_grant" })
-    .filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId)
-    .map((resource) => ({
-      serverId: (resource.payload as { serverId?: string }).serverId ?? resource.resourceKey,
-      allowedTools: (resource.payload as { allowedTools?: string[] }).allowedTools ?? [],
-    }));
-  return buildTaskEnvelope(workflow, {
+  const taskDefinition = workflow.tasks.find((candidate) => candidate.id === input.taskId);
+  if (!taskDefinition) throw new Error(`unknown task: ${input.taskId}`);
+  const domainPack = domainPackForWorkflow(workflow);
+  const rootSessionId = task.rootSessionId ?? `root-${input.runId}-${input.taskId}`;
+  const runtimeTask = resolveRuntimeTaskProfile(workflow, domainPack, taskDefinition);
+  const contextPacket = latestContextPacket(db, input) ?? buildContextPacketForTask(db, workflow, domainPack, taskDefinition, {
     runId: input.runId,
-    taskId: input.taskId,
-    rootSessionId: task.rootSessionId ?? `root-${input.runId}-${input.taskId}`,
-    memorySnapshot: retrieveApprovedMemory(db, inferDomain(workflow), workflow.memoryPolicy.retrievalLimit),
-    vaultLeases,
-    mcpGrants,
+    rootSessionId,
+    executionAttempt: 1,
+    runtimeTask,
+  });
+  return buildRuntimeTaskEnvelopeV2(db, workflow, domainPack, taskDefinition, {
+    runId: input.runId,
+    rootSessionId,
+    contextPacket,
+    runtimeTask,
   });
 }
 
@@ -353,17 +563,42 @@ async function materializedWorkflowForExecution(
   input: { runId: string; runRoot?: string; harnessEndpoint?: string },
 ): Promise<SouthstarWorkflowManifest> {
   const tasks = [];
+  const domainPack = domainPackForWorkflow(workflow);
+  const sessionGraph = createSqliteSessionGraphProvider(db);
+  const workspaceProvider = createGitWorkspaceSnapshotProvider();
   for (const task of workflow.tasks) {
-    const rootSessionId = `root-${input.runId}-${task.id}`;
-    const envelope = buildTaskEnvelope(workflow, {
+    const runtimeTask = resolveRuntimeTaskProfile(workflow, domainPack, task);
+    const sessionNode = sessionGraph.createSession({
       runId: input.runId,
       taskId: task.id,
+      roleRef: runtimeTask.roleRef,
+      agentProfileRef: runtimeTask.agentProfileRef,
+    });
+    const rootSessionId = sessionNode.id;
+    const workspaceSnapshot = snapshotTaskWorkspace(workspaceProvider, task);
+    persistWorkspaceSnapshot(db, { runId: input.runId, taskId: task.id, workspaceSnapshot });
+    const contextPacket = buildContextPacketForTask(db, workflow, domainPack, task, {
+      runId: input.runId,
       rootSessionId,
-      memorySnapshot: retrieveApprovedMemory(db, task.domain, workflow.memoryPolicy.retrievalLimit),
-      vaultLeases: [],
-      mcpGrants: workflow.mcpGrants
-        .filter((grant) => grant.taskId === task.id)
-        .map((grant) => ({ serverId: grant.serverId, allowedTools: grant.allowedTools })),
+      executionAttempt: 1,
+      runtimeTask,
+    });
+    const startCheckpoint = sessionGraph.checkpoint({
+      sessionId: rootSessionId,
+      runId: input.runId,
+      taskId: task.id,
+      contextPacketId: contextPacket.id,
+      artifactRefs: [],
+      transcriptSummary: "Task submitted to executor.",
+      metrics: {},
+    });
+    const envelope = buildRuntimeTaskEnvelopeV2(db, workflow, domainPack, task, {
+      runId: input.runId,
+      rootSessionId,
+      baseCheckpointId: startCheckpoint.id,
+      contextPacket,
+      runtimeTask,
+      workspaceSnapshot,
     });
     const materialization = await materializeTaskEnvelope(envelope, { runRoot: input.runRoot });
     const runRoot = input.runRoot ?? "/tmp/southstar-runs";
@@ -375,7 +610,7 @@ async function materializedWorkflowForExecution(
         env: {
           ...task.execution.env,
           ...(input.harnessEndpoint ? { SOUTHSTAR_HARNESS_ENDPOINT: input.harnessEndpoint } : {}),
-          ...(!isImplementerTask(task.id) ? { SOUTHSTAR_HARNESS_KIND: "builtin" } : {}),
+          ...runtimeHarnessEnv(runtimeTask.agentProfile),
           SOUTHSTAR_MATERIALIZATION_ROOT: input.runRoot ?? "/tmp/southstar-runs",
           ...(piAgentConfigMount ? {
             PI_CODING_AGENT_DIR: piAgentConfigMount.target,
@@ -397,8 +632,258 @@ async function materializedWorkflowForExecution(
   return { ...workflow, tasks };
 }
 
-function isImplementerTask(taskId: string): boolean {
-  return /implement/i.test(taskId);
+function domainPackForWorkflow(workflow: SouthstarWorkflowManifest): DomainPack {
+  return {
+    ...softwareDomainPack,
+    id: workflow.domain ?? softwareDomainPack.id,
+    version: workflow.domainPackRef?.version ?? softwareDomainPack.version,
+    roles: workflow.roles ?? softwareDomainPack.roles,
+    agentProfiles: workflow.agentProfiles ?? softwareDomainPack.agentProfiles,
+    artifactContracts: workflow.artifactContracts ?? softwareDomainPack.artifactContracts,
+    evaluatorPipelines: workflow.evaluatorPipelines ?? softwareDomainPack.evaluatorPipelines,
+    contextPolicies: workflow.contextPolicies ?? softwareDomainPack.contextPolicies,
+    sessionPolicies: workflow.sessionPolicies ?? softwareDomainPack.sessionPolicies,
+    memoryPolicies: workflow.memoryPolicies ?? softwareDomainPack.memoryPolicies,
+    workspacePolicies: workflow.workspacePolicies ?? softwareDomainPack.workspacePolicies,
+  };
+}
+
+function taskGoalPrompt(workflow: SouthstarWorkflowManifest, task: SouthstarWorkflowManifest["tasks"][number]): string {
+  const promptGoal = task.promptInputs?.goalPrompt;
+  if (typeof promptGoal === "string" && promptGoal.length > 0) return promptGoal;
+  return workflow.goalPrompt;
+}
+
+type RuntimeTaskProfile = {
+  roleRef: string;
+  agentProfileRef: string;
+  role: DomainPack["roles"][number];
+  agentProfile: DomainPack["agentProfiles"][number];
+  harness: SouthstarWorkflowManifest["harnessDefinitions"][number];
+  artifactContractRefs: string[];
+  artifactContracts: DomainPack["artifactContracts"];
+  evaluatorPipeline: DomainPack["evaluatorPipelines"][number];
+};
+
+function resolveRuntimeTaskProfile(
+  workflow: SouthstarWorkflowManifest,
+  domainPack: DomainPack,
+  task: SouthstarWorkflowManifest["tasks"][number],
+): RuntimeTaskProfile {
+  const roleProfile = resolveRoleProfile({
+    taskId: task.id,
+    roleRef: task.roleRef,
+    agentProfileRef: task.agentProfileRef,
+    roles: domainPack.roles,
+  });
+  const role = requiredDomainItem(domainPack.roles.find((candidate) => candidate.id === roleProfile.roleRef), `role ${roleProfile.roleRef}`);
+  const agentProfile = requiredDomainItem(
+    domainPack.agentProfiles.find((candidate) => candidate.id === roleProfile.agentProfileRef),
+    `agent profile ${roleProfile.agentProfileRef}`,
+  );
+  const artifactContractRefs = resolveArtifactContractRefs({
+    requiredArtifactRefs: task.requiredArtifactRefs,
+    subagentArtifactTypes: task.subagents.flatMap((subagent) => subagent.requiredArtifacts),
+    artifactContracts: domainPack.artifactContracts,
+  });
+  const artifactContracts = artifactContractRefs.map((artifactRef) =>
+    requiredDomainItem(domainPack.artifactContracts.find((candidate) => candidate.id === artifactRef), `artifact contract ${artifactRef}`)
+  );
+  const evaluatorPipeline = requiredDomainItem(
+    domainPack.evaluatorPipelines.find((candidate) => candidate.id === task.evaluatorPipelineRef)
+      ?? domainPack.evaluatorPipelines[0],
+    "evaluator pipeline",
+  );
+  const harness = requiredDomainItem(
+    workflow.harnessDefinitions.find((candidate) => candidate.id === agentProfile.harnessRef)
+      ?? workflow.harnessDefinitions.find((candidate) => candidate.id === task.subagents[0]?.harnessId)
+      ?? workflow.harnessDefinitions[0],
+    `harness ${agentProfile.harnessRef}`,
+  );
+  return {
+    roleRef: roleProfile.roleRef,
+    agentProfileRef: roleProfile.agentProfileRef,
+    role,
+    agentProfile,
+    harness,
+    artifactContractRefs,
+    artifactContracts,
+    evaluatorPipeline,
+  };
+}
+
+function buildContextPacketForTask(
+  db: SouthstarDb,
+  workflow: SouthstarWorkflowManifest,
+  domainPack: DomainPack,
+  task: SouthstarWorkflowManifest["tasks"][number],
+  input: { runId: string; rootSessionId: string; executionAttempt: number; runtimeTask: RuntimeTaskProfile },
+) {
+  return buildContextPacket(db, {
+    runId: input.runId,
+    taskId: task.id,
+    rootSessionId: input.rootSessionId,
+    executionAttempt: input.executionAttempt,
+    goalPrompt: taskGoalPrompt(workflow, task),
+    domainPack,
+    roleRef: input.runtimeTask.roleRef,
+    agentProfileRef: input.runtimeTask.agentProfileRef,
+    artifactContractRefs: input.runtimeTask.artifactContractRefs,
+    priorArtifactRefs: task.dependsOn,
+    checkpointSummary: "No checkpoint materialized before initial task submission.",
+    workspaceSummary: `Task ${task.id} will run in ${task.domain} workspace scope.`,
+  });
+}
+
+function buildRuntimeTaskEnvelopeV2(
+  db: SouthstarDb,
+  workflow: SouthstarWorkflowManifest,
+  _domainPack: DomainPack,
+  task: SouthstarWorkflowManifest["tasks"][number],
+  input: {
+    runId: string;
+    rootSessionId: string;
+    baseCheckpointId?: string;
+    contextPacket: ReturnType<typeof buildContextPacket>;
+    runtimeTask: RuntimeTaskProfile;
+    workspaceSnapshot?: WorkspaceSnapshotRef;
+  },
+) {
+  const envelope = buildTaskEnvelopeV2({
+    runId: input.runId,
+    workflowId: workflow.workflowId,
+    taskId: task.id,
+    domain: task.domain,
+    intent: workflow.intent ?? "unknown",
+    role: input.runtimeTask.role,
+    agentProfile: input.runtimeTask.agentProfile,
+    harness: input.runtimeTask.harness,
+    contextPacket: input.contextPacket,
+    skills: resolveTaskSkills(db, input.runId, task),
+    mcpGrants: [
+      ...input.runtimeTask.agentProfile.mcpGrantRefs.map((grantRef) => ({
+        serverId: grantRef,
+        allowedTools: input.runtimeTask.agentProfile.toolPolicy.allowedTools,
+      })),
+      ...workflow.mcpGrants
+        .filter((grant) => grant.taskId === task.id)
+        .map((grant) => ({ serverId: grant.serverId, allowedTools: grant.allowedTools })),
+      ...listResources(db, { resourceType: "mcp_grant" })
+        .filter((resource) => resource.runId === input.runId && resource.taskId === task.id)
+        .map((resource) => ({
+          serverId: (resource.payload as { serverId?: string }).serverId ?? resource.resourceKey,
+          allowedTools: (resource.payload as { allowedTools?: string[] }).allowedTools ?? [],
+        })),
+    ],
+    vaultLeases: listResources(db, { resourceType: "vault_lease" })
+      .filter((resource) => resource.runId === input.runId && resource.taskId === task.id)
+      .map((resource) => ({
+        leaseRef: resource.resourceKey,
+        mountAs: ((resource.payload as { mountAs?: "env" | "file" }).mountAs ?? "file"),
+      })),
+    artifactContracts: input.runtimeTask.artifactContracts,
+    evaluatorPipeline: input.runtimeTask.evaluatorPipeline,
+    session: {
+      sessionId: input.rootSessionId,
+      baseCheckpointId: input.baseCheckpointId,
+      maxRepairAttempts: task.rootSession.maxRepairAttempts,
+    },
+    workspace: {
+      handle: {
+        repoRoot: input.workspaceSnapshot?.repoRoot ?? task.execution.mounts[0]?.source ?? ".",
+        worktreePath: input.workspaceSnapshot?.repoRoot ?? task.execution.mounts[0]?.source ?? ".",
+      },
+      baseSnapshotRef: input.workspaceSnapshot,
+    },
+  });
+  upsertRuntimeResource(db, {
+    id: `task-envelope-${input.runId}-${task.id}`,
+    resourceType: "task_envelope",
+    resourceKey: `task-envelope-${input.runId}-${task.id}`,
+    runId: input.runId,
+    taskId: task.id,
+    sessionId: input.rootSessionId,
+    scope: task.domain,
+    status: "created",
+    title: "TaskEnvelopeV2",
+    payload: envelope,
+    summary: { schemaVersion: envelope.schemaVersion, contextPacketId: envelope.contextPacket.id },
+  });
+  return envelope;
+}
+
+function persistWorkspaceSnapshot(
+  db: SouthstarDb,
+  input: { runId: string; taskId: string; workspaceSnapshot?: WorkspaceSnapshotRef },
+): void {
+  if (!input.workspaceSnapshot) return;
+  upsertRuntimeResource(db, {
+    id: `workspace-snapshot-${input.runId}-${input.taskId}`,
+    resourceType: "workspace_snapshot",
+    resourceKey: `workspace-snapshot-${input.runId}-${input.taskId}`,
+    runId: input.runId,
+    taskId: input.taskId,
+    scope: "workspace",
+    status: "created",
+    title: "Workspace snapshot",
+    payload: input.workspaceSnapshot,
+    summary: {
+      provider: input.workspaceSnapshot.provider,
+      repoRoot: input.workspaceSnapshot.repoRoot,
+      commitSha: input.workspaceSnapshot.commitSha,
+      dirtyPatchRef: input.workspaceSnapshot.dirtyPatchRef,
+    },
+  });
+}
+
+function snapshotTaskWorkspace(
+  workspaceProvider: ReturnType<typeof createGitWorkspaceSnapshotProvider>,
+  task: SouthstarWorkflowManifest["tasks"][number],
+): WorkspaceSnapshotRef | undefined {
+  if (!task.workspacePolicyRef) return undefined;
+  const mount = task.execution.mounts.find((candidate) => !candidate.readonly && existsSync(join(candidate.source, ".git")));
+  if (!mount) return undefined;
+  return workspaceProvider.snapshot({ repoRoot: mount.source, reason: `task-start:${task.id}` });
+}
+
+function requiredDomainItem<T>(value: T | undefined, label: string): T {
+  if (!value) throw new Error(`missing ${label}`);
+  return value;
+}
+
+function latestContextPacket(
+  db: SouthstarDb,
+  input: { runId: string; taskId: string },
+): ReturnType<typeof buildContextPacket> | undefined {
+  const row = db.prepare(`
+    select payload_json from runtime_resources
+    where resource_type = 'context_packet' and run_id = ? and task_id = ?
+    order by updated_at desc
+    limit 1
+  `).get(input.runId, input.taskId) as { payload_json: string } | undefined;
+  return row ? JSON.parse(row.payload_json) as ReturnType<typeof buildContextPacket> : undefined;
+}
+
+function resolveTaskSkills(db: SouthstarDb, runId: string, task: SouthstarWorkflowManifest["tasks"][number]): ResolvedSkillSnapshot[] {
+  const skillRefs = task.skillRefs ?? [];
+  return skillRefs.map((skillRef) => {
+    const resourceKey = `${runId}:${task.id}:${skillRef}`;
+    const existing = getResourceByKey(db, "skill_snapshot", resourceKey);
+    if (existing?.status === "resolved") {
+      return existing.payload as ResolvedSkillSnapshot;
+    }
+    const [snapshot] = resolveSkillSnapshots(db, {
+      runId,
+      taskId: task.id,
+      skillRefs: [skillRef],
+    });
+    return snapshot;
+  });
+}
+
+function runtimeHarnessEnv(agentProfile: DomainPack["agentProfiles"][number]): Record<string, string> {
+  if (agentProfile.provider === "pi" || agentProfile.harnessRef === "pi") return {};
+  return { SOUTHSTAR_HARNESS_KIND: "builtin" };
 }
 
 function getPiAgentConfigMount(): { source: string; target: string; readonly: boolean } | undefined {
@@ -410,6 +895,14 @@ function getPiAgentConfigMount(): { source: string; target: string; readonly: bo
 function readTaskStates(db: SouthstarDb, runId: string) {
   const rows = db.prepare("select id, status from workflow_tasks where run_id = ?").all(runId) as Array<{ id: string; status: TaskStatus }>;
   return Object.fromEntries(rows.map((row) => [row.id, row.status]));
+}
+
+function parseJsonObject(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function workflowForAddedTasks(

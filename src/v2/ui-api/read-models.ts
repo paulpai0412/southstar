@@ -29,7 +29,7 @@ export function buildRuntimeMonitorModel(db: SouthstarDb, runId: string) {
     latestSteering: latestSteering?.message,
     executorJobIds: executorBindings
       .filter((binding) => binding.runId === runId)
-      .map((binding) => (binding.payload as { torkJobId?: string }).torkJobId)
+      .map((binding) => executorJobId(binding.payload))
       .filter((jobId): jobId is string => typeof jobId === "string"),
     runningTaskIds: listTasks(db, runId).filter((task) => task.status === "running").map((task) => task.id),
   };
@@ -86,9 +86,18 @@ export function buildExecutorOpsModel(db: SouthstarDb, runId: string) {
         id: resource.id,
         status: resource.status,
         taskId: resource.taskId,
-        torkJobId: (resource.payload as { torkJobId?: string }).torkJobId,
+        torkJobId: executorJobId(resource.payload),
       })),
   };
+}
+
+function executorJobId(payload: unknown): string | undefined {
+  const record = payload as { externalJobId?: unknown; torkJobId?: unknown };
+  return typeof record.externalJobId === "string"
+    ? record.externalJobId
+    : typeof record.torkJobId === "string"
+      ? record.torkJobId
+      : undefined;
 }
 
 function getRun(db: SouthstarDb, runId: string): { id: string; status: string } | undefined {
