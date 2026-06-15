@@ -4,7 +4,7 @@ import { createHttpPiPlannerClient } from "./planner/pi-planner.ts";
 import type { TorkClient } from "./executor/tork-client.ts";
 import type { ExecutorProvider } from "./executor/provider.ts";
 import { createCliRuntimeClient, type CliRuntimeClient } from "./cli-client.ts";
-import { buildRuntimeDependencies } from "./runtime/dependencies.ts";
+import { buildRuntimeDependencies, southstarSecretEnvName } from "./runtime/dependencies.ts";
 import {
   createPlannerDraft,
   createRunFromDraft,
@@ -224,8 +224,9 @@ function completeDependencies(
     const built = buildRuntimeDependencies({
       configPath,
       resolveCredential: (ref) => {
-        const value = process.env[`SOUTHSTAR_SECRET_${ref}`] ?? process.env[ref];
-        if (!value) throw new Error(`missing credential for ${ref}; set SOUTHSTAR_SECRET_${ref}`);
+        const key = southstarSecretEnvName(ref);
+        const value = process.env[key];
+        if (!value) throw new Error(`missing credential for ${ref}; set ${key}`);
         return value;
       },
     });

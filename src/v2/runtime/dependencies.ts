@@ -23,9 +23,10 @@ export function buildRuntimeDependencies(options: RuntimeDependencyOptions): Run
   const config = loadRuntimeConfigForV2(options.configPath);
   const provider = createExecutorProviderFromConfig(config, {
     resolveCredential: options.resolveCredential ?? ((ref: string) => {
-      const value = process.env[`SOUTHSTAR_SECRET_${ref}`] ?? process.env[ref];
+      const key = southstarSecretEnvName(ref);
+      const value = process.env[key];
       if (!value) {
-        throw new Error(`missing credential for ${ref}; set SOUTHSTAR_SECRET_${ref}`);
+        throw new Error(`missing credential for ${ref}; set ${key}`);
       }
       return value;
     }),
@@ -36,4 +37,12 @@ export function buildRuntimeDependencies(options: RuntimeDependencyOptions): Run
     db: openSouthstarDb(config.runtime.dbPath),
     executorManager: new ExecutorRuntimeManager({ provider }),
   };
+}
+
+export function southstarSecretEnvName(ref: string): string {
+  return `SOUTHSTAR_SECRET_${normalizeCredentialRef(ref)}`;
+}
+
+function normalizeCredentialRef(ref: string): string {
+  return ref.replace(/[^A-Za-z0-9_]/g, "_");
 }
