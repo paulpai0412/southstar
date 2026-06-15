@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { CubeSandboxRealE2EEnv } from "../env.ts";
-import { createCubeSandboxRealContext, writeEvidenceJson } from "./harness.ts";
+import { createCubeSandboxRealContext, ensureCubeSandboxApiReachable, writeEvidenceJson } from "./harness.ts";
 
 export async function runCubeSandboxRealOrphanReconcile(env: CubeSandboxRealE2EEnv) {
   const producer = createCubeSandboxRealContext(env);
+  await ensureCubeSandboxApiReachable(producer);
   await producer.executorManager.initialize();
   const orphan = await producer.executorManager.submit({
     runId: `cube-orphan-${Date.now()}`,
@@ -15,6 +16,7 @@ export async function runCubeSandboxRealOrphanReconcile(env: CubeSandboxRealE2EE
   });
 
   const reconciler = createCubeSandboxRealContext(env);
+  await ensureCubeSandboxApiReachable(reconciler);
   await reconciler.executorManager.initialize();
 
   const startedAt = performance.now();

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import type { CubeSandboxRealE2EEnv } from "../env.ts";
-import { createCubeSandboxRealContext, writeEvidenceJson } from "./harness.ts";
+import { createCubeSandboxRealContext, ensureCubeSandboxApiReachable, writeEvidenceJson } from "./harness.ts";
 
 export async function runCubeSandboxRealTimeoutCleanup(env: CubeSandboxRealE2EEnv) {
   const context = createCubeSandboxRealContext(env);
+  await ensureCubeSandboxApiReachable(context);
   await context.executorManager.initialize();
 
   const timeoutBudgetMs = context.config.executor.lifecycle.taskWallTimeoutSeconds * 1_000;

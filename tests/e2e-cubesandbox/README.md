@@ -25,6 +25,14 @@ Example: `api_key_ref: cubesandbox-api-key` => `SOUTHSTAR_TEST_SECRET_cubesandbo
 
 ## Run
 
+Before running real scenarios, verify CubeSandbox API is reachable from this host:
+
+```bash
+curl -sS ${CUBESANDBOX_API_URL:-http://127.0.0.1:3000}/health
+```
+
+If you're using CubeSandbox `dev-env`, API is often exposed at `http://127.0.0.1:13000`; set that value in `.southstar.yaml` (`executor.cubesandbox.api_url`).
+
 ```bash
 npm run test:e2e:cubesandbox
 ```
