@@ -617,7 +617,168 @@ type WorkspaceBinding = {
 
 Workspace 是 file/code/browser/session state 與 diff/evidence source，不是 workflow truth。
 
-## 10. Runtime Compile
+## 10. Artifact / Evidence / Validator Hardening
+
+Southstar 的信任來源不是 LLM transcript，而是 **accepted artifact + evidence packet + validator result**。本節把 artifact、evidence、validator 提升為 workflow correctness 的核心模型。
+
+### 10.1 Artifact Lifecycle
+
+每個 task 產出的 artifact 必須經過明確 lifecycle，不能因 container exit 0 或 LLM 回傳 JSON 就自動成為 downstream input。
+
+```text
+created
+  -> schema_validated
+  -> evidence_validated
+  -> policy_validated
+  -> accepted | rejected | needs_repair
+```
+
+只有 `accepted` artifact 能進 downstream `ContextPacket`。`rejected` 或 `needs_repair` artifact 只能作 failure context / repair input，不可滿足 edge contract。
+
+Runtime artifact reference：
+
+```ts
+type RuntimeArtifactRef = {
+  id: string;
+  runId: string;
+  taskId: string;
+  artifactType: string;
+  contractRef: string;
+  producerAgentSpecRef: string;
+  producerAttemptId: string;
+  status: "created" | "schema_validated" | "evidence_validated" | "policy_validated" | "accepted" | "rejected" | "needs_repair";
+  summary: string;
+  payloadResourceRef?: string;
+  blobRef?: string;
+  evidencePacketRefs: string[];
+  validatorResultRefs: string[];
+  createdAt: string;
+  acceptedAt?: string;
+};
+```
+
+Rules：
+
+- artifact payload 必須符合 `contract_spec`。
+- 大型 body、raw logs、transcript 不放進 workflow history；只放 blob/ref + summary。
+- artifact 必須記錄 producer task / agent / attempt，支援追溯與 retry 比對。
+- terminal artifact 必須有 stop-condition validator result。
+
+### 10.2 Evidence Packet
+
+Evidence 是 artifact 被接受的證據，不等於 artifact 本身。每個 output contract 可要求一組 evidence requirements。
+
+```ts
+type EvidencePacket = {
+  schemaVersion: "southstar.runtime.evidence_packet.v1";
+  id: string;
+  runId: string;
+  taskId: string;
+  artifactRef: string;
+  evidenceItems: Array<{
+    kind: "file-diff" | "test-result" | "command-output" | "url" | "screenshot" | "human-approval" | "artifact-ref" | "workspace-snapshot" | "policy-decision";
+    status: "present" | "missing" | "invalid" | "stale";
+    summary: string;
+    sourceRef?: string;
+    sha256?: string;
+    capturedAt: string;
+    reproducibleCommand?: string[];
+    redactionApplied: boolean;
+  }>;
+  completeness: {
+    requiredCount: number;
+    presentCount: number;
+    missingKinds: string[];
+  };
+};
+```
+
+Evidence rules：
+
+- software implementation 必須至少有 file diff 或 changed files evidence，並依 validator 要求附 test result / command output。
+- browser/web ops 必須以 screenshot / URL / DOM state summary 作 evidence。
+- research/report 必須以 source URL / citation extraction 作 evidence。
+- human gate 必須產生 human approval evidence。
+- stale evidence 不可滿足 validator，例如 workspace diff 與 artifact attempt 不一致。
+
+### 10.3 Validator Result Contract
+
+每個 validator 必須產生 typed result，不能只回傳 boolean。
+
+```ts
+type ValidatorResult = {
+  schemaVersion: "southstar.runtime.validator_result.v1";
+  id: string;
+  runId: string;
+  taskId?: string;
+  artifactRef?: string;
+  validatorRef: string;
+  validatorType: "schema" | "test" | "policy" | "checker-agent" | "human" | "pipeline" | "custom";
+  verdict: "passed" | "failed" | "warning" | "skipped";
+  blocking: boolean;
+  checkedContractRefs: string[];
+  checkedEvidenceRefs: string[];
+  messages: Array<{ severity: "info" | "warning" | "error"; path?: string; text: string }>;
+  metrics?: Record<string, number>;
+  rerunCommand?: string[];
+  repairHint?: string;
+  createdAt: string;
+};
+```
+
+Validator rules：
+
+- Schema validator checks contract shape and required fields.
+- Evidence validator checks required evidence presence, freshness, and attempt alignment.
+- Policy validator checks tool/MCP/workspace/model/secret boundaries.
+- Test validator records command argv, exit status, output summary, and log ref.
+- Checker-agent validator must reference its own verification artifact; it cannot pass based only on freeform text.
+- Pipeline validator passes only when all required blocking validators pass.
+
+### 10.4 Flow-level I/O Correctness Validator
+
+Before `approve_for_run`, template validation must prove the whole graph is connected by typed contracts and evidence.
+
+Checks：
+
+1. **Input coverage**：every root node input is provided by template input contract, memory policy, workspace binding, human input, or external capability artifact.
+2. **Output producer**：every edge `artifactContractRefs` has an upstream producer node.
+3. **Evidence producer**：every required evidence kind has either a task producer, workspace policy source, validator source, or human gate source.
+4. **Validator coverage**：every output contract has at least one blocking validator; terminal outputs have stop-condition validators.
+5. **Capability fit**：selected agent capabilities and tool policy satisfy node requirements.
+6. **Workspace fit**：workspace-required edge has compatible workspace policy and binding plan.
+7. **Fan-in compatibility**：fan-in node accepts all upstream artifact types and has merge strategy.
+8. **No transcript dependency**：no node may require raw transcript as its only input.
+
+### 10.5 Downstream Context Construction
+
+Downstream `ContextPacket` should include explicit artifact/evidence summaries, not raw workspace scan results.
+
+```text
+ContextPacket(task N)
+  includes accepted upstream artifact summaries
+  includes evidence packet summaries and refs
+  includes workspace diff/snapshot summaries when edge requires workspace state
+  excludes rejected artifacts unless task is a repair/recovery task
+```
+
+Repair task context may include rejected artifact summary, validator failure messages, and repair hints, but must label them as failure context.
+
+### 10.6 Evidence UI Priority
+
+Runtime UI should prioritize an evidence ledger over transcript display：
+
+- artifact status timeline
+- required vs present evidence matrix
+- validator results with blocking status
+- reproducible commands and log refs
+- workspace diff/snapshot refs
+- human approval evidence
+- downstream readiness blockers
+
+This makes product trust depend on inspectable proof rather than agent narrative.
+
+## 11. Runtime Compile
 
 Compiler 輸入：
 
@@ -648,7 +809,7 @@ compiledFrom: {
 
 Compiler 必須 snapshot exact version payload，不能引用 mutable library head。
 
-## 11. Template Reuse / Auto-run
+## 12. Template Reuse / Auto-run
 
 未來新需求流程：
 
@@ -683,7 +844,7 @@ Auto-run 只允許：
 
 否則進 user confirmation、partial clarification 或 DAG edit。
 
-## 12. API Surface
+## 13. API Surface
 
 ### Library Query
 
@@ -721,16 +882,33 @@ POST /api/v2/templates/:templateVersionId/run
 POST /api/v2/run-goal
 ```
 
-## 13. UI Surfaces
+### Artifact / Evidence / Validator Read Models
+
+```text
+GET /api/v2/runs/:runId/artifact-flow
+GET /api/v2/runs/:runId/artifacts/:artifactId
+GET /api/v2/runs/:runId/artifacts/:artifactId/evidence
+GET /api/v2/runs/:runId/validators/results
+GET /api/v2/runs/:runId/downstream-readiness
+```
+
+用途：
+
+- DAG editor / runtime monitor 顯示 artifact graph。
+- Evidence ledger 顯示 required vs present evidence。
+- Validator diagnostics 顯示 blocking failures 與 repair hints。
+- Downstream readiness 顯示哪些 task 可開始、哪些缺 artifact/evidence/workspace state。
+
+## 14. UI Surfaces
 
 第一版目標是完整 visual editor，至少包含：
 
 1. **Requirement Studio**：clarification Q&A、requirement spec、assumptions、non-goals、acceptance criteria、reuse/create decision。
 2. **Design Library**：agent specs、capabilities、contracts、validators、policy bundles、workflow templates、version history、approve/deprecate/promote。
 3. **DAG Visual Editor**：drag/drop nodes/edges、node detail form、agent/model band、contracts、validators、capabilities、MCP capabilities、workspace policy、LLM patch diff、validation diagnostics、approve_for_run。
-4. **Template Run Launcher / Runtime Monitor**：template inputs、compile preview、risk result、run launch、artifact flow、workspace binding/diff、validator result、template validation outcome。
+4. **Template Run Launcher / Runtime Monitor**：template inputs、compile preview、risk result、run launch、artifact flow、evidence ledger、validator result、downstream readiness、workspace binding/diff、template validation outcome。
 
-## 14. Error Handling
+## 15. Error Handling
 
 | Failure | Result |
 |---|---|
@@ -741,10 +919,13 @@ POST /api/v2/run-goal
 | required run input 缺失 | compile blocked，回到 input form / clarification |
 | workspace 無法 materialize | compile blocked 或 task exception |
 | task artifact 不合格 | runtime repair / retry / fork / rollback |
+| required evidence missing/stale | artifact stays `needs_repair`; downstream task remains blocked |
+| blocking validator failed | artifact rejected or repair requested; validator result records repair hint |
+| downstream readiness blocked | UI shows missing artifact/evidence/workspace requirement |
 | template run 失敗 | template 保持 `approved_for_run`，附 failure evidence，不升 validated |
 | web source 不可信 | proposal 可保存，但 risk high，不能 auto-approve |
 
-## 15. Security / Governance Rules
+## 16. Security / Governance Rules
 
 1. LLM 不可直接建立 approved library version。
 2. LLM 不可直接建立 MCP grant。
@@ -756,8 +937,10 @@ POST /api/v2/run-goal
 8. Workspace 是 state/evidence carrier，不是 workflow truth。
 9. Proposed definitions 在 approved 前不能被 executable template 引用。
 10. Template validation 必須由 successful run evidence 驅動，不能由 LLM 自行標記。
+11. Artifact 不能在缺少 required evidence 或 blocking validator failure 時進入 `accepted`。
+12. Downstream task 不能以 raw transcript、executor success、或 workspace scan 替代 typed upstream artifacts。
 
-## 16. Testing Strategy
+## 17. Testing Strategy
 
 ### Unit Tests
 
@@ -770,6 +953,10 @@ POST /api/v2/run-goal
 - template lifecycle transition validation
 - patch application / rollback
 - workspace policy validation
+- artifact lifecycle transition validation
+- evidence packet completeness/freshness validation
+- validator result contract validation
+- downstream readiness rejects non-accepted artifacts
 
 ### Integration Tests
 
@@ -779,6 +966,8 @@ POST /api/v2/run-goal
 - DAG editor patch → template validation
 - approved_for_run template → compile runtime manifest
 - runtime accepted artifacts → downstream context packet
+- missing evidence blocks downstream readiness
+- failed blocking validator produces repair hint and prevents artifact acceptance
 - successful run → template version validated
 - similar future goal → validated template match → skip clarification
 
@@ -792,12 +981,13 @@ goal: implement feature in repo
 -> create maker/checker/summarizer DAG
 -> approve_for_run
 -> compile/run through fake Tork or builtin harness
--> accepted artifacts
+-> accepted artifacts with evidence packets and validator results
+-> downstream tasks receive context from accepted artifact/evidence summaries
 -> mark template validated
 -> similar future goal matches template and skips clarification
 ```
 
-## 17. Implementation Phases
+## 18. Implementation Phases
 
 ### Phase 1：Design Library Core
 
@@ -837,7 +1027,10 @@ goal: implement feature in repo
 
 - template version + inputs → `SouthstarWorkflowManifest`
 - immutable snapshot refs
-- context packet with upstream artifact flow
+- artifact lifecycle resources and accepted-artifact gate
+- evidence packet creation and evidence ledger read model
+- validator result resources with blocking verdicts and repair hints
+- context packet with upstream artifact/evidence flow
 - workspace binding model
 - Tork execution unchanged as executor-only
 
@@ -851,11 +1044,11 @@ goal: implement feature in repo
 
 ### Phase 7：Template Validation From Successful Runs
 
-- runtime stop condition → template validated
+- runtime stop condition + terminal accepted artifacts + required evidence → template validated
 - failure evidence attached to template
 - success metrics / recommendation rank
 
-## 18. Acceptance Criteria
+## 19. Acceptance Criteria
 
 - Design Library uses few canonical tables and typed payloads, not one table per concept.
 - LLM can compose flow and agents from approved library definitions and can create proposals for missing capabilities.
@@ -863,11 +1056,14 @@ goal: implement feature in repo
 - DAG editor and LLM use the same `WorkflowTemplatePatch` model.
 - Template validator proves DAG input/process/output compatibility before approval.
 - Compiler materializes runtime manifest from immutable template/library versions and run inputs.
-- Runtime passes context through accepted artifacts, context packets, and workspace bindings, not by blind workspace scanning.
-- `approved_for_run` template can execute current demand; only successful run evidence promotes template to `validated`.
+- Runtime passes context through accepted artifacts, evidence summaries, context packets, and workspace bindings, not by blind workspace scanning.
+- Artifact lifecycle prevents downstream use until schema, evidence, policy, and blocking validators pass.
+- Evidence packets record required vs present evidence, freshness, source refs, reproducible commands, and redaction status.
+- Validator results are typed resources with blocking verdicts, checked contracts/evidence, messages, and repair hints.
+- `approved_for_run` template can execute current demand; only successful run evidence with accepted terminal artifacts promotes template to `validated`.
 - Future similar demand can match validated template and skip initial clarification when inputs are complete and risk is low.
 
-## 19. Self-review Notes
+## 20. Self-review Notes
 
 - Placeholder scan: no incomplete placeholder markers remain.
 - Consistency check: design-time library is reusable truth; runtime manifest remains immutable execution snapshot.
