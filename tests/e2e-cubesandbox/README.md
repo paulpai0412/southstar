@@ -6,12 +6,9 @@ This suite is **real provider acceptance** only when `SOUTHSTAR_CUBESANDBOX_E2E=
 
 - `SOUTHSTAR_CUBESANDBOX_E2E=1`
 - `SOUTHSTAR_CONFIG=<path-to-cubesandbox-.southstar.yaml>`
-- `SOUTHSTAR_TEST_SECRET_<normalized_api_key_ref>=<real-api-key>`
+- `SOUTHSTAR_TEST_SECRET_<api_key_ref>=<real-api-key>`
 - optional: `SOUTHSTAR_CALLBACK_HOST` (default `127.0.0.1`)
 - optional: `SOUTHSTAR_E2E_EVIDENCE_DIR` (default `.southstar/evidence/cubesandbox`)
-
-`normalized_api_key_ref` means `api_key_ref` with non `[A-Za-z0-9_]` characters replaced by `_`.
-Example: `api_key_ref: cubesandbox-api-key` => `SOUTHSTAR_TEST_SECRET_cubesandbox_api_key`.
 
 `SOUTHSTAR_CONFIG` must set:
 

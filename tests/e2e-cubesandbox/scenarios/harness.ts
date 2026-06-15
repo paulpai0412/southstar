@@ -3,7 +3,7 @@ import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { CubeSandboxRealE2EEnv } from "../env.ts";
-import { buildRuntimeDependencies, southstarSecretEnvName } from "../../../src/v2/runtime/dependencies.ts";
+import { buildRuntimeDependencies } from "../../../src/v2/runtime/dependencies.ts";
 
 export type CallbackProbeServer = {
   callbackUrl: string;
@@ -15,9 +15,8 @@ export function createCubeSandboxRealContext(env: CubeSandboxRealE2EEnv) {
   return buildRuntimeDependencies({
     configPath: env.configPath,
     resolveCredential(ref) {
-      const key = southstarSecretEnvName(ref).replace("SOUTHSTAR_SECRET_", "SOUTHSTAR_TEST_SECRET_");
-      const value = process.env[key];
-      if (!value) throw new Error(`missing test credential ${key}`);
+      const value = process.env[`SOUTHSTAR_TEST_SECRET_${ref}`];
+      if (!value) throw new Error(`missing test credential SOUTHSTAR_TEST_SECRET_${ref}`);
       return value;
     },
   });
