@@ -29,25 +29,3 @@ workflow:
   path: .southstar/workflows/generic-request-resolution.yaml
 agents:
   path: .southstar/agents.yaml
-executor:
-  provider: tork
-  lifecycle:
-    cleanup_mode: strict
-    health_check_interval_seconds: 10
-    reconcile_interval_seconds: 30
-    orphan_scan_interval_seconds: 30
-    orphan_grace_seconds: 60
-    shutdown_grace_seconds: 20
-    max_restart_attempts: 3
-    max_cleanup_attempts: 5
-    sdk_call_timeout_seconds: 15
-    sandbox_create_timeout_seconds: 60
-    command_start_timeout_seconds: 30
-    command_idle_timeout_seconds: 120
-    task_wall_timeout_seconds: 1800
-    callback_wait_timeout_seconds: 30
-    destroy_timeout_seconds: 20
-    lock_ttl_seconds: 60
-  tork:
-    base_url: http://127.0.0.1:8000
-    submit_path: /jobs
