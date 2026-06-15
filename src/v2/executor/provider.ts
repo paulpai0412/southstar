@@ -43,6 +43,29 @@ export type ExecutorCancelResult = {
   providerPayload?: Record<string, unknown>;
 };
 
+export type TorkAdapterCapabilities = {
+  supportsJobInspect: boolean;
+  supportsTaskInspect: boolean;
+  supportsJobCancel: boolean;
+  supportsTaskCancel: boolean;
+  supportsJobLogs: boolean;
+  supportsTaskLogs: boolean;
+  supportsWorkerHealth: boolean;
+};
+
+export type TorkJobObservation = {
+  jobId: string;
+  status: string;
+  raw?: unknown;
+};
+
+export type TorkObservationClient = {
+  capabilities(): TorkAdapterCapabilities;
+  getJob(jobId: string): Promise<TorkJobObservation>;
+  getJobLogs(jobId: string): Promise<string>;
+  cancelJob(jobId: string): Promise<void>;
+};
+
 export type ExecutorProvider = {
   readonly executorType: ExecutorType;
   submit(request: ExecutorSubmitRequest): Promise<ExecutorSubmitResult>;

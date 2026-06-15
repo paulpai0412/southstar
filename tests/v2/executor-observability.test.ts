@@ -17,6 +17,9 @@ import {
   updateExecutorBindingStatus,
 } from "../../src/v2/executor/bindings.ts";
 import { recordExecutorHeartbeat } from "../../src/v2/executor/heartbeat.ts";
+import { reconcileExecutorBindings } from "../../src/v2/executor/reconciler.ts";
+import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
+import type { RuntimeServerContext } from "../../src/v2/server/runtime-context.ts";
 
 test("validates executor binding payload and preserves four-layer status fields", () => {
   const payload: ExecutorBindingPayload = {
@@ -216,4 +219,188 @@ test("records heartbeat as liveness only and does not complete workflow task", (
     .get("run-hb", "task-hb") as { status: string };
   assert.equal(task.status, "running");
   assert.equal(listHistoryForRun(db, "run-hb").filter((event) => event.eventType === "executor.heartbeat").length, 1);
+});
+
+test("reconciler marks completed Tork job without callback as callback-missing", async () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-cb",
+    status: "running",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  createWorkflowTask(db, {
+    id: "task-cb",
+    runId: "run-cb",
+    taskKey: "task-cb",
+    status: "running",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+  createExecutorBinding(db, {
+    runId: "run-cb",
+    taskId: "task-cb",
+    attemptId: "attempt-1",
+    torkJobId: "job-cb",
+    status: "running",
+    now: "2026-06-15T00:00:00.000Z",
+    queueTimeoutSeconds: 120,
+    hardTimeoutSeconds: 600,
+  });
+
+  const result = await reconcileExecutorBindings(db, {
+    now: "2026-06-15T00:01:00.000Z",
+    tork: {
+      capabilities: () => ({
+        supportsJobInspect: true,
+        supportsTaskInspect: false,
+        supportsJobCancel: true,
+        supportsTaskCancel: false,
+        supportsJobLogs: true,
+        supportsTaskLogs: false,
+        supportsWorkerHealth: false,
+      }),
+      getJob: async () => ({ jobId: "job-cb", status: "COMPLETED" }),
+      getJobLogs: async () => "completed without callback",
+      cancelJob: async () => undefined,
+    },
+  });
+
+  assert.equal(result.findings.some((finding) => finding.classification === "callback-missing"), true);
+  assert.equal(listExecutorBindingsForRun(db, "run-cb")[0]?.payload.southstarExecutorStatus, "callback-missing");
+  const task = db.prepare("select status from workflow_tasks where run_id = ? and id = ?")
+    .get("run-cb", "task-cb") as { status: string };
+  assert.equal(task.status, "running");
+});
+
+test("reconciler marks terminal Southstar task with running Tork job as orphaned", async () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-orphan",
+    status: "passed",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  createWorkflowTask(db, {
+    id: "task-orphan",
+    runId: "run-orphan",
+    taskKey: "task-orphan",
+    status: "completed",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+  createExecutorBinding(db, {
+    runId: "run-orphan",
+    taskId: "task-orphan",
+    attemptId: "attempt-1",
+    torkJobId: "job-orphan",
+    status: "running",
+    now: "2026-06-15T00:00:00.000Z",
+    queueTimeoutSeconds: 120,
+    hardTimeoutSeconds: 600,
+  });
+
+  const result = await reconcileExecutorBindings(db, {
+    now: "2026-06-15T00:01:00.000Z",
+    tork: {
+      capabilities: () => ({
+        supportsJobInspect: true,
+        supportsTaskInspect: false,
+        supportsJobCancel: true,
+        supportsTaskCancel: false,
+        supportsJobLogs: true,
+        supportsTaskLogs: false,
+        supportsWorkerHealth: false,
+      }),
+      getJob: async () => ({ jobId: "job-orphan", status: "RUNNING" }),
+      getJobLogs: async () => "still running",
+      cancelJob: async () => undefined,
+    },
+  });
+
+  assert.equal(result.findings.some((finding) => finding.classification === "orphaned"), true);
+  assert.equal(listExecutorBindingsForRun(db, "run-orphan")[0]?.payload.southstarExecutorStatus, "orphaned");
+});
+
+test("executor reconcile route writes real reconcile result through Southstar API", async () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-route",
+    status: "running",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  createWorkflowTask(db, {
+    id: "task-route",
+    runId: "run-route",
+    taskKey: "task-route",
+    status: "running",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+  createExecutorBinding(db, {
+    runId: "run-route",
+    taskId: "task-route",
+    attemptId: "attempt-1",
+    torkJobId: "job-route",
+    status: "running",
+    now: "2026-06-15T00:00:00.000Z",
+    queueTimeoutSeconds: 120,
+    hardTimeoutSeconds: 600,
+  });
+
+  const context: RuntimeServerContext = {
+    db,
+    plannerClient: {
+      generate: async () => {
+        throw new Error("not used");
+      },
+    },
+    executorProvider: {
+      executorType: "tork",
+      submit: async () => {
+        throw new Error("not used");
+      },
+    },
+    torkObservationClient: {
+      capabilities: () => ({
+        supportsJobInspect: true,
+        supportsTaskInspect: false,
+        supportsJobCancel: true,
+        supportsTaskCancel: false,
+        supportsJobLogs: true,
+        supportsTaskLogs: false,
+        supportsWorkerHealth: false,
+      }),
+      getJob: async () => ({ jobId: "job-route", status: "COMPLETED" }),
+      getJobLogs: async () => "completed no callback",
+      cancelJob: async () => undefined,
+    },
+  };
+
+  const response = await handleRuntimeRoute(
+    context,
+    new Request("http://127.0.0.1/api/v2/executor/reconcile", { method: "POST" }),
+  );
+  const body = await response.json() as {
+    ok: boolean;
+    result: { findings: Array<{ classification: string }> };
+  };
+  assert.equal(body.ok, true);
+  assert.equal(body.result.findings[0]?.classification, "callback-missing");
 });

@@ -1,3 +1,4 @@
+import type { TorkAdapterCapabilities, TorkJobObservation } from "./provider.ts";
 import type { TorkJobProjection } from "./tork-projection.ts";
 
 export type TorkClientOptions = {
@@ -37,9 +38,35 @@ export class TorkClient {
     return { jobId, status: payload.status ?? payload.state ?? "submitted" };
   }
 
+  capabilities(): TorkAdapterCapabilities {
+    return {
+      supportsJobInspect: true,
+      supportsTaskInspect: false,
+      supportsJobCancel: true,
+      supportsTaskCancel: false,
+      supportsJobLogs: true,
+      supportsTaskLogs: false,
+      supportsWorkerHealth: false,
+    };
+  }
+
   async getJob(jobId: string): Promise<unknown> {
     const response = await this.fetchJobEndpoint(jobId, ["", "/api/v1"]);
     return await response.json() as unknown;
+  }
+
+  async getJobObservation(jobId: string): Promise<TorkJobObservation> {
+    const payload = await this.getJob(jobId) as {
+      id?: string;
+      job_id?: string;
+      status?: string;
+      state?: string;
+    };
+    return {
+      jobId: payload.id ?? payload.job_id ?? jobId,
+      status: payload.status ?? payload.state ?? "UNKNOWN",
+      raw: payload,
+    };
   }
 
   async cancelJob(jobId: string): Promise<void> {

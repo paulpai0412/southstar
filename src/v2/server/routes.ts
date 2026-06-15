@@ -1,5 +1,7 @@
 import { ingestTaskRunResult, type TaskRunCallbackResult } from "../executor/tork-callback.ts";
 import { recordExecutorHeartbeat } from "../executor/heartbeat.ts";
+import { getExecutorBinding, listExecutorBindingsForRun } from "../executor/bindings.ts";
+import { reconcileExecutorBindings } from "../executor/reconciler.ts";
 import {
   createPlannerDraft,
   createRunFromDraft,
@@ -215,6 +217,30 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         message: typeof body.message === "string" ? body.message : undefined,
         observedAt: typeof body.observedAt === "string" ? body.observedAt : new Date().toISOString(),
       }));
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/v2/executor/reconcile") {
+      if (!context.torkObservationClient) {
+        throw new Error("torkObservationClient is required for executor reconcile");
+      }
+      return json("executor-reconcile", await reconcileExecutorBindings(context.db, {
+        tork: context.torkObservationClient,
+      }));
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/v2/executor/bindings") {
+      const runId = url.searchParams.get("runId");
+      if (runId) {
+        return json("executor-bindings", listExecutorBindingsForRun(context.db, runId));
+      }
+      return json("executor-bindings", listResources(context.db, { resourceType: "executor_binding" }));
+    }
+
+    const bindingMatch = url.pathname.match(/^\/api\/v2\/executor\/bindings\/([^/]+)$/);
+    if (request.method === "GET" && bindingMatch) {
+      const binding = getExecutorBinding(context.db, decodeURIComponent(bindingMatch[1]!));
+      if (!binding) throw new Error("executor binding not found");
+      return json("executor-binding", binding);
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/tork/callback") {
