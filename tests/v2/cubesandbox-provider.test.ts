@@ -99,6 +99,58 @@ test("CubeSandbox provider creates sandbox and starts agent runner", async () =>
   });
   assert.equal(cancelled?.status, "cancelled");
   assert.deepEqual(sdk.destroyed, ["sbx_1"]);
+  assert.equal((cancelled?.providerPayload?.cleanup as { attempts?: number } | undefined)?.attempts, 1);
+  assert.equal((cancelled?.providerPayload?.cleanup as { finalizerStatus?: string } | undefined)?.finalizerStatus, "destroyed");
+});
+
+test("CubeSandbox provider cleanup increments finalizer attempts and records retry", async () => {
+  const sdk = client();
+  let shouldFail = true;
+  sdk.destroySandbox = async (input) => {
+    if (shouldFail) {
+      shouldFail = false;
+      throw new Error(`destroy failed for ${input.sandboxId}`);
+    }
+    sdk.destroyed.push(input.sandboxId);
+  };
+
+  const provider = new CubeSandboxExecutorProvider({
+    lifecycle,
+    sdkClient: sdk,
+    config: {
+      sdk: "e2b-compatible",
+      apiUrl: "http://cube",
+      apiKeyRef: "ref",
+      templateId: "tmpl",
+      defaultTimeoutSeconds: 900,
+      destroyOnCompletion: true,
+      hostMounts: [{ source: ".southstar/runs", target: "/southstar-runs", readonly: false }],
+    },
+  });
+
+  const retry = await provider.cleanup?.({
+    externalJobId: "cube-exec-1",
+    reason: "test-retry",
+    providerPayload: {
+      sandboxId: "sbx_1",
+      cleanup: { required: true, destroyOnCompletion: true, attempts: 0, finalizerStatus: "pending" },
+    },
+  });
+  assert.equal(retry?.status, "retry_scheduled");
+  assert.equal((retry?.providerPayload?.cleanup as { attempts?: number } | undefined)?.attempts, 1);
+  assert.equal((retry?.providerPayload?.cleanup as { finalizerStatus?: string } | undefined)?.finalizerStatus, "retry_scheduled");
+
+  const destroyed = await provider.cleanup?.({
+    externalJobId: "cube-exec-1",
+    reason: "test-destroy",
+    providerPayload: {
+      sandboxId: "sbx_1",
+      cleanup: retry?.providerPayload?.cleanup,
+    },
+  });
+  assert.equal(destroyed?.status, "destroyed");
+  assert.equal((destroyed?.providerPayload?.cleanup as { attempts?: number } | undefined)?.attempts, 2);
+  assert.equal((destroyed?.providerPayload?.cleanup as { finalizerStatus?: string } | undefined)?.finalizerStatus, "destroyed");
 });
 
 test("CubeSandbox provider reconcile destroys managed orphan sandboxes", async () => {

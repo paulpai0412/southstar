@@ -78,6 +78,7 @@ test("executor callback rejects unknown executor binding when provided", () => {
     taskId: "task-1",
     rootSessionId: "root-run-1-task-1",
     executorBindingId: "exec-1",
+    executorType: "tork",
     ok: true,
     attempts: 1,
     artifact: { status: "ok" },
@@ -87,4 +88,84 @@ test("executor callback rejects unknown executor binding when provided", () => {
 
   const row = sqlite.prepare("select status from workflow_tasks where run_id = ? and id = ?").get("run-1", "task-1") as { status: string };
   assert.equal(row.status, "completed");
+});
+
+test("executor callback rejects binding run-task mismatch and executor type mismatch", () => {
+  const sqlite = db();
+  createWorkflowRun(sqlite, {
+    id: "run-1",
+    status: "running",
+    domain: "software",
+    goalPrompt: "goal",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: JSON.stringify(null),
+    snapshotJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify({}),
+    metricsJson: JSON.stringify({}),
+  });
+  createWorkflowTask(sqlite, {
+    id: "task-1",
+    runId: "run-1",
+    taskKey: "task-1",
+    status: "pending",
+    sortOrder: 0,
+    dependsOn: [],
+    rootSessionId: "root-run-1-task-1",
+    snapshot: {},
+  });
+  createWorkflowTask(sqlite, {
+    id: "task-2",
+    runId: "run-1",
+    taskKey: "task-2",
+    status: "pending",
+    sortOrder: 1,
+    dependsOn: [],
+    rootSessionId: "root-run-1-task-2",
+    snapshot: {},
+  });
+
+  upsertRuntimeResource(sqlite, {
+    resourceType: "executor_binding",
+    resourceKey: "exec-mismatch",
+    runId: "run-1",
+    taskId: "task-2",
+    scope: "executor",
+    status: "running",
+    payload: { executorType: "cubesandbox" },
+  });
+
+  assert.throws(() => ingestExecutorCallback(sqlite, {
+    runId: "run-1",
+    taskId: "task-1",
+    rootSessionId: "root-run-1-task-1",
+    executorBindingId: "exec-mismatch",
+    ok: true,
+    attempts: 1,
+    artifact: {},
+    metrics: {},
+    events: [],
+  }), /executor binding does not match callback task/);
+
+  upsertRuntimeResource(sqlite, {
+    resourceType: "executor_binding",
+    resourceKey: "exec-type",
+    runId: "run-1",
+    taskId: "task-1",
+    scope: "executor",
+    status: "running",
+    payload: { executorType: "cubesandbox" },
+  });
+
+  assert.throws(() => ingestExecutorCallback(sqlite, {
+    runId: "run-1",
+    taskId: "task-1",
+    rootSessionId: "root-run-1-task-1",
+    executorBindingId: "exec-type",
+    executorType: "tork",
+    ok: true,
+    attempts: 1,
+    artifact: {},
+    metrics: {},
+    events: [],
+  }), /executor type mismatch for binding/);
 });
