@@ -43,7 +43,7 @@ test("creates run from draft, submits Tork projection, and exposes status", asyn
   const run = await createRunFromDraft(db, {
     draftId: draft.draftId,
     runRoot,
-    callbackUrl: "http://127.0.0.1:3000/api/v2/executor/callback",
+    callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
     torkClient: {
       submit: async (projection) => {
         submittedJobs.push(projection.job);

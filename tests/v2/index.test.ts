@@ -39,7 +39,6 @@ await import("./planner.test.ts");
 await import("./pi-sdk-harness.test.ts");
 await import("./tork-client.test.ts");
 await import("./tork-callback.test.ts");
-await import("./executor-callback.test.ts");
 await import("./env.test.ts");
 await import("./cli.test.ts");
 await import("./cli-operations.test.ts");

@@ -1,4 +1,4 @@
-import { ingestExecutorCallback, type ExecutorCallbackResult } from "../executor/callback.ts";
+import { ingestTaskRunResult, type TaskRunCallbackResult } from "../executor/tork-callback.ts";
 import {
   createPlannerDraft,
   createRunFromDraft,
@@ -199,8 +199,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       }));
     }
 
-    if (request.method === "POST" && url.pathname === "/api/v2/executor/callback") {
-      ingestExecutorCallback(context.db, validatedCallbackResult(context, await readJsonBody(request)));
+    if (request.method === "POST" && url.pathname === "/api/v2/tork/callback") {
+      ingestTaskRunResult(context.db, validatedCallbackResult(context, await readJsonBody(request)));
       return json("callback", { accepted: true });
     }
 
@@ -220,7 +220,7 @@ function requiredServerUrl(context: RuntimeServerContext): string {
 }
 
 function callbackUrl(context: RuntimeServerContext): string {
-  return context.callbackUrl ?? `${requiredServerUrl(context)}/api/v2/executor/callback`;
+  return context.callbackUrl ?? `${requiredServerUrl(context)}/api/v2/tork/callback`;
 }
 
 function riskTagsForVoiceTranscript(transcript: string): string[] {
@@ -231,7 +231,7 @@ function riskTagsForVoiceTranscript(transcript: string): string[] {
   return tags.size === 0 ? ["low-risk"] : [...tags];
 }
 
-function validatedCallbackResult(context: RuntimeServerContext, body: unknown): ExecutorCallbackResult {
+function validatedCallbackResult(context: RuntimeServerContext, body: unknown): TaskRunCallbackResult {
   if (!isRecord(body)) throw new Error("callback body must be an object");
   const runId = requiredString(body.runId, "runId");
   const taskId = requiredString(body.taskId, "taskId");
@@ -244,11 +244,6 @@ function validatedCallbackResult(context: RuntimeServerContext, body: unknown): 
     rootSessionId,
     ok: typeof body.ok === "boolean" ? body.ok : false,
     attempts: typeof body.attempts === "number" && Number.isFinite(body.attempts) ? body.attempts : 1,
-    attemptId: typeof body.attemptId === "string" ? body.attemptId : undefined,
-    executorBindingId: typeof body.executorBindingId === "string" ? body.executorBindingId : undefined,
-    executorType: body.executorType === "tork" || body.executorType === "cubesandbox"
-      ? body.executorType
-      : undefined,
     artifact: isRecord(body.artifact) ? body.artifact : {},
     metrics: isRecord(body.metrics) ? body.metrics : {},
     events: Array.isArray(body.events) ? body.events.map(validateCallbackEvent) : [],
@@ -256,11 +251,11 @@ function validatedCallbackResult(context: RuntimeServerContext, body: unknown): 
   };
 }
 
-function validateCallbackEvent(event: unknown): ExecutorCallbackResult["events"][number] {
+function validateCallbackEvent(event: unknown): TaskRunCallbackResult["events"][number] {
   if (!isRecord(event)) throw new Error("callback event must be an object");
   return {
     eventType: requiredString(event.eventType, "eventType"),
-    actorType: requiredString(event.actorType, "actorType") as ExecutorCallbackResult["events"][number]["actorType"],
+    actorType: requiredString(event.actorType, "actorType") as TaskRunCallbackResult["events"][number]["actorType"],
     sessionId: typeof event.sessionId === "string" ? event.sessionId : undefined,
     payload: event.payload,
   };

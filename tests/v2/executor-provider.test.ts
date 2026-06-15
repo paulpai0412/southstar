@@ -16,7 +16,7 @@ test("TorkExecutorProvider submits through Tork without leaking provider details
   const canonicalWorkflowJson = JSON.stringify(workflow);
   const submittedProjections: TorkJobProjection[] = [];
   const provider = new TorkExecutorProvider({
-    callbackUrl: "http://127.0.0.1:3000/api/v2/executor/callback",
+    callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
     envelopeBasePath: "/southstar-runs",
     torkClient: {
       submit: async (projection) => {
