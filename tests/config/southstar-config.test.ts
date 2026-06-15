@@ -23,6 +23,10 @@ test("loads Southstar config from .southstar.yaml shape", () => {
   assert.equal(config.workflow.id, "generic_request_resolution");
   assert.equal(config.workflow.path, ".southstar/workflows/generic-request-resolution.yaml");
   assert.equal(config.agents.path, ".southstar/agents.yaml");
+  assert.equal(config.executor.provider, "tork");
+  assert.equal(config.executor.lifecycle.cleanupMode, "strict");
+  assert.equal(config.executor.tork?.baseUrl, "http://127.0.0.1:8000");
+  assert.equal(config.executor.tork?.submitPath, "/jobs");
 });
 
 test("allows only Southstar bootstrap env names", () => {
@@ -72,6 +76,27 @@ workflow:
   path: .southstar/workflows/generic-request-resolution.yaml
 agents:
   path: .southstar/agents.yaml
+executor:
+  provider: tork
+  lifecycle:
+    cleanup_mode: strict
+    health_check_interval_seconds: 10
+    reconcile_interval_seconds: 30
+    orphan_scan_interval_seconds: 30
+    orphan_grace_seconds: 60
+    shutdown_grace_seconds: 20
+    max_restart_attempts: 3
+    max_cleanup_attempts: 5
+    sdk_call_timeout_seconds: 15
+    sandbox_create_timeout_seconds: 60
+    command_start_timeout_seconds: 30
+    command_idle_timeout_seconds: 120
+    task_wall_timeout_seconds: 1800
+    callback_wait_timeout_seconds: 30
+    destroy_timeout_seconds: 20
+    lock_ttl_seconds: 60
+  tork:
+    base_url: http://127.0.0.1:8000
 `);
   assert.throws(() => validateRuntimeConfig(parsed), /intake.mode must be local, remote, or hybrid/);
 });
@@ -92,6 +117,72 @@ test("runtime numeric fields must be non-negative integers", () => {
   assert.throws(() => validateRuntimeConfig(baseConfig({
     runtime: { task_timeout_seconds: 1.5 },
   })), /runtime.task_timeout_seconds must be a non-negative integer/);
+});
+
+test("validates cubesandbox executor config and host mounts", () => {
+  const config = validateRuntimeConfig(baseConfig({
+    executor: {
+      provider: "cubesandbox",
+      lifecycle: {
+        cleanup_mode: "strict",
+        health_check_interval_seconds: 10,
+        reconcile_interval_seconds: 30,
+        orphan_scan_interval_seconds: 30,
+        orphan_grace_seconds: 60,
+        shutdown_grace_seconds: 20,
+        max_restart_attempts: 3,
+        max_cleanup_attempts: 5,
+        sdk_call_timeout_seconds: 15,
+        sandbox_create_timeout_seconds: 60,
+        command_start_timeout_seconds: 30,
+        command_idle_timeout_seconds: 120,
+        task_wall_timeout_seconds: 1800,
+        callback_wait_timeout_seconds: 30,
+        destroy_timeout_seconds: 20,
+        lock_ttl_seconds: 60,
+      },
+      cubesandbox: {
+        sdk: "e2b-compatible",
+        api_url: "http://127.0.0.1:3000",
+        api_key_ref: "local-cubesandbox-api-key",
+        template_id: "southstar-agent-template",
+        default_timeout_seconds: 1800,
+        destroy_on_completion: true,
+        host_mounts: [{ source: ".southstar/runs", target: "/southstar-runs", readonly: false }],
+      },
+    },
+  }));
+
+  assert.equal(config.executor.provider, "cubesandbox");
+  assert.equal(config.executor.cubesandbox?.apiUrl, "http://127.0.0.1:3000");
+  assert.equal(config.executor.cubesandbox?.apiKeyRef, "local-cubesandbox-api-key");
+  assert.deepEqual(config.executor.cubesandbox?.hostMounts, [{ source: ".southstar/runs", target: "/southstar-runs", readonly: false }]);
+});
+
+test("requires active provider config", () => {
+  assert.throws(() => validateRuntimeConfig(baseConfig({
+    executor: {
+      provider: "cubesandbox",
+      lifecycle: {
+        cleanup_mode: "strict",
+        health_check_interval_seconds: 10,
+        reconcile_interval_seconds: 30,
+        orphan_scan_interval_seconds: 30,
+        orphan_grace_seconds: 60,
+        shutdown_grace_seconds: 20,
+        max_restart_attempts: 3,
+        max_cleanup_attempts: 5,
+        sdk_call_timeout_seconds: 15,
+        sandbox_create_timeout_seconds: 60,
+        command_start_timeout_seconds: 30,
+        command_idle_timeout_seconds: 120,
+        task_wall_timeout_seconds: 1800,
+        callback_wait_timeout_seconds: 30,
+        destroy_timeout_seconds: 20,
+        lock_ttl_seconds: 60,
+      },
+    },
+  })), /executor.cubesandbox.sdk|executor.cubesandbox.api_url|Missing required config fields/);
 });
 
 function baseConfig(overrides: Record<string, unknown> = {}) {
@@ -115,6 +206,31 @@ function baseConfig(overrides: Record<string, unknown> = {}) {
       path: ".southstar/workflows/generic-request-resolution.yaml",
     },
     agents: { path: ".southstar/agents.yaml" },
+    executor: {
+      provider: "tork",
+      lifecycle: {
+        cleanup_mode: "strict",
+        health_check_interval_seconds: 10,
+        reconcile_interval_seconds: 30,
+        orphan_scan_interval_seconds: 30,
+        orphan_grace_seconds: 60,
+        shutdown_grace_seconds: 20,
+        max_restart_attempts: 3,
+        max_cleanup_attempts: 5,
+        sdk_call_timeout_seconds: 15,
+        sandbox_create_timeout_seconds: 60,
+        command_start_timeout_seconds: 30,
+        command_idle_timeout_seconds: 120,
+        task_wall_timeout_seconds: 1800,
+        callback_wait_timeout_seconds: 30,
+        destroy_timeout_seconds: 20,
+        lock_ttl_seconds: 60,
+      },
+      tork: {
+        base_url: "http://127.0.0.1:8000",
+        submit_path: "/jobs",
+      },
+    },
   }, overrides);
 }
 

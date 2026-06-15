@@ -5,6 +5,55 @@ export const ALLOWED_BOOTSTRAP_ENV = [
 ] as const;
 
 export type IntakeMode = "local" | "remote" | "hybrid";
+export type ExecutorProviderName = "tork" | "cubesandbox";
+export type ExecutorCleanupMode = "strict" | "best_effort";
+
+export type ExecutorLifecycleConfig = {
+  cleanupMode: ExecutorCleanupMode;
+  healthCheckIntervalSeconds: number;
+  reconcileIntervalSeconds: number;
+  orphanScanIntervalSeconds: number;
+  orphanGraceSeconds: number;
+  shutdownGraceSeconds: number;
+  maxRestartAttempts: number;
+  maxCleanupAttempts: number;
+  sdkCallTimeoutSeconds: number;
+  sandboxCreateTimeoutSeconds: number;
+  commandStartTimeoutSeconds: number;
+  commandIdleTimeoutSeconds: number;
+  taskWallTimeoutSeconds: number;
+  callbackWaitTimeoutSeconds: number;
+  destroyTimeoutSeconds: number;
+  lockTtlSeconds: number;
+};
+
+export type TorkExecutorConfig = {
+  baseUrl: string;
+  submitPath: string;
+};
+
+export type CubeSandboxHostMount = {
+  source: string;
+  target: string;
+  readonly: boolean;
+};
+
+export type CubeSandboxExecutorConfig = {
+  sdk: "e2b-compatible";
+  apiUrl: string;
+  apiKeyRef: string;
+  templateId: string;
+  defaultTimeoutSeconds: number;
+  destroyOnCompletion: boolean;
+  hostMounts: CubeSandboxHostMount[];
+};
+
+export type ExecutorConfig = {
+  provider: ExecutorProviderName;
+  lifecycle: ExecutorLifecycleConfig;
+  tork?: TorkExecutorConfig;
+  cubesandbox?: CubeSandboxExecutorConfig;
+};
 
 export interface RuntimeConfig {
   schemaVersion: string;
@@ -35,6 +84,7 @@ export interface RuntimeConfig {
   agents: {
     path: string;
   };
+  executor: ExecutorConfig;
 }
 
 const requiredStringFields = [
@@ -46,6 +96,23 @@ const requiredStringFields = [
   "workflow.version",
   "workflow.path",
   "agents.path",
+  "executor.provider",
+  "executor.lifecycle.cleanup_mode",
+  "executor.lifecycle.health_check_interval_seconds",
+  "executor.lifecycle.reconcile_interval_seconds",
+  "executor.lifecycle.orphan_scan_interval_seconds",
+  "executor.lifecycle.orphan_grace_seconds",
+  "executor.lifecycle.shutdown_grace_seconds",
+  "executor.lifecycle.max_restart_attempts",
+  "executor.lifecycle.max_cleanup_attempts",
+  "executor.lifecycle.sdk_call_timeout_seconds",
+  "executor.lifecycle.sandbox_create_timeout_seconds",
+  "executor.lifecycle.command_start_timeout_seconds",
+  "executor.lifecycle.command_idle_timeout_seconds",
+  "executor.lifecycle.task_wall_timeout_seconds",
+  "executor.lifecycle.callback_wait_timeout_seconds",
+  "executor.lifecycle.destroy_timeout_seconds",
+  "executor.lifecycle.lock_ttl_seconds",
 ] as const;
 
 const requiredIntegerFields = [
@@ -91,7 +158,82 @@ export function validateRuntimeConfig(value: unknown): RuntimeConfig {
     agents: {
       path: stringField(value, "agents.path"),
     },
+    executor: normalizeExecutor(value),
   };
+}
+
+function normalizeExecutor(value: unknown): ExecutorConfig {
+  const provider = enumField(value, "executor.provider", ["tork", "cubesandbox"] as const);
+  const lifecycle = normalizeExecutorLifecycle(value);
+  const executor: ExecutorConfig = { provider, lifecycle };
+
+  if (provider === "tork") {
+    executor.tork = {
+      baseUrl: stringField(value, "executor.tork.base_url"),
+      submitPath: typeof getConfigValue(value, "executor.tork.submit_path") === "string"
+        ? stringField(value, "executor.tork.submit_path")
+        : "/jobs",
+    };
+  }
+
+  if (provider === "cubesandbox") {
+    executor.cubesandbox = {
+      sdk: enumField(value, "executor.cubesandbox.sdk", ["e2b-compatible"] as const),
+      apiUrl: stringField(value, "executor.cubesandbox.api_url"),
+      apiKeyRef: stringField(value, "executor.cubesandbox.api_key_ref"),
+      templateId: stringField(value, "executor.cubesandbox.template_id"),
+      defaultTimeoutSeconds: nonNegativeIntegerField(value, "executor.cubesandbox.default_timeout_seconds"),
+      destroyOnCompletion: booleanField(value, "executor.cubesandbox.destroy_on_completion"),
+      hostMounts: normalizeHostMounts(getConfigValue(value, "executor.cubesandbox.host_mounts")),
+    };
+  }
+
+  return executor;
+}
+
+function normalizeExecutorLifecycle(value: unknown): ExecutorLifecycleConfig {
+  return {
+    cleanupMode: enumField(value, "executor.lifecycle.cleanup_mode", ["strict", "best_effort"] as const),
+    healthCheckIntervalSeconds: nonNegativeIntegerField(value, "executor.lifecycle.health_check_interval_seconds"),
+    reconcileIntervalSeconds: nonNegativeIntegerField(value, "executor.lifecycle.reconcile_interval_seconds"),
+    orphanScanIntervalSeconds: nonNegativeIntegerField(value, "executor.lifecycle.orphan_scan_interval_seconds"),
+    orphanGraceSeconds: nonNegativeIntegerField(value, "executor.lifecycle.orphan_grace_seconds"),
+    shutdownGraceSeconds: nonNegativeIntegerField(value, "executor.lifecycle.shutdown_grace_seconds"),
+    maxRestartAttempts: nonNegativeIntegerField(value, "executor.lifecycle.max_restart_attempts"),
+    maxCleanupAttempts: nonNegativeIntegerField(value, "executor.lifecycle.max_cleanup_attempts"),
+    sdkCallTimeoutSeconds: nonNegativeIntegerField(value, "executor.lifecycle.sdk_call_timeout_seconds"),
+    sandboxCreateTimeoutSeconds: nonNegativeIntegerField(value, "executor.lifecycle.sandbox_create_timeout_seconds"),
+    commandStartTimeoutSeconds: nonNegativeIntegerField(value, "executor.lifecycle.command_start_timeout_seconds"),
+    commandIdleTimeoutSeconds: nonNegativeIntegerField(value, "executor.lifecycle.command_idle_timeout_seconds"),
+    taskWallTimeoutSeconds: nonNegativeIntegerField(value, "executor.lifecycle.task_wall_timeout_seconds"),
+    callbackWaitTimeoutSeconds: nonNegativeIntegerField(value, "executor.lifecycle.callback_wait_timeout_seconds"),
+    destroyTimeoutSeconds: nonNegativeIntegerField(value, "executor.lifecycle.destroy_timeout_seconds"),
+    lockTtlSeconds: nonNegativeIntegerField(value, "executor.lifecycle.lock_ttl_seconds"),
+  };
+}
+
+function normalizeHostMounts(value: unknown): CubeSandboxHostMount[] {
+  if (!Array.isArray(value)) {
+    throw new Error("executor.cubesandbox.host_mounts must be an array");
+  }
+  return value.map((mount, index) => {
+    if (!isRecord(mount)) {
+      throw new Error(`executor.cubesandbox.host_mounts.${index} must be a mapping`);
+    }
+    return {
+      source: stringFromRecord(mount, "source", `executor.cubesandbox.host_mounts.${index}.source`),
+      target: stringFromRecord(mount, "target", `executor.cubesandbox.host_mounts.${index}.target`),
+      readonly: booleanValue(mount.readonly, `executor.cubesandbox.host_mounts.${index}.readonly`),
+    };
+  });
+}
+
+function stringFromRecord(record: Record<string, unknown>, key: string, field: string): string {
+  const value = record[key];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+  return value;
 }
 
 function normalizeSources(value: unknown): RuntimeConfig["sources"] {
@@ -157,6 +299,10 @@ function stringArrayField(value: unknown, field: string): string[] {
     throw new Error(`${field} must be a non-empty string array`);
   }
   return fieldValue;
+}
+
+function booleanField(value: unknown, field: string): boolean {
+  return booleanValue(getConfigValue(value, field), field);
 }
 
 function booleanValue(value: unknown, field: string): boolean {

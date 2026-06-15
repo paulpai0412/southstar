@@ -3,6 +3,13 @@ import assert from "node:assert/strict";
 import { TorkExecutorProvider } from "../../src/v2/executor/tork-provider.ts";
 import type { TorkJobProjection } from "../../src/v2/executor/tork-projection.ts";
 import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts";
+import type { ExecutorType } from "../../src/v2/executor/provider.ts";
+
+
+test("executor contract supports cubesandbox type", () => {
+  const executorType: ExecutorType = "cubesandbox";
+  assert.equal(executorType, "cubesandbox");
+});
 
 test("TorkExecutorProvider submits through Tork without leaking provider details into workflow manifest", async () => {
   const workflow = workflowManifest();
