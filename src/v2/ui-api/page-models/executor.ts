@@ -2,18 +2,51 @@ import type { SouthstarDb } from "../../stores/sqlite.ts";
 import { listResources } from "../../stores/resource-store.ts";
 import type { UiIntegrationHealth } from "./types.ts";
 
+type BindingPayload = {
+  torkJobId?: string;
+  externalJobId?: string;
+  image?: string;
+  southstarExecutorStatus?: string;
+  runnerPhase?: string;
+  heartbeatSeq?: number;
+  lastHeartbeatAt?: string;
+  queueTimeoutAt?: string;
+  heartbeatTimeoutAt?: string;
+  hardTimeoutAt?: string;
+  torkObservedStatus?: string;
+};
+
 export function buildExecutorOpsPageModel(db: SouthstarDb, input: { jobId?: string } = {}) {
   const bindings = listResources(db, { resourceType: "executor_binding" });
   const commandResources = listResources(db, { resourceType: "executor_job_command" });
+  const reconcileResources = listResources(db, { resourceType: "executor_reconcile_result" });
   const jobs = bindings.map((resource) => {
-    const payload = resource.payload as { torkJobId?: string; externalJobId?: string; image?: string };
+    const payload = resource.payload as BindingPayload;
+    const runId = resource.runId ?? undefined;
+    const taskId = resource.taskId ?? undefined;
     return {
       jobId: payload.torkJobId ?? payload.externalJobId ?? resource.resourceKey,
-      runId: resource.runId,
-      taskId: resource.taskId ?? undefined,
+      runId,
+      taskId,
       status: resource.status,
       image: payload.image ?? "southstar/pi-agent:local",
       resourceId: resource.id,
+      statusLayers: {
+        workflowTaskStatus: taskStatus(db, runId, taskId) ?? "unknown",
+        executorStatus: payload.southstarExecutorStatus ?? resource.status,
+        runnerStatus: payload.runnerPhase ?? "no-heartbeat-yet",
+        evaluatorStatus: evaluatorStatus(db, runId, taskId),
+      },
+      heartbeat: {
+        seq: payload.heartbeatSeq ?? 0,
+        lastHeartbeatAt: payload.lastHeartbeatAt ?? null,
+        torkObservedStatus: payload.torkObservedStatus ?? null,
+      },
+      deadlines: {
+        queueTimeoutAt: payload.queueTimeoutAt ?? null,
+        heartbeatTimeoutAt: payload.heartbeatTimeoutAt ?? null,
+        hardTimeoutAt: payload.hardTimeoutAt ?? null,
+      },
     };
   });
   const selectedJob = jobs.find((job) => job.jobId === input.jobId) ?? jobs[0];
@@ -28,6 +61,9 @@ export function buildExecutorOpsPageModel(db: SouthstarDb, input: { jobId?: stri
         { label: "Reconcile", command: "reconcile-job" },
       ],
       commands: commandResources.filter((resource) => (resource.payload as { jobId?: string }).jobId === selectedJob.jobId),
+      reconcileResults: reconcileResources
+        .filter((resource) => resource.taskId === selectedJob.taskId || resource.runId === selectedJob.runId)
+        .slice(-5),
     } : undefined,
     workerPool: [{ worker: "tork-docker", status: bindings.length > 0 ? "bound" : "idle" }],
     integrationHealth: [
@@ -36,4 +72,17 @@ export function buildExecutorOpsPageModel(db: SouthstarDb, input: { jobId?: stri
     ] satisfies UiIntegrationHealth[],
     reconcileStatus: commandResources.at(-1)?.status ?? "not-requested",
   };
+}
+
+function taskStatus(db: SouthstarDb, runId?: string, taskId?: string): string | undefined {
+  if (!runId || !taskId) return undefined;
+  const row = db.prepare("select status from workflow_tasks where run_id = ? and id = ?").get(runId, taskId) as { status: string } | undefined;
+  return row?.status;
+}
+
+function evaluatorStatus(db: SouthstarDb, runId?: string, taskId?: string): string {
+  if (!runId || !taskId) return "pending";
+  const row = db.prepare("select status from runtime_resources where run_id = ? and task_id = ? and resource_type = 'evaluator_result' order by updated_at desc limit 1").get(runId, taskId) as { status: string } | undefined;
+  if (!row) return "pending";
+  return row.status === "ok" ? "passed" : row.status;
 }

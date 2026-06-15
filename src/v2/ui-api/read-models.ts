@@ -40,6 +40,9 @@ export function buildRuntimeMonitorModel(db: SouthstarDb, runId: string) {
 export function buildTaskDetailModel(db: SouthstarDb, runId: string, taskId: string) {
   const task = db.prepare("select * from workflow_tasks where run_id = ? and id = ?").get(runId, taskId) as WorkflowTaskRow | undefined;
   if (!task) return null;
+  const latestBinding = listResources(db, { resourceType: "executor_binding" })
+    .filter((resource) => resource.runId === runId && resource.taskId === taskId)
+    .at(-1);
   return {
     id: task.id,
     runId: task.run_id,
@@ -51,6 +54,11 @@ export function buildTaskDetailModel(db: SouthstarDb, runId: string, taskId: str
     executorTaskId: task.executor_task_id,
     snapshot: JSON.parse(task.snapshot_json) as unknown,
     metrics: JSON.parse(task.metrics_json) as unknown,
+    executorObservation: latestBinding ? {
+      bindingId: latestBinding.id,
+      status: latestBinding.status,
+      payload: latestBinding.payload,
+    } : null,
   };
 }
 
@@ -84,12 +92,21 @@ export function buildExecutorOpsModel(db: SouthstarDb, runId: string) {
     runId,
     bindings: listResources(db, { resourceType: "executor_binding" })
       .filter((resource) => resource.runId === runId)
-      .map((resource) => ({
-        id: resource.id,
-        status: resource.status,
-        taskId: resource.taskId,
-        torkJobId: executorJobId(resource.payload),
-      })),
+      .map((resource) => {
+        const payload = resource.payload as { southstarExecutorStatus?: string; runnerPhase?: string; lastHeartbeatAt?: string };
+        return {
+          id: resource.id,
+          status: resource.status,
+          taskId: resource.taskId,
+          torkJobId: executorJobId(resource.payload),
+          statusLayers: {
+            workflowTaskStatus: resource.taskId ? (db.prepare("select status from workflow_tasks where run_id = ? and id = ?").get(runId, resource.taskId) as { status: string } | undefined)?.status ?? "unknown" : "unknown",
+            executorStatus: payload.southstarExecutorStatus ?? resource.status,
+            runnerStatus: payload.runnerPhase ?? "no-heartbeat-yet",
+          },
+          lastHeartbeatAt: payload.lastHeartbeatAt ?? null,
+        };
+      }),
   };
 }
 

@@ -20,6 +20,7 @@ import { recordExecutorHeartbeat } from "../../src/v2/executor/heartbeat.ts";
 import { reconcileExecutorBindings } from "../../src/v2/executor/reconciler.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import type { RuntimeServerContext } from "../../src/v2/server/runtime-context.ts";
+import { buildExecutorOpsPageModel } from "../../src/v2/ui-api/page-models/executor.ts";
 
 test("validates executor binding payload and preserves four-layer status fields", () => {
   const payload: ExecutorBindingPayload = {
@@ -403,4 +404,54 @@ test("executor reconcile route writes real reconcile result through Southstar AP
   };
   assert.equal(body.ok, true);
   assert.equal(body.result.findings[0]?.classification, "callback-missing");
+});
+
+test("executor ops page exposes workflow executor runner and evaluator status separately", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-ui-ex",
+    status: "running",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  createWorkflowTask(db, {
+    id: "task-ui-ex",
+    runId: "run-ui-ex",
+    taskKey: "task-ui-ex",
+    status: "running",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+  createExecutorBinding(db, {
+    runId: "run-ui-ex",
+    taskId: "task-ui-ex",
+    attemptId: "attempt-1",
+    torkJobId: "job-ui-ex",
+    status: "running",
+    now: "2026-06-15T00:00:00.000Z",
+    queueTimeoutSeconds: 120,
+    hardTimeoutSeconds: 600,
+  });
+  recordExecutorHeartbeat(db, {
+    runId: "run-ui-ex",
+    taskId: "task-ui-ex",
+    attemptId: "attempt-1",
+    executorType: "tork",
+    torkJobId: "job-ui-ex",
+    rootSessionId: "root-run-ui-ex-task-ui-ex",
+    heartbeatSeq: 1,
+    phase: "subagent-running",
+    observedAt: "2026-06-15T00:00:10.000Z",
+  });
+
+  const model = buildExecutorOpsPageModel(db, { jobId: "job-ui-ex" });
+  assert.equal(model.selectedJob?.statusLayers.workflowTaskStatus, "running");
+  assert.equal(model.selectedJob?.statusLayers.executorStatus, "running");
+  assert.equal(model.selectedJob?.statusLayers.runnerStatus, "subagent-running");
+  assert.equal(model.selectedJob?.statusLayers.evaluatorStatus, "pending");
 });
