@@ -13,6 +13,9 @@ export function buildTaskDetailPageModel(db: SouthstarDb, input: { runId: string
     ...listResources(db, { resourceType: "evaluator_result" }),
     ...listResources(db, { resourceType: "evaluator_pipeline_result" }),
   ].filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId);
+  const worktreeSnapshots = listResources(db, { resourceType: "worktree_snapshot" }).filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId);
+  const worktreeRollbackPreviews = listResources(db, { resourceType: "worktree_rollback_preview" }).filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId);
+  const worktreeRollbacks = listResources(db, { resourceType: "worktree_rollback" }).filter((resource) => resource.runId === input.runId && resource.taskId === input.taskId);
   const trace = listResources(db, { resourceType: "memory_injection_trace" }).find((resource) => resource.runId === input.runId && resource.taskId === input.taskId);
   const tracePayload = trace?.payload as { included?: unknown[]; excluded?: unknown[]; decisionReason?: string } | undefined;
   return {
@@ -31,6 +34,11 @@ export function buildTaskDetailPageModel(db: SouthstarDb, input: { runId: string
     evaluator: {
       pipelineId: envelope.evaluatorPipeline?.id ?? "domain-default",
       results: evaluatorResults,
+    },
+    worktree: {
+      snapshots: worktreeSnapshots,
+      rollbackPreviews: worktreeRollbackPreviews,
+      rollbacks: worktreeRollbacks,
     },
     logs: listHistoryForRun(db, input.runId).filter((event) => event.taskId === input.taskId),
     actions: [

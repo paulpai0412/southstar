@@ -10,6 +10,7 @@ test("Southstar built-in web app shell exists and uses operations vocabulary", (
   const page = readFileSync(join(root, "app/page.tsx"), "utf8");
   const globals = readFileSync(join(root, "app/globals.css"), "utf8");
   assert.match(page, /SouthstarOperationsApp/);
+  assert.doesNotMatch(page, /redirect\(/);
   assert.match(globals, /--ss-bg/);
   assert.doesNotMatch(page, /iframe|Tork Web|Northstar/);
 });
@@ -50,6 +51,8 @@ test("southstar UI controls are wired to runtime state instead of static demo da
   const taskDetail = readFileSync(join(root, "components/southstar/TaskDetail.tsx"), "utf8");
 
   assert.match(appShell, /createSouthstarApiClient/);
+  assert.match(appShell, /api\.getUiPlanner/);
+  assert.match(appShell, /selectedRunId/);
   assert.match(appShell, /currentRunId/);
   assert.match(planner, /onCreateDraft/);
   assert.match(planner, /onRunDraft/);
@@ -67,12 +70,55 @@ test("task detail exposes TaskEnvelopeV2 context evidence for selected runtime t
   const types = readFileSync(join(root, "components/southstar/types.ts"), "utf8");
 
   assert.match(apiClient, /getTaskEnvelope/);
+  assert.match(apiClient, /getUiTaskDetail/);
   assert.match(appShell, /selectedEnvelope/);
   assert.match(appShell, /api\.getTaskEnvelope/);
+  assert.match(appShell, /api\.getUiTaskDetail/);
   assert.match(taskDetail, /TaskEnvelopeV2/);
   assert.match(taskDetail, /ContextPacket/);
   assert.match(taskDetail, /Memory Injection/);
   assert.match(taskDetail, /Evaluator/);
   assert.match(taskDetail, /Workspace/);
   assert.match(types, /TaskEnvelopeEvidenceView/);
+  assert.match(types, /UiTaskDetailPageView/);
+});
+
+test("task detail operations bind to real session and worktree command APIs", () => {
+  const appShell = readFileSync(join(root, "components/southstar/AppShell.tsx"), "utf8");
+  const taskDetail = readFileSync(join(root, "components/southstar/TaskDetail.tsx"), "utf8");
+
+  assert.match(appShell, /\/api\/v2\/sessions\/\$\{encodeURIComponent\(sessionId\)\}\/\$\{command\}/);
+  assert.match(appShell, /\/worktree\/snapshots/);
+  assert.match(appShell, /\/worktree\/rollback-preview/);
+  assert.match(appShell, /\/worktree\/rollback/);
+  assert.match(appShell, /ensureAccepted/);
+  assert.match(taskDetail, /onResetSession/);
+  assert.match(taskDetail, /onApplyWorktreeRollback/);
+  assert.match(taskDetail, /model\?\.worktree\?\.rollbackPreviews/);
+});
+
+test("control plane layout mirrors the accepted 1:1 dashboard anatomy", () => {
+  const appShell = readFileSync(join(root, "components/southstar/AppShell.tsx"), "utf8");
+  const canvas = readFileSync(join(root, "components/southstar/WorkflowCanvas.tsx"), "utf8");
+  const taskDetail = readFileSync(join(root, "components/southstar/TaskDetail.tsx"), "utf8");
+  const globals = readFileSync(join(root, "app/globals.css"), "utf8");
+
+  assert.match(appShell, /ss-control-plane/);
+  assert.match(appShell, /ss-left-stack/);
+  assert.match(appShell, /ss-center-stack/);
+  assert.match(appShell, /ss-right-inspector/);
+  assert.match(canvas, /<svg/);
+  assert.match(canvas, /<path/);
+  assert.match(canvas, /ss-dag-node/);
+  assert.match(taskDetail, /Overview/);
+  assert.match(taskDetail, /Context & Memory/);
+  assert.match(taskDetail, /Evaluator/);
+  assert.match(taskDetail, /Artifacts/);
+  assert.match(taskDetail, /Logs/);
+  assert.match(taskDetail, /Session Graph/);
+  assert.match(taskDetail, /Worktree Console/);
+  assert.match(taskDetail, /Retry Task/);
+  assert.match(taskDetail, /Fork Session/);
+  assert.match(globals, /grid-template-columns: 300px minmax\(480px, 1fr\) 520px/);
+  assert.match(globals, /--ss-rail: #06172a/);
 });

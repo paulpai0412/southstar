@@ -129,6 +129,64 @@ export type TaskEnvelopeEvidenceView = {
   };
 };
 
+export type SouthstarCommandResultView = {
+  commandId: string;
+  accepted: boolean;
+  status: "applied" | "queued" | "rejected";
+  affectedRunId?: string;
+  affectedTaskId?: string;
+  resourceRefs: string[];
+  eventRefs: string[];
+  nextSuggestedActions: string[];
+};
+
+export type UiRuntimeResourceView = {
+  id?: string;
+  resourceKey?: string;
+  resourceType?: string;
+  status?: string;
+  title?: string;
+  payload?: unknown;
+  createdAt?: string;
+};
+
+export type UiTaskDetailPageView = {
+  surface: "southstar.ui.task-detail.v1";
+  task: {
+    taskId: string;
+    taskKey: string;
+    status: string;
+    dependsOn: string[];
+  };
+  envelope: TaskEnvelopeEvidenceView;
+  contextPacket: TaskEnvelopeEvidenceView["contextPacket"];
+  memoryTrace: {
+    selected: NonNullable<TaskEnvelopeEvidenceView["contextPacket"]>["selectedMemories"];
+    excluded: NonNullable<TaskEnvelopeEvidenceView["contextPacket"]>["excludedCandidates"];
+    includedTrace: unknown[];
+    excludedTrace: unknown[];
+    decisionReason: string;
+  };
+  artifacts: UiRuntimeResourceView[];
+  evaluator: {
+    pipelineId: string;
+    results: UiRuntimeResourceView[];
+  };
+  worktree?: {
+    snapshots: UiRuntimeResourceView[];
+    rollbackPreviews: UiRuntimeResourceView[];
+    rollbacks: UiRuntimeResourceView[];
+  };
+  logs: Array<{
+    sequence?: number;
+    eventType?: string;
+    actorType?: string;
+    payload?: unknown;
+    createdAt?: string;
+  }>;
+  actions: Array<{ label: string; command: string }>;
+};
+
 export type RunStatusView = {
   canvas: WorkflowCanvasView;
   runtime: RuntimeMonitorView;

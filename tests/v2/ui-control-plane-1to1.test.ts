@@ -113,6 +113,9 @@ test("task detail page model exposes TaskEnvelopeV2, ContextPacket, artifacts, e
   assert.equal(model.memoryTrace.selected.length >= 0, true);
   assert.equal(model.actions.some((action) => action.command === "retry-task"), true);
   assert.equal(model.evaluator.pipelineId.length > 0, true);
+  assert.equal(Array.isArray(model.worktree.snapshots), true);
+  assert.equal(Array.isArray(model.worktree.rollbackPreviews), true);
+  assert.equal(Array.isArray(model.worktree.rollbacks), true);
 });
 
 test("sessions memory page supports lineage and memory decisions through durable resources", () => {
