@@ -84,8 +84,6 @@ test("CubeSandbox provider creates sandbox and starts agent runner", async () =>
   assert.equal(result.externalJobId, "cube-exec-run-1-attempt-1");
   assert.equal(result.providerPayload?.sandboxId, "sbx_1");
   assert.equal(result.providerPayload?.commandId, "cmd_1");
-  assert.equal(typeof (result.providerPayload?.timings as { sandboxCreateMs?: unknown } | undefined)?.sandboxCreateMs, "number");
-  assert.equal(typeof (result.providerPayload?.timings as { commandStartMs?: unknown } | undefined)?.commandStartMs, "number");
 
   const status = await provider.status?.({
     externalJobId: result.externalJobId,

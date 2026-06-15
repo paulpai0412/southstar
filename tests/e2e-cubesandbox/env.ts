@@ -4,7 +4,6 @@ export type CubeSandboxRealE2EEnv = {
   configPath: string;
   callbackHost: string;
   workspaceRoot: string;
-  evidenceDir: string;
 };
 
 export function loadCubeSandboxRealE2EEnv(input: Record<string, string | undefined> = process.env): CubeSandboxRealE2EEnv {
@@ -23,6 +22,5 @@ export function loadCubeSandboxRealE2EEnv(input: Record<string, string | undefin
     configPath,
     callbackHost: input.SOUTHSTAR_CALLBACK_HOST ?? "127.0.0.1",
     workspaceRoot: input.SOUTHSTAR_E2E_WORKSPACE ?? "/tmp/southstar-cubesandbox-e2e",
-    evidenceDir: input.SOUTHSTAR_E2E_EVIDENCE_DIR ?? ".southstar/evidence/cubesandbox",
   };
 }

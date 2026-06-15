@@ -71,12 +71,9 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
   }
 
   async submit(request: ExecutorSubmitRequest): Promise<ExecutorSubmitResult> {
-    const submitStartedAt = Date.now();
     const attemptId = request.attemptId ?? "attempt-1";
     const taskId = request.workflow.tasks[0]?.id ?? "task-1";
     const externalJobId = `cube-exec-${request.runId}-${attemptId}`;
-
-    const sandboxCreateStartedAt = Date.now();
     const sandbox = await this.sdkClient.createSandbox({
       templateId: this.config.templateId,
       timeoutSeconds: this.config.defaultTimeoutSeconds,
@@ -91,7 +88,6 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
         ttlSeconds: String(this.config.defaultTimeoutSeconds),
       },
     });
-    const sandboxCreatedAt = Date.now();
 
     const envelopeRoot = request.envelopeBasePath ?? "/southstar-runs";
     const command = [
@@ -101,8 +97,6 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
       "--callback-url",
       request.callbackUrl ?? "/api/v2/executor/callback",
     ];
-
-    const commandStartStartedAt = Date.now();
     const commandResult = await this.sdkClient.runCommand({
       sandboxId: sandbox.sandboxId,
       command,
@@ -114,7 +108,6 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
       },
       timeoutSeconds: this.lifecycle.taskWallTimeoutSeconds,
     });
-    const commandStartedAt = Date.now();
 
     return {
       executorType: this.executorType,
@@ -126,15 +119,6 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
         templateId: this.config.templateId,
         attemptId,
         taskId,
-        timings: {
-          submitStartedAt: new Date(submitStartedAt).toISOString(),
-          sandboxCreateStartedAt: new Date(sandboxCreateStartedAt).toISOString(),
-          sandboxCreatedAt: new Date(sandboxCreatedAt).toISOString(),
-          sandboxCreateMs: sandboxCreatedAt - sandboxCreateStartedAt,
-          commandStartStartedAt: new Date(commandStartStartedAt).toISOString(),
-          commandStartedAt: new Date(commandStartedAt).toISOString(),
-          commandStartMs: commandStartedAt - commandStartStartedAt,
-        },
         cleanup: newExecutorCleanupPayload(this.config.destroyOnCompletion),
       },
     };
@@ -225,16 +209,12 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
   }
 
   async reconcile(request: { runId?: string; reason: string }) {
-    const detectionStartedAt = Date.now();
     const sandboxes = await this.sdkClient.listSandboxes({
       metadata: {
         managedBy: "southstar",
         ...(request.runId ? { runId: request.runId } : {}),
       },
     });
-    const detectionMs = Date.now() - detectionStartedAt;
-
-    const destroyStartedAt = Date.now();
     const failures: string[] = [];
     let cleaned = 0;
     for (const sandbox of sandboxes) {
@@ -245,20 +225,12 @@ export class CubeSandboxExecutorProvider implements ExecutorProvider {
         failures.push((error as Error).message);
       }
     }
-    const destroyMs = Date.now() - destroyStartedAt;
-
     return {
       executorType: this.executorType,
       reconciled: sandboxes.length,
       cleaned,
       failures,
-      providerPayload: {
-        managedResidueCount: Math.max(0, sandboxes.length - cleaned),
-        timings: {
-          orphanDetectionMs: detectionMs,
-          orphanDestroyMs: destroyMs,
-        },
-      },
+      providerPayload: { managedResidueCount: Math.max(0, sandboxes.length - cleaned) },
     };
   }
 

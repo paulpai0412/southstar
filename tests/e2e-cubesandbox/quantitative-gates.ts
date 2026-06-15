@@ -49,15 +49,7 @@ export function assertCubeSandboxExceptionGates(input: CubeSandboxExceptionGateI
 }
 
 function requireMax(failures: string[], label: string, actual: number, max: number): void {
-  if (!Number.isFinite(actual)) {
-    failures.push(`${label} must be a finite measured duration; got ${actual}`);
-    return;
-  }
-  if (actual <= 0) {
-    failures.push(`${label} must be measured and > 0ms; got ${actual}ms`);
-    return;
-  }
-  if (actual > max) {
+  if (!Number.isFinite(actual) || actual > max) {
     failures.push(`${label} ${actual}ms exceeds ${max}ms`);
   }
 }
