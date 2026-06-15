@@ -83,9 +83,10 @@ export async function reconcileExecutorBindings(db: SouthstarDb, input: {
       }
 
       if (normalized.category === "completed-like" && !binding.payload.callbackReceivedAt) {
+        const completedClassification = preserveCompletedClassification(binding.payload.southstarExecutorStatus);
         findings.push(recordFinding(db, {
           binding,
-          classification: "callback-missing",
+          classification: completedClassification,
           now,
           detail: { torkObservedStatus: observedStatus, logs },
         }));
@@ -216,6 +217,13 @@ async function compactLogs(tork: TorkObservationClient, jobId: string): Promise<
   return logs
     .slice(0, 4000)
     .replace(/(token|password|secret)[=:]\S+/gi, "$1=<redacted>");
+}
+
+function preserveCompletedClassification(currentStatus: SouthstarExecutorStatus): SouthstarExecutorStatus | "failed" {
+  if (["heartbeat-lost", "queue-timeout", "hard-timeout", "lost", "orphaned"].includes(currentStatus)) {
+    return currentStatus;
+  }
+  return "callback-missing";
 }
 
 function eventTypeForClassification(classification: SouthstarExecutorStatus | "failed"): string {

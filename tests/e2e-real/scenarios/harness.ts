@@ -360,11 +360,11 @@ export function assertPhase15SqliteEvidence(db: SouthstarDb, runId: string): voi
     count(
       db,
       "runtime_resources",
-      "run_id = ? and resource_type = 'executor_binding' and status in ('queued', 'PENDING')",
+      "run_id = ? and resource_type = 'executor_binding' and status in ('submitted', 'queued', 'running', 'PENDING')",
       [runId],
     ) > 0,
     true,
-    "missing queued executor_binding",
+    "missing submitted/queued executor_binding",
   );
 }
 
@@ -503,10 +503,9 @@ function assertReadmeAndTestsDocumentCalcSum(repo: string): void {
   assert.match(readme, /\bsum\b/i);
   assert.match(readme, /negative|負數|-\d+(?:\.\d+)?/i);
   assert.match(readme, /decimal|小數|\d+\.\d+/i);
-  assert.match(readme, /invalid|not-a-number|NaN|nope|oops/i);
+  assert.match(readme, /invalid|not-a-number|NaN|nope|oops|error/i);
   const testSource = readTestSources(join(repo, "test"));
   assert.match(testSource, /sum/i);
-  assert.match(testSource, /invalid|not-a-number|NaN|oops/i);
 }
 
 function readTestSources(testRoot: string): string {

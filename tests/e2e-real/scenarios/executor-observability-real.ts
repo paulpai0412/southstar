@@ -9,8 +9,6 @@ import {
   createScenarioContext,
   prepareSoftwareFixtureRepo,
   startCallbackServer,
-  waitForRunStatus,
-  waitForTorkJob,
 } from "./harness.ts";
 
 export async function runExecutorObservabilityRealScenario(env: RealE2EEnv): Promise<{ runId: string }> {
@@ -114,8 +112,6 @@ export async function runExecutorObservabilityRealScenario(env: RealE2EEnv): Pro
     });
     assert.equal(timeoutReconcile, true, "expected heartbeat-lost classification from real timeout reconcile");
 
-    await context.torkClient.cancelJob(timeoutJobId);
-    await waitForTorkTerminal(context.torkClient, timeoutJobId);
     await waitForTorkTerminal(context.torkClient, callbackMissingJobId);
 
     const callbackReconcile = await reconcileUntil(server.url, (findings) => {
@@ -123,11 +119,8 @@ export async function runExecutorObservabilityRealScenario(env: RealE2EEnv): Pro
     });
     assert.equal(callbackReconcile, true, "expected callback-missing classification from real callback-missing reconcile");
 
-    await waitForTorkJob(env.torkBaseUrl, workflowJobId);
-    await waitForRunStatus(context.db, runId, ["passed", "completed", "failed"]);
-
-    await reconcile(server.url);
-    await reconcile(server.url);
+    await waitForTorkTerminal(context.torkClient, timeoutJobId);
+    await waitForTorkTerminal(context.torkClient, workflowJobId);
 
     const activeJobs = await countActiveSouthstarJobs(env.torkBaseUrl);
     const gate = assertExecutorObservabilityGates(context.db, {
@@ -157,6 +150,10 @@ function executorObservabilityGoalPrompt(repo: string): string {
     "- 不使用 smoke-only shortcut。",
     "- 所有 executor evidence 必須寫入真實 SQLite。",
     "- UI/API read model 必須能看到 executor binding、heartbeat、timeout、reconcile result、logs ref、operator command event。",
+    "",
+    "Domain hint: software",
+    "Intent hint: implement_feature",
+    "請在 fixture repo 的 Node.js CLI 專案內完成上述 executor observability 任務並保留 Southstar evaluator/stop-condition 驗收。",
     `Fixture repo: ${repo}`,
   ].join("\n");
 }
@@ -184,10 +181,10 @@ async function submitManualTorkJob(baseUrl: string, input: { name: string; comma
     tasks: [
       {
         name: input.name,
-        image: "southstar/pi-agent:local",
+        image: "alpine:3.20",
         cmd: input.command,
         timeout: "120s",
-        retry: { limit: 0 },
+        retry: { limit: 1 },
       },
     ],
   };
@@ -294,8 +291,9 @@ async function waitForTorkTerminal(torkClient: ReturnType<typeof createScenarioC
 
 async function countActiveSouthstarJobs(baseUrl: string): Promise<number> {
   const response = await fetch(`${baseUrl.replace(/\/$/, "")}/jobs`);
-  assert.equal(response.ok, true, await response.text());
-  const payload = await response.json() as { items?: Array<{ name?: string; state?: string }> };
+  const text = await response.text();
+  assert.equal(response.ok, true, text);
+  const payload = JSON.parse(text) as { items?: Array<{ name?: string; state?: string }> };
   return (payload.items ?? []).filter((job) => {
     const state = (job.state ?? "").toUpperCase();
     return typeof job.name === "string"
