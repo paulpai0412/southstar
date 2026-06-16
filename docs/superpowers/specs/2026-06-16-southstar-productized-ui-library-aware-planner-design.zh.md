@@ -308,11 +308,11 @@ explorer
 → parallel:
     coding-reviewer
     spec-alignment
-    browser-qa?            conditional: UI/web repo detected
-→ commit-curator?          conditional: releaseMode != none
-→ merge-readiness?         conditional: releaseMode >= merge-ready
-→ merge-operator?          gated: releaseMode == merge-and-release
-→ release-reporter?        conditional: releaseMode != none
+    browser-qa?                      conditional: UI/web repo detected
+→ release-operator.commit-curation?  conditional: releaseMode != none
+→ release-operator.merge-readiness?  conditional: releaseMode >= merge-ready
+→ release-operator.merge-operation?  gated: releaseMode == merge-and-release
+→ release-reporter?                  conditional: releaseMode != none
 → summarizer
 ```
 
@@ -338,7 +338,7 @@ explorer
 → parallel:
     test-runner-checker
     spec-alignment
-→ commit-curator?
+→ release-operator.commit-curation?
 → summarizer
 ```
 
@@ -364,7 +364,7 @@ explorer
 → parallel:
     doc-checker
     spec-alignment
-→ commit-curator?
+→ release-operator.commit-curation?
 → release-reporter?
 → summarizer
 ```
@@ -389,9 +389,7 @@ software.doc-checker
 software.coding-reviewer
 software.spec-alignment
 software.browser-qa
-software.commit-curator
-software.merge-readiness
-software.merge-operator
+software.release-operator
 software.release-reporter
 software.summarizer
 ```
@@ -462,52 +460,49 @@ Default profile: browser-local, no external network by default.
 
 ### 7.4 Release Lane agents
 
-Release side effects are split by risk.
+Release side effects are split by risk, but the first three stages share one agent family. This keeps the product model simple while preserving task/profile/artifact/approval separation.
 
-#### Commit Curator
-
-```text
-software.commit-curator
-```
-
-Responsibilities:
-
-- Inspect workspace diff.
-- Confirm allowed changed files.
-- Produce commit plan and commit message.
-- Create local commit when policy allows.
-- Produce `commit_plan` and `commit_result`.
-
-Risk: medium.
-
-#### Merge Readiness
+#### Release Operator
 
 ```text
-software.merge-readiness
+software.release-operator
 ```
 
-Responsibilities:
+Purpose:
 
-- Check branch state.
-- Confirm review artifacts and tests passed.
-- Determine if merge is safe.
-- Produce `merge_readiness_report`.
+- Manage code finalization, local commit, merge readiness, and approved merge operations under policy.
+- Use different skills and profiles per release task mode.
+- Never let a high-risk merge operation inherit read-only readiness permissions by accident.
 
-Risk: low; read-only gatekeeper.
-
-#### Merge Operator
+Task modes / skills:
 
 ```text
-software.merge-operator
+release-operator.commit-curation
+  skill: software.commit-curation
+  profile: software.release-operator.commit-local
+  artifacts: commit_plan, commit_result
+  risk: medium
+
+release-operator.merge-readiness
+  skill: software.merge-readiness
+  profile: software.release-operator.readiness-readonly
+  artifacts: merge_readiness_report
+  risk: low
+
+release-operator.merge-operation
+  skill: software.merge-operation
+  profile: software.release-operator.merge-approved
+  artifacts: merge_result
+  risk: high; approval required by default
 ```
 
-Responsibilities:
+Responsibilities by mode:
 
-- Perform merge / PR merge only after approval.
-- Stop and report on conflict; do not invent conflict resolution silently.
-- Produce `merge_result`.
+- Commit curation: inspect workspace diff, confirm allowed changed files, produce commit plan/message, create local commit when policy allows.
+- Merge readiness: check branch state, accepted artifacts, tests, evaluator results, blocking approvals, and merge safety without mutating state.
+- Merge operation: perform merge / PR merge only after approval, stop and report on conflict, record merge SHA / PR state / result.
 
-Risk: high; approval required by default.
+Artifact contracts remain separate so audit, retry, and approval gates can identify exactly which release stage passed or failed.
 
 #### Release Reporter
 
@@ -536,9 +531,9 @@ software.implementer.pi.workspace-write
 software.coding-reviewer.codex.readonly
 software.spec-alignment.codex.readonly
 software.browser-qa.pi.browser-local
-software.commit-curator.pi.git-write
-software.merge-readiness.codex.readonly
-software.merge-operator.pi.github-write
+software.release-operator.commit-local
+software.release-operator.readiness-readonly
+software.release-operator.merge-approved
 software.release-reporter.codex.readonly
 software.summarizer.codex.readonly
 ```
@@ -580,6 +575,7 @@ software.spec-alignment
 software.browser-qa
 software.commit-curation
 software.merge-readiness
+software.merge-operation
 software.release-reporting
 software.completion-report
 ```
