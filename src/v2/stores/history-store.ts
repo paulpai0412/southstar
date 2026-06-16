@@ -27,30 +27,38 @@ export type WorkflowHistoryEvent = {
 };
 
 export function appendHistoryEvent(db: SouthstarDb, input: AppendHistoryInput): { id: string; sequence: number; createdAt: string } {
-  const now = new Date().toISOString();
-  const id = randomUUID();
-  const sequence = (db.prepare("select coalesce(max(sequence), 0) + 1 as next from workflow_history where run_id = ?")
-    .get(input.runId) as { next: number }).next;
-  db.prepare(`
-    insert into workflow_history (
-      id, run_id, task_id, sequence, event_type, actor_type, session_id,
-      idempotency_key, correlation_id, causation_id, payload_json, created_at
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    id,
-    input.runId,
-    input.taskId ?? null,
-    sequence,
-    input.eventType,
-    input.actorType,
-    input.sessionId ?? null,
-    input.idempotencyKey ?? null,
-    input.correlationId ?? null,
-    input.causationId ?? null,
-    JSON.stringify(input.payload),
-    now,
-  );
-  return { id, sequence, createdAt: now };
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const now = new Date().toISOString();
+    const id = randomUUID();
+    const sequence = (db.prepare("select coalesce(max(sequence), 0) + 1 as next from workflow_history where run_id = ?")
+      .get(input.runId) as { next: number }).next;
+    try {
+      db.prepare(`
+        insert into workflow_history (
+          id, run_id, task_id, sequence, event_type, actor_type, session_id,
+          idempotency_key, correlation_id, causation_id, payload_json, created_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        input.runId,
+        input.taskId ?? null,
+        sequence,
+        input.eventType,
+        input.actorType,
+        input.sessionId ?? null,
+        input.idempotencyKey ?? null,
+        input.correlationId ?? null,
+        input.causationId ?? null,
+        JSON.stringify(input.payload),
+        now,
+      );
+      return { id, sequence, createdAt: now };
+    } catch (error) {
+      if (!isWorkflowSequenceConflict(error) || attempt === 2) throw error;
+    }
+  }
+
+  throw new Error("appendHistoryEvent exhausted sequence retry attempts");
 }
 
 export function listHistoryForRun(db: SouthstarDb, runId: string): WorkflowHistoryEvent[] {
@@ -80,6 +88,12 @@ type WorkflowHistoryRow = {
   payload_json: string;
   created_at: string;
 };
+
+function isWorkflowSequenceConflict(error: unknown): boolean {
+  const message = String((error as Error)?.message ?? "");
+  return /unique constraint/i.test(message)
+    && message.includes("workflow_history.run_id, workflow_history.sequence");
+}
 
 function mapHistoryEvent(row: WorkflowHistoryRow): WorkflowHistoryEvent {
   return {

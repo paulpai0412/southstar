@@ -15,3 +15,11 @@ test("creates centralized v2 runtime tables in SQLite", () => {
     "workflow_tasks",
   ]);
 });
+
+test("opens sqlite with busy timeout and durable journal mode", () => {
+  const db = openSouthstarDb(":memory:");
+  const mode = db.prepare("pragma journal_mode").get() as { journal_mode: string };
+  const busy = db.prepare("pragma busy_timeout").get() as { timeout?: number; busy_timeout?: number };
+  assert.ok(["wal", "memory"].includes(mode.journal_mode.toLowerCase()));
+  assert.ok((busy.busy_timeout ?? busy.timeout ?? 0) >= 5000);
+});

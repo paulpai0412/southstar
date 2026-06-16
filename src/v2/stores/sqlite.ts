@@ -10,6 +10,9 @@ export function openSouthstarDb(path: string): SouthstarDb {
     mkdirSync(dirname(path), { recursive: true });
   }
   const db = new DatabaseSync(path);
+  db.exec("pragma foreign_keys = on;");
+  db.exec("pragma journal_mode = WAL;");
+  db.exec("pragma busy_timeout = 5000;");
   db.exec(SOUTHSTAR_V2_SCHEMA);
   return db;
 }
