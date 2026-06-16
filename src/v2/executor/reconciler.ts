@@ -8,6 +8,7 @@ import {
   listExecutorBindingsForRun,
   updateExecutorBindingStatus,
 } from "./bindings.ts";
+import { dispatchExecutorActions } from "./action-dispatcher.ts";
 import {
   classifyExecutorTimeouts,
   normalizeTorkStatus,
@@ -30,6 +31,7 @@ export type ExecutorReconcileResult = {
 
 export async function reconcileExecutorBindings(db: SouthstarDb, input: {
   tork: TorkObservationClient;
+  actionMode?: "observe" | "auto";
   now?: string;
 }): Promise<ExecutorReconcileResult> {
   const now = input.now ?? new Date().toISOString();
@@ -50,12 +52,16 @@ export async function reconcileExecutorBindings(db: SouthstarDb, input: {
           logs = await compactLogs(input.tork, binding.payload.torkJobId);
         }
       } catch (error) {
-        findings.push(recordFinding(db, {
+        const finding = recordFinding(db, {
           binding,
           classification: "lost",
           now,
           detail: { error: (error as Error).message },
-        }));
+        });
+        findings.push(finding);
+        if (input.actionMode !== "observe") {
+          await dispatchExecutorActions(db, { finding, binding, tork: input.tork });
+        }
         continue;
       }
 
@@ -70,46 +76,59 @@ export async function reconcileExecutorBindings(db: SouthstarDb, input: {
       );
 
       if (taskStatus && ["completed", "failed", "cancelled"].includes(taskStatus) && normalized.category === "running-like") {
-        findings.push(recordFinding(db, {
+        const finding = recordFinding(db, {
           binding,
           classification: "orphaned",
           now,
           detail: { torkObservedStatus: observedStatus, logs },
-        }));
-        if (input.tork.capabilities().supportsJobCancel) {
-          await input.tork.cancelJob(binding.payload.torkJobId);
+        });
+        findings.push(finding);
+        if (input.actionMode !== "observe") {
+          await dispatchExecutorActions(db, { finding, binding, tork: input.tork });
         }
         continue;
       }
 
       if (normalized.category === "completed-like" && !binding.payload.callbackReceivedAt) {
         const completedClassification = preserveCompletedClassification(binding.payload.southstarExecutorStatus);
-        findings.push(recordFinding(db, {
+        const finding = recordFinding(db, {
           binding,
           classification: completedClassification,
           now,
           detail: { torkObservedStatus: observedStatus, logs },
-        }));
+        });
+        findings.push(finding);
+        if (input.actionMode !== "observe") {
+          await dispatchExecutorActions(db, { finding, binding, tork: input.tork });
+        }
         continue;
       }
 
       if (normalized.category === "failed-like") {
-        findings.push(recordFinding(db, {
+        const finding = recordFinding(db, {
           binding,
           classification: "failed",
           now,
           detail: { torkObservedStatus: observedStatus, logs },
-        }));
+        });
+        findings.push(finding);
+        if (input.actionMode !== "observe") {
+          await dispatchExecutorActions(db, { finding, binding, tork: input.tork });
+        }
         continue;
       }
 
       for (const timeout of timeoutFindings) {
-        findings.push(recordFinding(db, {
+        const finding = recordFinding(db, {
           binding,
           classification: timeout,
           now,
           detail: { torkObservedStatus: observedStatus, logs },
-        }));
+        });
+        findings.push(finding);
+        if (input.actionMode !== "observe") {
+          await dispatchExecutorActions(db, { finding, binding, tork: input.tork });
+        }
       }
     }
   }

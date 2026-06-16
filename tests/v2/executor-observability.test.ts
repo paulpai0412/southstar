@@ -21,7 +21,7 @@ import { reconcileExecutorBindings } from "../../src/v2/executor/reconciler.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import type { RuntimeServerContext } from "../../src/v2/server/runtime-context.ts";
 import { buildExecutorOpsPageModel } from "../../src/v2/ui-api/page-models/executor.ts";
-import { upsertRuntimeResource } from "../../src/v2/stores/resource-store.ts";
+import { listResources, upsertRuntimeResource } from "../../src/v2/stores/resource-store.ts";
 import { assertExecutorObservabilityGates } from "../../src/v2/quality/executor-observability-gates.ts";
 
 test("validates executor binding payload and preserves four-layer status fields", () => {
@@ -279,6 +279,56 @@ test("reconciler marks completed Tork job without callback as callback-missing",
   const task = db.prepare("select status from workflow_tasks where run_id = ? and id = ?")
     .get("run-cb", "task-cb") as { status: string };
   assert.equal(task.status, "running");
+});
+
+test("reconciler dispatches cancel action for orphaned binding", async () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-orphan-action",
+    status: "passed",
+    domain: "software",
+    goalPrompt: "observe",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  createWorkflowTask(db, {
+    id: "task-orphan-action",
+    runId: "run-orphan-action",
+    taskKey: "task-orphan-action",
+    status: "completed",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+  createExecutorBinding(db, {
+    runId: "run-orphan-action",
+    taskId: "task-orphan-action",
+    attemptId: "attempt-1",
+    torkJobId: "job-orphan-action",
+    status: "running",
+    now: "2026-06-15T00:00:00.000Z",
+    queueTimeoutSeconds: 120,
+    hardTimeoutSeconds: 600,
+  });
+
+  let cancelCalls = 0;
+  await reconcileExecutorBindings(db, {
+    now: "2026-06-15T00:01:00.000Z",
+    tork: {
+      capabilities: () => ({ supportsJobInspect: true, supportsTaskInspect: false, supportsJobCancel: true, supportsTaskCancel: false, supportsJobLogs: true, supportsTaskLogs: false, supportsWorkerHealth: false }),
+      getJob: async () => ({ jobId: "job-orphan-action", status: "RUNNING" }),
+      getJobLogs: async () => "still running",
+      cancelJob: async () => { cancelCalls += 1; },
+    },
+  });
+
+  assert.equal(cancelCalls, 1);
+  const commands = listResources(db, { resourceType: "executor_job_command" })
+    .filter((resource) => resource.runId === "run-orphan-action" && resource.taskId === "task-orphan-action");
+  assert.equal(commands.length >= 1, true);
+  assert.equal(listHistoryForRun(db, "run-orphan-action").some((event) => event.eventType === "executor.action_dispatched"), true);
 });
 
 test("reconciler marks terminal Southstar task with running Tork job as orphaned", async () => {
