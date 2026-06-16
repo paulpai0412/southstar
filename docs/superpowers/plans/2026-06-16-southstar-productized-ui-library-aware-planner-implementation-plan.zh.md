@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build Southstar's productized Workspace UI and LLM-assisted Library-aware Planner so a non-calc software goal becomes a validated DAG assembled from the Software Engineering Starter Library, with real E2E and quantitative gates.
+**Goal:** Build Southstar's productized App Shell with Chat / Workflow / Operations tabs and LLM-assisted Library-aware Planner so a non-calc software goal becomes a validated DAG assembled from the Software Engineering Starter Library, with real E2E and quantitative gates.
 
-**Architecture:** Add a first-class library-aware planning path beside the existing constrained generator, backed by an expanded Software Engineering Starter Library, strict planner result validation, Context Economy resources, and UI read models. The Workspace UI consumes planner drafts, DAG rationale, context sources, Library alternatives, and Operator attention items from runtime APIs; runtime remains canonical truth through SQLite resources, validators, artifacts, evaluators, and stop conditions.
+**Architecture:** Add a first-class library-aware planning path beside the existing constrained generator, backed by an expanded Software Engineering Starter Library, strict planner result validation, Context Economy resources, and UI read models. The Southstar App Shell ports the useful pi-web shell/chat structure into Southstar and exposes Chat, Workflow, and Operations tabs; Workflow consumes planner drafts, DAG rationale, context sources, Library alternatives, and Operator attention items, while Operations productizes the old Northstar control-center concepts for multi-run monitoring.
 
 **Tech Stack:** TypeScript ESM, Node 22 native APIs via `tsx`, SQLite resource store, Next.js 16 app router, React 19, node:test, existing Southstar v2 server/UI API patterns.
 
@@ -15,7 +15,7 @@
 When starting execution in a long-running agent session, create a tracked goal with this exact objective:
 
 ```text
-Implement the Southstar productized Workspace UI and LLM-assisted Library-aware Planner from docs/superpowers/specs/2026-06-16-southstar-productized-ui-library-aware-planner-design.zh.md: expand the Software Engineering Starter Library, add library-aware planner schema/validation/skill orchestration, integrate prompt-to-DAG draft creation, add Context Economy resources, preserve fixed generic runner image delivery via TaskEnvelopeV2 skill snapshots/MCP grants/mounts, expose Workspace/Library/Operator read models and UI, add non-calc real E2E scenarios, and enforce quantitative gates with npm test, npm run test:v2, npm run web:build, and the new real E2E gate.
+Implement the Southstar productized App Shell and LLM-assisted Library-aware Planner from docs/superpowers/specs/2026-06-16-southstar-productized-ui-library-aware-planner-design.zh.md: expand the Software Engineering Starter Library, add library-aware planner schema/validation/skill orchestration, integrate prompt-to-DAG draft creation, add Context Economy resources, preserve fixed generic runner image delivery via TaskEnvelopeV2 skill snapshots/MCP grants/mounts, expose Chat/Workflow/Operations App Shell, Library, and Operator read models and UI, add non-calc real E2E scenarios, and enforce quantitative gates with npm test, npm run test:v2, npm run web:build, and the new real E2E gate.
 ```
 
 Use the goal tool only when the harness provides it. Do not mark the goal complete until the completion audit maps every requirement to tests, files, and command output.
@@ -30,7 +30,7 @@ This plan intentionally ships one vertical product capability, not a cosmetic UI
 4. Integrate the planner into draft creation and persist decision traces.
 5. Add Context Economy resources and downstream context reuse.
 6. Preserve fixed generic runner image delivery: skills and MCP/tool grants travel through TaskEnvelopeV2, materialized run roots, context packets, and mounts; planner output must not invent ad hoc Docker images.
-7. Add read models and UI surfaces for Workspace, Library alternatives, context sources, and Operator.
+7. Add read models and UI surfaces for the Southstar App Shell: Chat, Workflow, Operations, Library alternatives, context sources, and Operator.
 8. Add non-calc E2E fixtures, scenarios, and quantitative gates.
 
 ## File map
@@ -45,24 +45,30 @@ This plan intentionally ships one vertical product capability, not a cosmetic UI
 - `skills/southstar/workflow-planner-library-selection/SKILL.md` — planner skill instructions used by LLM planner sessions.
 - `src/v2/context/economy.ts` — creates and reads Run Brief, Repo Fact Cache, Artifact Summary, and context-source summaries.
 - `src/v2/quality/productized-ui-library-planner-gates.ts` — quantitative gate verifier for planner, DAG, context, library, execution image/skill/MCP delivery, UI, artifact, and E2E evidence.
-- `src/v2/ui-api/page-models/workspace.ts` — Workspace page model for new goal, planning, draft review, active run, task inspector, rationale, and context sources.
+- `src/v2/ui-api/page-models/workflow-tab.ts` — Workflow tab page model for new goal, planning, draft review, active run, task inspector, rationale, and context sources.
+- `src/v2/ui-api/page-models/operations-tab.ts` — Operations tab model for multi-run monitoring, approvals, executor health, release lanes, and automation watch state.
 - `src/v2/ui-api/page-models/library-alternatives.ts` — side-sheet model for matched templates, agent/profile alternatives, skills, MCP/tool grants, and rejected alternatives.
 - `src/v2/ui-api/page-models/operator-attention.ts` — floating Operator sheet model for approvals, stuck tasks, high-risk release actions, and recovery suggestions.
-- `components/southstar/pages/WorkspacePage.tsx` — productized Workspace UI.
-- `components/southstar/workspace/GoalComposer.tsx` — progressive brief input.
-- `components/southstar/workspace/PlanningProgress.tsx` — planning pipeline progress.
-- `components/southstar/workspace/DraftReviewCanvas.tsx` — simplified DAG review canvas.
-- `components/southstar/workspace/TaskInspector.tsx` — read-only task inspector with `Customize this run` entry.
-- `components/southstar/workspace/LibraryAlternativesSheet.tsx` — read-only alternative selector.
-- `components/southstar/workspace/OperatorDock.tsx` — collapsed Operator attention pill.
-- `components/southstar/workspace/OperatorSheet.tsx` — expanded Operator attention layer.
-- `app/workspace/page.tsx` — route for the Workspace.
+- `components/southstar/app-shell/SouthstarProductShell.tsx` — pi-web inspired Southstar shell with Chat / Workflow / Operations tabs.
+- `components/southstar/app-shell/SouthstarTopBar.tsx` — runtime/project/status bar.
+- `components/southstar/app-shell/SouthstarTabRail.tsx` — tab selector for Chat, Workflow, Operations.
+- `components/southstar/chat/SouthstarChatTab.tsx` — preserved chat surface adapted to Southstar style.
+- `components/southstar/workflow/WorkflowTab.tsx` — productized Workflow tab container.
+- `components/southstar/workflow/LibraryContextPanel.tsx` — selected/matched Library context panel.
+- `components/southstar/workflow/GuidedPlannerChat.tsx` — skill-guided planner chat.
+- `components/southstar/workflow/WorkflowDagPanel.tsx` — simplified DAG review canvas.
+- `components/southstar/workflow/TaskInspector.tsx` — read-only task inspector with `Customize this run` entry.
+- `components/southstar/workflow/LibraryAlternativesSheet.tsx` — read-only alternative selector.
+- `components/southstar/operator/OperatorDock.tsx` — collapsed Operator attention pill.
+- `components/southstar/operator/OperatorSheet.tsx` — expanded Operator attention layer.
+- `components/southstar/operations/SouthstarOperationsTab.tsx` — Southstar Control Center based on Northstar control-panel concepts.
+- `app/chat/page.tsx`, `app/workflow/page.tsx`, `app/operations/page.tsx` — deep-link routes into each tab.
 - `tests/v2/software-engineering-starter-library.test.ts` — Starter Library coverage.
 - `tests/v2/library-aware-planner-validator.test.ts` — planner result validator coverage.
 - `tests/v2/library-aware-planner.test.ts` — planner orchestration coverage with fake LLM.
 - `tests/v2/context-economy.test.ts` — Run Brief, Repo Fact Cache, Artifact Summary, and downstream context reuse coverage.
-- `tests/v2/productized-ui-read-models.test.ts` — Workspace, Library alternatives, and Operator read model coverage.
-- `tests/web/southstar-productized-workspace-ui.test.tsx` — static/source-level UI route and component coverage.
+- `tests/v2/productized-ui-read-models.test.ts` — Workflow tab, Operations tab, Library alternatives, and Operator read model coverage.
+- `tests/web/southstar-productized-app-shell-ui.test.tsx` — static/source-level App Shell, Chat, Workflow, Operations route and component coverage.
 - `tests/e2e-real/scenarios/todo-web-feature.ts` — non-calc feature scenario.
 - `tests/e2e-real/scenarios/markdown-table-bugfix.ts` — parser bugfix scenario.
 - `tests/e2e-real/scenarios/docs-cli-usage.ts` — docs-only scenario.
@@ -75,11 +81,11 @@ This plan intentionally ships one vertical product capability, not a cosmetic UI
 - `src/v2/design-library/software-dev-seed.ts` — call or delegate to the new Starter Library seed while preserving existing tests.
 - `src/v2/design-library/types.ts` — add object kinds and payload shapes if the current model lacks agent definition/profile/skill/grant/evaluator metadata fields.
 - `src/v2/ui-api/local-api.ts` — integrate Library-aware Planner into `createPlannerDraft`, persist traces, and create Context Economy resources.
-- `src/v2/server/ui-routes.ts` — expose Workspace, Library alternatives, and Operator page models.
+- `src/v2/server/ui-routes.ts` — expose Workflow tab, Operations tab, Library alternatives, and Operator page models.
 - `src/v2/ui-api/page-models/types.ts` — add new page model types.
 - `src/v2/read-models/registry.ts` and `src/v2/read-models/types.ts` — expose the new read models through the generic read-model registry if needed by CLI.
-- `components/southstar/shell/SideRail.tsx` — add Workspace nav while keeping existing routes reachable.
-- `app/page.tsx` — route root to Workspace page when productized UI is enabled.
+- `components/southstar/shell/*` — keep existing routes reachable while the new product shell becomes root.
+- `app/page.tsx` — route root to Southstar App Shell.
 - `tests/v2/index.test.ts` — import new v2 tests.
 - `tests/index.test.ts` — import web source-level tests if not already covered.
 - `package.json` — add a real E2E productized planner script if the existing E2E runner needs a new entry.
@@ -1905,10 +1911,11 @@ git add src/v2/context/economy.ts src/v2/context/builder.ts src/v2/ui-api/local-
 git commit -m "feat: add context economy resources"
 ```
 
-## Task 6: Add Workspace, Library alternatives, and Operator read models
+## Task 6: Add Workflow tab, Operations tab, Library alternatives, and Operator read models
 
 **Files:**
-- Create: `src/v2/ui-api/page-models/workspace.ts`
+- Create: `src/v2/ui-api/page-models/workflow-tab.ts`
+- Create: `src/v2/ui-api/page-models/operations-tab.ts`
 - Create: `src/v2/ui-api/page-models/library-alternatives.ts`
 - Create: `src/v2/ui-api/page-models/operator-attention.ts`
 - Modify: `src/v2/ui-api/page-models/types.ts`
@@ -1926,19 +1933,20 @@ import test from "node:test";
 import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
 import { seedSoftwareEngineeringStarterLibrary } from "../../src/v2/design-library/software-engineering-starter.ts";
 import { createPlannerDraft, createRunFromDraft } from "../../src/v2/ui-api/local-api.ts";
-import { buildWorkspacePageModel } from "../../src/v2/ui-api/page-models/workspace.ts";
+import { buildWorkflowTabPageModel } from "../../src/v2/ui-api/page-models/workflow-tab.ts";
 import { buildLibraryAlternativesPageModel } from "../../src/v2/ui-api/page-models/library-alternatives.ts";
 import { buildOperatorAttentionPageModel } from "../../src/v2/ui-api/page-models/operator-attention.ts";
+import { buildOperationsTabPageModel } from "../../src/v2/ui-api/page-models/operations-tab.ts";
 import { createApprovalRequest } from "../../src/v2/approvals/service.ts";
 import type { ExecutorProvider } from "../../src/v2/executor/provider.ts";
 
-test("workspace page model exposes draft DAG, task inspector, rationale, and context sources", async () => {
+test("workflow tab page model exposes draft DAG, task inspector, rationale, and context sources", async () => {
   const db = openSouthstarDb(":memory:");
   seedSoftwareEngineeringStarterLibrary(db, { actorType: "migration" });
   const draft = await createPlannerDraft(db, { goalPrompt: "todo-web priority labels overdue filter browser QA", plannerClient: { generate: async () => "{}" } });
-  const model = buildWorkspacePageModel(db, { draftId: draft.draftId });
+  const model = buildWorkflowTabPageModel(db, { draftId: draft.draftId });
 
-  assert.equal(model.surface, "southstar.ui.workspace.v1");
+  assert.equal(model.surface, "southstar.ui.workflow-tab.v1");
   assert.equal(model.state, "draft-review");
   assert.equal(model.draft?.dag.nodes.some((node) => node.id === "coding-review"), true);
   assert.equal(model.draft?.dag.nodes.some((node) => node.id === "spec-alignment"), true);
@@ -1958,6 +1966,15 @@ test("library alternatives model shows matched templates, profiles, skills, gran
   assert.equal(model.agentProfiles.length >= 1, true);
   assert.equal(model.skills.length >= 1, true);
   assert.equal(Array.isArray(model.rejectedAlternatives), true);
+});
+
+test("operations tab model exposes Southstar Control Center without Northstar wording", () => {
+  const db = openSouthstarDb(":memory:");
+  const model = buildOperationsTabPageModel(db, {});
+  assert.equal(model.surface, "southstar.ui.operations-tab.v1");
+  assert.equal(Array.isArray(model.runs), true);
+  assert.equal(Array.isArray(model.approvals), true);
+  assert.equal(Array.isArray(model.executorHealth), true);
 });
 
 test("operator attention model surfaces approvals and stuck executor attention", async () => {
@@ -1994,17 +2011,17 @@ npm run test:v2
 
 Expected: FAIL with missing page model files.
 
-- [ ] **Step 3: Implement Workspace page model**
+- [ ] **Step 3: Implement Workflow tab page model**
 
-Create `src/v2/ui-api/page-models/workspace.ts`:
+Create `src/v2/ui-api/page-models/workflow-tab.ts`:
 
 ```ts
 import type { SouthstarDb } from "../../stores/sqlite.ts";
 import { listResources } from "../../stores/resource-store.ts";
 import { buildWorkflowCanvasModel } from "../read-models.ts";
 
-export type WorkspacePageModel = {
-  surface: "southstar.ui.workspace.v1";
+export type WorkflowTabPageModel = {
+  surface: "southstar.ui.workflow-tab.v1";
   state: "new-goal" | "planning" | "draft-review" | "active-run";
   activeRunId?: string;
   draft?: {
@@ -2017,14 +2034,14 @@ export type WorkspacePageModel = {
   };
 };
 
-export function buildWorkspacePageModel(db: SouthstarDb, input: { draftId?: string; runId?: string }): WorkspacePageModel {
+export function buildWorkflowTabPageModel(db: SouthstarDb, input: { draftId?: string; runId?: string }): WorkflowTabPageModel {
   if (input.runId) {
     const canvas = buildWorkflowCanvasModel(db, input.runId);
-    return { surface: "southstar.ui.workspace.v1", state: "active-run", activeRunId: input.runId, draft: undefined };
+    return { surface: "southstar.ui.workflow-tab.v1", state: "active-run", activeRunId: input.runId, draft: undefined };
   }
-  if (!input.draftId) return { surface: "southstar.ui.workspace.v1", state: "new-goal" };
+  if (!input.draftId) return { surface: "southstar.ui.workflow-tab.v1", state: "new-goal" };
   const draft = listResources(db, { resourceType: "planner_draft" }).find((resource) => resource.resourceKey === input.draftId);
-  if (!draft) return { surface: "southstar.ui.workspace.v1", state: "new-goal" };
+  if (!draft) return { surface: "southstar.ui.workflow-tab.v1", state: "new-goal" };
   const payload = draft.payload as { workflow?: { title?: string; tasks?: Array<{ id: string; name?: string; dependsOn?: string[]; agentProfileRef?: string; skillRefs?: string[]; mcpGrantRefs?: string[]; requiredArtifactRefs?: string[]; promptInputs?: { rationale?: string } }> } };
   const workflow = payload.workflow;
   const tasks = workflow?.tasks ?? [];
@@ -2034,7 +2051,7 @@ export function buildWorkspacePageModel(db: SouthstarDb, input: { draftId?: stri
   const templateRefs = Array.isArray(templateTrace?.payload) ? (templateTrace!.payload as Array<{ ref?: string }>).map((item) => item.ref).filter((value): value is string => Boolean(value)) : [];
   const firstTask = tasks[0];
   return {
-    surface: "southstar.ui.workspace.v1",
+    surface: "southstar.ui.workflow-tab.v1",
     state: "draft-review",
     draft: {
       draftId: input.draftId,
@@ -2134,13 +2151,41 @@ export function buildOperatorAttentionPageModel(db: SouthstarDb, _input: {}): Op
 }
 ```
 
+Create `src/v2/ui-api/page-models/operations-tab.ts`:
+
+```ts
+import type { SouthstarDb } from "../../stores/sqlite.ts";
+import { listResources } from "../../stores/resource-store.ts";
+
+export type OperationsTabPageModel = {
+  surface: "southstar.ui.operations-tab.v1";
+  runs: Array<{ runId: string; status: string; title: string }>;
+  approvals: Array<{ id: string; runId?: string; title: string; status: string }>;
+  executorHealth: Array<{ service: string; status: "healthy" | "attention" | "unknown" }>;
+  releaseLanes: Array<{ runId?: string; status: string; summary: string }>;
+};
+
+export function buildOperationsTabPageModel(db: SouthstarDb, _input: {}): OperationsTabPageModel {
+  const runRows = db.prepare("select id, status, goal_prompt from workflow_runs order by updated_at desc limit 20").all() as Array<{ id: string; status: string; goal_prompt: string }>;
+  const approvals = listResources(db, { resourceType: "approval" });
+  const executorBindings = listResources(db, { resourceType: "executor_binding" });
+  return {
+    surface: "southstar.ui.operations-tab.v1",
+    runs: runRows.map((run) => ({ runId: run.id, status: run.status, title: run.goal_prompt })),
+    approvals: approvals.map((approval) => ({ id: approval.id, runId: approval.runId, title: approval.title ?? approval.resourceKey, status: approval.status })),
+    executorHealth: [{ service: "Tork Executor", status: executorBindings.some((binding) => ["heartbeat-lost", "queue-timeout", "hard-timeout", "callback-missing", "orphaned"].includes(binding.status)) ? "attention" : "healthy" }],
+    releaseLanes: listResources(db, { resourceType: "merge_result" }).map((resource) => ({ runId: resource.runId, status: resource.status, summary: resource.title ?? resource.resourceKey })),
+  };
+}
+```
+
 - [ ] **Step 5: Expose routes**
 
 Modify `src/v2/server/ui-routes.ts` to include:
 
 ```ts
-if (request.method === "GET" && url.pathname === "/api/v2/ui/workspace") {
-  return json("ui-workspace", buildWorkspacePageModel(context.db, {
+if (request.method === "GET" && url.pathname === "/api/v2/ui/workflow-tab") {
+  return json("ui-workflow-tab", buildWorkflowTabPageModel(context.db, {
     draftId: url.searchParams.get("draftId") ?? undefined,
     runId: url.searchParams.get("runId") ?? undefined,
   }));
@@ -2156,9 +2201,12 @@ if (request.method === "GET" && url.pathname === "/api/v2/ui/library-alternative
 if (request.method === "GET" && url.pathname === "/api/v2/ui/operator-attention") {
   return json("ui-operator-attention", buildOperatorAttentionPageModel(context.db, {}));
 }
+if (request.method === "GET" && url.pathname === "/api/v2/ui/operations-tab") {
+  return json("ui-operations-tab", buildOperationsTabPageModel(context.db, {}));
+}
 ```
 
-Add imports for the three builders.
+Add imports for the four builders.
 
 - [ ] **Step 6: Run read model tests**
 
@@ -2173,30 +2221,37 @@ Expected: PASS for productized UI read model tests.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src/v2/ui-api/page-models/workspace.ts src/v2/ui-api/page-models/library-alternatives.ts src/v2/ui-api/page-models/operator-attention.ts src/v2/ui-api/page-models/types.ts src/v2/server/ui-routes.ts tests/v2/productized-ui-read-models.test.ts tests/v2/index.test.ts
-git commit -m "feat: expose productized workspace read models"
+git add src/v2/ui-api/page-models/workflow-tab.ts src/v2/ui-api/page-models/operations-tab.ts src/v2/ui-api/page-models/library-alternatives.ts src/v2/ui-api/page-models/operator-attention.ts src/v2/ui-api/page-models/types.ts src/v2/server/ui-routes.ts tests/v2/productized-ui-read-models.test.ts tests/v2/index.test.ts
+git commit -m "feat: expose productized app shell read models"
 ```
 
-## Task 7: Build productized Workspace UI components
+## Task 7: Port pi-web inspired Southstar App Shell with Chat / Workflow / Operations tabs
 
 **Files:**
-- Create: `app/workspace/page.tsx`
+- Create: `components/southstar/app-shell/SouthstarProductShell.tsx`
+- Create: `components/southstar/app-shell/SouthstarTopBar.tsx`
+- Create: `components/southstar/app-shell/SouthstarTabRail.tsx`
+- Create: `components/southstar/chat/SouthstarChatTab.tsx`
+- Create: `components/southstar/workflow/WorkflowTab.tsx`
+- Create: `components/southstar/workflow/LibraryContextPanel.tsx`
+- Create: `components/southstar/workflow/GuidedPlannerChat.tsx`
+- Create: `components/southstar/workflow/WorkflowDagPanel.tsx`
+- Create: `components/southstar/workflow/TaskInspector.tsx`
+- Create: `components/southstar/workflow/LibraryAlternativesSheet.tsx`
+- Create: `components/southstar/operator/OperatorDock.tsx`
+- Create: `components/southstar/operator/OperatorSheet.tsx`
+- Create: `components/southstar/operations/SouthstarOperationsTab.tsx`
+- Create: `app/chat/page.tsx`
+- Modify: `app/workflow/page.tsx`
+- Create: `app/operations/page.tsx`
 - Modify: `app/page.tsx`
-- Create: `components/southstar/pages/WorkspacePage.tsx`
-- Create: `components/southstar/workspace/GoalComposer.tsx`
-- Create: `components/southstar/workspace/PlanningProgress.tsx`
-- Create: `components/southstar/workspace/DraftReviewCanvas.tsx`
-- Create: `components/southstar/workspace/TaskInspector.tsx`
-- Create: `components/southstar/workspace/LibraryAlternativesSheet.tsx`
-- Create: `components/southstar/workspace/OperatorDock.tsx`
-- Create: `components/southstar/workspace/OperatorSheet.tsx`
 - Modify: `app/globals.css`
-- Test: `tests/web/southstar-productized-workspace-ui.test.tsx`
+- Test: `tests/web/southstar-productized-app-shell-ui.test.tsx`
 - Modify: `tests/index.test.ts`
 
-- [ ] **Step 1: Write failing UI source tests**
+- [ ] **Step 1: Write failing App Shell UI source tests**
 
-Create `tests/web/southstar-productized-workspace-ui.test.tsx`:
+Create `tests/web/southstar-productized-app-shell-ui.test.tsx`:
 
 ```ts
 import assert from "node:assert/strict";
@@ -2205,35 +2260,44 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = join(import.meta.dirname, "../..");
+function source(path: string): string { return readFileSync(join(root, path), "utf8"); }
 
-function source(path: string): string {
-  return readFileSync(join(root, path), "utf8");
-}
-
-test("workspace route is the productized root and exposes goal-first vocabulary", () => {
-  assert.match(source("app/page.tsx"), /WorkspacePage/);
-  assert.match(source("app/workspace/page.tsx"), /WorkspacePage/);
-  const page = source("components/southstar/pages/WorkspacePage.tsx");
-  assert.match(page, /createSouthstarApiClient/);
-  assert.match(page, /getUiWorkspace/);
-  assert.match(page, /Start with a goal/);
-  assert.match(page, /OperatorDock/);
+test("root renders Southstar product shell with Chat Workflow Operations tabs", () => {
+  assert.match(source("app/page.tsx"), /SouthstarProductShell/);
+  const shell = source("components/southstar/app-shell/SouthstarProductShell.tsx");
+  assert.match(shell, /SouthstarChatTab/);
+  assert.match(shell, /WorkflowTab/);
+  assert.match(shell, /SouthstarOperationsTab/);
+  assert.match(shell, /activeTab/);
+  assert.match(shell, /Chat/);
+  assert.match(shell, /Workflow/);
+  assert.match(shell, /Operations/);
 });
 
-test("workspace draft review shows DAG, inspector, library alternatives, and context sources", () => {
-  assert.match(source("components/southstar/workspace/DraftReviewCanvas.tsx"), /svg/);
-  assert.match(source("components/southstar/workspace/DraftReviewCanvas.tsx"), /coding-review|spec-alignment|browser-qa/);
-  assert.match(source("components/southstar/workspace/TaskInspector.tsx"), /Customize this run/);
-  assert.match(source("components/southstar/workspace/TaskInspector.tsx"), /Context Sources/);
-  assert.match(source("components/southstar/workspace/LibraryAlternativesSheet.tsx"), /Matched templates/);
-  assert.match(source("components/southstar/workspace/OperatorSheet.tsx"), /Needs attention/);
+test("workflow tab contains library context, guided chat, DAG flow, and floating operator", () => {
+  assert.match(source("components/southstar/workflow/WorkflowTab.tsx"), /LibraryContextPanel/);
+  assert.match(source("components/southstar/workflow/WorkflowTab.tsx"), /GuidedPlannerChat/);
+  assert.match(source("components/southstar/workflow/WorkflowTab.tsx"), /WorkflowDagPanel/);
+  assert.match(source("components/southstar/workflow/TaskInspector.tsx"), /Customize this run/);
+  assert.match(source("components/southstar/workflow/TaskInspector.tsx"), /Context Sources/);
+  assert.match(source("components/southstar/workflow/LibraryAlternativesSheet.tsx"), /Matched templates/);
+  assert.match(source("components/southstar/operator/OperatorSheet.tsx"), /Needs attention/);
 });
 
-test("calm workflow OS visual tokens exist and avoid dense dashboard defaults", () => {
+test("chat tab remains available and operations tab replaces northstar wording", () => {
+  assert.match(source("components/southstar/chat/SouthstarChatTab.tsx"), /General conversation/);
+  assert.match(source("components/southstar/chat/SouthstarChatTab.tsx"), /skill-guided/);
+  const ops = source("components/southstar/operations/SouthstarOperationsTab.tsx");
+  assert.match(ops, /Southstar Control Center/);
+  assert.match(ops, /workflow runs/);
+  assert.doesNotMatch(ops, /Northstar issue|issue lifecycle/);
+});
+
+test("calm product shell tokens exist and avoid copied pi-web dark shell as default", () => {
   const css = source("app/globals.css");
-  assert.match(css, /--ss-workspace-bg: #f6f8fb/);
-  assert.match(css, /--ss-workspace-primary: #102033/);
-  assert.match(css, /--ss-workspace-border: #d8e1ec/);
+  assert.match(css, /--ss-product-bg: #f6f8fb/);
+  assert.match(css, /--ss-product-primary: #102033/);
+  assert.match(css, /--ss-product-border: #d8e1ec/);
   assert.doesNotMatch(css, /purple|violet|gradient\(.*purple/i);
 });
 ```
@@ -2241,7 +2305,7 @@ test("calm workflow OS visual tokens exist and avoid dense dashboard defaults", 
 Add to `tests/index.test.ts`:
 
 ```ts
-await import("./web/southstar-productized-workspace-ui.test.tsx");
+await import("./web/southstar-productized-app-shell-ui.test.tsx");
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -2252,18 +2316,23 @@ Run:
 npm test
 ```
 
-Expected: FAIL with missing Workspace files.
+Expected: FAIL with missing Southstar product shell files.
 
-- [ ] **Step 3: Add API client methods**
+- [ ] **Step 3: Add API client methods for Workflow, Operations, Library, and Operator**
 
-Modify `lib/southstar/api-client.ts` to add:
+Modify `lib/southstar/api-client.ts` using its existing request helper style. Add these methods to the returned client object:
 
 ```ts
-async getUiWorkspace(params?: { draftId?: string; runId?: string }) {
+async getUiWorkflowTab(params?: { draftId?: string; runId?: string }) {
   const query = new URLSearchParams();
   if (params?.draftId) query.set("draftId", params.draftId);
   if (params?.runId) query.set("runId", params.runId);
-  return this.get(`/api/v2/ui/workspace${query.size ? `?${query}` : ""}`);
+  return this.get(`/api/v2/ui/workflow-tab${query.size ? `?${query}` : ""}`);
+},
+async getUiOperationsTab(params?: { runId?: string }) {
+  const query = new URLSearchParams();
+  if (params?.runId) query.set("runId", params.runId);
+  return this.get(`/api/v2/ui/operations-tab${query.size ? `?${query}` : ""}`);
 },
 async getUiLibraryAlternatives(params: { draftId: string; taskId?: string }) {
   const query = new URLSearchParams({ draftId: params.draftId });
@@ -2275,202 +2344,237 @@ async getUiOperatorAttention() {
 }
 ```
 
-Use the same method style already present in the file.
+- [ ] **Step 4: Create Southstar Product Shell**
 
-- [ ] **Step 4: Create route files**
-
-Create `app/workspace/page.tsx`:
-
-```tsx
-import { WorkspacePage } from "@/components/southstar/pages/WorkspacePage";
-
-export default function Page() {
-  return <WorkspacePage />;
-}
-```
-
-Modify `app/page.tsx`:
-
-```tsx
-import { WorkspacePage } from "@/components/southstar/pages/WorkspacePage";
-
-export default function Home() {
-  return <WorkspacePage />;
-}
-```
-
-- [ ] **Step 5: Create Workspace page component**
-
-Create `components/southstar/pages/WorkspacePage.tsx`:
+Create `components/southstar/app-shell/SouthstarProductShell.tsx`:
 
 ```tsx
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
 import { createSouthstarApiClient } from "@/lib/southstar/api-client";
-import { GoalComposer } from "../workspace/GoalComposer";
-import { PlanningProgress } from "../workspace/PlanningProgress";
-import { DraftReviewCanvas } from "../workspace/DraftReviewCanvas";
-import { TaskInspector } from "../workspace/TaskInspector";
-import { LibraryAlternativesSheet } from "../workspace/LibraryAlternativesSheet";
-import { OperatorDock } from "../workspace/OperatorDock";
-import { OperatorSheet } from "../workspace/OperatorSheet";
+import { SouthstarTopBar } from "./SouthstarTopBar";
+import { SouthstarTabRail, type SouthstarProductTab } from "./SouthstarTabRail";
+import { SouthstarChatTab } from "../chat/SouthstarChatTab";
+import { WorkflowTab } from "../workflow/WorkflowTab";
+import { SouthstarOperationsTab } from "../operations/SouthstarOperationsTab";
+import { OperatorDock } from "../operator/OperatorDock";
+import { OperatorSheet } from "../operator/OperatorSheet";
 
-export function WorkspacePage() {
+export function SouthstarProductShell(props: { initialTab?: SouthstarProductTab }) {
+  const [activeTab, setActiveTab] = useState<SouthstarProductTab>(props.initialTab ?? "workflow");
+  const [operatorOpen, setOperatorOpen] = useState(false);
+  const [operator, setOperator] = useState<any | null>(null);
   const api = useMemo(() => createSouthstarApiClient({ baseUrl: process.env.NEXT_PUBLIC_SOUTHSTAR_SERVER_URL ?? "http://127.0.0.1:3001" }), []);
+
+  useEffect(() => { void api.getUiOperatorAttention().then(setOperator).catch(() => setOperator(null)); }, [api, activeTab]);
+
+  return (
+    <main className="ss-product-shell">
+      <SouthstarTopBar activeTab={activeTab} />
+      <div className="ss-product-body">
+        <SouthstarTabRail activeTab={activeTab} onChange={setActiveTab} />
+        <section className="ss-product-tab-surface">
+          {activeTab === "chat" ? <SouthstarChatTab /> : null}
+          {activeTab === "workflow" ? <WorkflowTab api={api} /> : null}
+          {activeTab === "operations" ? <SouthstarOperationsTab api={api} /> : null}
+        </section>
+      </div>
+      <OperatorDock count={operator?.attentionCount ?? 0} onOpen={() => setOperatorOpen(true)} />
+      {operatorOpen ? <OperatorSheet model={operator} onClose={() => setOperatorOpen(false)} /> : null}
+    </main>
+  );
+}
+```
+
+Create `components/southstar/app-shell/SouthstarTopBar.tsx`:
+
+```tsx
+import type { SouthstarProductTab } from "./SouthstarTabRail";
+
+export function SouthstarTopBar(props: { activeTab: SouthstarProductTab }) {
+  return (
+    <header className="ss-product-topbar">
+      <div className="ss-product-brand"><span aria-hidden /> <strong>Southstar</strong><small>Workflow OS</small></div>
+      <div className="ss-product-status"><span className="ss-status-dot" /> runtime healthy · {props.activeTab}</div>
+    </header>
+  );
+}
+```
+
+Create `components/southstar/app-shell/SouthstarTabRail.tsx`:
+
+```tsx
+export type SouthstarProductTab = "chat" | "workflow" | "operations";
+
+const tabs: Array<{ id: SouthstarProductTab; label: string; description: string }> = [
+  { id: "chat", label: "Chat", description: "General conversation" },
+  { id: "workflow", label: "Workflow", description: "Plan and run" },
+  { id: "operations", label: "Operations", description: "Control Center" },
+];
+
+export function SouthstarTabRail(props: { activeTab: SouthstarProductTab; onChange: (tab: SouthstarProductTab) => void }) {
+  return (
+    <aside className="ss-product-rail" aria-label="Southstar sections">
+      {tabs.map((tab) => <button key={tab.id} type="button" aria-pressed={props.activeTab === tab.id} onClick={() => props.onChange(tab.id)}><strong>{tab.label}</strong><span>{tab.description}</span></button>)}
+    </aside>
+  );
+}
+```
+
+- [ ] **Step 5: Create Chat tab and Workflow tab components**
+
+Create `components/southstar/chat/SouthstarChatTab.tsx`:
+
+```tsx
+export function SouthstarChatTab() {
+  return (
+    <section className="ss-chat-tab">
+      <div className="ss-chat-empty">
+        <h1>General conversation</h1>
+        <p>Use chat for freeform work, brainstorming, and skill-guided Southstar planning. Start with <code>/workflow</code> when you want Southstar to design a workflow.</p>
+        <div className="ss-chat-input-shell"><textarea aria-label="Chat message" aria-describedby="chat-helper" /><p id="chat-helper">Ask a question or use a Southstar skill command.</p></div>
+      </div>
+    </section>
+  );
+}
+```
+
+Create `components/southstar/workflow/WorkflowTab.tsx`:
+
+```tsx
+"use client";
+
+import { useState } from "react";
+import { LibraryContextPanel } from "./LibraryContextPanel";
+import { GuidedPlannerChat } from "./GuidedPlannerChat";
+import { WorkflowDagPanel } from "./WorkflowDagPanel";
+import { TaskInspector } from "./TaskInspector";
+import { LibraryAlternativesSheet } from "./LibraryAlternativesSheet";
+
+export function WorkflowTab(props: { api: any }) {
   const [goalPrompt, setGoalPrompt] = useState("");
   const [model, setModel] = useState<any | null>(null);
   const [draftId, setDraftId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
-  const [planning, setPlanning] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
-  const [operatorOpen, setOperatorOpen] = useState(false);
-  const [operator, setOperator] = useState<any | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  async function refresh(nextDraftId = draftId) {
-    setModel(await api.getUiWorkspace(nextDraftId ? { draftId: nextDraftId } : undefined));
-    setOperator(await api.getUiOperatorAttention());
-  }
-
-  useEffect(() => { void refresh(); }, []);
+  const [planning, setPlanning] = useState(false);
 
   async function planGoal() {
     setPlanning(true);
-    setError(null);
     try {
-      const draft = await api.createDraft(goalPrompt);
+      const draft = await props.api.createDraft(goalPrompt);
       setDraftId(draft.draftId);
-      const next = await api.getUiWorkspace({ draftId: draft.draftId });
+      const next = await props.api.getUiWorkflowTab({ draftId: draft.draftId });
       setModel(next);
       setSelectedTaskId(next.draft?.dag?.nodes?.[0]?.id ?? null);
-    } catch (cause) {
-      setError((cause as Error).message);
     } finally {
       setPlanning(false);
     }
   }
 
   return (
-    <main className="ss-workspace-page">
-      <header className="ss-workspace-topbar">
-        <div className="ss-workspace-brand"><span /> <strong>Southstar</strong><small>Workflow OS</small></div>
-        <nav><a href="/library">Library</a><a href="/runtime">Runs</a><a href="/governance">Settings</a></nav>
-      </header>
-      <section className="ss-workspace-main">
-        <div className="ss-workspace-stack">
-          <GoalComposer value={goalPrompt} error={error} onChange={setGoalPrompt} onPlan={() => void planGoal()} disabled={planning} />
-          {planning ? <PlanningProgress /> : null}
-          {model?.draft ? (
-            <div className="ss-draft-review-grid">
-              <DraftReviewCanvas draft={model.draft} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
-              <TaskInspector draft={model.draft} selectedTaskId={selectedTaskId} onOpenAlternatives={() => setLibraryOpen(true)} />
-            </div>
-          ) : null}
-        </div>
-      </section>
-      <OperatorDock count={operator?.attentionCount ?? 0} onOpen={() => setOperatorOpen(true)} />
-      {operatorOpen ? <OperatorSheet model={operator} onClose={() => setOperatorOpen(false)} /> : null}
-      {libraryOpen && draftId ? <LibraryAlternativesSheet api={api} draftId={draftId} taskId={selectedTaskId ?? undefined} onClose={() => setLibraryOpen(false)} /> : null}
-    </main>
+    <div className="ss-workflow-tab">
+      <LibraryContextPanel model={model} onOpenAlternatives={() => setLibraryOpen(true)} />
+      <main className="ss-workflow-main">
+        <GuidedPlannerChat value={goalPrompt} onChange={setGoalPrompt} onPlan={() => void planGoal()} planning={planning} />
+        <WorkflowDagPanel draft={model?.draft} selectedTaskId={selectedTaskId} onSelectTask={setSelectedTaskId} />
+      </main>
+      <TaskInspector draft={model?.draft} selectedTaskId={selectedTaskId} onOpenAlternatives={() => setLibraryOpen(true)} />
+      {libraryOpen && draftId ? <LibraryAlternativesSheet api={props.api} draftId={draftId} taskId={selectedTaskId ?? undefined} onClose={() => setLibraryOpen(false)} /> : null}
+    </div>
   );
 }
 ```
 
-- [ ] **Step 6: Create Workspace child components**
-
-Create `components/southstar/workspace/GoalComposer.tsx`:
+Create `components/southstar/workflow/LibraryContextPanel.tsx`:
 
 ```tsx
-export function GoalComposer(props: { value: string; error?: string | null; disabled?: boolean; onChange: (value: string) => void; onPlan: () => void }) {
+export function LibraryContextPanel(props: { model: any | null; onOpenAlternatives: () => void }) {
+  const summary = props.model?.draft?.summary;
   return (
-    <section className="ss-goal-composer">
-      <div><h1>Start with a goal.</h1><p>Describe the outcome. Southstar turns it into managed work.</p></div>
-      <p id="goal-helper">Describe the software outcome, repo context, and acceptance criteria.</p>
-      <textarea aria-label="Goal prompt" aria-describedby="goal-helper" value={props.value} onChange={(event) => props.onChange(event.currentTarget.value)} />
-      {props.error ? <p role="alert" className="ss-workspace-error">{props.error}</p> : null}
-      <div className="ss-goal-actions"><span>software</span><span>policy risk</span><span>repo context</span><button type="button" onClick={props.onPlan} disabled={props.disabled || props.value.trim().length === 0}>Plan</button></div>
-    </section>
-  );
-}
-```
-
-Create `components/southstar/workspace/PlanningProgress.tsx`:
-
-```tsx
-const steps = ["Extracting requirements", "Searching Library", "Selecting agents", "Checking artifact contracts", "Validating DAG"];
-
-export function PlanningProgress() {
-  return <section className="ss-planning-progress" aria-live="polite"><h2>Planning workflow</h2>{steps.map((step) => <p key={step}>{step}</p>)}</section>;
-}
-```
-
-Create `components/southstar/workspace/DraftReviewCanvas.tsx`:
-
-```tsx
-export function DraftReviewCanvas(props: { draft: any; selectedTaskId: string | null; onSelectTask: (taskId: string) => void }) {
-  const nodes = props.draft.dag.nodes as Array<{ id: string; label: string }>;
-  const edges = props.draft.dag.edges as Array<{ from: string; to: string }>;
-  return (
-    <section className="ss-draft-canvas">
-      <header><div><h2>Review generated flow</h2><p>{props.draft.summary.templateRefs.join(", ")} · {props.draft.summary.confidence} confidence · {props.draft.summary.risk} risk</p></div><button type="button">Run</button></header>
-      <svg viewBox="0 0 760 280" role="img" aria-label="Generated workflow DAG">
-        {edges.map((edge, index) => <line key={`${edge.from}-${edge.to}`} x1={80 + index * 90} y1="140" x2={150 + index * 90} y2="140" />)}
-        {nodes.map((node, index) => (
-          <g key={node.id} onClick={() => props.onSelectTask(node.id)} className={node.id === props.selectedTaskId ? "is-selected" : ""}>
-            <rect x={24 + index * 118} y={96 + (index % 2) * 32} width="96" height="56" rx="12" />
-            <text x={72 + index * 118} y={128 + (index % 2) * 32}>{node.label}</text>
-          </g>
-        ))}
-      </svg>
-      <p className="ss-dag-hint">coding-review · spec-alignment · browser-qa appear as separate tasks when selected by the planner.</p>
-    </section>
-  );
-}
-```
-
-Create `components/southstar/workspace/TaskInspector.tsx`:
-
-```tsx
-export function TaskInspector(props: { draft: any; selectedTaskId: string | null; onOpenAlternatives: () => void }) {
-  const inspector = props.draft.taskInspector;
-  return (
-    <aside className="ss-task-inspector">
-      <h2>Task Inspector</h2>
-      <p className="ss-muted">Read-only until you choose Customize this run.</p>
-      <dl>
-        <dt>Agent</dt><dd>{inspector?.agentDefinitionRef ?? "Select a task"}</dd>
-        <dt>Profile</dt><dd>{inspector?.agentProfileRef ?? "Select a task"}</dd>
-        <dt>Skills</dt><dd>{inspector?.skillRefs?.join(", ") ?? "None"}</dd>
-        <dt>MCP / Tool grants</dt><dd>{inspector?.mcpGrantRefs?.join(", ") ?? "None"}</dd>
-        <dt>Artifacts</dt><dd>{inspector?.artifactContractRefs?.join(", ") ?? "None"}</dd>
-      </dl>
-      <section><h3>Why selected</h3><p>{inspector?.rationale ?? props.draft.plannerRationale}</p></section>
-      <section><h3>Context Sources</h3><ul><li>Run Brief</li><li>Repo Facts</li><li>Upstream Artifacts</li><li>Selected Memories</li><li>Skills</li><li>MCP Grants</li></ul></section>
-      <div className="ss-inspector-actions"><button type="button">Customize this run</button><button type="button" onClick={props.onOpenAlternatives}>View alternatives</button></div>
+    <aside className="ss-library-context">
+      <h2>Library Context</h2>
+      <section><h3>Matched Workflow</h3><p>{summary?.templateRefs?.join(", ") ?? "Waiting for prompt"}</p></section>
+      <section><h3>Agent Team</h3><p>{props.model?.draft?.dag?.nodes?.map((node: any) => node.id).join(" · ") ?? "Southstar will select agents"}</p></section>
+      <section><h3>Skills / MCP</h3><p>Shown after planning from selected agent profiles.</p></section>
+      <button type="button" onClick={props.onOpenAlternatives}>View alternatives</button>
     </aside>
   );
 }
 ```
 
-Create the sheet components:
+Create `components/southstar/workflow/GuidedPlannerChat.tsx`:
 
 ```tsx
-// components/southstar/workspace/OperatorDock.tsx
+const guideSteps = ["Understand goal", "Select workflow", "Compose agent team", "Confirm profiles / tools", "Review DAG", "Run"];
+
+export function GuidedPlannerChat(props: { value: string; planning: boolean; onChange: (value: string) => void; onPlan: () => void }) {
+  return (
+    <section className="ss-guided-chat">
+      <header><h1>Guided workflow chat</h1><p>Southstar skill-guided planner helps confirm workflow, agents, profiles, and tools.</p></header>
+      <ol>{guideSteps.map((step) => <li key={step}>{step}</li>)}</ol>
+      <label htmlFor="workflow-goal">Workflow goal</label>
+      <textarea id="workflow-goal" value={props.value} onChange={(event) => props.onChange(event.currentTarget.value)} />
+      <button type="button" onClick={props.onPlan} disabled={props.planning || props.value.trim().length === 0}>{props.planning ? "Planning…" : "Plan workflow"}</button>
+    </section>
+  );
+}
+```
+
+Create `components/southstar/workflow/WorkflowDagPanel.tsx` and `TaskInspector.tsx`:
+
+```tsx
+export function WorkflowDagPanel(props: { draft: any | null; selectedTaskId: string | null; onSelectTask: (taskId: string) => void }) {
+  const nodes = props.draft?.dag?.nodes ?? [{ id: "prompt", label: "Prompt" }, { id: "planner", label: "Planner" }, { id: "dag", label: "DAG" }];
+  return (
+    <section className="ss-workflow-dag">
+      <header><h2>DAG Flow</h2><p>{props.draft ? "Review before running" : "Generated after planning"}</p></header>
+      <svg viewBox="0 0 720 180" role="img" aria-label="DAG Flow">
+        {nodes.map((node: any, index: number) => <g key={node.id} onClick={() => props.onSelectTask(node.id)} className={props.selectedTaskId === node.id ? "is-selected" : ""}><rect x={24 + index * 120} y="62" width="96" height="54" rx="12" /><text x={72 + index * 120} y="94">{node.label ?? node.id}</text></g>)}
+      </svg>
+    </section>
+  );
+}
+```
+
+```tsx
+export function TaskInspector(props: { draft: any | null; selectedTaskId: string | null; onOpenAlternatives: () => void }) {
+  const inspector = props.draft?.taskInspector;
+  return (
+    <aside className="ss-task-inspector">
+      <h2>Task Inspector</h2>
+      <p>Read-only until you choose Customize this run.</p>
+      <dl><dt>Agent</dt><dd>{inspector?.agentDefinitionRef ?? "Select a DAG node"}</dd><dt>Profile</dt><dd>{inspector?.agentProfileRef ?? "—"}</dd><dt>Skills</dt><dd>{inspector?.skillRefs?.join(", ") ?? "—"}</dd><dt>MCP Grants</dt><dd>{inspector?.mcpGrantRefs?.join(", ") ?? "—"}</dd></dl>
+      <section><h3>Context Sources</h3><ul><li>Run Brief</li><li>Repo Facts</li><li>Upstream Artifacts</li><li>Selected Memories</li><li>Skills</li><li>MCP Grants</li></ul></section>
+      <button type="button">Customize this run</button><button type="button" onClick={props.onOpenAlternatives}>View alternatives</button>
+    </aside>
+  );
+}
+```
+
+- [ ] **Step 6: Create Operator and Operations components**
+
+Create `components/southstar/operator/OperatorDock.tsx`:
+
+```tsx
 export function OperatorDock(props: { count: number; onOpen: () => void }) {
   return <button type="button" className="ss-operator-dock" onClick={props.onOpen}>Operator · {props.count}</button>;
 }
 ```
 
+Create `components/southstar/operator/OperatorSheet.tsx`:
+
 ```tsx
-// components/southstar/workspace/OperatorSheet.tsx
 export function OperatorSheet(props: { model: any; onClose: () => void }) {
   return <aside className="ss-operator-sheet"><header><h2>Needs attention</h2><button type="button" onClick={props.onClose}>Close</button></header>{props.model?.items?.map((item: any) => <article key={item.id}><strong>{item.title}</strong><p>{item.suggestedActions?.join(" · ")}</p></article>)}</aside>;
 }
 ```
 
+Create `components/southstar/workflow/LibraryAlternativesSheet.tsx`:
+
 ```tsx
-// components/southstar/workspace/LibraryAlternativesSheet.tsx
+"use client";
 import { useEffect, useState } from "react";
 
 export function LibraryAlternativesSheet(props: { api: any; draftId: string; taskId?: string; onClose: () => void }) {
@@ -2480,61 +2584,100 @@ export function LibraryAlternativesSheet(props: { api: any; draftId: string; tas
 }
 ```
 
-- [ ] **Step 7: Add Calm Workflow OS CSS tokens**
+Create `components/southstar/operations/SouthstarOperationsTab.tsx`:
+
+```tsx
+"use client";
+import { useEffect, useState } from "react";
+
+export function SouthstarOperationsTab(props: { api: any }) {
+  const [model, setModel] = useState<any | null>(null);
+  useEffect(() => { void props.api.getUiOperationsTab().then(setModel).catch(() => setModel(null)); }, [props.api]);
+  return (
+    <section className="ss-operations-tab">
+      <header><h1>Southstar Control Center</h1><p>Monitor workflow runs, approvals, executor health, release lanes, and automation loops.</p></header>
+      <div className="ss-ops-grid"><article><h2>workflow runs</h2><p>{model?.runs?.length ?? 0}</p></article><article><h2>approvals</h2><p>{model?.approvals?.length ?? 0}</p></article><article><h2>executor health</h2><p>{model?.executorHealth?.[0]?.status ?? "unknown"}</p></article></div>
+    </section>
+  );
+}
+```
+
+- [ ] **Step 7: Add routes**
+
+Create `app/chat/page.tsx`:
+
+```tsx
+import { SouthstarProductShell } from "@/components/southstar/app-shell/SouthstarProductShell";
+export default function Page() { return <SouthstarProductShell initialTab="chat" />; }
+```
+
+Modify `app/workflow/page.tsx`:
+
+```tsx
+import { SouthstarProductShell } from "@/components/southstar/app-shell/SouthstarProductShell";
+export default function Page() { return <SouthstarProductShell initialTab="workflow" />; }
+```
+
+Create `app/operations/page.tsx`:
+
+```tsx
+import { SouthstarProductShell } from "@/components/southstar/app-shell/SouthstarProductShell";
+export default function Page() { return <SouthstarProductShell initialTab="operations" />; }
+```
+
+Modify `app/page.tsx`:
+
+```tsx
+import { SouthstarProductShell } from "@/components/southstar/app-shell/SouthstarProductShell";
+export default function Home() { return <SouthstarProductShell initialTab="workflow" />; }
+```
+
+- [ ] **Step 8: Add Calm Product Shell CSS**
 
 Modify `app/globals.css` with:
 
 ```css
 :root {
-  --ss-workspace-bg: #f6f8fb;
-  --ss-workspace-surface: #ffffff;
-  --ss-workspace-primary: #102033;
-  --ss-workspace-muted: #64748b;
-  --ss-workspace-border: #d8e1ec;
-  --ss-workspace-safe: #0f766e;
-  --ss-workspace-safe-bg: #eaf6f3;
-  --ss-workspace-warning: #d97706;
-  --ss-workspace-warning-bg: #fff7ed;
+  --ss-product-bg: #f6f8fb;
+  --ss-product-surface: #ffffff;
+  --ss-product-primary: #102033;
+  --ss-product-muted: #64748b;
+  --ss-product-border: #d8e1ec;
+  --ss-product-safe: #0f766e;
+  --ss-product-safe-bg: #eaf6f3;
+  --ss-product-warning: #d97706;
+  --ss-product-warning-bg: #fff7ed;
 }
-
-.ss-workspace-page { min-height: 100dvh; background: var(--ss-workspace-bg); color: var(--ss-workspace-primary); }
-.ss-workspace-topbar { height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 28px; }
-.ss-workspace-brand { display: flex; align-items: center; gap: 10px; }
-.ss-workspace-brand span { width: 26px; height: 26px; border-radius: 8px; background: var(--ss-workspace-primary); display: inline-block; }
-.ss-workspace-brand small, .ss-workspace-topbar a, .ss-muted { color: var(--ss-workspace-muted); }
-.ss-workspace-topbar nav { display: flex; align-items: center; gap: 18px; font-size: 13px; }
-.ss-workspace-main { max-width: 1240px; margin: 0 auto; padding: 32px 24px 96px; }
-.ss-workspace-stack { display: grid; gap: 18px; }
-.ss-goal-composer, .ss-draft-canvas, .ss-task-inspector, .ss-planning-progress { background: var(--ss-workspace-surface); border: 1px solid var(--ss-workspace-border); border-radius: 18px; box-shadow: 0 18px 38px rgba(20,45,80,.06); }
-.ss-goal-composer { padding: 24px; }
-.ss-goal-composer h1 { font-size: clamp(34px, 5vw, 56px); line-height: 1; letter-spacing: -.055em; margin: 0 0 8px; }
-.ss-goal-composer textarea { width: 100%; min-height: 96px; resize: vertical; border: 1px solid var(--ss-workspace-border); border-radius: 13px; padding: 14px; background: #f8fafc; color: var(--ss-workspace-primary); }
-.ss-goal-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 12px; }
-.ss-goal-actions span { height: 28px; display: inline-flex; align-items: center; padding: 0 11px; border-radius: 999px; background: #eef2f7; color: #526173; font-size: 11px; }
-.ss-goal-actions button, .ss-draft-canvas button, .ss-inspector-actions button:first-child { background: var(--ss-workspace-primary); color: white; border: 0; border-radius: 10px; min-height: 38px; padding: 0 16px; font-weight: 700; }
-.ss-draft-review-grid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; }
-.ss-draft-canvas { padding: 18px; }
-.ss-draft-canvas header { display: flex; align-items: center; justify-content: space-between; }
-.ss-draft-canvas svg { width: 100%; height: 280px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; }
-.ss-draft-canvas rect { fill: white; stroke: #cbd5e1; cursor: pointer; }
-.ss-draft-canvas .is-selected rect { fill: var(--ss-workspace-safe-bg); stroke: #b9ddd3; }
-.ss-draft-canvas line { stroke: #8aa0b8; stroke-width: 2; }
-.ss-draft-canvas text { font-size: 10px; text-anchor: middle; fill: var(--ss-workspace-primary); pointer-events: none; }
-.ss-task-inspector { padding: 18px; }
-.ss-task-inspector dl { display: grid; gap: 8px; }
-.ss-task-inspector dt { color: var(--ss-workspace-muted); font-size: 11px; }
-.ss-task-inspector dd { margin: 0; font-size: 13px; }
-.ss-inspector-actions { display: grid; gap: 8px; margin-top: 16px; }
-.ss-inspector-actions button:last-child { background: white; color: var(--ss-workspace-primary); border: 1px solid var(--ss-workspace-border); border-radius: 10px; min-height: 38px; }
-.ss-operator-dock { position: fixed; right: 24px; bottom: 24px; background: var(--ss-workspace-primary); color: white; border: 0; border-radius: 999px; padding: 12px 16px; box-shadow: 0 12px 28px rgba(16,32,51,.24); }
-.ss-operator-sheet, .ss-library-sheet { position: fixed; right: 0; top: 0; width: min(420px, 92vw); height: 100dvh; background: white; border-left: 1px solid var(--ss-workspace-border); box-shadow: -16px 0 40px rgba(20,45,80,.10); padding: 18px; z-index: 40; overflow: auto; }
-.ss-operator-sheet header, .ss-library-sheet header { display: flex; align-items: center; justify-content: space-between; }
-.ss-workspace-error { color: #dc2626; }
-@media (max-width: 900px) { .ss-draft-review-grid { grid-template-columns: 1fr; } .ss-workspace-topbar nav { display: none; } }
+.ss-product-shell { min-height: 100dvh; background: var(--ss-product-bg); color: var(--ss-product-primary); }
+.ss-product-topbar { height: 60px; display: flex; align-items: center; justify-content: space-between; padding: 0 24px; border-bottom: 1px solid var(--ss-product-border); background: rgba(255,255,255,.78); backdrop-filter: blur(12px); }
+.ss-product-brand, .ss-product-status { display: flex; align-items: center; gap: 10px; }
+.ss-product-brand span { width: 24px; height: 24px; border-radius: 8px; background: var(--ss-product-primary); display: inline-block; }
+.ss-product-brand small, .ss-product-status, .ss-product-rail span { color: var(--ss-product-muted); }
+.ss-status-dot { width: 8px; height: 8px; border-radius: 99px; background: var(--ss-product-safe); }
+.ss-product-body { display: grid; grid-template-columns: 180px minmax(0, 1fr); min-height: calc(100dvh - 60px); }
+.ss-product-rail { padding: 16px; border-right: 1px solid var(--ss-product-border); display: grid; align-content: start; gap: 8px; }
+.ss-product-rail button { text-align: left; border: 1px solid transparent; background: transparent; border-radius: 12px; padding: 12px; color: var(--ss-product-primary); display: grid; gap: 4px; }
+.ss-product-rail button[aria-pressed="true"] { background: white; border-color: var(--ss-product-border); box-shadow: 0 10px 24px rgba(20,45,80,.05); }
+.ss-product-tab-surface { min-width: 0; overflow: hidden; }
+.ss-workflow-tab { display: grid; grid-template-columns: 260px minmax(0, 1fr) 320px; gap: 16px; padding: 18px; height: calc(100dvh - 60px); }
+.ss-library-context, .ss-guided-chat, .ss-workflow-dag, .ss-task-inspector, .ss-operations-tab, .ss-chat-empty { background: var(--ss-product-surface); border: 1px solid var(--ss-product-border); border-radius: 16px; box-shadow: 0 14px 32px rgba(20,45,80,.05); }
+.ss-library-context, .ss-guided-chat, .ss-workflow-dag, .ss-task-inspector, .ss-operations-tab, .ss-chat-empty { padding: 16px; }
+.ss-workflow-main { min-width: 0; display: grid; grid-template-rows: minmax(0, 1fr) 240px; gap: 16px; }
+.ss-guided-chat textarea, .ss-chat-input-shell textarea { width: 100%; min-height: 92px; border: 1px solid var(--ss-product-border); border-radius: 12px; background: #f8fafc; color: var(--ss-product-primary); padding: 12px; }
+.ss-guided-chat button, .ss-library-context button, .ss-task-inspector button:first-of-type { min-height: 38px; border: 0; border-radius: 10px; padding: 0 14px; color: white; background: var(--ss-product-primary); font-weight: 700; }
+.ss-workflow-dag svg { width: 100%; height: 180px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; }
+.ss-workflow-dag rect { fill: white; stroke: #cbd5e1; cursor: pointer; }
+.ss-workflow-dag .is-selected rect { fill: var(--ss-product-safe-bg); stroke: #b9ddd3; }
+.ss-workflow-dag text { font-size: 10px; text-anchor: middle; fill: var(--ss-product-primary); pointer-events: none; }
+.ss-operator-dock { position: fixed; right: 24px; bottom: 24px; background: var(--ss-product-primary); color: white; border: 0; border-radius: 999px; padding: 12px 16px; box-shadow: 0 12px 28px rgba(16,32,51,.24); }
+.ss-operator-sheet, .ss-library-sheet { position: fixed; right: 0; top: 0; width: min(420px, 92vw); height: 100dvh; background: white; border-left: 1px solid var(--ss-product-border); box-shadow: -16px 0 40px rgba(20,45,80,.10); padding: 18px; z-index: 40; overflow: auto; }
+.ss-ops-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.ss-ops-grid article { border: 1px solid var(--ss-product-border); border-radius: 14px; padding: 14px; background: #f8fafc; }
+@media (max-width: 1100px) { .ss-workflow-tab { grid-template-columns: 1fr; height: auto; } .ss-product-body { grid-template-columns: 1fr; } .ss-product-rail { grid-auto-flow: column; overflow: auto; border-right: 0; border-bottom: 1px solid var(--ss-product-border); } }
 @media (prefers-reduced-motion: no-preference) { .ss-operator-sheet, .ss-library-sheet { animation: ss-sheet-in .18s ease-out; } @keyframes ss-sheet-in { from { transform: translateX(24px); opacity: .4; } to { transform: translateX(0); opacity: 1; } } }
 ```
 
-- [ ] **Step 8: Run UI tests and build**
+- [ ] **Step 9: Run UI tests and build**
 
 Run:
 
@@ -2550,11 +2693,11 @@ npm test: PASS
 npm run web:build: Compiled successfully
 ```
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add app/page.tsx app/workspace/page.tsx app/globals.css components/southstar/pages/WorkspacePage.tsx components/southstar/workspace tests/web/southstar-productized-workspace-ui.test.tsx tests/index.test.ts lib/southstar/api-client.ts
-git commit -m "feat: add productized southstar workspace UI"
+git add app/page.tsx app/chat/page.tsx app/workflow/page.tsx app/operations/page.tsx app/globals.css components/southstar/app-shell components/southstar/chat components/southstar/workflow components/southstar/operator components/southstar/operations tests/web/southstar-productized-app-shell-ui.test.tsx tests/index.test.ts lib/southstar/api-client.ts
+git commit -m "feat: port pi web shell into southstar product tabs"
 ```
 
 ## Task 8: Add quantitative gates for productized planner and UI
@@ -2614,8 +2757,8 @@ test("productized planner gates pass with durable non-calc evidence", () => {
   const result = assertProductizedUiLibraryPlannerGates(db, {
     runId: "run-productized",
     scenarioId: "todo-web-feature",
-    timings: { plannerDraftMs: 1000, validationMs: 100, firstPlanningEventMs: 500, draftReviewVisibleMs: 500, operatorSheetOpenMs: 100, workspaceRouteLoadMs: 500, e2eScenarioMs: 60_000 },
-    visitedUiSurfaces: ["workspace-new-goal", "workspace-planning", "workspace-draft-review", "task-inspector", "library-alternatives", "context-sources", "operator-sheet"],
+    timings: { plannerDraftMs: 1000, validationMs: 100, firstPlanningEventMs: 500, draftReviewVisibleMs: 500, operatorSheetOpenMs: 100, appShellRouteLoadMs: 500, e2eScenarioMs: 60_000 },
+    visitedUiSurfaces: ["chat-tab", "workflow-new-goal", "workflow-planning", "workflow-draft-review", "operations-tab", "task-inspector", "library-alternatives", "context-sources", "operator-sheet"],
   });
   assert.equal(result.ok, true, result.failures.join("\n"));
 });
@@ -2625,11 +2768,11 @@ test("productized planner gates fail closed for calc scenario or missing context
   const result = assertProductizedUiLibraryPlannerGates(db, {
     runId: "missing",
     scenarioId: "calc-feature",
-    timings: { plannerDraftMs: 181_000, validationMs: 4_000, firstPlanningEventMs: 11_000, draftReviewVisibleMs: 6_000, operatorSheetOpenMs: 400, workspaceRouteLoadMs: 4_000, e2eScenarioMs: 26 * 60_000 },
+    timings: { plannerDraftMs: 181_000, validationMs: 4_000, firstPlanningEventMs: 11_000, draftReviewVisibleMs: 6_000, operatorSheetOpenMs: 400, appShellRouteLoadMs: 4_000, e2eScenarioMs: 26 * 60_000 },
     visitedUiSurfaces: [],
   });
   assert.equal(result.ok, false);
-  assert.match(result.failures.join("\n"), /non-calc|run not found|planner draft|Workspace/);
+  assert.match(result.failures.join("\n"), /non-calc|run not found|planner draft|Southstar UI/);
 });
 ```
 
@@ -2666,7 +2809,7 @@ export type ProductizedPlannerGateInput = {
     firstPlanningEventMs: number;
     draftReviewVisibleMs: number;
     operatorSheetOpenMs: number;
-    workspaceRouteLoadMs: number;
+    appShellRouteLoadMs: number;
     e2eScenarioMs: number;
   };
   visitedUiSurfaces: string[];
@@ -2674,7 +2817,7 @@ export type ProductizedPlannerGateInput = {
 
 export type ProductizedPlannerGateResult = { ok: boolean; failures: string[] };
 
-const requiredUiSurfaces = ["workspace-new-goal", "workspace-planning", "workspace-draft-review", "task-inspector", "library-alternatives", "context-sources"];
+const requiredUiSurfaces = ["chat-tab", "workflow-new-goal", "workflow-planning", "workflow-draft-review", "operations-tab", "task-inspector", "library-alternatives", "context-sources"];
 
 export function assertProductizedUiLibraryPlannerGates(db: SouthstarDb, input: ProductizedPlannerGateInput): ProductizedPlannerGateResult {
   const failures: string[] = [];
@@ -2684,7 +2827,7 @@ export function assertProductizedUiLibraryPlannerGates(db: SouthstarDb, input: P
   max(failures, "first planning event", input.timings.firstPlanningEventMs, 10_000);
   max(failures, "Draft Review visible", input.timings.draftReviewVisibleMs, 5_000);
   max(failures, "Operator sheet open", input.timings.operatorSheetOpenMs, 300);
-  max(failures, "Workspace route load", input.timings.workspaceRouteLoadMs, 3_000);
+  max(failures, "Southstar App Shell route load", input.timings.appShellRouteLoadMs, 3_000);
   max(failures, "E2E scenario", input.timings.e2eScenarioMs, 25 * 60_000);
 
   const run = db.prepare("select status, goal_prompt from workflow_runs where id = ?").get(input.runId) as { status: string; goal_prompt: string } | undefined;
@@ -2728,7 +2871,7 @@ export function assertProductizedUiLibraryPlannerGates(db: SouthstarDb, input: P
 
   const visited = new Set(input.visitedUiSurfaces);
   for (const surface of requiredUiSurfaces) {
-    if (!visited.has(surface)) failures.push(`Workspace UI did not visit ${surface}`);
+    if (!visited.has(surface)) failures.push(`Southstar UI did not visit ${surface}`);
   }
 
   return { ok: failures.length === 0, failures };
@@ -2792,7 +2935,7 @@ export const todoWebFeatureScenario = {
       runId,
       scenarioId: "todo-web-feature",
       timings,
-      visitedUiSurfaces: ["workspace-new-goal", "workspace-planning", "workspace-draft-review", "task-inspector", "library-alternatives", "context-sources", "operator-sheet"],
+      visitedUiSurfaces: ["chat-tab", "workflow-new-goal", "workflow-planning", "workflow-draft-review", "operations-tab", "task-inspector", "library-alternatives", "context-sources", "operator-sheet"],
     });
     assert.equal(result.ok, true, result.failures.join("\n"));
   },
@@ -2909,7 +3052,7 @@ Source spec: `docs/superpowers/specs/2026-06-16-southstar-productized-ui-library
 
 | Requirement | Evidence | Implementation |
 | --- | --- | --- |
-| Goal-first Workspace | `tests/web/southstar-productized-workspace-ui.test.tsx`, `npm run web:build` | `app/workspace/page.tsx`, `components/southstar/pages/WorkspacePage.tsx`, `components/southstar/workspace/*` |
+| Southstar App Shell with Chat / Workflow / Operations | `tests/web/southstar-productized-app-shell-ui.test.tsx`, `npm run web:build` | `app/page.tsx`, `app/chat/page.tsx`, `app/workflow/page.tsx`, `app/operations/page.tsx`, `components/southstar/app-shell/*`, `components/southstar/chat/*`, `components/southstar/workflow/*`, `components/southstar/operations/*` |
 | Library-aware Planner core | `tests/v2/library-aware-planner.test.ts`, `tests/v2/productized-planner-draft.test.ts` | `src/v2/planner/library-aware-planner.ts`, `src/v2/ui-api/local-api.ts` |
 | Planner result validation | `tests/v2/library-aware-planner-validator.test.ts` | `src/v2/planner/library-aware-validator.ts`, `src/v2/planner/library-aware-types.ts` |
 | Software Engineering Starter Library v1 | `tests/v2/software-engineering-starter-library.test.ts` | `src/v2/design-library/software-engineering-starter.ts` |
@@ -2971,7 +3114,8 @@ Before claiming complete, verify each item with file paths and command output:
 - [ ] Planner skill exists and is used by the planning path.
 - [ ] `createPlannerDraft` produces library-aware drafts when Starter Library exists.
 - [ ] Draft resources include library search, template selection, agent composition, and planner decision traces.
-- [ ] Workspace UI shows goal composer, planning state, DAG review, inspector, context sources, Library alternatives, and Operator.
+- [ ] Southstar App Shell shows Chat, Workflow, and Operations tabs.
+- [ ] Workflow tab shows guided planner chat, Library Context, DAG review, inspector, context sources, Library alternatives, and Operator.
 - [ ] Context Economy resources are persisted and consumed.
 - [ ] E2E scenario prompts are non-calc.
 - [ ] Fixed runner image is preserved; planner validation rejects ad hoc images.

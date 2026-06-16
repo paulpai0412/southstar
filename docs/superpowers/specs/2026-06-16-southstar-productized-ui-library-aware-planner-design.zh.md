@@ -11,8 +11,8 @@ Southstar v1 產品化 UI 的核心不是 runtime dashboard，也不是讓使用
 本設計範圍包含：
 
 - 重新規劃產品化 UI，可不受現有 UI 形狀限制。
-- 建立統一主視覺：**Calm Workflow OS**。
-- 以 **Workspace** 作為主入口。
+- 建立統一主視覺：**Calm Product Shell**。
+- 以 **Southstar App Shell** 作為主入口，保留 Chat，新增 Workflow tab，並將原 Northstar 中控台概念產品化為 Southstar Operations。
 - 以 **Floating Operator Sheet** 作為注意事項與修復入口。
 - 第一版即納入 **LLM-assisted Library-aware Planner**，不是未來階段。
 - 內建 **Software Engineering Starter Library v1**，讓 Planner 有可檢索、可組合、可驗證的 workflow / agent / profile / skill / MCP / evaluator 素材。
@@ -54,7 +54,7 @@ Requirement extraction
 
 UI 要讓使用者理解 Southstar 的規劃，而不是要求使用者手動完成規劃。
 
-## 4. 主視覺：Calm Workflow OS
+## 4. 主視覺：Calm Product Shell
 
 設計語言：
 
@@ -85,7 +85,7 @@ radius: 10-18px, 同一層級一致
 Typography：
 
 - 產品 UI 使用清晰 sans，避免裝飾 serif。
-- 標題可用緊湊 tracking，建立 Workflow OS 的產品感。
+- 標題可用緊湊 tracking，建立 Southstar Workflow OS 的產品感。
 - 數字、run id、artifact id 可用 monospace，但不讓整頁變成 terminal。
 
 Motion：
@@ -96,71 +96,108 @@ Motion：
 
 ## 5. Information Architecture
 
-```text
-Workspace              主入口：goal → draft DAG → run → observe
-Library                Read-only repository：templates / agents / profiles / skills / MCP / evaluators
-Operator Sheet         Floating attention layer：approvals / stuck tasks / recovery suggestions
-Studio                 deferred：完整 editable workflow / agent / profile management
-```
-
-### 5.1 Workspace 狀態
-
-Workspace 有四個主要狀態：
+Southstar 首頁採用參考 `~/apps/pi-web` 的產品殼，但不直接沿用 pi-web 的深色工具感。保留 pi-web 成熟的三個概念：左側 persistent context/navigation、中央 conversational work surface、右側可開合輔助 panel。Southstar 重新包裝為 Calm Product Shell。
 
 ```text
-1. Empty / New Goal
-2. Planning
-3. Draft Review
-4. Active Run
+Southstar App Shell
+  ├─ Chat          通用 agent conversation / skill entry
+  ├─ Workflow      單一 workflow planning / Library-aware DAG review / run launcher
+  └─ Operations    多 workflow runs / approvals / executor health / automation monitor
 ```
 
-#### Empty / New Goal
+### 5.1 Chat tab
 
-主畫面是 Progressive Brief：
+Chat tab 保留原 pi-web chat 頁面的心智與可用性，不改成 workflow-only。它負責：
 
-- 大型 prompt composer。
-- `Plan` 為 primary CTA。
-- domain hint、repo/context、risk preference、approval mode 預設收合。
-- 不在初始畫面顯示 workflow catalog。
+- freeform agent conversation
+- brainstorming / design discussion
+- manual operator discussion
+- skill-guided workflow entry
+- future slash commands such as `/workflow`, `/run`, `/explain`, `/operator`
 
-#### Planning
+Chat tab 可以使用 Southstar skill 引導使用者進入 Workflow tab，但它不是唯一 workflow UI。
 
-顯示可審計的 planning pipeline：
+### 5.2 Workflow tab
+
+Workflow tab 是產品核心，負責：
 
 ```text
-Extracting requirements
-Searching Library
-Selecting workflow template
-Selecting agent team
-Checking artifact contracts
-Checking MCP/tool risk
-Validating DAG
+Prompt
+→ skill-guided planner chat
+→ Library-aware Planner selects template / agents / profiles / skills / MCP grants
+→ user reviews DAG and rationale
+→ user confirms / revises / customizes this run
+→ run starts
 ```
 
-這讓使用者知道 Southstar 不是 chat，而是在做可驗證的 orchestration planning。
+Workflow tab layout：
 
-#### Draft Review
+```text
+Top bar: project / runtime / cost / status
+Left: Library Context
+Center: Guided Planner Chat
+Bottom or main lower area: DAG Flow / Draft Review
+Floating right: Operator Panel
+```
 
-prompt 後顯示 DAG Flow：
+左側不是完整手動 catalog browser，而是 **Library Context**：
 
-- 中央：DAG Review Canvas。
-- 右側：Task Inspector。
-- 頂部摘要：template、agents、confidence、risk。
-- Actions：`Run`、`Revise`、`Customize this run`、`Save draft`。
+- matched workflow template
+- selected agent team
+- selected agent profiles
+- selected skills
+- selected MCP/tool grants
+- confidence / risk
+- `View alternatives` entry
 
-Task Inspector 預設 read-only。按 `Customize this run` 後才可做 run-level override。
+完整 Library 搜尋、替換、比較仍放在 side sheet，不讓首頁變成手動 template picker。
 
-#### Active Run
+中央是 **Skill-guided Planner Chat**，不是一般聊天視窗。它以 Southstar planner skill 引導：
 
-執行後同一 Workspace 切換為 active DAG：
+```text
+Understand goal
+→ Select workflow
+→ Compose agent team
+→ Confirm profiles / tools
+→ Review DAG
+→ Run
+```
 
-- DAG node 顯示 task status / evaluator status / attention state。
-- selected task inspector 顯示 current context、artifact、evaluator、recovery actions。
-- 深層 logs 與 executor detail 放入 drill-down 或 Operator Sheet，不塞在主畫面。
+DAG Flow 必須在 Workflow tab 可見：
 
-### 5.2 Floating Operator
+- Draft 前顯示 empty / planning state。
+- Draft 後顯示 compact DAG + selected node inspector。
+- Run 後顯示 live DAG status。
 
-Operator 不做成首頁第二大欄。它是 attention layer。
+### 5.3 Operations tab
+
+Operations tab 由原 Northstar 中控台概念改造為 Southstar Control Center。它不負責 prompt-to-DAG，而負責未來多 workflow 自動化監控：
+
+- active workflow runs
+- queue / capacity
+- approvals
+- stuck tasks
+- executor health
+- Tork reconciliation
+- release lane status
+- automation watch mode
+- cross-run metrics
+- historical runs
+
+原 `components/northstar/*` 可作為結構參考，但必須遷移語意：
+
+```text
+Northstar issue       → Southstar workflow run / work item
+issue lifecycle       → runtime status / workflow state
+PR release            → release lane
+watch                 → automation loop
+issue drawer          → run / work item drawer
+SSE panel             → runtime event stream
+```
+
+### 5.4 Floating Operator
+
+Operator 不做成固定右欄。它是跨 Chat / Workflow / Operations 的 attention layer。
 
 收合：
 
@@ -794,9 +831,37 @@ LLM Planner must design workflows so explorer/planner tasks generate shared cont
 
 ## 11. UI details
 
-### 11.1 Workspace Draft Review summary
+### 11.1 Southstar App Shell
 
-Show:
+App Shell 使用 Calm Product Shell：
+
+```text
+Top Runtime Bar
+Left persistent panel
+Main tab surface: Chat / Workflow / Operations
+Floating Operator
+```
+
+Top bar 顯示：
+
+- Southstar brand
+- active project / repo
+- runtime connection
+- planning / running / idle status
+- token / cost / context usage when available
+
+### 11.2 Chat tab
+
+Chat tab 保留 pi-web chat 的核心：conversation list、streaming messages、input、skill/slash suggestions、runtime status。Southstar 改造點：
+
+- 使用 Calm Product Shell tokens。
+- 可從 chat 建立 workflow draft。
+- 可把 `/workflow` 或 planner skill result 推送到 Workflow tab。
+- 不把 Chat 變成 workflow-only page。
+
+### 11.3 Workflow tab Draft Review summary
+
+Show：
 
 ```text
 Planned from: Feature Implementation
@@ -806,9 +871,11 @@ Risk: Low
 Release mode: commit-only
 ```
 
-### 11.2 Task Inspector
+Workflow tab 的左側 Library Context 顯示 selected/matched，不顯示完整 catalog。
 
-Default read-only:
+### 11.4 Task Inspector
+
+Default read-only：
 
 ```text
 Task: Coding Review
@@ -821,7 +888,7 @@ Why selected:
 - produces reviewer gate before release lane
 ```
 
-Actions:
+Actions：
 
 ```text
 Customize this run
@@ -829,11 +896,11 @@ View alternatives
 Revise instruction
 ```
 
-### 11.3 Customize this run
+### 11.5 Customize this run
 
 Only after explicit click. Changes affect this draft/run only.
 
-Allowed overrides:
+Allowed overrides：
 
 - replace agent profile
 - adjust context budget
@@ -841,16 +908,16 @@ Allowed overrides:
 - change approval mode within policy
 - add/remove non-destructive evaluator
 
-Not allowed from Workspace:
+Not allowed from Workflow tab：
 
 - edit library default template
 - publish agent profile
 - permanently change skill
 - silently grant external write
 
-### 11.4 Library Side Sheet
+### 11.6 Library Side Sheet
 
-Use for viewing alternatives:
+Use for viewing alternatives：
 
 - matched templates
 - alternative agents
@@ -860,6 +927,10 @@ Use for viewing alternatives:
 - rejected alternatives and reasons
 
 Primary purpose is explainability and run-level replacement, not full editing.
+
+### 11.7 Operations tab / Southstar Control Center
+
+Operations tab is a productized successor to the old Northstar control panel. It should reuse useful structure from `~/apps/pi-web/components/northstar/*`, but migrated into Southstar language and data models. It displays multiple workflow runs, approvals, stuck tasks, executor health, release lane status, and automation-watch state.
 
 ## 12. Runtime gaps to implement
 
@@ -889,10 +960,12 @@ Required gaps:
 10. Repo Fact Cache resource.
 11. Artifact Summary contract enforcement.
 12. UI read model for planner rationale and context sources.
-13. Workspace UI states: New Goal, Planning, Draft Review, Active Run.
-14. Floating Operator Sheet.
-15. Execution image / skill / MCP delivery gates.
-16. Real E2E cases and quantitative gates.
+13. Southstar App Shell tabs: Chat, Workflow, Operations.
+14. Workflow tab states: New Goal, Planning, Draft Review, Active Run.
+15. Floating Operator Sheet.
+16. Southstar Operations Control Center migrated from Northstar control-panel concepts.
+17. Execution image / skill / MCP delivery gates.
+18. Real E2E cases and quantitative gates.
 
 ## 13. Real E2E scenarios
 
@@ -1069,14 +1142,16 @@ Required gates per E2E run:
 
 ### UI gates
 
-- Browser E2E visits Workspace New Goal.
-- Browser E2E submits prompt from UI.
+- Browser E2E visits Chat tab and verifies original chat surface remains available.
+- Browser E2E visits Workflow tab New Goal.
+- Browser E2E submits prompt from Workflow tab UI.
 - Browser E2E observes Planning state.
 - Browser E2E observes Draft Review DAG.
 - Browser E2E opens task inspector and sees agent/profile/rationale.
 - Browser E2E opens Library alternatives side sheet.
 - Browser E2E sees Context Sources section.
 - Browser E2E opens Operator sheet when an approval or attention item exists.
+- Browser E2E visits Operations tab and sees multi-run / approval / executor-health surfaces.
 - Browser E2E starts run only after draft validation passes.
 
 ### Performance gates
@@ -1090,7 +1165,7 @@ manifest validation <= 3s
 first planning progress event <= 10s
 Draft Review visible in UI <= 5s after draft ready
 Operator sheet open interaction <= 300ms
-Simple Workspace route load <= 3s in local browser E2E
+Southstar App Shell route load <= 3s in local browser E2E
 E2E scenario completion <= 25 minutes per scenario
 ```
 
@@ -1107,17 +1182,19 @@ E2E scenario completion <= 25 minutes per scenario
 
 This design is accepted when implementation can demonstrate:
 
-1. User can submit a non-calc software goal from Workspace.
+1. User can submit a non-calc software goal from the Workflow tab.
 2. Southstar plans via Library-aware Planner, not manual template selection.
 3. Software Engineering Starter Library v1 contains 5 workflow templates and required agents/profiles/skills/MCP/artifacts/evaluators.
 4. Draft Review shows DAG, agent team, profiles, and rationale.
 5. User can inspect but not accidentally edit agent/profile until `Customize this run` is clicked.
 6. Context Economy resources are produced and visible.
-7. Floating Operator handles attention items.
-8. Fixed generic runner image is preserved; task specialization is delivered by TaskEnvelopeV2, skill snapshots, MCP/tool grants, context packets, and mounts.
-9. Real E2E scenarios run against fixture repos other than calc.
-10. Quantitative gates fail closed when evidence is missing.
-11. Completion requires accepted artifacts, evaluator pass, and stop condition pass.
+7. Chat tab remains available as a general conversation surface.
+8. Operations tab provides Southstar Control Center surfaces for multi-run monitoring.
+9. Floating Operator handles attention items.
+10. Fixed generic runner image is preserved; task specialization is delivered by TaskEnvelopeV2, skill snapshots, MCP/tool grants, context packets, and mounts.
+11. Real E2E scenarios run against fixture repos other than calc.
+12. Quantitative gates fail closed when evidence is missing.
+13. Completion requires accepted artifacts, evaluator pass, and stop condition pass.
 
 ## 16. Recommended implementation milestones
 
@@ -1127,10 +1204,12 @@ This design is accepted when implementation can demonstrate:
 4. Integrate Library-aware Planner into planner draft creation.
 5. Add Run Brief / Repo Fact Cache / Artifact Summary resources.
 6. Add UI read models for planner rationale and context sources.
-7. Implement Workspace productized UI states.
-8. Implement Floating Operator Sheet.
-9. Implement Library alternatives side sheet.
-10. Add real non-calc fixture repos and E2E scenarios.
-11. Add execution image / skill / MCP delivery gates.
-12. Add quantitative gate verifier.
-13. Run full unit, integration, web build, and real E2E gates.
+7. Port needed pi-web shell/chat patterns into Southstar App Shell.
+8. Implement Workflow tab productized planning states.
+9. Implement Floating Operator Sheet.
+10. Implement Library alternatives side sheet.
+11. Implement Southstar Operations tab from Northstar control-panel concepts.
+12. Add real non-calc fixture repos and E2E scenarios.
+13. Add execution image / skill / MCP delivery gates.
+14. Add quantitative gate verifier.
+15. Run full unit, integration, web build, and real E2E gates.
