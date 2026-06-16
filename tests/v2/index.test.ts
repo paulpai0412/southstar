@@ -53,6 +53,7 @@ await import("./ui-control-plane-1to1.test.ts");
 await import("./software-engineering-starter-library.test.ts");
 await import("./library-aware-planner-validator.test.ts");
 await import("./library-aware-planner.test.ts");
+await import("./productized-planner-draft.test.ts");
 await import("./design-library-store.test.ts");
 await import("./design-library-validators.test.ts");
 await import("./design-library-draft-patch.test.ts");
