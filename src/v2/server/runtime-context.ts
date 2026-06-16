@@ -11,5 +11,6 @@ export type RuntimeServerContext = {
   callbackUrl?: string;
   serverUrl?: string;
   runRoot?: string;
+  reconcileIntervalMs?: number;
   createReconcileLoop?: () => RuntimeLoopController;
 };

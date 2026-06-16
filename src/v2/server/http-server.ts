@@ -1,6 +1,8 @@
 import { createServer, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
+import { reconcileExecutorBindings } from "../executor/reconciler.ts";
 import { handleRuntimeRoute } from "./routes.ts";
+import { createRuntimeLoopController, type RuntimeLoopController } from "./runtime-loops.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 
 export type CreateSouthstarRuntimeServerInput = RuntimeServerContext & {
@@ -18,7 +20,7 @@ export type SouthstarRuntimeServer = {
 export async function createSouthstarRuntimeServer(input: CreateSouthstarRuntimeServerInput): Promise<SouthstarRuntimeServer> {
   const host = input.host ?? "127.0.0.1";
   const context: RuntimeServerContext = { ...input };
-  const reconcileLoop = context.createReconcileLoop?.();
+  const reconcileLoop = context.createReconcileLoop?.() ?? createDefaultReconcileLoop(context);
   const server = createServer(async (incoming, outgoing) => {
     try {
       const request = await toRequest(incoming);
@@ -50,6 +52,18 @@ export async function createSouthstarRuntimeServer(input: CreateSouthstarRuntime
       });
     },
   };
+}
+
+function createDefaultReconcileLoop(context: RuntimeServerContext): RuntimeLoopController | undefined {
+  if (!context.torkObservationClient) return undefined;
+  return createRuntimeLoopController({
+    intervalMs: context.reconcileIntervalMs ?? 15_000,
+    runOnce: async () => {
+      await reconcileExecutorBindings(context.db, {
+        tork: context.torkObservationClient as NonNullable<RuntimeServerContext["torkObservationClient"]>,
+      });
+    },
+  });
 }
 
 async function toRequest(incoming: IncomingMessage): Promise<Request> {
