@@ -44,6 +44,7 @@ test("Tork callback ingests container task result into durable SQLite state", ()
   });
 
   assert.deepEqual(listHistoryForRun(db, "run-1").map((event) => event.eventType), [
+    "executor.callback_received",
     "session.entry",
     "subagent.completed",
     "evaluator.completed",
@@ -97,6 +98,77 @@ test("Tork callback cleans ephemeral task materialization after ingest", () => {
   });
 
   assert.equal(existsSync(taskDir), false);
+});
+
+test("callback ingestion is idempotent for duplicate callback payloads", () => {
+  const db = openSouthstarDb(":memory:");
+  seedRunWithWorkflow(db, {
+    runId: "run-dup",
+    taskId: "task-dup",
+    requiredArtifactRef: "implementation_report",
+    evaluatorPipelineRef: "software-feature-quality",
+  });
+
+  const callback = {
+    runId: "run-dup",
+    taskId: "task-dup",
+    rootSessionId: "session-root",
+    ok: true,
+    attempts: 1,
+    artifact: {
+      summary: "done",
+      filesChanged: ["src/index.ts"],
+      commandsRun: ["npm test"],
+      testResults: [{ command: "npm test", status: "passed", output: "ok" }],
+      risks: [],
+      artifactEvidence: { testResults: [{ command: "npm test", status: "passed", output: "ok" }] },
+    },
+    metrics: { tokens: 42, costMicrosUsd: 420, toolCalls: 3, retryCount: 0, durationMs: 1000 },
+    events: [],
+  };
+
+  ingestTaskRunResult(db, callback);
+  ingestTaskRunResult(db, callback);
+
+  const artifacts = listResources(db, { resourceType: "artifact" })
+    .filter((resource) => resource.runId === "run-dup" && resource.taskId === "task-dup");
+  assert.equal(artifacts.length, 1);
+  assert.equal(listHistoryForRun(db, "run-dup").filter((event) => event.eventType === "executor.callback_received").length, 1);
+});
+
+test("terminal task status remains monotonic when late callback arrives", () => {
+  const db = openSouthstarDb(":memory:");
+  seedRunWithWorkflow(db, {
+    runId: "run-terminal",
+    taskId: "task-terminal",
+    requiredArtifactRef: "implementation_report",
+    evaluatorPipelineRef: "software-feature-quality",
+  });
+  db.prepare("update workflow_tasks set status = 'failed' where run_id = ? and id = ?")
+    .run("run-terminal", "task-terminal");
+
+  ingestTaskRunResult(db, {
+    runId: "run-terminal",
+    taskId: "task-terminal",
+    rootSessionId: "session-root",
+    ok: true,
+    attempts: 1,
+    artifact: {
+      summary: "late callback",
+      filesChanged: ["src/index.ts"],
+      commandsRun: ["npm test"],
+      testResults: [{ command: "npm test", status: "passed", output: "ok" }],
+      risks: [],
+      artifactEvidence: { testResults: [{ command: "npm test", status: "passed", output: "ok" }] },
+    },
+    metrics: {},
+    events: [],
+  });
+
+  const task = db.prepare("select status from workflow_tasks where run_id = ? and id = ?")
+    .get("run-terminal", "task-terminal") as { status: string };
+  assert.equal(task.status, "failed");
+  assert.equal(listHistoryForRun(db, "run-terminal").some((event) => event.eventType === "executor.callback_ignored_terminal"), true);
 });
 
 test("callback ingestion does not accept artifact when evidence validators fail", () => {

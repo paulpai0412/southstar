@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { SouthstarDb } from "../stores/sqlite.ts";
@@ -29,6 +30,43 @@ export type TaskRunCallbackResult = {
 export function ingestTaskRunResult(db: SouthstarDb, result: TaskRunCallbackResult): void {
   db.exec("begin immediate");
   try {
+    const callbackReceipt = callbackReceiptToken(result);
+    if (historyHasIdempotencyKey(db, result.runId, callbackReceipt.idempotencyKey)) {
+      db.exec("commit");
+      cleanupTaskMaterialization(result);
+      return;
+    }
+
+    appendHistoryEvent(db, {
+      runId: result.runId,
+      taskId: result.taskId,
+      sessionId: result.rootSessionId,
+      eventType: "executor.callback_received",
+      actorType: "executor",
+      idempotencyKey: callbackReceipt.idempotencyKey,
+      payload: {
+        attempts: result.attempts,
+        artifactHash: callbackReceipt.artifactHash,
+      },
+    });
+
+    const existingTaskStatus = readTaskStatus(db, result.runId, result.taskId);
+    if (isTaskTerminalStatus(existingTaskStatus)) {
+      appendHistoryEvent(db, {
+        runId: result.runId,
+        taskId: result.taskId,
+        sessionId: result.rootSessionId,
+        eventType: "executor.callback_ignored_terminal",
+        actorType: "orchestrator",
+        payload: {
+          status: existingTaskStatus,
+        },
+      });
+      db.exec("commit");
+      cleanupTaskMaterialization(result);
+      return;
+    }
+
     for (const event of result.events) {
       appendHistoryEvent(db, {
         runId: result.runId,
@@ -241,6 +279,8 @@ function cleanupTaskMaterialization(result: TaskRunCallbackResult): void {
 }
 
 function updateTaskStatus(db: SouthstarDb, runId: string, taskId: string, status: string): void {
+  const current = readTaskStatus(db, runId, taskId);
+  if (isTaskTerminalStatus(current)) return;
   const completedAt = status === "completed" || status === "failed" ? new Date().toISOString() : null;
   db.prepare("update workflow_tasks set status = ?, updated_at = ?, completed_at = ? where run_id = ? and id = ?")
     .run(status, new Date().toISOString(), completedAt, runId, taskId);
@@ -249,6 +289,33 @@ function updateTaskStatus(db: SouthstarDb, runId: string, taskId: string, status
 function updateRunStatus(db: SouthstarDb, runId: string, status: string): void {
   db.prepare("update workflow_runs set status = ?, updated_at = ?, completed_at = ? where id = ?")
     .run(status, new Date().toISOString(), new Date().toISOString(), runId);
+}
+
+function callbackReceiptToken(result: TaskRunCallbackResult): { idempotencyKey: string; artifactHash: string } {
+  const artifactHash = createHash("sha256")
+    .update(JSON.stringify(result.artifact))
+    .digest("hex")
+    .slice(0, 16);
+  return {
+    idempotencyKey: `executor-callback:${result.runId}:${result.taskId}:${result.attempts}:${artifactHash}`,
+    artifactHash,
+  };
+}
+
+function historyHasIdempotencyKey(db: SouthstarDb, runId: string, idempotencyKey: string): boolean {
+  const row = db.prepare("select 1 as found from workflow_history where run_id = ? and idempotency_key = ?")
+    .get(runId, idempotencyKey) as { found: number } | undefined;
+  return Boolean(row?.found);
+}
+
+function readTaskStatus(db: SouthstarDb, runId: string, taskId: string): string | undefined {
+  const row = db.prepare("select status from workflow_tasks where run_id = ? and id = ?")
+    .get(runId, taskId) as { status?: string } | undefined;
+  return row?.status;
+}
+
+function isTaskTerminalStatus(status: string | undefined): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled";
 }
 
 function allTasksTerminal(db: SouthstarDb, runId: string): boolean {
