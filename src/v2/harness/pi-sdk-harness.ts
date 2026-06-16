@@ -82,9 +82,18 @@ function resolvedSkillInstructions(skills: Array<{ skillId: string; instructions
 
 function harnessCwd(envelope: HarnessRunInput["envelope"]): string {
   if (envelope.schemaVersion !== "southstar.task-envelope.v2") return process.cwd();
+
+  const workspaceHandle = envelope.workspace?.handle;
+  if (workspaceHandle?.worktreePath?.startsWith("/workspace/")) return workspaceHandle.worktreePath;
+  if (workspaceHandle?.repoRoot?.startsWith("/workspace/")) return workspaceHandle.repoRoot;
+
   const requiredMounts = envelope.skills.flatMap((skill) => skill.requiredMounts);
   if (requiredMounts.includes("/workspace/repo")) return "/workspace/repo";
-  return requiredMounts.find((mount) => mount.startsWith("/workspace/")) ?? process.cwd();
+  const mountedWorkspace = requiredMounts.find((mount) => mount.startsWith("/workspace/"));
+  if (mountedWorkspace) return mountedWorkspace;
+
+  if (workspaceHandle) return "/workspace/repo";
+  return process.cwd();
 }
 
 function workspaceDirective(cwd: string): string[] {

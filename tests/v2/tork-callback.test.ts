@@ -18,6 +18,7 @@ test("Tork callback ingests container task result into durable SQLite state", ()
     runId: "run-1",
     taskId: "task-1",
     requiredArtifactRef: "implementation_report",
+    artifactContractId: "implementation_report",
     evaluatorPipelineRef: "software-feature-quality",
   });
 
@@ -66,6 +67,40 @@ test("Tork callback ingests container task result into durable SQLite state", ()
   assert.equal(getWorkflowRun(db, "run-1")?.status, "passed");
 });
 
+test("Tork callback resolves artifact contract when task uses artifact-type ref", () => {
+  const db = openSouthstarDb(":memory:");
+  seedRunWithWorkflow(db, {
+    runId: "run-alias",
+    taskId: "task-alias",
+    requiredArtifactRef: "implementation-report",
+    artifactContractId: "implementation_report",
+    evaluatorPipelineRef: "software-feature-quality",
+  });
+
+  ingestTaskRunResult(db, {
+    runId: "run-alias",
+    taskId: "task-alias",
+    rootSessionId: "session-root",
+    ok: true,
+    attempts: 1,
+    artifact: {
+      summary: "done",
+      filesChanged: ["src/index.ts"],
+      commandsRun: ["npm test"],
+      testResults: [{ command: "npm test", status: "passed", output: "ok" }],
+      risks: [],
+      artifactEvidence: { testResults: [{ command: "npm test", status: "passed", output: "ok" }] },
+    },
+    metrics: { tokens: 42, costMicrosUsd: 420, toolCalls: 3, retryCount: 0, durationMs: 1000 },
+    events: [],
+  });
+
+  assert.equal(listResources(db, { resourceType: "artifact", status: "accepted" }).length, 1);
+  const task = db.prepare("select status from workflow_tasks where run_id = ? and id = ?")
+    .get("run-alias", "task-alias") as { status: string };
+  assert.equal(task.status, "completed");
+});
+
 test("Tork callback cleans ephemeral task materialization after ingest", () => {
   const db = openSouthstarDb(":memory:");
   const runRoot = mkdtempSync(join(tmpdir(), "southstar-callback-cleanup-"));
@@ -75,6 +110,7 @@ test("Tork callback cleans ephemeral task materialization after ingest", () => {
     runId: "run-1",
     taskId: "task-1",
     requiredArtifactRef: "implementation_report",
+    artifactContractId: "implementation_report",
     evaluatorPipelineRef: "software-feature-quality",
   });
 
@@ -106,6 +142,7 @@ test("callback ingestion is idempotent for duplicate callback payloads", () => {
     runId: "run-dup",
     taskId: "task-dup",
     requiredArtifactRef: "implementation_report",
+    artifactContractId: "implementation_report",
     evaluatorPipelineRef: "software-feature-quality",
   });
 
@@ -142,6 +179,7 @@ test("terminal task status remains monotonic when late callback arrives", () => 
     runId: "run-terminal",
     taskId: "task-terminal",
     requiredArtifactRef: "implementation_report",
+    artifactContractId: "implementation_report",
     evaluatorPipelineRef: "software-feature-quality",
   });
   db.prepare("update workflow_tasks set status = 'failed' where run_id = ? and id = ?")
@@ -177,6 +215,7 @@ test("callback ingestion does not accept artifact when evidence validators fail"
     runId: "run-evidence-callback",
     taskId: "implement-feature",
     requiredArtifactRef: "implementation_report",
+    artifactContractId: "implementation_report",
     evaluatorPipelineRef: "software-feature-quality",
   });
 
@@ -209,11 +248,17 @@ test("callback ingestion does not accept artifact when evidence validators fail"
 
 function seedRunWithWorkflow(
   db: ReturnType<typeof openSouthstarDb>,
-  input: { runId: string; taskId: string; requiredArtifactRef: string; evaluatorPipelineRef: string },
+  input: {
+    runId: string;
+    taskId: string;
+    requiredArtifactRef: string;
+    artifactContractId: string;
+    evaluatorPipelineRef: string;
+  },
 ): void {
   const artifactContract = softwareDomainPack.artifactContracts
-    .find((candidate) => candidate.id === input.requiredArtifactRef);
-  if (!artifactContract) throw new Error(`unknown artifact contract ${input.requiredArtifactRef}`);
+    .find((candidate) => candidate.id === input.artifactContractId);
+  if (!artifactContract) throw new Error(`unknown artifact contract ${input.artifactContractId}`);
 
   createWorkflowRun(db, {
     id: input.runId,

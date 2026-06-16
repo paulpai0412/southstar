@@ -39,13 +39,14 @@ export type AcceptTaskRunArtifactResult = {
 export function acceptTaskRunArtifact(db: SouthstarDb, input: AcceptTaskRunArtifactInput): AcceptTaskRunArtifactResult {
   const now = input.now ?? new Date().toISOString();
   const artifactResourceId = `artifact-${input.runId}-${input.taskId}-callback`;
+  const normalizedArtifact = normalizeArtifactForContract(input.artifact, input.artifactContract);
 
   const evidencePacket = buildEvidencePacket({
     runId: input.runId,
     taskId: input.taskId,
     artifactRef: artifactResourceId,
     requiredEvidenceKinds: input.requiredEvidenceKinds,
-    artifact: input.artifact,
+    artifact: normalizedArtifact,
     now,
   });
 
@@ -55,7 +56,7 @@ export function acceptTaskRunArtifact(db: SouthstarDb, input: AcceptTaskRunArtif
       taskId: input.taskId,
       artifactRef: artifactResourceId,
       contract: input.artifactContract,
-      artifact: input.artifact,
+      artifact: normalizedArtifact,
       now,
     }),
     evidenceValidatorResult({
@@ -71,7 +72,7 @@ export function acceptTaskRunArtifact(db: SouthstarDb, input: AcceptTaskRunArtif
       taskId: input.taskId,
       artifactRef: artifactResourceId,
       contractRef: input.artifactContract.id,
-      artifact: input.artifact,
+      artifact: normalizedArtifact,
       now,
     }),
   ];
@@ -125,7 +126,7 @@ export function acceptTaskRunArtifact(db: SouthstarDb, input: AcceptTaskRunArtif
     producerAgentSpecRef: input.producerAgentSpecRef,
     producerAttemptId: `attempt-${input.attempts}`,
     status,
-    summary: typeof input.artifact.summary === "string" ? input.artifact.summary : `${input.taskId} artifact`,
+    summary: typeof normalizedArtifact.summary === "string" ? normalizedArtifact.summary : `${input.taskId} artifact`,
     payloadResourceRef: artifactResourceId,
     evidencePacketRefs: [evidencePacket.id],
     validatorResultRefs: validatorResultIds,
@@ -143,7 +144,7 @@ export function acceptTaskRunArtifact(db: SouthstarDb, input: AcceptTaskRunArtif
     scope: "task",
     status,
     title: status === "accepted" ? "Accepted callback artifact" : "Artifact needs repair",
-    payload: { artifact: input.artifact, artifactRef },
+    payload: { artifact: normalizedArtifact, rawArtifact: input.artifact, artifactRef },
     summary: artifactRef,
     metrics: input.metrics,
   });
@@ -156,4 +157,25 @@ export function acceptTaskRunArtifact(db: SouthstarDb, input: AcceptTaskRunArtif
     status,
     blockingFailures,
   };
+}
+
+function normalizeArtifactForContract(
+  artifact: Record<string, unknown>,
+  contract: ArtifactContract,
+): Record<string, unknown> {
+  const keys = [
+    contract.id,
+    contract.artifactType,
+    contract.id.replace(/-/g, "_"),
+    contract.id.replace(/_/g, "-"),
+    contract.artifactType.replace(/-/g, "_"),
+    contract.artifactType.replace(/_/g, "-"),
+  ];
+  for (const key of keys) {
+    const nested = artifact[key];
+    if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+      return nested as Record<string, unknown>;
+    }
+  }
+  return artifact;
 }

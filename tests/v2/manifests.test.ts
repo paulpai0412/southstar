@@ -37,6 +37,23 @@ test("rejects task dependency cycles", () => {
   assert.match(result.issues.map((issue) => issue.message).join("\n"), /cycle/);
 });
 
+test("validates compiledFrom metadata when present", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    templateDefinitionId: "obj-software-template",
+    templateVersionId: "ver-software-template-1",
+    compilerVersion: "design-library-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["ver-software-template-1"],
+  };
+  assert.deepEqual(validatePlanBundle(bundle), { ok: true, issues: [] });
+
+  bundle.workflow.compiledFrom.inputHash = "not-sha256";
+  const invalid = validatePlanBundle(bundle);
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.issues.map((issue) => issue.path).join("\n"), /compiledFrom\.inputHash/);
+});
+
 function makeBundle(): PlanBundle {
   return {
     workflow: {

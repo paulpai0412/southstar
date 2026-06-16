@@ -198,8 +198,14 @@ function findArtifactContract(
   workflow: SouthstarWorkflowManifest,
   artifactRef: string,
 ): ArtifactContract | undefined {
-  return (workflow.artifactContracts ?? []).find((candidate) => candidate.id === artifactRef)
-    ?? softwareDomainPack.artifactContracts.find((candidate) => candidate.id === artifactRef);
+  const normalizedRef = normalizeArtifactRef(artifactRef);
+  const matches = (candidate: ArtifactContract) => {
+    const id = normalizeArtifactRef(candidate.id);
+    const artifactType = normalizeArtifactRef(candidate.artifactType);
+    return id === normalizedRef || artifactType === normalizedRef;
+  };
+  return (workflow.artifactContracts ?? []).find(matches)
+    ?? softwareDomainPack.artifactContracts.find(matches);
 }
 
 function evaluatorArtifactRef(pipeline: EvaluatorPipelineDefinition): string | undefined {
@@ -245,10 +251,19 @@ function taskArtifactContract(db: SouthstarDb, runId: string, taskId: string): A
   const workflow = readWorkflowManifest(db, runId);
   const task = workflow?.tasks.find((candidate) => candidate.id === taskId);
   if (!workflow || !task) throw new Error(`missing workflow task ${runId}/${taskId}`);
-  const artifactRef = task.requiredArtifactRefs?.[0] ?? task.subagents[0]?.requiredArtifacts[0];
-  const contract = artifactRef ? findArtifactContract(workflow, artifactRef) : undefined;
-  if (!contract) throw new Error(`missing artifact contract for ${runId}/${taskId}`);
-  return contract;
+  const pipeline = task.evaluatorPipelineRef ? findEvaluatorPipeline(workflow, task.evaluatorPipelineRef) : undefined;
+  const refs = [
+    ...(task.requiredArtifactRefs ?? []),
+    ...task.subagents.flatMap((subagent) => subagent.requiredArtifacts ?? []),
+    ...(pipeline ? [evaluatorArtifactRef(pipeline)] : []),
+  ].filter((value): value is string => typeof value === "string" && value.length > 0);
+
+  for (const ref of refs) {
+    const contract = findArtifactContract(workflow, ref);
+    if (contract) return contract;
+  }
+
+  throw new Error(`missing artifact contract for ${runId}/${taskId}`);
 }
 
 function requiredEvidenceKindsForTask(db: SouthstarDb, runId: string, taskId: string): EvidenceKind[] {
@@ -265,6 +280,10 @@ function requiredEvidenceKindsForTask(db: SouthstarDb, runId: string, taskId: st
   }
   if (kinds.size === 0) kinds.add("artifact-ref");
   return [...kinds];
+}
+
+function normalizeArtifactRef(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
 }
 
 function numericMetrics(metrics: Partial<ManagementMetrics>): Record<string, number> {

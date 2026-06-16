@@ -792,8 +792,8 @@ function buildRuntimeTaskEnvelopeV2(
     },
     workspace: {
       handle: {
-        repoRoot: input.workspaceSnapshot?.repoRoot ?? task.execution.mounts[0]?.source ?? ".",
-        worktreePath: input.workspaceSnapshot?.repoRoot ?? task.execution.mounts[0]?.source ?? ".",
+        repoRoot: task.execution.mounts[0]?.target ?? "/workspace/repo",
+        worktreePath: task.execution.mounts[0]?.target ?? "/workspace/repo",
       },
       baseSnapshotRef: input.workspaceSnapshot,
     },

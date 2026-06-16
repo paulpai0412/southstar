@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>todo-web fixture</title>
+    <link rel="stylesheet" href="./src/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <h1>todo-web</h1>
+      <p class="subtitle">Baseline fixture for Southstar design-library real E2E.</p>
+
+      <form data-testid="todo-form" class="todo-form">
+        <input data-testid="todo-input" name="text" type="text" placeholder="Add todo" required />
+        <button data-testid="add-todo" type="submit">Add</button>
+      </form>
+
+      <nav class="filters" aria-label="Todo filters">
+        <button type="button" data-filter="all" data-testid="filter-all">All</button>
+        <button type="button" data-filter="active" data-testid="filter-active">Active</button>
+        <button type="button" data-filter="completed" data-testid="filter-completed">Completed</button>
+      </nav>
+
+      <ul data-testid="todo-list" class="todo-list"></ul>
+    </main>
+
+    <script type="module" src="./src/app.ts"></script>
+  </body>
+</html>

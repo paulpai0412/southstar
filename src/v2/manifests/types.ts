@@ -110,6 +110,15 @@ export type ApprovalPolicy = {
   requireManualFor?: string[];
 };
 
+export type CompiledFromTemplate = {
+  templateDefinitionId: string;
+  templateVersionId: string;
+  recipeVersionId?: string;
+  compilerVersion: string;
+  inputHash: string;
+  libraryVersionRefs: string[];
+};
+
 export type SouthstarWorkflowManifest = {
   schemaVersion: "southstar.v2";
   workflowId: string;
@@ -157,6 +166,7 @@ export type SouthstarWorkflowManifest = {
     recordWorkflowLearnings: boolean;
   };
   approvalPolicy?: ApprovalPolicy;
+  compiledFrom?: CompiledFromTemplate;
 };
 
 export type PlanBundle = {

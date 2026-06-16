@@ -95,10 +95,46 @@ create table if not exists secure_blobs (
   rotated_at text
 );
 
+create table if not exists library_objects (
+  id text primary key,
+  object_key text unique not null,
+  object_kind text not null,
+  status text not null,
+  head_version_id text,
+  state_json text not null,
+  created_at text not null,
+  updated_at text not null
+);
+
+create table if not exists library_history (
+  id text primary key,
+  object_id text not null references library_objects(id),
+  sequence integer not null,
+  event_type text not null,
+  actor_type text not null,
+  payload_json text not null,
+  created_at text not null,
+  unique(object_id, sequence)
+);
+
+create table if not exists library_similarity_index (
+  id text primary key,
+  object_id text not null references library_objects(id),
+  signature text not null,
+  embedding_json text not null,
+  metadata_json text not null,
+  created_at text not null
+);
+
 create index if not exists idx_workflow_runs_status on workflow_runs(status);
 create unique index if not exists idx_workflow_history_run_sequence on workflow_history(run_id, sequence);
 create unique index if not exists idx_workflow_history_idempotency on workflow_history(run_id, idempotency_key) where idempotency_key is not null;
 create index if not exists idx_runtime_resources_run_type on runtime_resources(run_id, resource_type);
 create index if not exists idx_runtime_resources_task_type on runtime_resources(task_id, resource_type);
 create index if not exists idx_runtime_resources_session on runtime_resources(session_id);
+create index if not exists idx_library_objects_kind on library_objects(object_kind);
+create index if not exists idx_library_objects_status on library_objects(status);
+create index if not exists idx_library_history_object_sequence on library_history(object_id, sequence);
+create index if not exists idx_library_history_event_type on library_history(event_type);
+create index if not exists idx_library_similarity_signature on library_similarity_index(signature);
 `;

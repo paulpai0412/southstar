@@ -20,6 +20,24 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
   if (!Array.isArray(workflow.evaluators)) {
     issues.push({ path: "workflow.evaluators", message: "must be an array" });
   }
+  if (workflow.compiledFrom) {
+    if (!workflow.compiledFrom.templateDefinitionId) {
+      issues.push({ path: "workflow.compiledFrom.templateDefinitionId", message: "is required when compiledFrom is present" });
+    }
+    if (!workflow.compiledFrom.templateVersionId) {
+      issues.push({ path: "workflow.compiledFrom.templateVersionId", message: "is required when compiledFrom is present" });
+    }
+    if (!workflow.compiledFrom.compilerVersion) {
+      issues.push({ path: "workflow.compiledFrom.compilerVersion", message: "is required when compiledFrom is present" });
+    }
+    if (!/^[a-f0-9]{64}$/.test(workflow.compiledFrom.inputHash ?? "")) {
+      issues.push({ path: "workflow.compiledFrom.inputHash", message: "must be a 64-char lowercase sha256 hex string" });
+    }
+    if (!Array.isArray(workflow.compiledFrom.libraryVersionRefs) || workflow.compiledFrom.libraryVersionRefs.length === 0) {
+      issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must contain at least one immutable library version ref" });
+    }
+  }
+
   if (issues.length > 0) return { ok: false, issues };
 
   const taskIds = new Set<string>();

@@ -20,21 +20,24 @@ export type ArtifactGateResult = {
   missingFields: string[];
   decision: "pass" | "repair" | "fail";
   repairInstruction?: string;
+  normalizedArtifact: Record<string, unknown>;
 };
 
 export function evaluateArtifactGate(input: ArtifactGateInput): ArtifactGateResult {
-  const missingFields = input.requiredFields.filter((field) => !hasValue(input.artifact[field]));
+  const normalizedArtifact = normalizeArtifactForRequiredFields(input.artifact, input.requiredFields);
+  const missingFields = input.requiredFields.filter((field) => !hasValue(normalizedArtifact[field]));
   if (missingFields.length === 0) {
-    return { ok: true, missingFields: [], decision: "pass" };
+    return { ok: true, missingFields: [], decision: "pass", normalizedArtifact };
   }
   if (input.attempt >= input.maxRepairAttempts) {
-    return { ok: false, missingFields, decision: "fail" };
+    return { ok: false, missingFields, decision: "fail", normalizedArtifact };
   }
   return {
     ok: false,
     missingFields,
     decision: "repair",
     repairInstruction: `Artifact is missing required fields: ${missingFields.join(", ")}. Re-run the subagent and return a complete artifact.`,
+    normalizedArtifact,
   };
 }
 
@@ -143,7 +146,7 @@ export async function runRootSessionTask(
         scope: "task",
         status: "accepted",
         title: `Accepted artifact attempt ${attempt}`,
-        payload: harnessResult.artifact,
+        payload: gate.normalizedArtifact,
         metrics: harnessResult.metrics ?? {},
       });
       const checkpointResourceId = `checkpoint-${envelope.runId}-${runtime.taskId}`;
@@ -211,6 +214,22 @@ function normalizeRootSessionEnvelope(envelope: AnyTaskEnvelope): {
     memoryItemCount: envelope.memory.items.length,
     subagentIds: envelope.subagents.map((subagent) => subagent.id),
   };
+}
+
+function normalizeArtifactForRequiredFields(
+  artifact: Record<string, unknown>,
+  requiredFields: string[],
+): Record<string, unknown> {
+  if (requiredFields.length === 0) return artifact;
+  if (requiredFields.some((field) => hasValue(artifact[field]))) return artifact;
+  for (const candidate of Object.values(artifact)) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const nested = candidate as Record<string, unknown>;
+    if (requiredFields.some((field) => hasValue(nested[field]))) {
+      return nested;
+    }
+  }
+  return artifact;
 }
 
 function hasValue(value: unknown): boolean {

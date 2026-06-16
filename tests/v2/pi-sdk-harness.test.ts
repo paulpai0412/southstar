@@ -151,6 +151,43 @@ test("Pi SDK agent harness runs mounted workspace tasks from /workspace/repo", a
   assert.match(prompts[0], /Use the mounted repository\./);
 });
 
+test("Pi SDK agent harness defaults v2 workspace tasks to /workspace/repo when envelope carries workspace handle", async () => {
+  const sessionInputs: Array<{ cwd: string }> = [];
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async (input) => {
+      sessionInputs.push(input);
+      return {
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.push(listener);
+          return () => undefined;
+        },
+        prompt: async () => {
+          listeners.forEach((listener) => listener({
+            type: "agent_end",
+            messages: [{
+              role: "assistant",
+              content: [{ type: "text", text: JSON.stringify({ artifact: { summary: "ok" }, progress: ["done"] }) }],
+            }],
+          }));
+        },
+      };
+    },
+  });
+
+  const env = envelopeV2();
+  env.workspace = {
+    handle: {
+      repoRoot: "/tmp/non-mounted-host-path",
+      worktreePath: "/tmp/non-mounted-host-path",
+    },
+  };
+
+  await harness.run({ envelope: env, attempt: 1 });
+
+  assert.equal(sessionInputs[0]?.cwd, "/workspace/repo");
+});
+
 test("Pi SDK agent harness bounds session creation with the harness timeout", async () => {
   const harness = createPiSdkAgentHarness({
     timeoutMs: 5,

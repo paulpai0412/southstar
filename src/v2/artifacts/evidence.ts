@@ -118,7 +118,7 @@ function evidenceByKind(artifact: Record<string, unknown>, now: string): Map<Evi
     });
   }
 
-  const acceptedArtifacts = toStringArray(artifact.acceptedArtifacts);
+  const acceptedArtifacts = extractArtifactRefs(artifact.acceptedArtifacts);
   if (acceptedArtifacts.length > 0) {
     byKind.set("artifact-ref", {
       kind: "artifact-ref",
@@ -183,8 +183,10 @@ function objectTestEvidence(
 ): EvidencePacket["evidenceItems"][number] | undefined {
   const testResults = artifact.testResults;
   if (isRecord(testResults)) {
-    const status = valueStatus(testResults.status ?? testResults.result ?? testResults.outcome)
+    const status = valueStatus(testResults.status ?? testResults.result ?? testResults.outcome ?? testResults.overall)
       ?? (testResults.passed === true || testResults.ok === true ? "present" : undefined)
+      ?? statusFromCounts(testResults)
+      ?? nestedStatusFromResultTree(testResults)
       ?? "invalid";
     const summary = [
       typeof testResults.status === "string" ? `status=${testResults.status}` : undefined,
@@ -258,6 +260,61 @@ function valueStatus(value: unknown): "present" | "invalid" | undefined {
   return undefined;
 }
 
+function statusFromCounts(testResults: Record<string, unknown>): "present" | "invalid" | undefined {
+  const failed = numberFromObject(testResults, ["failed", "failCount"]);
+  const passed = numberFromObject(testResults, ["passed", "passCount"]);
+  if (typeof failed === "number") {
+    if (failed > 0) return "invalid";
+    if ((passed ?? 0) > 0) return "present";
+  }
+  const automated = testResults.automated;
+  if (isRecord(automated)) {
+    const automatedFailed = numberFromObject(automated, ["failed", "failCount"]);
+    const automatedPassed = numberFromObject(automated, ["passed", "passCount"]);
+    if (typeof automatedFailed === "number") {
+      if (automatedFailed > 0) return "invalid";
+      if ((automatedPassed ?? 0) > 0) return "present";
+    }
+  }
+  return undefined;
+}
+
+function numberFromObject(value: Record<string, unknown>, keys: string[]): number | undefined {
+  for (const key of keys) {
+    const candidate = value[key];
+    if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
+  }
+  return undefined;
+}
+
+function nestedStatusFromResultTree(value: unknown, depth = 0): "present" | "invalid" | undefined {
+  if (depth > 5) return undefined;
+  if (Array.isArray(value)) {
+    let sawPresent = false;
+    for (const item of value) {
+      const nested = nestedStatusFromResultTree(item, depth + 1);
+      if (nested === "invalid") return "invalid";
+      if (nested === "present") sawPresent = true;
+    }
+    return sawPresent ? "present" : undefined;
+  }
+  if (!isRecord(value)) return undefined;
+
+  let sawPresent = false;
+  for (const key of ["status", "result", "overall", "outcome"]) {
+    const direct = valueStatus(value[key]);
+    if (direct === "invalid") return "invalid";
+    if (direct === "present") sawPresent = true;
+  }
+
+  for (const nested of Object.values(value)) {
+    const status = nestedStatusFromResultTree(nested, depth + 1);
+    if (status === "invalid") return "invalid";
+    if (status === "present") sawPresent = true;
+  }
+  return sawPresent ? "present" : undefined;
+}
+
 function extractPathLikeValues(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value
@@ -271,6 +328,33 @@ function extractPathLikeValues(value: unknown): string[] {
 
 function toStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function extractArtifactRefs(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const refs: string[] = [];
+  for (const item of value) {
+    if (typeof item === "string" && item.length > 0) {
+      refs.push(item);
+      continue;
+    }
+    if (!isRecord(item)) continue;
+
+    let captured = false;
+    for (const key of ["artifactRef", "id", "ref", "resourceKey", "requirement", "title", "summary", "path", "name"]) {
+      const candidate = item[key];
+      if (typeof candidate === "string" && candidate.length > 0) {
+        refs.push(candidate);
+        captured = true;
+        break;
+      }
+    }
+
+    if (!captured) {
+      refs.push(`artifact-object-${shortHash(JSON.stringify(item))}`);
+    }
+  }
+  return refs;
 }
 
 function missingEvidence(kind: EvidenceKind, now: string): EvidencePacket["evidenceItems"][number] {

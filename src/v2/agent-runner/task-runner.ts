@@ -91,6 +91,7 @@ export async function runTaskEnvelope(
       payload: { ok: gate.ok, missingFields: gate.missingFields, attempt },
     });
     if (gate.ok) {
+      latestArtifact = gate.normalizedArtifact;
       events.push({
         eventType: "subagent.completed",
         actorType: "subagent",

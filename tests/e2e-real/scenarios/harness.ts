@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
 import { createServer, type IncomingMessage } from "node:http";
+import { once } from "node:events";
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
+import { chromium } from "playwright";
 import { openSouthstarDb, type SouthstarDb } from "../../../src/v2/stores/sqlite.ts";
 import { createHttpPiPlannerClient, createPiSdkPlannerClient } from "../../../src/v2/planner/pi-planner.ts";
 import { TorkClient } from "../../../src/v2/executor/tork-client.ts";
@@ -15,6 +17,7 @@ import type { RealE2EEnv } from "../env.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtureRoot = join(here, "../fixtures/software-change");
+const todoWebFixtureRoot = join(here, "../fixtures/todo-web-feature-issue");
 
 export type RealScenarioContext = {
   env: RealE2EEnv;
@@ -125,6 +128,57 @@ export function prepareSoftwareFixtureRepo(env: RealE2EEnv, name: string): strin
   run("git", ["commit", "-m", "initial calc add fixture"], repo);
   run("npm", ["install"], repo);
   return repo;
+}
+
+export function assertPiHostAdapterE2E(env: RealE2EEnv): void {
+  assert.equal(["http", "sdk"].includes(env.piPlannerMode), true, `invalid Pi planner mode: ${env.piPlannerMode}`);
+  assert.equal(["http", "sdk"].includes(env.piHarnessMode), true, `invalid Pi harness mode: ${env.piHarnessMode}`);
+  if (env.piPlannerMode === "http") assert.ok(env.piPlannerEndpoint, "Pi planner HTTP mode requires PI_PLANNER_ENDPOINT");
+  if (env.piHarnessMode === "http") assert.ok(env.piHarnessEndpoint, "Pi harness HTTP mode requires PI_HARNESS_ENDPOINT");
+}
+
+export function prepareTodoWebFeatureIssueRepo(env: RealE2EEnv, name: string): string {
+  const repo = join(env.workspaceRoot, name);
+  removeFixtureRepo(repo);
+  mkdirSync(dirname(repo), { recursive: true });
+  cpSync(todoWebFixtureRoot, repo, { recursive: true });
+  run("git", ["init"], repo);
+  run("git", ["config", "user.email", "southstar-e2e@example.local"], repo);
+  run("git", ["config", "user.name", "Southstar E2E"], repo);
+  run("npm", ["install"], repo);
+  run("git", ["add", "."], repo);
+  run("git", ["commit", "-m", "initial todo-web fixture"], repo);
+  return repo;
+}
+
+export function todoWebFeatureIssuePacket(repo: string) {
+  return {
+    title: "Todo-web: add priority labels, due dates, and overdue filter",
+    body: "Users need priority labels, due dates, an overdue filter, and persistence after reload in the todo-web app.",
+    labels: ["feature", "todo-web", "frontend"],
+    repoPath: repo,
+    acceptanceCriteria: [
+      "Each todo can show low, medium, or high priority.",
+      "Each todo can store an ISO due date.",
+      "Overdue filter shows only incomplete todos with due date before today.",
+      "Todo state persists in localStorage across reload.",
+      "Unit and browser behavior tests pass in Docker.",
+    ],
+  };
+}
+
+export async function assertTodoWebFeatureImplemented(repo: string): Promise<void> {
+  assertFixtureTests(repo);
+  const diffNames = run("git", ["diff", "--name-only", "HEAD"], repo).trim().split(/\n/).filter(Boolean);
+  for (const expected of ["src/todo-store.ts", "src/app.ts", "src/styles.css", "README.md"]) {
+    assert.equal(diffNames.includes(expected), true, `missing changed file ${expected}; diff=${diffNames.join(",")}`);
+  }
+  assert.equal(
+    diffNames.some((path) => path.startsWith("test/") && path.endsWith(".test.ts")),
+    true,
+    `missing changed test file; diff=${diffNames.join(",")}`,
+  );
+  await assertTodoWebBrowserBehavior(repo);
 }
 
 export function softwareGoalPrompt(repo: string): string {
@@ -597,6 +651,64 @@ function firstEventCreatedAt(db: SouthstarDb, runId: string, eventType: string):
   `).get(runId, eventType) as { created_at: string } | undefined;
   assert.ok(row, `missing timing event ${eventType}`);
   return row.created_at;
+}
+
+async function assertTodoWebBrowserBehavior(repo: string): Promise<void> {
+  const server = createServer((request, response) => {
+    const pathname = request.url === "/" ? "/index.html" : request.url ?? "/index.html";
+    const path = join(repo, pathname.replace(/^\//, ""));
+    if (!existsSync(path)) {
+      response.statusCode = 404;
+      response.end("not found");
+      return;
+    }
+    response.setHeader("content-type", fixtureContentType(path));
+    response.end(readFileSync(path));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.ok(address && typeof address !== "string");
+
+  const browser = await chromium.launch({ headless: true });
+  const today = new Date();
+  const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  try {
+    const page = await browser.newPage();
+    await page.goto(`http://127.0.0.1:${address.port}/`);
+
+    await page.getByTestId("todo-input").fill("Overdue electricity bill");
+    await page.getByTestId("todo-priority").selectOption("high");
+    await page.getByTestId("todo-due-date").fill(yesterday);
+    await page.getByTestId("add-todo").click();
+
+    await page.getByTestId("todo-input").fill("Tomorrow workout");
+    await page.getByTestId("todo-priority").selectOption("low");
+    await page.getByTestId("todo-due-date").fill(tomorrow);
+    await page.getByTestId("add-todo").click();
+
+    const labels = await page.getByTestId("todo-priority-label").allTextContents();
+    assert.equal(labels.some((label) => /high/i.test(label)), true, `priority labels missing high: ${JSON.stringify(labels)}`);
+
+    await page.getByTestId("filter-overdue").click();
+    await page.getByText("Overdue electricity bill").waitFor();
+    assert.equal(await page.getByText("Tomorrow workout").count(), 0, "overdue filter must hide non-overdue todo");
+
+    await page.reload();
+    await page.getByTestId("filter-overdue").click();
+    await page.getByText("Overdue electricity bill").waitFor();
+  } finally {
+    await browser.close();
+    server.close();
+  }
+}
+
+function fixtureContentType(path: string): string {
+  if (path.endsWith(".html")) return "text/html";
+  if (path.endsWith(".css")) return "text/css";
+  if (path.endsWith(".ts") || path.endsWith(".js")) return "text/javascript";
+  return "text/plain";
 }
 
 function assertInvalidInput(repo: string): void {

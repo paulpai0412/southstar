@@ -14,7 +14,7 @@
     "test": "tsx tests/index.test.ts",
     "test:v2": "tsx tests/v2/index.test.ts",
     "test:e2e:real": "tsx tests/e2e-real/index.test.ts",
-    "test:e2e:real:hardening": "tsx tests/e2e-real/runtime-hardening.test.ts",
+    "test:e2e:design-library-real": "tsx tests/e2e-real/design-library-template-real.test.ts",
     "test:e2e:ui": "tsx tests/e2e-ui/index.test.ts",
     "web:dev": "next dev -p 3030 --webpack",
     "web:build": "next build --webpack",

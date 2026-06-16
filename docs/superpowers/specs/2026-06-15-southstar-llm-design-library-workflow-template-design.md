@@ -76,87 +76,83 @@ User Goal
 
 ## 5. Design Library Schema
 
-設計原則與 runtime workflow 一致：少量 canonical tables、typed JSON payload、immutable versions、append-only history。
+設計原則對齊 runtime workflow 的 `issues + issue_history` 思路：
 
-### 5.1 Tables
+- **head snapshot + append-only history**
+- 用少量 canonical tables 承載所有 design-time state
+- version / draft / patch / approval 全部以 history event 表達
+
+### 5.1 Canonical Tables（2+1）
 
 ```text
-library_definitions
-library_definition_versions
-library_drafts
+library_objects
 library_history
-library_similarity_index   // 可 phase 2/6 實作
+library_similarity_index   // optional，phase 2/6 可再加
 ```
 
-#### `library_definitions`
+#### `library_objects`（design-time head snapshot）
 
-穩定 identity 與 head 狀態。
+用途等同 runtime 的 `issues`：
+
+- 穩定 object identity
+- 當前 head/version 狀態
+- 查詢與 UI 列表入口
 
 ```text
 id text primary key
-definition_key text unique not null
-definition_kind text not null
-current_version_id text
+object_key text unique not null
+object_kind text not null
 status text not null
-domain_refs_json text not null
-tag_json text not null
+head_version_id text
+state_json text not null
 created_at text not null
 updated_at text not null
 ```
 
-#### `library_definition_versions`
+`state_json` 承載原本分散在 definitions/drafts 的 head 資訊（例如 tags、domain refs、current validation summary、reuse signature、draft status）。
 
-immutable typed definition snapshot。
+#### `library_history`（append-only source of truth）
 
-```text
-id text primary key
-definition_id text not null
-version text not null
-definition_kind text not null
-payload_json text not null
-content_hash text not null
-created_by text not null
-created_at text not null
-supersedes_version_id text
-unique(definition_id, version)
-```
-
-#### `library_drafts`
-
-LLM / UI 編輯中的 draft 或 proposal。
+用途等同 runtime 的 `issue_history`：所有設計期事實都先寫 history，再投影回 `library_objects`。
 
 ```text
 id text primary key
-draft_type text not null
-base_definition_id text
-base_version_id text
-status text not null
-payload_json text not null
-validation_json text not null
-created_by text not null
-created_at text not null
-updated_at text not null
-```
-
-#### `library_history`
-
-append-only audit。
-
-```text
-id text primary key
-definition_id text
-version_id text
-draft_id text
+object_id text not null references library_objects(id)
 sequence integer not null
 event_type text not null
 actor_type text not null
 payload_json text not null
 created_at text not null
+unique(object_id, sequence)
+```
+
+主要 event 範例：
+
+- `object.created`
+- `version.created`
+- `draft.opened`
+- `draft.patch_applied`
+- `draft.validated`
+- `draft.approved_for_run`
+- `template.validated_from_run`
+- `template.deprecated`
+
+#### `library_similarity_index`（optional projection）
+
+僅在需要高效相似度查詢時啟用。若未啟用，先用 `library_objects.state_json` + `library_history` projection 完成匹配。
+
+```text
+id text primary key
+object_id text not null references library_objects(id)
+signature text not null
+embedding_json text not null
+metadata_json text not null
+created_at text not null
 ```
 
 ### 5.2 Definition Kinds
 
-第一版只需要 7 種 `definition_kind`，全部存在同一張 version table：
+第一版只需要 7 種 `definition_kind`。它們作為 object/event payload 的 typed discriminator，不需要一張獨立 version table：
 
 ```ts
 type LibraryDefinitionKind =
@@ -973,19 +969,66 @@ GET /api/v2/runs/:runId/downstream-readiness
 
 ### E2E Vertical Slice
 
-Software seed vertical slice：
+第一個 E2E 必須是新的 real vertical slice，不能重用既有 calc-sum scenario，也不能使用 fake / smoke / mock executor、planner、harness 或 Tork substitute。所有 E2E agent/planner execution 必須走 Pi host adapter：`PI_PLANNER_ENDPOINT` / `PI_HARNESS_ENDPOINT` backed by Pi，或 fallback to `@earendil-works/pi-coding-agent` SDK；不可使用 Codex/OpenCode/builtin/fake harness。
+
+新增 fixture：`tests/e2e-real/fixtures/todo-web-feature-issue`。
+
+Scenario：Design Library template creates and validates a reusable **software development agent workflow** for a real todo-web feature issue。
 
 ```text
-goal: implement feature in repo
--> clarify first time
--> create maker/checker/summarizer DAG
--> approve_for_run
--> compile/run through fake Tork or builtin harness
--> accepted artifacts with evidence packets and validator results
--> downstream tasks receive context from accepted artifact/evidence summaries
--> mark template validated
--> similar future goal matches template and skips clarification
+feature issue: todo-web app should support priority labels, due dates, and an "Overdue" filter
+-> first request ingests a real issue packet with title/body/acceptance criteria and creates requirement clarification trace with at least 3 resolved required inputs
+-> internal validated Design Library search runs before any external discovery
+-> LLM/design service composes a software-dev DAG from approved explorer/planner/implementer/checker/summarizer agents, capability specs, contracts, validators, and policy bundles
+-> UI/API patch loop applies at least 2 typed WorkflowTemplatePatch operations: add browser-ux-verification node and add artifact_flow edge from implementer to checker
+-> human approval creates one approved_for_run immutable workflow_template version
+-> compiler materializes runtime manifest from immutable version ids, issue packet, repo path, and run inputs
+-> run executes through real Docker/Tork and Pi host adapter planner + Pi host adapter agent harness, not fake/smoke/mock and not Codex/OpenCode/builtin harness
+-> agents modify the real todo-web fixture to implement the feature issue
+-> accepted artifacts have file-diff, test-result, command-output, and browser/screenshot-or-dom evidence packets plus blocking validator results
+-> downstream checker/summarizer tasks receive accepted artifact/evidence summaries, not raw transcript
+-> successful stop condition promotes template version to validated
+-> a similar future todo-web issue matches the validated software-dev template with confidence >= 0.85 and asks 0 clarification questions when required inputs are complete and risk is low
 ```
+
+Required new E2E files：
+
+- `tests/e2e-real/fixtures/todo-web-feature-issue/package.json`
+- `tests/e2e-real/fixtures/todo-web-feature-issue/README.md`
+- `tests/e2e-real/fixtures/todo-web-feature-issue/index.html`
+- `tests/e2e-real/fixtures/todo-web-feature-issue/src/todo-store.ts`
+- `tests/e2e-real/fixtures/todo-web-feature-issue/src/app.ts`
+- `tests/e2e-real/fixtures/todo-web-feature-issue/src/styles.css`
+- `tests/e2e-real/fixtures/todo-web-feature-issue/test/todo-store.test.ts`
+- `tests/e2e-real/fixtures/todo-web-feature-issue/test/browser-behavior.test.ts`
+- `tests/e2e-real/design-library-template-real.test.ts`
+- `tests/e2e-real/scenarios/design-library-template-real.ts`
+
+Quantitative E2E gates：
+
+| Gate | Minimum / Exact threshold |
+|---|---:|
+| Real executor | 100% tasks submitted through Docker/Tork |
+| Pi host adapter | 100% planner + agent invocations use Pi host adapter (`piPlannerMode` and `piHarnessMode` are `http` or `sdk`, with no Codex/OpenCode/builtin/fake harness rows) |
+| New fixture reuse | 0 references to existing `calc sum` goal prompt/helpers in this E2E |
+| Todo-web feature issue | issue title/body/acceptance criteria stored in requirement spec and compiled run input |
+| Approved library definitions seeded | >= 14 immutable approved versions across all 7 definition kinds |
+| Software-dev agent roles | >= 5 distinct approved agent specs: explorer, planner, implementer, checker, summarizer |
+| Draft patch audit | >= 2 typed patch events in `library_history` |
+| Compile immutability | 100% compiled refs point to version ids, not mutable heads |
+| Runtime task count | >= 5 completed tasks |
+| Accepted artifacts | exactly equals completed task count |
+| Complete evidence packets | exactly equals accepted artifact count |
+| Blocking validator failures | exactly 0 |
+| Oversized artifact/evidence/validator payloads | exactly 0 rows with payload_json > 50,000 bytes |
+| Stop condition | latest stop condition status exactly `passed` |
+| Fixture verification | Docker `npm test` passes inside modified todo-web repo |
+| Browser behavior verification | Playwright/browser test proves priority labels render, overdue filter hides non-overdue todos, and localStorage persistence survives reload |
+| Git diff evidence | changed files include `src/todo-store.ts`, `src/app.ts`, `src/styles.css`, `README.md`, and at least one test file |
+| Promotion order | `template.validated_from_run` event occurs after run terminal pass timestamp |
+| Reuse confidence | >= 0.85 for similar future todo-web issue |
+| Reuse clarification count | exactly 0 when all required inputs are present |
+| Wall-clock budget | <= 15 minutes for the scenario |
 
 ## 18. Implementation Phases
 
@@ -999,7 +1042,7 @@ goal: implement feature in repo
 
 ### Phase 2：Workflow Design Draft + Patch Model
 
-- `library_drafts`
+- `library_objects.state_json` + `library_history` draft events
 - `WorkflowDesignDraft`
 - `WorkflowTemplatePatch`
 - patch validation
@@ -1048,22 +1091,70 @@ goal: implement feature in repo
 - failure evidence attached to template
 - success metrics / recommendation rank
 
-## 19. Acceptance Criteria
+## 19. Quantitative Acceptance Criteria
 
-- Design Library uses few canonical tables and typed payloads, not one table per concept.
-- LLM can compose flow and agents from approved library definitions and can create proposals for missing capabilities.
-- Web discovery is recorded as proposal evidence and cannot directly create executable grants or approved definitions.
-- DAG editor and LLM use the same `WorkflowTemplatePatch` model.
-- Template validator proves DAG input/process/output compatibility before approval.
-- Compiler materializes runtime manifest from immutable template/library versions and run inputs.
-- Runtime passes context through accepted artifacts, evidence summaries, context packets, and workspace bindings, not by blind workspace scanning.
-- Artifact lifecycle prevents downstream use until schema, evidence, policy, and blocking validators pass.
-- Evidence packets record required vs present evidence, freshness, source refs, reproducible commands, and redaction status.
-- Validator results are typed resources with blocking verdicts, checked contracts/evidence, messages, and repair hints.
-- `approved_for_run` template can execute current demand; only successful run evidence with accepted terminal artifacts promotes template to `validated`.
-- Future similar demand can match validated template and skip initial clarification when inputs are complete and risk is low.
+Functional acceptance：
 
-## 20. Self-review Notes
+- Design Library core persists exactly 2 canonical tables in SQLite: `library_objects`, `library_history`; `library_similarity_index` is optional and enabled only when similarity projection is required.
+- The first production seed creates at least 14 immutable approved definition versions and covers all 7 `definition_kind` values: `agent_spec`, `capability_spec`, `contract_spec`, `validator_spec`, `policy_bundle`, `workflow_template`, `workflow_recipe`.
+- 100% of approved reusable definitions are created by `user`, `system`, or `migration`; 0 approved reusable definitions are created directly by actor `llm`.
+- 100% of `version.created` events carry a sha256 content hash of canonical payload JSON; the hash is immutable and auditable across later head updates.
+- Every draft mutation appends one `library_history` event with monotonic `sequence`; rollback/diff can be reconstructed from history without reading runtime workflow tables.
+- LLM/design service can create proposal drafts for missing agents/capabilities, but executable `approved_for_run` templates reference 0 proposal-only definitions.
+- External web discovery can appear only in proposal evidence; it creates 0 MCP grants, 0 credentials, and 0 approved executable definitions.
+- DAG editor/API and LLM patch loop both use `WorkflowTemplatePatch`; at least 95% branch coverage is required for patch validation errors in unit tests.
+- Template validation rejects cycles, missing input producers, missing blocking validators, missing evidence producers, unresolved capability refs, workspace-policy mismatch, and raw-transcript-only dependencies.
+- Compiler materializes runtime manifests only from immutable template/library version ids; 100% compiled manifests include `compiledFrom.templateVersionId`, `compilerVersion`, and 64-character `inputHash`.
+- Runtime downstream readiness uses only accepted artifact/evidence summaries and workspace binding summaries; 0 downstream tasks may be unblocked by raw transcript, executor exit status alone, or blind workspace scan.
+- Artifact lifecycle prevents downstream use until schema, evidence, policy, and blocking validators pass; accepted artifacts must equal completed task count in the real E2E.
+- Evidence packets record required vs present evidence, freshness, source refs, reproducible commands, redaction status, and completeness metrics for 100% accepted artifacts.
+- Validator results are typed resources with blocking verdicts, checked contracts/evidence, messages, and repair hints for 100% accepted artifacts.
+- Template promotion to `validated` requires a terminal passed/completed run, accepted terminal artifact, complete required evidence, and latest stop-condition status `passed`; promotion before runtime success is rejected 100% of the time.
+- Future similar demand can match validated template with confidence >= 0.85 and skip initial clarification when required inputs are complete and risk is low.
+
+Real E2E acceptance：
+
+- A new real E2E scenario is added at `tests/e2e-real/design-library-template-real.test.ts`; it must not import or call existing calc-sum scenario helpers.
+- The scenario uses a new fixture under `tests/e2e-real/fixtures/todo-web-feature-issue`; 0 references to the existing `software-change` fixture are allowed in the new E2E file.
+- The scenario ingests a real todo-web feature issue packet with title, body, labels, repo path, and at least 5 acceptance criteria.
+- The scenario executes through real Docker/Tork and Pi host adapter for both planner and agent harness; tests must fail if a fake, mock, smoke-only, builtin, Codex, OpenCode, or in-memory executor/harness path is used.
+- The scenario completes within 15 minutes on the configured real E2E environment.
+- The scenario completes at least 5 workflow tasks and records 100% task submission through Tork executor bindings.
+- Accepted artifact count exactly equals completed task count.
+- Complete evidence packet count exactly equals accepted artifact count.
+- Blocking validator failures equal 0.
+- Artifact/evidence/validator payloads larger than 50,000 bytes equal 0 rows.
+- Docker `npm test` passes inside the modified todo-web fixture repo.
+- Browser behavior verification proves priority labels render, overdue filter hides non-overdue todos, and localStorage persistence survives reload.
+- Git diff evidence includes `src/todo-store.ts`, `src/app.ts`, `src/styles.css`, `README.md`, and at least one test file.
+- Similar future todo-web issue reuse produces `confidence >= 0.85`, `missingInputs.length === 0`, `risk === "low"`, and `clarificationQuestionCount === 0`.
+
+## 20. Implementation Plan Goal Prompt
+
+Use this prompt when dispatching an implementation agent for the corresponding plan：
+
+```text
+Implement the Southstar v2 Design Library / Workflow Template vertical slice from docs/superpowers/specs/2026-06-15-southstar-llm-design-library-workflow-template-design.md.
+
+Use TDD and implement the plan in docs/superpowers/plans/2026-06-15-southstar-llm-design-library-workflow-template-implementation-plan.md task by task.
+
+Hard requirements:
+- Add SQLite-first Design Library tables, immutable versions, drafts, and append-only history.
+- Add typed payload validators for the 7 definition kinds.
+- Add workflow template draft, patch, graph validation, human approval, compile, run, validation-from-run, and reuse matching services.
+- Runtime manifests must compile only from immutable template/library version ids and include compiledFrom metadata.
+- LLM/design service may create drafts/proposals/patches only; it must not directly approve reusable definitions, MCP grants, secrets, credentials, or executable external write permissions.
+- Create a new real E2E case for a todo-web feature issue; do not reuse existing calc-sum scenarios, do not use fake/smoke/mock executor/planner/harness, and require real Docker/Tork execution through Pi host adapter planner + Pi host adapter agent harness.
+- The software-dev agent workflow must include approved explorer, planner, implementer, checker, and summarizer agent specs and compile them into real Tork tasks.
+- Every E2E planner and agent task must use Pi host adapter (`createPiSdkPlannerClient` / `createPiSdkAgentHarness` or HTTP endpoints backed by Pi); Codex/OpenCode/builtin/fake harnesses are forbidden.
+- Quantitative gates: >=14 approved library versions across all 7 definition kinds, >=5 completed real tasks, 100% Pi host adapter planner/agent invocations, accepted artifacts == completed tasks, complete evidence packets == accepted artifacts, blocking validator failures == 0, payloads >50KB == 0, stop condition passed, browser behavior verified, reuse confidence >=0.85 with 0 clarification questions, scenario <=15 minutes.
+
+Verification commands:
+- npm run test:v2
+- npm run test:e2e:design-library-real
+```
+
+## 21. Self-review Notes
 
 - Placeholder scan: no incomplete placeholder markers remain.
 - Consistency check: design-time library is reusable truth; runtime manifest remains immutable execution snapshot.

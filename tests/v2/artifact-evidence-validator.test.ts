@@ -135,6 +135,78 @@ test("builds evidence from rich implementation artifact payload shape", () => {
   assert.equal(packet.evidenceItems.some((item) => item.kind === "command-output" && item.status === "present"), true);
 });
 
+test("treats aggregate pass_with_environment_gap testResults as present when nested automated counts pass", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-1",
+    taskId: "checker",
+    artifactRef: "artifact-run-1-checker",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: {
+      commandsRun: [
+        { command: "cd /workspace/repo && npm test", result: "pass" },
+      ],
+      testResults: {
+        overall: "pass_with_environment_gap",
+        automated: {
+          passed: 4,
+          failed: 0,
+        },
+      },
+    },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness, { requiredCount: 1, presentCount: 1, missingKinds: [] });
+  assert.equal(packet.evidenceItems[0]?.kind, "test-result");
+  assert.equal(packet.evidenceItems[0]?.status, "present");
+});
+
+test("treats nested suite statuses as present when all nested checks pass", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-1",
+    taskId: "checker",
+    artifactRef: "artifact-run-1-checker",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: {
+      commandsRun: [
+        { command: "cd /workspace/repo && npm test", result: "pass" },
+      ],
+      testResults: {
+        automatedSuite: { status: "pass" },
+        targetedBehaviorCheck: { status: "pass" },
+      },
+    },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness, { requiredCount: 1, presentCount: 1, missingKinds: [] });
+  assert.equal(packet.evidenceItems[0]?.status, "present");
+});
+
+test("builds artifact-ref evidence from structured acceptedArtifacts entries", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-1",
+    taskId: "summarizer",
+    artifactRef: "artifact-run-1-summarizer",
+    requiredEvidenceKinds: ["artifact-ref", "test-result"],
+    artifact: {
+      acceptedArtifacts: [
+        { requirement: "priority labels added", evidence: ["src/app.ts"] },
+        { id: "artifact-run-1-checker" },
+        { path: "/workspace/repo/src/todo-store.ts" },
+        { status: "accepted", evidence: ["upstream checker accepted"] },
+      ],
+      tests: [{ command: "npm test", status: "passed" }],
+    },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.equal(packet.completeness.requiredCount, 2);
+  assert.equal(packet.completeness.presentCount, 2);
+  assert.deepEqual(packet.completeness.missingKinds, []);
+  assert.equal(packet.evidenceItems.some((item) => item.kind === "artifact-ref" && item.status === "present"), true);
+});
+
 test("marks required evidence missing when artifact omits real test output", () => {
   const packet = buildEvidencePacket({
     runId: "run-1",

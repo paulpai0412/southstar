@@ -23,7 +23,7 @@ export async function runArtifactEvidenceValidatorRealScenario(env: RealE2EEnv):
   const startedAt = Date.now();
   const context = createScenarioContext(env);
   const callback = await startCallbackServer(env);
-  const repo = prepareSoftwareFixtureRepo(env, "artifact-evidence-validator-real");
+  const repo = prepareSoftwareFixtureRepo(env, "domain-pack-dynamic-workflow-feature");
   try {
     const draft = await createPlannerDraft(context.db, {
       goalPrompt: artifactEvidenceValidatorGoalPrompt(repo),
