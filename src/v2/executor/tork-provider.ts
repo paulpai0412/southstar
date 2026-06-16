@@ -5,6 +5,7 @@ import { buildTorkJobProjection } from "./tork-projection.ts";
 export type TorkExecutorProviderOptions = {
   torkClient: Pick<TorkClient, "submit">;
   callbackUrl?: string;
+  heartbeatUrl?: string;
   envelopeBasePath?: string;
 };
 
@@ -12,11 +13,13 @@ export class TorkExecutorProvider implements ExecutorProvider {
   readonly executorType = "tork" as const;
   private readonly torkClient: Pick<TorkClient, "submit">;
   private readonly callbackUrl?: string;
+  private readonly heartbeatUrl?: string;
   private readonly envelopeBasePath?: string;
 
   constructor(options: TorkExecutorProviderOptions) {
     this.torkClient = options.torkClient;
     this.callbackUrl = options.callbackUrl;
+    this.heartbeatUrl = options.heartbeatUrl;
     this.envelopeBasePath = options.envelopeBasePath;
   }
 
@@ -26,6 +29,7 @@ export class TorkExecutorProvider implements ExecutorProvider {
     const envelopeBasePath = request.envelopeBasePath ?? this.envelopeBasePath ?? "/southstar-runs";
     const projection = buildTorkJobProjection(request.workflow, {
       callbackUrl,
+      heartbeatUrl: request.heartbeatUrl ?? this.heartbeatUrl,
       envelopeBasePath,
       runId: request.runId,
     });

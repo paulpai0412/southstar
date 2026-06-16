@@ -3,6 +3,7 @@ import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 
 export type TorkProjectionOptions = {
   callbackUrl: string;
+  heartbeatUrl?: string;
   envelopeBasePath: string;
   runId: string;
 };
@@ -48,6 +49,11 @@ export function buildTorkJobProjection(
           SOUTHSTAR_TASK_ID: task.id,
           SOUTHSTAR_ENVELOPE_PATH: envelopePath,
           SOUTHSTAR_CALLBACK_URL: options.callbackUrl,
+          SOUTHSTAR_ATTEMPT_ID: "attempt-1",
+          ...(options.heartbeatUrl ? {
+            SOUTHSTAR_HEARTBEAT_URL: options.heartbeatUrl,
+            SOUTHSTAR_HEARTBEAT_INTERVAL_MS: "10000",
+          } : {}),
         },
         mounts: task.execution.mounts,
         timeoutSeconds: task.execution.timeoutSeconds,

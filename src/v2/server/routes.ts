@@ -44,6 +44,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         draftId: draft.draftId,
         executorProvider: context.executorProvider,
         callbackUrl: callbackUrl(context),
+        heartbeatUrl: heartbeatUrl(context),
         runRoot: context.runRoot,
       });
       return json("run-goal", { draft, ...run });
@@ -65,6 +66,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         draftId: body.draftId,
         executorProvider: context.executorProvider,
         callbackUrl: callbackUrl(context),
+        heartbeatUrl: heartbeatUrl(context),
         runRoot: context.runRoot,
       }));
     }
@@ -265,6 +267,10 @@ function requiredServerUrl(context: RuntimeServerContext): string {
 
 function callbackUrl(context: RuntimeServerContext): string {
   return context.callbackUrl ?? `${requiredServerUrl(context)}/api/v2/tork/callback`;
+}
+
+function heartbeatUrl(context: RuntimeServerContext): string {
+  return `${requiredServerUrl(context)}/api/v2/executor/heartbeat`;
 }
 
 function riskTagsForVoiceTranscript(transcript: string): string[] {

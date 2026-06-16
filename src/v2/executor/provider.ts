@@ -6,6 +6,7 @@ export type ExecutorSubmitRequest = {
   runId: string;
   workflow: SouthstarWorkflowManifest;
   callbackUrl?: string;
+  heartbeatUrl?: string;
   envelopeBasePath?: string;
 };
 

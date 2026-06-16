@@ -227,6 +227,7 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
   torkClient?: Pick<TorkClient, "submit">;
   runRoot?: string;
   callbackUrl?: string;
+  heartbeatUrl?: string;
   harnessEndpoint?: string;
   contextRefreshUrl?: string;
 }): Promise<{ runId: string; tork: TorkSubmitResult }> {
@@ -289,6 +290,7 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     runId,
     workflow: projectedWorkflow,
     callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
+    heartbeatUrl: input.heartbeatUrl,
     envelopeBasePath: "/southstar-runs",
   });
   const executorSubmitMs = Date.now() - executorSubmitStartedAt;
@@ -365,6 +367,7 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
   torkClient?: Pick<TorkClient, "submit">;
   runRoot?: string;
   callbackUrl?: string;
+  heartbeatUrl?: string;
   harnessEndpoint?: string;
   contextRefreshUrl?: string;
 }) {
@@ -409,6 +412,7 @@ export async function expandWorkflowRun(db: SouthstarDb, input: {
     runId: input.runId,
     workflow: projectedWorkflow,
     callbackUrl: input.callbackUrl ?? "/api/v2/tork/callback",
+    heartbeatUrl: input.heartbeatUrl,
     envelopeBasePath: "/southstar-runs",
   });
   const tork = torkSubmitResultFromExecutorSubmission(executorSubmission);
