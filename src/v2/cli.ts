@@ -13,6 +13,7 @@ import {
   revisePlannerDraft,
   steerRun,
 } from "./ui-api/local-api.ts";
+import type { ReadModelKind } from "./read-models/types.ts";
 
 export type V2Command =
   | { command: "plan"; goal: string }
@@ -30,7 +31,8 @@ export type V2Command =
   | { command: "sessions"; runId: string }
   | { command: "memory"; runId: string }
   | { command: "logs"; runId: string }
-  | { command: "voice-command"; runId: string; transcript: string };
+  | { command: "voice-command"; runId: string; transcript: string }
+  | { command: "read-model"; kind: ReadModelKind; runId: string; taskId?: string };
 
 export type V2CliDependencies = {
   db: SouthstarDb;
@@ -82,6 +84,13 @@ export function parseV2Command(argv: string[]): V2Command {
       return { command, runId: requireFlag(args, "--run-id") };
     case "voice-command":
       return { command, runId: requireFlag(args, "--run-id"), transcript: requireFlag(args, "--transcript") };
+    case "read-model": {
+      const kind = requireFlag(args, "--kind") as ReadModelKind;
+      const runId = requireFlag(args, "--run-id");
+      const taskId = optionalFlag(args, "--task-id");
+      if (kind === "task-detail" && !taskId) throw new Error("--task-id is required for task-detail read model");
+      return taskId ? { command, kind, runId, taskId } : { command, kind, runId };
+    }
     default:
       throw new Error(`Unknown southstar:v2 command: ${command ?? "(missing)"}`);
   }
@@ -159,6 +168,12 @@ export async function executeV2Command(
         runId: command.runId,
         transcript: command.transcript,
       }));
+    case "read-model":
+      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).getReadModel({
+        kind: command.kind,
+        runId: command.runId,
+        taskId: command.taskId,
+      }));
   }
 }
 
@@ -186,6 +201,12 @@ function requireFlag(args: string[], flag: string): string {
     throw new Error(`${flag} is required`);
   }
   return value;
+}
+
+function optionalFlag(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  const value = index >= 0 ? args[index + 1] : undefined;
+  return value && !value.startsWith("--") ? value : undefined;
 }
 
 function completeDependencies(
@@ -240,6 +261,7 @@ function needsRuntimeServer(command: V2Command): boolean {
     "memory",
     "logs",
     "voice-command",
+    "read-model",
   ].includes(command.command);
 }
 

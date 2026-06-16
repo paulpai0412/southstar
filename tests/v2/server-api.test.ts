@@ -91,6 +91,11 @@ test("runtime server supports run-goal, voice-command, and read routes", async (
     const runGoal = await client.runGoal({ goalPrompt: "Add calc sum" });
     const runId = runGoal.result.runId;
     assert.match(runId, /^run-/);
+    const readModel = await client.getReadModel({ kind: "run-inspection", runId });
+    assert.equal(readModel.kind, "read-model");
+    assert.equal(readModel.result.kind, "run-inspection");
+    assert.equal(readModel.result.schemaVersion, "southstar.read_model.run_inspection.v1");
+    assert.equal((readModel.result.data as { runId?: string }).runId, runId);
     assert.equal(submissions[0]?.callbackUrl, `${server.url}/api/v2/tork/callback`);
     const memoryDelta = proposeMemoryDelta(db, runId, { preference: "minimal changes" });
     assert.equal((await client.listTasks(runId)).kind, "tasks");
@@ -129,6 +134,27 @@ test("runtime server supports run-goal, voice-command, and read routes", async (
     assert.equal(approvalRequestsAfterSecretVoice > approvalRequestsBeforeSecretVoice, true);
     assert.equal(listHistoryForRun(db, runId).some((event) => event.eventType === "steering.received"), true);
     assert.equal(listHistoryForRun(db, runId).some((event) => event.eventType === "approval.decided"), true);
+  } finally {
+    await server.close();
+  }
+});
+
+test("runtime server rejects unknown read model kinds with JSON error", async () => {
+  const db = openSouthstarDb(join(mkdtempSync(join(tmpdir(), "southstar-server-read-model-errors-")), "db.sqlite3"));
+  const server = await createSouthstarRuntimeServer({
+    host: "127.0.0.1",
+    port: 0,
+    db,
+    plannerClient: plannerClient(),
+    executorProvider: executorProvider([]),
+  });
+
+  try {
+    const response = await fetch(`${server.url}/api/v2/read-models/not-a-kind/run-1`);
+    assert.equal(response.status, 400);
+    const body = await response.json() as { ok: boolean; error: string };
+    assert.equal(body.ok, false);
+    assert.match(body.error, /unknown read model kind/);
   } finally {
     await server.close();
   }
