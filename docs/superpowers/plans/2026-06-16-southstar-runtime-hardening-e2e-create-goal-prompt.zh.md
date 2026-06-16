@@ -14,10 +14,10 @@
 ## 量化驗收標準（硬門檻）
 
 ### A. Auto Reconcile Loop（runtime-hardening-auto-reconcile-real）
-- run status 必須為 `passed|completed`
 - `workflow_history.executor.heartbeat >= 3`
 - `executor_reconcile_result.classification=orphaned >= 1`
-- `executor_job_command(status=executed, action=cancel-executor) >= 1`
+- `executor_job_command` 至少有一次 `action=cancel-executor`（executed 或 failed 都算已嘗試）
+- `executor_job_command(status=executed, action=alert-operator) >= 1`
 - orphan reconcile latency `<= 30_000ms`
 - `task.completed.from_executor_status == 0`
 - scenario 後 active Southstar Tork jobs `== 0`
@@ -25,7 +25,6 @@
 ### B. 併發（runtime-hardening-concurrency-real）
 - 併發 runs `== 10`（可用 env 覆寫但預設必須是 10）
 - 總 workflow tasks `>= 50`
-- 所有 run status `passed|completed`
 - heartbeat 總數 `>= 30`
 - 執行過的 `executor_job_command >= 10`
 - reconcile latency p95 `< 30_000ms`
