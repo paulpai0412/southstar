@@ -1,5 +1,6 @@
 import type { createPlannerDraft, createRunFromDraft } from "../ui-api/local-api.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
+import type { ReadModelKind } from "../read-models/types.ts";
 
 export type RuntimeServerClient = ReturnType<typeof createRuntimeServerClient>;
 type RunGoalResult = Awaited<ReturnType<typeof createRunFromDraft>> & {
@@ -58,6 +59,12 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     voiceCommand(body: { runId: string; transcript: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/voice-command`, { transcript: body.transcript });
     },
+    getReadModel(body: { kind: ReadModelKind; runId: string; taskId?: string }) {
+      const suffix = body.kind === "task-detail"
+        ? `${encodeURIComponent(body.runId)}/${encodeURIComponent(requiredTaskId(body.taskId))}`
+        : encodeURIComponent(body.runId);
+      return get(`${baseUrl}/api/v2/read-models/${encodeURIComponent(body.kind)}/${suffix}`);
+    },
     getTaskEnvelope(body: { runId: string; taskId: string }) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/envelope`);
     },
@@ -85,6 +92,11 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
       return post(`${baseUrl}/api/v2/tork/callback`, body);
     },
   };
+}
+
+function requiredTaskId(taskId: string | undefined): string {
+  if (!taskId) throw new Error("taskId is required for task-detail read model");
+  return taskId;
 }
 
 async function post<T = unknown>(url: string, body: unknown): Promise<ApiEnvelope<T>> {

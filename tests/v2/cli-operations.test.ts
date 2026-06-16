@@ -25,6 +25,17 @@ test("parses phase 1.5 CLI commands", () => {
     runId: "run-1",
     transcript: "approve low risk",
   });
+  assert.deepEqual(parseV2Command(["read-model", "--kind", "run-inspection", "--run-id", "run-1"]), {
+    command: "read-model",
+    kind: "run-inspection",
+    runId: "run-1",
+  });
+  assert.deepEqual(parseV2Command(["read-model", "--kind", "task-detail", "--run-id", "run-1", "--task-id", "task-1"]), {
+    command: "read-model",
+    kind: "task-detail",
+    runId: "run-1",
+    taskId: "task-1",
+  });
 });
 
 test("server-backed phase 1.5 CLI commands execute through the runtime client", async () => {
@@ -40,6 +51,7 @@ test("server-backed phase 1.5 CLI commands execute through the runtime client", 
     listMemory: async () => envelope("memory", [], calls),
     listLogs: async () => envelope("logs", [], calls),
     voiceCommand: async () => envelope("voice-command", { transcript: "approve" }, calls),
+    getReadModel: async () => envelope("read-model", { kind: "run-inspection", data: { runId: "run-1" } }, calls),
   } as unknown as CliRuntimeClient;
 
   const commands = [
@@ -52,6 +64,7 @@ test("server-backed phase 1.5 CLI commands execute through the runtime client", 
     ["memory", "--run-id", "run-1"],
     ["logs", "--run-id", "run-1"],
     ["voice-command", "--run-id", "run-1", "--transcript", "approve"],
+    ["read-model", "--kind", "run-inspection", "--run-id", "run-1"],
   ];
 
   for (const argv of commands) {
@@ -59,7 +72,14 @@ test("server-backed phase 1.5 CLI commands execute through the runtime client", 
     const result = await executeV2Command(parsed, { db, runtimeClient });
     assert.notEqual(result.kind, "serve");
   }
-  assert.deepEqual(calls, ["run-goal", "status", "tasks", "task", "artifacts", "sessions", "memory", "logs", "voice-command"]);
+  assert.deepEqual(calls, ["run-goal", "status", "tasks", "task", "artifacts", "sessions", "memory", "logs", "voice-command", "read-model"]);
+});
+
+test("task-detail read-model CLI requires task id", () => {
+  assert.throws(
+    () => parseV2Command(["read-model", "--kind", "task-detail", "--run-id", "run-1"]),
+    /--task-id is required for task-detail read model/,
+  );
 });
 
 test("serve command fails closed because it belongs to the runtime server entrypoint", async () => {

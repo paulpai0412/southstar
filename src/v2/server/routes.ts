@@ -19,6 +19,8 @@ import type { RuntimeServerContext } from "./runtime-context.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import { readRunEventsSince, toSseFrame } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
+import { buildReadModel } from "../read-models/registry.ts";
+import type { ReadModelKind } from "../read-models/types.ts";
 
 export async function handleRuntimeRoute(context: RuntimeServerContext, request: Request): Promise<Response> {
   const url = new URL(request.url);
@@ -91,6 +93,15 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
           "cache-control": "no-cache",
         },
       });
+    }
+
+    const readModelMatch = url.pathname.match(/^\/api\/v2\/read-models\/([^/]+)\/([^/]+)(?:\/([^/]+))?$/);
+    if (request.method === "GET" && readModelMatch) {
+      const kind = decodeURIComponent(readModelMatch[1]!) as ReadModelKind;
+      if (!isReadModelKind(kind)) throw new Error(`unknown read model kind: ${kind}`);
+      const runId = decodeURIComponent(readModelMatch[2]!);
+      const taskId = readModelMatch[3] ? decodeURIComponent(readModelMatch[3]) : undefined;
+      return json("read-model", buildReadModel(context.db, { kind, runId, taskId }));
     }
 
     const runMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)$/);
@@ -333,6 +344,18 @@ function errorResponse(error: string, status: number): Response {
       ...corsHeaders(),
     },
   });
+}
+
+function isReadModelKind(kind: string): kind is ReadModelKind {
+  return [
+    "run-inspection",
+    "runtime-monitor",
+    "workflow-canvas",
+    "executor-ops",
+    "task-detail",
+    "sessions-memory",
+    "vault-mcp",
+  ].includes(kind);
 }
 
 function corsHeaders(): Record<string, string> {

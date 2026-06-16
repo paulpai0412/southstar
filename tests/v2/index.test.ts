@@ -32,6 +32,8 @@ await import("./stop-condition.test.ts");
 await import("./progress.test.ts");
 await import("./approval-policy.test.ts");
 await import("./ui-read-models.test.ts");
+await import("./run-inspection.test.ts");
+await import("./read-model-registry.test.ts");
 await import("./operations-dashboard.test.ts");
 await import("./pi-web-dashboard-renderer.test.ts");
 await import("./local-api.test.ts");
