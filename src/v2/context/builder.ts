@@ -19,6 +19,7 @@ export type BuildContextPacketInput = {
   checkpointSummary?: string;
   workspaceSummary?: string;
   failureSummary?: string;
+  contextSourceSummary?: string;
 };
 
 export function buildContextPacket(db: SouthstarDb, input: BuildContextPacketInput): ContextPacket {
@@ -70,6 +71,7 @@ export function buildContextPacket(db: SouthstarDb, input: BuildContextPacketInp
     ? block("workspace", "Workspace", input.workspaceSummary)
     : undefined;
   const failureSummary = input.failureSummary ? block("failure", "Failure", input.failureSummary) : undefined;
+  const contextSourceSummary = input.contextSourceSummary ? block("workspace", "Context Sources", input.contextSourceSummary) : undefined;
 
   const tokenEstimate = estimatePacketTokens([
     block("prompt", "Goal", input.goalPrompt, input.runId),
@@ -80,7 +82,7 @@ export function buildContextPacket(db: SouthstarDb, input: BuildContextPacketInp
     ...priorArtifacts,
     ...skillInstructions,
     ...mcpGrantSummary,
-    ...definedBlocks([checkpointSummary, workspaceSummary, failureSummary]),
+    ...definedBlocks([checkpointSummary, workspaceSummary, failureSummary, contextSourceSummary]),
   ]);
   if (contextPolicy && tokenEstimate.total > contextPolicy.maxInputTokens) {
     throw new Error(`context packet exceeds maxInputTokens: ${tokenEstimate.total} > ${contextPolicy.maxInputTokens}`);
@@ -99,7 +101,7 @@ export function buildContextPacket(db: SouthstarDb, input: BuildContextPacketInp
     agentsMdBlocks,
     artifactContracts,
     selectedMemories,
-    priorArtifacts,
+    priorArtifacts: contextSourceSummary ? [...priorArtifacts, contextSourceSummary] : priorArtifacts,
     checkpointSummary,
     workspaceSummary,
     failureSummary,

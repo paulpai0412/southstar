@@ -32,6 +32,7 @@ import { appendRuntimeEvent } from "../signals/events.ts";
 import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import { buildContextPacket, resolveArtifactContractRefs, resolveRoleProfile } from "../context/builder.ts";
+import { buildContextSourceSummary, createRepoFactCache, createRunBrief, type RepoFactCacheInput } from "../context/economy.ts";
 import { createSqliteSessionGraphProvider } from "../session-graph/sqlite-provider.ts";
 import { createGitWorkspaceSnapshotProvider } from "../workspace/git-provider.ts";
 import type { WorkspaceSnapshotRef } from "../workspace/types.ts";
@@ -462,6 +463,19 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     runtimeContextJson: JSON.stringify({ draftId: input.draftId }),
     metricsJson: JSON.stringify({}),
   });
+  createRunBrief(db, {
+    runId,
+    requirementSpec: requirementSpecFromWorkflow(workflow),
+    selectedTemplateRefs: workflow.compiledFrom?.libraryVersionRefs.filter((ref) => ref.startsWith("software.workflow")) ?? [],
+    selectedAgentRefs: workflow.tasks.map((task) => task.agentProfileRef ?? task.roleRef ?? task.id),
+    risk: riskFromWorkflow(workflow),
+    releaseMode: releaseModeFromWorkflow(workflow),
+  });
+  createRepoFactCache(db, {
+    runId,
+    repoPath: repoPathFromWorkflow(workflow),
+    facts: inferRepoFacts(workflow),
+  });
   linkGenerationResourcesToRun(db, workflow, runId);
   workflow.tasks.forEach((task, index) => {
     createWorkflowTask(db, {
@@ -768,6 +782,47 @@ function readRunWorkflow(db: SouthstarDb, runId: string): SouthstarWorkflowManif
   return JSON.parse(row.workflow_manifest_json) as SouthstarWorkflowManifest;
 }
 
+function requirementSpecFromWorkflow(workflow: SouthstarWorkflowManifest): RequirementSpec {
+  return {
+    summary: workflow.goalPrompt,
+    acceptanceCriteria: workflow.goalPrompt.split(/[。.;；\n]/).map((part) => part.trim()).filter(Boolean),
+    nonGoals: [],
+  };
+}
+
+function riskFromWorkflow(workflow: SouthstarWorkflowManifest): "low" | "medium" | "high" {
+  if (workflow.tasks.some((task) => task.mcpGrantRefs?.includes("github.pr-write"))) return "high";
+  if (workflow.tasks.some((task) => task.mcpGrantRefs?.some((grant) => grant.includes("workspace-write") || grant.includes("git.workspace-patch")))) return "medium";
+  return "low";
+}
+
+function releaseModeFromWorkflow(workflow: SouthstarWorkflowManifest): ReleaseMode {
+  if (workflow.tasks.some((task) => task.id.includes("merge-operation"))) return "merge-and-release";
+  if (workflow.tasks.some((task) => task.id.includes("merge-readiness"))) return "merge-ready";
+  if (workflow.tasks.some((task) => task.id.includes("commit-curation"))) return "commit-only";
+  return "none";
+}
+
+function repoPathFromWorkflow(workflow: SouthstarWorkflowManifest): string | undefined {
+  for (const task of workflow.tasks) {
+    const repoPath = task.promptInputs?.repoPath;
+    if (typeof repoPath === "string") return repoPath;
+  }
+  return undefined;
+}
+
+function inferRepoFacts(workflow: SouthstarWorkflowManifest): RepoFactCacheInput["facts"] {
+  const prompt = workflow.goalPrompt.toLowerCase();
+  return {
+    packageManager: prompt.includes("pnpm") ? "pnpm" : "npm",
+    testCommand: prompt.includes("pytest") ? "pytest" : "npm test",
+    framework: prompt.includes("web") || prompt.includes("browser") || prompt.includes("todo-web") ? "web" : "node",
+    relevantFiles: [],
+    docsPaths: ["README.md", "docs/"],
+    localPreviewCommand: prompt.includes("web") || prompt.includes("browser") || prompt.includes("todo-web") ? "npm run dev" : undefined,
+  };
+}
+
 function inferDomain(workflow: SouthstarWorkflowManifest): string {
   return workflow.tasks[0]?.domain ?? "general";
 }
@@ -935,6 +990,11 @@ function buildContextPacketForTask(
   task: SouthstarWorkflowManifest["tasks"][number],
   input: { runId: string; rootSessionId: string; executionAttempt: number; runtimeTask: RuntimeTaskProfile },
 ) {
+  const contextSources = buildContextSourceSummary(db, {
+    runId: input.runId,
+    taskId: task.id,
+    dependencyTaskIds: task.dependsOn,
+  });
   return buildContextPacket(db, {
     runId: input.runId,
     taskId: task.id,
@@ -948,6 +1008,7 @@ function buildContextPacketForTask(
     priorArtifactRefs: task.dependsOn,
     checkpointSummary: "No checkpoint materialized before initial task submission.",
     workspaceSummary: `Task ${task.id} will run in ${task.domain} workspace scope.`,
+    contextSourceSummary: contextSources.text || undefined,
   });
 }
 
