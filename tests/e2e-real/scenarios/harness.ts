@@ -170,6 +170,19 @@ export function phase15OperationsGoalPrompt(repo: string): string {
   ].join("\n");
 }
 
+export function runtimeHardeningGoalPrompt(repo: string): string {
+  return [
+    "在真實 fixture repo 中完成 Southstar runtime hardening 驗收任務：新增 CLI 指令 calc sum <numbers...>。",
+    "支援多數字輸入、負數、小數、無效輸入錯誤訊息，並同步更新單元測試與 README。",
+    "Southstar 必須自動判斷 domain/intent，依 software domain pack 動態產生 workflow DAG。",
+    "task 必須經 Docker/Tork 執行；Tork 只當 executor，不掌握 workflow truth。",
+    "artifact 必須經 evaluator pipeline 與 stop condition 驗收。",
+    "host adapter 使用 Pi（planner/harness 走 Pi）。",
+    "禁止 fake/mock/smoke-only shortcut，所有 evidence 必須寫入 SQLite。",
+    `Fixture repo: ${repo}`,
+  ].join("\n");
+}
+
 export function uiControlPlaneGoalPrompt(repo: string): string {
   return [
     "在目前 fixture repo 新增 CLI 指令 sum <numbers...>。",

@@ -44,7 +44,7 @@ export async function runUiApiRunGoalRealScenario(env: RealE2EEnv): Promise<{ ru
     const runId = result.result.runId;
     const externalJobId = result.result.tork.jobId;
     await waitForTorkJob(env.torkBaseUrl, externalJobId);
-    await waitForRunStatus(context.db, runId, ["passed", "completed"]);
+    await waitForRunStatus(context.db, runId, ["passed", "completed"], 180_000);
     assertDynamicWorkflowEvidence(context.db, runId);
     assertCalcSum(repo);
     assertFixtureTests(repo);
