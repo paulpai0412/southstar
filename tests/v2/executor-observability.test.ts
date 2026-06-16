@@ -500,12 +500,41 @@ test("executor ops page exposes workflow executor runner and evaluator status se
     phase: "subagent-running",
     observedAt: "2026-06-15T00:00:10.000Z",
   });
+  upsertRuntimeResource(db, {
+    resourceType: "executor_reconcile_result",
+    resourceKey: "reconcile-run-ui-ex-task-ui-ex",
+    runId: "run-ui-ex",
+    taskId: "task-ui-ex",
+    scope: "executor",
+    status: "callback-missing",
+    payload: {
+      bindingId: "executor-run-ui-ex-task-ui-ex-attempt-1",
+      classification: "callback-missing",
+      actions: ["fetch-logs", "retry-attempt"],
+    },
+  });
+  upsertRuntimeResource(db, {
+    resourceType: "executor_job_command",
+    resourceKey: "command-run-ui-ex-task-ui-ex",
+    runId: "run-ui-ex",
+    taskId: "task-ui-ex",
+    scope: "executor",
+    status: "executed",
+    payload: {
+      bindingId: "executor-run-ui-ex-task-ui-ex-attempt-1",
+      jobId: "job-ui-ex",
+      action: "retry-attempt",
+    },
+  });
 
   const model = buildExecutorOpsPageModel(db, { jobId: "job-ui-ex" });
   assert.equal(model.selectedJob?.statusLayers.workflowTaskStatus, "running");
   assert.equal(model.selectedJob?.statusLayers.executorStatus, "running");
   assert.equal(model.selectedJob?.statusLayers.runnerStatus, "subagent-running");
   assert.equal(model.selectedJob?.statusLayers.evaluatorStatus, "pending");
+  assert.equal(typeof model.selectedJob?.heartbeat.lastHeartbeatAgeMs, "number");
+  assert.equal(model.selectedJob?.reconcile.lastClassification, "callback-missing");
+  assert.equal(model.selectedJob?.lastAction?.action, "retry-attempt");
 });
 
 test("executor observability gates pass when durable evidence exists", () => {

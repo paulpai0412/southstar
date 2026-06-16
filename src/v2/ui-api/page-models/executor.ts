@@ -14,6 +14,8 @@ type BindingPayload = {
   heartbeatTimeoutAt?: string;
   hardTimeoutAt?: string;
   torkObservedStatus?: string;
+  lastReconcileAt?: string;
+  reconcileGeneration?: number;
 };
 
 export function buildExecutorOpsPageModel(db: SouthstarDb, input: { jobId?: string } = {}) {
@@ -24,6 +26,20 @@ export function buildExecutorOpsPageModel(db: SouthstarDb, input: { jobId?: stri
     const payload = resource.payload as BindingPayload;
     const runId = resource.runId ?? undefined;
     const taskId = resource.taskId ?? undefined;
+    const latestReconcile = reconcileResources
+      .filter((item) => {
+        const reconcilePayload = item.payload as { bindingId?: string; classification?: string };
+        return reconcilePayload.bindingId === resource.id;
+      })
+      .at(-1);
+    const latestCommand = commandResources
+      .filter((item) => {
+        const commandPayload = item.payload as { bindingId?: string; jobId?: string };
+        return commandPayload.bindingId === resource.id
+          || commandPayload.jobId === payload.torkJobId
+          || commandPayload.jobId === payload.externalJobId;
+      })
+      .at(-1);
     return {
       jobId: payload.torkJobId ?? payload.externalJobId ?? resource.resourceKey,
       runId,
@@ -40,8 +56,21 @@ export function buildExecutorOpsPageModel(db: SouthstarDb, input: { jobId?: stri
       heartbeat: {
         seq: payload.heartbeatSeq ?? 0,
         lastHeartbeatAt: payload.lastHeartbeatAt ?? null,
+        lastHeartbeatAgeMs: heartbeatAgeMs(payload.lastHeartbeatAt),
         torkObservedStatus: payload.torkObservedStatus ?? null,
       },
+      reconcile: {
+        lastReconcileAt: payload.lastReconcileAt ?? latestReconcile?.updatedAt ?? null,
+        lastClassification: latestReconcile
+          ? ((latestReconcile.payload as { classification?: string }).classification ?? latestReconcile.status)
+          : null,
+        reconcileGeneration: payload.reconcileGeneration ?? 0,
+      },
+      lastAction: latestCommand ? {
+        action: ((latestCommand.payload as { action?: string }).action ?? latestCommand.status),
+        status: latestCommand.status,
+        updatedAt: latestCommand.updatedAt,
+      } : null,
       deadlines: {
         queueTimeoutAt: payload.queueTimeoutAt ?? null,
         heartbeatTimeoutAt: payload.heartbeatTimeoutAt ?? null,
@@ -72,6 +101,12 @@ export function buildExecutorOpsPageModel(db: SouthstarDb, input: { jobId?: stri
     ] satisfies UiIntegrationHealth[],
     reconcileStatus: commandResources.at(-1)?.status ?? "not-requested",
   };
+}
+
+function heartbeatAgeMs(lastHeartbeatAt: string | undefined): number | null {
+  if (!lastHeartbeatAt) return null;
+  const ms = Date.now() - Date.parse(lastHeartbeatAt);
+  return Number.isFinite(ms) ? Math.max(0, ms) : null;
 }
 
 function taskStatus(db: SouthstarDb, runId?: string, taskId?: string): string | undefined {
