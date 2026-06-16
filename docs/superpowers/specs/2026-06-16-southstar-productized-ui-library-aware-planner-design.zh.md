@@ -673,7 +673,34 @@ v1 does not use intra-task parallel subagents as a product requirement. Manifest
 
 Future intra-task subagent fan-out can be added later with child-run persistence, child artifact contracts, nested fan-in, and nested UI graph.
 
-## 9. Context Economy
+## 9. Execution image, skill, and MCP delivery
+
+v1 uses a fixed generic runner image. Planner output must not create ad hoc Docker image names for each workflow, agent, or task.
+
+```text
+Docker image = generic runner capability
+Task specialization = TaskEnvelopeV2 + materialized skill snapshots + ContextPacket + MCP/tool grants + workspace mounts
+```
+
+Default runner image:
+
+```text
+southstar/pi-agent:local
+```
+
+Rules:
+
+1. Library-aware Planner may select agent definitions, profiles, skills, and MCP/tool grants, but it must not invent per-workflow Docker images.
+2. Approved agent profiles may reference an approved runner capability; runtime normalizes task execution to the approved image set.
+3. Skill instructions are delivered through resolved skill snapshots in `TaskEnvelopeV2` and materialized under the per-task run root.
+4. Docker receives the materialized run root mounted read-only at `/southstar-runs`.
+5. Workspace access is delivered through explicit workspace mounts and MCP/tool grant metadata.
+6. MCP grants in v1 are capability/policy metadata in `TaskEnvelopeV2` and `ContextPacket`; a grant is not assumed to mean a live MCP server is running inside the container unless the runtime has an adapter for it.
+7. The UI must explain selected skills and MCP/tool grants in the task inspector without implying they are baked into the image.
+
+This keeps image management simple while allowing each task to behave differently through envelope, context, skills, grants, and mounts.
+
+## 10. Context Economy
 
 As agent count grows, Southstar must avoid repeated context discovery.
 
@@ -683,7 +710,7 @@ Principle:
 Read once, summarize once, reuse many times.
 ```
 
-### 9.1 Shared context artifacts
+### 10.1 Shared context artifacts
 
 v1 must produce and reuse:
 
@@ -740,7 +767,7 @@ run brief summary
 
 Preserve included/excluded memory and exclusion reasons.
 
-### 9.2 Context source UI
+### 10.2 Context source UI
 
 Task Inspector must show:
 
@@ -761,13 +788,13 @@ Excluded Context
 - wrong scope
 ```
 
-### 9.3 Planner rule
+### 10.3 Planner rule
 
 LLM Planner must design workflows so explorer/planner tasks generate shared context artifacts for downstream agents. Reviewers and release agents should consume summaries and evidence refs, not redo broad repository discovery.
 
-## 10. UI details
+## 11. UI details
 
-### 10.1 Workspace Draft Review summary
+### 11.1 Workspace Draft Review summary
 
 Show:
 
@@ -779,7 +806,7 @@ Risk: Low
 Release mode: commit-only
 ```
 
-### 10.2 Task Inspector
+### 11.2 Task Inspector
 
 Default read-only:
 
@@ -802,7 +829,7 @@ View alternatives
 Revise instruction
 ```
 
-### 10.3 Customize this run
+### 11.3 Customize this run
 
 Only after explicit click. Changes affect this draft/run only.
 
@@ -821,7 +848,7 @@ Not allowed from Workspace:
 - permanently change skill
 - silently grant external write
 
-### 10.4 Library Side Sheet
+### 11.4 Library Side Sheet
 
 Use for viewing alternatives:
 
@@ -834,7 +861,7 @@ Use for viewing alternatives:
 
 Primary purpose is explainability and run-level replacement, not full editing.
 
-## 11. Runtime gaps to implement
+## 12. Runtime gaps to implement
 
 Current repository already has:
 
@@ -864,9 +891,10 @@ Required gaps:
 12. UI read model for planner rationale and context sources.
 13. Workspace UI states: New Goal, Planning, Draft Review, Active Run.
 14. Floating Operator Sheet.
-15. Real E2E cases and quantitative gates.
+15. Execution image / skill / MCP delivery gates.
+16. Real E2E cases and quantitative gates.
 
-## 12. Real E2E scenarios
+## 13. Real E2E scenarios
 
 E2E must verify actual product behavior, not static fixtures or calc examples. It must run after implementation and produce durable SQLite evidence, runtime events, accepted artifacts, evaluator results, and UI-readable draft/run state.
 
@@ -967,7 +995,7 @@ Expected execution evidence:
 - Coding review checks over-broad changes.
 - Spec alignment confirms public CLI behavior unchanged.
 
-## 13. Quantitative gates
+## 14. Quantitative gates
 
 A new verifier should be added, for example:
 
@@ -1011,6 +1039,15 @@ Required gates per E2E run:
 - Review/release agents consume artifact summaries or evidence refs; they must not be missing all upstream context refs.
 - Average ContextPacket token estimate stays under configured policy budget.
 - Duplicate memory exclusions are recorded when applicable.
+
+### Execution image / skill / MCP gates
+
+- Every task execution image is from the approved runner image set; v1 default is `southstar/pi-agent:local`.
+- Planner output does not introduce ad hoc per-workflow image names.
+- Every selected skill ref appears in the task envelope skill snapshot list or a fail-closed validation issue is recorded.
+- Docker execution spec mounts the materialized run root read-only at `/southstar-runs`.
+- MCP/tool grants appear in both TaskEnvelopeV2 and ContextPacket summaries.
+- UI task inspector displays skills and MCP/tool grants as task-delivered capabilities, not image-baked dependencies.
 
 ### Agent / Library gates
 
@@ -1066,7 +1103,7 @@ E2E scenario completion <= 25 minutes per scenario
 - E2E must verify durable SQLite resources and history events.
 - E2E must preserve planner decision trace for audit.
 
-## 14. Acceptance criteria
+## 15. Acceptance criteria
 
 This design is accepted when implementation can demonstrate:
 
@@ -1077,11 +1114,12 @@ This design is accepted when implementation can demonstrate:
 5. User can inspect but not accidentally edit agent/profile until `Customize this run` is clicked.
 6. Context Economy resources are produced and visible.
 7. Floating Operator handles attention items.
-8. Real E2E scenarios run against fixture repos other than calc.
-9. Quantitative gates fail closed when evidence is missing.
-10. Completion requires accepted artifacts, evaluator pass, and stop condition pass.
+8. Fixed generic runner image is preserved; task specialization is delivered by TaskEnvelopeV2, skill snapshots, MCP/tool grants, context packets, and mounts.
+9. Real E2E scenarios run against fixture repos other than calc.
+10. Quantitative gates fail closed when evidence is missing.
+11. Completion requires accepted artifacts, evaluator pass, and stop condition pass.
 
-## 15. Recommended implementation milestones
+## 16. Recommended implementation milestones
 
 1. Expand Software Engineering Starter Library seed.
 2. Add planner result schema and validator.
@@ -1093,5 +1131,6 @@ This design is accepted when implementation can demonstrate:
 8. Implement Floating Operator Sheet.
 9. Implement Library alternatives side sheet.
 10. Add real non-calc fixture repos and E2E scenarios.
-11. Add quantitative gate verifier.
-12. Run full unit, integration, web build, and real E2E gates.
+11. Add execution image / skill / MCP delivery gates.
+12. Add quantitative gate verifier.
+13. Run full unit, integration, web build, and real E2E gates.

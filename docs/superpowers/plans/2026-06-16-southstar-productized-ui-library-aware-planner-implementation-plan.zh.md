@@ -15,7 +15,7 @@
 When starting execution in a long-running agent session, create a tracked goal with this exact objective:
 
 ```text
-Implement the Southstar productized Workspace UI and LLM-assisted Library-aware Planner from docs/superpowers/specs/2026-06-16-southstar-productized-ui-library-aware-planner-design.zh.md: expand the Software Engineering Starter Library, add library-aware planner schema/validation/skill orchestration, integrate prompt-to-DAG draft creation, add Context Economy resources, expose Workspace/Library/Operator read models and UI, add non-calc real E2E scenarios, and enforce quantitative gates with npm test, npm run test:v2, npm run web:build, and the new real E2E gate.
+Implement the Southstar productized Workspace UI and LLM-assisted Library-aware Planner from docs/superpowers/specs/2026-06-16-southstar-productized-ui-library-aware-planner-design.zh.md: expand the Software Engineering Starter Library, add library-aware planner schema/validation/skill orchestration, integrate prompt-to-DAG draft creation, add Context Economy resources, preserve fixed generic runner image delivery via TaskEnvelopeV2 skill snapshots/MCP grants/mounts, expose Workspace/Library/Operator read models and UI, add non-calc real E2E scenarios, and enforce quantitative gates with npm test, npm run test:v2, npm run web:build, and the new real E2E gate.
 ```
 
 Use the goal tool only when the harness provides it. Do not mark the goal complete until the completion audit maps every requirement to tests, files, and command output.
@@ -29,8 +29,9 @@ This plan intentionally ships one vertical product capability, not a cosmetic UI
 3. Add a library-aware planner with deterministic tests and a fake LLM client.
 4. Integrate the planner into draft creation and persist decision traces.
 5. Add Context Economy resources and downstream context reuse.
-6. Add read models and UI surfaces for Workspace, Library alternatives, context sources, and Operator.
-7. Add non-calc E2E fixtures, scenarios, and quantitative gates.
+6. Preserve fixed generic runner image delivery: skills and MCP/tool grants travel through TaskEnvelopeV2, materialized run roots, context packets, and mounts; planner output must not invent ad hoc Docker images.
+7. Add read models and UI surfaces for Workspace, Library alternatives, context sources, and Operator.
+8. Add non-calc E2E fixtures, scenarios, and quantitative gates.
 
 ## File map
 
@@ -43,7 +44,7 @@ This plan intentionally ships one vertical product capability, not a cosmetic UI
 - `src/v2/planner/library-aware-planner.ts` — orchestrates requirement extraction, library search, LLM-assisted selection/adaptation, validation, and repair attempts.
 - `skills/southstar/workflow-planner-library-selection/SKILL.md` — planner skill instructions used by LLM planner sessions.
 - `src/v2/context/economy.ts` — creates and reads Run Brief, Repo Fact Cache, Artifact Summary, and context-source summaries.
-- `src/v2/quality/productized-ui-library-planner-gates.ts` — quantitative gate verifier for planner, DAG, context, library, UI, artifact, and E2E evidence.
+- `src/v2/quality/productized-ui-library-planner-gates.ts` — quantitative gate verifier for planner, DAG, context, library, execution image/skill/MCP delivery, UI, artifact, and E2E evidence.
 - `src/v2/ui-api/page-models/workspace.ts` — Workspace page model for new goal, planning, draft review, active run, task inspector, rationale, and context sources.
 - `src/v2/ui-api/page-models/library-alternatives.ts` — side-sheet model for matched templates, agent/profile alternatives, skills, MCP/tool grants, and rejected alternatives.
 - `src/v2/ui-api/page-models/operator-attention.ts` — floating Operator sheet model for approvals, stuck tasks, high-risk release actions, and recovery suggestions.
@@ -609,6 +610,17 @@ test("rejects missing agent profile refs and unsafe grants", () => {
   assert.equal(validation.issues.some((issue) => issue.code === "readonly_agent_has_write_grant"), true);
 });
 
+test("rejects planner attempts to invent ad hoc Docker images", () => {
+  const db = openSouthstarDb(":memory:");
+  seedSoftwareEngineeringStarterLibrary(db, { actorType: "migration" });
+  const result = validFeatureResult();
+  result.tasks[1]!.executionImage = "southstar/custom-feature-agent:latest";
+
+  const validation = validateLibraryAwarePlannerResult(db, result);
+  assert.equal(validation.ok, false);
+  assert.equal(validation.issues.some((issue) => issue.code === "unapproved_execution_image"), true);
+});
+
 test("requires approval for high risk generated components", () => {
   const db = openSouthstarDb(":memory:");
   seedSoftwareEngineeringStarterLibrary(db, { actorType: "migration" });
@@ -728,6 +740,7 @@ export type PlannerTaskDraft = {
   evaluatorRef: string;
   rationale: string;
   conditional?: string;
+  executionImage?: string;
 };
 
 export type GeneratedDraftComponent = {
@@ -796,6 +809,7 @@ export type PlannerValidationIssueCode =
   | "unknown_mcp_grant"
   | "unknown_artifact_contract"
   | "unknown_evaluator"
+  | "unapproved_execution_image"
   | "readonly_agent_has_write_grant"
   | "write_task_missing_write_capability"
   | "high_risk_generated_component_requires_approval";
@@ -848,6 +862,7 @@ export function validateLibraryAwarePlannerResult(db: SouthstarDb, result: Libra
 
   for (const task of result.tasks) {
     validateTaskRefs(db, task, issues);
+    validateTaskExecutionImage(task, issues);
     validateTaskRisk(task, issues);
   }
 
@@ -906,6 +921,14 @@ function validateTaskRefs(db: SouthstarDb, task: PlannerTaskDraft, issues: Plann
   }
   if (!libraryObjectExists(db, "evaluator_profile", task.evaluatorRef)) {
     issues.push(issue("unknown_evaluator", `tasks.${task.id}.evaluatorRef`, `Unknown evaluator ${task.evaluatorRef}`));
+  }
+}
+
+function validateTaskExecutionImage(task: PlannerTaskDraft, issues: PlannerValidationIssue[]): void {
+  const image = task.executionImage ?? "southstar/pi-agent:local";
+  const approvedImages = new Set(["southstar/pi-agent:local"]);
+  if (!approvedImages.has(image)) {
+    issues.push(issue("unapproved_execution_image", `tasks.${task.id}.executionImage`, `${image} is not in the approved runner image set`));
   }
 }
 
@@ -2556,8 +2579,26 @@ import { assertProductizedUiLibraryPlannerGates } from "../../src/v2/quality/pro
 
 test("productized planner gates pass with durable non-calc evidence", () => {
   const db = openSouthstarDb(":memory:");
-  createWorkflowRun(db, { id: "run-productized", status: "passed", domain: "software", goalPrompt: "todo-web priority labels", workflowManifestJson: JSON.stringify({ tasks: [] }), executionProjectionJson: "{}", snapshotJson: "{}", runtimeContextJson: "{}", metricsJson: JSON.stringify({ aggregate: { tokens: 100, costUsd: 0, toolCalls: 10, retryCount: 1 } }) });
-  for (const [index, id] of ["explore", "implement", "coding-review", "spec-alignment", "browser-qa", "summarize"].entries()) {
+  const taskIds = ["explore", "implement", "coding-review", "spec-alignment", "browser-qa", "summarize"];
+  createWorkflowRun(db, {
+    id: "run-productized",
+    status: "passed",
+    domain: "software",
+    goalPrompt: "todo-web priority labels",
+    workflowManifestJson: JSON.stringify({
+      tasks: taskIds.map((id) => ({
+        id,
+        execution: { image: "southstar/pi-agent:local", mounts: [{ target: "/southstar-runs", readonly: true }] },
+        skillRefs: [`software.${id}`],
+        mcpGrantRefs: [id === "implement" ? "filesystem.workspace-write" : "filesystem.readonly"],
+      })),
+    }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: JSON.stringify({ aggregate: { tokens: 100, costUsd: 0, toolCalls: 10, retryCount: 1 } }),
+  });
+  for (const [index, id] of taskIds.entries()) {
     createWorkflowTask(db, { id, runId: "run-productized", taskKey: id, status: "completed", sortOrder: index, dependsOn: id === "implement" ? ["explore"] : ["coding-review", "spec-alignment", "browser-qa"].includes(id) ? ["implement"] : id === "summarize" ? ["coding-review", "spec-alignment", "browser-qa"] : [], rootSessionId: `root-${id}`, snapshot: {} });
     upsertRuntimeResource(db, { resourceType: "context_packet", resourceKey: `ctx-${id}`, runId: "run-productized", taskId: id, scope: "test", status: "created", payload: { tokenEstimate: { total: 1000 } } });
     upsertRuntimeResource(db, { resourceType: "memory_injection_trace", resourceKey: `mem-${id}`, runId: "run-productized", taskId: id, scope: "test", status: "created", payload: { included: [], excluded: [], decisionReason: "test" } });
@@ -2668,6 +2709,17 @@ export function assertProductizedUiLibraryPlannerGates(db: SouthstarDb, input: P
   if (tasks.some((task) => task.id === "implement" || task.id === "fix" || task.id === "refactor")) {
     for (const reviewer of ["coding-review", "spec-alignment"]) {
       if (!tasks.some((task) => task.id === reviewer)) failures.push(`parallel review lane missing ${reviewer}`);
+    }
+  }
+
+  const workflowRow = db.prepare("select workflow_manifest_json from workflow_runs where id = ?").get(input.runId) as { workflow_manifest_json: string } | undefined;
+  if (workflowRow) {
+    const workflow = JSON.parse(workflowRow.workflow_manifest_json) as { tasks?: Array<{ id: string; execution?: { image?: string; mounts?: Array<{ target: string; readonly: boolean }> }; skillRefs?: string[]; mcpGrantRefs?: string[] }> };
+    for (const task of workflow.tasks ?? []) {
+      if ((task.execution?.image ?? "southstar/pi-agent:local") !== "southstar/pi-agent:local") failures.push(`task ${task.id} uses unapproved image ${task.execution?.image}`);
+      if (!(task.execution?.mounts ?? []).some((mount) => mount.target === "/southstar-runs" && mount.readonly === true)) failures.push(`task ${task.id} missing readonly /southstar-runs mount`);
+      if ((task.skillRefs ?? []).length === 0) failures.push(`task ${task.id} missing selected skill refs`);
+      if ((task.mcpGrantRefs ?? []).length === 0) failures.push(`task ${task.id} missing selected MCP/tool grants`);
     }
   }
 
@@ -2865,6 +2917,7 @@ Source spec: `docs/superpowers/specs/2026-06-16-southstar-productized-ui-library
 | Release operator consolidation | starter library tests | `software.release-operator` profiles and skills |
 | Task-level parallelism | planner tests and quantitative gates | planner DAG tasks and dependsOn edges |
 | Context Economy | `tests/v2/context-economy.test.ts`, quantitative gates | `src/v2/context/economy.ts`, `src/v2/context/builder.ts`, `src/v2/ui-api/local-api.ts` |
+| Fixed runner image + task-delivered skills/MCP | planner validator and quantitative gates | `src/v2/planner/library-aware-validator.ts`, `src/v2/ui-api/local-api.ts`, `src/v2/quality/productized-ui-library-planner-gates.ts` |
 | Floating Operator | read model and web tests | `src/v2/ui-api/page-models/operator-attention.ts`, `OperatorDock`, `OperatorSheet` |
 | Library alternatives side sheet | read model and web tests | `src/v2/ui-api/page-models/library-alternatives.ts`, `LibraryAlternativesSheet` |
 | Non-calc E2E scenarios | `npm run test:e2e:real` in live environment | `tests/e2e-real/scenarios/*` |
@@ -2921,6 +2974,8 @@ Before claiming complete, verify each item with file paths and command output:
 - [ ] Workspace UI shows goal composer, planning state, DAG review, inspector, context sources, Library alternatives, and Operator.
 - [ ] Context Economy resources are persisted and consumed.
 - [ ] E2E scenario prompts are non-calc.
+- [ ] Fixed runner image is preserved; planner validation rejects ad hoc images.
+- [ ] Skill snapshots, MCP/tool grants, context packets, and `/southstar-runs` mount provide task specialization.
 - [ ] Quantitative gates fail closed when evidence is missing.
 - [ ] `npm test`, `npm run test:v2`, and `npm run web:build` pass.
 - [ ] Live E2E is either passed with evidence or explicitly not run because required live environment is absent.
