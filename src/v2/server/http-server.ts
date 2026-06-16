@@ -18,6 +18,7 @@ export type SouthstarRuntimeServer = {
 export async function createSouthstarRuntimeServer(input: CreateSouthstarRuntimeServerInput): Promise<SouthstarRuntimeServer> {
   const host = input.host ?? "127.0.0.1";
   const context: RuntimeServerContext = { ...input };
+  const reconcileLoop = context.createReconcileLoop?.();
   const server = createServer(async (incoming, outgoing) => {
     try {
       const request = await toRequest(incoming);
@@ -37,13 +38,17 @@ export async function createSouthstarRuntimeServer(input: CreateSouthstarRuntime
   const port = address.port;
   const url = `http://${host}:${port}`;
   context.serverUrl = url;
+  reconcileLoop?.start();
   return {
     host,
     port,
     url,
-    close: () => new Promise<void>((resolve, reject) => {
-      server.close((error) => error ? reject(error) : resolve());
-    }),
+    close: async () => {
+      await reconcileLoop?.stop();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    },
   };
 }
 
