@@ -115,3 +115,24 @@ test("Tork client fails on non-2xx responses", async () => {
     server.close();
   }
 });
+
+test("Tork client aborts requests when timeout is exceeded", async () => {
+  const server = createServer((_request, _response) => {
+    // Intentionally hold the connection open to trigger timeout.
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+
+  try {
+    const client = new TorkClient({
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      requestTimeoutMs: 30,
+      retryCount: 0,
+    });
+    await assert.rejects(() => client.getJob("job-timeout"), /timeout/i);
+  } finally {
+    server.close();
+  }
+});

@@ -4,6 +4,9 @@ import type { TorkJobProjection } from "./tork-projection.ts";
 export type TorkClientOptions = {
   baseUrl: string;
   submitPath?: string;
+  requestTimeoutMs?: number;
+  retryCount?: number;
+  retryBackoffMs?: number;
 };
 
 export type TorkSubmitResult = {
@@ -14,14 +17,20 @@ export type TorkSubmitResult = {
 export class TorkClient {
   private readonly baseUrl: string;
   private readonly submitPath: string;
+  private readonly requestTimeoutMs: number;
+  private readonly retryCount: number;
+  private readonly retryBackoffMs: number;
 
   constructor(options: TorkClientOptions) {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.submitPath = options.submitPath ?? "/jobs";
+    this.requestTimeoutMs = options.requestTimeoutMs ?? 10_000;
+    this.retryCount = options.retryCount ?? 1;
+    this.retryBackoffMs = options.retryBackoffMs ?? 200;
   }
 
   async submit(projection: TorkJobProjection): Promise<TorkSubmitResult> {
-    const response = await fetch(`${this.baseUrl}${this.submitPath}`, {
+    const response = await this.fetchWithRetry(`${this.baseUrl}${this.submitPath}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(toTorkJobPayload(projection.job)),
@@ -77,7 +86,9 @@ export class TorkClient {
   async getJobLogs(jobId: string): Promise<string> {
     const encoded = encodeURIComponent(jobId);
     for (const prefix of ["", "/api/v1"]) {
-      const response = await fetch(`${this.baseUrl}${prefix}/jobs/${encoded}/logs`);
+      const response = await this.fetchWithRetry(`${this.baseUrl}${prefix}/jobs/${encoded}/logs`, undefined, {
+        retryOnStatuses: [408, 429, 500, 502, 503, 504],
+      });
       if (response.ok) return await response.text();
       if (response.status !== 404) throw new Error(`Tork logs failed: ${response.status} ${await response.text()}`);
     }
@@ -88,12 +99,51 @@ export class TorkClient {
     const encoded = encodeURIComponent(jobId);
     let last: Response | undefined;
     for (const prefix of prefixes) {
-      const response = await fetch(`${this.baseUrl}${prefix}/jobs/${encoded}`, init);
+      const response = await this.fetchWithRetry(`${this.baseUrl}${prefix}/jobs/${encoded}`, init, {
+        retryOnStatuses: [408, 429, 500, 502, 503, 504],
+      });
       if (response.ok || response.status !== 404) return response;
       last = response;
     }
     throw new Error(`Tork job request failed: ${last?.status ?? 404} ${last ? await last.text() : "not found"}`);
   }
+
+  private async fetchWithRetry(
+    url: string,
+    init?: RequestInit,
+    options?: { retryOnStatuses?: number[] },
+  ): Promise<Response> {
+    let lastError: Error | undefined;
+    for (let attempt = 0; attempt <= this.retryCount; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(new Error("timeout")), this.requestTimeoutMs);
+      try {
+        const response = await fetch(url, { ...init, signal: controller.signal });
+        const retryOnStatuses = options?.retryOnStatuses ?? [408, 429, 500, 502, 503, 504];
+        if (retryOnStatuses.includes(response.status) && attempt < this.retryCount) {
+          await sleep(this.retryBackoffMs * (attempt + 1));
+          continue;
+        }
+        return response;
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+        if (attempt >= this.retryCount) {
+          const message = lastError.name === "AbortError"
+            ? `Tork request timeout after ${this.requestTimeoutMs}ms`
+            : `Tork request failed: ${lastError.message}`;
+          throw new Error(message);
+        }
+        await sleep(this.retryBackoffMs * (attempt + 1));
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    throw new Error(`Tork request failed: ${lastError?.message ?? "unknown error"}`);
+  }
+}
+
+async function sleep(ms: number): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function toTorkJobPayload(job: TorkJobProjection["job"]) {
