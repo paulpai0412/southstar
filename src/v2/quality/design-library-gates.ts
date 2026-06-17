@@ -126,6 +126,54 @@ export function assertDesignLibraryRealE2EGates(
   return { ok: failures.length === 0, failures };
 }
 
+export function assertDesignLibrarySessionRecoveryGates(
+  db: SouthstarDb,
+  input: { runId: string },
+): { ok: boolean; failures: string[] } {
+  const failures: string[] = [];
+
+  const beforeRecovery = count(db, `
+    select count(*) as count from runtime_resources
+    where run_id = '${input.runId}'
+      and resource_type = 'session_checkpoint'
+      and json_extract(payload_json, '$.kind') = 'before-recovery'
+  `);
+  if (beforeRecovery < 1) failures.push("missing before-recovery checkpoint");
+
+  const decisionTelemetry = count(db, `
+    select count(*) as count from runtime_resources
+    where run_id = '${input.runId}'
+      and resource_type = 'recovery_decision'
+      and json_extract(payload_json, '$.tokenTelemetry.estimatedSavings') is not null
+  `);
+  if (decisionTelemetry < 1) failures.push("missing recovery_decision with token telemetry");
+
+  const operations = count(db, `
+    select count(*) as count from runtime_resources
+    where run_id = '${input.runId}'
+      and resource_type = 'session_operation'
+  `);
+  if (operations < 1) failures.push("missing session_operation");
+
+  const recoveryContexts = count(db, `
+    select count(*) as count from runtime_resources
+    where run_id = '${input.runId}'
+      and resource_type = 'context_packet'
+      and json_extract(payload_json, '$.checkpointSummary.text') is not null
+  `);
+  if (recoveryContexts < 1) failures.push("missing recovery context packet with checkpoint summary");
+
+  const matchingPrompts = count(db, `
+    select count(*) as count from runtime_resources
+    where run_id = '${input.runId}'
+      and resource_type = 'task_envelope'
+      and json_extract(payload_json, '$.agentPrompt') like '%checkpoint%'
+  `);
+  if (matchingPrompts < 1) failures.push("missing recovery task envelope prompt with checkpoint context");
+
+  return { ok: failures.length === 0, failures };
+}
+
 function count(db: SouthstarDb, query: string): number {
   return Number((db.prepare(query).get() as { count: number }).count);
 }

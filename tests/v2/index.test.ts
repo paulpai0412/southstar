@@ -66,5 +66,6 @@ await import("./design-library-designer.test.ts");
 await import("./design-library-compiler.test.ts");
 await import("./design-library-lifecycle-reuse.test.ts");
 await import("./design-library-gates.test.ts");
+await import("./design-library-session-recovery-gates.test.ts");
 await import("./productized-ui-library-planner-gates.test.ts");
 await import("./productized-ui-scenarios-contract.test.ts");
