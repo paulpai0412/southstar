@@ -91,6 +91,8 @@ test("agent runner CLI refreshes v2 context packet before harness run", async ()
         ),
         true,
       );
+      assert.match(payload.envelope?.agentPrompt ?? "", /Prior artifacts:/);
+      assert.match(payload.envelope?.agentPrompt ?? "", /artifact-plan-1/);
       response.setHeader("content-type", "application/json");
       response.end(JSON.stringify({ artifact: { summary: "done" }, progress: ["ok"], metrics: { tokens: 10 } }));
       return;

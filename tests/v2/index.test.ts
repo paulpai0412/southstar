@@ -15,6 +15,7 @@ await import("./artifact-evidence-validator.test.ts");
 await import("./artifact-evidence-gates.test.ts");
 await import("./task-envelope.test.ts");
 await import("./task-envelope-v2.test.ts");
+await import("./task-envelope-v2-refresh.test.ts");
 await import("./context-builder.test.ts");
 await import("./materializer.test.ts");
 await import("./skills.test.ts");

@@ -3,7 +3,7 @@ import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "../harness
 import { createPiSdkAgentHarness } from "../harness/pi-sdk-harness.ts";
 import { createBuiltinAgentHarness } from "../harness/builtin-agent-harness.ts";
 import { runTaskEnvelope, type TaskRunResult } from "./task-runner.ts";
-import type { AnyTaskEnvelope } from "./task-envelope.ts";
+import { refreshTaskEnvelopeV2Prompt, type AnyTaskEnvelope } from "./task-envelope.ts";
 
 export async function runAgentRunnerCli(
   argv = process.argv.slice(2),
@@ -162,7 +162,7 @@ function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, en
   };
 }
 
-async function refreshEnvelopeContext(url: string, envelope: AnyTaskEnvelope): Promise<AnyTaskEnvelope> {
+export async function refreshEnvelopeContext(url: string, envelope: AnyTaskEnvelope): Promise<AnyTaskEnvelope> {
   if (envelope.schemaVersion !== "southstar.task-envelope.v2") return envelope;
   const response = await fetch(url, {
     method: "POST",
@@ -182,7 +182,7 @@ async function refreshEnvelopeContext(url: string, envelope: AnyTaskEnvelope): P
   };
   const text = payload.upstreamContext?.text?.trim();
   if (!text) return envelope;
-  return {
+  const refreshed = {
     ...envelope,
     contextPacket: {
       ...envelope.contextPacket,
@@ -199,6 +199,7 @@ async function refreshEnvelopeContext(url: string, envelope: AnyTaskEnvelope): P
       ],
     },
   };
+  return refreshTaskEnvelopeV2Prompt(refreshed);
 }
 
 function flagValue(argv: string[], flag: string): string | undefined {

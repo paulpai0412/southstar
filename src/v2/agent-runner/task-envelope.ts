@@ -135,6 +135,18 @@ export function buildTaskEnvelopeV2(input: Omit<TaskEnvelopeV2, "schemaVersion" 
   };
 }
 
+export function refreshTaskEnvelopeV2Prompt(envelope: TaskEnvelopeV2): TaskEnvelopeV2 {
+  return {
+    ...envelope,
+    agentPrompt: renderContextPacketPrompt(envelope.contextPacket, {
+      role: envelope.role,
+      agentProfile: envelope.agentProfile,
+      artifactContracts: envelope.artifactContracts,
+      evaluatorPipeline: envelope.evaluatorPipeline,
+    }),
+  };
+}
+
 function renderContextPacketPrompt(
   packet: ContextPacket,
   input: {
