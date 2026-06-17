@@ -51,6 +51,7 @@ await import("./server-sse.test.ts");
 await import("./runtime-loops.test.ts");
 await import("./planner.test.ts");
 await import("./pi-sdk-harness.test.ts");
+await import("./pi-session-recovery.test.ts");
 await import("./tork-client.test.ts");
 await import("./tork-callback.test.ts");
 await import("./env.test.ts");
