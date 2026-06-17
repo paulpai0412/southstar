@@ -13,7 +13,7 @@ import type { SouthstarCommandRequest } from "../ui-api/commands/types.ts";
 import { rejectedCommand } from "../ui-api/commands/types.ts";
 import { pauseRunCommand, resumeRunCommand, cancelRunCommand } from "../ui-api/commands/run-commands.ts";
 import { retryTaskCommand, requestTaskSessionForkCommand, requestWorkflowRevisionCommand, rollbackWorkspaceCommand } from "../ui-api/commands/task-commands.ts";
-import { forkSessionCommand, resetSessionCommand, rollbackSessionCommand, approveMemoryCommand, rejectMemoryCommand, doNotInjectMemoryCommand } from "../ui-api/commands/session-memory-commands.ts";
+import { forkSessionCommand, resetSessionCommand, rollbackSessionCommand, rewindSessionCommand, approveMemoryCommand, rejectMemoryCommand, doNotInjectMemoryCommand } from "../ui-api/commands/session-memory-commands.ts";
 import { createWorktreeSnapshotCommand, previewWorktreeRollbackCommand, rollbackWorktreeCommand } from "../ui-api/commands/worktree-commands.ts";
 import { retryExecutorJobCommand, cancelExecutorJobCommand, reconcileExecutorJobCommand } from "../ui-api/commands/executor-commands.ts";
 import { validateDomainPackCommand, previewDomainPackWorkflowCommand, publishDomainPackCommand } from "../ui-api/commands/domain-pack-commands.ts";
@@ -69,12 +69,13 @@ export async function handleUiRoute(context: RuntimeServerContext, request: Requ
     return json("command-result", requestWorkflowRevisionCommand(context.db, input));
   }
 
-  const sessionCommand = url.pathname.match(/^\/api\/v2\/sessions\/([^/]+)\/(fork|reset|rollback)$/);
+  const sessionCommand = url.pathname.match(/^\/api\/v2\/sessions\/([^/]+)\/(fork|reset|rollback|rewind)$/);
   if (request.method === "POST" && sessionCommand) {
     const body = await request.json() as SouthstarCommandRequest<{ checkpointId?: string; reason?: string }>;
     const input = { ...body, sessionId: decodeURIComponent(sessionCommand[1]!) };
     if (sessionCommand[2] === "fork") return json("command-result", forkSessionCommand(context.db, input));
     if (sessionCommand[2] === "reset") return json("command-result", resetSessionCommand(context.db, input));
+    if (sessionCommand[2] === "rewind") return json("command-result", rewindSessionCommand(context.db, input));
     return json("command-result", rollbackSessionCommand(context.db, input));
   }
 

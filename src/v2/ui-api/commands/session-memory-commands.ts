@@ -21,6 +21,10 @@ export function rollbackSessionCommand(db: SouthstarDb, input: SessionCommand): 
   return recordSessionLineage(db, input, "session_rollback", "session.rollback", "rollback");
 }
 
+export function rewindSessionCommand(db: SouthstarDb, input: SessionCommand): SouthstarCommandResult {
+  return recordSessionLineage(db, input, "session_operation", "session.rewind.requested", "queued");
+}
+
 export function approveMemoryCommand(db: SouthstarDb, input: MemoryCommand): SouthstarCommandResult {
   return recordMemoryDecision(db, input, "approved", "memory.approved");
 }
@@ -47,7 +51,19 @@ function recordSessionLineage(db: SouthstarDb, input: SessionCommand, resourceTy
     scope: "session",
     status,
     title: `${resourceType} ${status}`,
-    payload: { sessionId: input.sessionId, checkpointId, reason: input.payload.reason ?? "" },
+    payload: resourceType === "session_operation"
+      ? {
+        operationId: input.commandId,
+        sessionId: input.sessionId,
+        checkpointId,
+        reason: input.payload.reason ?? "",
+        type: "rewind",
+        baseCheckpointId: checkpointId ?? "",
+        host: "pi",
+        status: "queued",
+        fallbackUsed: false,
+      }
+      : { sessionId: input.sessionId, checkpointId, reason: input.payload.reason ?? "" },
   });
   const event = appendHistoryEvent(db, {
     runId,

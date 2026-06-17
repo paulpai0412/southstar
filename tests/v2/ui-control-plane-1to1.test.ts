@@ -23,7 +23,7 @@ import { buildDomainPacksPageModel } from "../../src/v2/ui-api/page-models/domai
 import { buildGovernancePageModel } from "../../src/v2/ui-api/page-models/governance.ts";
 import { pauseRunCommand, resumeRunCommand, cancelRunCommand } from "../../src/v2/ui-api/commands/run-commands.ts";
 import { retryTaskCommand, requestTaskSessionForkCommand, requestWorkflowRevisionCommand } from "../../src/v2/ui-api/commands/task-commands.ts";
-import { approveMemoryCommand, rejectMemoryCommand, doNotInjectMemoryCommand, forkSessionCommand, resetSessionCommand, rollbackSessionCommand } from "../../src/v2/ui-api/commands/session-memory-commands.ts";
+import { approveMemoryCommand, rejectMemoryCommand, doNotInjectMemoryCommand, forkSessionCommand, resetSessionCommand, rollbackSessionCommand, rewindSessionCommand } from "../../src/v2/ui-api/commands/session-memory-commands.ts";
 import { createWorktreeSnapshotCommand, previewWorktreeRollbackCommand, rollbackWorktreeCommand } from "../../src/v2/ui-api/commands/worktree-commands.ts";
 import { retryExecutorJobCommand, cancelExecutorJobCommand, reconcileExecutorJobCommand } from "../../src/v2/ui-api/commands/executor-commands.ts";
 import { validateDomainPackCommand, previewDomainPackWorkflowCommand, publishDomainPackCommand } from "../../src/v2/ui-api/commands/domain-pack-commands.ts";
@@ -46,6 +46,14 @@ test("runtime server exposes UI page model and command envelopes", async () => {
     assert.equal(command.result.accepted, false);
     assert.equal(command.result.status, "rejected");
     assert.match(command.result.nextSuggestedActions.join(" "), /select an existing run/i);
+
+    const rewindResponse = await fetch(`${server.url}/api/v2/sessions/${encodeURIComponent("sess-root")}/rewind`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ commandId: "cmd-rewind", actor: { type: "user" }, payload: { checkpointId: "chk-1", reason: "operator rewind" } }),
+    });
+    const rewindPayload = await rewindResponse.json() as { kind: string; result: { accepted: boolean } };
+    assert.equal(rewindPayload.kind, "command-result");
   } finally {
     await server.close();
   }
@@ -134,6 +142,8 @@ test("sessions memory page supports lineage and memory decisions through durable
   assert.equal(forkSessionCommand(db, { sessionId: "sess-root", commandId: "cmd-fork", actor: { type: "user" }, payload: { checkpointId: "chk-1" } }).accepted, true);
   assert.equal(resetSessionCommand(db, { sessionId: "sess-root", commandId: "cmd-reset", actor: { type: "user" }, payload: { checkpointId: "chk-1" } }).accepted, true);
   assert.equal(rollbackSessionCommand(db, { sessionId: "sess-root", commandId: "cmd-rollback", actor: { type: "user" }, payload: { checkpointId: "chk-1" } }).accepted, true);
+  const rewindResult = rewindSessionCommand(db, { sessionId: "sess-root", commandId: "cmd-rewind-compatible", actor: { type: "user" }, payload: { checkpointId: "chk-1", reason: "rewind via compatible command path" } });
+  assert.equal(rewindResult.accepted, true);
   assert.equal(approveMemoryCommand(db, { memoryId: "mem-1", commandId: "cmd-approve", actor: { type: "user" }, payload: { reason: "relevant" } }).accepted, true);
   assert.equal(rejectMemoryCommand(db, { memoryId: "mem-1", commandId: "cmd-reject", actor: { type: "user" }, payload: { reason: "low value" } }).accepted, true);
   assert.equal(doNotInjectMemoryCommand(db, { memoryId: "mem-1", commandId: "cmd-exclude", actor: { type: "user" }, payload: { reason: "conflict" } }).accepted, true);
