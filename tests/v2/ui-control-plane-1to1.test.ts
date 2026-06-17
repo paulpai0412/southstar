@@ -80,6 +80,14 @@ test("workflow canvas model exposes real DAG and recovery command effects", asyn
   assert.equal(retryTaskCommand(db, { runId: run.runId, taskId, commandId: "cmd-retry", actor: { type: "user", id: "tester" }, payload: { reason: "test retry" } }).accepted, true);
   assert.equal(requestTaskSessionForkCommand(db, { runId: run.runId, taskId, commandId: "cmd-fork", actor: { type: "user", id: "tester" }, payload: { reason: "test fork" } }).accepted, true);
   assert.equal(requestWorkflowRevisionCommand(db, { runId: run.runId, taskId, commandId: "cmd-revision", actor: { type: "user", id: "tester" }, payload: { prompt: "split testing" } }).accepted, true);
+  const recoveryRows = db.prepare(`
+    select payload_json from runtime_resources
+    where run_id = ? and task_id = ? and resource_type = 'recovery_decision'
+  `).all(run.runId, taskId) as Array<{ payload_json: string }>;
+  assert.equal(recoveryRows.length >= 1, true);
+  const parsed = recoveryRows.map((row) => JSON.parse(row.payload_json));
+  assert.equal(parsed.some((payload) => payload.schemaVersion === "southstar.recovery-decision.v1"), true);
+
   const after = buildWorkflowCanvasPageModel(db, { runId: run.runId, selectedTaskId: taskId });
   assert.equal(after.revisionTimeline.length >= 1, true);
   assert.equal(after.rootSessionDecisions.length >= 3, true);
