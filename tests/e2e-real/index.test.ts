@@ -15,6 +15,10 @@ import { runUiLoopEngineeringControlPlaneScenario } from "./scenarios/ui-loop-en
 import { runVoiceCommandPolicyScenario } from "./scenarios/voice-command-policy.ts";
 import { runExecutorObservabilityRealScenario } from "./scenarios/executor-observability-real.ts";
 import { runArtifactEvidenceValidatorRealScenario } from "./scenarios/artifact-evidence-validator-real.ts";
+import { todoWebFeatureScenario } from "./scenarios/todo-web-feature.ts";
+import { markdownTableBugfixScenario } from "./scenarios/markdown-table-bugfix.ts";
+import { docsCliUsageScenario } from "./scenarios/docs-cli-usage.ts";
+import { refactorSafetyNetScenario } from "./scenarios/refactor-safety-net.ts";
 import {
   assertNoDurableSouthstarFolders,
   assertSqliteEvidence,
@@ -27,6 +31,18 @@ import { assertPhase1QuantitativeGates } from "../../src/v2/quality/phase1-gates
 import { assertPhase15QuantitativeGates } from "../../src/v2/quality/phase15-gates.ts";
 import { assertDomainPackDynamicQuantitativeGates } from "../../src/v2/quality/domain-pack-dynamic-gates.ts";
 import { assertArtifactEvidenceGates } from "../../src/v2/quality/artifact-evidence-gates.ts";
+
+test("productized non-calc scenario contracts are defined", () => {
+  for (const scenario of [
+    todoWebFeatureScenario,
+    markdownTableBugfixScenario,
+    docsCliUsageScenario,
+    refactorSafetyNetScenario,
+  ]) {
+    assert.match(scenario.id, /feature|bugfix|docs|refactor/);
+    assert.doesNotMatch(scenario.goalPrompt, /calc/i);
+  }
+});
 
 test("Phase 1 real E2E suite", async () => {
   const e2eStartedAt = Date.now();
