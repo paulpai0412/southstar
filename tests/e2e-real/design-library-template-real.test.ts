@@ -18,3 +18,21 @@ test("Design Library template real E2E develops todo-web feature issue through s
   assert.match(result.runId, /^run-/);
   assert.match(result.templateVersionId, /^ver-/);
 });
+
+test("Design Library real E2E recovers incomplete evidence with compact retry", async () => {
+  const env = await loadRealE2EEnv();
+  const result = await runDesignLibraryTemplateRealScenario(env, { recoveryMode: "compact-retry" });
+  assert.match(result.runId, /^run-/);
+});
+
+test("Design Library real E2E forks from checkpoint after rejected branch", async () => {
+  const env = await loadRealE2EEnv();
+  const result = await runDesignLibraryTemplateRealScenario(env, { recoveryMode: "fork-from-checkpoint" });
+  assert.match(result.runId, /^run-/);
+});
+
+test("Design Library real E2E rolls back workspace before recovered attempt", async () => {
+  const env = await loadRealE2EEnv();
+  const result = await runDesignLibraryTemplateRealScenario(env, { recoveryMode: "rollback-workspace" });
+  assert.match(result.runId, /^run-/);
+});

@@ -7,7 +7,7 @@ import { applyWorkflowTemplatePatch } from "../../../src/v2/design-library/patch
 import { approveDraftForRun, validateTemplateFromRun } from "../../../src/v2/design-library/lifecycle.ts";
 import { compileTemplateVersionToManifest } from "../../../src/v2/design-library/compiler.ts";
 import { matchValidatedTemplateForIssue } from "../../../src/v2/design-library/reuse.ts";
-import { assertDesignLibraryQuantitativeGates, assertDesignLibraryRealE2EGates } from "../../../src/v2/quality/design-library-gates.ts";
+import { assertDesignLibraryQuantitativeGates, assertDesignLibraryRealE2EGates, assertDesignLibrarySessionRecoveryGates } from "../../../src/v2/quality/design-library-gates.ts";
 import { upsertRuntimeResource } from "../../../src/v2/stores/resource-store.ts";
 import type { RealE2EEnv } from "../env.ts";
 import {
@@ -21,8 +21,11 @@ import {
   waitForTorkJob,
 } from "./harness.ts";
 
+export type DesignLibraryRecoveryMode = "none" | "compact-retry" | "fork-from-checkpoint" | "rollback-workspace";
+
 export async function runDesignLibraryTemplateRealScenario(
   env: RealE2EEnv,
+  options: { recoveryMode?: DesignLibraryRecoveryMode } = {},
 ): Promise<{ runId: string; repo: string; templateVersionId: string; durationMs: number }> {
   assertPiHostAdapterE2E(env);
   const startedAt = Date.now();
@@ -39,8 +42,17 @@ export async function runDesignLibraryTemplateRealScenario(
     assert.equal(seedGate.ok, true, seedGate.failures.join("\n"));
 
     const issue = todoWebFeatureIssuePacket(repo);
+    const recoveryInstructions = recoveryModeInstructions(options.recoveryMode ?? "none");
+    const issueWithRecovery = recoveryInstructions.length === 0
+      ? issue
+      : {
+        ...issue,
+        body: [issue.body, ...recoveryInstructions].join("\n"),
+        acceptanceCriteria: [...issue.acceptanceCriteria, ...recoveryInstructions],
+      };
+
     const design = await createWorkflowDesignDraftFromIssue(context.db, {
-      issue,
+      issue: issueWithRecovery,
       actorType: "llm",
       plannerClient: context.plannerClient,
     });
@@ -71,12 +83,12 @@ export async function runDesignLibraryTemplateRealScenario(
 
     const manifest = compileTemplateVersionToManifest(context.db, {
       templateVersionId: approved.templateVersionId,
-      issue,
+      issue: issueWithRecovery,
       runInputs: {
         repoPath: repo,
-        issueTitle: issue.title,
-        issueBody: issue.body,
-        acceptanceCriteria: issue.acceptanceCriteria,
+        issueTitle: issueWithRecovery.title,
+        issueBody: issueWithRecovery.body,
+        acceptanceCriteria: issueWithRecovery.acceptanceCriteria,
       },
       compilerVersion: "design-library-compiler-v1",
     });
@@ -144,9 +156,15 @@ export async function runDesignLibraryTemplateRealScenario(
     });
     assert.equal(e2eGate.ok, true, e2eGate.failures.join("\n"));
 
+    if ((options.recoveryMode ?? "none") !== "none") {
+      const recoveryGate = assertDesignLibrarySessionRecoveryGates(context.db, { runId: run.runId });
+      assert.equal(recoveryGate.ok, true, recoveryGate.failures.join("\n"));
+    }
+
+    const reuseIssue = todoWebFeatureIssuePacket(repo);
     const reuse = matchValidatedTemplateForIssue(context.db, {
       issue: {
-        ...issue,
+        ...reuseIssue,
         title: "Todo-web: add tags and filtered views",
         body: "Another low-risk todo-web feature issue with complete repository path and acceptance criteria.",
       },
@@ -220,4 +238,26 @@ function assertCheckerArtifactEvidenceAccepted(
   };
   assert.equal(evidence.evidenceItems?.some((item) => item.kind === "command-output" && item.status === "present"), true);
   assert.equal(evidence.evidenceItems?.some((item) => item.kind === "test-result" && item.status === "present"), true);
+}
+
+function recoveryModeInstructions(mode: DesignLibraryRecoveryMode): string[] {
+  if (mode === "compact-retry") {
+    return [
+      "Session recovery test mode: compact-retry.",
+      "The first checker artifact must omit testResults evidence so Southstar can trigger retry-same-agent recovery. The recovered attempt must include complete commandsRun, testResults, and artifactEvidence.",
+    ];
+  }
+  if (mode === "fork-from-checkpoint") {
+    return [
+      "Session recovery test mode: fork-from-checkpoint.",
+      "The first implementation branch should intentionally miss due-date persistence so the checker rejects the product direction. The forked recovery branch must implement priority labels, due dates, overdue filtering, and persistence completely.",
+    ];
+  }
+  if (mode === "rollback-workspace") {
+    return [
+      "Session recovery test mode: rollback-workspace.",
+      "The first implementation branch should create a failing workspace mutation in src/todo-store.ts or src/app.ts so Southstar performs rollback preview/apply before a recovered attempt fixes the feature.",
+    ];
+  }
+  return [];
 }
