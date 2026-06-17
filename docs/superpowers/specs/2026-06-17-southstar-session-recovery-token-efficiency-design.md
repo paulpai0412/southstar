@@ -604,87 +604,90 @@ Hard rules:
 - Workspace rollback must perform real git operations.
 - SQLite must contain checkpoint, recovery decision, context packet, task envelope, lineage, token telemetry, artifact/evidence, and callback evidence.
 
-### Fixture repo: JSON Schema Tooling
+### Base E2E: Design Library real scenario
 
-Create a realistic fixture repo, not a toy calculator:
+Use the existing real E2E family as the basis for session management tests:
 
-```text
-json-schema-tooling-fixture/
-  package.json
-  src/
-    normalize-config.ts
-    validate-schema.ts
-  schemas/
-    app-config.schema.json
-  fixtures/
-    valid-app-config.json
-    invalid-app-config.json
-  tests/
-    normalize-config.test.ts
-    validate-schema.test.ts
-  README.md
-```
+- Scenario: `tests/e2e-real/scenarios/design-library-template-real.ts`
+- Test entry: `tests/e2e-real/design-library-template-real.test.ts`
+- Fixture repo helper: `prepareTodoWebFeatureIssueRepo(...)`
+- Fixture issue: `todoWebFeatureIssuePacket(repo)`
+- Runtime path: Design Library seed -> issue workflow draft -> patch -> approve template -> compile manifest -> `createRunFromDraft` -> real Tork/Docker execution -> real Pi harness/planner path -> callback ingestion -> template validation from run.
 
-The fixture models a real tool repo with schema validation, config normalization, fixtures, tests, docs, git history, and recoverable workspace state.
+The base scenario already enforces important non-toy constraints:
 
-### E2E Case 1: Real compact retry
+- no calc helpers or calc fixture
+- no fake/mock/smoke/builtin shortcut in the scenario source
+- Pi planner and Pi harness mode must be `http` or `sdk`
+- tasks use Pi harness definitions
+- accepted artifacts, complete evidence packets, validator results, stop condition, executor bindings, and `template.validated_from_run` evidence are required
+- the target repo is a todo-web feature issue with real TypeScript app files, tests, README, localStorage behavior, and browser verification
 
-Purpose: verify `retry-same-agent` with compact context.
+Session-management E2E must extend this base scenario instead of introducing a separate JSON-schema fixture. The resulting tests should remain Design Library aware: compiled templates, agent specs, skills, contracts, validators, and template lifecycle evidence must still be present after recovery.
+
+### E2E Case 1: Design Library real compact retry
+
+Purpose: verify `retry-same-agent` with compact context on the Design Library todo-web workflow.
 
 Failure injection:
 
-- first real runner attempt produces an artifact missing evidence fields such as `commandsRun`, `testResults`, or `artifactEvidence`
+- use a Design Library skill/contract or controlled task prompt variant that causes the first real runner attempt for the `implementer` or `checker` task to produce incomplete evidence, such as missing `commandsRun`, `testResults`, or `artifactEvidence`
+- the callback must still come from the real runner path; do not insert a synthetic callback
 
 Expected evidence:
 
-- `before-recovery` checkpoint exists
+- `before-recovery` checkpoint exists for the failed task
 - `recovery_decision(selectedStrategy=retry-same-agent)` exists
-- new compact `context_packet` exists
-- new matching `task_envelope.agentPrompt` exists
+- a new compact `context_packet` exists and references the Design Library compiled workflow/task
+- the new `task_envelope.agentPrompt` matches the rebuilt context packet
+- the failed suffix is summarized, not replayed in full
 - callback is real
 - final artifact is accepted
+- complete evidence packet and validator results exist
 - token telemetry is present
+- Design Library gates still pass, including template validation from the recovered run
 
-### E2E Case 2: Real fork-from-checkpoint
+### E2E Case 2: Design Library real fork-from-checkpoint
 
-Purpose: verify branch creation and preserved old branch.
+Purpose: verify branch creation and preserved old branch in the Design Library todo-web workflow.
 
 Failure injection:
 
-- first branch changes the JSON schema to accept invalid config instead of fixing the normalizer
-- checker/evaluator rejects the approach because schema contract was weakened
+- first branch takes a rejected product/design direction, for example implementing priority labels without due-date persistence or weakening checker/browser evidence requirements
+- checker/evaluator rejects the branch because it fails the todo-web acceptance criteria or Design Library verification contract
 
 Expected evidence:
 
-- fork from task-start or before-recovery checkpoint
+- fork originates from the task-start or before-recovery checkpoint for the affected Design Library task
 - new `session_node(parentSessionId, baseCheckpointId)` exists
-- old branch remains inspectable
-- new compact context is created
-- real runner completes new branch
+- old branch remains inspectable and is not overwritten
+- new compact recovery context includes Design Library template/version/task identity and accepted upstream artifact summaries
+- real runner completes the new branch
 - read model shows old and new branch lineage
 - final branch artifact is accepted
+- Design Library lifecycle evidence remains coherent: compiledFrom metadata, accepted artifacts, complete evidence, stop condition, and `template.validated_from_run`
 
-### E2E Case 3: Real rollback-workspace
+### E2E Case 3: Design Library real rollback-workspace
 
-Purpose: verify real git rollback and recovery dispatch.
+Purpose: verify real git rollback and recovery dispatch on the todo-web fixture repo.
 
 Failure injection:
 
-- runner modifies `schemas/app-config.schema.json` incorrectly
-- tests fail
-- git diff is non-empty
+- real runner modifies todo-web workspace incorrectly, for example breaking `src/todo-store.ts`, `src/app.ts`, or README/test alignment so Docker `npm test` or browser behavior verification fails
+- git diff is non-empty before rollback
 
 Expected evidence:
 
-- workspace snapshot exists
+- workspace snapshot exists for the task
 - rollback preview exists
 - rollback is applied through real git operation
 - `worktree_rollback` exists
-- git diff returns to expected state
-- recovery attempt is dispatched
+- git diff returns to the expected pre-recovery state or to the approved rollback target
+- recovery attempt is dispatched after rollback
 - real callback is received
-- tests pass
-- artifact accepted
+- Docker tests and todo-web browser behavior verification pass
+- artifact is accepted
+- Design Library gates still pass after recovery
 
 ## 12. Unit and Integration Test Coverage
 
@@ -730,7 +733,7 @@ The design is complete when implementation demonstrates:
 7. Context rebuild creates immutable context packets and matching prompts.
 8. Token telemetry is recorded for recovery attempts.
 9. Read models expose checkpoints, branches, operations, and token telemetry.
-10. Real E2E cases using the JSON Schema Tooling fixture pass without fake adapters, mocked callbacks, smoke-only assertions, or calc scenarios.
+10. Real E2E cases extend the Design Library real todo-web scenario and pass without fake adapters, mocked callbacks, smoke-only assertions, or calc scenarios.
 
 ## 14. Non-goals for v1
 
@@ -758,6 +761,8 @@ Likely areas to modify:
 - `src/v2/read-models/sessions-memory.ts`
 - `src/v2/ui-api/page-models/workflow-canvas.ts`
 - `src/v2/ui-api/page-models/sessions-memory.ts`
+- `tests/e2e-real/scenarios/design-library-template-real.ts`
+- `tests/e2e-real/design-library-template-real.test.ts`
 - `tests/e2e-real/scenarios/*`
 
 The implementation should preserve current table structure and use `runtime_resources` plus `workflow_history` for new durable facts.
