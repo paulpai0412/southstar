@@ -71,12 +71,17 @@ function buildHarnessPrompt(input: HarnessRunInput, cwd: string): string {
   ].filter(Boolean).join("\n");
 }
 
-function resolvedSkillInstructions(skills: Array<{ skillId: string; instructions: string }>): string[] {
+function resolvedSkillInstructions(skills: Array<{ skillId: string; version?: string; instructions: string }>): string[] {
   if (skills.length === 0) return [];
   return [
     "",
-    "Resolved skill instructions:",
-    ...skills.map((skill) => `## ${skill.skillId}\n${skill.instructions.trim()}`),
+    "=== SKILL INSTRUCTIONS ===",
+    ...skills.map((skill) => [
+      `## ${skill.skillId}${skill.version ? `@${skill.version}` : ""}`,
+      skill.instructions.trim(),
+    ].join("\n\n")),
+    "=== END SKILL INSTRUCTIONS ===",
+    "",
   ];
 }
 

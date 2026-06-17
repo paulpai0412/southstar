@@ -7,6 +7,7 @@ import { runDesignLibraryTemplateRealScenario } from "./scenarios/design-library
 test("Design Library template real E2E develops todo-web feature issue through software-development workflow", async () => {
   const source = readFileSync(new URL("./scenarios/design-library-template-real.ts", import.meta.url), "utf8");
   assert.equal(/calc\s+sum|software-change|assertCalcSum|softwareGoalPrompt/.test(source), false, "new E2E must not reuse old calc-sum scenario helpers");
+  assert.equal(/artifactEvidenceValidatorGoalPrompt|prepareSoftwareFixtureRepo|assertFixtureTests/.test(source), false, "new E2E must not use calc/software fixture helpers");
   assert.equal(/fake|mock|smoke|codex|opencode|builtin-agent/i.test(source), false, "new E2E must execute through Pi host adapter path only");
 
   const env = await loadRealE2EEnv();

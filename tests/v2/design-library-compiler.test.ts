@@ -36,6 +36,34 @@ test("approved template compiles from immutable version refs into a valid Tork m
   assert.equal(validation.ok, true, JSON.stringify(validation.issues));
 });
 
+test("compiler assigns task-specific software-dev skill refs and records skill version refs", async () => {
+  const db = openSouthstarDb(":memory:");
+  seedSoftwareDevDesignLibrary(db, { actorType: "migration" });
+  const issue = todoIssue("/tmp/todo-web");
+  const draft = await createWorkflowDesignDraftFromIssue(db, {
+    issue,
+    actorType: "llm",
+    plannerClient: { generate: async () => "{}" },
+  });
+  const approved = approveDraftForRun(db, { draftId: draft.draftId, approvedBy: "user", version: "1.0.0" });
+
+  const manifest = compileTemplateVersionToManifest(db, {
+    templateVersionId: approved.templateVersionId,
+    issue,
+    runInputs: { repoPath: issue.repoPath, issueTitle: issue.title, issueBody: issue.body, acceptanceCriteria: issue.acceptanceCriteria },
+    compilerVersion: "design-library-compiler-v1",
+  });
+
+  const refsByTask = Object.fromEntries(manifest.tasks.map((task) => [task.id, task.skillRefs ?? []]));
+  assert.equal((refsByTask.explorer ?? []).includes("software-dev.skill.explorer-context"), true);
+  assert.equal((refsByTask.planner ?? []).includes("software-dev.skill.planner-planning"), true);
+  assert.equal((refsByTask.implementer ?? []).includes("software-dev.skill.implementer-implementation"), true);
+  assert.equal((refsByTask.checker ?? []).includes("software-dev.skill.checker-verification"), true);
+  assert.equal((refsByTask.summarizer ?? []).includes("software-dev.skill.summarizer-completion"), true);
+  assert.equal(manifest.agentProfiles.some((profile) => (profile.skillRefs?.length ?? 0) > 0), false);
+  assert.equal((manifest.compiledFrom?.libraryVersionRefs ?? []).some((ref) => ref.includes("software-dev-skill")), true);
+});
+
 function todoIssue(repoPath: string) {
   return {
     title: "Todo-web: add priority labels, due dates, and overdue filter",

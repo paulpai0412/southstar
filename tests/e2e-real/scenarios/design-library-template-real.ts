@@ -122,6 +122,12 @@ export async function runDesignLibraryTemplateRealScenario(
     await waitForTorkJob(env.torkBaseUrl, run.tork.jobId, 15 * 60 * 1000);
     await waitForRunStatus(context.db, run.runId, ["passed", "completed"], 120_000);
 
+    assertSkillSnapshotsMaterialized(context.db, run.runId, "checker", [
+      "software-dev.skill.artifact-generator-base",
+      "software-dev.skill.checker-verification",
+    ]);
+    assertCheckerArtifactEvidenceAccepted(context.db, run.runId);
+
     await assertTodoWebFeatureImplemented(repo);
 
     validateTemplateFromRun(context.db, {
@@ -156,4 +162,62 @@ export async function runDesignLibraryTemplateRealScenario(
   } finally {
     await callback.close();
   }
+}
+
+function assertSkillSnapshotsMaterialized(
+  db: ReturnType<typeof createScenarioContext>["db"],
+  runId: string,
+  taskId: string,
+  expectedSkillIds: string[],
+): void {
+  const envelopeRow = db.prepare(`
+    select payload_json from runtime_resources
+    where resource_type = 'task_envelope' and run_id = ? and task_id = ?
+    order by updated_at desc limit 1
+  `).get(runId, taskId) as { payload_json: string } | undefined;
+  assert.ok(envelopeRow, `missing task envelope for ${runId}/${taskId}`);
+
+  const envelope = JSON.parse(envelopeRow.payload_json) as {
+    skills?: Array<{ skillId?: string; instructions?: string }>;
+  };
+  const skillIds = (envelope.skills ?? []).map((skill) => skill.skillId);
+
+  for (const expected of expectedSkillIds) {
+    assert.equal(skillIds.includes(expected), true, `missing skill ${expected}`);
+    const skill = (envelope.skills ?? []).find((candidate) => candidate.skillId === expected);
+    assert.equal(typeof skill?.instructions === "string" && skill.instructions.length > 100, true, `skill ${expected} instructions too small`);
+  }
+}
+
+function assertCheckerArtifactEvidenceAccepted(
+  db: ReturnType<typeof createScenarioContext>["db"],
+  runId: string,
+): void {
+  const artifactRow = db.prepare(`
+    select payload_json from runtime_resources
+    where resource_type = 'artifact' and run_id = ? and task_id = 'checker'
+    order by updated_at desc limit 1
+  `).get(runId) as { payload_json: string } | undefined;
+  assert.ok(artifactRow, `missing checker artifact for ${runId}`);
+
+  const artifactPayload = JSON.parse(artifactRow.payload_json) as {
+    artifact?: Record<string, unknown>;
+  };
+  const artifact = artifactPayload.artifact ?? artifactPayload;
+  for (const field of ["summary", "commandsRun", "testResults", "checkerFindings", "risks"]) {
+    assert.equal(Object.prototype.hasOwnProperty.call(artifact, field), true, `checker artifact missing ${field}`);
+  }
+
+  const evidenceRow = db.prepare(`
+    select payload_json from runtime_resources
+    where resource_type = 'evidence_packet' and run_id = ? and task_id = 'checker'
+    order by updated_at desc limit 1
+  `).get(runId) as { payload_json: string } | undefined;
+  assert.ok(evidenceRow, `missing checker evidence packet for ${runId}`);
+
+  const evidence = JSON.parse(evidenceRow.payload_json) as {
+    evidenceItems?: Array<{ kind?: string; status?: string }>;
+  };
+  assert.equal(evidence.evidenceItems?.some((item) => item.kind === "command-output" && item.status === "present"), true);
+  assert.equal(evidence.evidenceItems?.some((item) => item.kind === "test-result" && item.status === "present"), true);
 }

@@ -183,6 +183,23 @@ test("treats nested suite statuses as present when all nested checks pass", () =
   assert.equal(packet.evidenceItems[0]?.status, "present");
 });
 
+test("derives test-result evidence from completion report tests string entries", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-1",
+    taskId: "summarizer",
+    artifactRef: "artifact-run-1-summarizer",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: {
+      tests: ["npm test passed: 5 passed, 0 failed"],
+    },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness, { requiredCount: 1, presentCount: 1, missingKinds: [] });
+  assert.equal(packet.evidenceItems[0]?.kind, "test-result");
+  assert.equal(packet.evidenceItems[0]?.status, "present");
+});
+
 test("builds artifact-ref evidence from structured acceptedArtifacts entries", () => {
   const packet = buildEvidencePacket({
     runId: "run-1",

@@ -34,6 +34,7 @@ import { createSqliteSessionGraphProvider } from "../session-graph/sqlite-provid
 import { createGitWorkspaceSnapshotProvider } from "../workspace/git-provider.ts";
 import type { WorkspaceSnapshotRef } from "../workspace/types.ts";
 import { resolveSkillSnapshots } from "../skills/resolver.ts";
+import { createLibraryBackedSkillCatalog } from "../skills/library-backed-catalog.ts";
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import {
   buildExecutorOpsModel,
@@ -868,18 +869,20 @@ function latestContextPacket(
 
 function resolveTaskSkills(db: SouthstarDb, runId: string, task: SouthstarWorkflowManifest["tasks"][number]): ResolvedSkillSnapshot[] {
   const skillRefs = task.skillRefs ?? [];
-  return skillRefs.map((skillRef) => {
-    const resourceKey = `${runId}:${task.id}:${skillRef}`;
+  if (skillRefs.length === 0) return [];
+
+  const catalog = createLibraryBackedSkillCatalog(db);
+  const expectedSnapshots = resolveSkillSnapshots(db, {
+    runId,
+    taskId: task.id,
+    skillRefs,
+    catalog,
+  });
+
+  return expectedSnapshots.map((snapshot) => {
+    const resourceKey = `${runId}:${task.id}:${snapshot.skillId}`;
     const existing = getResourceByKey(db, "skill_snapshot", resourceKey);
-    if (existing?.status === "resolved") {
-      return existing.payload as ResolvedSkillSnapshot;
-    }
-    const [snapshot] = resolveSkillSnapshots(db, {
-      runId,
-      taskId: task.id,
-      skillRefs: [skillRef],
-    });
-    return snapshot;
+    return existing?.status === "resolved" ? existing.payload as ResolvedSkillSnapshot : snapshot;
   });
 }
 

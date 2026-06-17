@@ -62,5 +62,39 @@ function validPayloads(): Record<string, unknown> {
     policy_bundle: { schemaVersion: "southstar.library.policy_bundle.v1", policyTypes: ["tool"], tool: { allowedTools: ["bash", "read", "edit"], deniedTools: ["secret-read"], requiresApprovalFor: [], networkPolicy: "none", filesystemPolicy: "workspace-write", shellPolicy: "workspace-shell" } },
     workflow_template: validTemplate(),
     workflow_recipe: { schemaVersion: "southstar.library.workflow_recipe.v1", baseTemplateRef: "software-dev.template.issue-to-pr-style-todo-web@1.0.0", adaptationRules: [{ condition: "requires browser evidence", action: "add-checker", parameters: { capability: "browser" } }], allowedAgentSpecRefs: ["software-dev.agent.checker@1.0.0"], allowedCapabilityRefs: ["software-dev.capability.browser-ux-verification@1.0.0"], maxTasks: 8, maxParallelTasks: 2 },
+    skill_spec: {
+      schemaVersion: "southstar.library.skill_spec.v1",
+      skillType: "specialized",
+      title: "Checker Verification",
+      description: "Verify implementation outputs and return verification artifact.",
+      baseSkillRef: "software-dev.skill.artifact-generator-base",
+      instructions: {
+        format: "markdown",
+        content: "# Checker Verification Skill\n\nReturn contract-valid JSON.",
+      },
+      domainRefs: ["software"],
+      roleRefs: ["checker"],
+      taskRefs: ["checker"],
+      contractRefs: ["software-dev.contract.verification-artifact"],
+      designedFor: ["pi-agent"],
+      allowedTools: ["read", "search", "shell"],
+      requiredMounts: ["/workspace/repo"],
+      mcpRequirements: [],
+      fieldGuidance: {
+        summary: {
+          sectionId: "#field-summary",
+          description: "Brief summary",
+          dataType: "string",
+          generationSteps: ["Summarize verification"],
+          example: "All checks passed",
+          validation: ["Must be non-empty"],
+        },
+      },
+      repairGuidance: {
+        template: "Missing fields: {missingFieldsList}",
+        fieldReferenceFormat: "- {field} -> {sectionId}: {description}",
+      },
+      provenance: { source: "seed", createdBy: "migration" },
+    },
   };
 }

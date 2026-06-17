@@ -219,6 +219,48 @@ function objectTestEvidence(
     };
   }
 
+  const tests = artifact.tests;
+  if (Array.isArray(tests)) {
+    const objectEntry = tests.find((item) => isRecord(item));
+    if (isRecord(objectEntry)) {
+      const status = valueStatus(objectEntry.status ?? objectEntry.result ?? objectEntry.outcome)
+        ?? (objectEntry.passed === true || objectEntry.ok === true ? "present" : undefined)
+        ?? statusFromCounts(objectEntry)
+        ?? nestedStatusFromResultTree(objectEntry)
+        ?? "invalid";
+      const summary = typeof objectEntry.summary === "string"
+        ? objectEntry.summary
+        : typeof objectEntry.output === "string"
+          ? objectEntry.output
+          : "tests evidence present";
+      return {
+        kind: "test-result",
+        status,
+        summary,
+        sourceRef: "artifact.tests",
+        sha256: shortHash(JSON.stringify(objectEntry)),
+        capturedAt: now,
+        reproducibleCommand: splitCommand(findTestCommand(commands)),
+        redactionApplied: true,
+      };
+    }
+
+    const stringEntry = tests.find((item): item is string => typeof item === "string" && item.length > 0);
+    if (stringEntry) {
+      const status = valueStatus(stringEntry) ?? (/(pass|success|ok)/i.test(stringEntry) ? "present" : "invalid");
+      return {
+        kind: "test-result",
+        status,
+        summary: stringEntry,
+        sourceRef: "artifact.tests",
+        sha256: shortHash(stringEntry),
+        capturedAt: now,
+        reproducibleCommand: splitCommand(findTestCommand(commands)),
+        redactionApplied: true,
+      };
+    }
+  }
+
   const artifactEvidence = artifact.artifactEvidence;
   if (Array.isArray(artifactEvidence)) {
     const evidence = artifactEvidence.find((item) => {

@@ -1,3 +1,5 @@
+import type { SkillFieldGuidance, SkillRepairGuidance } from "../design-library/types.ts";
+
 export type SkillSourceDefinition = {
   skillId: string;
   version: string;
@@ -6,6 +8,9 @@ export type SkillSourceDefinition = {
   requiredMounts: string[];
   mcpRequirements: string[];
   artifactContracts: string[];
+  baseSkillRefs?: string[];
+  fieldGuidance?: Record<string, SkillFieldGuidance>;
+  repairGuidance?: SkillRepairGuidance;
 };
 
 export type ResolvedSkillSnapshot = SkillSourceDefinition & {

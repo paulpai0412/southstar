@@ -148,7 +148,10 @@ test("Pi SDK agent harness runs mounted workspace tasks from /workspace/repo", a
   assert.match(prompts[0], /Execution workspace: \/workspace\/repo/);
   assert.match(prompts[0], /change directory to \/workspace\/repo/i);
   assert.match(prompts[0], /Do not modify \/app/);
+  assert.match(prompts[0], /=== SKILL INSTRUCTIONS ===/);
+  assert.match(prompts[0], /## software\.calc-cli@2026-06-12/);
   assert.match(prompts[0], /Use the mounted repository\./);
+  assert.match(prompts[0], /=== END SKILL INSTRUCTIONS ===/);
 });
 
 test("Pi SDK agent harness defaults v2 workspace tasks to /workspace/repo when envelope carries workspace handle", async () => {

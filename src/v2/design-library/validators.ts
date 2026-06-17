@@ -81,6 +81,32 @@ export function validateLibraryPayload(kind: LibraryDefinitionKind, payload: unk
       requireString(payload.baseTemplateRef, "baseTemplateRef", issues);
       requireArray(payload.adaptationRules, "adaptationRules", issues);
       break;
+
+    case "skill_spec":
+      if (schemaVersion !== "southstar.library.skill_spec.v1") {
+        issues.push({ path: "schemaVersion", message: "skill_spec schemaVersion must be southstar.library.skill_spec.v1" });
+      }
+      requireString(payload.title, "title", issues);
+      requireString(payload.description, "description", issues);
+      requireObject(payload.instructions, "instructions", issues);
+      if (isRecord(payload.instructions)) {
+        requireString(payload.instructions.format, "instructions.format", issues);
+        requireString(payload.instructions.content, "instructions.content", issues);
+      }
+      requireArray(payload.allowedTools, "allowedTools", issues);
+      requireArray(payload.requiredMounts, "requiredMounts", issues);
+      requireArray(payload.mcpRequirements, "mcpRequirements", issues);
+      if (payload.fieldGuidance !== undefined && !isRecord(payload.fieldGuidance)) {
+        issues.push({ path: "fieldGuidance", message: "fieldGuidance must be an object" });
+      }
+      if (payload.repairGuidance !== undefined) {
+        requireObject(payload.repairGuidance, "repairGuidance", issues);
+        if (isRecord(payload.repairGuidance)) {
+          requireString(payload.repairGuidance.template, "repairGuidance.template", issues);
+          requireString(payload.repairGuidance.fieldReferenceFormat, "repairGuidance.fieldReferenceFormat", issues);
+        }
+      }
+      break;
   }
 
   return { ok: issues.length === 0, issues };

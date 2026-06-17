@@ -2,7 +2,7 @@ import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manif
 import type { SouthstarDb } from "../stores/sqlite.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import { contentHashForPayload } from "./canonical-json.ts";
-import { getLibraryVersion } from "./store.ts";
+import { findLibraryObjectByKey, getLibraryVersion } from "./store.ts";
 import type { TodoWebFeatureIssuePacket } from "./designer.ts";
 import type { WorkflowTemplatePayload } from "./types.ts";
 
@@ -67,7 +67,7 @@ export function compileTemplateVersionToManifest(db: SouthstarDb, input: {
         validator: "schema-evaluator-v1",
         maxRepairAttempts: 2,
       },
-      skillRefs: [],
+      skillRefs: skillRefsForNode(node),
       memoryScopeRefs: ["software", "project"],
       mcpGrantRefs: [],
       subagents: [{
@@ -80,15 +80,19 @@ export function compileTemplateVersionToManifest(db: SouthstarDb, input: {
   });
 
   const inputHash = contentHashForPayload({ issue: input.issue, runInputs: input.runInputs });
+  const skillRefs = [...new Set(taskNodes.flatMap((node) => skillRefsForNode(node)))];
   const libraryVersionRefs = [
     input.templateVersionId,
     ...taskNodes
       .map((node) => node.agentSpecRef)
       .filter((value): value is string => typeof value === "string" && value.length > 0),
+    ...collectSkillVersionRefs(db, skillRefs),
   ];
 
   const agentProfiles = [
-    ...softwareDomainPack.agentProfiles.filter((profile) => profile.provider === "pi"),
+    ...softwareDomainPack.agentProfiles
+      .filter((profile) => profile.provider === "pi")
+      .map((profile) => ({ ...profile, skillRefs: [] })),
     {
       id: "software-summarizer-pi",
       name: "Software Summarizer Pi",
@@ -207,6 +211,42 @@ function profileForNode(node: WorkflowTemplatePayload["flow"]["nodes"][number]):
   };
 }
 
+function skillRefsForNode(node: WorkflowTemplatePayload["flow"]["nodes"][number]): string[] {
+  const id = `${node.id} ${node.name} ${node.roleRef ?? ""}`.toLowerCase();
+  if (id.includes("summar")) return ["software-dev.skill.summarizer-completion"];
+  if (id.includes("check") || id.includes("verify") || id.includes("browser")) return ["software-dev.skill.checker-verification"];
+  if (id.includes("planner") || id.startsWith("planner ") || id.includes(" plan ")) return ["software-dev.skill.planner-planning"];
+  if (id.includes("explorer") || id.includes("explore")) return ["software-dev.skill.explorer-context"];
+  return ["software-dev.skill.implementer-implementation"];
+}
+
+function collectSkillVersionRefs(db: SouthstarDb, skillRefs: string[]): string[] {
+  const refs: string[] = [];
+  const visited = new Set<string>();
+
+  const visit = (skillRef: string) => {
+    if (visited.has(skillRef)) return;
+    visited.add(skillRef);
+
+    const object = findLibraryObjectByKey(db, skillRef);
+    if (!object?.headVersionId) return;
+    refs.push(object.headVersionId);
+
+    const version = getLibraryVersion(db, object.headVersionId);
+    if (!version || version.definitionKind !== "skill_spec") return;
+    const payload = version.payload as { baseSkillRef?: string };
+    if (typeof payload.baseSkillRef === "string" && payload.baseSkillRef.length > 0) {
+      visit(payload.baseSkillRef);
+    }
+  };
+
+  for (const skillRef of skillRefs) {
+    visit(skillRef);
+  }
+
+  return refs;
+}
+
 function renderTaskPrompt(
   profile: ReturnType<typeof profileForNode>,
   issue: TodoWebFeatureIssuePacket,
@@ -217,12 +257,13 @@ function renderTaskPrompt(
       "Required changed files: src/todo-store.ts, src/app.ts, src/styles.css, README.md, and at least one file under test/.",
       "Overdue semantics are calendar-day based: a todo due today must NOT be overdue in any timezone; only due dates before today are overdue.",
       "Run npm test in /workspace/repo and include exact command output and test results.",
+      "Browser contract required by acceptance harness: form/input controls must expose data-testid values todo-input, todo-priority, todo-due-date, add-todo; rendered priority labels must expose data-testid todo-priority-label.",
     ]
     : profile.roleRef === "checker"
     ? [
       "Verify that priority labels render, overdue filtering works, and localStorage persistence survives reload.",
       "Run targeted timezone checks to ensure due-today is not overdue (for example with TZ=America/New_York and TZ=America/Los_Angeles).",
-      "Reject if required files were not changed, npm test did not run, or overdue semantics are timezone-buggy.",
+      "Reject if required files were not changed, npm test did not run, overdue semantics are timezone-buggy, or required browser selectors (todo-input, todo-priority, todo-due-date, add-todo, todo-priority-label, filter-overdue) are missing.",
     ]
     : profile.roleRef === "summarizer"
     ? [

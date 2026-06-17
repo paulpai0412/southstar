@@ -10,6 +10,7 @@ import type {
   LibraryActorType,
   LibraryDefinitionKind,
 } from "./types.ts";
+import { seedSoftwareDevSkills } from "./software-dev-skills.ts";
 
 type SeedObject = {
   objectKey: string;
@@ -316,6 +317,10 @@ export function seedSoftwareDevDesignLibrary(db: SouthstarDb, input: {
     });
     createdVersionIds.push(versionId);
   }
+
+  const seededSkills = seedSoftwareDevSkills(db, { actorType: input.actorType });
+  createdObjectIds.push(...seededSkills.createdObjectIds);
+  createdVersionIds.push(...seededSkills.createdVersionIds);
 
   return { createdObjectIds, createdVersionIds };
 }

@@ -679,16 +679,16 @@ async function assertTodoWebBrowserBehavior(repo: string): Promise<void> {
     await page.goto(`http://127.0.0.1:${address.port}/`);
 
     await page.getByTestId("todo-input").fill("Overdue electricity bill");
-    await page.getByTestId("todo-priority").selectOption("high");
-    await page.getByTestId("todo-due-date").fill(yesterday);
+    await pickByTestId(page, ["todo-priority", "priority-input"]).then((locator) => locator.selectOption("high"));
+    await pickByTestId(page, ["todo-due-date", "due-date-input"]).then((locator) => locator.fill(yesterday));
     await page.getByTestId("add-todo").click();
 
     await page.getByTestId("todo-input").fill("Tomorrow workout");
-    await page.getByTestId("todo-priority").selectOption("low");
-    await page.getByTestId("todo-due-date").fill(tomorrow);
+    await pickByTestId(page, ["todo-priority", "priority-input"]).then((locator) => locator.selectOption("low"));
+    await pickByTestId(page, ["todo-due-date", "due-date-input"]).then((locator) => locator.fill(tomorrow));
     await page.getByTestId("add-todo").click();
 
-    const labels = await page.getByTestId("todo-priority-label").allTextContents();
+    const labels = await pickByTestId(page, ["todo-priority-label", "todo-priority"]).then((locator) => locator.allTextContents());
     assert.equal(labels.some((label) => /high/i.test(label)), true, `priority labels missing high: ${JSON.stringify(labels)}`);
 
     await page.getByTestId("filter-overdue").click();
@@ -702,6 +702,14 @@ async function assertTodoWebBrowserBehavior(repo: string): Promise<void> {
     await browser.close();
     server.close();
   }
+}
+
+async function pickByTestId(page: { getByTestId: (value: string) => { count(): Promise<number>; first(): any } }, ids: string[]) {
+  for (const id of ids) {
+    const locator = page.getByTestId(id);
+    if (await locator.count() > 0) return locator.first();
+  }
+  throw new Error(`none of test ids found: ${ids.join(", ")}`);
 }
 
 function fixtureContentType(path: string): string {

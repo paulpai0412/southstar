@@ -5,7 +5,8 @@ export type LibraryDefinitionKind =
   | "validator_spec"
   | "policy_bundle"
   | "workflow_template"
-  | "workflow_recipe";
+  | "workflow_recipe"
+  | "skill_spec";
 
 export type LibraryActorType = "user" | "system" | "migration" | "llm" | "validator" | "runtime";
 
@@ -119,4 +120,41 @@ export type TemplateMatchResult = {
 export type LibraryValidationResult = {
   ok: boolean;
   issues: Array<{ path: string; message: string; code?: string }>;
+};
+
+export type SkillFieldGuidance = {
+  sectionId: string;
+  description: string;
+  dataType: "string" | "array" | "object" | "boolean" | "number";
+  generationSteps: string[];
+  example: unknown;
+  validation: string[];
+};
+
+export type SkillRepairGuidance = {
+  template: string;
+  fieldReferenceFormat: string;
+};
+
+export type SkillSpecPayload = {
+  schemaVersion: "southstar.library.skill_spec.v1";
+  skillType: "base" | "specialized";
+  title: string;
+  description: string;
+  baseSkillRef?: string;
+  instructions: {
+    format: "markdown";
+    content: string;
+  };
+  domainRefs: string[];
+  roleRefs?: string[];
+  taskRefs?: string[];
+  contractRefs?: string[];
+  designedFor: Array<"pi-agent" | "codex" | "opencode">;
+  allowedTools: string[];
+  requiredMounts: string[];
+  mcpRequirements: string[];
+  fieldGuidance?: Record<string, SkillFieldGuidance>;
+  repairGuidance?: SkillRepairGuidance;
+  provenance: DefinitionProvenance;
 };

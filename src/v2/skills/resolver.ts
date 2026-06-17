@@ -13,12 +13,13 @@ export type ResolveSkillSnapshotsInput = {
 
 export function resolveSkillSnapshots(db: SouthstarDb, input: ResolveSkillSnapshotsInput): ResolvedSkillSnapshot[] {
   const catalog = input.catalog ?? builtInSkillCatalog;
-  return input.skillRefs.map((skillRef) => {
-    const skill = catalog.resolve(skillRef);
+  const skills = expandSkills(input.skillRefs, catalog);
+
+  return skills.map((skill) => {
     const snapshot = toSnapshot(skill);
     upsertRuntimeResource(db, {
       resourceType: "skill_snapshot",
-      resourceKey: `${input.runId}:${input.taskId}:${skillRef}`,
+      resourceKey: `${input.runId}:${input.taskId}:${skill.skillId}`,
       runId: input.runId,
       taskId: input.taskId,
       scope: "task",
@@ -32,6 +33,37 @@ export function resolveSkillSnapshots(db: SouthstarDb, input: ResolveSkillSnapsh
     });
     return snapshot;
   });
+}
+
+function expandSkills(skillRefs: string[], catalog: SkillCatalog): SkillSourceDefinition[] {
+  const expanded: SkillSourceDefinition[] = [];
+  const emitted = new Set<string>();
+  const visiting: string[] = [];
+
+  const visit = (skillRef: string) => {
+    if (emitted.has(skillRef)) return;
+    if (visiting.includes(skillRef)) {
+      throw new Error(`skill base dependency cycle: ${[...visiting, skillRef].join(" -> ")}`);
+    }
+
+    visiting.push(skillRef);
+    const skill = catalog.resolve(skillRef);
+    for (const baseRef of skill.baseSkillRefs ?? []) {
+      visit(baseRef);
+    }
+    visiting.pop();
+
+    if (!emitted.has(skill.skillId)) {
+      expanded.push(skill);
+      emitted.add(skill.skillId);
+    }
+  };
+
+  for (const skillRef of skillRefs) {
+    visit(skillRef);
+  }
+
+  return expanded;
 }
 
 function toSnapshot(skill: SkillSourceDefinition): ResolvedSkillSnapshot {

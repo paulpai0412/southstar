@@ -1,5 +1,6 @@
 import type { AgentHarness, HarnessRunResult } from "../harness/types.ts";
 import { evaluateArtifactGate } from "./root-session.ts";
+import type { ArtifactRepairContext } from "./root-session.ts";
 import type { AnyTaskEnvelope } from "./task-envelope.ts";
 
 export type TaskRunnerEvent = {
@@ -83,6 +84,7 @@ export async function runTaskEnvelope(
       requiredFields: input.requiredFields,
       attempt,
       maxRepairAttempts,
+      repairContext: repairContextFromEnvelope(envelope),
     });
     events.push({
       eventType: "evaluator.completed",
@@ -175,6 +177,23 @@ function finalizeRuntimeMetrics(metrics: TaskRunMetrics, envelope: AnyTaskEnvelo
 function envelopeInputTokenEstimate(envelope: AnyTaskEnvelope): number {
   if (envelope.schemaVersion !== "southstar.task-envelope.v2") return 0;
   return Math.max(0, numberValue(envelope.contextPacket.tokenEstimate.total));
+}
+
+function repairContextFromEnvelope(envelope: AnyTaskEnvelope): ArtifactRepairContext | undefined {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return undefined;
+  const contract = envelope.artifactContracts[0];
+  if (!contract) return undefined;
+
+  const specialized = [...envelope.skills]
+    .reverse()
+    .find((skill) => skill.fieldGuidance && Object.keys(skill.fieldGuidance).length > 0);
+  if (!specialized?.fieldGuidance) return undefined;
+
+  return {
+    contractId: contract.id,
+    fieldGuidance: specialized.fieldGuidance,
+    repairGuidance: specialized.repairGuidance,
+  };
 }
 
 function numberValue(value: unknown): number {

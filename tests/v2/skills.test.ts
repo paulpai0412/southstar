@@ -7,7 +7,9 @@ import { buildTaskEnvelope } from "../../src/v2/agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../../src/v2/agent-runner/materializer.ts";
 import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts";
 import { createStaticSkillCatalog, builtInSkillCatalog } from "../../src/v2/skills/catalog.ts";
+import { createLibraryBackedSkillCatalog } from "../../src/v2/skills/library-backed-catalog.ts";
 import { resolveSkillSnapshots } from "../../src/v2/skills/resolver.ts";
+import { seedSoftwareDevSkills } from "../../src/v2/design-library/software-dev-skills.ts";
 import { listResources } from "../../src/v2/stores/resource-store.ts";
 import { createWorkflowRun } from "../../src/v2/stores/run-store.ts";
 import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
@@ -48,6 +50,45 @@ test("resolves skill refs into durable runtime skill snapshots", () => {
   assert.equal(resources[0].runId, "run-1");
   assert.equal(resources[0].taskId, "task-implement");
   assert.deepEqual(resources[0].payload, snapshots[0]);
+});
+
+test("library-backed catalog resolves seeded checker skill with base references", () => {
+  const db = openSouthstarDb(":memory:");
+  seedSoftwareDevSkills(db, { actorType: "migration" });
+
+  const catalog = createLibraryBackedSkillCatalog(db);
+  const checker = catalog.resolve("software-dev.skill.checker-verification");
+
+  assert.equal(checker.skillId, "software-dev.skill.checker-verification");
+  assert.deepEqual(checker.baseSkillRefs, ["software-dev.skill.artifact-generator-base"]);
+  assert.equal(checker.fieldGuidance?.summary?.sectionId, "#field-summary");
+  assert.equal(checker.fieldGuidance?.testResults?.sectionId, "#field-testResults");
+});
+
+test("resolver expands base skill before specialized skill", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, minimalRun());
+  seedSoftwareDevSkills(db, { actorType: "migration" });
+
+  const snapshots = resolveSkillSnapshots(db, {
+    runId: "run-1",
+    taskId: "task-checker",
+    skillRefs: ["software-dev.skill.checker-verification"],
+    catalog: createLibraryBackedSkillCatalog(db),
+  });
+
+  assert.deepEqual(snapshots.map((snapshot) => snapshot.skillId), [
+    "software-dev.skill.artifact-generator-base",
+    "software-dev.skill.checker-verification",
+  ]);
+  assert.equal(snapshots[1]?.fieldGuidance?.commandsRun?.sectionId, "#field-commandsRun");
+
+  const resources = listResources(db, { resourceType: "skill_snapshot", status: "resolved" })
+    .filter((resource) => resource.taskId === "task-checker");
+  assert.deepEqual(resources.map((resource) => resource.resourceKey).sort(), [
+    "run-1:task-checker:software-dev.skill.artifact-generator-base",
+    "run-1:task-checker:software-dev.skill.checker-verification",
+  ]);
 });
 
 test("built-in catalog includes the software calc CLI skill", () => {

@@ -7,12 +7,20 @@ import { persistEvaluatorResult } from "../evaluators/runner.ts";
 import { recordProgressCommentary } from "../signals/progress.ts";
 import type { AnyTaskEnvelope } from "./task-envelope.ts";
 import type { AgentHarness } from "../harness/types.ts";
+import type { SkillFieldGuidance, SkillRepairGuidance } from "../design-library/types.ts";
+
+export type ArtifactRepairContext = {
+  contractId: string;
+  fieldGuidance: Record<string, SkillFieldGuidance>;
+  repairGuidance?: SkillRepairGuidance;
+};
 
 export type ArtifactGateInput = {
   artifact: Record<string, unknown>;
   requiredFields: string[];
   attempt: number;
   maxRepairAttempts: number;
+  repairContext?: ArtifactRepairContext;
 };
 
 export type ArtifactGateResult = {
@@ -36,7 +44,12 @@ export function evaluateArtifactGate(input: ArtifactGateInput): ArtifactGateResu
     ok: false,
     missingFields,
     decision: "repair",
-    repairInstruction: `Artifact is missing required fields: ${missingFields.join(", ")}. Re-run the subagent and return a complete artifact.`,
+    repairInstruction: buildRepairInstruction({
+      missingFields,
+      attempt: input.attempt + 1,
+      maxAttempts: input.maxRepairAttempts,
+      repairContext: input.repairContext,
+    }),
     normalizedArtifact,
   };
 }
@@ -120,6 +133,7 @@ export async function runRootSessionTask(
       requiredFields,
       attempt,
       maxRepairAttempts: runtime.maxRepairAttempts,
+      repairContext: repairContextFromEnvelope(envelope),
     });
     persistEvaluatorResult(db, {
       runId: envelope.runId,
@@ -230,6 +244,55 @@ function normalizeArtifactForRequiredFields(
     }
   }
   return artifact;
+}
+
+function repairContextFromEnvelope(envelope: AnyTaskEnvelope): ArtifactRepairContext | undefined {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return undefined;
+  const contract = envelope.artifactContracts[0];
+  if (!contract) return undefined;
+
+  const specialized = [...envelope.skills]
+    .reverse()
+    .find((skill) => skill.fieldGuidance && Object.keys(skill.fieldGuidance).length > 0);
+  if (!specialized?.fieldGuidance) return undefined;
+
+  return {
+    contractId: contract.id,
+    fieldGuidance: specialized.fieldGuidance,
+    repairGuidance: specialized.repairGuidance,
+  };
+}
+
+function buildRepairInstruction(input: {
+  missingFields: string[];
+  attempt: number;
+  maxAttempts: number;
+  repairContext?: ArtifactRepairContext;
+}): string {
+  const fallback = [
+    `Artifact is missing required fields: ${input.missingFields.join(", ")}.`,
+    "Re-read your skill instructions, regenerate the complete artifact, and self-validate before submitting.",
+  ].join(" ");
+
+  const repairGuidance = input.repairContext?.repairGuidance;
+  if (!repairGuidance) return fallback;
+
+  const fieldInstructions = input.missingFields
+    .map((field) => {
+      const guidance = input.repairContext?.fieldGuidance[field];
+      if (!guidance) return `- ${field} -> check artifact contract and skill instructions`;
+      return repairGuidance.fieldReferenceFormat
+        .replaceAll("{field}", field)
+        .replaceAll("{sectionId}", guidance.sectionId)
+        .replaceAll("{description}", guidance.description);
+    })
+    .join("\n");
+
+  return repairGuidance.template
+    .replaceAll("{attempt}", String(input.attempt))
+    .replaceAll("{maxAttempts}", String(input.maxAttempts))
+    .replaceAll("{missingFieldsList}", input.missingFields.join(", "))
+    .replaceAll("{fieldInstructions}", fieldInstructions);
 }
 
 function hasValue(value: unknown): boolean {
