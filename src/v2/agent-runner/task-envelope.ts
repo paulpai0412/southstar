@@ -177,6 +177,7 @@ function renderContextPacketPrompt(
     formatBlocks("Memory", packet.selectedMemories),
     formatBlocks("Prior artifacts", packet.priorArtifacts),
     formatBlocks("Checkpoint", packet.checkpointSummary ? [packet.checkpointSummary] : []),
+    formatBlocks("Failure", packet.failureSummary ? [packet.failureSummary] : []),
     formatBlocks("Workspace", packet.workspaceSummary ? [packet.workspaceSummary] : []),
     formatBlocks("Skills", packet.skillInstructions),
     formatBlocks("MCP grants", packet.mcpGrantSummary),

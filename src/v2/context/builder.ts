@@ -6,6 +6,7 @@ import type { MemoryCandidate } from "../memory/provider.ts";
 import type { ContextBlock, ContextExclusion, ContextPacket, TokenEstimate } from "./types.ts";
 
 export type BuildContextPacketInput = {
+  contextPacketId?: string;
   runId: string;
   taskId: string;
   rootSessionId?: string;
@@ -86,7 +87,7 @@ export function buildContextPacket(db: SouthstarDb, input: BuildContextPacketInp
     throw new Error(`context packet exceeds maxInputTokens: ${tokenEstimate.total} > ${contextPolicy.maxInputTokens}`);
   }
   const packet: ContextPacket = {
-    id: `ctx-${input.runId}-${input.taskId}-attempt-${executionAttempt}`,
+    id: input.contextPacketId ?? `ctx-${input.runId}-${input.taskId}-attempt-${executionAttempt}`,
     runId: input.runId,
     taskId: input.taskId,
     rootSessionId: input.rootSessionId,
