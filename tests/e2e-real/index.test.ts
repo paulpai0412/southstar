@@ -15,6 +15,11 @@ import { runUiLoopEngineeringControlPlaneScenario } from "./scenarios/ui-loop-en
 import { runVoiceCommandPolicyScenario } from "./scenarios/voice-command-policy.ts";
 import { runExecutorObservabilityRealScenario } from "./scenarios/executor-observability-real.ts";
 import { runArtifactEvidenceValidatorRealScenario } from "./scenarios/artifact-evidence-validator-real.ts";
+import { runProductizedUiLibraryPlannerRealScenario } from "./scenarios/productized-ui-library-planner-real.ts";
+import "./scenarios/todo-web-feature.ts";
+import "./scenarios/markdown-table-bugfix.ts";
+import "./scenarios/docs-cli-usage.ts";
+import "./scenarios/refactor-safety-net.ts";
 import {
   assertNoDurableSouthstarFolders,
   assertSqliteEvidence,
@@ -57,6 +62,7 @@ test("Phase 1 real E2E suite", async () => {
   const phase15Cli = await runCliRunGoalRealScenario(env);
   await runUiLoopEngineeringControlPlaneScenario(env);
   const phase15Browser = await runUiBrowserOperationsScenario(env);
+  await runProductizedUiLibraryPlannerRealScenario(env);
   const gateContext = createScenarioContext(env);
   const runtimeTimings = collectPhase15RuntimeTimings(gateContext.db, phase15Api.runId);
   const phase15GateResult = assertPhase15QuantitativeGates(gateContext.db, {
