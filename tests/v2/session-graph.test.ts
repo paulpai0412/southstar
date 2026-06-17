@@ -56,6 +56,18 @@ test("session graph fails closed when workflow run is unknown", () => {
   }), /unknown workflow run/);
 });
 
+test("reset from checkpoint records superseded session operation", () => {
+  const db = openSouthstarDb(":memory:");
+  insertRun(db, "run-reset");
+  const graph = createSqliteSessionGraphProvider(db);
+  const session = graph.createSession({ runId: "run-reset", taskId: "checker", roleRef: "checker", agentProfileRef: "software-checker-pi" });
+  const checkpoint = graph.checkpoint({ sessionId: session.id, runId: "run-reset", taskId: "checker", contextPacketId: "ctx-reset", artifactRefs: [], transcriptSummary: "before reset" });
+  const reset = graph.reset({ runId: "run-reset", taskId: "checker", baseCheckpointId: checkpoint.id, reason: "context rot" });
+  assert.equal(reset.strategy, "reset-from-checkpoint");
+  const opCount = count(db, "session_operation");
+  assert.equal(opCount, 1);
+});
+
 test("session graph rejects cross-run recovery from another run checkpoint", () => {
   const db = openSouthstarDb(":memory:");
   insertRun(db, "run-a");

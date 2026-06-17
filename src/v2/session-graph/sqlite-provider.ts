@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../stores/sqlite.ts";
 import { appendHistoryEvent } from "../stores/history-store.ts";
 import { getResourceByKey, upsertRuntimeResource } from "../stores/resource-store.ts";
+import { recordSessionOperation } from "../session-recovery/operations.ts";
 import type { RecoveryDecision, SessionCheckpoint, SessionGraphProvider, SessionNode } from "./types.ts";
 
 export function createSqliteSessionGraphProvider(db: SouthstarDb): SessionGraphProvider {
@@ -79,6 +80,17 @@ export function createSqliteSessionGraphProvider(db: SouthstarDb): SessionGraphP
         reason: input.reason,
         baseCheckpointId: input.baseCheckpointId,
       });
+      recordSessionOperation(db, {
+        runId: input.runId,
+        taskId: input.taskId ?? checkpoint.taskId ?? "unknown-task",
+        type: "fork",
+        baseCheckpointId: input.baseCheckpointId,
+        oldSessionId: checkpoint.sessionId,
+        newSessionId: fork.id,
+        host: "southstar-native",
+        status: "succeeded",
+        fallbackUsed: false,
+      });
       return { ...fork, recoveryDecisionId: decision.id };
     },
     reset(input) {
@@ -92,7 +104,7 @@ export function createSqliteSessionGraphProvider(db: SouthstarDb): SessionGraphP
         agentProfileRef: parentSession?.agentProfileRef ?? "unknown",
         baseCheckpointId: input.baseCheckpointId,
       });
-      return persistRecoveryDecision(db, {
+      const decision = persistRecoveryDecision(db, {
         id: `recovery-${randomUUID()}`,
         runId: input.runId,
         taskId: input.taskId ?? checkpoint.taskId,
@@ -101,10 +113,22 @@ export function createSqliteSessionGraphProvider(db: SouthstarDb): SessionGraphP
         reason: input.reason,
         baseCheckpointId: input.baseCheckpointId,
       });
+      recordSessionOperation(db, {
+        runId: input.runId,
+        taskId: input.taskId ?? checkpoint.taskId ?? "unknown-task",
+        type: "reset",
+        baseCheckpointId: input.baseCheckpointId,
+        oldSessionId: checkpoint.sessionId,
+        newSessionId: resetSession.id,
+        host: "southstar-native",
+        status: "succeeded",
+        fallbackUsed: false,
+      });
+      return decision;
     },
     rollback(input) {
       const checkpoint = requireCheckpointForRun(db, input.checkpointId, input.runId);
-      return persistRecoveryDecision(db, {
+      const decision = persistRecoveryDecision(db, {
         id: `recovery-${randomUUID()}`,
         runId: input.runId,
         taskId: input.taskId ?? checkpoint.taskId,
@@ -113,6 +137,18 @@ export function createSqliteSessionGraphProvider(db: SouthstarDb): SessionGraphP
         reason: input.reason,
         restoredCheckpointId: input.checkpointId,
       });
+      recordSessionOperation(db, {
+        runId: input.runId,
+        taskId: input.taskId ?? checkpoint.taskId ?? "unknown-task",
+        type: "replay",
+        baseCheckpointId: input.checkpointId,
+        oldSessionId: checkpoint.sessionId,
+        newSessionId: checkpoint.sessionId,
+        host: "southstar-native",
+        status: "succeeded",
+        fallbackUsed: false,
+      });
+      return decision;
     },
   };
 }
