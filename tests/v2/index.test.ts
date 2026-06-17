@@ -26,6 +26,7 @@ await import("./root-session.test.ts");
 await import("./root-session-loop.test.ts");
 await import("./session-graph.test.ts");
 await import("./session-recovery-types.test.ts");
+await import("./session-recovery-telemetry.test.ts");
 await import("./workspace-snapshot.test.ts");
 await import("./signals.test.ts");
 await import("./evaluator.test.ts");
