@@ -1,5 +1,5 @@
-import { WorkflowCanvasPage } from "@/components/southstar/pages/WorkflowCanvasPage";
+import { SouthstarProductShell } from "@/components/southstar/app-shell/SouthstarProductShell";
 
 export default function Page() {
-  return <WorkflowCanvasPage />;
+  return <SouthstarProductShell initialTab="workflow" />;
 }

@@ -21,10 +21,10 @@ test("planner route uses the 1:1 shell and planner page component", () => {
   assert.doesNotMatch(page, /const .* = \[/);
 });
 
-test("all 1:1 routes and shared UI primitives exist", () => {
-  for (const route of ["planner", "workflow", "runtime", "task", "sessions", "worktree", "executor", "domain-packs", "governance"]) {
+test("legacy 1:1 routes and shared UI primitives still exist", () => {
+  for (const route of ["planner", "runtime", "task", "sessions", "worktree", "executor", "domain-packs", "governance"]) {
     const source = readFileSync(join(root, `app/${route}/page.tsx`), "utf8");
-    assert.match(source, /Page|PlannerPage|WorkflowCanvasPage|RuntimeMonitorPage|TaskDetailPage|SessionsMemoryPage|WorktreeConsolePage|ExecutorOpsPage|DomainPacksAgentStudioPage|GovernancePage/);
+    assert.match(source, /Page|PlannerPage|RuntimeMonitorPage|TaskDetailPage|SessionsMemoryPage|WorktreeConsolePage|ExecutorOpsPage|DomainPacksAgentStudioPage|GovernancePage/);
   }
   for (const component of ["Button", "Panel", "StatusBadge", "DataTable", "MetricCard", "Timeline", "CodeBlock", "GraphCanvas"]) {
     const source = readFileSync(join(root, `components/southstar/ui/${component}.tsx`), "utf8");
@@ -34,4 +34,11 @@ test("all 1:1 routes and shared UI primitives exist", () => {
   assert.match(css, /#071827/);
   assert.match(css, /#f7f9fc/);
   assert.match(css, /border-radius: 8px/);
+});
+
+test("product shell routes map to SouthstarProductShell tabs", () => {
+  for (const route of ["page", "chat/page", "workflow/page", "operations/page"]) {
+    const source = readFileSync(join(root, `app/${route}.tsx`), "utf8");
+    assert.match(source, /SouthstarProductShell/);
+  }
 });
