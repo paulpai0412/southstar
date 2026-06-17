@@ -186,3 +186,14 @@ flowchart TD
   - `src/v2/read-models/sessions-memory.ts`
   - `src/v2/ui-api/page-models/sessions-memory.ts`
 - 資料表 schema：`src/v2/stores/schema.ts`
+
+## 9. v1 Recovery Semantics Update
+
+Session recovery actions are now committed by Southstar, not directly by LLM output.
+
+- LLM/agent may suggest recovery in artifacts.
+- Evaluator/policy classifies failure facts.
+- Southstar creates `before-recovery` checkpoints and `recovery_decision` resources.
+- Recovery rebuild creates immutable `context_packet` plus matching `task_envelope.agentPrompt`.
+- Pi-native rewind/fork/resume is an optimization and falls back to Southstar-native replay.
+- Real Design Library E2E validates compact retry, fork-from-checkpoint, and rollback-workspace paths using the todo-web feature issue scenario.
