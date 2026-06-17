@@ -22,6 +22,7 @@ export function buildWorkflowCanvasPageModel(db: SouthstarDb, input: { runId: st
   const contextPackets = listResources(db, { resourceType: "context_packet" }).filter((resource) => resource.runId === input.runId);
   const evaluatorResources = listResources(db, { resourceType: "evaluator_pipeline_result" }).filter((resource) => resource.runId === input.runId);
   const recoveryResources = listResources(db, { resourceType: "recovery_decision" }).filter((resource) => resource.runId === input.runId);
+  const sessionOperations = listResources(db, { resourceType: "session_operation" }).filter((resource) => resource.runId === input.runId);
   const nodes = workflow.tasks.map((task) => {
     const packet = contextPackets.find((resource) => resource.taskId === task.id);
     const packetPayload = packet?.payload as { selectedMemories?: unknown[] } | undefined;
@@ -40,6 +41,7 @@ export function buildWorkflowCanvasPageModel(db: SouthstarDb, input: { runId: st
   const contextEdges = contextPackets.map((packet) => ({ id: `context-${packet.id}`, source: packet.taskId ?? "workflow", target: packet.taskId ?? "workflow", kind: "context-packet" as const }));
   const evaluatorEdges = evaluatorResources.filter((resource) => resource.taskId).map((resource) => ({ id: `eval-${resource.id}`, source: resource.taskId!, target: resource.taskId!, kind: "evaluator-gate" as const }));
   const recoveryEdges = recoveryResources.filter((resource) => resource.taskId).map((resource) => ({ id: `recovery-${resource.id}`, source: resource.taskId!, target: resource.taskId!, kind: "repair-revision" as const }));
+  const operationEdges = sessionOperations.filter((resource) => resource.taskId).map((resource) => ({ id: `operation-${resource.id}`, source: resource.taskId!, target: resource.taskId!, kind: "repair-revision" as const }));
   const selectedTaskId = input.selectedTaskId ?? nodes[0]?.taskId;
   const events = listHistoryForRun(db, input.runId);
   return {
@@ -47,7 +49,7 @@ export function buildWorkflowCanvasPageModel(db: SouthstarDb, input: { runId: st
     runId: input.runId,
     status: run.status,
     nodes,
-    edges: [...dependencyEdges, ...contextEdges, ...evaluatorEdges, ...recoveryEdges],
+    edges: [...dependencyEdges, ...contextEdges, ...evaluatorEdges, ...recoveryEdges, ...operationEdges],
     selectedNode: selectedTaskId ? {
       taskId: selectedTaskId,
       actions: [

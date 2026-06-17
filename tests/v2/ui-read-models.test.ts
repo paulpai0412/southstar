@@ -11,6 +11,7 @@ import { buildWorkflowCanvasData } from "../../src/v2/read-models/workflow-canva
 import { buildSessionsMemoryData } from "../../src/v2/read-models/sessions-memory.ts";
 import { buildVaultMcpData } from "../../src/v2/read-models/vault-mcp.ts";
 import { buildExecutorOpsData } from "../../src/v2/read-models/executor-ops.ts";
+import { buildSessionsMemoryPageModel } from "../../src/v2/ui-api/page-models/sessions-memory.ts";
 
 test("builds workflow canvas from SQLite run and tasks", () => {
   const db = seededDb();
@@ -60,6 +61,56 @@ test("builds runtime monitor from history and executor binding", () => {
     executorJobIds: ["job-1"],
     runningTaskIds: ["task-1"],
   });
+});
+
+test("sessions memory read model exposes recovery telemetry and session operations", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: "run-recovery-rm",
+    status: "running",
+    domain: "software",
+    goalPrompt: "todo-web",
+    workflowManifestJson: JSON.stringify({ tasks: [] }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  upsertRuntimeResource(db, {
+    resourceType: "session_operation",
+    resourceKey: "op-1",
+    runId: "run-recovery-rm",
+    taskId: "checker",
+    sessionId: "session-new",
+    scope: "session",
+    status: "succeeded",
+    title: "fork via southstar-native",
+    payload: {
+      operationId: "op-1",
+      type: "fork",
+      baseCheckpointId: "checkpoint-1",
+      host: "southstar-native",
+      status: "succeeded",
+      fallbackUsed: false,
+      runId: "run-recovery-rm",
+      taskId: "checker",
+    },
+    summary: { fallbackUsed: false },
+  });
+  upsertRuntimeResource(db, {
+    resourceType: "recovery_decision",
+    resourceKey: "decision-1",
+    runId: "run-recovery-rm",
+    taskId: "checker",
+    scope: "session",
+    status: "queued",
+    title: "fork-from-checkpoint",
+    payload: { tokenTelemetry: { estimatedSavings: 500 }, selectedStrategy: "fork-from-checkpoint" },
+  });
+
+  const model = buildSessionsMemoryPageModel(db, { runId: "run-recovery-rm" });
+  assert.equal(model.lineage.some((entry) => entry.type === "session_operation"), true);
+  assert.equal(model.recoveryTelemetry.estimatedSavingsTotal, 500);
 });
 
 test("builds task, sessions-memory, vault-mcp, and executor models", () => {

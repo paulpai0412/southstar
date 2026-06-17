@@ -15,5 +15,6 @@ export function sessionGraphResources(db: SouthstarDb) {
     ...listResources(db, { resourceType: "session_node" }),
     ...listResources(db, { resourceType: "session_checkpoint" }),
     ...listResources(db, { resourceType: "recovery_decision" }),
+    ...listResources(db, { resourceType: "session_operation" }),
   ];
 }
