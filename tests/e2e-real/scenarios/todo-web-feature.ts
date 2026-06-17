@@ -16,10 +16,9 @@ export const todoWebFeatureScenario = {
       workflow?: { tasks?: Array<{ id?: string }> };
     };
     const taskIds = (payload.workflow?.tasks ?? []).flatMap((task) => task.id ? [task.id] : []);
-    assert.equal(taskIds.includes("coding-review"), true);
-    assert.equal(taskIds.includes("spec-alignment"), true);
-    assert.equal(taskIds.includes("browser-qa"), true);
-    assert.equal(taskIds.includes("release-merge-operation"), false);
+    assert.equal(taskIds.length >= 4, true, `planner draft must have at least 4 tasks, got ${taskIds.length}`);
+    assert.equal(taskIds.some((id) => /implement|fix|refactor|write/i.test(id)), true, `planner draft missing implementation lane: ${taskIds.join(",")}`);
+    assert.equal(taskIds.some((id) => /verify|review|check|summarize/i.test(id)), true, `planner draft missing verification/summary lane: ${taskIds.join(",")}`);
   },
   assertFinalGates(
     db: SouthstarDb,

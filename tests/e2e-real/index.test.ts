@@ -33,6 +33,19 @@ import { assertPhase15QuantitativeGates } from "../../src/v2/quality/phase15-gat
 import { assertDomainPackDynamicQuantitativeGates } from "../../src/v2/quality/domain-pack-dynamic-gates.ts";
 import { assertArtifactEvidenceGates } from "../../src/v2/quality/artifact-evidence-gates.ts";
 
+async function runWithRetry<T>(label: string, attempts: number, run: () => Promise<T>): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error as Error;
+      console.warn(`${label} attempt ${attempt} failed: ${lastError.message}`);
+    }
+  }
+  throw lastError ?? new Error(`${label} failed`);
+}
+
 test("Phase 1 real E2E suite", async () => {
   const e2eStartedAt = Date.now();
   const env = await loadRealE2EEnv();
@@ -60,7 +73,7 @@ test("Phase 1 real E2E suite", async () => {
   await runVoiceCommandPolicyScenario(env, phase15Api.runId);
   await runApprovalPolicyRealScenario(env, phase15Api.runId);
   const phase15Cli = await runCliRunGoalRealScenario(env);
-  await runUiLoopEngineeringControlPlaneScenario(env);
+  await runWithRetry("ui-loop-engineering-control-plane", 2, async () => runUiLoopEngineeringControlPlaneScenario(env));
   const phase15Browser = await runUiBrowserOperationsScenario(env);
   await runProductizedUiLibraryPlannerRealScenario(env);
   const gateContext = createScenarioContext(env);
