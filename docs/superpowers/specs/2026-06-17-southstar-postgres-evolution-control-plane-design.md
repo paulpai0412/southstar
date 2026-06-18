@@ -5,38 +5,40 @@ Status: proposed
 
 ## 1. Purpose
 
-Southstar should evolve from a workflow runner with memory injection into a self-improving control plane. The target loop is:
+Southstar should evolve from a workflow runner with ad-hoc memory into a self-improving control plane. The target loop is:
 
 ```text
-observe -> recall -> hypothesize -> validate -> promote -> monitor -> rollback
+observe -> distill -> improve -> validate -> promote -> monitor -> rollback
 ```
 
-The system must learn from accepted artifacts, evaluator results, repair outcomes, checkpoint summaries, context packets, and runtime metrics. It must then propose bounded changes to prompts, skills, agent profiles, memory items, and workflow flow policy. Those changes must be validated in sandbox runs before activation.
-
-This design replaces the earlier mem0 direction with a Postgres-first architecture. Southstar stores canonical learning/evolution truth in its own Postgres schema and uses Postgres full-text search, graph queries, and optional vector search for recall.
+This design intentionally avoids mem0, RAG, embedding search, and runtime semantic retrieval in the first version. Southstar stores canonical learning/evolution truth in its own Postgres schema, distills repeated evidence into Knowledge Cards, deterministically selects relevant cards for future tasks, and uses those cards to generate bounded prompt, skill, agent profile, and flow deltas.
 
 ## 2. Goals
 
 - Use a single Postgres database with separate `tork` and `southstar` schemas.
-- Make `southstar` schema the canonical runtime, learning, recall, evolution, and audit store.
+- Make `southstar` schema the canonical runtime, learning, knowledge, evolution, and audit store.
 - Keep Tork executor-only; Southstar must not directly read/write Tork internal tables.
 - Remove SQLite fallback and use Postgres-only tests.
-- Avoid mem0; implement memory/recall with Southstar-owned learning graph and recall index.
+- Avoid mem0, RAG, `recall_documents`, and pgvector in the first version.
+- Store memory as typed Knowledge Cards in the Southstar learning graph.
 - Support self-evolution of:
-  - memory / recall items,
+  - Knowledge Cards,
   - prompt templates,
   - skills,
   - agent profiles,
   - workflow / flow policy proposals.
-- Require sandbox validation before promotion.
-- Auto-promote low-risk prompt, skill, and agent profile changes when validation passes.
+- Require sandbox validation before asset promotion.
+- Auto-activate low/medium-risk Knowledge Cards after validation; require human approval for high-risk cards.
+- Auto-promote low-risk prompt, skill, and agent profile changes when sandbox validation passes.
 - Use canary for medium-risk agent profile changes.
 - Require human approval for flow changes and high-risk profile/security changes.
-- Provide an Evolution Control Center UI/read model.
+- Provide an Evolution Control Center UI with graph visualization.
 
 ## 3. Non-goals
 
 - No mem0 integration in the first version.
+- No RAG retriever, vector memory store, runtime semantic query planner, or embedding model requirement.
+- No `recall_documents` table in the first version.
 - No SQLite runtime fallback.
 - No SQLite-to-Postgres migration path; the project is still in development and can switch directly.
 - No migration framework in the first version.
@@ -46,6 +48,7 @@ This design replaces the earlier mem0 direction with a Postgres-first architectu
 - No cloud embedding API.
 - No automatic flow promotion.
 - No automatic tool/MCP grant expansion.
+- No graph database dependency such as Neo4j, Apache AGE, or ArangoDB in the first version.
 - No full RBAC in the first version; every mutating command must still record actor, reason, and audit event.
 
 ## 4. Postgres storage model
@@ -73,14 +76,10 @@ npm run southstar -- db:init --config .northstar.yaml
 The command creates and validates `southstar` schema objects:
 
 - `CREATE SCHEMA IF NOT EXISTS southstar`.
-- Required extensions where available:
-  - UUID support, for example `pgcrypto`.
-  - `pg_trgm` optional for fuzzy search.
-  - `vector` optional for pgvector recall tier.
+- Required UUID support, for example `pgcrypto`.
 - Runtime tables.
 - Learning graph tables.
-- Recall index tables and indexes.
-- Evolution asset/delta/experiment tables.
+- Asset version and evolution resource tables where dedicated tables are useful.
 - `southstar.schema_metadata` with schema name and version.
 
 Runtime startup must not auto-create or mutate schema. It should validate schema metadata and fail fast with a clear message if `db:init` has not run.
@@ -120,7 +119,7 @@ Rules:
 
 ## 6. Learning graph
 
-The learning graph is canonical evolution memory. It captures evidence, causality, asset lineage, validation outcomes, promotion, and rollback.
+The learning graph is canonical evolution memory. It captures evidence, causality, asset lineage, validation outcomes, promotion, rollback, and Knowledge Cards.
 
 ### 6.1 Tables
 
@@ -154,8 +153,8 @@ artifact
 evaluator_result
 repair_attempt
 failure_kind
-memory_item
 learning_signal
+knowledge_card
 delta_proposal
 prompt_version
 skill_version
@@ -186,12 +185,13 @@ Edge types include:
 USED_PROFILE
 USED_PROMPT
 USED_SKILL
-INJECTED_MEMORY
+INJECTED_CARD
 PRODUCED
 EVALUATED_BY
 FOUND_FAILURE
 FIXED_FAILURE
 DERIVED_FROM
+SUPPORTED_BY
 BASED_ON
 TESTED
 PROMOTED_TO
@@ -207,125 +207,121 @@ CONFLICTS_WITH
 - Which agent profile version works best for an intent/task family?
 - Which skill version lowered repair count?
 - Which prompt delta increased cost or failure rate?
-- Which injected memories helped or hurt evaluator outcomes?
+- Which Knowledge Cards were injected into successful or failed tasks?
 - Which sandbox experiment justified an asset promotion?
 - Which rollback target is safe for a regressed asset?
+- What evidence supports a Knowledge Card claim?
+- What downstream deltas/promotions were based on a Knowledge Card?
 
-## 7. Recall index
+## 7. Knowledge Cards
 
-Recall replaces mem0. It is not the source of truth; it is an index over learning graph nodes.
+Knowledge Cards replace runtime semantic recall. Southstar does not search arbitrary chunks at runtime. Instead, it periodically distills repeated evidence into typed, cited cards and later selects cards deterministically from task metadata.
 
-### 7.1 `southstar.recall_documents`
-
-Fields:
-
-```text
-id
-node_id
-scope
-kind
-text
-tsv
-embedding optional vector
-metadata_jsonb
-status
-created_at
-updated_at
-```
-
-`node_id` points to a canonical learning node. Recall documents without resolvable graph nodes are invalid for injection or delta generation.
-
-### 7.2 Recall tiers
-
-Tier 1 is required and default:
+A Knowledge Card is stored as:
 
 ```text
-Postgres full-text search + graph scoring
+learning_nodes.node_type = 'knowledge_card'
+learning_nodes.payload_jsonb = full card payload
 ```
 
-Tier 2 is optional:
+A dedicated `southstar.knowledge_cards` table may be added later as a read-optimized projection, but the canonical first-version representation is the graph node.
 
-```text
-pgvector semantic recall
+### 7.1 Card schema
+
+```ts
+type KnowledgeCard = {
+  cardType:
+    | "failure_lesson"
+    | "success_pattern"
+    | "profile_lesson"
+    | "flow_lesson"
+    | "preference"
+    | "domain_pattern";
+  topicKey: string;
+  scope: string;
+  title: string;
+  summary: string;
+  appliesTo: {
+    intents?: string[];
+    roles?: string[];
+    artifactTypes?: string[];
+    agentProfiles?: string[];
+    promptTemplates?: string[];
+    skills?: string[];
+    flowTemplates?: string[];
+  };
+  claims: Array<{
+    text: string;
+    evidenceNodeRefs: string[];
+  }>;
+  confidence: number;
+  successScore: number;
+  status: "candidate" | "active" | "pending_approval" | "stale" | "superseded" | "rejected" | "do_not_inject";
+  riskTier: "low" | "medium" | "high";
+};
 ```
 
-The first version should include provider interfaces and optional vector columns/indexes when available, but runtime defaults to FTS + graph scoring. Tests use deterministic embeddings only when testing vector-specific behavior.
+Rules:
 
-### 7.3 ContextBuilder retrieval pipeline
+- Every claim must cite existing evidence nodes.
+- Cards cannot include raw transcripts, large logs, or secret-like payloads.
+- Cards are concise; they summarize stable lessons, not entire conversations.
+- Cards carry explicit `appliesTo` fields so runtime selection is deterministic.
 
-```text
-ContextBuilder
-  -> recall search
-  -> resolve candidates through learning graph
-  -> apply memory policy
-  -> rank candidates
-  -> persist memory_injection_trace
-  -> ContextPacket.selectedMemories
-```
-
-Policy checks include:
-
-- scope match,
-- allowed kind,
-- token budget,
-- confidence and success score,
-- superseded status,
-- do-not-inject decision,
-- conflict exclusion,
-- harmful/stale penalty.
-
-Ranking combines:
-
-```text
-FTS score
-+ graph evidence score
-+ success score
-+ recency
-+ confidence
-- harmful/stale penalties
-```
-
-## 8. Memory model
-
-Memory is a learning graph node plus recall document, not an external black-box store.
-
-Memory kinds remain:
-
-```text
-preference
-architecture_decision
-domain_pattern
-failure_lesson
-artifact_summary
-workflow_learning
-```
-
-Example memory payload:
+### 7.2 Example
 
 ```json
 {
-  "kind": "failure_lesson",
+  "cardType": "failure_lesson",
+  "topicKey": "implementation-report-self-check",
   "scope": "software",
-  "text": "For implementation reports, self-check commandsRun and risks before submitting.",
-  "tags": ["artifact", "schema"],
-  "confidence": 0.85,
-  "successScore": 0.8,
-  "sourceRefs": ["eval-123", "repair-456"]
+  "title": "Implementation report self-check",
+  "summary": "Implementation agents often miss commandsRun and risks unless the prompt or skill includes a final artifact checklist.",
+  "appliesTo": {
+    "intents": ["implement_feature", "fix_bug"],
+    "roles": ["maker"],
+    "artifactTypes": ["implementation_report"],
+    "agentProfiles": ["software-maker-pi"]
+  },
+  "claims": [
+    {
+      "text": "Adding a final artifact checklist reduces schema repair loops.",
+      "evidenceNodeRefs": ["eval-123", "repair-456", "experiment-789"]
+    }
+  ],
+  "confidence": 0.86,
+  "successScore": 0.81,
+  "status": "active",
+  "riskTier": "low"
 }
 ```
 
-Memory governance is represented in the graph:
+### 7.3 Card lifecycle
 
-- `SUPERSEDES` for replacement.
-- `CONFLICTS_WITH` for incompatible memories.
-- do-not-inject decision node/edge for exclusion.
-- `HELPED` and `HURT` edges from downstream evaluator outcomes.
+```text
+candidate -> active
+candidate -> pending_approval -> active
+candidate -> rejected
+active -> stale
+active -> superseded
+active -> do_not_inject
+```
 
-## 9. Learning signal pipeline
+Activation policy:
 
-The runtime records learning signals immediately, but generates deltas in batch.
+- low/medium-risk cards: validator pass -> active,
+- high-risk cards: validator pass -> pending approval,
+- rejected cards remain auditable,
+- superseded cards are not injected,
+- do-not-inject cards are excluded from ContextBuilder.
 
-### 9.1 Runtime signal capture
+High-risk cards include lessons that recommend tool/MCP changes, broad memory scope changes, model/provider changes, flow/retry strategy changes, release/deploy/security changes, or claims that conflict with existing high-confidence cards.
+
+## 8. Learning signal pipeline
+
+The runtime records learning signals immediately, but synthesizes Knowledge Cards in batch.
+
+### 8.1 Runtime signal capture
 
 Structured sources only:
 
@@ -335,71 +331,212 @@ Structured sources only:
 - failure summaries,
 - session checkpoint `transcriptSummary`,
 - context packets,
-- memory injection traces,
+- Knowledge Card injection traces,
 - workflow generation plans,
-- cost, duration, retry, tool-call metrics.
+- cost, duration, retry, and tool-call metrics,
+- sandbox experiment outcomes,
+- promotion regression outcomes.
 
 Full transcripts are not extracted into long-term memory.
 
-### 9.2 Batch evolution cycle
+Example signal:
 
-```text
-gather recent learning signals
-cluster similar patterns
-retrieve related recall documents
-build evidence subgraph
-generate delta hypotheses
-generate schema-valid delta proposals
-validate proposals
-run sandbox experiments
-promote / queue approval / reject
+```json
+{
+  "signalKind": "repair_success",
+  "runId": "run-123",
+  "taskId": "implement-feature",
+  "roleRef": "maker",
+  "agentProfileRef": "software-maker-pi",
+  "artifactType": "implementation_report",
+  "failureKind": "missing_required_field",
+  "missingFields": ["commandsRun", "risks"],
+  "repairInstruction": "include commandsRun and risks",
+  "outcome": "passed_after_repair",
+  "sourceRefs": ["artifact-1", "eval-1", "checkpoint-1"]
+}
 ```
 
-## 10. Delta generation
+### 8.2 Batch Knowledge Card synthesis
 
-Delta generation is rule-first with optional constrained LLM wording.
+Trigger card synthesis by:
 
-### 10.1 Deterministic classifier
+- manual command from Evolution UI,
+- run completed event,
+- every N learning signals,
+- scheduled background job after the first version is stable.
 
-Rules produce hypotheses:
+First-version default should support manual trigger and run-completed batch. Avoid making a single task failure immediately become active long-term knowledge.
+
+Pipeline:
 
 ```text
-missing required field -> prompt_delta for artifact self-check
-repeated failure lesson -> skill_delta for durable guidance
-validated skill lowers repair count -> agent_profile_delta to use that skill
-high cost without quality gain -> agent_profile_delta for cheaper model candidate
-repeated task-family repair/fork -> flow_delta generator hint
-accepted reusable pattern -> memory_delta
+LearningSignalCollector
+  -> SignalClusterer
+  -> CardCandidateBuilder
+  -> CardSynthesizer
+  -> CardValidator
+  -> CardPromoter
 ```
 
-### 10.2 Constrained proposal generator
+### 8.3 Signal clustering
 
-A generator may draft the final JSON, but only inside a schema and policy boundary. Validators reject:
+Cluster signals with deterministic structured keys, not embeddings:
 
-- nonexistent targets,
-- wrong target version,
-- invalid source references,
-- secret-like payloads,
-- raw transcript or oversized logs,
-- patch outside allowed fields/sections,
-- runtime invariant changes,
-- flow delta auto-promotion.
+```text
+scope
+intent
+roleRef
+artifactType
+failureKind
+missingFields
+agentProfileRef
+skillRef
+promptTemplateRef
+flowTemplateRef
+```
 
-### 10.3 `DeltaProposal`
+Example cluster key:
+
+```text
+software:maker:implementation_report:missing_required_field:commandsRun-risks
+```
+
+### 8.4 Candidate thresholds
+
+A cluster can become a card candidate when:
+
+- support count is at least 2 or 3,
+- or there is high-value evidence such as repair success plus sandbox pass,
+- or evaluator failure repeats across runs,
+- or an operator manually marks the cluster for synthesis.
+
+Candidate mapping:
+
+| Signal pattern | Card type |
+| --- | --- |
+| evaluator failure + repair success | `failure_lesson` |
+| accepted artifacts repeatedly use same pattern | `success_pattern` |
+| profile/model/skill correlation | `profile_lesson` |
+| workflow repeatedly needs fork/checker | `flow_lesson` |
+| repeated user/operator preference | `preference` |
+| architecture/evaluator rule discovered | `domain_pattern` |
+
+### 8.5 Card synthesis and validation
+
+An LLM may summarize a signal cluster into card JSON, but it only acts as a bounded summarizer. It cannot invent evidence, access full transcripts, change assets, or promote cards.
+
+Validator checks:
+
+- stable `topicKey`,
+- valid `appliesTo` fields,
+- every claim has existing `evidenceNodeRefs`,
+- no secret-like values,
+- no raw transcript/log dump,
+- summary and claims stay under size limits,
+- no unhandled conflict with an active high-confidence card,
+- high-risk cards are routed to approval instead of auto-activation.
+
+## 9. ContextBuilder card selection
+
+ContextBuilder does not perform semantic search. It selects active Knowledge Cards by matching typed task metadata.
+
+```text
+Task context:
+  intent
+  role
+  artifact contracts
+  agent profile
+  prompt template
+  skills
+  flow template
+
+ContextBuilder:
+  -> query active knowledge_card nodes
+  -> match appliesTo fields
+  -> exclude superseded / do_not_inject / conflicting cards
+  -> rank by evidence strength + successScore + confidence + recency
+  -> inject top N as ContextBlocks
+  -> persist knowledge_card_injection_trace
+```
+
+Selection is deterministic and explainable. The injection trace records:
+
+- matched task metadata,
+- selected card refs,
+- excluded card refs,
+- exclusion reasons,
+- evidence score,
+- confidence/success score,
+- context token contribution.
+
+This replaces `memory_injection_trace` with a card-specific trace. The old term may remain as a compatibility alias only if needed by existing UI.
+
+## 10. Delta generation from Knowledge Cards
+
+Delta generation consumes active cards, evidence subgraphs, and asset performance metrics.
+
+```text
+active Knowledge Cards
++ evidence subgraph
++ asset performance metrics
+-> deterministic hypothesis
+-> schema-valid DeltaProposal
+```
+
+### 10.1 Card type to delta type
+
+| Knowledge Card | Likely Delta |
+| --- | --- |
+| `failure_lesson` | `prompt_delta` / `skill_delta` |
+| `success_pattern` | `skill_delta` / card reinforcement |
+| `profile_lesson` | `agent_profile_delta` |
+| `flow_lesson` | `flow_delta` |
+| `preference` | `prompt_delta` / context policy hint |
+| `domain_pattern` | `skill_delta` / `flow_delta` |
+
+### 10.2 Rule examples
+
+```text
+IF cardType=failure_lesson
+AND failureKind=missing_required_field
+AND appliesTo.artifactTypes includes implementation_report
+THEN propose prompt_delta adding final artifact self-check instruction.
+```
+
+```text
+IF same failure_lesson has supportCount >= 3
+AND summary describes repeatable procedure
+THEN propose skill_delta adding a checklist/section.
+```
+
+```text
+IF skill_version is linked to lower repair rate
+AND cardType=profile_lesson
+THEN propose agent_profile_delta adding or preferring that skill version.
+```
+
+```text
+IF cardType=flow_lesson
+AND repeated checker/fork repair improves outcome
+THEN propose flow_delta adding a generator policy hint or checker stage.
+```
+
+### 10.3 Delta proposal schema
 
 ```ts
 type DeltaProposal = {
   id: string;
   deltaKind:
-    | "memory_delta"
+    | "knowledge_card_delta"
     | "prompt_delta"
     | "skill_delta"
     | "agent_profile_delta"
     | "flow_delta";
   targetRef?: string;
   targetVersion?: string;
+  sourceCardRefs: string[];
   sourceNodeRefs: string[];
-  relatedRecallDocumentRefs: string[];
   evidenceSubgraphHash: string;
   hypothesis: string;
   patch: unknown;
@@ -425,13 +562,26 @@ type DeltaProposal = {
 };
 ```
 
-Persist proposals in `southstar.delta_proposals`, `runtime_resources`, and learning graph nodes/edges.
+Persist proposals in `runtime_resources(resource_type='delta_proposal')` and as learning graph nodes/edges. A dedicated `delta_proposals` table can be added later if query volume requires it.
+
+### 10.4 Delta validation
+
+Validators reject:
+
+- nonexistent targets,
+- wrong target version,
+- invalid source cards or source nodes,
+- secret-like payloads,
+- raw transcript or oversized logs,
+- patch outside allowed fields/sections,
+- runtime invariant changes,
+- flow delta auto-promotion.
 
 ## 11. Delta kinds
 
-### 11.1 Memory delta
+### 11.1 Knowledge card delta
 
-Creates or updates memory graph nodes and recall documents. Promotion depends on memory policy.
+Creates, updates, supersedes, or marks Knowledge Cards stale/do-not-inject. Activation follows card risk policy.
 
 ### 11.2 Prompt delta
 
@@ -449,7 +599,7 @@ Agent profile is a versioned capability bundle:
 model
 promptTemplateRef
 skillRefs
-memoryScopes
+knowledgeCardScopes
 contextPolicyRef
 sessionPolicyRef
 toolPolicy
@@ -464,7 +614,7 @@ Risk model:
 | Switch model inside allowed pool | medium |
 | Modest budget change | medium |
 | Add tool/MCP grant | high |
-| Broaden memory scope | high |
+| Broaden Knowledge Card scope | high |
 | Change role default mapping globally | high |
 
 Promotion:
@@ -479,7 +629,7 @@ Changes workflow template hints, generator policy hints, task DAG strategy, chec
 
 ## 12. Sandbox validation
 
-Every nontrivial delta requires sandbox validation.
+Sandbox validation proves that a candidate delta is no worse than baseline and fixes the targeted issue when applicable.
 
 ### 12.1 Strategy
 
@@ -491,48 +641,151 @@ fixed regression suite
 + cost/time guard
 ```
 
-### 12.2 Baseline vs candidate
+### 12.2 Experiment structure
 
-Baseline uses active asset versions. Candidate uses the proposed version(s) with the same task input, artifact contracts, evaluator pipelines, and stop conditions.
+Each `DeltaProposal` creates a `SandboxExperiment` resource and graph node.
 
-Compare:
-
-- artifact pass rate,
-- required field completeness,
-- domain evaluator score,
-- test/evidence score,
-- repair count,
-- retry count,
-- tool calls,
-- duration,
-- tokens,
-- cost,
-- failure kinds.
-
-Candidate must not lower required evaluator pass rate, must fix the replay failure when specified, must stay within cost/duration thresholds, and must not introduce high-risk failures.
-
-### 12.3 `SandboxExperiment`
-
-```ts
-type SandboxExperiment = {
-  id: string;
-  deltaProposalId: string;
-  baselineAssetRefs: string[];
-  candidateAssetRefs: string[];
-  regressionSuiteRefs: string[];
-  replayRunRefs: string[];
-  status: "queued" | "running" | "passed" | "failed" | "cancelled";
-  metrics: {
-    baseline: ExperimentMetrics;
-    candidate: ExperimentMetrics;
-    comparison: ExperimentComparison;
-  };
-  evaluatorResultRefs: string[];
-  failureReasons: string[];
-};
+```text
+DeltaProposal
+  -> SandboxExperiment
+      -> baseline trials
+      -> candidate trials
+      -> comparison
+      -> decision
 ```
 
-Persist experiments in `southstar.sandbox_experiments` and as learning graph nodes.
+Example experiment payload:
+
+```json
+{
+  "deltaProposalId": "delta-123",
+  "baselineAssetRefs": ["prompt-software-maker@v3"],
+  "candidateAssetRefs": ["prompt-software-maker@v4-candidate"],
+  "regressionSuiteRefs": ["software-core-regression"],
+  "replayRunRefs": ["run-101", "run-102"],
+  "maxCostRegressionPercent": 10,
+  "maxDurationRegressionPercent": 15
+}
+```
+
+### 12.3 Case sources
+
+Fixed regression suites prevent broad regressions. Each case defines:
+
+- input prompt,
+- domain/intent,
+- expected artifact contract,
+- evaluator pipeline,
+- optional fixture repo/worktree,
+- success criteria,
+- cost/duration limits.
+
+Recent failure replay uses evidence behind the source Knowledge Card or learning signal. Replay cases preserve:
+
+- same goal prompt or summarized task input,
+- same artifact contract,
+- same evaluator pipeline,
+- same relevant context summary,
+- same workspace snapshot when available.
+
+### 12.4 Baseline vs candidate execution
+
+For each case, run two variants:
+
+```text
+baseline: active asset versions
+candidate: active versions + candidate delta version
+```
+
+Examples:
+
+- prompt delta: baseline prompt v3 vs candidate prompt v4-candidate,
+- skill delta: baseline skill v1 vs candidate skill v2-candidate,
+- profile delta: baseline profile v3 vs candidate profile v4-candidate,
+- flow delta: baseline workflow generation vs candidate generation with flow hint.
+
+### 12.5 Sandbox isolation
+
+Sandbox cannot pollute production runs.
+
+Use the normal Southstar/Tork/Pi execution path but mark all records:
+
+```text
+run_mode = "sandbox"
+sandbox_experiment_id = "exp-123"
+```
+
+Sandbox creates isolated resources:
+
+```text
+sandbox_run
+sandbox_task
+sandbox_session
+sandbox_worktree
+sandbox_context_packet
+sandbox_artifact
+sandbox_evaluator_result
+```
+
+Tork still only executes Docker tasks. Tork completion does not mean sandbox pass; evaluator/comparison decides.
+
+Sandbox Tork tasks receive environment markers:
+
+```text
+SOUTHSTAR_RUN_MODE=sandbox
+SOUTHSTAR_SANDBOX_EXPERIMENT_ID=...
+```
+
+Workspace isolation uses temporary git worktrees, fixture copies, or read-only replay when no mutation is needed.
+
+### 12.6 Trial lifecycle
+
+```text
+queued -> materializing -> running -> evaluating -> passed / failed / cancelled
+```
+
+Trial payload:
+
+```json
+{
+  "trialId": "trial-1",
+  "experimentId": "exp-123",
+  "variant": "baseline",
+  "caseRef": "replay-run-101",
+  "runId": "sandbox-exp-123-baseline-1",
+  "assetRefs": ["prompt@v3"],
+  "status": "passed",
+  "artifactRef": "artifact-...",
+  "evaluatorResultRefs": ["eval-..."],
+  "metrics": {
+    "durationMs": 120000,
+    "tokens": 10000,
+    "costMicrosUsd": 3000,
+    "repairCount": 0,
+    "toolCalls": 12
+  }
+}
+```
+
+### 12.7 Decision rules
+
+Candidate passes when:
+
+- candidate pass rate is at least baseline pass rate,
+- targeted replay failure is fixed,
+- cost stays within threshold,
+- duration stays within threshold,
+- no blocked/high-risk failure kind is introduced,
+- required evaluator gates pass.
+
+First-version shortcut:
+
+- support prompt and skill sandbox first,
+- use existing Tork/Pi harness execution path,
+- require at least one regression case and one replay case when available,
+- run baseline/candidate once per case initially,
+- flow delta only performs dry-run DAG validation plus human approval,
+- medium-risk profile delta requires canary even after sandbox pass.
 
 ## 13. Asset versioning and promotion
 
@@ -557,7 +810,7 @@ Promotion matrix:
 
 | Delta kind | First-version behavior |
 | --- | --- |
-| `memory_delta` | Policy-controlled |
+| `knowledge_card_delta` | Low/medium auto-active after validation; high-risk approval |
 | `prompt_delta` | Auto-promote after sandbox pass |
 | `skill_delta` | Auto-promote after sandbox pass |
 | Low-risk `agent_profile_delta` | Auto-promote after sandbox pass |
@@ -588,13 +841,73 @@ Regression triggers rollback for auto-promoted low-risk assets or an approval al
 
 Rollback never deletes history or versions. It appends rollback facts, marks bad versions, restores the previous active version, and creates a learning signal such as `promotion_regressed`.
 
-## 15. Evolution Control Center UI
+## 15. Graph API and visualization
+
+Postgres stores the graph; it does not draw it. Southstar exposes graph read models, and the UI renders them.
+
+### 15.1 Graph API
+
+```text
+GET /api/v2/evolution/graph?nodeId=...
+GET /api/v2/evolution/graph/card/:cardId
+GET /api/v2/evolution/graph/delta/:deltaId
+GET /api/v2/evolution/graph/asset/:assetVersionId
+```
+
+Read models return:
+
+```ts
+type GraphReadModel = {
+  centerNodeId: string;
+  nodes: Array<{
+    id: string;
+    type: string;
+    label: string;
+    status?: string;
+    summary?: string;
+    payload?: unknown;
+  }>;
+  edges: Array<{
+    id: string;
+    from: string;
+    to: string;
+    type: string;
+    weight?: number;
+  }>;
+};
+```
+
+Backend helpers:
+
+```text
+getEvidenceSubgraph(nodeId, depth, filters)
+getLineage(nodeId)
+getImpactGraph(assetVersionId)
+getKnowledgeCardEvidence(cardId)
+```
+
+Use SQL edge queries and recursive CTEs where needed. Do not introduce a graph database or graph extension in the first version.
+
+### 15.2 UI visualization
+
+Use a frontend graph visualization library, preferably React Flow for the first version, to render local subgraphs:
+
+- Knowledge Card evidence graph,
+- Delta proposal evidence graph,
+- Sandbox experiment graph,
+- Asset version lineage graph,
+- Rollback impact graph.
+
+Do not render the entire graph by default. Load small local neighborhoods around the selected node.
+
+## 16. Evolution Control Center UI
 
 Self-evolution needs a dedicated top-level UI surface, not a subpanel inside Sessions/Memory.
 
-### 15.1 Questions the UI must answer
+### 16.1 Questions the UI must answer
 
 - What has Southstar recently learned?
+- Which Knowledge Cards are active, pending approval, stale, or do-not-inject?
 - Which deltas are proposed, validating, promoted, rejected, or awaiting approval?
 - Which sandbox experiments passed or failed?
 - Which prompt/skill/profile versions are active?
@@ -602,23 +915,29 @@ Self-evolution needs a dedicated top-level UI surface, not a subpanel inside Ses
 - Why was an asset promoted?
 - Did a promotion cause regression?
 - What rollback target is available?
-- Which memories helped or hurt?
+- Which cards helped or hurt?
 
-### 15.2 Page sections
+### 16.2 Page sections
 
 - Evolution Health Overview.
 - Learning Signal Feed.
+- Knowledge Card Library.
 - Delta Proposal Queue.
 - Sandbox Experiments.
 - Asset Version Registry.
 - Canary / Regression Monitor.
-- Recall / Memory Quality.
+- Graph Viewer.
 
-### 15.3 API surface
+### 16.3 API surface
 
 ```text
 GET  /api/v2/evolution/overview
 GET  /api/v2/evolution/signals
+GET  /api/v2/evolution/cards
+GET  /api/v2/evolution/cards/:id
+POST /api/v2/evolution/cards/:id/approve
+POST /api/v2/evolution/cards/:id/reject
+POST /api/v2/evolution/cards/synthesize
 GET  /api/v2/evolution/deltas
 GET  /api/v2/evolution/deltas/:id
 POST /api/v2/evolution/deltas/:id/approve
@@ -628,15 +947,14 @@ GET  /api/v2/evolution/experiments
 GET  /api/v2/evolution/assets
 GET  /api/v2/evolution/assets/:id
 POST /api/v2/evolution/assets/:id/rollback
-GET  /api/v2/evolution/recall
 GET  /api/v2/evolution/graph?nodeId=...
 ```
 
 All mutating commands record actor, reason, command id, and audit event.
 
-## 16. Testing strategy
+## 17. Testing strategy
 
-### 16.1 Test bootstrap
+### 17.1 Test bootstrap
 
 ```text
 create database southstar_test_<uuid>
@@ -645,58 +963,67 @@ run tests
 drop database
 ```
 
-### 16.2 Required test groups
+### 17.2 Required test groups
 
 - Schema/init tests.
 - Runtime compatibility tests.
 - No direct `tork.*` SQL tests.
 - Learning graph node/edge/lineage/evidence tests.
-- Recall FTS and governance tests.
 - Learning signal capture tests.
+- Signal clustering and Knowledge Card synthesis tests.
+- Knowledge Card validation, approval, supersede, and do-not-inject tests.
+- ContextBuilder deterministic card selection and injection trace tests.
 - Delta classifier and validator tests.
 - Sandbox baseline/candidate tests.
 - Promotion/canary/rollback tests.
+- Graph read model/API tests.
 - Evolution UI read model/API tests.
 
-## 17. Risks and mitigations
+## 18. Risks and mitigations
 
 ### Scope risk
 
-This is a large change. Implement in phases: Postgres store, learning graph, recall, signal pipeline, delta model, sandbox, promotion, UI.
+This is a large change. Implement in phases: Postgres store, learning graph, signals, Knowledge Cards, deterministic card selection, delta model, sandbox, promotion, UI.
 
 ### Postgres setup burden
 
 Provide clear `db:init`, test bootstrap, configuration examples, and fail-fast startup validation.
 
-### Evolution drift
+### Knowledge drift
 
-Require evidence subgraphs, sandbox validation, human approval for high-risk changes, regression monitoring, and rollback.
+Require evidence-backed card claims, card validation, human approval for high-risk cards, deterministic selection, sandbox validation for deltas, regression monitoring, and rollback.
 
-### Recall quality
+### Weak semantic recall without RAG
 
-Start with FTS + graph scoring. Keep optional pgvector tier for future local embedding improvements.
+This is an explicit first-version tradeoff. Southstar prioritizes deterministic, evidence-backed knowledge over fuzzy recall. If needed later, a separate recall index can be introduced as a non-canonical helper.
 
 ### Security/tooling drift
 
-Tool/MCP grants, broad memory scope changes, large budget increases, and flow changes are high-risk and require human approval.
+Tool/MCP grants, broad Knowledge Card scope changes, large budget increases, and flow changes are high-risk and require human approval.
 
 ### Tork coupling
 
 Keep schemas separate and ban direct SQL references to `tork.*` in Southstar code/tests. Tork remains executor-only.
 
-## 18. Success criteria
+### Graph complexity
+
+Only render local subgraphs and provide bounded graph queries. Avoid whole-graph visualization and external graph DB dependency in the first version.
+
+## 19. Success criteria
 
 The first version succeeds when:
 
 1. Southstar runs on Postgres `southstar` schema without SQLite fallback.
 2. DB-backed tests run Postgres-only with per-run test databases.
 3. Southstar does not directly read/write `tork.*` tables.
-4. Learning graph captures task, artifact, evaluator, repair, context, memory, delta, experiment, promotion, and rollback lineage.
-5. Recall works with Postgres FTS + graph scoring and persists injection traces.
-6. A repair success can produce a learning signal.
-7. Batch evolution can produce schema-valid prompt/skill/profile/flow deltas.
-8. Sandbox validation compares baseline and candidate against regression/replay/cost guards.
-9. Prompt and skill deltas can auto-promote after sandbox pass.
-10. Low-risk profile deltas can auto-promote; medium-risk profile deltas canary; high-risk profile and flow deltas require human approval.
-11. Rollback restores previous asset versions without deleting history.
-12. Evolution Control Center read models expose signals, deltas, experiments, assets, recall quality, canaries, and rollback targets.
+4. Learning graph captures task, artifact, evaluator, repair, context, Knowledge Card, delta, experiment, promotion, and rollback lineage.
+5. A repair success can produce a learning signal.
+6. Repeated learning signals can synthesize a schema-valid Knowledge Card with cited evidence.
+7. Low/medium-risk Knowledge Cards auto-activate after validation; high-risk cards require approval.
+8. ContextBuilder injects Knowledge Cards deterministically by role/intent/artifact/profile and records an injection trace.
+9. Active Knowledge Cards can produce schema-valid prompt/skill/profile/flow deltas.
+10. Sandbox validation compares baseline and candidate against regression/replay/cost guards.
+11. Prompt and skill deltas can auto-promote after sandbox pass.
+12. Low-risk profile deltas can auto-promote; medium-risk profile deltas canary; high-risk profile and flow deltas require human approval.
+13. Rollback restores previous asset versions without deleting history.
+14. Evolution Control Center read models expose signals, cards, deltas, experiments, assets, graph views, canaries, and rollback targets.
