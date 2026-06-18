@@ -32,6 +32,7 @@ export class TorkExecutorProvider implements ExecutorProvider {
       heartbeatUrl: request.heartbeatUrl ?? this.heartbeatUrl,
       envelopeBasePath,
       runId: request.runId,
+      attemptId: request.attemptId,
     });
     const tork = await this.torkClient.submit(projection);
     return {

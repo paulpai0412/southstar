@@ -21,6 +21,48 @@ test("rebuilds compact recovery context and matching prompt from checkpoint", ()
     payload: { summary: "Plan says implement due-date persistence in todo-store." },
     summary: { summary: "Plan says implement due-date persistence in todo-store." },
   });
+  upsertRuntimeResource(db, {
+    resourceType: "skill_snapshot",
+    resourceKey: "run-rebuild:implementer:software-dev.skill.artifact-generator-base",
+    runId: "run-rebuild",
+    taskId: "implementer",
+    scope: "task",
+    status: "resolved",
+    title: "software-dev.skill.artifact-generator-base",
+    payload: {
+      skillId: "software-dev.skill.artifact-generator-base",
+      version: "ver-base",
+      instructions: "base skill instructions",
+      allowedTools: ["read"],
+      requiredMounts: ["/workspace/repo"],
+      mcpRequirements: [],
+      artifactContracts: ["implementation_report"],
+      contentHash: "a".repeat(64),
+      mountPath: "/southstar/skills/software-dev.skill.artifact-generator-base",
+    },
+    summary: { version: "ver-base" },
+  });
+  upsertRuntimeResource(db, {
+    resourceType: "skill_snapshot",
+    resourceKey: "run-rebuild:implementer:software-dev.skill.implementer-implementation",
+    runId: "run-rebuild",
+    taskId: "implementer",
+    scope: "task",
+    status: "resolved",
+    title: "software-dev.skill.implementer-implementation",
+    payload: {
+      skillId: "software-dev.skill.implementer-implementation",
+      version: "ver-impl",
+      instructions: "implementer skill instructions",
+      allowedTools: ["read", "edit"],
+      requiredMounts: ["/workspace/repo"],
+      mcpRequirements: [],
+      artifactContracts: ["implementation_report"],
+      contentHash: "b".repeat(64),
+      mountPath: "/southstar/skills/software-dev.skill.implementer-implementation",
+    },
+    summary: { version: "ver-impl" },
+  });
 
   const checkpoint = createSessionCheckpoint(db, {
     runId: "run-rebuild",
@@ -55,6 +97,10 @@ test("rebuilds compact recovery context and matching prompt from checkpoint", ()
   assert.match(result.envelope.agentPrompt, /Missing testResults/);
   assert.equal(result.telemetry.originalContextTokenEstimate, 1200);
   assert.equal((result.telemetry.rebuiltContextTokenEstimate ?? 0) > 0, true);
+  assert.deepEqual(result.envelope.skills.map((skill) => skill.skillId), [
+    "software-dev.skill.artifact-generator-base",
+    "software-dev.skill.implementer-implementation",
+  ]);
 });
 
 function run(id: string) {

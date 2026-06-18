@@ -209,6 +209,62 @@ test("terminal task status remains monotonic when late callback arrives", () => 
   assert.equal(listHistoryForRun(db, "run-terminal").some((event) => event.eventType === "executor.callback_ignored_terminal"), true);
 });
 
+test("callback ingestion records durable recovery resources when evaluator pipeline selects strategy", () => {
+  const db = openSouthstarDb(":memory:");
+  seedRunWithWorkflow(db, {
+    runId: "run-recovery-callback",
+    taskId: "checker",
+    requiredArtifactRef: "verification_report",
+    artifactContractId: "verification_report",
+    evaluatorPipelineRef: "software-verification-quality",
+  });
+
+  ingestTaskRunResult(db, {
+    runId: "run-recovery-callback",
+    taskId: "checker",
+    rootSessionId: "root-run-recovery-callback-checker",
+    ok: true,
+    attempts: 1,
+    artifact: {
+      summary: "checker rejected approach",
+      commandsRun: [
+        { command: "npm test", result: "pass" },
+        { command: "custom due-date probe", result: "failed" },
+      ],
+      testResults: [
+        { checkId: "repositoryTests", command: "npm test", status: "passed", gating: "blocking", details: "npm test passed" },
+        {
+          checkId: "dueDatePersistenceProbe",
+          command: "custom due-date probe",
+          status: "failed",
+          gating: "blocking",
+          details: "due date persistence missing",
+        },
+      ],
+      checkerFindings: [{ severity: "blocking", message: "due date persistence missing" }],
+      risks: [],
+    },
+    metrics: { tokens: 64, costMicrosUsd: 0 },
+    events: [],
+  });
+
+  const checkpoints = listResources(db, { resourceType: "session_checkpoint" })
+    .filter((resource) => resource.runId === "run-recovery-callback")
+    .map((resource) => resource.payload as { kind?: string });
+  assert.equal(checkpoints.some((checkpoint) => checkpoint.kind === "before-recovery"), true);
+
+  const decisions = listResources(db, { resourceType: "recovery_decision" })
+    .filter((resource) => resource.runId === "run-recovery-callback");
+  assert.equal(decisions.some((resource) => {
+    const payload = resource.payload as { selectedStrategy?: string; strategy?: string };
+    return payload.selectedStrategy === "fork-from-checkpoint" || payload.strategy === "fork-from-checkpoint";
+  }), true);
+
+  const operations = listResources(db, { resourceType: "session_operation" })
+    .filter((resource) => resource.runId === "run-recovery-callback");
+  assert.equal(operations.some((resource) => (resource.payload as { type?: string }).type === "fork"), true);
+});
+
 test("callback ingestion does not accept artifact when evidence validators fail", () => {
   const db = openSouthstarDb(":memory:");
   seedRunWithWorkflow(db, {
@@ -276,6 +332,8 @@ function seedRunWithWorkflow(
           id: input.taskId,
           name: input.taskId,
           domain: "software",
+          roleRef: input.taskId === "checker" ? "checker" : "maker",
+          agentProfileRef: input.taskId === "checker" ? "software-checker-pi" : "software-maker-pi",
           dependsOn: [],
           requiredArtifactRefs: [input.requiredArtifactRef],
           evaluatorPipelineRef: input.evaluatorPipelineRef,
@@ -317,8 +375,15 @@ function seedRunWithWorkflow(
         },
       ],
       evaluators: [],
+      roles: softwareDomainPack.roles,
+      agentProfiles: softwareDomainPack.agentProfiles,
       artifactContracts: [artifactContract],
       evaluatorPipelines: softwareDomainPack.evaluatorPipelines,
+      contextPolicies: softwareDomainPack.contextPolicies,
+      sessionPolicies: softwareDomainPack.sessionPolicies,
+      memoryPolicies: softwareDomainPack.memoryPolicies,
+      workspacePolicies: softwareDomainPack.workspacePolicies,
+      stopConditions: softwareDomainPack.stopConditions,
       memoryPolicy: {
         retrievalLimit: 5,
         writeRequiresApproval: false,

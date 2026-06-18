@@ -27,6 +27,9 @@ export async function runDesignLibraryTemplateRealScenario(
   env: RealE2EEnv,
   options: { recoveryMode?: DesignLibraryRecoveryMode } = {},
 ): Promise<{ runId: string; repo: string; templateVersionId: string; durationMs: number }> {
+  const torkWaitMs = timeoutFromEnv("SOUTHSTAR_E2E_TORK_WAIT_MS", 30 * 60 * 1000);
+  const runWaitMs = timeoutFromEnv("SOUTHSTAR_E2E_RUN_WAIT_MS", 30 * 60 * 1000);
+  const scenarioMaxMs = timeoutFromEnv("SOUTHSTAR_E2E_SCENARIO_MAX_MS", 45 * 60 * 1000);
   assertPiHostAdapterE2E(env);
   const startedAt = Date.now();
   const context = createScenarioContext(env);
@@ -92,6 +95,7 @@ export async function runDesignLibraryTemplateRealScenario(
       },
       compilerVersion: "design-library-compiler-v1",
     });
+    applyRecoveryDrillToManifest(manifest, options.recoveryMode ?? "none");
 
     const manifestValidation = validateWorkflowManifest(manifest);
     assert.equal(manifestValidation.ok, true, JSON.stringify(manifestValidation.issues));
@@ -131,8 +135,8 @@ export async function runDesignLibraryTemplateRealScenario(
       harnessEndpoint: env.piHarnessEndpoint,
     });
 
-    await waitForTorkJob(env.torkBaseUrl, run.tork.jobId, 15 * 60 * 1000);
-    await waitForRunStatus(context.db, run.runId, ["passed", "completed"], 120_000);
+    await waitForTorkJob(env.torkBaseUrl, run.tork.jobId, torkWaitMs);
+    await waitForRunStatus(context.db, run.runId, ["passed", "completed"], runWaitMs);
 
     assertSkillSnapshotsMaterialized(context.db, run.runId, "checker", [
       "software-dev.skill.artifact-generator-base",
@@ -175,11 +179,50 @@ export async function runDesignLibraryTemplateRealScenario(
     assert.equal(reuse.clarificationQuestionCount, 0);
 
     const durationMs = Date.now() - startedAt;
-    assert.equal(durationMs <= 15 * 60 * 1000, true, `scenario took ${durationMs}ms`);
+    assert.equal(durationMs <= scenarioMaxMs, true, `scenario took ${durationMs}ms`);
     return { runId: run.runId, repo, templateVersionId: approved.templateVersionId, durationMs };
   } finally {
     await callback.close();
   }
+}
+
+function applyRecoveryDrillToManifest(
+  manifest: ReturnType<typeof compileTemplateVersionToManifest>,
+  mode: DesignLibraryRecoveryMode,
+): void {
+  if (mode === "none") return;
+  const pipelineId = mode === "fork-from-checkpoint"
+    ? "software-verification-quality"
+    : mode === "rollback-workspace"
+      ? "software-feature-quality"
+      : mode === "compact-retry"
+        ? "software-completion-quality"
+        : undefined;
+  const strategy = mode === "compact-retry" ? "retry-same-agent" : mode;
+  if (!pipelineId || !strategy) return;
+
+  manifest.evaluatorPipelines = (manifest.evaluatorPipelines ?? []).map((pipeline) => {
+    if (pipeline.id !== pipelineId) return pipeline;
+    return {
+      ...pipeline,
+      evaluators: [
+        ...pipeline.evaluators,
+        {
+          id: `recovery-drill-${mode}`,
+          kind: "domain",
+          config: {
+            recoveryDrill: {
+              trigger: "once",
+              strategy,
+              reason: `Design Library real E2E ${mode} recovery drill: force exactly one workflow-declared evaluator failure before recovered rerun.`,
+            },
+          },
+          required: true,
+        },
+      ],
+      onFailure: { defaultStrategy: strategy },
+    };
+  });
 }
 
 function assertSkillSnapshotsMaterialized(
@@ -238,6 +281,13 @@ function assertCheckerArtifactEvidenceAccepted(
   };
   assert.equal(evidence.evidenceItems?.some((item) => item.kind === "command-output" && item.status === "present"), true);
   assert.equal(evidence.evidenceItems?.some((item) => item.kind === "test-result" && item.status === "present"), true);
+}
+
+function timeoutFromEnv(name: string, fallbackMs: number): number {
+  const raw = process.env[name];
+  if (!raw) return fallbackMs;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
 }
 
 function recoveryModeInstructions(mode: DesignLibraryRecoveryMode): string[] {

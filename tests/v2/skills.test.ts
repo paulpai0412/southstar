@@ -63,6 +63,8 @@ test("library-backed catalog resolves seeded checker skill with base references"
   assert.deepEqual(checker.baseSkillRefs, ["software-dev.skill.artifact-generator-base"]);
   assert.equal(checker.fieldGuidance?.summary?.sectionId, "#field-summary");
   assert.equal(checker.fieldGuidance?.testResults?.sectionId, "#field-testResults");
+  assert.match(checker.instructions, /Allowed status values: passed, failed, failed_non_gating, blocked, not-verified, not-run/);
+  assert.match(checker.instructions, /Allowed gating values: blocking, non-gating/);
 });
 
 test("resolver expands base skill before specialized skill", () => {

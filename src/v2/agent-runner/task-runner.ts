@@ -24,6 +24,7 @@ export type TaskRunResult = {
   rootSessionId: string;
   ok: boolean;
   attempts: number;
+  attemptId?: string;
   artifact: Record<string, unknown>;
   metrics: TaskRunMetrics;
   events: TaskRunnerEvent[];

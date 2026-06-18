@@ -8,6 +8,7 @@ export type ExecutorSubmitRequest = {
   callbackUrl?: string;
   heartbeatUrl?: string;
   envelopeBasePath?: string;
+  attemptId?: string;
 };
 
 export type ExecutorSubmitResult = {

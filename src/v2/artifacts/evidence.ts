@@ -31,7 +31,7 @@ export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePa
       requiredCount: requiredKinds.length,
       presentCount,
       missingKinds: evidenceItems
-        .filter((item) => item.status !== "present")
+        .filter((item) => item.status === "missing")
         .map((item) => item.kind),
     },
   };
@@ -136,17 +136,14 @@ function evidenceByKind(artifact: Record<string, unknown>, now: string): Map<Evi
 
 function firstCommandResult(value: unknown): Record<string, unknown> | undefined {
   if (!Array.isArray(value)) return undefined;
-  return value.find((item): item is Record<string, unknown> => isRecord(item));
+  return value.find((item): item is Record<string, unknown> =>
+    isRecord(item) && typeof item.command === "string" && item.command.trim().length > 0
+  );
 }
 
 function commandStatus(command: Record<string, unknown>): "present" | "invalid" {
-  if (command.passed === true || command.ok === true) return "present";
-  const status = typeof command.status === "string" ? command.status.toLowerCase() : "";
-  const result = typeof command.result === "string" ? command.result.toLowerCase() : "";
-  if (["passed", "pass", "success", "succeeded", "ok"].includes(status)) return "present";
-  if (["passed", "pass", "success", "succeeded", "ok"].includes(result)) return "present";
-  if (command.exitCode === 0 || command.code === 0) return "present";
-  return "invalid";
+  if (typeof command.command !== "string" || command.command.trim().length === 0) return "invalid";
+  return "present";
 }
 
 function summarizeCommand(command: Record<string, unknown>): string {
@@ -182,11 +179,54 @@ function objectTestEvidence(
   now: string,
 ): EvidencePacket["evidenceItems"][number] | undefined {
   const testResults = artifact.testResults;
+  if (Array.isArray(testResults)) {
+    const objectEntry = testResults.find((item) => isRecord(item));
+    if (isRecord(objectEntry)) {
+      const status = valueStatus(objectEntry.status ?? objectEntry.result ?? objectEntry.outcome)
+        ?? (objectEntry.passed === true || objectEntry.ok === true ? "present" : undefined)
+        ?? statusFromCounts(objectEntry)
+        ?? nestedStatusFromResultTree(objectEntry)
+        ?? statusFromTextValues(objectEntry)
+        ?? "invalid";
+      const summary = typeof objectEntry.summary === "string"
+        ? objectEntry.summary
+        : typeof objectEntry.output === "string"
+          ? objectEntry.output
+          : "test results present";
+      return {
+        kind: "test-result",
+        status,
+        summary,
+        sourceRef: "artifact.testResults",
+        sha256: shortHash(JSON.stringify(objectEntry)),
+        capturedAt: now,
+        reproducibleCommand: splitCommand(findTestCommand(commands)),
+        redactionApplied: true,
+      };
+    }
+
+    const stringEntry = testResults.find((item): item is string => typeof item === "string" && item.length > 0);
+    if (stringEntry) {
+      const status = valueStatus(stringEntry) ?? (/(pass|success|ok)/i.test(stringEntry) ? "present" : "invalid");
+      return {
+        kind: "test-result",
+        status,
+        summary: stringEntry,
+        sourceRef: "artifact.testResults",
+        sha256: shortHash(stringEntry),
+        capturedAt: now,
+        reproducibleCommand: splitCommand(findTestCommand(commands)),
+        redactionApplied: true,
+      };
+    }
+  }
+
   if (isRecord(testResults)) {
     const status = valueStatus(testResults.status ?? testResults.result ?? testResults.outcome ?? testResults.overall)
       ?? (testResults.passed === true || testResults.ok === true ? "present" : undefined)
       ?? statusFromCounts(testResults)
       ?? nestedStatusFromResultTree(testResults)
+      ?? statusFromTextValues(testResults)
       ?? "invalid";
     const summary = [
       typeof testResults.status === "string" ? `status=${testResults.status}` : undefined,
@@ -227,6 +267,7 @@ function objectTestEvidence(
         ?? (objectEntry.passed === true || objectEntry.ok === true ? "present" : undefined)
         ?? statusFromCounts(objectEntry)
         ?? nestedStatusFromResultTree(objectEntry)
+        ?? statusFromTextValues(objectEntry)
         ?? "invalid";
       const summary = typeof objectEntry.summary === "string"
         ? objectEntry.summary
@@ -293,11 +334,32 @@ function objectTestEvidence(
 function valueStatus(value: unknown): "present" | "invalid" | undefined {
   if (typeof value !== "string") return undefined;
   const normalized = value.toLowerCase();
-  if (["passed", "pass", "success", "succeeded", "ok"].some((token) => normalized.includes(token))) {
+
+  if (/\b0\s+failed\b/.test(normalized) && /(pass|passed|success|succeeded|ok)/.test(normalized)) {
     return "present";
   }
-  if (["failed", "fail", "error"].some((token) => normalized.includes(token))) {
-    return "invalid";
+  if ([
+    "passed",
+    "pass",
+    "success",
+    "succeeded",
+    "ok",
+    "failed",
+    "fail",
+    "error",
+    "errored",
+    "blocked",
+    "not-verified",
+    "not_verified",
+    "not-run",
+    "not_run",
+    "skipped",
+    "failed_non_gating",
+    "non-gating",
+    "non_gating",
+    "pass_with_environment_gap",
+  ].some((token) => normalized.includes(token))) {
+    return "present";
   }
   return undefined;
 }
@@ -306,7 +368,7 @@ function statusFromCounts(testResults: Record<string, unknown>): "present" | "in
   const failed = numberFromObject(testResults, ["failed", "failCount"]);
   const passed = numberFromObject(testResults, ["passed", "passCount"]);
   if (typeof failed === "number") {
-    if (failed > 0) return "invalid";
+    if (failed > 0) return "present";
     if ((passed ?? 0) > 0) return "present";
   }
   const automated = testResults.automated;
@@ -314,7 +376,7 @@ function statusFromCounts(testResults: Record<string, unknown>): "present" | "in
     const automatedFailed = numberFromObject(automated, ["failed", "failCount"]);
     const automatedPassed = numberFromObject(automated, ["passed", "passCount"]);
     if (typeof automatedFailed === "number") {
-      if (automatedFailed > 0) return "invalid";
+      if (automatedFailed > 0) return "present";
       if ((automatedPassed ?? 0) > 0) return "present";
     }
   }
@@ -327,6 +389,33 @@ function numberFromObject(value: Record<string, unknown>, keys: string[]): numbe
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
   }
   return undefined;
+}
+
+function statusFromTextValues(value: unknown): "present" | "invalid" | undefined {
+  const samples = collectTextSamples(value, 0, []);
+  if (samples.length === 0) return undefined;
+
+  const hasPositive = samples.some((sample) => /(pass|passed|success|succeeded|ok)/i.test(sample));
+  const hasOutcome = samples.some((sample) => /(\bfail(ed)?\b|\berror\b|\bassertion\b|\bblocked\b|\bnot[-_ ]?verified\b|\bskipped\b)/i.test(sample));
+
+  if (hasPositive || hasOutcome) return "present";
+  return undefined;
+}
+
+function collectTextSamples(value: unknown, depth: number, output: string[]): string[] {
+  if (depth > 4) return output;
+  if (typeof value === "string") {
+    output.push(value);
+    return output;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) collectTextSamples(item, depth + 1, output);
+    return output;
+  }
+  if (isRecord(value)) {
+    for (const nested of Object.values(value)) collectTextSamples(nested, depth + 1, output);
+  }
+  return output;
 }
 
 function nestedStatusFromResultTree(value: unknown, depth = 0): "present" | "invalid" | undefined {

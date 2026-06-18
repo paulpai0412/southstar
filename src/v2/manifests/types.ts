@@ -7,6 +7,7 @@ import type {
   RoleDefinition,
   SessionPolicyDefinition,
   WorkspacePolicyDefinition,
+  StopConditionDefinition,
 } from "../domain-packs/types.ts";
 
 export type HarnessKind = "pi-agent" | "codex" | "claude-code" | "custom";
@@ -140,6 +141,7 @@ export type SouthstarWorkflowManifest = {
   sessionPolicies?: SessionPolicyDefinition[];
   memoryPolicies?: MemoryPolicyDefinition[];
   workspacePolicies?: WorkspacePolicyDefinition[];
+  stopConditions?: StopConditionDefinition[];
   tasks: WorkflowTaskDefinition[];
   harnessDefinitions: HarnessDefinition[];
   evaluators: EvaluatorDefinition[];

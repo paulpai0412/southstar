@@ -26,6 +26,7 @@ export async function runAgentRunnerCli(
       }
     })();
     result.materializationRoot = options.materializationRoot;
+    result.attemptId = options.attemptId;
     if (options.resultPath) {
       await writeFile(options.resultPath, JSON.stringify(result, null, 2), "utf8");
     } else {

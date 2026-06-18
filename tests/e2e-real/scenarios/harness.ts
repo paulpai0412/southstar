@@ -9,7 +9,9 @@ import { chromium } from "playwright";
 import { openSouthstarDb, type SouthstarDb } from "../../../src/v2/stores/sqlite.ts";
 import { createHttpPiPlannerClient, createPiSdkPlannerClient } from "../../../src/v2/planner/pi-planner.ts";
 import { TorkClient } from "../../../src/v2/executor/tork-client.ts";
+import { TorkExecutorProvider } from "../../../src/v2/executor/tork-provider.ts";
 import { ingestTaskRunResult, type TaskRunCallbackResult } from "../../../src/v2/executor/tork-callback.ts";
+import { dispatchRecoveryExecution } from "../../../src/v2/session-recovery/dispatcher.ts";
 import { getWorkflowRun } from "../../../src/v2/stores/run-store.ts";
 import type { AgentHarness, HarnessRunResult } from "../../../src/v2/harness/types.ts";
 import { createPiSdkAgentHarness } from "../../../src/v2/harness/pi-sdk-harness.ts";
@@ -49,9 +51,19 @@ export async function startCallbackServer(env: RealE2EEnv): Promise<CallbackServ
     try {
       if (request.method === "POST" && request.url === "/api/v2/tork/callback") {
         const payload = JSON.parse(await readRequestBody(request)) as TaskRunCallbackResult;
-        ingestTaskRunResult(db, payload);
+        const ingestion = ingestTaskRunResult(db, payload);
+        const recoveryDispatch = ingestion.recoveryDispatch
+          ? await dispatchRecoveryExecution(db, {
+            ...ingestion.recoveryDispatch,
+            executorProvider: new TorkExecutorProvider({ torkClient: new TorkClient({ baseUrl: env.torkBaseUrl }) }),
+            runRoot: "/tmp/southstar-runs",
+            callbackUrl: `http://${process.env.SOUTHSTAR_CALLBACK_HOST ?? "172.17.0.1"}:${(server.address() as { port: number }).port}/api/v2/tork/callback`,
+            contextRefreshUrl: `http://${process.env.SOUTHSTAR_CALLBACK_HOST ?? "172.17.0.1"}:${(server.address() as { port: number }).port}/api/v2/context/refresh`,
+            harnessEndpoint: env.piHarnessEndpoint,
+          })
+          : undefined;
         response.setHeader("content-type", "application/json");
-        response.end(JSON.stringify({ ok: true }));
+        response.end(JSON.stringify({ ok: true, recoveryDispatch }));
         return;
       }
 
@@ -170,7 +182,7 @@ export function todoWebFeatureIssuePacket(repo: string) {
 export async function assertTodoWebFeatureImplemented(repo: string): Promise<void> {
   assertFixtureTests(repo);
   const diffNames = run("git", ["diff", "--name-only", "HEAD"], repo).trim().split(/\n/).filter(Boolean);
-  for (const expected of ["src/todo-store.ts", "src/app.ts", "src/styles.css", "README.md"]) {
+  for (const expected of ["src/todo-store.ts", "src/app.ts", "src/styles.css"]) {
     assert.equal(diffNames.includes(expected), true, `missing changed file ${expected}; diff=${diffNames.join(",")}`);
   }
   assert.equal(

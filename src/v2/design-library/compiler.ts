@@ -131,6 +131,7 @@ export function compileTemplateVersionToManifest(db: SouthstarDb, input: {
     sessionPolicies: softwareDomainPack.sessionPolicies,
     memoryPolicies: softwareDomainPack.memoryPolicies,
     workspacePolicies: softwareDomainPack.workspacePolicies,
+    stopConditions: softwareDomainPack.stopConditions,
     tasks,
     harnessDefinitions: [{
       id: "pi",
@@ -254,7 +255,7 @@ function renderTaskPrompt(
   const roleSpecific = profile.roleRef === "maker"
     ? [
       "You must implement missing feature code in the current repository.",
-      "Required changed files: src/todo-store.ts, src/app.ts, src/styles.css, README.md, and at least one file under test/.",
+      "Required changed files: src/todo-store.ts, src/app.ts, src/styles.css, and at least one file under test/; update documentation only when the issue acceptance criteria require it.",
       "Overdue semantics are calendar-day based: a todo due today must NOT be overdue in any timezone; only due dates before today are overdue.",
       "Run npm test in /workspace/repo and include exact command output and test results.",
       "Browser contract required by acceptance harness: form/input controls must expose data-testid values todo-input, todo-priority, todo-due-date, add-todo; rendered priority labels must expose data-testid todo-priority-label.",

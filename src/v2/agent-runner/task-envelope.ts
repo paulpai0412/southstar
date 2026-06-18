@@ -199,8 +199,29 @@ function formatArtifactContracts(contracts: ArtifactContract[]): string {
   return [
     "",
     "Artifact contracts:",
-    ...contracts.map((contract) =>
-      `- ${contract.id}: ${contract.artifactType}; required fields: ${contract.requiredFields.join(", ")}`
-    ),
+    ...contracts.flatMap((contract) => {
+      const rules = contractSpecificOutputRules(contract.id);
+      return [
+        `- ${contract.id}: ${contract.artifactType}; required fields: ${contract.requiredFields.join(", ")}`,
+        ...rules.map((rule) => `  - ${rule}`),
+      ];
+    }),
   ].join("\n");
+}
+
+function contractSpecificOutputRules(contractId: string): string[] {
+  if (contractId === "implementation_report" || contractId === "verification_report") {
+    return [
+      "commandsRun must be an array of executed commands (string or object with command).",
+      "testResults entries should use status enum: passed, failed, failed_non_gating, blocked, not-verified, not-run.",
+      "when status is failed/blocked/not-verified/not-run, include gating: blocking or non-gating.",
+    ];
+  }
+  if (contractId === "completion_report") {
+    return [
+      "tests must summarize executed test evidence (array of strings or structured entries).",
+      "acceptedArtifacts must reference upstream artifact IDs or requirements.",
+    ];
+  }
+  return [];
 }

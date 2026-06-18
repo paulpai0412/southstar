@@ -766,3 +766,100 @@ Likely areas to modify:
 - `tests/e2e-real/scenarios/*`
 
 The implementation should preserve current table structure and use `runtime_resources` plus `workflow_history` for new durable facts.
+
+## 16. 2026-06-18 Architecture Correction: Workflow-Driven Recovery Execution
+
+The real fork/rollback E2E debugging exposed a design gap: Southstar recorded recovery facts but did not execute a recovery attempt. This section supersedes any interpretation that a `recovery_decision` plus `session_operation` alone is sufficient lifecycle truth.
+
+### 16.1 New invariant: recovery is not complete until the workflow reruns
+
+A recovery path is complete only when all of the following are true:
+
+1. the failed evaluator pipeline has a durable failed result;
+2. Southstar has a `before-recovery` checkpoint;
+3. Southstar has a `recovery_decision` and `session_operation`;
+4. Southstar dispatches a recovery execution slice derived from the workflow graph;
+5. the recovery slice produces new artifacts/callbacks;
+6. required evaluator pipelines rerun and pass after the recovery operation.
+
+`stop_condition_result` must not treat recovery intent, decision, or operation as success by itself. Those records are audit/control-plane facts, not lifecycle completion facts.
+
+### 16.2 Recovery target selection must be workflow-driven
+
+Recovery execution targets must be resolved from the workflow graph and artifact flow, not from task id strings or software-development role names.
+
+For a failed task `F` and strategy `fork-from-checkpoint`:
+
+1. inspect `F.dependsOn` and the workflow artifact flow implied by `requiredArtifactRefs`, dependency edges, and workspace state requirements;
+2. find the nearest upstream producer task(s) whose accepted output/workspace state can change the failed input to `F`;
+3. rerun that producer slice plus downstream verification/summary tasks needed for stop conditions;
+4. preserve prior branch/session lineage through checkpoint and operation records.
+
+For software issue-to-PR style workflows this often means checker failure reruns implementer then checker/summarizer, but this is a consequence of the workflow graph, not a hardcoded `checker -> implementer` rule.
+
+### 16.3 Generic runtime must not import software domain fallbacks
+
+Generic modules such as executor callback ingestion, stop condition evaluation, recovery planning, recovery dispatch, and task envelope construction must not import `softwareDomainPack` or infer software roles by task id. They must use:
+
+- the workflow manifest embedded in the run;
+- the workflow's domain pack refs and materialized domain definitions;
+- artifact contracts and evaluator pipelines declared on the workflow;
+- a domain registry/driver only at explicit seams.
+
+If required workflow definitions are missing, runtime must fail closed with an auditable diagnostic instead of guessing `checker`, `summarizer`, `software-maker-pi`, or software artifact contracts.
+
+### 16.4 New recovery modules
+
+Add two deep modules:
+
+#### `RecoveryExecutionPlanner`
+
+Pure, workflow-aware planner. Inputs:
+
+- workflow manifest;
+- failed task id;
+- evaluator pipeline result/finding summary;
+- selected recovery strategy;
+- current task statuses.
+
+Outputs `RecoveryExecutionPlan`:
+
+- `strategy`;
+- `failedTaskId`;
+- `targetTaskIds` in workflow order;
+- `baseTaskId` / `baseCheckpointId`;
+- `attemptNumber`;
+- `reason`;
+- `requiresOperatorApproval`;
+- `diagnostics`.
+
+It performs no filesystem, DB, Tork, or host SDK effects.
+
+#### `RecoveryDispatcher`
+
+Effectful dispatcher. Inputs:
+
+- durable recovery execution plan;
+- executor provider;
+- callback/context refresh URLs;
+- run root;
+- existing workflow/run state.
+
+Responsibilities:
+
+1. materialize recovery task envelopes for `targetTaskIds`;
+2. submit a Tork subset workflow containing only the recovery slice;
+3. create attempt-specific executor bindings such as `attempt-2`;
+4. move target tasks back to executable state;
+5. append history and resource rows linking the new execution to the decision/operation;
+6. let callbacks and evaluator pipelines produce lifecycle truth.
+
+### 16.5 E2E implications
+
+The four real Design Library cases should pass because runtime behavior is correct, not because scenario assertions are loosened:
+
+- baseline: no recovery slice required;
+- compact-retry: failed artifact/evidence produces retry slice for the same task;
+- fork-from-checkpoint: checker rejection produces an upstream producer + downstream verifier slice from the workflow graph;
+- rollback-workspace: workspace rollback operation is followed by a recovery execution slice.
+

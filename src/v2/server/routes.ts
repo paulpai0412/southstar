@@ -1,4 +1,5 @@
 import { ingestTaskRunResult, type TaskRunCallbackResult } from "../executor/tork-callback.ts";
+import { dispatchRecoveryExecution } from "../session-recovery/dispatcher.ts";
 import { recordExecutorHeartbeat } from "../executor/heartbeat.ts";
 import { getExecutorBinding, listExecutorBindingsForRun } from "../executor/bindings.ts";
 import { reconcileExecutorBindings } from "../executor/reconciler.ts";
@@ -257,8 +258,17 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/tork/callback") {
-      ingestTaskRunResult(context.db, validatedCallbackResult(context, await readJsonBody(request)));
-      return json("callback", { accepted: true });
+      const ingestion = ingestTaskRunResult(context.db, validatedCallbackResult(context, await readJsonBody(request)));
+      const recoveryDispatch = ingestion.recoveryDispatch
+        ? await dispatchRecoveryExecution(context.db, {
+          ...ingestion.recoveryDispatch,
+          executorProvider: context.executorProvider,
+          runRoot: context.runRoot,
+          callbackUrl: callbackUrl(context),
+          heartbeatUrl: heartbeatUrl(context),
+        })
+        : undefined;
+      return json("callback", { accepted: true, recoveryDispatch });
     }
 
     return errorResponse("not found", 404);
@@ -305,6 +315,7 @@ function validatedCallbackResult(context: RuntimeServerContext, body: unknown): 
     rootSessionId,
     ok: typeof body.ok === "boolean" ? body.ok : false,
     attempts: typeof body.attempts === "number" && Number.isFinite(body.attempts) ? body.attempts : 1,
+    attemptId: typeof body.attemptId === "string" ? body.attemptId : undefined,
     artifact: isRecord(body.artifact) ? body.artifact : {},
     metrics: isRecord(body.metrics) ? body.metrics : {},
     events: Array.isArray(body.events) ? body.events.map(validateCallbackEvent) : [],

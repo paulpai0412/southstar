@@ -30,6 +30,8 @@ await import("./session-recovery-types.test.ts");
 await import("./session-recovery-telemetry.test.ts");
 await import("./session-recovery-checkpoints.test.ts");
 await import("./session-recovery-context-rebuild.test.ts");
+await import("./session-recovery-execution-planner.test.ts");
+await import("./session-recovery-dispatcher.test.ts");
 await import("./session-recovery-policy.test.ts");
 await import("./session-recovery-operations.test.ts");
 await import("./workspace-snapshot.test.ts");

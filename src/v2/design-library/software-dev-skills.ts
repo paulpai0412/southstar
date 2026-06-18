@@ -76,6 +76,17 @@ const baseSkill: SkillSeed = {
   },
 };
 
+const ALLOWED_TEST_RESULT_STATUSES = [
+  "passed",
+  "failed",
+  "failed_non_gating",
+  "blocked",
+  "not-verified",
+  "not-run",
+] as const;
+
+const ALLOWED_TEST_RESULT_GATING = ["blocking", "non-gating"] as const;
+
 function arrayField(field: string): boolean {
   return [
     "filesToInspect",
@@ -93,7 +104,57 @@ function arrayField(field: string): boolean {
 }
 
 function genericFieldGuidance(fields: string[]): NonNullable<SkillSpecPayload["fieldGuidance"]> {
-  return Object.fromEntries(fields.map((field) => [field, {
+  return Object.fromEntries(fields.map((field) => [field, guidanceForField(field)]));
+}
+
+function guidanceForField(field: string): NonNullable<SkillSpecPayload["fieldGuidance"]>[string] {
+  if (field === "commandsRun" || field === "commandsToRun") {
+    return {
+      sectionId: `#field-${field}`,
+      description: `${field} must be an array of executed commands (string or { command, exitCode?, result? }).`,
+      dataType: "array",
+      generationSteps: [
+        "Record every command actually executed in order",
+        "Include at least one test command (npm test or equivalent)",
+      ],
+      example: [{ command: "npm test", exitCode: 0, result: "4 passed, 0 failed" }],
+      validation: [
+        `${field} must be a non-empty array`,
+        "each object entry requires command (string)",
+      ],
+    };
+  }
+
+  if (field === "testResults" || field === "tests") {
+    return {
+      sectionId: `#field-${field}`,
+      description: [
+        `${field} must be an array or object map of test checks.`,
+        `Allowed status values: ${ALLOWED_TEST_RESULT_STATUSES.join(", ")}.`,
+        `When status is failed/blocked/not-verified/not-run, include gating with one of: ${ALLOWED_TEST_RESULT_GATING.join(", ")}.`,
+      ].join(" "),
+      dataType: arrayField(field) ? "array" : "string",
+      generationSteps: [
+        "Emit one entry per meaningful check",
+        "Include details/evidence text for each entry",
+        "Mark non-blocking failures as failed_non_gating or gating=non-gating",
+      ],
+      example: [{
+        checkId: "repositoryTests",
+        status: "passed",
+        gating: "blocking",
+        command: "npm test",
+        details: "4 passed, 0 failed",
+      }],
+      validation: [
+        `${field} must be present and non-empty`,
+        "status must use allowed enum values",
+        "failure-like statuses require explicit gating",
+      ],
+    };
+  }
+
+  return {
     sectionId: `#field-${field}`,
     description: `Generate ${field} according to artifact contract requirements`,
     dataType: arrayField(field) ? "array" : "string",
@@ -103,7 +164,7 @@ function genericFieldGuidance(fields: string[]): NonNullable<SkillSpecPayload["f
     ],
     example: arrayField(field) ? [] : `${field} value`,
     validation: [`${field} must be present and contract-compliant`],
-  }]));
+  };
 }
 
 function checkerFieldGuidance(): NonNullable<SkillSpecPayload["fieldGuidance"]> {
@@ -117,31 +178,44 @@ function checkerFieldGuidance(): NonNullable<SkillSpecPayload["fieldGuidance"]> 
         "Summarize whether acceptance criteria are met",
         "Mention any blocking issues",
       ],
-      example: "All tests pass and acceptance criteria are satisfied with no critical risks.",
+      example: "Selector contract passes; due-date persistence fails and blocks acceptance.",
       validation: ["Must be non-empty", "Should mention tests", "Should mention acceptance criteria"],
     },
-    commandsRun: {
-      sectionId: "#field-commandsRun",
-      description: "Commands executed during verification",
-      dataType: "array",
-      generationSteps: [
-        "Record each shell command executed",
-        "Ensure test commands are included",
-      ],
-      example: ["cd /workspace/repo", "npm test"],
-      validation: ["Must be array", "Should include npm test"],
-    },
+    commandsRun: guidanceForField("commandsRun"),
     testResults: {
       sectionId: "#field-testResults",
-      description: "Structured test execution results",
+      description: [
+        "Canonical checker test matrix.",
+        `Allowed status values: ${ALLOWED_TEST_RESULT_STATUSES.join(", ")}.`,
+        `Allowed gating values: ${ALLOWED_TEST_RESULT_GATING.join(", ")}.`,
+      ].join(" "),
       dataType: "array",
       generationSteps: [
-        "Capture command name",
-        "Capture pass/fail status",
-        "Capture output and exit code",
+        "Emit one object per verification check",
+        "Set checkId, status, gating, details, and optional command/exitCode",
+        "Use gating=non-gating for environmental gaps that should not block release",
       ],
-      example: [{ command: "npm test", passed: true, output: "8 passing", exitCode: 0 }],
-      validation: ["Must be array", "Each item needs command, passed, output, exitCode"],
+      example: [
+        {
+          checkId: "repositoryTests",
+          status: "passed",
+          gating: "blocking",
+          command: "npm test",
+          details: "4 passed, 0 failed",
+          exitCode: 0,
+        },
+        {
+          checkId: "dockerBrowserBehavior",
+          status: "failed_non_gating",
+          gating: "non-gating",
+          details: "Docker unavailable in this environment; marked non-gating.",
+        },
+      ],
+      validation: [
+        "Must be a non-empty array",
+        "Each item requires checkId, status, gating, and details",
+        "status must be one of allowed enum values",
+      ],
     },
     checkerFindings: {
       sectionId: "#field-checkerFindings",
@@ -151,7 +225,9 @@ function checkerFieldGuidance(): NonNullable<SkillSpecPayload["fieldGuidance"]> 
         "Enumerate acceptance criteria",
         "Write one finding per criterion",
       ],
-      example: ["Priority labels render correctly"],
+      example: [
+        { criterion: "reload persistence", verdict: "failed", evidence: "dueDate resets to null after parseTodos" },
+      ],
       validation: ["Must be array", "Should cover criteria"],
     },
     risks: {
@@ -168,7 +244,17 @@ function checkerFieldGuidance(): NonNullable<SkillSpecPayload["fieldGuidance"]> 
   };
 }
 
-function specializedMarkdown(title: string, roleInstructions: string, fields: string[]): string {
+function renderGuidanceExample(example: unknown): string {
+  if (typeof example === "string") return example;
+  return JSON.stringify(example, null, 2);
+}
+
+function specializedMarkdown(
+  title: string,
+  roleInstructions: string,
+  fields: string[],
+  guidance: NonNullable<SkillSpecPayload["fieldGuidance"]>,
+): string {
   return [
     `# ${title} Skill`,
     "",
@@ -176,11 +262,30 @@ function specializedMarkdown(title: string, roleInstructions: string, fields: st
     roleInstructions,
     "",
     "## Field Generation Guide",
-    ...fields.flatMap((field) => [
-      `### ${field} {#field-${field}}`,
-      `Generate ${field} according to contract evidence and task context.`,
-      "",
-    ]),
+    ...fields.flatMap((field) => {
+      const item = guidance[field];
+      if (!item) {
+        return [
+          `### ${field} {#field-${field}}`,
+          `Generate ${field} according to contract evidence and task context.`,
+          "",
+        ];
+      }
+      return [
+        `### ${field} {#field-${field}}`,
+        `Description: ${item.description}`,
+        `Data type: ${item.dataType}`,
+        "Generation steps:",
+        ...item.generationSteps.map((step) => `- ${step}`),
+        "Validation:",
+        ...item.validation.map((rule) => `- ${rule}`),
+        "Example:",
+        "```json",
+        renderGuidanceExample(item.example),
+        "```",
+        "",
+      ];
+    }),
     "## Self-Validation",
     `Verify required fields are present: ${fields.join(", ")}.`,
     "Verify output is exactly one JSON object with artifact/progress/metrics.",
@@ -197,6 +302,7 @@ function specializedSkill(input: {
   fields: string[];
   fieldGuidance?: NonNullable<SkillSpecPayload["fieldGuidance"]>;
 }): SkillSeed {
+  const guidance = input.fieldGuidance ?? genericFieldGuidance(input.fields);
   return {
     objectKey: input.objectKey,
     payload: {
@@ -207,7 +313,7 @@ function specializedSkill(input: {
       baseSkillRef: baseSkill.objectKey,
       instructions: {
         format: "markdown",
-        content: specializedMarkdown(input.title, input.description, input.fields),
+        content: specializedMarkdown(input.title, input.description, input.fields, guidance),
       },
       domainRefs: ["software"],
       roleRefs: input.roleRefs,
@@ -217,7 +323,7 @@ function specializedSkill(input: {
       allowedTools: ["read", "search", "shell"],
       requiredMounts: ["/workspace/repo"],
       mcpRequirements: [],
-      fieldGuidance: input.fieldGuidance ?? genericFieldGuidance(input.fields),
+      fieldGuidance: guidance,
       repairGuidance,
       provenance: {
         source: "seed",

@@ -200,6 +200,106 @@ test("derives test-result evidence from completion report tests string entries",
   assert.equal(packet.evidenceItems[0]?.status, "present");
 });
 
+test("derives test-result evidence from implementation testResults string entries", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-1",
+    taskId: "implementer",
+    artifactRef: "artifact-run-1-implementer",
+    requiredEvidenceKinds: ["test-result", "command-output"],
+    artifact: {
+      commandsRun: [
+        "pwd && ls -la",
+        "npm test",
+      ],
+      testResults: [
+        "PASS npm test: 5 passed, 0 failed",
+      ],
+    },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness, { requiredCount: 2, presentCount: 2, missingKinds: [] });
+  assert.equal(packet.evidenceItems.some((item) => item.kind === "test-result" && item.status === "present"), true);
+  assert.equal(packet.evidenceItems.some((item) => item.kind === "command-output" && item.status === "present"), true);
+});
+
+test("derives test-result evidence from implementation testResults object map entries", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-1",
+    taskId: "implementer",
+    artifactRef: "artifact-run-1-implementer-object-map",
+    requiredEvidenceKinds: ["test-result", "command-output"],
+    artifact: {
+      commandsRun: [
+        "npm test",
+      ],
+      testResults: {
+        npmTest: "PASS: tsx --test test/*.test.ts; 5 tests passed, 0 failed.",
+        coverage: "Covered overdue and persistence behavior.",
+      },
+    },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness, { requiredCount: 2, presentCount: 2, missingKinds: [] });
+  assert.equal(packet.evidenceItems.some((item) => item.kind === "test-result" && item.status === "present"), true);
+});
+
+test("treats non-gating failed status in testResults map as present when core tests passed", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-1",
+    taskId: "checker",
+    artifactRef: "artifact-run-1-checker-map",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: {
+      commandsRun: ["npm test"],
+      testResults: {
+        npmTest: {
+          status: "passed",
+          tests: 5,
+          passed: 5,
+          failed: 0,
+        },
+        typecheck: {
+          status: "failed_non_gating",
+          evidence: "non-gating static check",
+        },
+      },
+    },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness, { requiredCount: 1, presentCount: 1, missingKinds: [] });
+  assert.equal(packet.evidenceItems[0]?.status, "present");
+});
+
+test("treats mixed pass/fail probe map as present evidence", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-1",
+    taskId: "checker",
+    artifactRef: "artifact-run-1-checker-probes",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: {
+      commandsRun: [{ command: "npm test", result: "pass" }],
+      testResults: {
+        repositoryTests: {
+          status: "pass",
+          details: "npm test passed: 2 tests, 0 failures.",
+        },
+        acceptanceProbe_dueDatePersistence: {
+          status: "fail",
+          details: "Known gap in current branch.",
+          gating: "blocking",
+        },
+      },
+    },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness, { requiredCount: 1, presentCount: 1, missingKinds: [] });
+  assert.equal(packet.evidenceItems[0]?.status, "present");
+});
+
 test("builds artifact-ref evidence from structured acceptedArtifacts entries", () => {
   const packet = buildEvidencePacket({
     runId: "run-1",
@@ -299,6 +399,114 @@ test("keeps artifact in needs_repair when required evidence is missing", () => {
   assert.equal(listResources(db, { resourceType: "artifact", status: "needs_repair" }).length, 1);
   const failed = listResources(db, { resourceType: "validator_result", status: "failed" });
   assert.equal(failed.some((resource) => JSON.stringify(resource.payload).includes("Missing required file-diff evidence")), true);
+});
+
+test("verification report rejects failure-like statuses without explicit gating", () => {
+  const db = openSouthstarDb(":memory:");
+  createMinimalRun(db, "run-verification-repair");
+  const result = acceptTaskRunArtifact(db, {
+    runId: "run-verification-repair",
+    taskId: "checker",
+    rootSessionId: "session-1",
+    attempts: 1,
+    producerAgentSpecRef: "software-checker-pi",
+    artifactContract: {
+      id: "verification_report",
+      artifactType: "verification-report",
+      requiredFields: ["summary", "commandsRun", "testResults", "checkerFindings", "risks"],
+      evidenceFields: ["commandsRun", "testResults", "checkerFindings"],
+    },
+    requiredEvidenceKinds: ["command-output", "test-result"],
+    artifact: {
+      summary: "Checker found a blocking issue.",
+      commandsRun: [{ command: "npm test", exitCode: 0 }],
+      testResults: [{ checkId: "dueDatePersistence", status: "failed", details: "dueDate lost after reload" }],
+      checkerFindings: [{ criterion: "due date persistence", verdict: "failed" }],
+      risks: [],
+    },
+    metrics: { tokens: 256, costMicrosUsd: 0 },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.equal(result.accepted, false);
+  const failed = listResources(db, { resourceType: "validator_result", status: "failed" });
+  assert.equal(failed.some((resource) => JSON.stringify(resource.payload).includes("gating is required for failure-like status failed")), true);
+});
+
+test("verification report accepts explicit status and gating enums", () => {
+  const db = openSouthstarDb(":memory:");
+  createMinimalRun(db, "run-verification-accepted");
+  const result = acceptTaskRunArtifact(db, {
+    runId: "run-verification-accepted",
+    taskId: "checker",
+    rootSessionId: "session-1",
+    attempts: 1,
+    producerAgentSpecRef: "software-checker-pi",
+    artifactContract: {
+      id: "verification_report",
+      artifactType: "verification-report",
+      requiredFields: ["summary", "commandsRun", "testResults", "checkerFindings", "risks"],
+      evidenceFields: ["commandsRun", "testResults", "checkerFindings"],
+    },
+    requiredEvidenceKinds: ["command-output", "test-result"],
+    artifact: {
+      summary: "Checker verified blockers and non-gating gaps.",
+      commandsRun: [{ command: "npm test", exitCode: 0, result: "4 passed, 0 failed" }],
+      testResults: [
+        {
+          checkId: "repositoryTests",
+          status: "passed",
+          gating: "blocking",
+          details: "4 passed, 0 failed",
+          command: "npm test",
+        },
+        {
+          checkId: "dockerBrowserBehavior",
+          status: "failed_non_gating",
+          gating: "non-gating",
+          details: "Docker unavailable in this environment",
+        },
+      ],
+      checkerFindings: [{ criterion: "docker browser run", verdict: "non-gating gap" }],
+      risks: [],
+    },
+    metrics: { tokens: 256, costMicrosUsd: 0 },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.equal(result.accepted, true);
+});
+
+test("policy validator does not flag risk IDs that merely contain sk- substrings", () => {
+  const db = openSouthstarDb(":memory:");
+  createMinimalRun(db, "run-policy-safe-risk-id");
+  const result = acceptTaskRunArtifact(db, {
+    runId: "run-policy-safe-risk-id",
+    taskId: "implementer",
+    rootSessionId: "session-1",
+    attempts: 1,
+    producerAgentSpecRef: "software-maker-pi",
+    artifactContract: {
+      id: "implementation_report",
+      artifactType: "implementation-report",
+      requiredFields: ["summary", "filesChanged", "commandsRun", "testResults", "risks", "artifactEvidence"],
+      evidenceFields: ["filesChanged", "commandsRun", "testResults", "artifactEvidence"],
+    },
+    requiredEvidenceKinds: ["file-diff", "test-result", "command-output"],
+    artifact: {
+      summary: "Implementer first branch with intentional gap for recovery test.",
+      filesChanged: ["src/todo-store.ts", "README.md"],
+      commandsRun: [{ command: "npm test", exitCode: 0, result: "4 passed, 0 failed" }],
+      testResults: [{ checkId: "repositoryTests", status: "passed", gating: "blocking", details: "4 passed, 0 failed" }],
+      risks: [{ id: "risk-intentional-gap", level: "high", details: "intentional recovery setup" }],
+      artifactEvidence: [{ type: "test-output", evidence: "npm test passed" }],
+    },
+    metrics: { tokens: 64, costMicrosUsd: 0 },
+    now: "2026-06-15T00:00:00.000Z",
+  });
+
+  assert.equal(result.accepted, true);
+  assert.equal(listResources(db, { resourceType: "validator_result", status: "failed" }).length, 0);
 });
 
 test("downstream readiness requires accepted upstream artifacts", () => {

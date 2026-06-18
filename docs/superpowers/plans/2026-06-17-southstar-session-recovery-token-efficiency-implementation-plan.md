@@ -2453,3 +2453,149 @@ Spec coverage mapping:
 Placeholder scan: no open-ended implementation steps are intentionally left for the executor. Each task includes target files, test commands, expected failures, and concrete code shapes.
 
 Type consistency: `SessionCheckpointV1`, `RecoveryDecisionV1`, `SessionOperationV1`, `RecoveryStrategy`, `createSessionCheckpoint`, `commitRecoveryDecision`, `recordSessionOperation`, `rebuildTaskEnvelopeFromCheckpoint`, and `attemptPiNativeRewind` are introduced before use in later tasks.
+
+---
+
+## 2026-06-18 Addendum: Workflow-Driven Recovery Execution Closure
+
+**Reason for addendum:** Real fork/rollback E2E debugging showed that the earlier implementation records recovery decisions/operations but does not dispatch recovery reruns. This addendum is now required before continuing E2E execution.
+
+### Task 16: Add Pure Workflow Recovery Execution Planner
+
+**Files:**
+- Create: `src/v2/session-recovery/execution-planner.ts`
+- Create: `tests/v2/session-recovery-execution-planner.test.ts`
+- Modify: `tests/v2/index.test.ts`
+
+- [ ] **Step 1: Write failing tests**
+
+Create `tests/v2/session-recovery-execution-planner.test.ts` with tests that prove:
+
+```ts
+import assert from "node:assert/strict";
+import test from "node:test";
+import { planRecoveryExecution } from "../../src/v2/session-recovery/execution-planner.ts";
+import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts";
+
+const baseExecution = {
+  engine: "tork" as const,
+  image: "southstar/pi-agent:local",
+  command: ["southstar-agent-runner"],
+  env: {},
+  mounts: [],
+  timeoutSeconds: 900,
+  infraRetry: { maxAttempts: 1 },
+};
+
+function workflow(): SouthstarWorkflowManifest {
+  return {
+    schemaVersion: "southstar.v2",
+    workflowId: "wf-generic",
+    title: "generic workflow",
+    goalPrompt: "do work",
+    domain: "general",
+    tasks: [
+      { id: "discover", name: "Discover", domain: "general", dependsOn: [], requiredArtifactRefs: ["plan"], evaluatorPipelineRef: "plan-quality", execution: baseExecution, rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 }, subagents: [] },
+      { id: "produce", name: "Produce", domain: "general", dependsOn: ["discover"], requiredArtifactRefs: ["work"], evaluatorPipelineRef: "work-quality", execution: baseExecution, rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 }, subagents: [] },
+      { id: "review", name: "Review", domain: "general", dependsOn: ["produce"], requiredArtifactRefs: ["review"], evaluatorPipelineRef: "review-quality", stopConditionRefs: ["done"], execution: baseExecution, rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 }, subagents: [] },
+      { id: "publish", name: "Publish", domain: "general", dependsOn: ["review"], requiredArtifactRefs: ["completion"], evaluatorPipelineRef: "completion-quality", stopConditionRefs: ["done"], execution: baseExecution, rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 }, subagents: [] },
+    ],
+    harnessDefinitions: [],
+    evaluators: [],
+    memoryPolicy: { retrievalLimit: 0, writeRequiresApproval: false },
+    vaultPolicy: { leaseTtlSeconds: 0, mountMode: "ephemeral-file" },
+    mcpServers: [],
+    mcpGrants: [],
+    progressPolicy: { firstEventWithinSeconds: 1, minEventsPerLongTask: 1 },
+    steeringPolicy: { enabled: true, acceptedSignals: [] },
+    learningPolicy: { recordMemoryDeltas: false, recordWorkflowLearnings: false },
+  };
+}
+
+test("fork recovery targets upstream producer and downstream stop-condition path without software names", () => {
+  const plan = planRecoveryExecution({
+    workflow: workflow(),
+    failedTaskId: "review",
+    strategy: "fork-from-checkpoint",
+    attemptNumber: 2,
+    completedTaskIds: ["discover", "produce", "review", "publish"],
+  });
+
+  assert.deepEqual(plan.targetTaskIds, ["produce", "review", "publish"]);
+  assert.equal(plan.baseTaskId, "produce");
+  assert.equal(plan.requiresOperatorApproval, false);
+});
+
+test("retry-same-agent targets only the failed task", () => {
+  const plan = planRecoveryExecution({
+    workflow: workflow(),
+    failedTaskId: "review",
+    strategy: "retry-same-agent",
+    attemptNumber: 2,
+    completedTaskIds: ["discover", "produce"],
+  });
+
+  assert.deepEqual(plan.targetTaskIds, ["review"]);
+  assert.equal(plan.baseTaskId, "review");
+});
+```
+
+- [ ] **Step 2: Run RED**
+
+Run:
+
+```bash
+npx tsx tests/v2/session-recovery-execution-planner.test.ts
+```
+
+Expected: fails because module does not exist.
+
+- [ ] **Step 3: Implement planner**
+
+Implement `src/v2/session-recovery/execution-planner.ts` as a pure function. Use DAG traversal only; no software role/task id inference.
+
+- [ ] **Step 4: Run GREEN and register index**
+
+Run:
+
+```bash
+npx tsx tests/v2/session-recovery-execution-planner.test.ts
+```
+
+Then add `await import("./session-recovery-execution-planner.test.ts");` to `tests/v2/index.test.ts` and run `npm run test:v2`.
+
+### Task 17: Dispatch Recovery Execution Slices
+
+**Files:**
+- Create: `src/v2/session-recovery/dispatcher.ts`
+- Modify: `src/v2/executor/tork-callback.ts`
+- Modify: `tests/e2e-real/scenarios/harness.ts`
+- Create: `tests/v2/session-recovery-dispatcher.test.ts`
+
+- [ ] Add a dispatcher that materializes a workflow subset from `RecoveryExecutionPlan`, submits it through an injected `ExecutorProvider`, creates `attempt-N` executor bindings, resets target task status to executable state, and records `recovery_execution` resources.
+- [ ] Change `ingestTaskRunResult` to return a structured recovery dispatch request instead of trying to dispatch internally without an executor provider.
+- [ ] Change runtime HTTP callback and real E2E callback server to execute that dispatch request with their configured executor provider/Tork client.
+- [ ] Keep callback ingestion transaction-safe: recovery facts commit before external dispatch.
+- [ ] Add tests that prove evaluator failure does not mark run terminal before dispatch and that dispatcher submits target task slice.
+
+### Task 18: Remove Generic Runtime Software Fallbacks
+
+**Files:**
+- Modify: `src/v2/executor/tork-callback.ts`
+- Modify: `src/v2/session-recovery/context-rebuild.ts`
+- Add/modify tests under `tests/v2/`
+
+- [ ] Remove `softwareDomainPack` imports from generic executor/recovery runtime paths.
+- [ ] Use workflow-embedded roles, profiles, artifact contracts, evaluator pipelines, context/session policies.
+- [ ] Fail closed when workflow definitions are absent instead of inferring `checker`, `summarizer`, or software agent profile ids.
+
+### Task 19: Re-run Real E2E Recovery Suite
+
+**Files:**
+- Existing E2E scripts and logs only unless product defects remain.
+
+- [ ] Run single `fork-from-checkpoint` timer job.
+- [ ] Verify the DB has recovery decision, operation, recovery execution, attempt-2 bindings, and later evaluator pass.
+- [ ] Run `compact-retry`, `rollback-workspace`, then full `npm run test:e2e:design-library-real`.
+- [ ] Run `npm run test:v2` and `npm test`.
+

@@ -6,6 +6,7 @@ export type TorkProjectionOptions = {
   heartbeatUrl?: string;
   envelopeBasePath: string;
   runId: string;
+  attemptId?: string;
 };
 
 export type TorkJobProjection = {
@@ -34,6 +35,7 @@ export function buildTorkJobProjection(
   workflow: SouthstarWorkflowManifest,
   options: TorkProjectionOptions,
 ): TorkJobProjection {
+  const attemptId = options.attemptId ?? "attempt-1";
   const job = {
     name: options.runId,
     tasks: workflow.tasks.map((task): TorkTaskProjection => {
@@ -49,7 +51,7 @@ export function buildTorkJobProjection(
           SOUTHSTAR_TASK_ID: task.id,
           SOUTHSTAR_ENVELOPE_PATH: envelopePath,
           SOUTHSTAR_CALLBACK_URL: options.callbackUrl,
-          SOUTHSTAR_ATTEMPT_ID: "attempt-1",
+          SOUTHSTAR_ATTEMPT_ID: attemptId,
           ...(options.heartbeatUrl ? {
             SOUTHSTAR_HEARTBEAT_URL: options.heartbeatUrl,
             SOUTHSTAR_HEARTBEAT_INTERVAL_MS: "10000",

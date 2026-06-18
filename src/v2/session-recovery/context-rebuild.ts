@@ -4,7 +4,8 @@ import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { ContextPacket } from "../context/types.ts";
 import type { TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { SouthstarDb } from "../stores/sqlite.ts";
-import { upsertRuntimeResource } from "../stores/resource-store.ts";
+import { listResources, upsertRuntimeResource } from "../stores/resource-store.ts";
+import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import { getSessionCheckpoint } from "./checkpoints.ts";
 import { recoverySavingsTelemetry } from "./telemetry.ts";
 import type { RecoverySavingsTelemetry } from "./telemetry.ts";
@@ -73,7 +74,7 @@ export function rebuildTaskEnvelopeFromCheckpoint(db: SouthstarDb, input: Rebuil
       supportsProgress: true,
     },
     contextPacket,
-    skills: [],
+    skills: resolvedSkillsForRecovery(db, input.runId, input.taskId),
     mcpGrants: [],
     vaultLeases: [],
     artifactContracts: runtimeTask.artifactContracts,
@@ -112,6 +113,13 @@ function compactFailureText(checkpoint: NonNullable<ReturnType<typeof getSession
     checkpoint.summaries.attemptedApproach ? `Attempted approach: ${checkpoint.summaries.attemptedApproach}` : undefined,
     checkpoint.summaries.nextAttemptHint ? `Next attempt: ${checkpoint.summaries.nextAttemptHint}` : undefined,
   ].filter(Boolean).join("\n") || undefined;
+}
+
+function resolvedSkillsForRecovery(db: SouthstarDb, runId: string, taskId: string): ResolvedSkillSnapshot[] {
+  return listResources(db, { resourceType: "skill_snapshot", status: "resolved" })
+    .filter((resource) => resource.runId === runId && resource.taskId === taskId)
+    .map((resource) => resource.payload as ResolvedSkillSnapshot)
+    .sort((left, right) => left.skillId.localeCompare(right.skillId));
 }
 
 function resolveRuntimeTask(domainPack: DomainPack, roleRef: string, agentProfileRef: string, artifactContractRefs: string[]) {
