@@ -33,6 +33,25 @@ export function createSouthstarApiClient(input: { baseUrl: string }) {
       const query = draftId ? `?draftId=${encodeURIComponent(draftId)}` : "";
       return get(`${baseUrl}/api/v2/ui/planner${query}`);
     },
+    getUiWorkflowTab(params?: { draftId?: string; runId?: string }): Promise<any> {
+      const query = new URLSearchParams();
+      if (params?.draftId) query.set("draftId", params.draftId);
+      if (params?.runId) query.set("runId", params.runId);
+      return get(`${baseUrl}/api/v2/ui/workflow-tab${query.size ? `?${query.toString()}` : ""}`);
+    },
+    getUiOperationsTab(params?: { runId?: string }): Promise<any> {
+      const query = new URLSearchParams();
+      if (params?.runId) query.set("runId", params.runId);
+      return get(`${baseUrl}/api/v2/ui/operations-tab${query.size ? `?${query.toString()}` : ""}`);
+    },
+    getUiLibraryAlternatives(params: { draftId: string; taskId?: string }): Promise<any> {
+      const query = new URLSearchParams({ draftId: params.draftId });
+      if (params.taskId) query.set("taskId", params.taskId);
+      return get(`${baseUrl}/api/v2/ui/library-alternatives?${query.toString()}`);
+    },
+    getUiOperatorAttention(): Promise<any> {
+      return get(`${baseUrl}/api/v2/ui/operator-attention`);
+    },
     getUiWorkflowCanvas(runId: string, taskId?: string): Promise<any> {
       const task = taskId ? `&taskId=${encodeURIComponent(taskId)}` : "";
       return get(`${baseUrl}/api/v2/ui/workflow-canvas?runId=${encodeURIComponent(runId)}${task}`);

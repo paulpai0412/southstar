@@ -12,7 +12,7 @@ export function createLibraryBackedSkillCatalog(db: SouthstarDb, fallbackCatalog
         return fallbackCatalog.resolve(skillId);
       }
       if (object.objectKind !== "skill_spec") {
-        throw new Error(`library object ${skillId} is not skill_spec`);
+        return fallbackCatalog.resolve(skillId);
       }
       if (!object.headVersionId) {
         throw new Error(`skill ${skillId} has no head version`);
