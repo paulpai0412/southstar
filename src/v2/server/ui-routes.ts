@@ -9,6 +9,10 @@ import { buildWorktreePageModel } from "../ui-api/page-models/worktree.ts";
 import { buildExecutorOpsPageModel } from "../ui-api/page-models/executor.ts";
 import { buildDomainPacksPageModel } from "../ui-api/page-models/domain-packs.ts";
 import { buildGovernancePageModel } from "../ui-api/page-models/governance.ts";
+import { buildWorkflowTabPageModel } from "../ui-api/page-models/workflow-tab.ts";
+import { buildLibraryAlternativesPageModel } from "../ui-api/page-models/library-alternatives.ts";
+import { buildOperatorAttentionPageModel } from "../ui-api/page-models/operator-attention.ts";
+import { buildOperationsTabPageModel } from "../ui-api/page-models/operations-tab.ts";
 import type { SouthstarCommandRequest } from "../ui-api/commands/types.ts";
 import { rejectedCommand } from "../ui-api/commands/types.ts";
 import { pauseRunCommand, resumeRunCommand, cancelRunCommand } from "../ui-api/commands/run-commands.ts";
@@ -22,6 +26,24 @@ import { addMcpConnectionCommand, addVaultSecretGroupCommand, simulateApprovalPo
 export async function handleUiRoute(context: RuntimeServerContext, request: Request, url: URL): Promise<Response | undefined> {
   if (request.method === "GET" && url.pathname === "/api/v2/ui/planner") {
     return json("ui-planner", buildPlannerPageModel(context.db, { draftId: url.searchParams.get("draftId") }));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/workflow-tab") {
+    return json("ui-workflow-tab", buildWorkflowTabPageModel(context.db, {
+      draftId: url.searchParams.get("draftId"),
+      runId: url.searchParams.get("runId"),
+    }));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/library-alternatives") {
+    return json("ui-library-alternatives", buildLibraryAlternativesPageModel(context.db, {
+      draftId: requiredQuery(url, "draftId"),
+      taskId: url.searchParams.get("taskId") ?? undefined,
+    }));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/operator-attention") {
+    return json("ui-operator-attention", buildOperatorAttentionPageModel(context.db, {}));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/operations-tab") {
+    return json("ui-operations-tab", buildOperationsTabPageModel(context.db, {}));
   }
   if (request.method === "GET" && url.pathname === "/api/v2/ui/workflow-canvas") {
     return json("ui-workflow-canvas", buildWorkflowCanvasPageModel(context.db, { runId: requiredQuery(url, "runId"), selectedTaskId: url.searchParams.get("taskId") }));

@@ -1,5 +1,11 @@
 export type LibraryDefinitionKind =
   | "agent_spec"
+  | "agent_definition"
+  | "agent_profile"
+  | "skill_definition"
+  | "mcp_tool_grant"
+  | "artifact_contract"
+  | "evaluator_profile"
   | "capability_spec"
   | "contract_spec"
   | "validator_spec"

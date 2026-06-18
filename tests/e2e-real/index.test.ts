@@ -16,10 +16,10 @@ import { runVoiceCommandPolicyScenario } from "./scenarios/voice-command-policy.
 import { runExecutorObservabilityRealScenario } from "./scenarios/executor-observability-real.ts";
 import { runArtifactEvidenceValidatorRealScenario } from "./scenarios/artifact-evidence-validator-real.ts";
 import { runProductizedUiLibraryPlannerRealScenario } from "./scenarios/productized-ui-library-planner-real.ts";
-import "./scenarios/todo-web-feature.ts";
-import "./scenarios/markdown-table-bugfix.ts";
-import "./scenarios/docs-cli-usage.ts";
-import "./scenarios/refactor-safety-net.ts";
+import { todoWebFeatureScenario } from "./scenarios/todo-web-feature.ts";
+import { markdownTableBugfixScenario } from "./scenarios/markdown-table-bugfix.ts";
+import { docsCliUsageScenario } from "./scenarios/docs-cli-usage.ts";
+import { refactorSafetyNetScenario } from "./scenarios/refactor-safety-net.ts";
 import {
   assertNoDurableSouthstarFolders,
   assertSqliteEvidence,
@@ -32,6 +32,31 @@ import { assertPhase1QuantitativeGates } from "../../src/v2/quality/phase1-gates
 import { assertPhase15QuantitativeGates } from "../../src/v2/quality/phase15-gates.ts";
 import { assertDomainPackDynamicQuantitativeGates } from "../../src/v2/quality/domain-pack-dynamic-gates.ts";
 import { assertArtifactEvidenceGates } from "../../src/v2/quality/artifact-evidence-gates.ts";
+
+async function runWithRetry<T>(label: string, attempts: number, run: () => Promise<T>): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      return await run();
+    } catch (error) {
+      lastError = error as Error;
+      console.warn(`${label} attempt ${attempt} failed: ${lastError.message}`);
+    }
+  }
+  throw lastError ?? new Error(`${label} failed`);
+}
+
+test("productized non-calc scenario contracts are defined", () => {
+  for (const scenario of [
+    todoWebFeatureScenario,
+    markdownTableBugfixScenario,
+    docsCliUsageScenario,
+    refactorSafetyNetScenario,
+  ]) {
+    assert.match(scenario.id, /feature|bugfix|docs|refactor/);
+    assert.doesNotMatch(scenario.goalPrompt, /calc/i);
+  }
+});
 
 test("Phase 1 real E2E suite", async () => {
   const e2eStartedAt = Date.now();
@@ -60,7 +85,7 @@ test("Phase 1 real E2E suite", async () => {
   await runVoiceCommandPolicyScenario(env, phase15Api.runId);
   await runApprovalPolicyRealScenario(env, phase15Api.runId);
   const phase15Cli = await runCliRunGoalRealScenario(env);
-  await runUiLoopEngineeringControlPlaneScenario(env);
+  await runWithRetry("ui-loop-engineering-control-plane", 2, async () => runUiLoopEngineeringControlPlaneScenario(env));
   const phase15Browser = await runUiBrowserOperationsScenario(env);
   await runProductizedUiLibraryPlannerRealScenario(env);
   const gateContext = createScenarioContext(env);

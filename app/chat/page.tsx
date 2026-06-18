@@ -1,5 +1,5 @@
 import { SouthstarProductShell } from "@/components/southstar/app-shell/SouthstarProductShell";
 
-export default function Home() {
-  return <SouthstarProductShell initialTab="workflow" />;
+export default function Page() {
+  return <SouthstarProductShell initialTab="chat" />;
 }

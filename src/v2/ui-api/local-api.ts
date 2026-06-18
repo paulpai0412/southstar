@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { SouthstarDb } from "../stores/sqlite.ts";
-import type { DomainPack } from "../domain-packs/types.ts";
-import type { PlanBundle, SouthstarWorkflowManifest, TaskStatus, WorkflowRevisionRequest } from "../manifests/types.ts";
+import type { AgentProfile, ArtifactContract, DomainPack } from "../domain-packs/types.ts";
+import type { PlanBundle, SouthstarWorkflowManifest, TaskStatus, WorkflowRevisionRequest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
+import { createLibraryAwareWorkflowPlanner } from "../planner/library-aware-planner.ts";
+import type { LibraryAwarePlannerResult, PlannerTaskDraft, ReleaseMode, RequirementSpec } from "../planner/library-aware-types.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import { createDomainPackRegistry } from "../domain-packs/registry.ts";
@@ -30,6 +32,7 @@ import { appendRuntimeEvent } from "../signals/events.ts";
 import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import { buildContextPacket, resolveArtifactContractRefs, resolveRoleProfile } from "../context/builder.ts";
+import { buildContextSourceSummary, createRepoFactCache, createRunBrief, type RepoFactCacheInput } from "../context/economy.ts";
 import { createSqliteSessionGraphProvider } from "../session-graph/sqlite-provider.ts";
 import { createGitWorkspaceSnapshotProvider } from "../workspace/git-provider.ts";
 import type { WorkspaceSnapshotRef } from "../workspace/types.ts";
@@ -57,7 +60,7 @@ export async function createPlannerDraft(db: SouthstarDb, input: {
   goalPrompt: string;
   plannerClient: PiPlannerClient;
 }): Promise<PlannerDraftResult> {
-  const generated = generateConstrainedPlannerBundle(input.goalPrompt);
+  const generated = await generateLibraryAwarePlannerBundle(db, input) ?? generateConstrainedPlannerBundle(input.goalPrompt);
   const bundle = generated.bundle;
   const draftId = `draft-${bundle.workflow.workflowId}`;
   if ("generationPlan" in generated) {
@@ -82,7 +85,219 @@ export async function createPlannerDraft(db: SouthstarDb, input: {
       validationMs: generated.validationMs,
     },
   });
+  if ("traces" in generated) {
+    for (const trace of generated.traces) {
+      upsertRuntimeResource(db, {
+        resourceType: trace.resourceType,
+        resourceKey: trace.resourceKey,
+        scope: "planner",
+        status: "created",
+        title: trace.resourceType,
+        payload: trace.payload,
+        summary: trace.summary,
+      });
+    }
+  }
   return { draftId, goalPrompt: input.goalPrompt, workflowId: bundle.workflow.workflowId };
+}
+
+async function generateLibraryAwarePlannerBundle(db: SouthstarDb, input: {
+  goalPrompt: string;
+  plannerClient: PiPlannerClient;
+}): Promise<{
+  bundle: PlanBundle;
+  plannerMs: number;
+  validationMs: number;
+  traces: Array<{ resourceType: string; resourceKey: string; payload: unknown; summary?: Record<string, unknown> }>;
+} | undefined> {
+  if (!hasStarterLibrary(db)) return undefined;
+  const startedAt = Date.now();
+  const planner = createLibraryAwareWorkflowPlanner(db, { plannerClient: input.plannerClient });
+  const planned = await planner.plan({
+    goalPrompt: input.goalPrompt,
+    repoPath: inferRepoPath(input.goalPrompt),
+    releaseMode: inferReleaseMode(input.goalPrompt),
+  });
+  const validationStartedAt = Date.now();
+  if (!planned.validation.ok) {
+    throw new Error(`library-aware planner result failed validation: ${JSON.stringify(planned.validation.issues)}`);
+  }
+  const workflow = materializeLibraryAwareWorkflow(input.goalPrompt, planned.result);
+  return {
+    bundle: {
+      workflow,
+      plannerTrace: {
+        model: "southstar-library-aware-planner",
+        promptHash: hash(input.goalPrompt),
+        generatedAt: new Date().toISOString(),
+      },
+    },
+    plannerMs: Date.now() - startedAt,
+    validationMs: Date.now() - validationStartedAt,
+    traces: plannerTraceResources(planned.result),
+  };
+}
+
+function hasStarterLibrary(db: SouthstarDb): boolean {
+  return Boolean(db.prepare("select 1 from library_objects where object_kind = 'workflow_template' and object_key = 'software.workflow.feature-implementation'").get());
+}
+
+function inferRepoPath(goalPrompt: string): string | undefined {
+  const match = goalPrompt.match(/(?:repo|fixture repo|repository)\s*(?:中|:)?\s*([\w./-]+)/i);
+  return match?.[1];
+}
+
+function inferReleaseMode(goalPrompt: string): ReleaseMode {
+  if (/(merge and release|merge.*release|合併.*發布|release.*merge)/i.test(goalPrompt)) return "merge-and-release";
+  if (/(merge readiness|ready to merge|可合併)/i.test(goalPrompt)) return "merge-ready";
+  if (/(commit|提交)/i.test(goalPrompt)) return "commit-only";
+  return "none";
+}
+
+function materializeLibraryAwareWorkflow(goalPrompt: string, result: LibraryAwarePlannerResult): SouthstarWorkflowManifest {
+  const tasks = result.tasks.map((task): WorkflowTaskDefinition => ({
+    id: task.id,
+    name: task.name,
+    domain: "software",
+    roleRef: roleRefFromAgent(task.agentDefinitionRef),
+    agentProfileRef: task.agentProfileRef,
+    providerRef: task.agentProfileRef.includes("codex") ? "codex" : "pi",
+    model: task.agentProfileRef.includes("codex") ? "gpt-5-codex" : "pi-agent-default",
+    dependsOn: task.dependsOn,
+    promptInputs: { goalPrompt, requirementSpec: result.requirementSpec, rationale: task.rationale, repoPath: result.requirementSpec.repoPath },
+    requiredArtifactRefs: task.artifactContractRefs,
+    evaluatorPipelineRef: evaluatorPipelineForTask(task.evaluatorRef),
+    stopConditionRefs: task.id === "summarize" ? ["software-feature-complete"] : [],
+    recoveryStrategyRefs: ["retry-same-agent", "request-workflow-revision"],
+    contextPolicyRef: "software-context-default",
+    sessionPolicyRef: "software-session-default",
+    workspacePolicyRef: "software-git-workspace",
+    execution: {
+      engine: "tork",
+      image: PHASE1_AGENT_IMAGE,
+      command: ["southstar-agent-runner"],
+      env: {},
+      mounts: [],
+      timeoutSeconds: task.agentProfileRef.includes("browser") ? 1200 : 900,
+      infraRetry: { maxAttempts: 1 },
+    },
+    rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
+    skillRefs: task.skillRefs,
+    memoryScopeRefs: ["software", "project"],
+    mcpGrantRefs: task.mcpGrantRefs,
+    subagents: [{ id: `${task.id}-worker`, harnessId: task.agentProfileRef.includes("codex") ? "codex" : "pi", prompt: task.rationale, requiredArtifacts: task.artifactContractRefs }],
+  }));
+  const artifactContracts = mergeArtifactContracts(softwareDomainPack.artifactContracts, result.tasks.flatMap((task) => task.artifactContractRefs));
+  return {
+    schemaVersion: "southstar.v2",
+    workflowId: `wf-library-${hash(JSON.stringify(result)).slice(0, 12)}`,
+    title: result.draftTitle,
+    goalPrompt,
+    domain: "software",
+    intent: result.selectedTemplateRefs[0]?.split(".").at(-1) ?? "library-aware",
+    roles: softwareDomainPack.roles,
+    agentProfiles: mergeAgentProfiles(softwareDomainPack.agentProfiles),
+    artifactContracts,
+    evaluatorPipelines: softwareDomainPack.evaluatorPipelines,
+    contextPolicies: softwareDomainPack.contextPolicies,
+    sessionPolicies: softwareDomainPack.sessionPolicies,
+    memoryPolicies: softwareDomainPack.memoryPolicies,
+    workspacePolicies: softwareDomainPack.workspacePolicies,
+    tasks,
+    harnessDefinitions: softwareHarnessDefinitions(),
+    evaluators: [{ id: "schema-evaluator-v1", kind: "schema", artifactTypes: result.tasks.flatMap((task) => task.artifactContractRefs), requiredFields: ["summary"] }],
+    memoryPolicy: { retrievalLimit: 8, writeRequiresApproval: true },
+    vaultPolicy: { leaseTtlSeconds: 900, mountMode: "ephemeral-file" },
+    mcpServers: [],
+    mcpGrants: result.tasks.flatMap((task) => task.mcpGrantRefs.map((grantRef) => ({ taskId: task.id, serverId: grantRef, allowedTools: [] }))),
+    progressPolicy: { firstEventWithinSeconds: 10, minEventsPerLongTask: 3 },
+    steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
+    learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+    compiledFrom: {
+      templateDefinitionId: result.selectedTemplateRefs[0] ?? "library-aware-generated",
+      templateVersionId: result.selectedTemplateRefs[0] ?? "library-aware-generated",
+      compilerVersion: "library-aware-planner-v1",
+      inputHash: hash(goalPrompt),
+      libraryVersionRefs: [...result.selectedTemplateRefs, ...result.tasks.flatMap((task) => [task.agentDefinitionRef, task.agentProfileRef, ...task.skillRefs])],
+    },
+  };
+}
+
+function plannerTraceResources(result: LibraryAwarePlannerResult): Array<{ resourceType: string; resourceKey: string; payload: unknown; summary?: Record<string, unknown> }> {
+  const base = hash(JSON.stringify(result)).slice(0, 12);
+  return [
+    { resourceType: "library_search_trace", resourceKey: `library-search-${base}`, payload: result.librarySearchTrace, summary: { matchedCount: result.librarySearchTrace.matchedRefs.length } },
+    { resourceType: "agent_composition_trace", resourceKey: `agent-composition-${base}`, payload: result.tasks.map((task) => ({ taskId: task.id, agentDefinitionRef: task.agentDefinitionRef, agentProfileRef: task.agentProfileRef, skillRefs: task.skillRefs, mcpGrantRefs: task.mcpGrantRefs })) },
+    { resourceType: "template_selection_trace", resourceKey: `template-selection-${base}`, payload: result.rationale.templateReasons },
+    { resourceType: "planner_decision_trace", resourceKey: `planner-decision-${base}`, payload: { confidence: result.confidence, risk: result.risk, releaseMode: result.releaseMode, rationale: result.rationale } },
+  ];
+}
+
+function roleRefFromAgent(agentRef: string): string {
+  if (agentRef.includes("implementer") || agentRef.includes("refactorer") || agentRef.includes("doc-writer")) return "maker";
+  if (agentRef.includes("review") || agentRef.includes("alignment") || agentRef.includes("qa") || agentRef.includes("checker")) return "checker";
+  if (agentRef.includes("summarizer") || agentRef.includes("release-reporter")) return "summarizer";
+  return "explorer";
+}
+
+function evaluatorPipelineForTask(evaluatorRef: string): string {
+  if (evaluatorRef.includes("implementation")) return "software-feature-quality";
+  if (evaluatorRef.includes("review") || evaluatorRef.includes("alignment") || evaluatorRef.includes("browser") || evaluatorRef.includes("regression")) return "software-verification-quality";
+  if (evaluatorRef.includes("completion")) return "software-completion-quality";
+  return "software-plan-quality";
+}
+
+function softwareHarnessDefinitions(): SouthstarWorkflowManifest["harnessDefinitions"] {
+  return [
+    { id: "pi", kind: "pi-agent", entrypoint: "southstar-agent-runner", image: PHASE1_AGENT_IMAGE, capabilities: ["software"], inputProtocol: "task-envelope-v2", eventProtocol: "southstar-events-v1", supportsCheckpoint: true, supportsSteering: true, supportsProgress: true },
+    { id: "codex", kind: "codex", entrypoint: "southstar-agent-runner", image: PHASE1_AGENT_IMAGE, capabilities: ["software"], inputProtocol: "task-envelope-v2", eventProtocol: "southstar-events-v1", supportsCheckpoint: true, supportsSteering: true, supportsProgress: true },
+  ];
+}
+
+function mergeAgentProfiles(existing: AgentProfile[]): AgentProfile[] {
+  const additions: AgentProfile[] = [
+    agentProfile("software.explorer.codex.readonly", "Software Explorer Readonly", "codex", ["software.repo-inspection"], ["filesystem.readonly"], ["read", "search"], ["edit", "external-write"]),
+    agentProfile("software.implementer.pi.workspace-write", "Software Implementer", "pi", ["software.minimal-patch", "software.test-evidence"], ["filesystem.workspace-write", "shell.test-runner"], ["read", "search", "edit", "shell"], ["external-write"]),
+    agentProfile("software.doc-writer.pi.docs-write", "Software Doc Writer", "pi", ["software.docs-update"], ["filesystem.workspace-write"], ["read", "search", "edit"], ["external-write"]),
+    agentProfile("software.coding-reviewer.codex.readonly", "Coding Reviewer", "codex", ["software.code-review"], ["filesystem.readonly", "git.readonly"], ["read", "search", "shell"], ["edit", "external-write"]),
+    agentProfile("software.spec-alignment.codex.readonly", "Spec Alignment", "codex", ["software.spec-alignment-skill"], ["filesystem.readonly"], ["read", "search"], ["edit", "external-write"]),
+    agentProfile("software.browser-qa.pi.browser-local", "Browser QA", "pi", ["software.browser-qa-skill"], ["filesystem.readonly", "browser.local-preview", "shell.test-runner"], ["read", "search", "shell", "browser"], ["edit", "external-write"]),
+    agentProfile("software.release-operator.commit-local", "Release Operator Commit", "pi", ["software.commit-curation"], ["filesystem.workspace-write", "git.workspace-patch", "shell.test-runner"], ["read", "search", "shell", "edit"], ["external-write"]),
+    agentProfile("software.release-operator.readiness-readonly", "Release Operator Readiness", "codex", ["software.merge-readiness"], ["filesystem.readonly", "git.readonly"], ["read", "search", "shell"], ["edit", "external-write"]),
+    agentProfile("software.release-operator.merge-approved", "Release Operator Merge", "pi", ["software.merge-operation"], ["filesystem.workspace-write", "git.workspace-patch", "github.pr-write"], ["read", "search", "shell", "edit"], ["secret-read-without-approval"]),
+    agentProfile("software.release-reporter.codex.readonly", "Release Reporter", "codex", ["software.release-reporting"], ["filesystem.readonly", "git.readonly", "github.readonly"], ["read", "search"], ["edit"]),
+    agentProfile("software.summarizer.codex.readonly", "Software Summarizer", "codex", ["software.completion-report"], ["filesystem.readonly"], ["read", "search"], ["edit", "external-write"]),
+  ];
+  const byId = new Map(existing.map((profile) => [profile.id, profile]));
+  for (const profile of additions) byId.set(profile.id, profile);
+  return [...byId.values()];
+}
+
+function agentProfile(id: string, name: string, provider: "pi" | "codex", skillRefs: string[], mcpGrantRefs: string[], allowedTools: string[], deniedTools: string[]): AgentProfile {
+  return {
+    id,
+    name,
+    provider,
+    model: provider === "pi" ? "pi-agent-default" : "gpt-5-codex",
+    harnessRef: provider,
+    agentsMdRefs: provider === "pi" ? ["repo:AGENTS.md"] : [],
+    promptTemplateRef: id,
+    skillRefs,
+    mcpGrantRefs,
+    memoryScopes: ["software", "project"],
+    contextPolicyRef: "software-context-default",
+    sessionPolicyRef: "software-session-default",
+    toolPolicy: { allowedTools, deniedTools, requiresApprovalFor: mcpGrantRefs.includes("github.pr-write") ? ["github.pr-write"] : [] },
+    budgetPolicy: { maxInputTokens: 24_000, maxOutputTokens: 4_000, maxWallTimeSeconds: provider === "pi" ? 900 : 600 },
+  };
+}
+
+function mergeArtifactContracts(existing: ArtifactContract[], refs: string[]): ArtifactContract[] {
+  const byId = new Map(existing.map((contract) => [contract.id, contract]));
+  for (const ref of refs) {
+    if (!byId.has(ref)) byId.set(ref, { id: ref, artifactType: ref, requiredFields: ["summary"], evidenceFields: ["evidence", "risks"] });
+  }
+  return [...byId.values()];
 }
 
 function generateConstrainedPlannerBundle(goalPrompt: string): {
@@ -248,6 +463,19 @@ export async function createRunFromDraft(db: SouthstarDb, input: {
     snapshotJson: JSON.stringify({ activeTaskIds: workflow.tasks.map((task) => task.id) }),
     runtimeContextJson: JSON.stringify({ draftId: input.draftId }),
     metricsJson: JSON.stringify({}),
+  });
+  createRunBrief(db, {
+    runId,
+    requirementSpec: requirementSpecFromWorkflow(workflow),
+    selectedTemplateRefs: workflow.compiledFrom?.libraryVersionRefs.filter((ref) => ref.startsWith("software.workflow")) ?? [],
+    selectedAgentRefs: workflow.tasks.map((task) => task.agentProfileRef ?? task.roleRef ?? task.id),
+    risk: riskFromWorkflow(workflow),
+    releaseMode: releaseModeFromWorkflow(workflow),
+  });
+  createRepoFactCache(db, {
+    runId,
+    repoPath: repoPathFromWorkflow(workflow),
+    facts: inferRepoFacts(workflow),
   });
   linkGenerationResourcesToRun(db, workflow, runId);
   workflow.tasks.forEach((task, index) => {
@@ -555,6 +783,47 @@ function readRunWorkflow(db: SouthstarDb, runId: string): SouthstarWorkflowManif
   return JSON.parse(row.workflow_manifest_json) as SouthstarWorkflowManifest;
 }
 
+function requirementSpecFromWorkflow(workflow: SouthstarWorkflowManifest): RequirementSpec {
+  return {
+    summary: workflow.goalPrompt,
+    acceptanceCriteria: workflow.goalPrompt.split(/[。.;；\n]/).map((part) => part.trim()).filter(Boolean),
+    nonGoals: [],
+  };
+}
+
+function riskFromWorkflow(workflow: SouthstarWorkflowManifest): "low" | "medium" | "high" {
+  if (workflow.tasks.some((task) => task.mcpGrantRefs?.includes("github.pr-write"))) return "high";
+  if (workflow.tasks.some((task) => task.mcpGrantRefs?.some((grant) => grant.includes("workspace-write") || grant.includes("git.workspace-patch")))) return "medium";
+  return "low";
+}
+
+function releaseModeFromWorkflow(workflow: SouthstarWorkflowManifest): ReleaseMode {
+  if (workflow.tasks.some((task) => task.id.includes("merge-operation"))) return "merge-and-release";
+  if (workflow.tasks.some((task) => task.id.includes("merge-readiness"))) return "merge-ready";
+  if (workflow.tasks.some((task) => task.id.includes("commit-curation"))) return "commit-only";
+  return "none";
+}
+
+function repoPathFromWorkflow(workflow: SouthstarWorkflowManifest): string | undefined {
+  for (const task of workflow.tasks) {
+    const repoPath = task.promptInputs?.repoPath;
+    if (typeof repoPath === "string") return repoPath;
+  }
+  return undefined;
+}
+
+function inferRepoFacts(workflow: SouthstarWorkflowManifest): RepoFactCacheInput["facts"] {
+  const prompt = workflow.goalPrompt.toLowerCase();
+  return {
+    packageManager: prompt.includes("pnpm") ? "pnpm" : "npm",
+    testCommand: prompt.includes("pytest") ? "pytest" : "npm test",
+    framework: prompt.includes("web") || prompt.includes("browser") || prompt.includes("todo-web") ? "web" : "node",
+    relevantFiles: [],
+    docsPaths: ["README.md", "docs/"],
+    localPreviewCommand: prompt.includes("web") || prompt.includes("browser") || prompt.includes("todo-web") ? "npm run dev" : undefined,
+  };
+}
+
 function inferDomain(workflow: SouthstarWorkflowManifest): string {
   return workflow.tasks[0]?.domain ?? "general";
 }
@@ -722,6 +991,11 @@ function buildContextPacketForTask(
   task: SouthstarWorkflowManifest["tasks"][number],
   input: { runId: string; rootSessionId: string; executionAttempt: number; runtimeTask: RuntimeTaskProfile },
 ) {
+  const contextSources = buildContextSourceSummary(db, {
+    runId: input.runId,
+    taskId: task.id,
+    dependencyTaskIds: task.dependsOn,
+  });
   return buildContextPacket(db, {
     runId: input.runId,
     taskId: task.id,
@@ -735,6 +1009,7 @@ function buildContextPacketForTask(
     priorArtifactRefs: task.dependsOn,
     checkpointSummary: "No checkpoint materialized before initial task submission.",
     workspaceSummary: `Task ${task.id} will run in ${task.domain} workspace scope.`,
+    contextSourceSummary: contextSources.text || undefined,
   });
 }
 

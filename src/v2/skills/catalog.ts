@@ -13,7 +13,41 @@ export function createStaticSkillCatalog(skills: SkillSourceDefinition[]): Skill
   };
 }
 
+const softwareEngineeringSkillIds = [
+  "software.repo-inspection",
+  "software.minimal-patch",
+  "software.test-evidence",
+  "software.bug-reproduction",
+  "software.regression-check",
+  "software.refactor-safety",
+  "software.docs-update",
+  "software.code-review",
+  "software.spec-alignment-skill",
+  "software.browser-qa-skill",
+  "software.commit-curation",
+  "software.merge-readiness",
+  "software.merge-operation",
+  "software.release-reporting",
+  "software.completion-report",
+];
+
+const softwareEngineeringSkills: SkillSourceDefinition[] = softwareEngineeringSkillIds.map((skillId) => ({
+  skillId,
+  version: "2026-06-16",
+  instructions: [
+    `Use ${skillId} discipline for this Southstar task.`,
+    "Follow the task's ContextPacket, artifact contracts, selected MCP/tool grants, and forbidden actions.",
+    "Return structured artifact evidence with summary, evidence, and risks fields unless the task contract requires stricter fields.",
+    "Do not assume this skill is baked into the Docker image; it is delivered through the task envelope.",
+  ].join("\n"),
+  allowedTools: ["read", "search", "shell", "edit"],
+  requiredMounts: ["/workspace/repo"],
+  mcpRequirements: [],
+  artifactContracts: [],
+}));
+
 export const builtInSkillCatalog = createStaticSkillCatalog([
+  ...softwareEngineeringSkills,
   {
     skillId: "software.calc-cli",
     version: "2026-06-12",

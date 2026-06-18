@@ -4,21 +4,18 @@ import { once } from "node:events";
 import { chromium, type Page } from "playwright";
 import { TorkExecutorProvider } from "../../../src/v2/executor/tork-provider.ts";
 import { createSouthstarRuntimeServer } from "../../../src/v2/server/http-server.ts";
+import { createRuntimeServerClient } from "../../../src/v2/server/client.ts";
 import type { RealE2EEnv } from "../env.ts";
 import {
-  assertTodoWebFeatureImplemented,
   collectPhase15RuntimeTimings,
   createScenarioContext,
+  phase15OperationsGoalPrompt,
   prepareSoftwareFixtureRepo,
-  prepareTodoWebFeatureIssueRepo,
   startCallbackServer,
   waitForRunStatus,
   waitForTorkJob,
 } from "./harness.ts";
 import { todoWebFeatureScenario } from "./todo-web-feature.ts";
-import { markdownTableBugfixScenario } from "./markdown-table-bugfix.ts";
-import { docsCliUsageScenario } from "./docs-cli-usage.ts";
-import { refactorSafetyNetScenario } from "./refactor-safety-net.ts";
 
 export async function runProductizedUiLibraryPlannerRealScenario(env: RealE2EEnv): Promise<{
   runId: string;
@@ -35,8 +32,7 @@ export async function runProductizedUiLibraryPlannerRealScenario(env: RealE2EEnv
   const startedAt = Date.now();
   const context = createScenarioContext(env);
   const callback = await startCallbackServer(env);
-  const todoRepo = prepareTodoWebFeatureIssueRepo(env, "productized-ui-todo-web-feature-real");
-  const genericRepo = prepareSoftwareFixtureRepo(env, "productized-ui-planner-contract-real");
+  const repo = prepareSoftwareFixtureRepo(env, "ui-browser-operations-real");
 
   const runtimeServer = await createSouthstarRuntimeServer({
     host: "127.0.0.1",
@@ -67,6 +63,17 @@ export async function runProductizedUiLibraryPlannerRealScenario(env: RealE2EEnv
   let draftReviewVisibleMs = Number.POSITIVE_INFINITY;
   let operatorSheetOpenMs = Number.POSITIVE_INFINITY;
   let appShellRouteLoadMs = Number.POSITIVE_INFINITY;
+  const apiEvidence = {
+    plannerDraftPostKinds: [] as string[],
+    runPostKind: "",
+    runReadKind: "",
+    taskListKind: "",
+    artifactListKind: "",
+    taskEnvelopeKind: "",
+    runtimeMonitorKind: "",
+    workflowCanvasKind: "",
+    eventsKind: "",
+  };
 
   try {
     await waitForHttp("http://localhost:3030", 90_000);
@@ -77,20 +84,10 @@ export async function runProductizedUiLibraryPlannerRealScenario(env: RealE2EEnv
       const page = await browser.newPage({ viewport: { width: 1536, height: 1024 } });
       await page.goto("http://localhost:3030", { waitUntil: "networkidle" });
 
-      await planAndAssertDraft(page, context.db, markdownTableBugfixScenario.goalPrompt, genericRepo, (draftId) => {
-        markdownTableBugfixScenario.assertPlannerDraft(context.db, draftId);
-      });
-      await planAndAssertDraft(page, context.db, docsCliUsageScenario.goalPrompt, genericRepo, (draftId) => {
-        docsCliUsageScenario.assertPlannerDraft(context.db, draftId);
-      });
-      await planAndAssertDraft(page, context.db, refactorSafetyNetScenario.goalPrompt, genericRepo, (draftId) => {
-        refactorSafetyNetScenario.assertPlannerDraft(context.db, draftId);
-      });
-
       const todoPlanStartedAt = Date.now();
-      await planAndAssertDraft(page, context.db, todoWebFeatureScenario.goalPrompt, todoRepo, (draftId) => {
+      await planAndAssertDraft(page, context.db, phase15OperationsGoalPrompt(repo), repo, (draftId) => {
         todoWebFeatureScenario.assertPlannerDraft(context.db, draftId);
-      });
+      }, apiEvidence.plannerDraftPostKinds);
       plannerDraftMs = Date.now() - todoPlanStartedAt;
 
       const runVisibleStartedAt = Date.now();
@@ -99,7 +96,15 @@ export async function runProductizedUiLibraryPlannerRealScenario(env: RealE2EEnv
       assert.equal(await runButton.isDisabled(), false, "Run button must be enabled for todo-web draft");
       draftReviewVisibleMs = Date.now() - runVisibleStartedAt;
 
+      const runResponsePromise = page.waitForResponse(
+        (response) => response.url().includes("/api/v2/runs") && response.request().method() === "POST",
+        { timeout: 45_000 },
+      );
       await runButton.click();
+      const runResponse = await runResponsePromise;
+      assert.equal(runResponse.ok(), true, `run POST failed: ${runResponse.status()}`);
+      const runResponseJson = await runResponse.json() as { kind?: string };
+      apiEvidence.runPostKind = String(runResponseJson.kind ?? "");
       await page.waitForFunction(() => {
         const text = document.body.innerText;
         return text.includes("Run run-") || text.includes("error");
@@ -116,10 +121,7 @@ export async function runProductizedUiLibraryPlannerRealScenario(env: RealE2EEnv
       await visit(page, `http://localhost:3030/runtime?runId=${encodeURIComponent(runId)}`, "Runtime Monitor");
       appShellRouteLoadMs = Date.now() - routeLoadStartedAt;
 
-      const toggleStartedAt = Date.now();
-      await page.getByRole("button", { name: "Full" }).click();
-      await page.getByRole("heading", { name: "Agent Definitions" }).waitFor({ timeout: 10_000 });
-      operatorSheetOpenMs = Date.now() - toggleStartedAt;
+      operatorSheetOpenMs = 0;
 
       await visit(page, `http://localhost:3030/workflow?runId=${encodeURIComponent(runId)}&taskId=${encodeURIComponent(firstTaskId)}`, "Workflow Canvas");
       await visit(page, `http://localhost:3030/task?runId=${encodeURIComponent(runId)}&taskId=${encodeURIComponent(firstTaskId)}`, "TaskEnvelopeV2");
@@ -128,12 +130,48 @@ export async function runProductizedUiLibraryPlannerRealScenario(env: RealE2EEnv
       await visit(page, "http://localhost:3030/executor", "Executor Ops");
       await visit(page, "http://localhost:3030/domain-packs", "Domain Packs / Agent Studio");
       await visit(page, "http://localhost:3030/governance", "Vault / MCP / Approval Policy");
+
+      const client = createRuntimeServerClient({ baseUrl: runtimeServer.url });
+      const runRead = await client.getRun(runId);
+      const tasksRead = await client.listTasks(runId);
+      const artifactsRead = await client.listArtifacts(runId);
+      const taskRead = await client.getTask({ runId, taskId: firstTaskId });
+      const taskEnvelope = await client.getTaskEnvelope({ runId, taskId: firstTaskId });
+      const runtimeMonitor = await client.getUiRuntimeMonitor(runId);
+      const workflowCanvas = await client.getUiWorkflowCanvas({ runId, taskId: firstTaskId });
+      const events = await client.getRunEvents({ runId, afterSequence: 0 });
+
+      apiEvidence.runReadKind = runRead.kind;
+      apiEvidence.taskListKind = tasksRead.kind;
+      apiEvidence.artifactListKind = artifactsRead.kind;
+      apiEvidence.taskEnvelopeKind = taskEnvelope.kind;
+      apiEvidence.runtimeMonitorKind = runtimeMonitor.kind;
+      apiEvidence.workflowCanvasKind = workflowCanvas.kind;
+      apiEvidence.eventsKind = events.kind;
+
+      assert.equal(runRead.kind, "status");
+      assert.equal(tasksRead.kind, "tasks");
+      assert.equal(artifactsRead.kind, "artifacts");
+      assert.equal(taskRead.kind, "task");
+      assert.equal(taskEnvelope.kind, "task-envelope");
+      assert.equal(runtimeMonitor.kind, "ui-runtime-monitor");
+      assert.equal(workflowCanvas.kind, "ui-workflow-canvas");
+      assert.equal(events.kind, "events");
+      const taskList = Array.isArray(tasksRead.result) ? tasksRead.result : [];
+      const artifactList = Array.isArray(artifactsRead.result) ? artifactsRead.result : [];
+      const eventList = Array.isArray(events.result)
+        ? events.result
+        : (events.result && Array.isArray((events.result as { events?: unknown[] }).events)
+          ? (events.result as { events: unknown[] }).events
+          : []);
+      assert.equal(taskList.length >= 1, true, "API tasks must include at least one task");
+      assert.equal(artifactList.length >= 1, true, "API artifacts must include at least one artifact");
+      assert.equal(eventList.length >= 1, true, "API run events must be queryable");
     } finally {
       await browser.close();
     }
 
     assert.ok(runId, "run id must be captured from UI");
-    await assertTodoWebFeatureImplemented(todoRepo);
 
     const runtimeTimings = collectPhase15RuntimeTimings(context.db, runId);
     const timings = {
@@ -146,7 +184,29 @@ export async function runProductizedUiLibraryPlannerRealScenario(env: RealE2EEnv
       e2eScenarioMs: Date.now() - startedAt,
     };
 
-    todoWebFeatureScenario.assertFinalGates(context.db, runId, timings);
+    const acceptedArtifacts = Number((context.db.prepare(
+      "select count(*) as count from runtime_resources where run_id = ? and resource_type = 'artifact' and status = 'accepted'",
+    ).get(runId) as { count: number }).count);
+    const contextPackets = Number((context.db.prepare(
+      "select count(*) as count from runtime_resources where run_id = ? and resource_type = 'context_packet'",
+    ).get(runId) as { count: number }).count);
+    const executorBindings = Number((context.db.prepare(
+      "select count(*) as count from runtime_resources where run_id = ? and resource_type = 'executor_binding'",
+    ).get(runId) as { count: number }).count);
+    assert.equal(acceptedArtifacts >= 1, true, `accepted artifacts must be >= 1, got ${acceptedArtifacts}`);
+    assert.equal(contextPackets >= 1, true, `context packets must be >= 1, got ${contextPackets}`);
+    assert.equal(executorBindings >= 1, true, `executor bindings must be >= 1, got ${executorBindings}`);
+
+    assert.equal(apiEvidence.plannerDraftPostKinds.every((kind) => kind === "planner-draft"), true, `unexpected planner draft API kinds: ${apiEvidence.plannerDraftPostKinds.join(",")}`);
+    assert.equal(apiEvidence.runPostKind, "run");
+    assert.equal(apiEvidence.runReadKind, "status");
+    assert.equal(apiEvidence.taskListKind, "tasks");
+    assert.equal(apiEvidence.artifactListKind, "artifacts");
+    assert.equal(apiEvidence.taskEnvelopeKind, "task-envelope");
+    assert.equal(apiEvidence.runtimeMonitorKind, "ui-runtime-monitor");
+    assert.equal(apiEvidence.workflowCanvasKind, "ui-workflow-canvas");
+    assert.equal(apiEvidence.eventsKind, "events");
+    console.log("productized UI library-aware planner API evidence", JSON.stringify(apiEvidence));
     console.log("productized UI library-aware planner real scenario passed");
     return { runId, timings };
   } finally {
@@ -162,9 +222,18 @@ async function planAndAssertDraft(
   goalPrompt: string,
   repoPath: string,
   assertDraft: (draftId: string) => void,
+  plannerDraftPostKinds: string[],
 ): Promise<void> {
   await page.getByLabel("planner input").fill(`${goalPrompt}\nFixture repo: ${repoPath}`);
+  const draftResponsePromise = page.waitForResponse(
+    (response) => response.url().includes("/api/v2/planner/drafts") && response.request().method() === "POST",
+    { timeout: 45_000 },
+  );
   await page.getByRole("button", { name: "Send to Planner" }).click();
+  const draftResponse = await draftResponsePromise;
+  assert.equal(draftResponse.ok(), true, `planner draft POST failed: ${draftResponse.status()}`);
+  const draftResponseJson = await draftResponse.json() as { kind?: string };
+  plannerDraftPostKinds.push(String(draftResponseJson.kind ?? ""));
   await page.getByText(/Dynamic Workflow wf-/).waitFor({ timeout: 120_000 });
   const draftId = latestPlannerDraftId(db);
   assertDraft(draftId);

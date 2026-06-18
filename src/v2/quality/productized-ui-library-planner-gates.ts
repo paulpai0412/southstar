@@ -36,6 +36,7 @@ export function assertProductizedUiLibraryPlannerGates(
 ): ProductizedPlannerGateResult {
   const failures: string[] = [];
 
+  if (/calc/i.test(input.scenarioId)) failures.push("E2E scenario must be non-calc");
   max(failures, "planner draft", input.timings.plannerDraftMs, 180_000);
   max(failures, "manifest validation", input.timings.validationMs, 3_000);
   max(failures, "first planning event", input.timings.firstPlanningEventMs, 10_000);
@@ -50,6 +51,7 @@ export function assertProductizedUiLibraryPlannerGates(
     failures.push(`run not found: ${input.runId}`);
   } else {
     if (!isTerminalSuccess(run.status)) failures.push(`run must be passed/completed, got ${run.status}`);
+    if (/calc/i.test(run.goal_prompt)) failures.push("run goal must be non-calc");
 
     const workflow = parseManifest(run.workflow_manifest_json);
     for (const task of workflow.tasks) {
