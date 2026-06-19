@@ -31,12 +31,11 @@ The end state of this stabilization pass is:
 
 ## Phase 1 — Commit boundary plan
 
-- [ ] Commit A: Postgres DB/config foundation.
-- [ ] Commit B: Postgres runtime API/read-model/CLI/server path.
-- [ ] Commit C: Evolution control plane API/UI/read-models.
-- [ ] Commit D: Legacy SQLite quarantine and E2E isolation.
-- [ ] Commit E: Pure root-session artifact gate split from legacy DB-backed loop.
-- [ ] Commit F: Stabilization TODO/checklist and verification evidence updates, if not already included.
+- [x] Commit A: Postgres DB/config foundation (`fa96fd2`).
+- [x] Commit B: Postgres runtime API/read-model/CLI/server path plus Evolution backend (`53a5b8e`).
+- [x] Commit C: Evolution Control Center UI/read-model wiring (`496690f`).
+- [x] Commit D/E: Legacy SQLite quarantine, E2E isolation, and pure root-session split (`da7af12`).
+- [x] Commit F: Stabilization TODO/checklist and verification evidence updates (`0b48020` plus final docs commit).
 
 ## Phase 2 — Canonical/legacy boundary gates
 
@@ -65,11 +64,11 @@ The end state of this stabilization pass is:
 
 ## Phase 4 — Staging rules
 
-- [ ] Use pathspec-based `git add`, never `git add .`.
-- [ ] Stage move of `tests/e2e-real` to `tests/e2e-legacy-sqlite` as a rename, not as silent delete/loss.
-- [ ] Exclude generated `.southstar/` runtime state unless explicitly reviewed.
-- [ ] Inspect each staged diff before commit.
-- [ ] Each commit must pass its focused gate or be marked as requiring later aggregate verification.
+- [x] Use pathspec-based `git add`, never `git add .`.
+- [x] Stage move of `tests/e2e-real` to `tests/e2e-legacy-sqlite` as a rename, not as silent delete/loss.
+- [x] Exclude generated `.southstar/` runtime state unless explicitly reviewed.
+- [x] Inspect each staged diff before commit.
+- [x] Each commit must pass its focused gate or be marked as requiring later aggregate verification.
 
 ## Phase 5 — Follow-up migration after stabilization
 
@@ -86,9 +85,9 @@ After this pass is committed and verified, migrate one legacy module group at a 
 
 ## Completion criteria for this stabilization pass
 
-- [ ] Working tree has reviewable staged/committed chunks.
-- [ ] No active runtime/server/CLI/Postgres path imports legacy SQLite/local APIs.
-- [ ] Canonical tests pass.
-- [ ] Web build passes.
-- [ ] Remaining legacy surfaces are documented as quarantine, not active runtime.
-- [ ] Real E2E gaps are listed explicitly rather than hidden.
+- [x] Working tree has reviewable staged/committed chunks.
+- [x] No active runtime/server/CLI/Postgres path imports legacy SQLite/local APIs.
+- [x] Canonical tests pass.
+- [x] Web build passes.
+- [x] Remaining legacy surfaces are documented as quarantine, not active runtime.
+- [x] Real E2E gaps are listed explicitly rather than hidden.
