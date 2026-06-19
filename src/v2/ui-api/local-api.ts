@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: retained only for compatibility while Postgres v2 APIs replace this surface.
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join } from "node:path";

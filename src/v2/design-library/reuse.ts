@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: retained only for compatibility while Postgres v2 APIs replace this surface.
 import type { SouthstarDb } from "../stores/sqlite.ts";
 import type { TodoWebFeatureIssuePacket } from "./designer.ts";
 import type { TemplateMatchResult, WorkflowTemplatePayload } from "./types.ts";

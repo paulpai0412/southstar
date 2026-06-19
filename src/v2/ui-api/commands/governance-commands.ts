@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: retained only for compatibility while Postgres v2 APIs replace this surface.
 import { evaluateApprovalPolicy, type ApprovalActionType } from "../../approvals/policy.ts";
 import { decideApproval } from "../../approvals/service.ts";
 import { appendHistoryEvent } from "../../stores/history-store.ts";

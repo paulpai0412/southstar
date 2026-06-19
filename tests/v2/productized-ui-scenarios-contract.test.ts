@@ -3,10 +3,10 @@ import test from "node:test";
 import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
 import { upsertRuntimeResource } from "../../src/v2/stores/resource-store.ts";
 import { createWorkflowRun } from "../../src/v2/stores/run-store.ts";
-import { todoWebFeatureScenario } from "../e2e-real/scenarios/todo-web-feature.ts";
-import { markdownTableBugfixScenario } from "../e2e-real/scenarios/markdown-table-bugfix.ts";
-import { docsCliUsageScenario } from "../e2e-real/scenarios/docs-cli-usage.ts";
-import { refactorSafetyNetScenario } from "../e2e-real/scenarios/refactor-safety-net.ts";
+import { todoWebFeatureScenario } from "../e2e-legacy-sqlite/scenarios/todo-web-feature.ts";
+import { markdownTableBugfixScenario } from "../e2e-legacy-sqlite/scenarios/markdown-table-bugfix.ts";
+import { docsCliUsageScenario } from "../e2e-legacy-sqlite/scenarios/docs-cli-usage.ts";
+import { refactorSafetyNetScenario } from "../e2e-legacy-sqlite/scenarios/refactor-safety-net.ts";
 
 function writeDraft(db: ReturnType<typeof openSouthstarDb>, draftId: string, tasks: Array<{ id: string; agentProfileRef?: string }>) {
   upsertRuntimeResource(db, {

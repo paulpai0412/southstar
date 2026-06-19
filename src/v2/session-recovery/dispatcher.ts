@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: retained only for compatibility while Postgres v2 APIs replace this surface.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";

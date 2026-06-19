@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: superseded by tests/e2e-postgres for canonical real E2E.
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadRealE2EEnv } from "./env.ts";

@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: retained only for compatibility while Postgres v2 APIs replace this surface.
 import { execFileSync } from "node:child_process";
 import { resolve } from "node:path";
 import { appendHistoryEvent } from "../../stores/history-store.ts";
