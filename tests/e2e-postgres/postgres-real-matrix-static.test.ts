@@ -10,6 +10,7 @@ const implementedCases = [
   "00-infra-preflight.test.ts",
   "01-db-schema-init.test.ts",
   "02-runtime-api-contract.test.ts",
+  "03-normal-software-run.test.ts",
   "08-evolution-sandbox-baseline-candidate.test.ts",
 ];
 

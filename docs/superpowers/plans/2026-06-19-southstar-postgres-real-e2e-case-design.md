@@ -40,6 +40,7 @@ npm run test:e2e:postgres      # static manifest/boundary only
 npm run test:e2e:postgres:00   # infra preflight
 npm run test:e2e:postgres:01   # db schema init
 npm run test:e2e:postgres:02   # runtime API contract
+npm run test:e2e:postgres:03   # normal software run
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate
 ```
 
@@ -97,20 +98,22 @@ Evidence:
 
 ### 03 — Normal software run
 
-Status: planned
+File: `tests/e2e-postgres/cases/03-normal-software-run.test.ts`
+
+Status: implemented
 
 Purpose:
 
-- Execute a small real software-development workflow through Planner -> Postgres run -> Tork -> Pi harness -> callback.
+- Execute a small real software-development workflow through Planner -> Postgres run -> materialized task envelopes -> Tork -> Pi harness -> callback.
 - Assert artifact/evidence acceptance and completed lifecycle.
 
-Evidence target:
+Evidence:
 
-- executor binding created.
-- Tork job completed.
-- `executor.callback_received` history exists.
-- task status completed or accepted according to canonical callback semantics.
-- accepted artifact resource contains command/test evidence.
+- executor bindings are created for all tasks.
+- Tork job completes.
+- `executor.callback_received` history exists for all tasks.
+- all task statuses become `completed` and run status becomes `passed`.
+- accepted artifact resources contain command/test evidence.
 
 ### 04 — Artifact repair/recovery
 

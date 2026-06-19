@@ -183,6 +183,29 @@ export function dockerReachableUrl(server: SouthstarRuntimeServer, infra: RealPo
   return `http://${infra.callbackHost}:${server.port}`;
 }
 
+export async function waitForPostgresRunStatus(db: SouthstarDb, runId: string, statuses: string[], timeoutMs = 20 * 60 * 1000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const row = await db.maybeOne<{ status: string }>("select status from southstar.workflow_runs where id = $1", [runId]);
+    if (row && statuses.includes(row.status)) return row.status;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  throw new Error(`run ${runId} did not reach ${statuses.join("/")} within ${timeoutMs}ms`);
+}
+
+export async function waitForPostgresTaskCallbacks(db: SouthstarDb, runId: string, taskIds: string[], timeoutMs = 20 * 60 * 1000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const rows = await db.query<{ task_id: string }>(
+      "select distinct task_id from southstar.workflow_history where run_id = $1 and event_type = 'executor.callback_received' and task_id = any($2::text[])",
+      [runId, taskIds],
+    );
+    if (new Set(rows.rows.map((row) => row.task_id)).size === taskIds.length) return;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  throw new Error(`run ${runId} did not receive callbacks for all tasks within ${timeoutMs}ms`);
+}
+
 export async function waitForTorkJob(baseUrl: string, jobId: string, timeoutMs = 20 * 60 * 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   const client = new TorkClient({ baseUrl, requestTimeoutMs: 20_000, retryCount: 2 });

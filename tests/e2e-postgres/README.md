@@ -29,6 +29,7 @@ Run these individually:
 npm run test:e2e:postgres:00   # infra preflight
 npm run test:e2e:postgres:01   # db:init/schema contract
 npm run test:e2e:postgres:02   # planner/run/read-model/envelope API contract
+npm run test:e2e:postgres:03   # normal software run through Tork/Pi callbacks
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through Tork/Pi
 ```
 
@@ -41,7 +42,7 @@ npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through To
 | 00 infra preflight | implemented | Verify real Postgres, Tork, Pi planner/harness reachability | schema metadata, endpoint probes |
 | 01 db schema init | implemented | Verify `db:init`, schema metadata, simplified table model | `southstar.schema_metadata`, no dedicated forbidden tables |
 | 02 runtime API contract | implemented | Verify planner draft, run creation, task envelope, run inspection | Postgres rows + `/api/v2/read-models/...` |
-| 03 normal software run | planned | Real software task through planner -> Tork -> Pi -> callback -> completed artifact | `workflow_history`, accepted artifact, completed task/run |
+| 03 normal software run | implemented | Real software task through planner -> Tork -> Pi -> callback -> completed artifact | `workflow_history`, accepted artifact, completed task/run |
 | 04 artifact repair/recovery | planned | Malformed/partial artifact causes repair request and successful retry | `repair.requested`, evaluator result, accepted repaired artifact |
 | 05 session recovery | planned | Failed/stuck session checkpoints and dispatches recovery execution | checkpoint resource, recovery binding, new executor job |
 | 06 executor reconcile | planned | Lost/drifted executor state is reconciled without corrupting lifecycle | binding status, reconcile history, operator finding |
