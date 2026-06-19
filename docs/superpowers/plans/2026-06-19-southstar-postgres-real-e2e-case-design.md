@@ -42,6 +42,7 @@ npm run test:e2e:postgres:01   # db schema init
 npm run test:e2e:postgres:02   # runtime API contract
 npm run test:e2e:postgres:03   # normal software run
 npm run test:e2e:postgres:04   # artifact repair/recovery
+npm run test:e2e:postgres:05   # session recovery
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate
 ```
 
@@ -138,19 +139,23 @@ Evidence:
 
 ### 05 — Session recovery
 
-Status: planned
+File: `tests/e2e-postgres/cases/05-session-recovery.test.ts`
+
+Status: implemented
 
 Purpose:
 
-- Simulate failed/stuck session after durable checkpoint.
-- Dispatch recovery execution through Postgres recovery dispatcher and Tork.
+- Record failed callback with an initial root session id.
+- Dispatch session recovery through Postgres recovery dispatcher and real Tork/Pi.
+- Verify recovered execution runs under a new root session id with checkpoint-linked context/envelope.
 
-Evidence target:
+Evidence:
 
-- session checkpoint resource.
-- recovery decision/operation history.
-- new executor binding/job.
-- rebuilt task envelope includes checkpoint/failure context.
+- task root session id changes from initial session to `-recovery-2` session id.
+- `session_checkpoint` resource is created with `kind=before-recovery` and original session id.
+- recovery context packet and task envelope carry checkpoint/session metadata.
+- `checkpoint.created`, `recovery.execution_submitted`, and callback history events exist.
+- recovery attempt executor binding reaches `completed`.
 
 ### 06 — Executor reconcile
 

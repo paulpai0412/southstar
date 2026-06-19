@@ -31,6 +31,7 @@ npm run test:e2e:postgres:01   # db:init/schema contract
 npm run test:e2e:postgres:02   # planner/run/read-model/envelope API contract
 npm run test:e2e:postgres:03   # normal software run through Tork/Pi callbacks
 npm run test:e2e:postgres:04   # artifact failure + recovery dispatch
+npm run test:e2e:postgres:05   # session checkpoint + recovery rerun
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through Tork/Pi
 ```
 
@@ -45,7 +46,7 @@ npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through To
 | 02 runtime API contract | implemented | Verify planner draft, run creation, task envelope, run inspection | Postgres rows + `/api/v2/read-models/...` |
 | 03 normal software run | implemented | Real software task through planner -> Tork -> Pi -> callback -> completed artifact | `workflow_history`, accepted artifact, completed task/run |
 | 04 artifact repair/recovery | implemented | Failed callback evidence triggers repair/recovery execution and successful retry | `repair.requested`, `recovery.execution_submitted`, recovered executor binding/task |
-| 05 session recovery | planned | Failed/stuck session checkpoints and dispatches recovery execution | checkpoint resource, recovery binding, new executor job |
+| 05 session recovery | implemented | Failed session callback gets checkpointed and rerun under new root session id | checkpoint resource, rerun context packet/envelope, `checkpoint.created`, `recovery.execution_submitted` |
 | 06 executor reconcile | planned | Lost/drifted executor state is reconciled without corrupting lifecycle | binding status, reconcile history, operator finding |
 | 07 evolution learning | planned | Completed/failed runs synthesize cards, wiki backlinks, delta proposals | `learning_nodes`, `learning_edges`, card/delta resources |
 | 08 evolution sandbox | implemented | Baseline/candidate sandbox jobs execute through Tork/Pi and evaluate decision | sandbox run contexts, callback history, decision resource |
