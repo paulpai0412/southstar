@@ -13,10 +13,16 @@
   "scripts": {
     "test": "tsx tests/index.test.ts",
     "test:v2": "tsx tests/v2/index.test.ts",
-    "test:e2e:real": "tsx tests/e2e-real/index.test.ts",
-    "test:e2e:productized-ui": "tsx tests/e2e-real/productized-ui-library-planner-real.test.ts",
-    "test:e2e:design-library-real": "tsx tests/e2e-real/design-library-template-real.test.ts",
+    "test:e2e:real": "tsx tests/e2e-postgres/index.test.ts",
+    "test:e2e:legacy-sqlite": "tsx tests/e2e-legacy-sqlite/index.test.ts",
+    "test:e2e:productized-ui": "tsx tests/e2e-legacy-sqlite/productized-ui-library-planner-real.test.ts",
+    "test:e2e:design-library-real": "tsx tests/e2e-legacy-sqlite/design-library-template-real.test.ts",
+    "test:postgres": "tsx tests/v2/postgres-store.test.ts",
+    "test:e2e:postgres": "tsx tests/e2e-postgres/index.test.ts",
     "test:e2e:ui": "tsx tests/e2e-ui/index.test.ts",
+    "e2e:ui:start": "tsx scripts/e2e-ui-cli.ts start",
+    "e2e:ui:stop": "tsx scripts/e2e-ui-cli.ts stop",
+    "e2e:ui:status": "tsx scripts/e2e-ui-cli.ts status",
     "web:dev": "next dev -p 3030 --webpack",
     "web:build": "next build --webpack",
     "web:start": "next start -p 3030",
@@ -56,11 +62,13 @@
   },
   "dependencies": {
     "lucide-react": "^0.468.0",
+    "pg": "^8.13.1",
     "next": "16.2.1",
     "react": "^19.2.4",
     "react-dom": "^19.2.4"
   },
   "devDependencies": {
+    "@types/pg": "^8.11.10",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "c8": "^11.0.0",

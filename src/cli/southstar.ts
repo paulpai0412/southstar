@@ -12,6 +12,7 @@ export const CLI_COMMANDS = [
   "workflow",
   "watch",
   "inspect",
+  "db:init",
 ] as const;
 
 export type SouthstarCliCommand = typeof CLI_COMMANDS[number];
