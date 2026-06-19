@@ -175,6 +175,7 @@ function renderContextPacketPrompt(
     packet.roleInstruction,
     formatBlocks("Agents.md", packet.agentsMdBlocks),
     formatBlocks("Memory", packet.selectedMemories),
+    formatBlocks("Knowledge Cards", packet.selectedKnowledgeCards ?? []),
     formatBlocks("Prior artifacts", packet.priorArtifacts),
     formatBlocks("Checkpoint", packet.checkpointSummary ? [packet.checkpointSummary] : []),
     formatBlocks("Failure", packet.failureSummary ? [packet.failureSummary] : []),

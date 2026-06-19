@@ -5,7 +5,8 @@ export type ReadModelKind =
   | "executor-ops"
   | "task-detail"
   | "sessions-memory"
-  | "vault-mcp";
+  | "vault-mcp"
+  | "evolution-control-center";
 
 export type ReadModelInput = {
   kind: ReadModelKind;

@@ -1,23 +1,9 @@
-import type { SouthstarDb } from "./stores/sqlite.ts";
-import { openSouthstarDb } from "./stores/sqlite.ts";
-import type { PiPlannerClient } from "./planner/types.ts";
-import { createHttpPiPlannerClient } from "./planner/pi-planner.ts";
-import { TorkClient } from "./executor/tork-client.ts";
 import { loadSouthstarEnv } from "./config/env.ts";
 import { createCliRuntimeClient, type CliRuntimeClient } from "./cli-client.ts";
-import {
-  createPlannerDraft,
-  createRunFromDraft,
-  getRunStatus,
-  getTaskEnvelope,
-  revisePlannerDraft,
-  steerRun,
-} from "./ui-api/local-api.ts";
 import type { ReadModelKind } from "./read-models/types.ts";
 
 export type V2Command =
   | { command: "plan"; goal: string }
-  | { command: "revise"; draftId: string; prompt: string }
   | { command: "run"; draftId: string }
   | { command: "status"; runId: string }
   | { command: "steer"; runId: string; message: string }
@@ -35,27 +21,16 @@ export type V2Command =
   | { command: "read-model"; kind: ReadModelKind; runId: string; taskId?: string };
 
 export type V2CliDependencies = {
-  db: SouthstarDb;
-  plannerClient?: PiPlannerClient;
-  torkClient?: Pick<TorkClient, "submit">;
   runtimeClient?: CliRuntimeClient;
 };
 
-export type V2CommandResult =
-  | { kind: "planner-draft"; result: Awaited<ReturnType<typeof createPlannerDraft>> }
-  | { kind: "run"; result: Awaited<ReturnType<typeof createRunFromDraft>> }
-  | { kind: "status"; result: ReturnType<typeof getRunStatus> }
-  | { kind: "steering"; result: ReturnType<typeof steerRun> }
-  | { kind: "task-envelope"; result: ReturnType<typeof getTaskEnvelope> }
-  | { kind: string; result: unknown };
+export type V2CommandResult = { kind: string; result: unknown };
 
 export function parseV2Command(argv: string[]): V2Command {
   const [command, ...args] = argv;
   switch (command) {
     case "plan":
       return { command, goal: requireFlag(args, "--goal") };
-    case "revise":
-      return { command, draftId: requireFlag(args, "--draft-id"), prompt: requireFlag(args, "--prompt") };
     case "run":
       return { command, draftId: requireFlag(args, "--draft-id") };
     case "status":
@@ -96,97 +71,48 @@ export function parseV2Command(argv: string[]): V2Command {
   }
 }
 
-export async function executeV2Command(
-  command: V2Command,
-  dependencies: V2CliDependencies,
-): Promise<V2CommandResult> {
+export async function executeV2Command(command: V2Command, dependencies: V2CliDependencies): Promise<V2CommandResult> {
+  if (command.command === "serve") throw new Error("serve is implemented by src/v2/server entrypoint task");
+  const client = requireRuntimeClient(dependencies);
   switch (command.command) {
     case "plan":
-      return {
-        kind: "planner-draft",
-        result: await createPlannerDraft(dependencies.db, {
-          goalPrompt: command.goal,
-          plannerClient: requirePlannerClient(dependencies),
-        }),
-      };
-    case "revise":
-      return {
-        kind: "planner-draft",
-        result: await revisePlannerDraft(dependencies.db, {
-          draftId: command.draftId,
-          prompt: command.prompt,
-          plannerClient: requirePlannerClient(dependencies),
-        }),
-      };
+      return unwrapServerEnvelope(await client.createPlannerDraft({ goalPrompt: command.goal }));
     case "run":
-      return {
-        kind: "run",
-        result: await createRunFromDraft(dependencies.db, {
-          draftId: command.draftId,
-          torkClient: requireTorkClient(dependencies),
-        }),
-      };
+      return unwrapServerEnvelope(await client.createRun({ draftId: command.draftId }));
     case "status":
-      if (dependencies.runtimeClient) return unwrapServerEnvelope(await dependencies.runtimeClient.getRun(command.runId));
-      return { kind: "status", result: getRunStatus(dependencies.db, command.runId) };
-    case "steer":
-      if (dependencies.runtimeClient) {
-        return unwrapServerEnvelope(await dependencies.runtimeClient.steerRun({ runId: command.runId, message: command.message }));
-      }
-      return {
-        kind: "steering",
-        result: steerRun(dependencies.db, { runId: command.runId, message: command.message }),
-      };
-    case "task-envelope":
-      if (dependencies.runtimeClient) {
-        return unwrapServerEnvelope(await dependencies.runtimeClient.getTaskEnvelope({ runId: command.runId, taskId: command.taskId }));
-      }
-      return {
-        kind: "task-envelope",
-        result: getTaskEnvelope(dependencies.db, { runId: command.runId, taskId: command.taskId }),
-      };
-    case "serve":
-      throw new Error("serve is implemented by src/v2/server entrypoint task");
-    case "run-goal":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).runGoal({ goalPrompt: command.goal }));
     case "wait":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).getRun(command.runId));
+      return unwrapServerEnvelope(await client.getRun(command.runId));
+    case "steer":
+      return unwrapServerEnvelope(await client.steerRun({ runId: command.runId, message: command.message }));
+    case "task-envelope":
+      return unwrapServerEnvelope(await client.getTaskEnvelope({ runId: command.runId, taskId: command.taskId }));
+    case "run-goal":
+      return unwrapServerEnvelope(await client.runGoal({ goalPrompt: command.goal }));
     case "tasks":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).listTasks(command.runId));
+      return unwrapServerEnvelope(await client.listTasks(command.runId));
     case "task":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).getTask({ runId: command.runId, taskId: command.taskId }));
+      return unwrapServerEnvelope(await client.getTask({ runId: command.runId, taskId: command.taskId }));
     case "artifacts":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).listArtifacts(command.runId));
+      return unwrapServerEnvelope(await client.listArtifacts(command.runId));
     case "sessions":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).listSessions(command.runId));
+      return unwrapServerEnvelope(await client.listSessions(command.runId));
     case "memory":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).listMemory(command.runId));
+      return unwrapServerEnvelope(await client.listMemory(command.runId));
     case "logs":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).listLogs(command.runId));
+      return unwrapServerEnvelope(await client.listLogs(command.runId));
     case "voice-command":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).voiceCommand({
-        runId: command.runId,
-        transcript: command.transcript,
-      }));
+      return unwrapServerEnvelope(await client.voiceCommand({ runId: command.runId, transcript: command.transcript }));
     case "read-model":
-      return unwrapServerEnvelope(await requireRuntimeClient(dependencies).getReadModel({
-        kind: command.kind,
-        runId: command.runId,
-        taskId: command.taskId,
-      }));
+      return unwrapServerEnvelope(await client.getReadModel({ kind: command.kind, runId: command.runId, taskId: command.taskId }));
   }
 }
 
-export async function main(
-  argv = process.argv.slice(2),
-  dependencies?: Partial<V2CliDependencies> & { write?: (text: string) => void },
-): Promise<number> {
+export async function main(argv = process.argv.slice(2), dependencies?: Partial<V2CliDependencies> & { write?: (text: string) => void }): Promise<number> {
   try {
     const parsed = parseV2Command(argv);
-    const deps = dependencies ?? {};
-    const runtimeDeps = completeDependencies(parsed, deps);
-    const result = await executeV2Command(parsed, runtimeDeps);
-    (deps.write ?? console.log)(JSON.stringify(result, null, 2));
+    const deps = { ...dependencies, runtimeClient: dependencies?.runtimeClient ?? createCliRuntimeClient({ baseUrl: loadSouthstarEnv().serverUrl }) };
+    const result = await executeV2Command(parsed, deps);
+    (dependencies?.write ?? console.log)(JSON.stringify(result, null, 2));
     return 0;
   } catch (error) {
     console.error((error as Error).message);
@@ -197,9 +123,7 @@ export async function main(
 function requireFlag(args: string[], flag: string): string {
   const index = args.indexOf(flag);
   const value = index >= 0 ? args[index + 1] : undefined;
-  if (!value || value.startsWith("--")) {
-    throw new Error(`${flag} is required`);
-  }
+  if (!value || value.startsWith("--")) throw new Error(`${flag} is required`);
   return value;
 }
 
@@ -209,65 +133,13 @@ function optionalFlag(args: string[], flag: string): string | undefined {
   return value && !value.startsWith("--") ? value : undefined;
 }
 
-function completeDependencies(
-  command: V2Command,
-  dependencies: Partial<V2CliDependencies>,
-): V2CliDependencies {
-  const env = loadSouthstarEnv();
-  const plannerClient = dependencies.plannerClient
-    ?? (needsPlanner(command)
-      ? createHttpPiPlannerClient({ endpoint: requirePiPlannerEndpoint(env.piPlannerEndpoint) })
-      : undefined);
-  return {
-    db: dependencies.db ?? openSouthstarDb(env.databaseUrl),
-    plannerClient,
-    torkClient: dependencies.torkClient ?? new TorkClient({ baseUrl: env.torkBaseUrl }),
-    runtimeClient: dependencies.runtimeClient
-      ?? (needsRuntimeServer(command) ? createCliRuntimeClient({ baseUrl: env.serverUrl }) : undefined),
-  };
-}
-
-function requirePlannerClient(dependencies: V2CliDependencies): PiPlannerClient {
-  if (!dependencies.plannerClient) throw new Error("planner client is required for this command");
-  return dependencies.plannerClient;
-}
-
-function requireTorkClient(dependencies: V2CliDependencies): Pick<TorkClient, "submit"> {
-  if (!dependencies.torkClient) throw new Error("tork client is required for this command");
-  return dependencies.torkClient;
-}
-
 function requireRuntimeClient(dependencies: V2CliDependencies): CliRuntimeClient {
   if (!dependencies.runtimeClient) throw new Error("runtime server client is required for this command");
   return dependencies.runtimeClient;
 }
 
-function unwrapServerEnvelope<T>(envelope: { kind: string; result: T }) {
+function unwrapServerEnvelope<T>(envelope: { kind: string; result: T }): V2CommandResult {
   return { kind: envelope.kind, result: envelope.result };
-}
-
-function needsPlanner(command: V2Command): boolean {
-  return command.command === "plan" || command.command === "revise";
-}
-
-function needsRuntimeServer(command: V2Command): boolean {
-  return [
-    "run-goal",
-    "wait",
-    "tasks",
-    "task",
-    "artifacts",
-    "sessions",
-    "memory",
-    "logs",
-    "voice-command",
-    "read-model",
-  ].includes(command.command);
-}
-
-function requirePiPlannerEndpoint(endpoint: string | undefined): string {
-  if (!endpoint) throw new Error("PI_PLANNER_ENDPOINT is required for planner commands");
-  return endpoint;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

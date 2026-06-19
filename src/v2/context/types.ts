@@ -14,6 +14,7 @@ export type ContextPacket = {
   agentsMdBlocks: ContextBlock[];
   artifactContracts: ContextBlock[];
   selectedMemories: ContextBlock[];
+  selectedKnowledgeCards: ContextBlock[];
   priorArtifacts: ContextBlock[];
   checkpointSummary?: ContextBlock;
   workspaceSummary?: ContextBlock;
@@ -33,6 +34,7 @@ export type ContextBlock = {
     | "role"
     | "agents-md"
     | "memory"
+    | "knowledge_card"
     | "artifact"
     | "checkpoint"
     | "skill"

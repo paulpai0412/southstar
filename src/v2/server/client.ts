@@ -1,10 +1,12 @@
-import type { createPlannerDraft, createRunFromDraft } from "../ui-api/local-api.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
 
 export type RuntimeServerClient = ReturnType<typeof createRuntimeServerClient>;
-type RunGoalResult = Awaited<ReturnType<typeof createRunFromDraft>> & {
-  draft: Awaited<ReturnType<typeof createPlannerDraft>>;
+
+type RunGoalResult = {
+  draft: { draftId: string; goalPrompt: string; workflowId: string };
+  runId: string;
+  taskIds: string[];
 };
 
 export function createRuntimeServerClient(input: { baseUrl: string }) {
@@ -48,10 +50,7 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/approvals`);
     },
     decideApproval(body: { runId: string; approvalId: string; decision: "approved" | "rejected"; reason: string }) {
-      return post(
-        `${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/approvals/${encodeURIComponent(body.approvalId)}/decision`,
-        { decision: body.decision, reason: body.reason },
-      );
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/approvals/${encodeURIComponent(body.approvalId)}/decision`, { decision: body.decision, reason: body.reason });
     },
     steerRun(body: { runId: string; message: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/steering`, { message: body.message });
@@ -100,11 +99,7 @@ function requiredTaskId(taskId: string | undefined): string {
 }
 
 async function post<T = unknown>(url: string, body: unknown): Promise<ApiEnvelope<T>> {
-  const response = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   return readJson(response);
 }
 
@@ -114,11 +109,7 @@ async function get<T = unknown>(url: string): Promise<ApiEnvelope<T>> {
 
 async function readJson<T>(response: Response): Promise<ApiEnvelope<T>> {
   const payload = await response.json() as ApiEnvelope<T> | ApiErrorEnvelope;
-  if (payload.ok === false) {
-    throw new Error(payload.error);
-  }
-  if (!response.ok) {
-    throw new Error(`request failed: ${response.status}`);
-  }
+  if (payload.ok === false) throw new Error(payload.error);
+  if (!response.ok) throw new Error(`request failed: ${response.status}`);
   return payload;
 }
