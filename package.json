@@ -28,6 +28,7 @@
     "test:e2e:postgres:06": "tsx tests/e2e-postgres/cases/06-executor-reconcile.test.ts",
     "test:e2e:postgres:07": "tsx tests/e2e-postgres/cases/07-evolution-learning.test.ts",
     "test:e2e:postgres:08": "tsx tests/e2e-postgres/cases/08-evolution-sandbox-baseline-candidate.test.ts",
+    "test:e2e:postgres:09": "tsx tests/e2e-postgres/cases/09-regression-rollback.test.ts",
     "test:e2e:ui": "tsx tests/e2e-ui/index.test.ts",
     "web:dev": "next dev -p 3030 --webpack",
     "web:build": "next build --webpack",

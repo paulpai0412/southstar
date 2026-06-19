@@ -46,6 +46,7 @@ npm run test:e2e:postgres:05   # session recovery
 npm run test:e2e:postgres:06   # executor reconcile
 npm run test:e2e:postgres:07   # evolution learning
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate
+npm run test:e2e:postgres:09   # regression rollback
 ```
 
 ## Case matrix
@@ -216,17 +217,23 @@ Evidence:
 
 ### 09 — Regression rollback
 
-Status: planned
+File: `tests/e2e-postgres/cases/09-regression-rollback.test.ts`
+
+Status: implemented
 
 Purpose:
 
-- Promote an asset, record regression observations, run regression monitor, and verify rollback/alert behavior.
+- Promote low/high risk assets and record regression observations.
+- Run regression monitor policy to auto-rollback low-risk regressions and raise high-risk alerts.
+- Verify rollback lineage and alert decision handling.
 
-Evidence target:
+Evidence:
 
-- promoted asset version.
-- regression alert or rollback resource.
-- lineage from regressed asset to rollback target.
+- low-risk asset transitions to `rolled_back` and previous version returns `active`.
+- high-risk regressed asset remains `active` with `approval_alert` created.
+- rollback lineage edges include `ROLLED_BACK_TO` and regressed-asset `HURT` linkage.
+- regression observation resources move to `rolled_back`/`alerted`.
+- alert acknowledge API updates alert status/payload decision fields.
 
 ## Execution order
 

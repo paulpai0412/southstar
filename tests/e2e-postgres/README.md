@@ -35,6 +35,7 @@ npm run test:e2e:postgres:05   # session checkpoint + recovery rerun
 npm run test:e2e:postgres:06   # executor binding drift/lost reconcile
 npm run test:e2e:postgres:07   # evolution learning signals/cards/deltas/wiki
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through Tork/Pi
+npm run test:e2e:postgres:09   # regression monitor rollback/alert policy
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
@@ -52,7 +53,7 @@ npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through To
 | 06 executor reconcile | implemented | Lost executor binding is classified and actioned without mutating run/task lifecycle | lost binding status, reconcile result resource, executor action commands/history |
 | 07 evolution learning | implemented | Runtime-linked signals synthesize cards, deltas, and wiki backlinks with read-model evidence | `learning_nodes`, `learning_edges`, delta resource, evolution control center counts |
 | 08 evolution sandbox | implemented | Baseline/candidate sandbox jobs execute through Tork/Pi and evaluate decision | sandbox run contexts, callback history, decision resource |
-| 09 regression rollback | planned | Promoted asset regression triggers rollback/alert according to risk | asset versions, regression alert, rollback lineage |
+| 09 regression rollback | implemented | Regression monitor auto-rolls back low-risk asset and raises high-risk approval alert | rolled_back/active asset statuses, rollback lineage edges, acknowledged alert |
 
 ## Adding a new case
 
