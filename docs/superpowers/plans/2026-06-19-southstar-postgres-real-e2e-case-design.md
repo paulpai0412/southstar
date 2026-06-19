@@ -43,6 +43,7 @@ npm run test:e2e:postgres:02   # runtime API contract
 npm run test:e2e:postgres:03   # normal software run
 npm run test:e2e:postgres:04   # artifact repair/recovery
 npm run test:e2e:postgres:05   # session recovery
+npm run test:e2e:postgres:06   # executor reconcile
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate
 ```
 
@@ -159,18 +160,23 @@ Evidence:
 
 ### 06 — Executor reconcile
 
-Status: planned
+File: `tests/e2e-postgres/cases/06-executor-reconcile.test.ts`
+
+Status: implemented
 
 Purpose:
 
-- Introduce executor binding drift/orphan state.
-- Verify reconcile classifies and records finding without corrupting lifecycle.
+- Introduce a lost executor binding state for a real Postgres run.
+- Reconcile against real Tork observation through runtime API.
+- Verify findings/actions are recorded without mutating run/task lifecycle.
 
-Evidence target:
+Evidence:
 
-- reconcile history event.
-- binding status update.
-- operator finding resource if human action is required.
+- reconcile finding classification is `lost` with `retry-attempt`/`alert-operator`.
+- executor binding status updates to `lost` with incremented reconcile generation.
+- `executor_reconcile_result` resource is persisted for the run/task.
+- `executor_job_command` resources and `executor.action_dispatched` history are emitted.
+- run/task statuses remain `created`/`pending` (no lifecycle corruption).
 
 ### 07 — Evolution learning
 
