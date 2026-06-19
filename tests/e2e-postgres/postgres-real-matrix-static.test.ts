@@ -11,6 +11,7 @@ const implementedCases = [
   "01-db-schema-init.test.ts",
   "02-runtime-api-contract.test.ts",
   "03-normal-software-run.test.ts",
+  "04-artifact-repair-recovery.test.ts",
   "08-evolution-sandbox-baseline-candidate.test.ts",
 ];
 

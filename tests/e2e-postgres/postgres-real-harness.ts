@@ -206,6 +206,19 @@ export async function waitForPostgresTaskCallbacks(db: SouthstarDb, runId: strin
   throw new Error(`run ${runId} did not receive callbacks for all tasks within ${timeoutMs}ms`);
 }
 
+export async function waitForExecutorBindingStatus(db: SouthstarDb, bindingId: string, statuses: string[], timeoutMs = 20 * 60 * 1000): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const row = await db.maybeOne<{ status: string }>(
+      "select status from southstar.runtime_resources where resource_type = 'executor_binding' and resource_key = $1",
+      [bindingId],
+    );
+    if (row && statuses.includes(row.status)) return row.status;
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+  throw new Error(`executor binding ${bindingId} did not reach ${statuses.join("/")} within ${timeoutMs}ms`);
+}
+
 export async function waitForTorkJob(baseUrl: string, jobId: string, timeoutMs = 20 * 60 * 1000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   const client = new TorkClient({ baseUrl, requestTimeoutMs: 20_000, retryCount: 2 });

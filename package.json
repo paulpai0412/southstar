@@ -23,6 +23,7 @@
     "test:e2e:postgres:01": "tsx tests/e2e-postgres/cases/01-db-schema-init.test.ts",
     "test:e2e:postgres:02": "tsx tests/e2e-postgres/cases/02-runtime-api-contract.test.ts",
     "test:e2e:postgres:03": "tsx tests/e2e-postgres/cases/03-normal-software-run.test.ts",
+    "test:e2e:postgres:04": "tsx tests/e2e-postgres/cases/04-artifact-repair-recovery.test.ts",
     "test:e2e:postgres:08": "tsx tests/e2e-postgres/cases/08-evolution-sandbox-baseline-candidate.test.ts",
     "test:e2e:ui": "tsx tests/e2e-ui/index.test.ts",
     "web:dev": "next dev -p 3030 --webpack",

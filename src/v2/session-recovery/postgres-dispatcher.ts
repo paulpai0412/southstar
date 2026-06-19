@@ -1,5 +1,6 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
+import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
 import { createExecutorBindingPg } from "../executor/postgres-bindings.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
@@ -92,6 +93,7 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
       payload: contextPacket,
       summary: { checkpointId, executionAttempt: input.plan.attemptNumber },
     });
+    const materialized = await materializeTaskEnvelope(envelope, { runRoot: input.runRoot });
     const envelopeId = `task-envelope-${input.runId}-${task.id}-recovery-${input.plan.attemptNumber}`;
     await upsertRuntimeResourcePg(db, {
       id: envelopeId,
@@ -101,9 +103,13 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
       taskId: task.id,
       sessionId,
       scope: task.domain,
-      status: "created",
+      status: "materialized",
       title: "Recovery TaskEnvelopeV2",
-      payload: envelope,
+      payload: {
+        envelope,
+        envelopePath: materialized.envelopePath,
+        taskDir: materialized.taskDir,
+      },
       summary: { schemaVersion: envelope.schemaVersion, contextPacketId: contextPacket.id, checkpointId },
     });
     await resetTaskForRecovery(db, input.runId, task.id, sessionId);

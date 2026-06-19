@@ -41,6 +41,7 @@ npm run test:e2e:postgres:00   # infra preflight
 npm run test:e2e:postgres:01   # db schema init
 npm run test:e2e:postgres:02   # runtime API contract
 npm run test:e2e:postgres:03   # normal software run
+npm run test:e2e:postgres:04   # artifact repair/recovery
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate
 ```
 
@@ -117,20 +118,23 @@ Evidence:
 
 ### 04 — Artifact repair/recovery
 
-Status: planned
+File: `tests/e2e-postgres/cases/04-artifact-repair-recovery.test.ts`
+
+Status: implemented
 
 Purpose:
 
-- Force a partial/malformed artifact in a real worker run.
-- Verify root/session artifact gate requests repair.
-- Verify retry produces accepted artifact.
+- Record failed callback evidence for a task's first attempt.
+- Dispatch recovery execution for that task through real Tork/Pi.
+- Verify repair/recovery lifecycle evidence and completed retry binding state.
 
-Evidence target:
+Evidence:
 
-- `repair.requested` history event.
-- failed evaluator result for first artifact.
-- accepted artifact after repair.
-- no raw transcript stored.
+- `repair.requested` history event for failed task.
+- `recovery.execution_submitted` history event.
+- recovery execution resource with strategy/attempt metadata.
+- recovery attempt executor binding reaches `completed`.
+- failed task returns to `completed` after retry.
 
 ### 05 — Session recovery
 
