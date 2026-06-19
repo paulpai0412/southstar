@@ -14,6 +14,7 @@ const implementedCases = [
   "04-artifact-repair-recovery.test.ts",
   "05-session-recovery.test.ts",
   "06-executor-reconcile.test.ts",
+  "07-evolution-learning.test.ts",
   "08-evolution-sandbox-baseline-candidate.test.ts",
 ];
 

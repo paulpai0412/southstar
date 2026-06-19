@@ -33,6 +33,7 @@ npm run test:e2e:postgres:03   # normal software run through Tork/Pi callbacks
 npm run test:e2e:postgres:04   # artifact failure + recovery dispatch
 npm run test:e2e:postgres:05   # session checkpoint + recovery rerun
 npm run test:e2e:postgres:06   # executor binding drift/lost reconcile
+npm run test:e2e:postgres:07   # evolution learning signals/cards/deltas/wiki
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through Tork/Pi
 ```
 
@@ -49,7 +50,7 @@ npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through To
 | 04 artifact repair/recovery | implemented | Failed callback evidence triggers repair/recovery execution and successful retry | `repair.requested`, `recovery.execution_submitted`, recovered executor binding/task |
 | 05 session recovery | implemented | Failed session callback gets checkpointed and rerun under new root session id | checkpoint resource, rerun context packet/envelope, `checkpoint.created`, `recovery.execution_submitted` |
 | 06 executor reconcile | implemented | Lost executor binding is classified and actioned without mutating run/task lifecycle | lost binding status, reconcile result resource, executor action commands/history |
-| 07 evolution learning | planned | Completed/failed runs synthesize cards, wiki backlinks, delta proposals | `learning_nodes`, `learning_edges`, card/delta resources |
+| 07 evolution learning | implemented | Runtime-linked signals synthesize cards, deltas, and wiki backlinks with read-model evidence | `learning_nodes`, `learning_edges`, delta resource, evolution control center counts |
 | 08 evolution sandbox | implemented | Baseline/candidate sandbox jobs execute through Tork/Pi and evaluate decision | sandbox run contexts, callback history, decision resource |
 | 09 regression rollback | planned | Promoted asset regression triggers rollback/alert according to risk | asset versions, regression alert, rollback lineage |
 

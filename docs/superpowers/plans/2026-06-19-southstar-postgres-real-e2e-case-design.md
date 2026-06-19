@@ -44,6 +44,7 @@ npm run test:e2e:postgres:03   # normal software run
 npm run test:e2e:postgres:04   # artifact repair/recovery
 npm run test:e2e:postgres:05   # session recovery
 npm run test:e2e:postgres:06   # executor reconcile
+npm run test:e2e:postgres:07   # evolution learning
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate
 ```
 
@@ -180,18 +181,23 @@ Evidence:
 
 ### 07 — Evolution learning
 
-Status: planned
+File: `tests/e2e-postgres/cases/07-evolution-learning.test.ts`
+
+Status: implemented
 
 Purpose:
 
-- After completed/failed runtime flows, synthesize knowledge cards, wiki links, and deltas.
+- Record runtime-linked learning signals through evolution API.
+- Synthesize Knowledge Cards, then delta proposals from active cards.
+- Verify wiki backlinks/forward links and evolution read-model counts.
 
-Evidence target:
+Evidence:
 
-- `learning_nodes` card/delta nodes.
-- `learning_edges` evidence/wiki/runtime usage edges.
-- card status respects approval policy.
-- delta proposal contains evidence subgraph hash.
+- `learning_nodes` includes recorded signals and synthesized card nodes.
+- `learning_edges` include card support edges and delta/card wiki lineage edges.
+- delta proposal resource persists source card refs + target asset reference.
+- card wiki page exposes forward support links and delta backlinks.
+- `/api/v2/read-models/evolution-control-center/...` counts reflect signals/cards/deltas.
 
 ### 08 — Evolution sandbox baseline/candidate
 
