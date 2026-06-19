@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createInitializedRealPostgresE2E, createRealRuntimeServer, probeRealPostgresTorkPi, requireRealPostgresInfra } from "./postgres-real-harness.ts";
+import { createInitializedRealPostgresE2E, createRealRuntimeServer, probeRealPostgresTorkPi, requireRealPostgresInfra } from "../postgres-real-harness.ts";
 
 test("real Postgres/Tork/Pi matrix creates a run through canonical async APIs", async () => {
   const infra = requireRealPostgresInfra();

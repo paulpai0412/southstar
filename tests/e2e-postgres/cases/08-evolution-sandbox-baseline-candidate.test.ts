@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createInitializedRealPostgresE2E, createRealRuntimeServer, dockerReachableUrl, probeRealPostgresTorkPi, requireRealPostgresInfra, waitForTorkJob } from "./postgres-real-harness.ts";
+import { createInitializedRealPostgresE2E, createRealRuntimeServer, dockerReachableUrl, probeRealPostgresTorkPi, requireRealPostgresInfra, waitForTorkJob } from "../postgres-real-harness.ts";
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
 import { createAssetVersion } from "../../src/v2/evolution/assets.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
