@@ -55,6 +55,35 @@ test("high-risk card synthesis requires approval before activation", async () =>
   });
 });
 
+test("repeated Knowledge Card synthesis does not duplicate supported-by evidence edges", async () => {
+  await withDb(async (db) => {
+    const firstSignal = await recordLearningSignal(db, repairSignal("run-1", "eval-1"));
+    const secondSignal = await recordLearningSignal(db, repairSignal("run-2", "eval-2"));
+
+    const first = await synthesizeKnowledgeCards(db, { actor: "test-operator", reason: "initial synthesis" });
+    const second = await synthesizeKnowledgeCards(db, { actor: "test-operator", reason: "recovery re-synthesis" });
+
+    assert.deepEqual(second.cardIds, first.cardIds);
+    assert.equal(first.cardIds.length, 1);
+    const edges = await db.query<{ from_node_id: string; to_node_id: string; count: string }>(
+      `select from_node_id, to_node_id, count(*) as count
+         from southstar.learning_edges
+        where from_node_id = $1
+          and edge_type = 'SUPPORTED_BY'
+          and to_node_id = any($2::text[])
+        group by from_node_id, to_node_id
+        order by to_node_id`,
+      [first.cardIds[0], [firstSignal.nodeId, secondSignal.nodeId]],
+    );
+    const expectedEdges = [firstSignal.nodeId, secondSignal.nodeId].sort().map((nodeId) => ({
+      fromNodeId: first.cardIds[0],
+      toNodeId: nodeId,
+      count: 1,
+    }));
+    assert.deepEqual(edges.rows.map((row) => ({ fromNodeId: row.from_node_id, toNodeId: row.to_node_id, count: Number(row.count) })), expectedEdges);
+  });
+});
+
 test("completed run trigger synthesizes Knowledge Cards once and records batch audit", async () => {
   await withDb(async (db) => {
     await createWorkflowRunPg(db, {

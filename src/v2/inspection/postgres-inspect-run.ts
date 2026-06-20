@@ -1,4 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { allRuntimeGatesPassed, evaluateRuntimeInspectionGates } from "./runtime-gates.ts";
 import type { InspectionCause, InspectedTask, RunInspection, RunInspectionCounts } from "./types.ts";
 
@@ -39,11 +40,11 @@ async function resourcesForRun(db: SouthstarDb, runId: string): Promise<RunResou
     `select * from southstar.runtime_resources
      where run_id = $1 and resource_type = any($2::text[])
      order by created_at, resource_key`,
-    [runId, ["executor_binding", "artifact", "evidence_packet", "validator_result", "stop_condition_result"]],
+    [runId, ["executor_binding", "artifact", ARTIFACT_REF_RESOURCE_TYPE, "evidence_packet", "validator_result", "stop_condition_result"]],
   )).rows.map(mapResource);
   return {
     executorBindings: rows.filter((row) => row.resourceType === "executor_binding"),
-    artifacts: rows.filter((row) => row.resourceType === "artifact"),
+    artifacts: rows.filter((row) => row.resourceType === "artifact" || row.resourceType === ARTIFACT_REF_RESOURCE_TYPE),
     evidencePackets: rows.filter((row) => row.resourceType === "evidence_packet"),
     validators: rows.filter((row) => row.resourceType === "validator_result"),
     stopConditions: rows.filter((row) => row.resourceType === "stop_condition_result"),

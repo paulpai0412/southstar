@@ -33,6 +33,7 @@ export async function synthesizeKnowledgeCards(
     });
     for (const evidenceNodeId of evidenceIds) {
       await createLearningEdge(db, {
+        id: `card-supported-by-${hash(`${nodeId}:${evidenceNodeId}`)}`,
         fromNodeId: nodeId,
         edgeType: "SUPPORTED_BY",
         toNodeId: evidenceNodeId,
