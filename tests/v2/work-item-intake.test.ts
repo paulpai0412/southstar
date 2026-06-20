@@ -57,6 +57,81 @@ test("work item intake dedupes external source and preserves metadata", async ()
   }
 });
 
+test("work item intake creates distinct records when different source refs sanitize to the same id", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const first = await intakeWorkItemPg(db, {
+      sourceProvider: "github",
+      sourceScope: "owner/repo",
+      sourceRef: "owner/repo#123",
+      title: "Slash ref issue",
+      body: "Ref with slash and hash.",
+      domain: "software",
+    });
+    const second = await intakeWorkItemPg(db, {
+      sourceProvider: "github",
+      sourceScope: "owner_repo",
+      sourceRef: "owner_repo_123",
+      title: "Underscore ref issue",
+      body: "Distinct ref with same sanitized form.",
+      domain: "software",
+    });
+
+    assert.notEqual(first.workItemId, second.workItemId);
+    assert.equal(first.deduped, false);
+    assert.equal(second.deduped, false);
+    assert.equal((await getWorkItemPg(db, first.workItemId))?.sourceRef, "owner/repo#123");
+    assert.equal((await getWorkItemPg(db, second.workItemId))?.sourceRef, "owner_repo_123");
+  } finally {
+    await db.close();
+  }
+});
+
+test("duplicate work item intake preserves omitted provenance and custom metadata", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const first = await intakeWorkItemPg(db, {
+      sourceProvider: "github",
+      sourceScope: "owner/repo",
+      sourceRef: "owner/repo#456",
+      sourceUrl: "https://github.com/owner/repo/issues/456",
+      title: "Original title",
+      body: "Original body.",
+      domain: "software",
+      priority: "high",
+      labels: ["runtime"],
+      requestedBy: "operator",
+      metadata: { externalSeverity: "sev2", externalTeam: "platform" },
+    });
+    const second = await intakeWorkItemPg(db, {
+      sourceProvider: "github",
+      sourceRef: "owner/repo#456",
+      title: "Updated title",
+      body: "Updated body.",
+      domain: "software",
+      priority: "urgent",
+      labels: ["runtime", "callback"],
+      requestedBy: "operator-2",
+    });
+
+    assert.equal(second.workItemId, first.workItemId);
+    assert.equal(second.deduped, true);
+    const record = await getWorkItemPg(db, first.workItemId);
+    assert.equal(record?.title, "Updated title");
+    assert.equal(record?.sourceUrl, "https://github.com/owner/repo/issues/456");
+    assert.equal(record?.metadata.body, "Updated body.");
+    assert.equal(record?.metadata.sourceScope, "owner/repo");
+    assert.equal(record?.metadata.sourceUrl, "https://github.com/owner/repo/issues/456");
+    assert.equal(record?.metadata.priority, "urgent");
+    assert.deepEqual(record?.metadata.labels, ["runtime", "callback"]);
+    assert.equal(record?.metadata.requestedBy, "operator-2");
+    assert.equal(record?.metadata.externalSeverity, "sev2");
+    assert.equal(record?.metadata.externalTeam, "platform");
+  } finally {
+    await db.close();
+  }
+});
+
 test("work item intake defaults optional metadata and marks blank bodies for triage", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -74,6 +149,58 @@ test("work item intake defaults optional metadata and marks blank bodies for tri
     assert.equal(record?.metadata.priority, "normal");
     assert.deepEqual(record?.metadata.labels, []);
     assert.equal(record?.metadata.triageState, "needs_triage");
+  } finally {
+    await db.close();
+  }
+});
+
+test("work item run attempt linkage is idempotent for the same run id", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const intake = await intakeWorkItemPg(db, {
+      sourceProvider: "api",
+      sourceRef: "request-idempotent-link",
+      title: "Build feature",
+      body: "Build the runtime feature.",
+      domain: "software",
+    });
+    await createWorkflowRunPg(db, {
+      id: "run-linked-idempotent",
+      status: "created",
+      domain: "software",
+      goalPrompt: "Build feature",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+
+    const firstRef = await linkRunAttemptFromWorkItemPg(db, {
+      workItemId: intake.workItemId,
+      runId: "run-linked-idempotent",
+      statusAtLink: "created",
+      reason: "initial",
+    });
+    const secondRef = await linkRunAttemptFromWorkItemPg(db, {
+      workItemId: intake.workItemId,
+      runId: "run-linked-idempotent",
+      statusAtLink: "queued",
+      reason: "retry-after-timeout",
+    });
+
+    assert.equal(firstRef.runAttempt, 1);
+    assert.equal(secondRef.runAttempt, 1);
+    const record = await getWorkItemPg(db, intake.workItemId);
+    const refsForRun = record?.runRefs.filter((ref) => ref.runId === "run-linked-idempotent") ?? [];
+    assert.equal(refsForRun.length, 1);
+    assert.equal(refsForRun[0]?.runAttempt, 1);
+
+    const run = await db.one<{ runtime_context_json: { workItemRef?: { runAttempt?: number } } }>(
+      "select runtime_context_json from southstar.workflow_runs where id = $1",
+      ["run-linked-idempotent"],
+    );
+    assert.equal(run.runtime_context_json.workItemRef?.runAttempt, 1);
   } finally {
     await db.close();
   }

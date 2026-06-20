@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { createWorkItemPg, getWorkItemPg } from "./postgres-work-items.ts";
 import type { WorkItemIntakeInput, WorkItemIntakePriority, WorkItemIntakeResult, WorkItemRecord, WorkItemRunRef, WorkItemSourceProvider } from "./types.ts";
@@ -20,8 +20,7 @@ export async function intakeWorkItemPg(db: SouthstarDb, input: WorkItemIntakeInp
   const title = requiredTrimmed(input.title, "title");
   const body = input.body ?? "";
   const domain = requiredTrimmed(input.domain, "domain");
-  const labels = normalizeLabels(input.labels);
-  const priority = priorityValue(input.priority);
+  const inputLabels = Array.isArray(input.labels) ? normalizeLabels(input.labels) : undefined;
   const requestedBy = optionalTrimmed(input.requestedBy);
   const triageState = body.trim().length > 0 ? "ready" : "needs_triage";
   const status: WorkItemRecord["status"] = triageState === "ready" ? "active" : "waiting";
@@ -31,23 +30,27 @@ export async function intakeWorkItemPg(db: SouthstarDb, input: WorkItemIntakeInp
         [sourceProvider, sourceRef],
       )
     : null;
+  const existingWorkItem = existing ? await getWorkItemPg(db, existing.id) : null;
+  const priority = priorityValue(input.priority, existingWorkItem?.metadata.priority);
+  const labels = inputLabels ?? labelValues(existingWorkItem?.metadata.labels);
+  const metadataRequestedBy = requestedBy ?? stringValue(existingWorkItem?.metadata.requestedBy);
 
-  const metadata = {
-    ...(isRecord(input.metadata) ? input.metadata : {}),
+  const metadata = mergeIntakeMetadata({
+    existing: existingWorkItem?.metadata,
+    inputMetadata: input.metadata,
     body,
-    ...(sourceScope ? { sourceScope } : {}),
-    ...(sourceUrl ? { sourceUrl } : {}),
+    sourceScope,
+    sourceUrl,
     priority,
     labels,
-    ...(requestedBy ? { requestedBy } : {}),
+    requestedBy: metadataRequestedBy,
     triageState,
-    intakeVersion: WORK_ITEM_INTAKE_VERSION,
-  };
+  });
   const record = await createWorkItemPg(db, {
     id: existing?.id ?? workItemId(sourceProvider, sourceRef),
     sourceProvider,
     sourceRef,
-    sourceUrl,
+    sourceUrl: sourceUrl ?? existingWorkItem?.sourceUrl,
     title,
     domain,
     status,
@@ -69,17 +72,20 @@ export async function linkRunAttemptFromWorkItemPg(
     const workItem = await getWorkItemPg(tx, input.workItemId);
     if (!workItem) throw new Error(`work item not found: ${input.workItemId}`);
 
-    const runAttempt = nextRunAttempt(workItem.runRefs);
+    const existingRef = workItem.runRefs.find((ref) => ref.runId === input.runId);
+    const runAttempt = existingRef?.runAttempt ?? nextRunAttempt(workItem.runRefs);
     const runRef: WorkItemRunRef = {
+      ...existingRef,
       runId: input.runId,
       runAttempt,
       statusAtLink: input.statusAtLink,
       reason: input.reason,
-      createdAt: new Date().toISOString(),
+      createdAt: existingRef?.createdAt ?? new Date().toISOString(),
     };
+    const nextRunRefs = upsertRunRef(workItem.runRefs, runRef);
     await tx.query(
       "update southstar.work_items set run_refs_json = $1::jsonb, updated_at = now() where id = $2",
-      [JSON.stringify([...workItem.runRefs, runRef]), input.workItemId],
+      [JSON.stringify(nextRunRefs), input.workItemId],
     );
 
     const workItemRef = {
@@ -106,18 +112,70 @@ function nextRunAttempt(runRefs: WorkItemRunRef[]): number {
   return attempts.length === 0 ? 1 : Math.max(...attempts) + 1;
 }
 
-function workItemId(sourceProvider: WorkItemSourceProvider, sourceRef: string | undefined): string {
-  if (!sourceRef) return `wi_${randomUUID()}`;
-  return `wi_${safeId(sourceProvider)}_${safeId(sourceRef)}`;
+function upsertRunRef(runRefs: WorkItemRunRef[], runRef: WorkItemRunRef): WorkItemRunRef[] {
+  let replaced = false;
+  const next = runRefs.flatMap((ref) => {
+    if (ref.runId !== runRef.runId) return [ref];
+    if (replaced) return [];
+    replaced = true;
+    return [runRef];
+  });
+  if (!replaced) next.push(runRef);
+  return next;
 }
 
-function priorityValue(priority: WorkItemIntakePriority | undefined): WorkItemIntakePriority {
-  return priority ?? "normal";
+function workItemId(sourceProvider: WorkItemSourceProvider, sourceRef: string | undefined): string {
+  if (!sourceRef) return `wi_${randomUUID()}`;
+  return `wi_${safeId(sourceProvider)}_${safeId(sourceRef)}_${sourceHash(sourceProvider, sourceRef)}`;
+}
+
+function sourceHash(sourceProvider: WorkItemSourceProvider, sourceRef: string): string {
+  return createHash("sha256").update(sourceProvider).update("\0").update(sourceRef).digest("hex").slice(0, 24);
+}
+
+function priorityValue(priority: WorkItemIntakePriority | undefined, existing: unknown): WorkItemIntakePriority {
+  if (priority) return priority;
+  if (existing === "low" || existing === "normal" || existing === "high" || existing === "urgent") return existing;
+  return "normal";
 }
 
 function normalizeLabels(labels: string[] | undefined): string[] {
   if (!Array.isArray(labels)) return [];
   return labels.map((label) => label.trim()).filter((label) => label.length > 0);
+}
+
+function labelValues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return normalizeLabels(value.filter((item): item is string => typeof item === "string"));
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function mergeIntakeMetadata(input: {
+  existing: Record<string, unknown> | undefined;
+  inputMetadata: Record<string, unknown> | undefined;
+  body: string;
+  sourceScope: string | undefined;
+  sourceUrl: string | undefined;
+  priority: WorkItemIntakePriority;
+  labels: string[];
+  requestedBy: string | undefined;
+  triageState: string;
+}): Record<string, unknown> {
+  return {
+    ...(input.existing ?? {}),
+    ...(isRecord(input.inputMetadata) ? input.inputMetadata : {}),
+    body: input.body,
+    ...(input.sourceScope ? { sourceScope: input.sourceScope } : {}),
+    ...(input.sourceUrl ? { sourceUrl: input.sourceUrl } : {}),
+    priority: input.priority,
+    labels: input.labels,
+    ...(input.requestedBy ? { requestedBy: input.requestedBy } : {}),
+    triageState: input.triageState,
+    intakeVersion: WORK_ITEM_INTAKE_VERSION,
+  };
 }
 
 function requiredTrimmed(value: string, field: string): string {
