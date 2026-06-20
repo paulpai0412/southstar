@@ -1,8 +1,13 @@
 import { buildPostgresCoreReadModel } from "../read-models/postgres-core.ts";
+import { getManagedAgentRunReadModelPg } from "../read-models/managed-agents.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
 export async function handleUiRoute(context: RuntimeServerContext, request: Request, url: URL): Promise<Response | undefined> {
+  const managedAgentsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/managed-agents$/);
+  if (request.method === "GET" && managedAgentsMatch) {
+    return json("managed-agents", await getManagedAgentRunReadModelPg(context.db, decodeURIComponent(managedAgentsMatch[1]!)));
+  }
   if (request.method === "GET" && url.pathname === "/api/v2/ui/workflow-canvas") {
     return json("ui-workflow-canvas", await buildPostgresCoreReadModel(context.db, {
       kind: "workflow-canvas",
