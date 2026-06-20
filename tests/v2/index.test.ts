@@ -48,6 +48,7 @@ await import("./postgres-run-api.test.ts");
 await import("./postgres-run-dispatcher.test.ts");
 await import("./postgres-run-inspection-api.test.ts");
 await import("./postgres-runtime-store.test.ts");
+await import("./postgres-session-store.test.ts");
 await import("./postgres-work-items.test.ts");
 await import("./postgres-task-envelope.test.ts");
 await import("./postgres-tork-callback.test.ts");
