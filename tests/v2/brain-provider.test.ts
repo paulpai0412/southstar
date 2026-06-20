@@ -23,3 +23,14 @@ test("BrainProvider registry selects registered provider", () => {
   assert.equal(registry.get("fake-brain").providerId, "fake-brain");
   assert.throws(() => registry.get("missing"));
 });
+
+test("BrainProvider registry rejects duplicate provider ids", () => {
+  assert.throws(
+    () =>
+      createBrainProviderRegistry([
+        createFakeBrainProvider({ providerId: "fake-brain" }),
+        createFakeBrainProvider({ providerId: "fake-brain" }),
+      ]),
+    /duplicate brain provider registered: fake-brain/,
+  );
+});

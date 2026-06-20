@@ -6,7 +6,11 @@ export type BrainProviderRegistry = {
 };
 
 export function createBrainProviderRegistry(providers: BrainProvider[]): BrainProviderRegistry {
-  const byId = new Map(providers.map((provider) => [provider.providerId, provider]));
+  const byId = new Map<string, BrainProvider>();
+  for (const provider of providers) {
+    if (byId.has(provider.providerId)) throw new Error(`duplicate brain provider registered: ${provider.providerId}`);
+    byId.set(provider.providerId, provider);
+  }
   return {
     get(providerId: string): BrainProvider {
       const provider = byId.get(providerId);
