@@ -1,12 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { Client } from "pg";
-import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
-import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
+import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createExecutorBindingPg, getExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
+import { ARTIFACT_REF_RESOURCE_TYPE } from "../../src/v2/artifacts/types.ts";
+import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("Postgres Tork callback route ingests task result, artifacts, binding status, and audit history idempotently", async () => {
   await withDb(async (db) => {
@@ -64,21 +63,36 @@ test("Postgres Tork callback route ingests task result, artifacts, binding statu
       assert.equal(binding?.status, "completed");
       assert.equal(binding?.payload.callbackReceivedAt, "2026-06-19T10:05:00.000Z");
 
-      const artifacts = await listResourcesPg(db, { resourceType: "artifact" });
-      assert.equal(artifacts.length, 1);
-      assert.equal(artifacts[0]?.resourceKey, "artifact-run-callback-pg-task-1-attempt-1");
-      assert.equal((artifacts[0]?.payload as { kind?: string }).kind, "implementation_report");
+      const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
+      assert.equal(artifactRefs.length, 1);
+      assert.equal(artifactRefs[0]?.taskId, "task-1");
+      assert.equal(artifactRefs[0]?.status, "accepted");
+      assert.equal((artifactRefs[0]?.payload as { artifactType?: string }).artifactType, "implementation_report");
+      assert.equal(first.result.artifactRefId, artifactRefs[0]?.resourceKey);
+
+      const legacyArtifacts = await listResourcesPg(db, { resourceType: "artifact" });
+      assert.equal(legacyArtifacts.length, 0);
+
+      const evaluator = await db.one<{ status: string; payload_json: { status?: string; findings?: string[] } }>(
+        "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
+        ["completion-gate:run-callback-pg"],
+      );
+      assert.equal(evaluator.status, "passed");
+      assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
 
       const history = await listHistoryForRunPg(db, "run-callback-pg");
       assert.deepEqual(history.map((event) => event.eventType), [
         "executor.submitted",
         "executor.callback_received",
         "session.entry",
+        "artifact.accepted",
         "artifact.created",
         "executor.callback_completed",
+        "run.evaluating_started",
         "run.completed",
         "evolution.knowledge_cards_synthesized",
       ]);
+      assert.equal(history.find((event) => event.eventType === "run.completed")?.actorType, "evaluator");
       assert.equal(history.filter((event) => event.eventType === "executor.callback_received").length, 1);
     } finally {
       await server.close();
@@ -109,56 +123,20 @@ async function seedRunTask(db: SouthstarDb): Promise<void> {
   });
 }
 
-async function post(baseUrl: string, path: string, body: unknown): Promise<{ ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean } }> {
+async function post(baseUrl: string, path: string, body: unknown): Promise<{ ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean; artifactRefId?: string } }> {
   const response = await fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const text = await response.text();
   if (!response.ok) throw new Error(`POST ${path} failed: ${response.status} ${text}`);
-  const envelope = JSON.parse(text) as { ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean } } | { ok: false; error: string };
+  const envelope = JSON.parse(text) as { ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean; artifactRefId?: string } } | { ok: false; error: string };
   if (!envelope.ok) throw new Error(envelope.error);
   return envelope;
 }
 
 async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
-  const fixture = await createTestDatabase();
+  const db = await createTestPostgresDb();
   try {
-    await initializeSouthstarSchema(fixture.databaseUrl);
-    const db = await openSouthstarDb(fixture.databaseUrl);
-    try {
-      await run(db);
-    } finally {
-      await db.close();
-    }
+    await run(db);
   } finally {
-    await fixture.drop();
+    await db.close();
   }
-}
-
-async function createTestDatabase(): Promise<{ databaseUrl: string; drop(): Promise<void> }> {
-  const adminUrl = process.env.SOUTHSTAR_TEST_ADMIN_DATABASE_URL;
-  if (!adminUrl) throw new Error("SOUTHSTAR_TEST_ADMIN_DATABASE_URL is required for Postgres-backed tests");
-  const databaseName = `southstar_test_${randomUUID().replace(/-/g, "_")}`;
-  const admin = new Client({ connectionString: adminUrl });
-  await admin.connect();
-  await admin.query(`create database ${quoteIdent(databaseName)}`);
-  await admin.end();
-  return {
-    databaseUrl: replaceDatabase(adminUrl, databaseName),
-    async drop() {
-      const cleanup = new Client({ connectionString: adminUrl });
-      await cleanup.connect();
-      await cleanup.query("select pg_terminate_backend(pid) from pg_stat_activity where datname = $1", [databaseName]);
-      await cleanup.query(`drop database if exists ${quoteIdent(databaseName)}`);
-      await cleanup.end();
-    },
-  };
-}
-
-function replaceDatabase(adminUrl: string, db: string): string {
-  const url = new URL(adminUrl);
-  url.pathname = `/${db}`;
-  return url.toString();
-}
-
-function quoteIdent(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
 }

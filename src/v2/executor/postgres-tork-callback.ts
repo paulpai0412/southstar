@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { appendHistoryEventPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { acceptOrRejectArtifactRefPg } from "../artifacts/artifact-ref-store.ts";
+import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
+import { appendHistoryEventPg, listResourcesPg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
 import { updateExecutorBindingStatusPg } from "./postgres-bindings.ts";
 import type { TaskRunCallbackResult } from "./tork-callback.ts";
@@ -13,6 +15,7 @@ export type PostgresCallbackIngestionResult = {
   accepted: boolean;
   duplicate?: boolean;
   artifactResourceId?: string;
+  artifactRefId?: string;
 };
 
 export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTaskRunCallbackResult): Promise<PostgresCallbackIngestionResult> {
@@ -55,24 +58,21 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
       });
     }
 
-    const artifactResourceId = `artifact-${result.runId}-${result.taskId}-${result.attemptId ?? `attempt-${result.attempts}`}`;
-    await upsertRuntimeResourcePg(tx, {
-      id: artifactResourceId,
-      resourceType: "artifact",
-      resourceKey: artifactResourceId,
+    const artifactRef = await acceptOrRejectArtifactRefPg(tx, {
       runId: result.runId,
       taskId: result.taskId,
       sessionId: result.rootSessionId,
-      scope: "artifact",
+      attemptId: result.attemptId ?? `attempt-${result.attempts}`,
+      handExecutionId: `executor-callback:${result.runId}:${result.taskId}:${result.attemptId ?? result.attempts}`,
+      producer: { actorType: "hand", providerId: "tork-callback" },
+      artifactType: artifactType(result.artifact),
       status: result.ok ? "accepted" : "rejected",
-      title: `Callback artifact ${result.taskId}`,
-      payload: result.artifact,
-      summary: {
-        attemptId: result.attemptId,
-        artifactHash: receipt.artifactHash,
-        accepted: result.ok,
-      },
-      metrics: result.metrics,
+      content: result.artifact,
+      contractRefs: [`task:${result.taskId}:completion`],
+      summary: `Callback artifact ${result.taskId}`,
+      evidenceRefs: [],
+      evaluatorResultRefs: [],
+      sourceEventRefs: [receipt.idempotencyKey],
     });
 
     await appendHistoryEventPg(tx, {
@@ -82,7 +82,8 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
       eventType: "artifact.created",
       actorType: "orchestrator",
       payload: {
-        artifactResourceId,
+        artifactResourceId: artifactRef.resourceId,
+        artifactRefId: artifactRef.artifactRefId,
         attempts: result.attempts,
         accepted: result.ok,
       },
@@ -100,7 +101,8 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
         },
         eventPayload: {
           accepted: result.ok,
-          artifactResourceId,
+          artifactResourceId: artifactRef.resourceId,
+          artifactRefId: artifactRef.artifactRefId,
         },
       });
     } else {
@@ -110,7 +112,7 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
         sessionId: result.rootSessionId,
         eventType: "executor.callback_completed",
         actorType: "orchestrator",
-        payload: { accepted: result.ok, artifactResourceId },
+        payload: { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId },
       });
     }
 
@@ -120,26 +122,18 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
     );
 
     const allTasks = await tx.query<{ status: string }>("select status from southstar.workflow_tasks where run_id = $1", [result.runId]);
-    if (allTasks.rows.length > 0 && allTasks.rows.every((row) => ["completed", "failed", "cancelled"].includes(row.status))) {
-      const passed = allTasks.rows.every((row) => row.status === "completed");
-      await tx.query(
-        "update southstar.workflow_runs set status = $1, updated_at = now(), completed_at = coalesce(completed_at, now()) where id = $2",
-        [passed ? "passed" : "failed", result.runId],
-      );
-      await appendHistoryEventPg(tx, {
-        runId: result.runId,
-        eventType: "run.completed",
-        actorType: "orchestrator",
-        payload: { status: passed ? "passed" : "failed" },
-      });
-      await triggerRunCompletedKnowledgeCardSynthesis(tx, {
-        runId: result.runId,
-        actor: "southstar-evolution",
-        reason: "workflow run completed",
-      });
+    if (allTasks.rows.length > 0 && allTasks.rows.every((row) => ["completed", "failed", "cancelled", "lost", "blocked"].includes(row.status))) {
+      const gateResult = await evaluateRunCompletionGatePg(tx, { runId: result.runId });
+      if (gateResult.status !== "not_ready") {
+        await triggerRunCompletedKnowledgeCardSynthesis(tx, {
+          runId: result.runId,
+          actor: "southstar-evolution",
+          reason: "workflow run completed",
+        });
+      }
     }
 
-    return { accepted: result.ok, artifactResourceId };
+    return { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId };
   });
 }
 
@@ -155,6 +149,13 @@ function callbackReceiptToken(result: PostgresTaskRunCallbackResult): { idempote
     artifactHash,
     idempotencyKey: `executor-callback:${result.runId}:${result.taskId}:${result.attemptId ?? result.attempts}:${artifactHash}`,
   };
+}
+
+function artifactType(artifact: unknown): string {
+  if (artifact && typeof artifact === "object" && typeof (artifact as { kind?: unknown }).kind === "string") {
+    return (artifact as { kind: string }).kind;
+  }
+  return "callback_artifact";
 }
 
 function stableStringify(value: unknown): string {
