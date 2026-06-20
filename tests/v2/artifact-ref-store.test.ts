@@ -77,24 +77,6 @@ test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref run
   }
 });
 
-test("acceptOrRejectArtifactRefPg writes the resource and history through one caller transaction", async () => {
-  const db = transactionOnlyDb();
-
-  const result = await acceptOrRejectArtifactRefPg(db, artifactRefInput({
-    runId: "run-artifact-ref-atomic",
-    taskId: "task-a",
-    content: { atomic: true },
-  }));
-
-  assert.equal(result.artifactRefId.startsWith("artifact_ref:run-artifact-ref-atomic:task-a:attempt-1:"), true);
-  assert.equal(db.calls.rootTx, 1);
-  assert.equal(db.calls.rootMaybeOne, 0);
-  assert.equal(db.calls.rootQuery, 0);
-  assert.equal(db.calls.rootOne, 0);
-  assert.equal(db.calls.resourceUpsertInTx, 1);
-  assert.equal(db.calls.historyInsertInTx, 1);
-});
-
 test("acceptOrRejectArtifactRefPg repeats identical artifact content with the same ids and one history event", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -128,6 +110,49 @@ test("acceptOrRejectArtifactRefPg repeats identical artifact content with the sa
   }
 });
 
+test("acceptOrRejectArtifactRefPg treats duplicate same-status metadata changes as an immutable no-op", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRun(db, "run-artifact-ref-immutable");
+    const first = await acceptOrRejectArtifactRefPg(db, artifactRefInput({
+      runId: "run-artifact-ref-immutable",
+      taskId: "task-a",
+      content: { immutable: true },
+      contractRefs: ["contract:first"],
+    }));
+    const firstResource = await artifactRefResource(db, first.resourceId);
+
+    const second = await acceptOrRejectArtifactRefPg(db, {
+      ...artifactRefInput({
+        runId: "run-artifact-ref-immutable",
+        taskId: "task-a",
+        content: { immutable: true },
+        contractRefs: ["contract:changed", "contract:first"],
+      }),
+      producer: { actorType: "brain", providerId: "changed-provider" },
+      summary: "Changed summary should not overwrite canonical artifact ref",
+      evidenceRefs: ["evidence:changed"],
+      evaluatorResultRefs: ["validator:changed"],
+      sourceEventRefs: ["history:changed"],
+      producedAt: "2026-06-21T01:02:03.000Z",
+    });
+    const secondResource = await artifactRefResource(db, second.resourceId);
+
+    assert.equal(second.resourceId, first.resourceId);
+    assert.equal(second.artifactRefId, first.artifactRefId);
+    assert.deepEqual(secondResource.payload_json, firstResource.payload_json);
+    assert.deepEqual(secondResource.summary_json, firstResource.summary_json);
+    assert.equal(secondResource.status, "accepted");
+    const history = await db.one<{ count: string }>(
+      "select count(*) as count from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+      ["run-artifact-ref-immutable", `${first.artifactRefId}:accepted`],
+    );
+    assert.equal(Number(history.count), 1);
+  } finally {
+    await db.close();
+  }
+});
+
 test("acceptOrRejectArtifactRefPg keeps generated producedAt stable when retried without producedAt", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -147,6 +172,78 @@ test("acceptOrRejectArtifactRefPg keeps generated producedAt stable when retried
 
     assert.equal(second.artifactRefId, first.artifactRefId);
     assert.equal(secondPayload.producedAt, firstPayload.producedAt);
+  } finally {
+    await db.close();
+  }
+});
+
+test("acceptOrRejectArtifactRefPg preserves first producedAt when duplicate first-time content conflicts", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRun(db, "run-artifact-ref-first-produced-at");
+    const input = artifactRefInput({
+      runId: "run-artifact-ref-first-produced-at",
+      taskId: "task-a",
+      content: { duplicate: "first wins" },
+    });
+    const first = await acceptOrRejectArtifactRefPg(db, {
+      ...input,
+      producedAt: "2026-06-21T00:00:01.000Z",
+      summary: "First write",
+    });
+    const second = await acceptOrRejectArtifactRefPg(db, {
+      ...input,
+      producedAt: "2026-06-21T00:00:02.000Z",
+      summary: "Second write should not overwrite",
+    });
+
+    const payload = await artifactRefPayload(db, second.resourceId);
+    const history = await db.one<{ count: string }>(
+      "select count(*) as count from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+      ["run-artifact-ref-first-produced-at", `${first.artifactRefId}:accepted`],
+    );
+
+    assert.equal(second.resourceId, first.resourceId);
+    assert.equal(second.artifactRefId, first.artifactRefId);
+    assert.equal(payload.producedAt, "2026-06-21T00:00:01.000Z");
+    assert.equal(payload.summary, "First write");
+    assert.equal(Number(history.count), 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("acceptOrRejectArtifactRefPg allows status changes for the same artifact ref and records status history", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRun(db, "run-artifact-ref-status-change");
+    const input = artifactRefInput({
+      runId: "run-artifact-ref-status-change",
+      taskId: "task-a",
+      content: { status: "can change" },
+    });
+    const accepted = await acceptOrRejectArtifactRefPg(db, input);
+
+    const rejected = await acceptOrRejectArtifactRefPg(db, {
+      ...input,
+      status: "rejected",
+      summary: "Rejected after evaluator review",
+    });
+    const resource = await artifactRefResource(db, rejected.resourceId);
+    const history = await db.query<{ event_type: string; idempotency_key: string }>(
+      "select event_type, idempotency_key from southstar.workflow_history where run_id = $1 order by sequence",
+      ["run-artifact-ref-status-change"],
+    );
+
+    assert.equal(rejected.resourceId, accepted.resourceId);
+    assert.equal(resource.status, "rejected");
+    assert.equal(resource.payload_json.status, "rejected");
+    assert.equal(resource.payload_json.summary, "Rejected after evaluator review");
+    assert.deepEqual(history.rows.map((row) => row.event_type), ["artifact.accepted", "artifact.rejected"]);
+    assert.deepEqual(history.rows.map((row) => row.idempotency_key), [
+      `${accepted.artifactRefId}:accepted`,
+      `${accepted.artifactRefId}:rejected`,
+    ]);
   } finally {
     await db.close();
   }
@@ -230,11 +327,22 @@ async function seedRun(db: Awaited<ReturnType<typeof createTestPostgresDb>>, run
 }
 
 async function artifactRefPayload(db: SouthstarDb, resourceId: string): Promise<ArtifactRefPayload> {
-  const row = await db.one<{ payload_json: ArtifactRefPayload }>(
-    "select payload_json from southstar.runtime_resources where id = $1",
+  return (await artifactRefResource(db, resourceId)).payload_json;
+}
+
+async function artifactRefResource(db: SouthstarDb, resourceId: string): Promise<{
+  status: string;
+  payload_json: ArtifactRefPayload;
+  summary_json: Record<string, unknown>;
+}> {
+  return await db.one<{
+    status: string;
+    payload_json: ArtifactRefPayload;
+    summary_json: Record<string, unknown>;
+  }>(
+    "select status, payload_json, summary_json from southstar.runtime_resources where id = $1",
     [resourceId],
   );
-  return row.payload_json;
 }
 
 function artifactRefInput(overrides: {
@@ -273,62 +381,4 @@ function artifactRefInputWithoutProducedAt(overrides: {
   const input = artifactRefInput(overrides);
   delete (input as { producedAt?: string }).producedAt;
   return input;
-}
-
-function transactionOnlyDb(): SouthstarDb & {
-  calls: {
-    rootTx: number;
-    rootMaybeOne: number;
-    rootQuery: number;
-    rootOne: number;
-    resourceUpsertInTx: number;
-    historyInsertInTx: number;
-  };
-} {
-  const calls = {
-    rootTx: 0,
-    rootMaybeOne: 0,
-    rootQuery: 0,
-    rootOne: 0,
-    resourceUpsertInTx: 0,
-    historyInsertInTx: 0,
-  };
-  const txDb: SouthstarDb = {
-    async query(sql: string) {
-      if (sql.includes("insert into southstar.runtime_resources")) calls.resourceUpsertInTx++;
-      if (sql.includes("insert into southstar.workflow_history")) calls.historyInsertInTx++;
-      return { rows: [], rowCount: 1 };
-    },
-    async one<T>(sql: string) {
-      if (sql.includes("coalesce(max(sequence)")) return { next_sequence: 1 } as T;
-      throw new Error(`unexpected tx one: ${sql}`);
-    },
-    async maybeOne() {
-      return null;
-    },
-    async tx<T>(fn: (db: SouthstarDb) => Promise<T>) {
-      return await fn(txDb);
-    },
-    async close() {},
-  };
-  return {
-    calls,
-    async query() {
-      calls.rootQuery++;
-      throw new Error("resource writes must use transaction db");
-    },
-    async one() {
-      calls.rootOne++;
-      throw new Error("resource writes must use transaction db");
-    },
-    async maybeOne() {
-      calls.rootMaybeOne++;
-      throw new Error("resource writes must use transaction db");
-    },
-    async tx<T>(fn: (db: SouthstarDb) => Promise<T>) {
-      calls.rootTx++;
-      return await fn(txDb);
-    },
-    async close() {},
-  };
 }

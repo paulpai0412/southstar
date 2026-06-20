@@ -1,6 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import {
   ARTIFACT_EVIDENCE_SCHEMA_VERSION,
   ARTIFACT_REF_RESOURCE_TYPE,
@@ -40,53 +39,49 @@ export async function acceptOrRejectArtifactRefPg(
   const contentHash = sha256Stable(input.content);
   const artifactRefId = `artifact_ref:${input.runId}:${input.taskId}:${input.attemptId}:${contentHash}`;
   const sortedContractRefs = [...input.contractRefs].sort();
-  const summary = {
-    artifactRefId,
-    artifactType: input.artifactType,
-    contractRefs: sortedContractRefs,
-    contentHash,
-  };
 
   const resource = await db.tx(async (tx) => {
-    const existing = await tx.maybeOne<{ payload_json: unknown }>(
-      "select payload_json from southstar.runtime_resources where resource_type = $1 and resource_key = $2 for update",
-      [ARTIFACT_REF_RESOURCE_TYPE, artifactRefId],
-    );
-    const payload: ArtifactRefPayload = {
-      schemaVersion: ARTIFACT_EVIDENCE_SCHEMA_VERSION,
-      artifactRefId,
-      runId: input.runId,
-      taskId: input.taskId,
-      sessionId: input.sessionId,
-      attemptId: input.attemptId,
-      handExecutionId: input.handExecutionId,
-      producer: input.producer,
-      artifactType: input.artifactType,
-      status: input.status,
-      contentRef: {
-        kind: "inline_digest",
-        ref: contentHash,
-        sha256: contentHash,
-      },
-      contractRefs: sortedContractRefs,
-      summary: input.summary,
-      evidenceRefs: input.evidenceRefs ?? [],
-      evaluatorResultRefs: input.evaluatorResultRefs ?? [],
-      sourceEventRefs: input.sourceEventRefs ?? [],
-      producedAt: input.producedAt ?? existingProducedAt(existing?.payload_json) ?? new Date().toISOString(),
-    };
+    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
 
-    const resource = await upsertRuntimeResourcePg(tx, {
-      id: artifactRefId,
-      resourceType: ARTIFACT_REF_RESOURCE_TYPE,
-      resourceKey: artifactRefId,
-      runId: input.runId,
-      taskId: input.taskId,
-      sessionId: input.sessionId,
-      scope: "artifact",
-      status: input.status,
-      title: `${input.artifactType} ${input.taskId}`,
-      payload,
+    const initialPayload = buildArtifactRefPayload(input, {
+      artifactRefId,
+      contentHash,
+      contractRefs: sortedContractRefs,
+      producedAt: input.producedAt ?? new Date().toISOString(),
+    });
+    const summary = artifactRefSummary(input, { artifactRefId, contentHash, contractRefs: sortedContractRefs });
+    const inserted = await insertArtifactRefResource(tx, {
+      artifactRefId,
+      input,
+      payload: initialPayload,
+      summary,
+    });
+    if (inserted) {
+      await appendArtifactHistoryOnce(tx, {
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        artifactRefId,
+        status: input.status,
+        payload: initialPayload,
+        summary,
+      });
+      return inserted;
+    }
+
+    const existing = await selectArtifactRefResourceForUpdate(tx, artifactRefId);
+    if (existing.status === input.status) return { id: existing.id };
+
+    const transitionPayload = buildArtifactRefPayload(input, {
+      artifactRefId,
+      contentHash,
+      contractRefs: sortedContractRefs,
+      producedAt: input.producedAt ?? existingProducedAt(existing.payload_json) ?? new Date().toISOString(),
+    });
+    const updated = await updateArtifactRefResource(tx, {
+      artifactRefId,
+      input,
+      payload: transitionPayload,
       summary,
     });
 
@@ -96,11 +91,11 @@ export async function acceptOrRejectArtifactRefPg(
       sessionId: input.sessionId,
       artifactRefId,
       status: input.status,
-      payload,
+      payload: transitionPayload,
       summary,
     });
 
-    return resource;
+    return updated;
   });
 
   return { resourceId: resource.id, artifactRefId, contentHash };
@@ -124,6 +119,135 @@ export function sha256Stable(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
+type ArtifactRefResourceRow = {
+  id: string;
+  status: ArtifactRefStatus;
+  payload_json: unknown;
+};
+
+function buildArtifactRefPayload(
+  input: ArtifactRefWriteInput,
+  values: { artifactRefId: string; contentHash: string; contractRefs: string[]; producedAt: string },
+): ArtifactRefPayload {
+  return {
+    schemaVersion: ARTIFACT_EVIDENCE_SCHEMA_VERSION,
+    artifactRefId: values.artifactRefId,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    attemptId: input.attemptId,
+    handExecutionId: input.handExecutionId,
+    producer: input.producer,
+    artifactType: input.artifactType,
+    status: input.status,
+    contentRef: {
+      kind: "inline_digest",
+      ref: values.contentHash,
+      sha256: values.contentHash,
+    },
+    contractRefs: values.contractRefs,
+    summary: input.summary,
+    evidenceRefs: input.evidenceRefs ?? [],
+    evaluatorResultRefs: input.evaluatorResultRefs ?? [],
+    sourceEventRefs: input.sourceEventRefs ?? [],
+    producedAt: values.producedAt,
+  };
+}
+
+function artifactRefSummary(
+  input: ArtifactRefWriteInput,
+  values: { artifactRefId: string; contentHash: string; contractRefs: string[] },
+): Record<string, unknown> {
+  return {
+    artifactRefId: values.artifactRefId,
+    artifactType: input.artifactType,
+    contractRefs: values.contractRefs,
+    contentHash: values.contentHash,
+  };
+}
+
+async function insertArtifactRefResource(
+  db: SouthstarDb,
+  input: {
+    artifactRefId: string;
+    input: ArtifactRefWriteInput;
+    payload: ArtifactRefPayload;
+    summary: Record<string, unknown>;
+  },
+): Promise<ArtifactRefResourceRow | null> {
+  const result = await db.query<ArtifactRefResourceRow>(
+    `insert into southstar.runtime_resources (
+      id, resource_type, resource_key, run_id, task_id, session_id, scope, status,
+      title, payload_json, summary_json, metrics_json, created_at, updated_at, expires_at
+    ) values ($1, $2, $3, $4, $5, $6, 'artifact', $7, $8, $9::jsonb, $10::jsonb, '{}'::jsonb, now(), now(), null)
+    on conflict(resource_type, resource_key) do nothing
+    returning id, status, payload_json`,
+    [
+      input.artifactRefId,
+      ARTIFACT_REF_RESOURCE_TYPE,
+      input.artifactRefId,
+      input.input.runId,
+      input.input.taskId,
+      input.input.sessionId,
+      input.input.status,
+      `${input.input.artifactType} ${input.input.taskId}`,
+      JSON.stringify(input.payload),
+      JSON.stringify(input.summary),
+    ],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function selectArtifactRefResourceForUpdate(db: SouthstarDb, artifactRefId: string): Promise<ArtifactRefResourceRow> {
+  return await db.one<ArtifactRefResourceRow>(
+    `select id, status, payload_json
+       from southstar.runtime_resources
+      where resource_type = $1
+        and resource_key = $2
+      for update`,
+    [ARTIFACT_REF_RESOURCE_TYPE, artifactRefId],
+  );
+}
+
+async function updateArtifactRefResource(
+  db: SouthstarDb,
+  input: {
+    artifactRefId: string;
+    input: ArtifactRefWriteInput;
+    payload: ArtifactRefPayload;
+    summary: Record<string, unknown>;
+  },
+): Promise<ArtifactRefResourceRow> {
+  return await db.one<ArtifactRefResourceRow>(
+    `update southstar.runtime_resources
+        set run_id = $1,
+            task_id = $2,
+            session_id = $3,
+            scope = 'artifact',
+            status = $4,
+            title = $5,
+            payload_json = $6::jsonb,
+            summary_json = $7::jsonb,
+            metrics_json = '{}'::jsonb,
+            updated_at = now(),
+            expires_at = null
+      where resource_type = $8
+        and resource_key = $9
+      returning id, status, payload_json`,
+    [
+      input.input.runId,
+      input.input.taskId,
+      input.input.sessionId,
+      input.input.status,
+      `${input.input.artifactType} ${input.input.taskId}`,
+      JSON.stringify(input.payload),
+      JSON.stringify(input.summary),
+      ARTIFACT_REF_RESOURCE_TYPE,
+      input.artifactRefId,
+    ],
+  );
+}
+
 async function appendArtifactHistoryOnce(
   db: SouthstarDb,
   input: {
@@ -137,7 +261,6 @@ async function appendArtifactHistoryOnce(
   },
 ): Promise<void> {
   const idempotencyKey = `${input.artifactRefId}:${input.status}`;
-  await db.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
   await db.query(
     `insert into southstar.workflow_history (
       id, run_id, task_id, sequence, event_type, actor_type, session_id,
