@@ -17,6 +17,7 @@ const implementedCases = [
   "07-evolution-learning.test.ts",
   "08-evolution-sandbox-baseline-candidate.test.ts",
   "09-regression-rollback.test.ts",
+  "10-managed-brain-crash-wake.test.ts",
 ];
 
 test("canonical real E2E entrypoint is a static manifest and real cases run one at a time", () => {
