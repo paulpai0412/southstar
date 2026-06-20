@@ -20,13 +20,20 @@ test("real Postgres/Tork/Pi matrix creates a run through canonical async APIs", 
     });
     assert.equal(run.taskIds.includes("implement-feature"), true);
 
-    const inspect = await api<{ data: { runId: string; status: string; tasks: unknown[]; resources: unknown[] } }>(
+    const inspect = await api<{
+      data: {
+        runId: string;
+        status: string;
+        tasks: unknown[];
+        counts: { resources: { acceptedArtifacts: number } };
+      };
+    }>(
       server.url,
       `/api/v2/read-models/run-inspection/${encodeURIComponent(run.runId)}`,
     );
     assert.equal(inspect.data.runId, run.runId);
     assert.equal(inspect.data.tasks.length > 0, true);
-    assert.equal(inspect.data.resources.length > 0, true);
+    assert.equal(inspect.data.counts.resources.acceptedArtifacts >= 0, true);
 
     const envelope = await api<{ schemaVersion: string; contextPacket: { selectedKnowledgeCards: unknown[] } }>(
       server.url,

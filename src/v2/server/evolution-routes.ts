@@ -171,13 +171,26 @@ export async function handleEvolutionRoute(context: RuntimeServerContext, reques
 
   const experimentStartMatch = url.pathname.match(/^\/api\/v2\/evolution\/experiments\/([^/]+)\/start$/);
   if (request.method === "POST" && experimentStartMatch) {
-    const body = await readJsonBody<EvolutionCommandBody>(request);
+    const body = await readJsonBody<EvolutionCommandBody & {
+      callbackUrl?: string;
+      heartbeatUrl?: string;
+      runRoot?: string;
+      envelopeBasePath?: string;
+      harnessEndpoint?: string;
+    }>(request);
     requireCommand(body);
     return json("evolution-sandbox-started", await startSandboxExecutionPg(db, {
       experimentId: decodeURIComponent(experimentStartMatch[1]!),
       executorProvider: context.executorProvider,
-      callbackUrl: context.callbackUrl ?? `${context.serverUrl ?? ""}/api/v2/tork/callback`,
-      heartbeatUrl: context.serverUrl ? `${context.serverUrl}/api/v2/executor/heartbeat` : undefined,
+      callbackUrl: typeof body.callbackUrl === "string"
+        ? body.callbackUrl
+        : (context.callbackUrl ?? `${context.serverUrl ?? ""}/api/v2/tork/callback`),
+      heartbeatUrl: typeof body.heartbeatUrl === "string"
+        ? body.heartbeatUrl
+        : (context.serverUrl ? `${context.serverUrl}/api/v2/executor/heartbeat` : undefined),
+      runRoot: typeof body.runRoot === "string" ? body.runRoot : undefined,
+      envelopeBasePath: typeof body.envelopeBasePath === "string" ? body.envelopeBasePath : undefined,
+      harnessEndpoint: typeof body.harnessEndpoint === "string" ? body.harnessEndpoint : undefined,
     }));
   }
 

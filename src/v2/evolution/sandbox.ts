@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
-import { tmpdir } from "node:os";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
+import { withMaterializationMount } from "../executor/materialization-mount.ts";
+import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
 import { createExecutorBindingPg } from "../executor/postgres-bindings.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
@@ -90,6 +91,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
   callbackUrl: string;
   heartbeatUrl?: string;
   runRoot?: string;
+  envelopeBasePath?: string;
   harnessEndpoint?: string;
 }): Promise<{ experimentId: string; runs: Record<"baseline" | "candidate", { runId: string; externalJobId: string; workspacePath: string }> }> {
   const experiment = await loadExperiment(db, input.experimentId);
@@ -104,10 +106,23 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
   const runs = {} as Record<"baseline" | "candidate", { runId: string; externalJobId: string; workspacePath: string }>;
   for (const variant of ["baseline", "candidate"] as const) {
     const assetRefs = variant === "baseline" ? experiment.baselineAssetRefs : experiment.candidateAssetRefs;
-    const workspacePath = await mkdtemp(join(tmpdir(), `southstar-sandbox-${input.experimentId}-${variant}-`));
     const sandboxRunId = `sandbox-${input.experimentId}-${variant}`;
-    const runRoot = input.runRoot ?? "/tmp/southstar-runs";
-    const workflow = sandboxWorkflow(sourceRun.workflow_manifest_json, { experimentId: input.experimentId, variant, workspacePath, assetRefs, runRoot, harnessEndpoint: input.harnessEndpoint });
+    const requestedRunRoot = input.runRoot ?? "/tmp/southstar-runs";
+    const workspacePath = join(requestedRunRoot, "sandbox-workspaces", `${input.experimentId}-${variant}`);
+    await mkdir(workspacePath, { recursive: true });
+    const configuredWorkflow = sandboxWorkflow(sourceRun.workflow_manifest_json, {
+      experimentId: input.experimentId,
+      variant,
+      workspacePath,
+      assetRefs,
+      runRoot: requestedRunRoot,
+      harnessEndpoint: input.harnessEndpoint,
+    });
+    const { workflow, runRoot, envelopeBasePath } = withMaterializationMount(configuredWorkflow, {
+      runRoot: input.runRoot,
+      envelopeBasePath: input.envelopeBasePath,
+    });
+
     await createWorkflowRunPg(db, {
       id: sandboxRunId,
       status: "running",
@@ -125,6 +140,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
       actorType: "southstar-evolution",
       payload: { experimentId: input.experimentId, variant, sourceRunId, assetRefs, workspacePath },
     });
+
     for (const [index, task] of workflow.tasks.entries()) {
       const sessionId = `root-${sandboxRunId}-${task.id}`;
       await createWorkflowTaskPg(db, {
@@ -155,6 +171,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
       const envelope = await getPostgresTaskEnvelope(db, { runId: sandboxRunId, taskId: task.id });
       await materializeTaskEnvelope(envelope, { runRoot });
     }
+
     await upsertRuntimeResourcePg(db, {
       resourceType: "sandbox_workspace",
       resourceKey: `sandbox-workspace-${input.experimentId}-${variant}`,
@@ -165,13 +182,16 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
       payload: { experimentId: input.experimentId, variant, path: workspacePath, isolation: "temp-fixture-copy" },
       summary: { variant, path: workspacePath },
     });
+
     const submission = await input.executorProvider.submit({
       runId: sandboxRunId,
       workflow,
       callbackUrl: input.callbackUrl,
       heartbeatUrl: input.heartbeatUrl,
+      envelopeBasePath,
       attemptId: `sandbox-${variant}-1`,
     });
+
     for (const task of workflow.tasks) {
       await createExecutorBindingPg(db, {
         runId: sandboxRunId,
@@ -183,6 +203,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
         hardTimeoutSeconds: task.execution.timeoutSeconds,
       });
     }
+
     await upsertRuntimeResourcePg(db, {
       resourceType: "sandbox_trial_execution",
       resourceKey: `sandbox-trial-execution-${input.experimentId}-${variant}`,
@@ -193,6 +214,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
       payload: { experimentId: input.experimentId, variant, runId: sandboxRunId, externalJobId: submission.externalJobId, executionProjection: submission.executionProjection },
       summary: { variant, externalJobId: submission.externalJobId },
     });
+
     runs[variant] = { runId: sandboxRunId, externalJobId: submission.externalJobId, workspacePath };
   }
 
@@ -312,6 +334,9 @@ async function saveExperiment(db: SouthstarDb, experimentId: string, status: str
 }
 
 function sandboxWorkflow(workflow: SouthstarWorkflowManifest, input: { experimentId: string; variant: "baseline" | "candidate"; workspacePath: string; assetRefs: string[]; runRoot: string; harnessEndpoint?: string }): SouthstarWorkflowManifest {
+  const piEnv = piAgentRuntimeEnv();
+  const piMount = piAgentConfigMount();
+  const containerWorkspaceRoot = `/workspace/sandbox/sandbox-workspaces/${input.experimentId}-${input.variant}`;
   return {
     ...workflow,
     workflowId: `${workflow.workflowId}-sandbox-${input.variant}`,
@@ -322,22 +347,31 @@ function sandboxWorkflow(workflow: SouthstarWorkflowManifest, input: { experimen
         ...task.execution,
         env: {
           ...task.execution.env,
+          ...piEnv,
           SOUTHSTAR_RUN_MODE: "sandbox",
           SOUTHSTAR_SANDBOX_EXPERIMENT_ID: input.experimentId,
           SOUTHSTAR_SANDBOX_VARIANT: input.variant,
           SOUTHSTAR_SANDBOX_ASSET_REFS: input.assetRefs.join(","),
-          SOUTHSTAR_SANDBOX_WORKSPACE_ROOT: input.workspacePath,
+          SOUTHSTAR_SANDBOX_WORKSPACE_ROOT: containerWorkspaceRoot,
           SOUTHSTAR_MATERIALIZATION_ROOT: input.runRoot,
           ...(input.harnessEndpoint ? { PI_HARNESS_ENDPOINT: input.harnessEndpoint, SOUTHSTAR_HARNESS_ENDPOINT: input.harnessEndpoint } : {}),
         },
-        mounts: [
-          ...task.execution.mounts,
-          { source: input.workspacePath, target: "/workspace/sandbox", readonly: false },
-          { source: input.runRoot, target: "/southstar-runs", readonly: true },
-        ],
+        mounts: ensureMount(
+          ensureMount(task.execution.mounts, { source: input.runRoot, target: "/workspace/sandbox", readonly: false }),
+          piMount,
+        ),
       },
     })),
   };
+}
+
+function ensureMount(
+  mounts: Array<{ source: string; target: string; readonly: boolean }>,
+  mount: { source: string; target: string; readonly: boolean } | undefined,
+): Array<{ source: string; target: string; readonly: boolean }> {
+  if (!mount) return mounts;
+  if (mounts.some((entry) => entry.source === mount.source && entry.target === mount.target)) return mounts;
+  return [...mounts, mount];
 }
 
 function numberMetric(value: unknown): number {

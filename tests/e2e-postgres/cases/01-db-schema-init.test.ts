@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Client } from "pg";
 import { createRealPostgresE2E, runSouthstar } from "../postgres-real-harness.ts";
-import { openSouthstarDb } from "../../src/v2/db/postgres.ts";
+import { openSouthstarDb } from "../../../src/v2/db/postgres.ts";
 
 test("db:init creates southstar schema and runtime refuses uninitialized databases", async () => {
   const env = await createRealPostgresE2E();
