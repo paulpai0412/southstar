@@ -26,6 +26,8 @@ test("Postgres run dispatcher materializes envelopes, submits executor, and reco
         runRoot,
         callbackUrl: "http://127.0.0.1/callback",
         heartbeatUrl: "http://127.0.0.1/heartbeat",
+        harnessEndpoint: "http://127.0.0.1:7890/harness",
+        contextRefreshUrl: "http://127.0.0.1:7890/context/refresh",
         executorProvider: {
           executorType: "tork",
           submit: async (request) => {
@@ -44,6 +46,24 @@ test("Postgres run dispatcher materializes envelopes, submits executor, and reco
       assert.equal(result.externalJobId, "job-normal-run-pg");
       assert.deepEqual(result.taskIds, run.taskIds);
       assert.equal(submissions.length, 1);
+      const submitted = submissions[0] as {
+        workflow: {
+          tasks: Array<{
+            id: string;
+            execution: {
+              env: Record<string, string>;
+              mounts: Array<{ source: string; target: string; readonly: boolean }>;
+            };
+          }>;
+        };
+      };
+      const understandTask = submitted.workflow.tasks.find((task) => task.id === "understand-repo");
+      const understandMounts = understandTask?.execution.mounts ?? [];
+      assert.equal(understandMounts.some((mount) => mount.source === runRoot && mount.target === "/southstar-runs" && mount.readonly), true);
+      assert.equal(understandTask?.execution.env.SOUTHSTAR_HARNESS_ENDPOINT, "http://127.0.0.1:7890/harness");
+      assert.equal(understandTask?.execution.env.PI_HARNESS_ENDPOINT, "http://127.0.0.1:7890/harness");
+      assert.equal(understandTask?.execution.env.SOUTHSTAR_CONTEXT_REFRESH_URL, "http://127.0.0.1:7890/context/refresh");
+      assert.equal(understandTask?.execution.env.SOUTHSTAR_MATERIALIZATION_ROOT, runRoot);
       assert.equal(result.materializedEnvelopePaths.length, run.taskIds.length);
       for (const envelopePath of result.materializedEnvelopePaths) assert.equal(existsSync(envelopePath), true);
 

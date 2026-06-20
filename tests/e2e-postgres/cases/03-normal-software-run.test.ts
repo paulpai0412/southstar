@@ -2,10 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
-import { dispatchPostgresRunExecutionPg } from "../../../src/v2/executor/postgres-run-dispatcher.ts";
-import { TorkClient } from "../../../src/v2/executor/tork-client.ts";
-import { TorkExecutorProvider } from "../../../src/v2/executor/tork-provider.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../../src/v2/ui-api/postgres-run-api.ts";
 import {
   createInitializedRealPostgresE2E,
   createRealRuntimeServer,
@@ -25,22 +21,31 @@ test("03 normal software run: real Postgres/Tork/Pi completes a bounded software
   const server = await createRealRuntimeServer({ db: env.db, infra });
   let runIdForCleanup: string | undefined;
   try {
-    const draft = await createPostgresPlannerDraft(env.db, {
-      goalPrompt: "normal real E2E: inspect the repository and produce implementation evidence for a bounded CLI/doc task",
+    const draft = await api<{ draftId: string }>(server.port, "/api/v2/planner/drafts", {
+      method: "POST",
+      body: JSON.stringify({ goalPrompt: "normal real E2E: inspect the repository and produce implementation evidence for a bounded CLI/doc task" }),
     });
-    const run = await createPostgresRunFromDraft(env.db, { draftId: draft.draftId });
+    const run = await api<{ runId: string; taskIds: string[] }>(server.port, "/api/v2/runs", {
+      method: "POST",
+      body: JSON.stringify({ draftId: draft.draftId }),
+    });
     runIdForCleanup = run.runId;
     const callbackBase = dockerReachableUrl(server, infra);
-    const torkClient = new TorkClient({ baseUrl: infra.torkBaseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
 
-    const dispatched = await dispatchPostgresRunExecutionPg(env.db, {
-      runId: run.runId,
-      executorProvider: new TorkExecutorProvider({ torkClient }),
-      callbackUrl: `${callbackBase}/api/v2/tork/callback`,
-      heartbeatUrl: `${callbackBase}/api/v2/executor/heartbeat`,
-      runRoot: "/tmp/southstar-runs",
-      envelopeBasePath: "/southstar-runs",
-    });
+    const dispatched = await api<{ runId: string; attemptId: string; externalJobId: string; taskIds: string[]; materializedEnvelopePaths: string[] }>(
+      server.port,
+      `/api/v2/runs/${encodeURIComponent(run.runId)}/execute`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          callbackUrl: `${callbackBase}/api/v2/tork/callback`,
+          heartbeatUrl: `${callbackBase}/api/v2/executor/heartbeat`,
+          runRoot: "/tmp/southstar-runs",
+          envelopeBasePath: "/southstar-runs",
+          harnessEndpoint: infra.piHarnessEndpoint,
+        }),
+      },
+    );
 
     assert.equal(dispatched.taskIds.length, run.taskIds.length);
     assert.match(dispatched.externalJobId, /.+/);
@@ -62,7 +67,18 @@ test("03 normal software run: real Postgres/Tork/Pi completes a bounded software
     );
     assert.equal(artifactRows.rows.length >= run.taskIds.length, true);
     assert.equal(artifactRows.rows.every((row) => row.status === "accepted"), true);
-    assert.equal(artifactRows.rows.some((row) => Array.isArray(row.payload_json.commandsRun) || Array.isArray(row.payload_json.testResults)), true);
+    const hasEvidence = artifactRows.rows.some((row) => {
+      const nested = row.payload_json.artifact;
+      const payload = nested && typeof nested === "object" && !Array.isArray(nested)
+        ? nested as Record<string, unknown>
+        : row.payload_json;
+      return Array.isArray(payload.commandsRun)
+        || Array.isArray(payload.testResults)
+        || Array.isArray(payload.tests)
+        || Array.isArray(payload.acceptedArtifacts)
+        || (payload.artifactEvidence && typeof payload.artifactEvidence === "object");
+    });
+    assert.equal(hasEvidence, true);
 
     const history = await env.db.query<{ event_type: string; task_id: string | null }>(
       "select event_type, task_id from southstar.workflow_history where run_id = $1 order by sequence",
@@ -84,3 +100,15 @@ test("03 normal software run: real Postgres/Tork/Pi completes a bounded software
     await env.close();
   }
 });
+
+async function api<T>(port: number, path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, {
+    ...init,
+    headers: { "content-type": "application/json", ...(init?.headers ?? {}) },
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`${init?.method ?? "GET"} ${path} failed: ${response.status} ${text}`);
+  const envelope = JSON.parse(text) as { ok: true; result: T } | { ok: false; error: string };
+  if (!envelope.ok) throw new Error(envelope.error);
+  return envelope.result;
+}

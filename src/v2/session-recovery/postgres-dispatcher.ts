@@ -2,6 +2,8 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import { buildTaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
+import { withMaterializationMount } from "../executor/materialization-mount.ts";
+import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
 import { createExecutorBindingPg } from "../executor/postgres-bindings.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
@@ -37,6 +39,9 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
   const targetSet = new Set(targetTaskIds);
   const subsetWorkflow = workflowForRecoveryTargets(workflow, targetSet, input);
   if (subsetWorkflow.tasks.length !== targetTaskIds.length) throw new Error(`recovery plan references unknown target task(s): ${targetTaskIds.join(",")}`);
+  const { workflow: executableWorkflow, runRoot, envelopeBasePath } = withMaterializationMount(subsetWorkflow, {
+    runRoot: input.runRoot,
+  });
 
   const checkpointId = await createRecoveryCheckpointPg(db, {
     runId: input.runId,
@@ -47,7 +52,7 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
     attemptNumber: input.plan.attemptNumber,
   });
 
-  for (const task of subsetWorkflow.tasks) {
+  for (const task of executableWorkflow.tasks) {
     const baseEnvelope = await getPostgresTaskEnvelope(db, { runId: input.runId, taskId: task.id });
     const sessionId = `root-${input.runId}-${task.id}-recovery-${input.plan.attemptNumber}`;
     const contextPacket = {
@@ -93,7 +98,7 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
       payload: contextPacket,
       summary: { checkpointId, executionAttempt: input.plan.attemptNumber },
     });
-    const materialized = await materializeTaskEnvelope(envelope, { runRoot: input.runRoot });
+    const materialized = await materializeTaskEnvelope(envelope, { runRoot });
     const envelopeId = `task-envelope-${input.runId}-${task.id}-recovery-${input.plan.attemptNumber}`;
     await upsertRuntimeResourcePg(db, {
       id: envelopeId,
@@ -117,13 +122,14 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
 
   const submission = await input.executorProvider.submit({
     runId: input.runId,
-    workflow: subsetWorkflow,
+    workflow: executableWorkflow,
     callbackUrl: input.callbackUrl,
     heartbeatUrl: input.heartbeatUrl,
+    envelopeBasePath,
     attemptId,
   });
 
-  for (const task of subsetWorkflow.tasks) {
+  for (const task of executableWorkflow.tasks) {
     await createExecutorBindingPg(db, {
       runId: input.runId,
       taskId: task.id,
@@ -176,6 +182,8 @@ async function readWorkflowManifest(db: SouthstarDb, runId: string): Promise<Sou
 }
 
 function workflowForRecoveryTargets(workflow: SouthstarWorkflowManifest, targetSet: Set<string>, input: Pick<RecoveryDispatchInputPg, "contextRefreshUrl" | "harnessEndpoint" | "runRoot">): SouthstarWorkflowManifest {
+  const piMount = piAgentConfigMount();
+  const piEnv = piAgentRuntimeEnv();
   return {
     ...workflow,
     tasks: workflow.tasks.filter((task) => targetSet.has(task.id)).map((task) => ({
@@ -185,14 +193,27 @@ function workflowForRecoveryTargets(workflow: SouthstarWorkflowManifest, targetS
         ...task.execution,
         env: {
           ...task.execution.env,
+          ...piEnv,
           SOUTHSTAR_RECOVERY_ATTEMPT: "true",
           ...(input.runRoot ? { SOUTHSTAR_MATERIALIZATION_ROOT: input.runRoot } : {}),
           ...(input.contextRefreshUrl ? { SOUTHSTAR_CONTEXT_REFRESH_URL: input.contextRefreshUrl } : {}),
-          ...(input.harnessEndpoint ? { SOUTHSTAR_HARNESS_ENDPOINT: input.harnessEndpoint } : {}),
+          ...(input.harnessEndpoint ? {
+            SOUTHSTAR_HARNESS_ENDPOINT: input.harnessEndpoint,
+            PI_HARNESS_ENDPOINT: input.harnessEndpoint,
+          } : {}),
         },
+        mounts: piMount ? ensureMount(task.execution.mounts, piMount) : task.execution.mounts,
       },
     })),
   };
+}
+
+function ensureMount(
+  mounts: Array<{ source: string; target: string; readonly: boolean }>,
+  mount: { source: string; target: string; readonly: boolean },
+): Array<{ source: string; target: string; readonly: boolean }> {
+  if (mounts.some((entry) => entry.source === mount.source && entry.target === mount.target)) return mounts;
+  return [...mounts, mount];
 }
 
 async function createRecoveryCheckpointPg(db: SouthstarDb, input: {

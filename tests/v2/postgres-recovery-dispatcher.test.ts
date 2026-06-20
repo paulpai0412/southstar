@@ -45,6 +45,9 @@ test("Postgres recovery dispatcher checkpoints failed sessions, rebuilds envelop
     assert.deepEqual(result.targetTaskIds, ["implement-feature"]);
     assert.equal(result.attemptId, "attempt-2");
     assert.equal(submissions.length, 1);
+    const submitted = submissions[0] as { workflow: { tasks: Array<{ id: string; execution: { mounts: Array<{ source: string; target: string; readonly: boolean }> } }> } };
+    const recoveryMounts = submitted.workflow.tasks.find((task) => task.id === "implement-feature")?.execution.mounts ?? [];
+    assert.equal(recoveryMounts.some((mount) => mount.target === "/southstar-runs" && mount.readonly), true);
 
     const task = await db.one<{ status: string; root_session_id: string }>("select status, root_session_id from southstar.workflow_tasks where run_id = $1 and id = 'implement-feature'", [run.runId]);
     assert.equal(task.status, "running");

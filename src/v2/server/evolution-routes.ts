@@ -6,7 +6,7 @@ import { createAssetVersion, promoteAssetVersion, rollbackAssetVersion } from ".
 import { createSandboxExperiment, evaluateSandboxExperiment, recordSandboxEvaluatorOutputPg, recordSandboxTrial, startSandboxExecutionPg } from "../evolution/sandbox.ts";
 import { getEvidenceSubgraph } from "../evolution/learning-graph.ts";
 import { getWikiPage, listBacklinks, listForwardLinks, proposeWikiLink, approveWikiLink, rejectWikiLink, findOrphanKnowledgeCards, findStaleWikiLinks, normalizeWikiAliases, openWikiConflict, resolveWikiConflict, rewireStaleWikiLinks } from "../evolution/wiki.ts";
-import { decideRegressionAlert } from "../evolution/regression-monitor.ts";
+import { decideRegressionAlert, recordAssetRegressionObservation, runRegressionMonitor } from "../evolution/regression-monitor.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 
 type EvolutionCommandBody = {
@@ -365,6 +365,40 @@ export async function handleEvolutionRoute(context: RuntimeServerContext, reques
 
   if (request.method === "GET" && url.pathname === "/api/v2/evolution/wiki/stale-links") {
     return json("evolution-wiki-stale-links", await findStaleWikiLinks(db));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v2/evolution/regression-observations") {
+    const body = await readJsonBody<EvolutionCommandBody & {
+      assetId?: string;
+      riskTier?: "low" | "medium" | "high";
+      evaluatorFailureRateDelta?: number;
+      repairCountDelta?: number;
+      costRegressionPercent?: number;
+      durationRegressionPercent?: number;
+      observedRunRefs?: string[];
+    }>(request);
+    requireCommand(body);
+    if (body.riskTier !== "low" && body.riskTier !== "medium" && body.riskTier !== "high") throw new Error("riskTier must be low, medium, or high");
+    return json("evolution-regression-observation", await recordAssetRegressionObservation(db, {
+      assetId: requiredString(body.assetId, "assetId"),
+      riskTier: body.riskTier,
+      evaluatorFailureRateDelta: numberValue(body.evaluatorFailureRateDelta, 0),
+      repairCountDelta: numberValue(body.repairCountDelta, 0),
+      costRegressionPercent: numberValue(body.costRegressionPercent, 0),
+      durationRegressionPercent: numberValue(body.durationRegressionPercent, 0),
+      observedRunRefs: Array.isArray(body.observedRunRefs)
+        ? body.observedRunRefs.filter((item): item is string => typeof item === "string")
+        : [],
+    }));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v2/evolution/regression-monitor/run") {
+    const body = await readJsonBody<EvolutionCommandBody>(request);
+    requireCommand(body);
+    return json("evolution-regression-monitor", await runRegressionMonitor(db, {
+      actor: body.actor,
+      reason: body.reason,
+    }));
   }
 
   const regressionAlertMatch = url.pathname.match(/^\/api\/v2\/evolution\/regression-alerts\/([^/]+)\/(acknowledge|dismiss)$/);

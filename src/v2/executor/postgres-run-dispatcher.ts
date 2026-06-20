@@ -3,6 +3,8 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
+import { withMaterializationMount } from "./materialization-mount.ts";
+import { piAgentConfigMount, piAgentRuntimeEnv } from "./pi-agent-runtime.ts";
 import { createExecutorBindingPg } from "./postgres-bindings.ts";
 import type { ExecutorProvider } from "./provider.ts";
 
@@ -13,6 +15,8 @@ export type PostgresRunDispatchInput = {
   heartbeatUrl?: string;
   runRoot?: string;
   envelopeBasePath?: string;
+  harnessEndpoint?: string;
+  contextRefreshUrl?: string;
   attemptId?: string;
 };
 
@@ -34,10 +38,20 @@ export async function dispatchPostgresRunExecutionPg(db: SouthstarDb, input: Pos
   if (!Array.isArray(workflow.tasks) || workflow.tasks.length === 0) throw new Error(`run has no executable tasks: ${input.runId}`);
 
   const attemptId = input.attemptId ?? "attempt-1";
+  const { workflow: mountedWorkflow, runRoot, envelopeBasePath } = withMaterializationMount(workflow, {
+    runRoot: input.runRoot,
+    envelopeBasePath: input.envelopeBasePath,
+  });
+  const executableWorkflow = workflowForRuntimeDispatch(mountedWorkflow, {
+    runRoot,
+    harnessEndpoint: input.harnessEndpoint,
+    contextRefreshUrl: input.contextRefreshUrl,
+  });
+
   const materializedEnvelopePaths: string[] = [];
-  for (const task of workflow.tasks) {
+  for (const task of executableWorkflow.tasks) {
     const envelope = await getPostgresTaskEnvelope(db, { runId: input.runId, taskId: task.id });
-    const materialized = await materializeTaskEnvelope(envelope, { runRoot: input.runRoot });
+    const materialized = await materializeTaskEnvelope(envelope, { runRoot });
     materializedEnvelopePaths.push(materialized.envelopePath);
     await upsertRuntimeResourcePg(db, {
       resourceType: "task_envelope",
@@ -55,10 +69,10 @@ export async function dispatchPostgresRunExecutionPg(db: SouthstarDb, input: Pos
 
   const submission = await input.executorProvider.submit({
     runId: input.runId,
-    workflow,
+    workflow: executableWorkflow,
     callbackUrl: input.callbackUrl,
     heartbeatUrl: input.heartbeatUrl,
-    envelopeBasePath: input.envelopeBasePath,
+    envelopeBasePath,
     attemptId,
   });
 
@@ -74,7 +88,7 @@ export async function dispatchPostgresRunExecutionPg(db: SouthstarDb, input: Pos
       payload: { externalJobId: submission.externalJobId, attemptId, executorType: submission.executorType },
     });
 
-    for (const task of workflow.tasks) {
+    for (const task of executableWorkflow.tasks) {
       const taskStatus = task.dependsOn.length === 0 ? "running" : "pending";
       await tx.query(
         "update southstar.workflow_tasks set status = $1, updated_at = now() where run_id = $2 and id = $3",
@@ -96,7 +110,43 @@ export async function dispatchPostgresRunExecutionPg(db: SouthstarDb, input: Pos
     runId: input.runId,
     attemptId,
     externalJobId: submission.externalJobId,
-    taskIds: workflow.tasks.map((task) => task.id),
+    taskIds: executableWorkflow.tasks.map((task) => task.id),
     materializedEnvelopePaths,
   };
+}
+
+function workflowForRuntimeDispatch(
+  workflow: SouthstarWorkflowManifest,
+  input: { runRoot: string; harnessEndpoint?: string; contextRefreshUrl?: string },
+): SouthstarWorkflowManifest {
+  const piMount = piAgentConfigMount();
+  const piEnv = piAgentRuntimeEnv();
+  return {
+    ...workflow,
+    tasks: workflow.tasks.map((task) => ({
+      ...task,
+      execution: {
+        ...task.execution,
+        env: {
+          ...task.execution.env,
+          ...piEnv,
+          SOUTHSTAR_MATERIALIZATION_ROOT: input.runRoot,
+          ...(input.contextRefreshUrl ? { SOUTHSTAR_CONTEXT_REFRESH_URL: input.contextRefreshUrl } : {}),
+          ...(input.harnessEndpoint ? {
+            SOUTHSTAR_HARNESS_ENDPOINT: input.harnessEndpoint,
+            PI_HARNESS_ENDPOINT: input.harnessEndpoint,
+          } : {}),
+        },
+        mounts: piMount ? ensureMount(task.execution.mounts, piMount) : task.execution.mounts,
+      },
+    })),
+  };
+}
+
+function ensureMount(
+  mounts: Array<{ source: string; target: string; readonly: boolean }>,
+  mount: { source: string; target: string; readonly: boolean },
+): Array<{ source: string; target: string; readonly: boolean }> {
+  if (mounts.some((entry) => entry.source === mount.source && entry.target === mount.target)) return mounts;
+  return [...mounts, mount];
 }
