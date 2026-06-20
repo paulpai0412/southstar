@@ -130,7 +130,7 @@ test("Postgres Tork callback ok false writes rejected artifact_ref and evaluator
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
     });
     try {
-      const response = await post(server.url, "/api/v2/tork/callback", {
+      const callbackBody = {
         runId: "run-callback-rejected",
         taskId: "task-1",
         rootSessionId: "session-1",
@@ -141,9 +141,15 @@ test("Postgres Tork callback ok false writes rejected artifact_ref and evaluator
         metrics: { tokens: 12 },
         receivedAt: "2026-06-19T10:05:00.000Z",
         events: [],
-      });
+      };
+      const response = await post(server.url, "/api/v2/tork/callback", callbackBody);
+      const duplicate = await post(server.url, "/api/v2/tork/callback", callbackBody);
 
       assert.equal(response.result.accepted, false);
+      assert.equal(duplicate.result.duplicate, true);
+      assert.equal(duplicate.result.accepted, false);
+      assert.equal(duplicate.result.artifactRefId, response.result.artifactRefId);
+      assert.equal(duplicate.result.artifactResourceId, response.result.artifactResourceId);
       const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
       assert.equal(artifactRefs.length, 1);
       assert.equal(artifactRefs[0]?.status, "rejected");
@@ -176,6 +182,168 @@ test("Postgres Tork callback ok false writes rejected artifact_ref and evaluator
   });
 });
 
+test("Postgres Tork callback ignores stale attempt after a newer attempt completed the task", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, "run-callback-stale", "task-1");
+    await createExecutorBindingPg(db, {
+      runId: "run-callback-stale",
+      taskId: "task-1",
+      attemptId: "attempt-1",
+      torkJobId: "job-1",
+      status: "running",
+      now: "2026-06-19T10:00:00.000Z",
+      queueTimeoutSeconds: 60,
+      hardTimeoutSeconds: 600,
+    });
+    await createExecutorBindingPg(db, {
+      runId: "run-callback-stale",
+      taskId: "task-1",
+      attemptId: "attempt-2",
+      torkJobId: "job-2",
+      status: "running",
+      now: "2026-06-19T10:02:00.000Z",
+      queueTimeoutSeconds: 60,
+      hardTimeoutSeconds: 600,
+    });
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const newer = await post(server.url, "/api/v2/tork/callback", {
+        runId: "run-callback-stale",
+        taskId: "task-1",
+        rootSessionId: "session-2",
+        ok: true,
+        attempts: 2,
+        attemptId: "attempt-2",
+        artifact: { kind: "implementation_report", summary: "newer attempt passed", filesChanged: ["src/new.ts"] },
+        metrics: { tokens: 12 },
+        receivedAt: "2026-06-19T10:06:00.000Z",
+        events: [],
+      });
+      const stale = await post(server.url, "/api/v2/tork/callback", {
+        runId: "run-callback-stale",
+        taskId: "task-1",
+        rootSessionId: "session-1",
+        ok: false,
+        attempts: 1,
+        attemptId: "attempt-1",
+        artifact: { kind: "implementation_report", summary: "old attempt failed", risks: ["late stale callback"] },
+        metrics: { tokens: 5 },
+        receivedAt: "2026-06-19T10:07:00.000Z",
+        events: [{ eventType: "session.entry", actorType: "root-session", sessionId: "session-1", payload: { message: "late" } }],
+      });
+
+      assert.equal(newer.result.accepted, true);
+      assert.equal(stale.result.accepted, false);
+      const task = await db.one<{ status: string }>("select status from southstar.workflow_tasks where id = 'task-1' and run_id = 'run-callback-stale'");
+      assert.equal(task.status, "completed");
+      const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = 'run-callback-stale'");
+      assert.equal(run.status, "passed");
+      const evaluator = await db.one<{ status: string; payload_json: { status?: string; findings?: string[] } }>(
+        "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
+        ["completion-gate:run-callback-stale"],
+      );
+      assert.equal(evaluator.status, "passed");
+      assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
+      const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
+      assert.equal(artifactRefs.length, 1);
+      assert.equal(artifactRefs[0]?.resourceKey, newer.result.artifactRefId);
+      assert.equal(artifactRefs[0]?.status, "accepted");
+      const attempt1 = await getExecutorBindingPg(db, "executor-run-callback-stale-task-1-attempt-1");
+      const attempt2 = await getExecutorBindingPg(db, "executor-run-callback-stale-task-1-attempt-2");
+      assert.equal(attempt1?.status, "running");
+      assert.equal(attempt2?.status, "completed");
+      const history = await listHistoryForRunPg(db, "run-callback-stale");
+      assert.equal(history.filter((event) => event.eventType === "executor.callback_received").length, 2);
+      assert.equal(history.filter((event) => event.eventType === "artifact.created").length, 1);
+      assert.equal(history.filter((event) => event.eventType === "executor.callback_ignored_stale_attempt").length, 1);
+      assert.equal(history.some((event) => event.eventType === "executor.callback_ignored_terminal"), false);
+      assert.equal(history.some((event) => event.eventType === "session.entry" && event.sessionId === "session-1"), false);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("Postgres Tork callback ignores non-identical callback for an already terminal task", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, "run-callback-terminal", "task-1");
+    await createExecutorBindingPg(db, {
+      runId: "run-callback-terminal",
+      taskId: "task-1",
+      attemptId: "attempt-1",
+      torkJobId: "job-1",
+      status: "running",
+      now: "2026-06-19T10:00:00.000Z",
+      queueTimeoutSeconds: 60,
+      hardTimeoutSeconds: 600,
+    });
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const first = await post(server.url, "/api/v2/tork/callback", {
+        runId: "run-callback-terminal",
+        taskId: "task-1",
+        rootSessionId: "session-1",
+        ok: true,
+        attempts: 1,
+        attemptId: "attempt-1",
+        artifact: { kind: "implementation_report", summary: "first terminal result", filesChanged: ["src/first.ts"] },
+        metrics: { tokens: 12 },
+        receivedAt: "2026-06-19T10:05:00.000Z",
+        events: [],
+      });
+      const late = await post(server.url, "/api/v2/tork/callback", {
+        runId: "run-callback-terminal",
+        taskId: "task-1",
+        rootSessionId: "session-1",
+        ok: false,
+        attempts: 1,
+        attemptId: "attempt-1",
+        artifact: { kind: "implementation_report", summary: "different late failed result", risks: ["should be ignored"] },
+        metrics: { tokens: 8 },
+        receivedAt: "2026-06-19T10:06:00.000Z",
+        events: [{ eventType: "session.entry", actorType: "root-session", sessionId: "session-1", payload: { message: "late" } }],
+      });
+
+      assert.equal(first.result.accepted, true);
+      assert.equal(late.result.accepted, false);
+      const task = await db.one<{ status: string }>("select status from southstar.workflow_tasks where id = 'task-1' and run_id = 'run-callback-terminal'");
+      assert.equal(task.status, "completed");
+      const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = 'run-callback-terminal'");
+      assert.equal(run.status, "passed");
+      const evaluator = await db.one<{ status: string; payload_json: { status?: string; findings?: string[] } }>(
+        "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
+        ["completion-gate:run-callback-terminal"],
+      );
+      assert.equal(evaluator.status, "passed");
+      assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
+      const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
+      assert.equal(artifactRefs.length, 1);
+      assert.equal(artifactRefs[0]?.resourceKey, first.result.artifactRefId);
+      assert.equal(artifactRefs[0]?.status, "accepted");
+      const binding = await getExecutorBindingPg(db, "executor-run-callback-terminal-task-1-attempt-1");
+      assert.equal(binding?.status, "completed");
+      const history = await listHistoryForRunPg(db, "run-callback-terminal");
+      assert.equal(history.filter((event) => event.eventType === "executor.callback_received").length, 2);
+      assert.equal(history.filter((event) => event.eventType === "artifact.created").length, 1);
+      assert.equal(history.filter((event) => event.eventType === "executor.callback_ignored_terminal").length, 1);
+      assert.equal(history.filter((event) => event.eventType === "run.completed").length, 1);
+      assert.equal(history.some((event) => event.eventType === "session.entry" && event.payload.message === "late"), false);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 async function seedRunTask(db: SouthstarDb, runId: string, taskId: string): Promise<void> {
   await createWorkflowRunPg(db, {
     id: runId,
@@ -199,11 +367,11 @@ async function seedRunTask(db: SouthstarDb, runId: string, taskId: string): Prom
   });
 }
 
-async function post(baseUrl: string, path: string, body: unknown): Promise<{ ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean; artifactRefId?: string } }> {
+async function post(baseUrl: string, path: string, body: unknown): Promise<{ ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean; artifactRefId?: string; artifactResourceId?: string } }> {
   const response = await fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   const text = await response.text();
   if (!response.ok) throw new Error(`POST ${path} failed: ${response.status} ${text}`);
-  const envelope = JSON.parse(text) as { ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean; artifactRefId?: string } } | { ok: false; error: string };
+  const envelope = JSON.parse(text) as { ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean; artifactRefId?: string; artifactResourceId?: string } } | { ok: false; error: string };
   if (!envelope.ok) throw new Error(envelope.error);
   return envelope;
 }

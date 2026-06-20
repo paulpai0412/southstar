@@ -49,42 +49,84 @@ export async function triggerRunCompletedKnowledgeCardSynthesis(
   db: SouthstarDb,
   input: { runId: string; actor: string; reason: string },
 ): Promise<{ triggered: boolean; cardIds: string[]; batchId: string }> {
-  const completed = await latestCompletedRunEvaluation(db, input.runId);
-  if (!completed) throw new Error(`run is not completed: ${input.runId}`);
-  const batchId = completed.completedCount === 1
-    ? `knowledge-card-synthesis-${input.runId}`
-    : `knowledge-card-synthesis-${input.runId}:${hash(completed.versionKey)}`;
-  const existing = await db.maybeOne<{ payload_json: { cardIds?: unknown } }>(
-    "select payload_json from southstar.runtime_resources where resource_type = 'knowledge_card_synthesis_batch' and resource_key = $1",
-    [batchId],
-  );
-  if (existing) {
-    const cardIds = Array.isArray(existing.payload_json.cardIds)
-      ? existing.payload_json.cardIds.filter((id): id is string => typeof id === "string")
-      : [];
-    return { triggered: false, cardIds, batchId };
-  }
+  return await db.tx(async (tx) => {
+    const completed = await latestCompletedRunEvaluation(tx, input.runId);
+    if (!completed) throw new Error(`run is not completed: ${input.runId}`);
+    const batchId = completed.completedCount === 1
+      ? `knowledge-card-synthesis-${input.runId}`
+      : `knowledge-card-synthesis-${input.runId}:${hash(completed.versionKey)}`;
 
-  const synthesized = await synthesizeKnowledgeCards(db, { actor: input.actor, reason: input.reason, runId: input.runId });
-  await upsertRuntimeResourcePg(db, {
-    id: batchId,
-    resourceType: "knowledge_card_synthesis_batch",
-    resourceKey: batchId,
-    runId: input.runId,
-    scope: "evolution",
-    status: "completed",
-    title: `Knowledge Card synthesis ${input.runId}`,
-    payload: { runId: input.runId, cardIds: synthesized.cardIds, actor: input.actor, reason: input.reason },
-    summary: { cardCount: synthesized.cardIds.length },
+    const claimed = await claimSynthesisBatch(tx, {
+      batchId,
+      runId: input.runId,
+      actor: input.actor,
+      reason: input.reason,
+      completionEventId: completed.id,
+    });
+    if (!claimed) {
+      const existing = await tx.one<{ payload_json: { cardIds?: unknown } }>(
+        "select payload_json from southstar.runtime_resources where resource_type = 'knowledge_card_synthesis_batch' and resource_key = $1 for update",
+        [batchId],
+      );
+      return { triggered: false, cardIds: cardIdsFromPayload(existing.payload_json), batchId };
+    }
+
+    const synthesized = await synthesizeKnowledgeCards(tx, { actor: input.actor, reason: input.reason, runId: input.runId });
+    await upsertRuntimeResourcePg(tx, {
+      id: batchId,
+      resourceType: "knowledge_card_synthesis_batch",
+      resourceKey: batchId,
+      runId: input.runId,
+      scope: "evolution",
+      status: "completed",
+      title: `Knowledge Card synthesis ${input.runId}`,
+      payload: { status: "completed", runId: input.runId, cardIds: synthesized.cardIds, actor: input.actor, reason: input.reason, completionEventId: completed.id },
+      summary: { cardCount: synthesized.cardIds.length },
+    });
+    await appendHistoryEventPg(tx, {
+      runId: input.runId,
+      eventType: "evolution.knowledge_cards_synthesized",
+      actorType: "southstar-evolution",
+      idempotencyKey: batchId,
+      payload: { batchId, cardIds: synthesized.cardIds, reason: input.reason, completionEventId: completed.id },
+    });
+    return { triggered: true, cardIds: synthesized.cardIds, batchId };
   });
-  await appendHistoryEventPg(db, {
-    runId: input.runId,
-    eventType: "evolution.knowledge_cards_synthesized",
-    actorType: "southstar-evolution",
-    idempotencyKey: batchId,
-    payload: { batchId, cardIds: synthesized.cardIds, reason: input.reason, completionEventId: completed.id },
-  });
-  return { triggered: true, cardIds: synthesized.cardIds, batchId };
+}
+
+async function claimSynthesisBatch(
+  db: SouthstarDb,
+  input: { batchId: string; runId: string; actor: string; reason: string; completionEventId: string },
+): Promise<boolean> {
+  const inserted = await db.query<{ id: string }>(
+    `insert into southstar.runtime_resources (
+      id, resource_type, resource_key, run_id, task_id, session_id, scope, status,
+      title, payload_json, summary_json, metrics_json, created_at, updated_at, expires_at
+    ) values ($1, 'knowledge_card_synthesis_batch', $1, $2, null, null, 'evolution', 'in_progress',
+      $3, $4::jsonb, '{}'::jsonb, '{}'::jsonb, now(), now(), null)
+    on conflict(resource_type, resource_key) do nothing
+    returning id`,
+    [
+      input.batchId,
+      input.runId,
+      `Knowledge Card synthesis ${input.runId}`,
+      JSON.stringify({
+        status: "in_progress",
+        runId: input.runId,
+        cardIds: [],
+        actor: input.actor,
+        reason: input.reason,
+        completionEventId: input.completionEventId,
+      }),
+    ],
+  );
+  return (inserted.rowCount ?? 0) > 0;
+}
+
+function cardIdsFromPayload(payload: { cardIds?: unknown }): string[] {
+  return Array.isArray(payload.cardIds)
+    ? payload.cardIds.filter((id): id is string => typeof id === "string")
+    : [];
 }
 
 async function latestCompletedRunEvaluation(

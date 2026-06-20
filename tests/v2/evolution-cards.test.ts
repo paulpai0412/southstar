@@ -90,6 +90,56 @@ test("completed run trigger synthesizes Knowledge Cards once and records batch a
   });
 });
 
+test("concurrent completed run triggers claim the same Knowledge Card batch only once", async () => {
+  await withDb(async (db) => {
+    await createWorkflowRunPg(db, {
+      id: "run-card-trigger-concurrent",
+      status: "passed",
+      domain: "software",
+      goalPrompt: "card trigger concurrent",
+      workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", workflowId: "wf-card-trigger-concurrent", tasks: [] }),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await appendHistoryEventPg(db, {
+      runId: "run-card-trigger-concurrent",
+      eventType: "run.completed",
+      actorType: "orchestrator",
+      payload: { status: "passed" },
+    });
+    await recordLearningSignal(db, repairSignal("run-card-trigger-concurrent", "eval-1"));
+    await recordLearningSignal(db, repairSignal("run-card-trigger-concurrent", "eval-2"));
+
+    const gatedDb = gateConcurrentBatchRead(db, "knowledge-card-synthesis-run-card-trigger-concurrent");
+    const results = await Promise.all([
+      triggerRunCompletedKnowledgeCardSynthesis(gatedDb, { runId: "run-card-trigger-concurrent", actor: "southstar-a", reason: "run completed" }),
+      triggerRunCompletedKnowledgeCardSynthesis(gatedDb, { runId: "run-card-trigger-concurrent", actor: "southstar-b", reason: "run completed" }),
+    ]);
+
+    assert.equal(results.filter((result) => result.triggered).length, 1);
+    assert.equal(results.filter((result) => !result.triggered).length, 1);
+    assert.deepEqual(results[0]?.cardIds, results[1]?.cardIds);
+    assert.equal(results[0]?.cardIds.length, 1);
+    const edges = await db.query<{ count: string }>(
+      "select count(*) as count from southstar.learning_edges where from_node_id = $1 and edge_type = 'SUPPORTED_BY'",
+      [results[0]?.cardIds[0]],
+    );
+    assert.equal(Number(edges.rows[0]?.count), 2);
+    const batches = await db.query<{ resource_key: string; status: string; payload_json: { status?: string; cardIds?: string[] } }>(
+      "select resource_key, status, payload_json from southstar.runtime_resources where resource_type = 'knowledge_card_synthesis_batch' and run_id = $1",
+      ["run-card-trigger-concurrent"],
+    );
+    assert.equal(batches.rows.length, 1);
+    assert.equal(batches.rows[0]?.status, "completed");
+    assert.equal(batches.rows[0]?.payload_json.status, "completed");
+    assert.deepEqual(batches.rows[0]?.payload_json.cardIds, results[0]?.cardIds);
+    const history = await listHistoryForRunPg(db, "run-card-trigger-concurrent");
+    assert.equal(history.filter((event) => event.eventType === "evolution.knowledge_cards_synthesized").length, 1);
+  });
+});
+
 test("completed run trigger creates a new synthesis batch after recovery appends a later terminal evaluation", async () => {
   await withDb(async (db) => {
     await createWorkflowRunPg(db, {
@@ -191,6 +241,43 @@ function highRiskSignal(runId: string, sourceRef: string) {
     failureKind: "security_tool_grant_required",
     missingFields: ["github.pr-write"],
     repairInstruction: "consider tool/MCP grant expansion only after approval",
+  };
+}
+
+function gateConcurrentBatchRead(db: SouthstarDb, batchId: string): SouthstarDb {
+  let waiting = 0;
+  let released = false;
+  let release: () => void = () => {};
+  const bothWaiting = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  return {
+    query: db.query.bind(db),
+    one: db.one.bind(db),
+    async maybeOne(sql, params = []) {
+      if (
+        !released
+        && typeof sql === "string"
+        && sql.includes("resource_type = 'knowledge_card_synthesis_batch'")
+        && params[0] === batchId
+      ) {
+        waiting += 1;
+        if (waiting === 2) {
+          released = true;
+          release();
+        }
+        await Promise.race([
+          bothWaiting,
+          new Promise<void>((resolve) => setTimeout(resolve, 50)),
+        ]);
+        released = true;
+        release();
+      }
+      return await db.maybeOne(sql, params);
+    },
+    tx: db.tx.bind(db),
+    close: db.close.bind(db),
   };
 }
 
