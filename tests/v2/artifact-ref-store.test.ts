@@ -5,6 +5,7 @@ import {
   acceptedArtifactTaskIdsForRunPg,
   sha256Stable,
 } from "../../src/v2/artifacts/artifact-ref-store.ts";
+import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE, type ArtifactRefPayload } from "../../src/v2/artifacts/types.ts";
 import { createWorkflowRunPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -76,6 +77,24 @@ test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref run
   }
 });
 
+test("acceptOrRejectArtifactRefPg writes the resource and history through one caller transaction", async () => {
+  const db = transactionOnlyDb();
+
+  const result = await acceptOrRejectArtifactRefPg(db, artifactRefInput({
+    runId: "run-artifact-ref-atomic",
+    taskId: "task-a",
+    content: { atomic: true },
+  }));
+
+  assert.equal(result.artifactRefId.startsWith("artifact_ref:run-artifact-ref-atomic:task-a:attempt-1:"), true);
+  assert.equal(db.calls.rootTx, 1);
+  assert.equal(db.calls.rootMaybeOne, 0);
+  assert.equal(db.calls.rootQuery, 0);
+  assert.equal(db.calls.rootOne, 0);
+  assert.equal(db.calls.resourceUpsertInTx, 1);
+  assert.equal(db.calls.historyInsertInTx, 1);
+});
+
 test("acceptOrRejectArtifactRefPg repeats identical artifact content with the same ids and one history event", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -104,6 +123,30 @@ test("acceptOrRejectArtifactRefPg repeats identical artifact content with the sa
       ["run-artifact-ref-idempotent"],
     );
     assert.equal(Number(history.count), 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("acceptOrRejectArtifactRefPg keeps generated producedAt stable when retried without producedAt", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRun(db, "run-artifact-ref-produced-at");
+    const input = artifactRefInputWithoutProducedAt({
+      runId: "run-artifact-ref-produced-at",
+      taskId: "task-a",
+      content: { stable: "produced-at" },
+    });
+
+    const first = await acceptOrRejectArtifactRefPg(db, input);
+    const firstPayload = await artifactRefPayload(db, first.resourceId);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const second = await acceptOrRejectArtifactRefPg(db, input);
+    const secondPayload = await artifactRefPayload(db, second.resourceId);
+
+    assert.equal(second.artifactRefId, first.artifactRefId);
+    assert.equal(secondPayload.producedAt, firstPayload.producedAt);
   } finally {
     await db.close();
   }
@@ -166,6 +209,12 @@ test("acceptedArtifactTaskIdsForRunPg ignores accepted legacy artifact resources
   }
 });
 
+test("sha256Stable sorts object keys, preserves array order, and omits object undefined values", () => {
+  assert.equal(sha256Stable({ b: 2, a: 1 }), sha256Stable({ a: 1, b: 2 }));
+  assert.notEqual(sha256Stable(["a", "b"]), sha256Stable(["b", "a"]));
+  assert.equal(sha256Stable({ a: 1, b: undefined }), sha256Stable({ a: 1 }));
+});
+
 async function seedRun(db: Awaited<ReturnType<typeof createTestPostgresDb>>, runId: string): Promise<void> {
   await createWorkflowRunPg(db, {
     id: runId,
@@ -178,6 +227,14 @@ async function seedRun(db: Awaited<ReturnType<typeof createTestPostgresDb>>, run
     runtimeContextJson: "{}",
     metricsJson: "{}",
   });
+}
+
+async function artifactRefPayload(db: SouthstarDb, resourceId: string): Promise<ArtifactRefPayload> {
+  const row = await db.one<{ payload_json: ArtifactRefPayload }>(
+    "select payload_json from southstar.runtime_resources where id = $1",
+    [resourceId],
+  );
+  return row.payload_json;
 }
 
 function artifactRefInput(overrides: {
@@ -203,5 +260,75 @@ function artifactRefInput(overrides: {
     evaluatorResultRefs: ["validator:schema"],
     sourceEventRefs: ["history:event"],
     producedAt: "2026-06-21T00:00:00.000Z",
+  };
+}
+
+function artifactRefInputWithoutProducedAt(overrides: {
+  runId: string;
+  taskId: string;
+  status?: "accepted" | "rejected" | "needs_repair";
+  content?: unknown;
+  contractRefs?: string[];
+}) {
+  const input = artifactRefInput(overrides);
+  delete (input as { producedAt?: string }).producedAt;
+  return input;
+}
+
+function transactionOnlyDb(): SouthstarDb & {
+  calls: {
+    rootTx: number;
+    rootMaybeOne: number;
+    rootQuery: number;
+    rootOne: number;
+    resourceUpsertInTx: number;
+    historyInsertInTx: number;
+  };
+} {
+  const calls = {
+    rootTx: 0,
+    rootMaybeOne: 0,
+    rootQuery: 0,
+    rootOne: 0,
+    resourceUpsertInTx: 0,
+    historyInsertInTx: 0,
+  };
+  const txDb: SouthstarDb = {
+    async query(sql: string) {
+      if (sql.includes("insert into southstar.runtime_resources")) calls.resourceUpsertInTx++;
+      if (sql.includes("insert into southstar.workflow_history")) calls.historyInsertInTx++;
+      return { rows: [], rowCount: 1 };
+    },
+    async one<T>(sql: string) {
+      if (sql.includes("coalesce(max(sequence)")) return { next_sequence: 1 } as T;
+      throw new Error(`unexpected tx one: ${sql}`);
+    },
+    async maybeOne() {
+      return null;
+    },
+    async tx<T>(fn: (db: SouthstarDb) => Promise<T>) {
+      return await fn(txDb);
+    },
+    async close() {},
+  };
+  return {
+    calls,
+    async query() {
+      calls.rootQuery++;
+      throw new Error("resource writes must use transaction db");
+    },
+    async one() {
+      calls.rootOne++;
+      throw new Error("resource writes must use transaction db");
+    },
+    async maybeOne() {
+      calls.rootMaybeOne++;
+      throw new Error("resource writes must use transaction db");
+    },
+    async tx<T>(fn: (db: SouthstarDb) => Promise<T>) {
+      calls.rootTx++;
+      return await fn(txDb);
+    },
+    async close() {},
   };
 }

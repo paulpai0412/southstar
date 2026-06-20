@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import {
   ARTIFACT_EVIDENCE_SCHEMA_VERSION,
   ARTIFACT_REF_RESOURCE_TYPE,
@@ -40,29 +40,6 @@ export async function acceptOrRejectArtifactRefPg(
   const contentHash = sha256Stable(input.content);
   const artifactRefId = `artifact_ref:${input.runId}:${input.taskId}:${input.attemptId}:${contentHash}`;
   const sortedContractRefs = [...input.contractRefs].sort();
-  const payload: ArtifactRefPayload = {
-    schemaVersion: ARTIFACT_EVIDENCE_SCHEMA_VERSION,
-    artifactRefId,
-    runId: input.runId,
-    taskId: input.taskId,
-    sessionId: input.sessionId,
-    attemptId: input.attemptId,
-    handExecutionId: input.handExecutionId,
-    producer: input.producer,
-    artifactType: input.artifactType,
-    status: input.status,
-    contentRef: {
-      kind: "inline_digest",
-      ref: contentHash,
-      sha256: contentHash,
-    },
-    contractRefs: sortedContractRefs,
-    summary: input.summary,
-    evidenceRefs: input.evidenceRefs ?? [],
-    evaluatorResultRefs: input.evaluatorResultRefs ?? [],
-    sourceEventRefs: input.sourceEventRefs ?? [],
-    producedAt: input.producedAt ?? new Date().toISOString(),
-  };
   const summary = {
     artifactRefId,
     artifactType: input.artifactType,
@@ -70,28 +47,60 @@ export async function acceptOrRejectArtifactRefPg(
     contentHash,
   };
 
-  const resource = await upsertRuntimeResourcePg(db, {
-    id: artifactRefId,
-    resourceType: ARTIFACT_REF_RESOURCE_TYPE,
-    resourceKey: artifactRefId,
-    runId: input.runId,
-    taskId: input.taskId,
-    sessionId: input.sessionId,
-    scope: "artifact",
-    status: input.status,
-    title: `${input.artifactType} ${input.taskId}`,
-    payload,
-    summary,
-  });
+  const resource = await db.tx(async (tx) => {
+    const existing = await tx.maybeOne<{ payload_json: unknown }>(
+      "select payload_json from southstar.runtime_resources where resource_type = $1 and resource_key = $2 for update",
+      [ARTIFACT_REF_RESOURCE_TYPE, artifactRefId],
+    );
+    const payload: ArtifactRefPayload = {
+      schemaVersion: ARTIFACT_EVIDENCE_SCHEMA_VERSION,
+      artifactRefId,
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId: input.attemptId,
+      handExecutionId: input.handExecutionId,
+      producer: input.producer,
+      artifactType: input.artifactType,
+      status: input.status,
+      contentRef: {
+        kind: "inline_digest",
+        ref: contentHash,
+        sha256: contentHash,
+      },
+      contractRefs: sortedContractRefs,
+      summary: input.summary,
+      evidenceRefs: input.evidenceRefs ?? [],
+      evaluatorResultRefs: input.evaluatorResultRefs ?? [],
+      sourceEventRefs: input.sourceEventRefs ?? [],
+      producedAt: input.producedAt ?? existingProducedAt(existing?.payload_json) ?? new Date().toISOString(),
+    };
 
-  await appendArtifactHistoryOnce(db, {
-    runId: input.runId,
-    taskId: input.taskId,
-    sessionId: input.sessionId,
-    artifactRefId,
-    status: input.status,
-    payload,
-    summary,
+    const resource = await upsertRuntimeResourcePg(tx, {
+      id: artifactRefId,
+      resourceType: ARTIFACT_REF_RESOURCE_TYPE,
+      resourceKey: artifactRefId,
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      scope: "artifact",
+      status: input.status,
+      title: `${input.artifactType} ${input.taskId}`,
+      payload,
+      summary,
+    });
+
+    await appendArtifactHistoryOnce(tx, {
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      artifactRefId,
+      status: input.status,
+      payload,
+      summary,
+    });
+
+    return resource;
   });
 
   return { resourceId: resource.id, artifactRefId, contentHash };
@@ -127,25 +136,41 @@ async function appendArtifactHistoryOnce(
     summary: Record<string, unknown>;
   },
 ): Promise<void> {
-  try {
-    await appendHistoryEventPg(db, {
-      runId: input.runId,
-      taskId: input.taskId,
-      sessionId: input.sessionId,
-      eventType: `artifact.${input.status}`,
-      actorType: "orchestrator",
-      idempotencyKey: `${input.artifactRefId}:${input.status}`,
-      payload: {
+  const idempotencyKey = `${input.artifactRefId}:${input.status}`;
+  await db.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
+  await db.query(
+    `insert into southstar.workflow_history (
+      id, run_id, task_id, sequence, event_type, actor_type, session_id,
+      idempotency_key, correlation_id, causation_id, payload_json, created_at
+    ) values (
+      $1, $2, $3,
+      (select coalesce(max(sequence), 0) + 1 from southstar.workflow_history where run_id = $2),
+      $4, $5, $6, $7, null, null, $8::jsonb, $9
+    )
+    on conflict (run_id, idempotency_key) where idempotency_key is not null do nothing`,
+    [
+      randomUUID(),
+      input.runId,
+      input.taskId,
+      `artifact.${input.status}`,
+      "orchestrator",
+      input.sessionId,
+      idempotencyKey,
+      JSON.stringify({
         artifactRefId: input.artifactRefId,
         status: input.status,
         summary: input.summary,
         artifactRef: input.payload,
-      },
-    });
-  } catch (error) {
-    if (isUniqueViolation(error)) return;
-    throw error;
-  }
+      }),
+      new Date().toISOString(),
+    ],
+  );
+}
+
+function existingProducedAt(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+  const producedAt = (payload as { producedAt?: unknown }).producedAt;
+  return typeof producedAt === "string" && producedAt.length > 0 ? producedAt : undefined;
 }
 
 function stableJson(value: unknown): string {
@@ -172,8 +197,4 @@ function toStableJsonValue(value: unknown): unknown {
     return output;
   }
   return undefined;
-}
-
-function isUniqueViolation(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "23505");
 }
