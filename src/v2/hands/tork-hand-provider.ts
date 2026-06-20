@@ -25,7 +25,11 @@ export function createTorkHandProvider(input: {
     },
     async execute(binding: HandBinding, call: HandCall): Promise<HandResult> {
       const workflow = call.input.workflow as SouthstarWorkflowManifest | undefined;
-      if (!workflow) return { ok: false, output: "missing workflow input for Tork hand execution", metadata: { callName: call.name } };
+      if (!workflow) {
+        binding.status = "failed";
+        binding.payload = { ...binding.payload, lastError: "missing workflow input for Tork hand execution" };
+        return { ok: false, output: "missing workflow input for Tork hand execution", metadata: { callName: call.name } };
+      }
       const validation = validateWorkflowManifest(workflow);
       if (!validation.ok) {
         binding.status = "failed";

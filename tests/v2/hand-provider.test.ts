@@ -93,7 +93,8 @@ test("Tork hand provider reports missing workflow input", async () => {
 
   assert.equal(result.ok, false);
   assert.equal(result.output, "missing workflow input for Tork hand execution");
-  assert.equal(binding.status, "provisioned");
+  assert.equal(binding.status, "failed");
+  assert.equal(binding.payload.lastError, "missing workflow input for Tork hand execution");
 });
 
 test("Tork hand provider submits workflow through executor provider", async () => {
@@ -147,9 +148,10 @@ test("Tork hand provider submits workflow through executor provider", async () =
     executorType: "tork",
     projectionFingerprint: "fingerprint-1",
   });
-  await provider.destroy(binding);
+  const reloadedBinding = JSON.parse(JSON.stringify(binding));
+  await provider.destroy(reloadedBinding);
   assert.deepEqual(cancelled, [{ externalJobId: "tork-job-1", runId: "run-1", reason: "hand binding destroyed" }]);
-  assert.equal(binding.status, "destroyed");
+  assert.equal(reloadedBinding.status, "destroyed");
 });
 
 test("Tork hand provider converts submit failures into failed hand results", async () => {
