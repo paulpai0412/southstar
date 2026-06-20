@@ -39,6 +39,7 @@ await import("./evolution-signals.test.ts");
 await import("./evolution-static-gates.test.ts");
 await import("./evolution-wiki.test.ts");
 await import("./pi-web-dashboard-renderer.test.ts");
+await import("./meta-harness-taxonomy.test.ts");
 await import("./postgres-core-read-models-api.test.ts");
 await import("./postgres-executor-bindings.test.ts");
 await import("./postgres-executor-reconcile.test.ts");
