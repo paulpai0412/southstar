@@ -1,7 +1,8 @@
-# Southstar Tork Hand Provider Runtime Design
+# Southstar Tork Hand Provider Managed Runtime Design
 
 日期：2026-06-20
-狀態：design draft
+更新：2026-06-21
+狀態：design reviewed
 
 ## 1. 背景
 
@@ -11,6 +12,14 @@ Southstar 目前已經有 managed-agent meta-harness 的主要 interface 與 Pos
 
 本設計把 Tork 改成 **per-task HandProvider**：Southstar scheduler 決定哪些 task 可跑、何時可跑、可以併發多少；Tork 只負責實際執行單一 task job、queue/worker/heartbeat/callback observation。Postgres 仍是唯一 runtime truth。
 
+這份文件同時把既有 remaining work 納入同一條 runtime 設計，而不是另開補資料機制：
+
+1. `artifact_ref` 契約統一。
+2. evaluator/end-state gate 接入 completion。
+3. work item intake 自動化。
+4. tool proxy 全路徑 enforcement。
+5. 更 native 的 brain-hand task loop。
+
 ## 2. 目標
 
 1. `/execute` 不再直接 submit whole-workflow Tork job。
@@ -19,7 +28,10 @@ Southstar 目前已經有 managed-agent meta-harness 的主要 interface 與 Pos
 4. Southstar scheduler 能控制 task 併發，而 Tork worker pool 負責實際 job 執行併發。
 5. `artifact_ref` 成為 dependency gate 與 evaluator completion 的 canonical artifact contract。
 6. Completion 必須經 evaluator/end-state gate，不可只由 Tork terminal status 決定。
-7. Recovery decision、checkpoint、attempt lineage 由 Southstar 持久化控制。
+7. Work item intake 統一 API、CLI、UI、GitHub-like source 到 canonical `work_items`。
+8. Tool proxy policy 對 run/context/envelope/callback 全路徑 fail-closed。
+9. Recovery decision、checkpoint、attempt lineage 由 Southstar 持久化控制。
+10. Brain/hand loop 成為 managed runtime 的執行模型，Tork 只是其中一個 hand backend。
 
 ## 3. 非目標
 
@@ -28,47 +40,52 @@ Southstar 目前已經有 managed-agent meta-harness 的主要 interface 與 Pos
 - 不在此設計中實作新的 Tork server 或 worker。
 - 不要求立即移除 legacy executor APIs；但新 managed runtime path 不應依賴 whole-workflow submit。
 - 不以 Tork internal retry 取代 Southstar recovery policy。
+- 不讓 external issue/ticket projection 直接決定 run terminal status。
+- 不讓 tool proxy 成為 optional helper；它是 managed runtime 的安全邊界。
 
-## 4. Remaining Work From Managed-Agent Design
-
-目前已經有 managed-agent meta-harness 的主要 interface 與 Postgres runtime 骨架；真正還要補的是：
-
-1. **`artifact_ref` 契約統一**：scheduler、callback、evaluator、read models 必須使用同一種 accepted/rejected artifact resource contract。舊 `artifact` 可作 compatibility projection 或 blob/detail，但不可作 dependency gate truth。
-2. **Evaluator/end-state gate 接入 completion**：所有 task terminal 後，run 進入 `evaluating`；只有 evaluator/end-state gate 通過後才能 `passed`。
-3. **Work item intake 自動化**：external prompt/GitHub issue/Linear ticket 等 intake 應建立或解析 `work_item`，並自動 link run attempt。
-4. **Tool proxy 全路徑 enforcement**：sandbox/hand execution 不可持有 raw long-lived credentials；所有高風險 tool call 必須透過 vault lease + tool proxy。
-5. **更 native 的 brain-hand task loop**：scheduler claim task 後，由 brain/hand provider 驅動 task execution；Tork 是 hand provider，不是補資料目標。
-
-本文件聚焦第 1、2、5 項，並為第 3、4 項保留相容邊界。
-
-## 5. Architecture
+## 4. 整體架構
 
 ```text
-Operator / CLI / UI
-  -> Southstar Runtime Server
-      -> Work Item Registry
-      -> Workflow Draft / Run API
-      -> Runnable Task Scheduler
-      -> BrainProvider Registry
-      -> HandProvider Registry
-          -> TorkHandProvider
-              -> Tork Queue / Worker / Callback
-      -> SessionStore
-      -> Artifact/Evaluator Pipeline
-      -> Recovery Controller
-      -> Read Models
+Intake Sources
+  GitHub / Linear / CLI / UI / API prompt
+    -> WorkItemIntakeService
+       -> work_items canonical record
+       -> Workflow Draft / Run materialization
+
+Southstar Managed Runtime
+  -> RunExecutionController
+  -> RunnableTaskScheduler
+  -> BrainProvider
+  -> HandProviderRegistry
+       -> TorkHandProvider
+  -> ArtifactRefStore / ArtifactGate
+  -> EvaluatorCompletionGate
+  -> ToolProxyPolicyEnforcer
+  -> RecoveryController
+  -> Read Models
+
+Execution Plane
+  -> Tork queue / worker / callback / heartbeat
 ```
 
 Boundary responsibilities:
 
-- **Southstar Runtime**：control plane。負責 run lifecycle、task dependency、context packet、brain binding、hand binding、artifact/evaluator gate、recovery、read model。
-- **TorkHandProvider**：execution plane。負責 single-task Tork job submission、queue/running/terminal observation、callback correlation。
-- **BrainProvider**：strategy plane。負責 wake from session/context，產生 task execution intent、tool decisions、artifact decisions。第一階段可讓 task envelope runner 承接 brain behavior，但狀態與介面要保留 brain boundary。
-- **Postgres**：唯一 truth。Tork state 必須投影回 `workflow_history` 與 `runtime_resources`。
+- **WorkItemIntakeService**：把 external source 轉成 canonical `work_items`，負責 dedupe、source identity、run attempt linkage。
+- **RunExecutionController**：只把 run 轉成 `scheduling`，喚醒 scheduler，不 submit Tork workflow。
+- **RunnableTaskScheduler**：決定 dependency ready、claim、concurrency、brain wake、hand execution submit。
+- **BrainProvider**：從 session/context 醒來，產生 task execution intent 與 tool/artifact expectations。第一階段可由 deterministic/default brain intent 承接，但 contract 要存在。
+- **HandProvider**：執行一個 task attempt。Tork 是 `TorkHandProvider`，不是 workflow owner。
+- **ArtifactRefStore**：唯一負責 canonical `artifact_ref` normalization、hash、accepted/rejected/needs_repair gate。
+- **EvaluatorCompletionGate**：唯一能把 all-terminal run 變成 `passed` 或 `failed` 的元件。
+- **ToolProxyPolicyEnforcer**：保證所有 hand/tool 路徑使用 vault lease + proxy，不允許 raw credential 進入 hand sandbox、Tork envelope、callback artifact。
+- **RecoveryController**：根據 queued timeout、running heartbeat loss、rejected artifact、evaluator failure 建立 recovery decision，並產生新 attempt lineage。
+- **Postgres**：唯一 truth。Tork state、brain intent、tool calls、artifact refs、evaluator result 都必須投影回 `workflow_history` 與 `runtime_resources`。
 
-## 6. Status Model
+Tork 的價值仍保留：queue、worker pool、job isolation、callback/heartbeat、execution log。但 Southstar 不再把 workflow DAG 與 completion truth 交給 Tork。
 
-### 6.1 Run Lifecycle
+## 5. Status Model
+
+### 5.1 Run Lifecycle
 
 ```text
 created
@@ -84,25 +101,26 @@ created
 - `evaluating`：所有 tasks terminal，正在執行 artifact/end-state gates。
 - `passed` / `failed` / `cancelled`：terminal run state。
 
-### 6.2 Task Lifecycle
+### 5.2 Task Lifecycle
 
 ```text
 pending
   -> claimed
   -> queued
   -> running
-  -> completed | failed | cancelled | lost
+  -> completed | failed | cancelled | lost | blocked
 ```
 
 - `pending`：尚未 ready 或尚未被 scheduler claim。
-- `claimed`：scheduler 已用 Postgres transaction claim，準備提交 hand execution。
+- `claimed`：scheduler 已用 Postgres transaction claim，準備建立 brain intent 與提交 hand execution。
 - `queued`：Tork job 已提交，等待 worker。
 - `running`：Tork heartbeat、poll 或 callback 已確認 worker 開始。
 - `completed`：task artifact gate accepted。
 - `failed`：task terminal failure，等待 recovery/evaluator policy。
 - `lost`：execution attempt 無法確認，需 recovery decision。
+- `blocked`：policy 或 intake/security 條件阻擋，需要 recovery 或 operator intervention。
 
-### 6.3 Hand Execution Lifecycle
+### 5.3 Hand Execution Lifecycle
 
 ```text
 queued
@@ -117,17 +135,19 @@ queued
 - `taskId`
 - `sessionId`
 - `attemptId`
+- `brainBindingId`
+- `handBindingId`
 - `providerId = "tork"`
 - `torkJobId`
 - `queuedAt`
-- `startedAt?`
-- `terminalAt?`
-- `previousAttemptId?`
-- `supersededBy?`
+- `startedAt`
+- `terminalAt`
+- `previousAttemptId`
+- `supersededBy`
 - `queueTimeoutSeconds`
 - `heartbeatTimeoutSeconds`
 
-### 6.4 Concurrency Semantics
+### 5.4 Concurrency Semantics
 
 Southstar 控制 logical concurrency；Tork 控制 worker execution concurrency。
 
@@ -141,35 +161,227 @@ Concurrency inputs:
 - `providerCapacity.tork.maxRunningPerRun`
 - work item 或 domain policy 的 risk/cost limit
 
-## 7. New Data Flow
+## 6. Canonical Resource Contracts
 
-### 7.1 Draft
+### 6.1 `artifact_ref`
+
+`artifact_ref` 是 dependency gate 與 evaluator completion 的 canonical runtime resource。舊 `artifact` 可以保留為 payload/blob/detail 或 legacy read model projection，但不能被 scheduler 或 evaluator 當成 truth。
+
+Resource shape:
 
 ```text
-POST /api/v2/planner/drafts
-  -> generate constrained workflow plan
-  -> materialize workflow manifest
+runtime_resources(
+  resource_type = "artifact_ref",
+  resource_key = "artifact_ref:{runId}:{taskId}:{attemptId}:{contentHash}",
+  run_id,
+  task_id,
+  session_id,
+  scope = "artifact",
+  status = accepted | rejected | needs_repair,
+  payload_json = ArtifactRefPayload,
+  summary_json = ArtifactRefSummary,
+  metrics_json = ArtifactRefMetrics
+)
+```
+
+Payload:
+
+```ts
+type ArtifactRefPayload = {
+  schemaVersion: "southstar.runtime.artifact_ref.v1";
+  artifactRefId: string;
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  handExecutionId: string;
+  producer: {
+    actorType: "hand" | "brain" | "tool-proxy" | "evaluator";
+    providerId: string;
+  };
+  artifactType: string;
+  status: "accepted" | "rejected" | "needs_repair";
+  contentRef?: {
+    kind: "runtime_resource" | "secure_blob" | "external_url" | "inline_digest";
+    ref: string;
+    sha256: string;
+  };
+  contractRefs: string[];
+  summary: string;
+  evidenceRefs: string[];
+  evaluatorResultRefs: string[];
+  sourceEventRefs: string[];
+  producedAt: string;
+};
+```
+
+Rules:
+
+- Callback ingestion must validate `runId/taskId/attemptId/handExecutionId` lineage before accepting an artifact.
+- `ArtifactRefStore.acceptOrReject()` normalizes payload, computes content hash, writes idempotent `artifact_ref`, and appends `artifact.accepted`, `artifact.rejected`, or `artifact.needs_repair`.
+- Scheduler `dependenciesReady()` reads only accepted `artifact_ref` rows.
+- Fan-in task context receives accepted `artifact_ref` summaries and selected `contentRef`; raw upstream transcripts are not passed by default.
+- Legacy `artifact` rows do not unlock downstream work or final completion.
+
+### 6.2 `hand_execution`
+
+`hand_execution` tracks a single provider execution attempt.
+
+```ts
+type HandExecutionPayload = {
+  schemaVersion: "southstar.runtime.hand_execution.v1";
+  handExecutionId: string;
+  providerId: string;
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  brainBindingId: string;
+  handBindingId: string;
+  externalJobId?: string;
+  status: "queued" | "running" | "completed" | "failed" | "lost" | "superseded" | "cancelled";
+  queuedAt: string;
+  startedAt?: string;
+  terminalAt?: string;
+  previousAttemptId?: string;
+  supersededBy?: string;
+};
+```
+
+Same task and same active attempt can have only one non-terminal `hand_execution`.
+
+### 6.3 `tool_proxy_policy` and `tool_proxy_violation`
+
+Tool proxy policy is produced during run materialization or intake policy classification.
+
+```ts
+type ToolProxyPolicy = {
+  schemaVersion: "southstar.tool_proxy_policy.v1";
+  runId: string;
+  sessionId: string;
+  allowedTools: string[];
+  requiredProxyTools: string[];
+  forbiddenDirectEnvKeys: string[];
+  vaultLeaseRefs: string[];
+  maxLeaseTtlSeconds: number;
+  redactResultPayloads: true;
+  failClosed: true;
+};
+```
+
+Violation payload:
+
+```ts
+type ToolProxyViolation = {
+  schemaVersion: "southstar.tool_proxy_violation.v1";
+  runId: string;
+  taskId?: string;
+  sessionId?: string;
+  handExecutionId?: string;
+  severity: "blocking" | "warning";
+  reason:
+    | "raw_credential_in_context"
+    | "raw_credential_in_envelope"
+    | "direct_tool_without_proxy"
+    | "callback_payload_leak"
+    | "missing_required_lease"
+    | "expired_lease";
+  evidenceRef: string;
+  redactedExcerpt?: string;
+  detectedAt: string;
+};
+```
+
+Completion gate must fail closed when unresolved blocking `tool_proxy_violation` exists.
+
+## 7. Work Item Intake Automation
+
+Work item is the canonical work identity before draft/run. External records are source inputs or projections, not runtime truth.
+
+Input:
+
+```ts
+type WorkItemIntakeInput = {
+  sourceProvider: "api" | "cli" | "github" | "linear" | "ui" | "scheduler";
+  sourceScope?: string;
+  sourceRef?: string;
+  sourceUrl?: string;
+  title: string;
+  body: string;
+  domain: string;
+  priority?: "low" | "normal" | "high" | "urgent";
+  labels?: string[];
+  requestedBy?: string;
+  metadata?: Record<string, unknown>;
+};
+```
+
+Responsibilities:
+
+- **Dedupe**：`sourceProvider + sourceRef` is the idempotency key for external sources. Without `sourceRef`, generate an internal id.
+- **Normalize**：GitHub issue、Linear ticket、CLI prompt、UI prompt all become one `work_items` shape.
+- **Policy classify**：select domain、effort policy hint、security profile、allowed tools、evaluator profile。
+- **Draft seed**：create planner draft seed with `workItemRef`。
+- **Run linkage**：every run attempt from the same work item updates `run_refs_json` and `workflow_runs.runtime_context_json.workItemRef`。
+- **Attempt semantics**：one active run attempt per work item by default. Parallel attempts require explicit operator request.
+- **Projection**：external issue/ticket status is projection only; evaluator gate remains final runtime truth.
+
+Run reference:
+
+```ts
+type WorkItemRunRef = {
+  runId: string;
+  runAttempt: number;
+  statusAtLink: "created" | "scheduling";
+  reason: "initial" | "retry" | "operator_requested" | "recovery_fork";
+  createdAt: string;
+};
+```
+
+`workflow_runs.runtime_context_json.workItemRef`:
+
+```json
+{
+  "workItemId": "wi_...",
+  "sourceProvider": "github",
+  "sourceRef": "owner/repo#123",
+  "runAttempt": 2,
+  "intakeVersion": "southstar.work_item_intake.v1"
+}
+```
+
+Error handling:
+
+- Duplicate external webhook returns the existing work item and appends an event when useful.
+- Incomplete source payload creates `work_items(status=needs_triage)` and does not auto-draft.
+- Active run conflict rejects or queues the requested attempt unless `allowParallelAttempts=true`.
+- External projection failure records `projection_failed` resource/history and does not alter run truth.
+
+## 8. New Runtime Data Flow
+
+### 8.1 Intake To Draft
+
+```text
+external source/prompt
+  -> WorkItemIntakeService.upsert()
+  -> work_items(status=open|ready|needs_triage)
+  -> planner draft generated with workItemRef
   -> runtime_resources(planner_draft, status=validated)
 ```
 
-### 7.2 Run
+### 8.2 Draft To Run
 
 ```text
 POST /api/v2/runs
   -> workflow_runs(status=created)
   -> workflow_tasks(status=pending)
   -> context_packet per task
+  -> tool_proxy_policy per run/session
   -> workflow_history: run.created, task.created
+  -> work_items.run_refs_json += WorkItemRunRef
 ```
 
-If the request originates from a work item, run creation must link:
-
-```text
-work_items.run_refs_json += { runId, runAttempt }
-workflow_runs.runtime_context_json.workItemRef = { workItemId, runAttempt }
-```
-
-### 7.3 Execute
+### 8.3 Execute
 
 ```text
 POST /api/v2/runs/:runId/execute
@@ -182,7 +394,7 @@ POST /api/v2/runs/:runId/execute
 
 `/execute` means Southstar has accepted control of the run. It does not mean Tork has started a worker.
 
-### 7.4 Scheduler Tick
+### 8.4 Native Brain-Hand Scheduler Tick
 
 ```text
 for each run in scheduling/running:
@@ -191,17 +403,63 @@ for each run in scheduling/running:
   find pending tasks whose dependencies are accepted
   apply concurrency/capacity gates
   transactionally claim task: pending -> claimed
-  create/wake brain_binding
-  create hand_binding(providerId=tork)
-  call TorkHandProvider.executeTask()
+  BrainProvider.wake(sessionId, contextPacketId)
+  create TaskExecutionIntent
+  ToolProxyPolicyEnforcer validates intent and context
+  HandProvider.provision()
+  TorkHandProvider.executeTask()
 ```
 
 Atomic claim must lock the run/task rows and re-check task status plus concurrency counters in the same transaction.
 
-### 7.5 Tork Hand Execution
+### 8.5 Task Execution Intent
+
+```ts
+type TaskExecutionIntent = {
+  schemaVersion: "southstar.brain.task_execution_intent.v1";
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  contextPacketId: string;
+  attemptId: string;
+  expectedArtifactContracts: string[];
+  allowedToolNames: string[];
+  toolProxyPolicyRef: string;
+  handProviderId: "tork" | string;
+  executionMode: "single_task";
+  instructionsRef: string;
+  inputArtifactRefs: string[];
+};
+```
+
+First implementation can use deterministic/default brain intent:
+
+- Reads manifest task, context packet, accepted upstream refs.
+- Produces `TaskExecutionIntent`.
+- Emits `brain.intent_created`.
+- Keeps the contract compatible with later Pi/Codex/Claude Code brain providers.
+
+### 8.6 Tork Hand Execution
+
+```ts
+type ExecuteTaskInput = {
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  handExecutionId: string;
+  brainBindingId: string;
+  handBindingId: string;
+  intent: TaskExecutionIntent;
+  contextPacketRef: string;
+  acceptedInputArtifactRefs: string[];
+  toolProxyPolicyRef: string;
+};
+```
 
 ```text
 TorkHandProvider.executeTask()
+  -> validate tool proxy policy and envelope
   -> materialize only this task envelope
   -> submit one Tork job for this task
   -> runtime_resources(hand_execution, status=queued)
@@ -209,9 +467,9 @@ TorkHandProvider.executeTask()
   -> workflow_history: hand.execute_queued
 ```
 
-Compatibility projection may also write `executor_binding`, but canonical managed runtime state is `hand_execution`.
+Legacy `HandProvider.execute(binding, call)` can remain as compatibility wrapper. Managed scheduler must call `executeTask()` or an equivalent typed adapter.
 
-### 7.6 Tork Started
+### 8.7 Tork Started
 
 Tork heartbeat, callback, or poll observes worker start:
 
@@ -222,16 +480,17 @@ workflow_runs: scheduling -> running
 workflow_history: hand.execute_started
 ```
 
-### 7.7 Tork Terminal Callback
+### 8.8 Tork Terminal Callback
 
 ```text
 callback received
   -> workflow_history: executor.callback_received
-  -> append agent/task events
-  -> artifact_ref accepted/rejected
-  -> workflow_history: artifact.accepted or artifact.rejected
+  -> validate callback lineage
+  -> append selected agent/task events
+  -> scan for tool proxy violations
+  -> ArtifactRefStore writes accepted/rejected/needs_repair artifact_ref
   -> hand_execution completed/failed
-  -> workflow_tasks completed/failed
+  -> workflow_tasks completed/failed/lost/blocked
 ```
 
 Callback identity must include:
@@ -244,7 +503,7 @@ Callback identity must include:
 
 This identity is used for idempotency and late callback handling.
 
-### 7.8 Fan-In
+### 8.9 Fan-In
 
 ```text
 upstream task completed
@@ -256,57 +515,85 @@ upstream task completed
 
 Fan-in must not consume raw upstream transcripts by default.
 
-### 7.9 Completion
+### 8.10 Completion
 
 ```text
 all tasks terminal
   -> workflow_runs.status = evaluating
-  -> run end-state evaluator
+  -> EvaluatorCompletionGate runs
   -> passed if gates pass
   -> failed if gates reject or unresolved terminal failures remain
 ```
 
 Tork terminal state alone is insufficient to mark run `passed`.
 
-## 8. Artifact Contract
+## 9. Evaluator Completion Gate
 
-`artifact_ref` is the canonical runtime resource for dependency gating and evaluator completion.
+Completion gate inputs:
 
-Required fields:
+- task statuses
+- accepted/rejected/needs_repair `artifact_ref`
+- required artifact contracts from domain pack and manifest
+- final report artifact refs
+- evaluator result resources
+- recovery decisions
+- tool proxy violations
+- work item policy and attempt policy
 
-```ts
-type ArtifactRefPayload = {
-  schemaVersion: "southstar.runtime.artifact_ref.v1";
-  artifactType: string;
-  producerTaskId: string;
-  status: "accepted" | "rejected" | "needs_repair";
-  contentRef?: string;
-  summary: string;
-  evidenceRefs: string[];
-  evaluatorResultRefs: string[];
-  sourceEventRefs: string[];
-};
-```
+`passed` requires:
 
-Resource shape:
+1. All required tasks are terminal and no unresolved `failed` or `lost` task remains.
+2. Every required artifact contract has an accepted `artifact_ref`.
+3. Final/completion report references all required upstream accepted refs.
+4. No unresolved evaluator finding remains.
+5. No unresolved blocking `tool_proxy_violation` remains.
+6. Recovery policy has no pending mandatory action.
 
-```text
-runtime_resources(
-  resource_type = "artifact_ref",
-  resource_key = "artifact-ref:{runId}:{taskId}:{attemptId}:{hash}",
-  run_id,
-  task_id,
-  session_id,
-  scope = "artifact",
-  status = accepted | rejected | needs_repair
-)
-```
+`failed` is produced when:
 
-Legacy `artifact` may remain as compatibility projection or blob/detail storage, but it cannot be used by managed scheduler or completion gate.
+- Evaluator explicitly rejects the end state.
+- Required artifact is missing.
+- Terminal failure exceeds recovery policy.
+- Security/tool proxy gate fails closed.
+- Work item policy disallows further attempts.
 
-## 9. Recovery And Error Handling
+`needs_repair` does not directly make the run failed. It creates a recovery decision or follow-up task until policy is exhausted.
 
-### 9.1 Tork Queued Timeout
+## 10. Tool Proxy Full-Path Enforcement
+
+Tool proxy enforcement has four fail-closed points.
+
+### 10.1 Run Materialization
+
+- Domain/security profile produces `tool_proxy_policy`.
+- Context packet can include only `vaultLeaseRef`, `toolProxyEndpointRef`, and allowed tool names.
+- Context packet, `workflow_manifest_json`, and `runtime_context_json` are scanned for credential-like values.
+- Raw token/password/API key values create blocking `tool_proxy_violation`.
+
+### 10.2 Hand/Tork Envelope Creation
+
+- `TorkHandProvider.executeTask()` calls policy enforcer before materializing envelope.
+- Envelope includes only tool proxy endpoint, lease id, capability names, and redaction policy.
+- Tork job env cannot contain forbidden direct env keys.
+- Required proxy tool without active vault lease blocks the task and records policy evidence.
+
+### 10.3 Tool Call Execution
+
+- Hand sandbox calls Southstar tool proxy, not provider APIs directly.
+- Tool proxy validates lease run/session/tool/expiry/scope.
+- Tool handler raw result is not written directly to session/log/artifact.
+- Redacted summary, secure blob digest, or contentRef is persisted.
+- Each call writes `tool_proxy_call` and `tool_proxy.called`.
+
+### 10.4 Callback And Artifact Ingestion
+
+- Callback payload is scanned before `artifact_ref` acceptance.
+- Credential-like values, raw lease secrets, or forbidden env keys create `artifact_ref(status=rejected)` plus blocking violation.
+- Completion gate fails closed while blocking violations remain unresolved.
+
+## 11. Recovery And Error Handling
+
+### 11.1 Tork Queued Timeout
 
 ```text
 task = queued, hand_execution = queued
@@ -319,7 +606,7 @@ queueTimeoutSeconds exceeded
 
 Queued timeout is not task failure. It means this execution attempt did not start.
 
-### 9.2 Running Heartbeat Lost
+### 11.2 Running Heartbeat Lost
 
 ```text
 task = running, hand_execution = running
@@ -330,7 +617,7 @@ heartbeatTimeoutSeconds exceeded
   -> new hand_execution submitted
 ```
 
-### 9.3 Tork Terminal Failure
+### 11.3 Tork Terminal Failure
 
 ```text
 Tork job failed or callback ok=false
@@ -339,7 +626,7 @@ Tork job failed or callback ok=false
   -> evaluator/recovery policy decides retry, fork, or run failure
 ```
 
-### 9.4 Duplicate Or Late Callback
+### 11.4 Duplicate Or Late Callback
 
 Duplicate callback:
 
@@ -353,7 +640,7 @@ Late callback:
 - Record as late observation.
 - Do not overwrite newer attempt or task status.
 
-### 9.5 Brain Crash
+### 11.5 Brain Crash
 
 ```text
 brain_binding failed/lost
@@ -364,7 +651,16 @@ brain_binding failed/lost
 
 Brain recovery reads Postgres session/context truth, not old process memory.
 
-## 10. Tork Retry Policy
+### 11.6 Policy Or Intent Failure
+
+If `BrainProvider.wake()`, intent creation, or tool policy validation fails:
+
+- Task must not silently return to `pending`.
+- Runtime writes `recovery_decision` or blocking policy resource.
+- Task moves to `blocked` or `failed` according to policy.
+- Scheduler does not retry without a new decision.
+
+## 12. Tork Retry Policy
 
 Tork internal retry must not hide attempt lineage from Southstar.
 
@@ -376,9 +672,9 @@ Recommended default:
 
 If Tork retry is enabled, each retry attempt must be observable through callback/poll events and mapped to Southstar attempt lineage. Otherwise it should not be used for managed runtime paths.
 
-## 11. API Changes
+## 13. API Changes
 
-### 11.1 Execute
+### 13.1 Execute
 
 `POST /api/v2/runs/:runId/execute`
 
@@ -394,7 +690,23 @@ Response:
 
 No `externalJobId` is returned from `/execute`, because no Tork job is submitted at this layer.
 
-### 11.2 Scheduler Tick
+### 13.2 Work Item Intake
+
+`POST /api/v2/work-items/intake`
+
+Response:
+
+```json
+{
+  "workItemId": "wi_...",
+  "status": "ready",
+  "deduped": false
+}
+```
+
+The route is an API entry point for the same service used by CLI/UI/GitHub-like adapters.
+
+### 13.3 Scheduler Tick
 
 Internal or operator route may expose:
 
@@ -409,91 +721,115 @@ Response includes:
 - skipped task ids and reasons
 - capacity/concurrency decisions
 
-### 11.3 Hand Execution Read Model
+### 13.4 Hand Execution Read Model
 
 Read models should expose:
 
+- work item ref and run attempt
 - `brain_binding`
+- `task_execution_intent`
 - `hand_binding`
 - `hand_execution`
 - `artifact_ref`
+- evaluator result and completion gate status
+- tool proxy policy and violations
 - queue/running/terminal timestamps
 - attempt lineage
 - recovery decision refs
 
-## 12. Migration Plan
+## 14. Migration Slices
 
-### Slice 1: State And Contract Cleanup
+Each slice must leave runtime behavior verifiable and keep Postgres as canonical truth.
 
-- Add run status `scheduling`, `evaluating`.
-- Add task status `claimed`, `queued`, `lost`.
-- Add `hand_execution` taxonomy and static gates.
-- Make callback write `artifact_ref`.
-- Keep legacy `artifact` only as compatibility projection.
-- Update scheduler to read accepted `artifact_ref` only after callback writes it.
+### Slice 1: Canonical Contracts
 
-### Slice 2: Thin Execute
+- Add or formalize `artifact_ref`, `hand_execution`, `tool_proxy_policy`, `tool_proxy_violation` contracts.
+- Update taxonomy and static runtime gates.
+- Add `ArtifactRefStore`.
+- Callback ingestion writes `artifact_ref`.
+- Legacy `artifact` remains only compatibility projection.
 
-- Change `/execute` from whole-workflow submit to run scheduling start.
-- Append `run.scheduling_started`.
-- Wake scheduler without submitting Tork job directly.
-- Move old whole-workflow dispatch behind a deprecated compatibility path or tests-only fixture.
+### Slice 2: Evaluator Completion Gate
 
-### Slice 3: Per-Task TorkHandProvider
+- All terminal tasks move run to `evaluating`.
+- Add `EvaluatorCompletionGate`.
+- Gate checks artifact graph, final report refs, unresolved failures, recovery decisions, and tool proxy violations.
+- Only gate pass can set `passed`.
 
-- Add `executeTask()` or equivalent hand execution method.
-- Materialize a single task envelope.
-- Submit one Tork job per claimed task.
-- Write `hand_execution queued`.
-- Update task status to `queued`.
-- Map Tork start/heartbeat/callback into `running` and terminal states.
+### Slice 3: Automated Intake
 
-### Slice 4: Evaluator Completion Gate
+- Add `WorkItemIntakeService.upsert()`.
+- Wire API/CLI/UI entry points through intake service.
+- Draft/run creation carries `workItemRef`.
+- Enforce one active attempt per work item unless explicitly overridden.
 
-- When all tasks terminal, set run to `evaluating`.
-- Run end-state evaluator.
-- Set `passed` only when required artifact graph and security/hand/evidence gates pass.
-- Set `failed` when evaluator rejects or unrecovered terminal failures remain.
+### Slice 4: Tool Proxy Enforcement
 
-## 13. Testing Strategy
+- Add run/context/envelope/callback scanning.
+- Tork envelope forbids raw credentials.
+- Required proxy tools require active vault leases.
+- Blocking violations fail completion gate.
 
-Unit tests:
+### Slice 5: Native Brain-Hand Loop
 
+- Scheduler claim changes `pending -> claimed`.
+- Default brain creates `TaskExecutionIntent`.
+- Add `TorkHandProvider.executeTask()` for single-task Tork jobs.
+- Task lifecycle becomes `claimed -> queued -> running -> terminal`.
+- `/execute` starts scheduling only.
+
+### Slice 6: Per-Task Tork Runtime E2E
+
+- Independent tasks submit multiple Tork jobs under Southstar concurrency.
+- Fan-in waits for accepted `artifact_ref`.
+- Queued/running observation updates state.
+- Duplicate/late callback is lineage-safe.
+- Recovery decision is written before retry/requeue/reprovision.
+
+## 15. Testing Strategy
+
+### Unit Tests
+
+- `artifact_ref` normalization, hash, idempotency.
+- Scheduler only uses accepted `artifact_ref` to unlock dependencies.
+- Legacy `artifact` does not unlock dependencies.
+- Completion gate pass/fail/needs_repair.
+- Tool proxy violation fail-closed behavior.
+- Work item dedupe and run attempt linkage.
+- Brain intent validation.
+- Same task cannot have two active hand executions.
 - `/execute` does not call `executorProvider.submit`.
-- `/execute` moves run `created -> scheduling`.
-- Scheduler claims only dependency-ready tasks.
-- `claimed` / `queued` / `running` occupy concurrency slots.
-- `artifact_ref` unlocks downstream tasks.
-- Legacy `artifact` does not unlock managed scheduler dependencies.
-- Duplicate callbacks are idempotent.
-- Late callbacks do not overwrite superseded attempts.
 
-Integration tests:
+### Postgres Integration Tests
 
-- Two independent tasks submit two Tork hand executions concurrently.
-- Downstream fan-in waits for accepted upstream `artifact_ref`.
-- Queue timeout requeues through recovery decision.
-- Running heartbeat loss triggers `reprovision-hand`.
-- All terminal tasks move run to `evaluating`, then evaluator sets final run state.
+- Run moves `created -> scheduling`; Tork job absent until scheduler claim.
+- Scheduler claim/queued/running occupy concurrency slots.
+- Callback writes `artifact_ref` and terminal hand execution.
+- All terminal tasks move `running -> evaluating -> final`.
+- Active work item attempt conflict follows policy.
+- Raw credential in context/envelope/callback creates blocking violation.
 
-Real Postgres/Tork E2E:
+### Real Postgres/Tork E2E
 
 - Normal per-task Tork execution.
-- Parallel runnable tasks.
-- Fan-in task execution after accepted artifacts.
-- Queued timeout or lost worker recovery.
-- Duplicate callback behavior.
-- Completion only through evaluator gate.
+- Two runnable tasks submit two Tork jobs under `maxParallelTasks`.
+- Fan-in task starts only after upstream accepted refs.
+- Tork queued timeout or lost heartbeat recovery.
+- Duplicate callback idempotency.
+- Final passed only after evaluator gate.
+- Security case proves no raw credential in runtime surfaces.
 
-## 14. Acceptance Criteria
+## 16. Acceptance Criteria
 
-1. `/execute` never submits a whole-workflow Tork job in the managed runtime path.
-2. A run can be `scheduling` while all Tork jobs are still absent or queued.
-3. Scheduler can submit multiple independent task Tork jobs up to configured concurrency.
-4. Tork queue/running/terminal observations are recorded as `hand_execution` state.
-5. Accepted `artifact_ref` unlocks downstream tasks; legacy `artifact` does not.
-6. Callback duplicate and late callback behavior is idempotent and lineage-safe.
-7. Queue timeout and heartbeat lost recovery create `recovery_decision` before retry/reprovision.
-8. Run `passed` requires evaluator/end-state gate, not only Tork terminal success.
-9. Read models show task status, hand execution status, queue/running timestamps, and recovery lineage.
-10. Real Postgres/Tork E2E proves normal, parallel, fan-in, recovery, and completion-gate behavior.
+1. Managed `/execute` path never submits a whole-workflow Tork job.
+2. `scheduling` can exist while no Tork worker is running.
+3. Scheduler can submit per-task Tork jobs concurrently within Southstar limits.
+4. Every Tork task attempt has `hand_execution` lineage.
+5. Downstream readiness uses only accepted `artifact_ref`.
+6. Legacy `artifact` cannot unlock dependency or completion.
+7. All run terminal transitions pass through `evaluating` and evaluator gate.
+8. Work item intake creates stable deduped `work_items` and run attempt refs.
+9. Tool proxy policy blocks raw credential context/envelope/callback paths.
+10. Recovery creates `recovery_decision` before retry/requeue/reprovision.
+11. Read models expose work item, brain intent, hand execution, artifact refs, evaluator result, policy violations, and recovery lineage.
+12. Existing whole-workflow submit remains only as explicitly deprecated compatibility path or tests fixture; managed runtime does not depend on it.
