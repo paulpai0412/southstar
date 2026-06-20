@@ -90,6 +90,65 @@ test("completed run trigger synthesizes Knowledge Cards once and records batch a
   });
 });
 
+test("completed run trigger creates a new synthesis batch after recovery appends a later terminal evaluation", async () => {
+  await withDb(async (db) => {
+    await createWorkflowRunPg(db, {
+      id: "run-card-trigger-recovery",
+      status: "failed",
+      domain: "software",
+      goalPrompt: "card trigger recovery",
+      workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", workflowId: "wf-card-trigger-recovery", tasks: [] }),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await appendHistoryEventPg(db, {
+      runId: "run-card-trigger-recovery",
+      eventType: "run.completed",
+      actorType: "evaluator",
+      idempotencyKey: "completion-gate:run-card-trigger-recovery:completed:failed-attempt",
+      payload: { status: "failed", findings: ["task failed"] },
+    });
+
+    const first = await triggerRunCompletedKnowledgeCardSynthesis(db, {
+      runId: "run-card-trigger-recovery",
+      actor: "southstar",
+      reason: "run completed failed",
+    });
+    assert.equal(first.triggered, true);
+    assert.deepEqual(first.cardIds, []);
+
+    await recordLearningSignal(db, repairSignal("run-card-trigger-recovery", "eval-1"));
+    await recordLearningSignal(db, repairSignal("run-card-trigger-recovery", "eval-2"));
+    await db.query("update southstar.workflow_runs set status = 'passed', updated_at = now() where id = $1", ["run-card-trigger-recovery"]);
+    await appendHistoryEventPg(db, {
+      runId: "run-card-trigger-recovery",
+      eventType: "run.completed",
+      actorType: "evaluator",
+      idempotencyKey: "completion-gate:run-card-trigger-recovery:completed:passed-attempt",
+      payload: { status: "passed", findings: [] },
+    });
+
+    const second = await triggerRunCompletedKnowledgeCardSynthesis(db, {
+      runId: "run-card-trigger-recovery",
+      actor: "southstar",
+      reason: "run completed after recovery",
+    });
+
+    assert.equal(second.triggered, true);
+    assert.notEqual(second.batchId, first.batchId);
+    assert.equal(second.cardIds.length, 1);
+    const batches = await db.query<{ resource_key: string }>(
+      "select resource_key from southstar.runtime_resources where resource_type = 'knowledge_card_synthesis_batch' and run_id = $1 order by created_at, resource_key",
+      ["run-card-trigger-recovery"],
+    );
+    assert.deepEqual(batches.rows.map((row) => row.resource_key), [first.batchId, second.batchId]);
+    const history = await listHistoryForRunPg(db, "run-card-trigger-recovery");
+    assert.equal(history.filter((event) => event.eventType === "evolution.knowledge_cards_synthesized").length, 2);
+  });
+});
+
 test("invalid card validation and rejection preserve the Knowledge Card node", async () => {
   await withDb(async (db) => {
     assert.equal(validateKnowledgeCard({ topicKey: "missing" }, new Set()).ok, false);

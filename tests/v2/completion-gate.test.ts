@@ -58,6 +58,43 @@ test("completion gate records evaluating_started before completed idempotently",
   }
 });
 
+test("completion gate records a new immutable terminal event after recovery re-evaluates to passed", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRun(db, "run-gate-recovery-pass");
+    await seedTask(db, "run-gate-recovery-pass", "task-a", "failed", 0);
+
+    const failed = await evaluateRunCompletionGatePg(db, { runId: "run-gate-recovery-pass" });
+    assert.deepEqual(failed, {
+      runId: "run-gate-recovery-pass",
+      status: "failed",
+      findings: ["task task-a terminal status is failed"],
+    });
+
+    await db.query(
+      "update southstar.workflow_tasks set status = 'completed', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
+      ["run-gate-recovery-pass", "task-a"],
+    );
+    await acceptArtifactRef(db, "run-gate-recovery-pass", "task-a");
+
+    const passed = await evaluateRunCompletionGatePg(db, { runId: "run-gate-recovery-pass" });
+
+    assert.deepEqual(passed, { runId: "run-gate-recovery-pass", status: "passed", findings: [] });
+    const run = await runStatus(db, "run-gate-recovery-pass");
+    assert.equal(run.status, "passed");
+    const evaluator = await evaluatorResult(db, "run-gate-recovery-pass");
+    assert.equal(evaluator.status, "passed");
+    assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
+    const completedEvents = (await listHistoryForRunPg(db, "run-gate-recovery-pass"))
+      .filter((event) => event.eventType === "run.completed");
+    assert.equal(completedEvents.length, 2);
+    assert.deepEqual(completedEvents.map((event) => (event.payload as { status?: string }).status), ["failed", "passed"]);
+    assert.notEqual(completedEvents[0]?.idempotencyKey, completedEvents[1]?.idempotencyKey);
+  } finally {
+    await db.close();
+  }
+});
+
 test("completion gate does not set completed_at while tasks are not ready for final evaluation", async () => {
   const db = await createTestPostgresDb();
   try {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import {
@@ -38,25 +39,18 @@ export async function evaluateRunCompletionGatePg(
       return { runId: input.runId, status: "not_ready", findings: ["tasks are not terminal"] };
     }
 
-    await updateWorkflowRunStatusPg(tx, input.runId, "evaluating");
-    await appendHistoryEventOncePg(tx, {
-      runId: input.runId,
-      eventType: "run.evaluating_started",
-      actorType: "evaluator",
-      idempotencyKey: `completion-gate:${input.runId}:evaluating_started`,
-      payload: {},
-    });
-
-    const acceptedArtifactRefs = new Set((await tx.query<{ task_id: string }>(
+    const acceptedArtifactRefRows = (await tx.query<{ task_id: string; resource_key: string }>(
       `select distinct task_id
+            , resource_key
          from southstar.runtime_resources
         where run_id = $1
           and task_id is not null
           and resource_type = $2
           and status = 'accepted'
-        order by task_id`,
+        order by task_id, resource_key`,
       [input.runId, ARTIFACT_REF_RESOURCE_TYPE],
-    )).rows.map((row) => row.task_id));
+    )).rows;
+    const acceptedArtifactRefs = new Set(acceptedArtifactRefRows.map((row) => row.task_id));
 
     const findings: string[] = [];
     for (const task of tasks) {
@@ -81,6 +75,23 @@ export async function evaluateRunCompletionGatePg(
     }
 
     const status = findings.length === 0 ? "passed" : "failed";
+    const evaluationFingerprint = shortHash(stableStringify({
+      tasks,
+      acceptedArtifactRefs: acceptedArtifactRefRows,
+      blockingViolations,
+      status,
+      findings,
+    }));
+
+    await updateWorkflowRunStatusPg(tx, input.runId, "evaluating");
+    await appendHistoryEventOncePg(tx, {
+      runId: input.runId,
+      eventType: "run.evaluating_started",
+      actorType: "evaluator",
+      idempotencyKey: `completion-gate:${input.runId}:evaluating_started:${evaluationFingerprint}`,
+      payload: {},
+    });
+
     await upsertRuntimeResourcePg(tx, {
       id: `completion-gate:${input.runId}`,
       resourceType: "evaluator_result",
@@ -98,7 +109,7 @@ export async function evaluateRunCompletionGatePg(
       runId: input.runId,
       eventType: "run.completed",
       actorType: "evaluator",
-      idempotencyKey: `completion-gate:${input.runId}:completed`,
+      idempotencyKey: `completion-gate:${input.runId}:completed:${evaluationFingerprint}`,
       payload: { status, findings },
     });
 
@@ -125,4 +136,16 @@ async function appendHistoryEventOncePg(
   if (existing) return;
 
   await appendHistoryEventPg(db, input);
+}
+
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => `${JSON.stringify(key)}:${stableStringify(child)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

@@ -49,7 +49,11 @@ export async function triggerRunCompletedKnowledgeCardSynthesis(
   db: SouthstarDb,
   input: { runId: string; actor: string; reason: string },
 ): Promise<{ triggered: boolean; cardIds: string[]; batchId: string }> {
-  const batchId = `knowledge-card-synthesis-${input.runId}`;
+  const completed = await latestCompletedRunEvaluation(db, input.runId);
+  if (!completed) throw new Error(`run is not completed: ${input.runId}`);
+  const batchId = completed.completedCount === 1
+    ? `knowledge-card-synthesis-${input.runId}`
+    : `knowledge-card-synthesis-${input.runId}:${hash(completed.versionKey)}`;
   const existing = await db.maybeOne<{ payload_json: { cardIds?: unknown } }>(
     "select payload_json from southstar.runtime_resources where resource_type = 'knowledge_card_synthesis_batch' and resource_key = $1",
     [batchId],
@@ -60,16 +64,6 @@ export async function triggerRunCompletedKnowledgeCardSynthesis(
       : [];
     return { triggered: false, cardIds, batchId };
   }
-
-  const completed = await db.maybeOne<{ status: string }>(
-    `select r.status
-     from southstar.workflow_runs r
-     where r.id = $1
-       and r.status in ('passed', 'completed', 'failed', 'cancelled')
-       and exists (select 1 from southstar.workflow_history h where h.run_id = r.id and h.event_type = 'run.completed')`,
-    [input.runId],
-  );
-  if (!completed) throw new Error(`run is not completed: ${input.runId}`);
 
   const synthesized = await synthesizeKnowledgeCards(db, { actor: input.actor, reason: input.reason, runId: input.runId });
   await upsertRuntimeResourcePg(db, {
@@ -88,9 +82,38 @@ export async function triggerRunCompletedKnowledgeCardSynthesis(
     eventType: "evolution.knowledge_cards_synthesized",
     actorType: "southstar-evolution",
     idempotencyKey: batchId,
-    payload: { batchId, cardIds: synthesized.cardIds, reason: input.reason },
+    payload: { batchId, cardIds: synthesized.cardIds, reason: input.reason, completionEventId: completed.id },
   });
   return { triggered: true, cardIds: synthesized.cardIds, batchId };
+}
+
+async function latestCompletedRunEvaluation(
+  db: SouthstarDb,
+  runId: string,
+): Promise<{ id: string; versionKey: string; completedCount: number } | null> {
+  const row = await db.maybeOne<{
+    id: string;
+    sequence: number;
+    idempotency_key: string | null;
+    completed_count: string;
+  }>(
+    `select h.id, h.sequence, h.idempotency_key,
+            count(*) over () as completed_count
+       from southstar.workflow_runs r
+       join southstar.workflow_history h on h.run_id = r.id
+      where r.id = $1
+        and r.status in ('passed', 'completed', 'failed', 'cancelled')
+        and h.event_type = 'run.completed'
+      order by h.sequence desc
+      limit 1`,
+    [runId],
+  );
+  if (!row) return null;
+  return {
+    id: row.id,
+    versionKey: row.idempotency_key ?? `sequence:${row.sequence}`,
+    completedCount: Number(row.completed_count),
+  };
 }
 
 export function validateKnowledgeCard(value: unknown, evidenceNodeIds: Set<string>): CardValidationResult {

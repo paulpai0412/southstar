@@ -1,4 +1,5 @@
 import { evaluateApprovalPolicy } from "../approvals/policy.ts";
+import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { createExecutorBindingPg, getExecutorBindingPg, listExecutorBindingsForRunPg, updateExecutorBindingStatusPg } from "../executor/postgres-bindings.ts";
 import { dispatchPostgresRunExecutionPg } from "../executor/postgres-run-dispatcher.ts";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
@@ -180,7 +181,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       const runId = decodeURIComponent(resourceMatch[1]!);
       const kind = resourceMatch[2]!;
       if (kind === "logs") return json("logs", await listHistoryForRunPg(context.db, runId));
-      const resourceTypes = kind === "artifacts" ? ["artifact"] : kind === "sessions" ? ["session"] : ["memory_item", "memory_delta"];
+      const resourceTypes = kind === "artifacts" ? ["artifact", ARTIFACT_REF_RESOURCE_TYPE] : kind === "sessions" ? ["session"] : ["memory_item", "memory_delta"];
       const resources = (await Promise.all(resourceTypes.map((resourceType) => listResourcesPg(context.db, { resourceType })))).flat().filter((resource) => resource.runId === runId);
       return json(kind, resources);
     }
