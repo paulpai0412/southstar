@@ -167,6 +167,24 @@ test("SessionStore slices events by anchor, task, correlation, artifact ref, and
       correlationId: "corr-b",
       payload: { artifactRefs: ["artifact-c"] },
     });
+    await store.emitEvent({
+      eventType: "artifact.rejected",
+      actorType: "evaluator",
+      runId: "run-session-1",
+      taskId: "task-c",
+      sessionId: "session-1",
+      correlationId: "corr-c",
+      payload: { artifactRef: "artifact-b-copy", note: "contains artifact-b as text only" },
+    });
+    await store.emitEvent({
+      eventType: "artifact.accepted",
+      actorType: "evaluator",
+      runId: "run-session-1",
+      taskId: "task-d",
+      sessionId: "session-1",
+      correlationId: "corr-d",
+      payload: { artifact: { id: "artifact-b" } },
+    });
 
     const around = await store.getEvents("session-1", { aroundEventId: anchor.id, windowBefore: 1, windowAfter: 1 });
     assert.deepEqual(around.map((event) => event.eventType), ["session.created", "artifact.created", "artifact.accepted"]);
@@ -175,7 +193,10 @@ test("SessionStore slices events by anchor, task, correlation, artifact ref, and
     assert.deepEqual(taskAndCorrelation.map((event) => event.eventType), ["artifact.created", "artifact.accepted"]);
 
     const artifact = await store.getEvents("session-1", { artifactRef: "artifact-b" });
-    assert.deepEqual(artifact.map((event) => event.eventType), ["artifact.created"]);
+    assert.deepEqual(artifact.map((event) => event.payload), [
+      { artifactRefs: ["artifact-b"] },
+      { artifact: { id: "artifact-b" } },
+    ]);
 
     const limited = await store.getEvents("session-1", { limit: 2 });
     assert.deepEqual(limited.map((event) => event.eventType), ["session.created", "artifact.created"]);

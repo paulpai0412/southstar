@@ -81,7 +81,7 @@ export function createPostgresSessionStore(db: SouthstarDb): SessionStore {
       }
       if (query.artifactRef) {
         params.push(query.artifactRef);
-        filters.push(`payload_json::text like '%' || $${params.length} || '%'`);
+        filters.push(artifactRefPredicate(params.length));
       }
 
       const limit = query.limit && query.limit > 0 ? query.limit : undefined;
@@ -149,6 +149,26 @@ export function createPostgresSessionStore(db: SouthstarDb): SessionStore {
       return row ? mapCheckpoint(row) : null;
     },
   };
+}
+
+function artifactRefPredicate(paramIndex: number): string {
+  return `(
+    payload_json @> jsonb_build_object('artifactRef', $${paramIndex}::text)
+    or payload_json @> jsonb_build_object('artifactRefs', jsonb_build_array($${paramIndex}::text))
+    or payload_json @> jsonb_build_object('artifact', jsonb_build_object('ref', $${paramIndex}::text))
+    or payload_json @> jsonb_build_object('artifact', jsonb_build_object('id', $${paramIndex}::text))
+    or exists (
+      select 1
+        from jsonb_array_elements(
+          case
+            when jsonb_typeof(payload_json->'artifacts') = 'array' then payload_json->'artifacts'
+            else '[]'::jsonb
+          end
+        ) elem
+       where elem @> jsonb_build_object('ref', $${paramIndex}::text)
+          or elem @> jsonb_build_object('id', $${paramIndex}::text)
+    )
+  )`;
 }
 
 async function appendIdempotentCheckpointHistoryEvent(
