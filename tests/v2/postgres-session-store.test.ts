@@ -114,15 +114,18 @@ test("SessionStore reuses checkpoint id and history idempotency for repeated res
       resourceKey: "checkpoint-key-1",
       checkpointType: "operator",
       summary: "operator checkpoint retry",
-      eventRange: { fromSequence: 1, toSequence: 1 },
+      eventRange: { fromSequence: 1, toSequence: 99 },
       refs: {},
       metrics: { tokenEstimate: 150 },
     });
 
     assert.equal(second.id, first.id);
+    assert.equal(second.summary, "operator checkpoint");
+    assert.deepEqual(second.eventRange, { fromSequence: 1, toSequence: 1 });
     const loadedByKey = await store.getCheckpoint("checkpoint-key-1");
     assert.equal(loadedByKey?.id, first.id);
-    assert.equal(loadedByKey?.summary, "operator checkpoint retry");
+    assert.equal(loadedByKey?.summary, "operator checkpoint");
+    assert.deepEqual(loadedByKey?.eventRange, { fromSequence: 1, toSequence: 1 });
 
     const rows = await db.query<{ id: string; idempotency_key: string | null; payload_json: { checkpointId?: string } }>(
       "select id, idempotency_key, payload_json from southstar.workflow_history where event_type = 'checkpoint.created' order by sequence",

@@ -12,6 +12,7 @@ export type ProvisionHandInput = {
   taskId: string;
   handName: string;
   resources: Record<string, unknown>;
+  recoveryKey?: string;
 };
 
 export type HandBinding = {

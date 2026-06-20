@@ -18,6 +18,7 @@ export function createPiBrainProvider(input: { providerId?: string } = {}): Brai
         payload: {
           adapter: "pi",
           contextPacketId: wakeInput.contextPacketId,
+          ...(wakeInput.recoveryKey ? { recoveryKey: wakeInput.recoveryKey } : {}),
           note: "Pi SDK execution remains delegated through existing task envelope and harness path until scheduler dispatch is wired.",
         },
       };

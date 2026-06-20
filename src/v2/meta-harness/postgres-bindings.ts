@@ -45,3 +45,29 @@ export async function listManagedBindingsForRunPg(
     handBindings: hand.filter((item) => item.runId === runId).map((item) => item.payload as HandBinding),
   };
 }
+
+export async function getBrainBindingByRecoveryKeyPg(db: SouthstarDb, recoveryKey: string): Promise<BrainSessionBinding | null> {
+  const row = await db.maybeOne<{ payload_json: unknown }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where resource_type = 'brain_binding'
+        and payload_json @> $1::jsonb
+      order by created_at
+      limit 1`,
+    [JSON.stringify({ payload: { recoveryKey } })],
+  );
+  return row ? row.payload_json as BrainSessionBinding : null;
+}
+
+export async function getHandBindingByRecoveryKeyPg(db: SouthstarDb, recoveryKey: string): Promise<HandBinding | null> {
+  const row = await db.maybeOne<{ payload_json: unknown }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where resource_type = 'hand_binding'
+        and payload_json @> $1::jsonb
+      order by created_at
+      limit 1`,
+    [JSON.stringify({ payload: { recoveryKey } })],
+  );
+  return row ? row.payload_json as HandBinding : null;
+}

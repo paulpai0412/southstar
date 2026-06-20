@@ -169,6 +169,80 @@ test("Postgres recovery controller is idempotent for the same recovery request",
   }
 });
 
+test("Postgres recovery controller resumes persisted binding after execution submission failure", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRunTask(db, "run-recovery-controller-partial", "task-1", "session-1");
+    const sessionStore = createPostgresSessionStore(db);
+    await sessionStore.emitEvent({
+      eventType: "session.created",
+      actorType: "orchestrator",
+      runId: "run-recovery-controller-partial",
+      taskId: "task-1",
+      sessionId: "session-1",
+      payload: { reason: "test" },
+    });
+    let wakeCount = 0;
+    let failExecutionSubmitOnce = true;
+    const brainProvider = createFakeBrainProvider({ providerId: "fake-brain" });
+    const flakySessionStore: typeof sessionStore = {
+      ...sessionStore,
+      async emitEvent(event) {
+        if (event.eventType === "recovery.execution_submitted" && failExecutionSubmitOnce) {
+          failExecutionSubmitOnce = false;
+          throw new Error("lost connection after binding persisted");
+        }
+        return sessionStore.emitEvent(event);
+      },
+    };
+    const controller = createPostgresRecoveryController({
+      db,
+      sessionStore: flakySessionStore,
+      brainProvider: {
+        ...brainProvider,
+        async wake(input) {
+          wakeCount += 1;
+          return brainProvider.wake(input);
+        },
+      },
+      handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
+    });
+    const input = {
+      runId: "run-recovery-controller-partial",
+      taskId: "task-1",
+      sessionId: "session-1",
+      strategy: "wake-new-brain" as const,
+      reason: "execution emit fails after binding",
+      contextPacketId: "ctx-partial",
+    };
+
+    await assert.rejects(() => controller.recover(input), /lost connection after binding persisted/);
+
+    const partialDecisions = await listResourcesPg(db, { resourceType: "recovery_decision" });
+    const partialPayload = partialDecisions[0]?.payload as { brainBindingId?: string; executionEventId?: string };
+    assert.match(partialPayload.brainBindingId ?? "", /^brain-/);
+    assert.equal(partialPayload.executionEventId, undefined);
+    const partialCheckpoint = (await listResourcesPg(db, { resourceType: "session_checkpoint" }))[0];
+    const partialCheckpointRange = (partialCheckpoint?.payload as { eventRange?: unknown }).eventRange;
+
+    const recovered = await controller.recover(input);
+
+    assert.equal(wakeCount, 1);
+    assert.equal(recovered.brainBindingId, partialPayload.brainBindingId);
+    const bindings = await listManagedBindingsForRunPg(db, "run-recovery-controller-partial");
+    assert.equal(bindings.brainBindings.length, 1);
+    assert.equal(bindings.brainBindings[0]?.payload.recoveryKey, (partialDecisions[0]?.payload as { recoveryKey?: string }).recoveryKey);
+    const history = await listHistoryForRunPg(db, "run-recovery-controller-partial");
+    assert.equal(history.filter((event) => event.eventType === "recovery.execution_submitted").length, 1);
+    const decisions = await listResourcesPg(db, { resourceType: "recovery_decision" });
+    assert.equal((decisions[0]?.payload as { executionEventId?: string }).executionEventId, recovered.executionEventId);
+    const recoveredCheckpoint = (await listResourcesPg(db, { resourceType: "session_checkpoint" }))[0];
+    assert.deepEqual((recoveredCheckpoint?.payload as { eventRange?: unknown }).eventRange, partialCheckpointRange);
+  } finally {
+    await db.close();
+  }
+});
+
 test("Postgres recovery controller records provider failure durably", async () => {
   const db = await createTestPostgresDb();
   try {

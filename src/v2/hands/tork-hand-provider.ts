@@ -20,7 +20,10 @@ export function createTorkHandProvider(input: {
         handName: provisionInput.handName,
         status: "provisioned",
         createdAt: new Date().toISOString(),
-        payload: { resourceKeys: Object.keys(provisionInput.resources).sort() },
+        payload: {
+          resourceKeys: Object.keys(provisionInput.resources).sort(),
+          ...(provisionInput.recoveryKey ? { recoveryKey: provisionInput.recoveryKey } : {}),
+        },
       };
     },
     async execute(binding: HandBinding, call: HandCall): Promise<HandResult> {

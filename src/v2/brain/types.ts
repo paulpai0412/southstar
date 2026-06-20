@@ -12,6 +12,7 @@ export type WakeBrainInput = {
   taskId: string;
   sessionId: string;
   contextPacketId: string;
+  recoveryKey?: string;
   effortPolicy: {
     complexity: "simple" | "standard" | "broad" | "deep";
     maxToolCallsPerTask: number;

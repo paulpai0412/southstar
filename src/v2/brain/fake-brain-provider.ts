@@ -15,7 +15,10 @@ export function createFakeBrainProvider(input: { providerId: string; failWake?: 
         contextPacketId: wakeInput.contextPacketId,
         status: "running",
         createdAt: new Date().toISOString(),
-        payload: { effortPolicy: wakeInput.effortPolicy },
+        payload: {
+          effortPolicy: wakeInput.effortPolicy,
+          ...(wakeInput.recoveryKey ? { recoveryKey: wakeInput.recoveryKey } : {}),
+        },
       };
     },
     async cancel(binding: BrainSessionBinding): Promise<void> {

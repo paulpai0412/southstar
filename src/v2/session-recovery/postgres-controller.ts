@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import type { HandProvider } from "../hands/types.ts";
-import { persistBrainBindingPg, persistHandBindingPg } from "../meta-harness/postgres-bindings.ts";
+import {
+  getBrainBindingByRecoveryKeyPg,
+  getHandBindingByRecoveryKeyPg,
+  persistBrainBindingPg,
+  persistHandBindingPg,
+} from "../meta-harness/postgres-bindings.ts";
 import type { SessionStore } from "../session/types.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 
@@ -89,12 +94,8 @@ export function createPostgresRecoveryController(deps: PostgresRecoveryControlle
         summary: { strategy: input.strategy, reason: input.reason },
       });
 
-      await deps.sessionStore.emitEvent({
+      await emitIdempotentRecoveryEvent(deps, input, {
         eventType: "recovery.decision_recorded",
-        actorType: "orchestrator",
-        runId: input.runId,
-        taskId: input.taskId,
-        sessionId: input.sessionId,
         idempotencyKey: `${recoveryKey}:decision-recorded`,
         payload: { recoveryDecisionId, recoveryKey, strategy: input.strategy, reason: input.reason, status: "recorded" },
       });
@@ -115,15 +116,24 @@ export function createPostgresRecoveryController(deps: PostgresRecoveryControlle
         metrics: { strategy: input.strategy },
       });
 
-      let brainBindingId: string | undefined;
-      let handBindingId: string | undefined;
+      const existingPayload = asRecord(existing?.payload);
+      let brainBindingId = stringValue(existingPayload.brainBindingId);
+      let handBindingId = stringValue(existingPayload.handBindingId);
+
+      if (isBrainStrategy(input.strategy) && !brainBindingId) {
+        brainBindingId = (await getBrainBindingByRecoveryKeyPg(deps.db, recoveryKey))?.id;
+      }
+      if (isHandStrategy(input.strategy) && !handBindingId) {
+        handBindingId = (await getHandBindingByRecoveryKeyPg(deps.db, recoveryKey))?.id;
+      }
+
       try {
-        brainBindingId = isBrainStrategy(input.strategy)
-          ? await wakeAndPersistBrain(deps, input, checkpoint.id)
-          : undefined;
-        handBindingId = isHandStrategy(input.strategy)
-          ? await provisionAndPersistHand(deps, input)
-          : undefined;
+        brainBindingId = isBrainStrategy(input.strategy) && !brainBindingId
+          ? await wakeAndPersistBrain(deps, input, checkpoint.id, recoveryKey)
+          : brainBindingId;
+        handBindingId = isHandStrategy(input.strategy) && !handBindingId
+          ? await provisionAndPersistHand(deps, input, recoveryKey)
+          : handBindingId;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         await recordRecoveryFailure(deps, input, {
@@ -135,12 +145,15 @@ export function createPostgresRecoveryController(deps: PostgresRecoveryControlle
         throw error;
       }
 
-      const executionEvent = await deps.sessionStore.emitEvent({
-        eventType: "recovery.execution_submitted",
-        actorType: "orchestrator",
-        runId: input.runId,
-        taskId: input.taskId,
-        sessionId: input.sessionId,
+      await recordRecoveryProgress(deps, input, {
+        recoveryDecisionId,
+        recoveryKey,
+        checkpointId: checkpoint.id,
+        brainBindingId,
+        handBindingId,
+      });
+
+      const executionEvent = await emitRecoveryExecutionSubmitted(deps, input, {
         idempotencyKey: `${recoveryKey}:execution-submitted`,
         payload: {
           recoveryDecisionId,
@@ -152,31 +165,13 @@ export function createPostgresRecoveryController(deps: PostgresRecoveryControlle
         },
       });
 
-      await upsertRuntimeResourcePg(deps.db, {
-        id: recoveryDecisionId,
-        resourceType: "recovery_decision",
-        resourceKey: recoveryKey,
-        runId: input.runId,
-        taskId: input.taskId,
-        sessionId: input.sessionId,
-        scope: "recovery",
-        status: "recorded",
-        title: `Recovery decision: ${input.strategy}`,
-        payload: {
-          schemaVersion: "southstar.managed-recovery-decision.v1",
-          recoveryDecisionId,
-          recoveryKey,
-          runId: input.runId,
-          taskId: input.taskId,
-          sessionId: input.sessionId,
-          strategy: input.strategy,
-          reason: input.reason,
-          beforeRecoveryCheckpointId: checkpoint.id,
-          brainBindingId,
-          handBindingId,
-          executionEventId: executionEvent.id,
-        },
-        summary: { strategy: input.strategy, reason: input.reason, brainBindingId, handBindingId },
+      await recordRecoverySuccess(deps, input, {
+        recoveryDecisionId,
+        recoveryKey,
+        checkpointId: checkpoint.id,
+        brainBindingId,
+        handBindingId,
+        executionEventId: executionEvent.id,
       });
 
       return {
@@ -206,12 +201,14 @@ async function wakeAndPersistBrain(
   deps: PostgresRecoveryControllerDeps,
   input: ManagedRecoveryInput,
   checkpointId: string,
+  recoveryKey: string,
 ): Promise<string> {
   const binding = await deps.brainProvider.wake({
     runId: input.runId,
     taskId: input.taskId,
     sessionId: input.sessionId,
     contextPacketId: input.contextPacketId ?? checkpointId,
+    recoveryKey,
     effortPolicy: input.effortPolicy ?? { complexity: "standard", maxToolCallsPerTask: 100 },
   });
   await persistBrainBindingPg(deps.db, binding);
@@ -221,15 +218,158 @@ async function wakeAndPersistBrain(
 async function provisionAndPersistHand(
   deps: PostgresRecoveryControllerDeps,
   input: ManagedRecoveryInput,
+  recoveryKey: string,
 ): Promise<string> {
   const binding = await deps.handProvider.provision({
     runId: input.runId,
     taskId: input.taskId,
     handName: input.handName ?? "workspace",
     resources: input.handResources ?? {},
+    recoveryKey,
   });
   await persistHandBindingPg(deps.db, binding);
   return binding.id;
+}
+
+async function recordRecoveryProgress(
+  deps: PostgresRecoveryControllerDeps,
+  input: ManagedRecoveryInput,
+  progress: {
+    recoveryDecisionId: string;
+    recoveryKey: string;
+    checkpointId: string;
+    brainBindingId?: string;
+    handBindingId?: string;
+  },
+): Promise<void> {
+  await upsertRuntimeResourcePg(deps.db, {
+    id: progress.recoveryDecisionId,
+    resourceType: "recovery_decision",
+    resourceKey: progress.recoveryKey,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    scope: "recovery",
+    status: "recorded",
+    title: `Recovery decision: ${input.strategy}`,
+    payload: recoveryDecisionPayload(input, progress),
+    summary: {
+      strategy: input.strategy,
+      reason: input.reason,
+      brainBindingId: progress.brainBindingId,
+      handBindingId: progress.handBindingId,
+    },
+  });
+}
+
+async function recordRecoverySuccess(
+  deps: PostgresRecoveryControllerDeps,
+  input: ManagedRecoveryInput,
+  result: {
+    recoveryDecisionId: string;
+    recoveryKey: string;
+    checkpointId: string;
+    brainBindingId?: string;
+    handBindingId?: string;
+    executionEventId: string;
+  },
+): Promise<void> {
+  await upsertRuntimeResourcePg(deps.db, {
+    id: result.recoveryDecisionId,
+    resourceType: "recovery_decision",
+    resourceKey: result.recoveryKey,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    scope: "recovery",
+    status: "recorded",
+    title: `Recovery decision: ${input.strategy}`,
+    payload: recoveryDecisionPayload(input, result),
+    summary: {
+      strategy: input.strategy,
+      reason: input.reason,
+      brainBindingId: result.brainBindingId,
+      handBindingId: result.handBindingId,
+    },
+  });
+}
+
+function recoveryDecisionPayload(
+  input: ManagedRecoveryInput,
+  state: {
+    recoveryDecisionId: string;
+    recoveryKey: string;
+    checkpointId: string;
+    brainBindingId?: string;
+    handBindingId?: string;
+    executionEventId?: string;
+  },
+): Record<string, unknown> {
+  return {
+    schemaVersion: "southstar.managed-recovery-decision.v1",
+    recoveryDecisionId: state.recoveryDecisionId,
+    recoveryKey: state.recoveryKey,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    strategy: input.strategy,
+    reason: input.reason,
+    beforeRecoveryCheckpointId: state.checkpointId,
+    brainBindingId: state.brainBindingId,
+    handBindingId: state.handBindingId,
+    ...(state.executionEventId ? { executionEventId: state.executionEventId } : {}),
+  };
+}
+
+async function emitRecoveryExecutionSubmitted(
+  deps: PostgresRecoveryControllerDeps,
+  input: ManagedRecoveryInput,
+  event: {
+    idempotencyKey: string;
+    payload: Record<string, unknown>;
+  },
+): Promise<{ id: string }> {
+  return emitIdempotentRecoveryEvent(deps, input, {
+    eventType: "recovery.execution_submitted",
+    idempotencyKey: event.idempotencyKey,
+    payload: event.payload,
+  });
+}
+
+async function emitIdempotentRecoveryEvent(
+  deps: PostgresRecoveryControllerDeps,
+  input: ManagedRecoveryInput,
+  event: {
+    eventType: "recovery.decision_recorded" | "recovery.execution_submitted";
+    idempotencyKey: string;
+    payload: Record<string, unknown>;
+  },
+): Promise<{ id: string }> {
+  const existing = await getHistoryEventIdByIdempotencyKey(deps.db, input.runId, event.idempotencyKey);
+  if (existing) return { id: existing };
+  try {
+    return await deps.sessionStore.emitEvent({
+      eventType: event.eventType,
+      actorType: "orchestrator",
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      idempotencyKey: event.idempotencyKey,
+      payload: event.payload,
+    });
+  } catch (error) {
+    const inserted = await getHistoryEventIdByIdempotencyKey(deps.db, input.runId, event.idempotencyKey);
+    if (inserted) return { id: inserted };
+    throw error;
+  }
+}
+
+async function getHistoryEventIdByIdempotencyKey(db: SouthstarDb, runId: string, idempotencyKey: string): Promise<string | null> {
+  const row = await db.maybeOne<{ id: string }>(
+    "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+    [runId, idempotencyKey],
+  );
+  return row?.id ?? null;
 }
 
 async function recordRecoveryFailure(
@@ -340,4 +480,8 @@ function resultFromDecisionPayload(value: unknown): ManagedRecoveryResult | null
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }

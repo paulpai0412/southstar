@@ -103,6 +103,23 @@ export function createPostgresSessionStore(db: SouthstarDb): SessionStore {
         const resourceKey = input.resourceKey ?? input.id ?? randomUUID();
         const existing = await loadCheckpointRow(tx, resourceKey);
         const id = existing?.id ?? input.id ?? resourceKey;
+        if (existing) {
+          const checkpoint = mapCheckpoint(existing);
+          await appendIdempotentCheckpointHistoryEvent(tx, {
+            runId: input.runId,
+            taskId: input.taskId,
+            sessionId: input.sessionId,
+            idempotencyKey: `checkpoint:${resourceKey}`,
+            payload: {
+              checkpointId: checkpoint.id,
+              checkpointResourceKey: resourceKey,
+              checkpointType: checkpoint.checkpointType,
+              eventRange: checkpoint.eventRange,
+              refs: checkpoint.refs,
+            },
+          });
+          return checkpoint;
+        }
         const payload = {
           id,
           resourceKey,
