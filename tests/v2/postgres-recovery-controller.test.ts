@@ -117,6 +117,141 @@ test("Postgres recovery controller reprovision-hand strategy persists a hand bin
   }
 });
 
+test("Postgres recovery controller is idempotent for the same recovery request", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRunTask(db, "run-recovery-controller-idempotent", "task-1", "session-1");
+    const sessionStore = createPostgresSessionStore(db);
+    await sessionStore.emitEvent({
+      eventType: "session.created",
+      actorType: "orchestrator",
+      runId: "run-recovery-controller-idempotent",
+      taskId: "task-1",
+      sessionId: "session-1",
+      payload: { reason: "test" },
+    });
+    let wakeCount = 0;
+    const brainProvider = createFakeBrainProvider({ providerId: "fake-brain" });
+    const controller = createPostgresRecoveryController({
+      db,
+      sessionStore,
+      brainProvider: {
+        ...brainProvider,
+        async wake(input) {
+          wakeCount += 1;
+          return brainProvider.wake(input);
+        },
+      },
+      handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
+    });
+    const input = {
+      runId: "run-recovery-controller-idempotent",
+      taskId: "task-1",
+      sessionId: "session-1",
+      strategy: "wake-new-brain" as const,
+      reason: "same failure",
+      contextPacketId: "ctx-idempotent",
+    };
+
+    const first = await controller.recover(input);
+    const second = await controller.recover(input);
+
+    assert.equal(second.recoveryDecisionId, first.recoveryDecisionId);
+    assert.equal(second.beforeRecoveryCheckpointId, first.beforeRecoveryCheckpointId);
+    assert.equal(second.brainBindingId, first.brainBindingId);
+    assert.equal(wakeCount, 1);
+    const decisions = await listResourcesPg(db, { resourceType: "recovery_decision" });
+    const bindings = await listManagedBindingsForRunPg(db, "run-recovery-controller-idempotent");
+    assert.equal(decisions.length, 1);
+    assert.equal(bindings.brainBindings.length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("Postgres recovery controller records provider failure durably", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRunTask(db, "run-recovery-controller-failure", "task-1", "session-1");
+    const sessionStore = createPostgresSessionStore(db);
+    await sessionStore.emitEvent({
+      eventType: "session.created",
+      actorType: "orchestrator",
+      runId: "run-recovery-controller-failure",
+      taskId: "task-1",
+      sessionId: "session-1",
+      payload: { reason: "test" },
+    });
+    const controller = createPostgresRecoveryController({
+      db,
+      sessionStore,
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain", failWake: true }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
+    });
+
+    await assert.rejects(
+      () =>
+        controller.recover({
+          runId: "run-recovery-controller-failure",
+          taskId: "task-1",
+          sessionId: "session-1",
+          strategy: "wake-new-brain",
+          reason: "brain wake fails",
+          contextPacketId: "ctx-failure",
+        }),
+      /fake brain wake failed: fake-brain/,
+    );
+
+    const decisions = await listResourcesPg(db, { resourceType: "recovery_decision" });
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]?.status, "failed");
+    assert.match(JSON.stringify(decisions[0]?.payload), /fake brain wake failed/);
+    const history = await listHistoryForRunPg(db, "run-recovery-controller-failure");
+    assert.equal(history.some((event) => event.eventType === "recovery.execution_submitted"), false);
+    assert.equal(history.some((event) => event.eventType === "recovery.decision_recorded" && (event.payload as { status?: string }).status === "failed"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("Postgres recovery controller rejects unsupported host-native rewind", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRunTask(db, "run-recovery-controller-rewind", "task-1", "session-1");
+    const sessionStore = createPostgresSessionStore(db);
+    await sessionStore.emitEvent({
+      eventType: "session.created",
+      actorType: "orchestrator",
+      runId: "run-recovery-controller-rewind",
+      taskId: "task-1",
+      sessionId: "session-1",
+      payload: { reason: "test" },
+    });
+    const controller = createPostgresRecoveryController({
+      db,
+      sessionStore,
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
+    });
+
+    await assert.rejects(
+      () =>
+        controller.recover({
+          runId: "run-recovery-controller-rewind",
+          taskId: "task-1",
+          sessionId: "session-1",
+          strategy: "host-native-rewind",
+          reason: "host rewind requested",
+        }),
+      /unsupported managed recovery strategy: host-native-rewind/,
+    );
+    const history = await listHistoryForRunPg(db, "run-recovery-controller-rewind");
+    assert.equal(history.some((event) => event.eventType === "recovery.execution_submitted"), false);
+  } finally {
+    await db.close();
+  }
+});
+
 async function seedRunTask(db: TestPostgresDb, runId: string, taskId: string, sessionId: string): Promise<void> {
   await initSouthstarSchema(db);
   await createWorkflowRunPg(db, {
