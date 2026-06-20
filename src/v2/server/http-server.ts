@@ -2,7 +2,7 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage } from "no
 import type { AddressInfo } from "node:net";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { handleRuntimeRoute } from "./routes.ts";
-import { createRuntimeLoopController, type RuntimeLoopController } from "./runtime-loops.ts";
+import { createCompositeRuntimeLoopController, createManagedRuntimeLoopController, createRuntimeLoopController, type RuntimeLoopController } from "./runtime-loops.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 
 export type CreateSouthstarRuntimeServerInput = RuntimeServerContext & {
@@ -20,7 +20,7 @@ export type SouthstarRuntimeServer = {
 export async function createSouthstarRuntimeServer(input: CreateSouthstarRuntimeServerInput): Promise<SouthstarRuntimeServer> {
   const host = input.host ?? "127.0.0.1";
   const context: RuntimeServerContext = { ...input };
-  const reconcileLoop = context.createReconcileLoop?.() ?? createDefaultReconcileLoop(context);
+  const runtimeLoops = createDefaultRuntimeLoops(context);
   const server = createServer(async (incoming, outgoing) => {
     try {
       const request = await toRequest(incoming);
@@ -40,18 +40,28 @@ export async function createSouthstarRuntimeServer(input: CreateSouthstarRuntime
   const port = address.port;
   const url = `http://${host}:${port}`;
   context.serverUrl = url;
-  reconcileLoop?.start();
+  runtimeLoops?.start();
   return {
     host,
     port,
     url,
     close: async () => {
-      await reconcileLoop?.stop();
+      await runtimeLoops?.stop();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });
     },
   };
+}
+
+function createDefaultRuntimeLoops(context: RuntimeServerContext): RuntimeLoopController | undefined {
+  const loops = [
+    context.createReconcileLoop?.() ?? createDefaultReconcileLoop(context),
+    createDefaultManagedRuntimeLoop(context),
+  ].filter((loop): loop is RuntimeLoopController => Boolean(loop));
+  if (loops.length === 0) return undefined;
+  if (loops.length === 1) return loops[0];
+  return createCompositeRuntimeLoopController(loops);
 }
 
 function createDefaultReconcileLoop(context: RuntimeServerContext): RuntimeLoopController | undefined {
@@ -63,6 +73,18 @@ function createDefaultReconcileLoop(context: RuntimeServerContext): RuntimeLoopC
         tork: context.torkObservationClient as NonNullable<RuntimeServerContext["torkObservationClient"]>,
       });
     },
+  });
+}
+
+function createDefaultManagedRuntimeLoop(context: RuntimeServerContext): RuntimeLoopController | undefined {
+  if (!context.managedRuntime) return undefined;
+  return createManagedRuntimeLoopController({
+    db: context.db,
+    sessionStore: context.managedRuntime.sessionStore,
+    brainProvider: context.managedRuntime.brainProvider,
+    handProvider: context.managedRuntime.handProvider,
+    schedulerIntervalMs: context.managedRuntime.schedulerIntervalMs ?? 5_000,
+    recoveryIntervalMs: context.managedRuntime.recoveryIntervalMs ?? 15_000,
   });
 }
 
