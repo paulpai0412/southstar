@@ -25,6 +25,15 @@ export type ContextPacket = {
   budget: BudgetPolicy;
   tokenEstimate: TokenEstimate;
   excludedCandidates: ContextExclusion[];
+  managedSourceRefs?: ManagedContextSourceRefs;
+};
+
+export type ManagedContextSourceRefs = {
+  rawEventRefs: Array<{ id: string; sessionId: string; runId: string; sequence: number }>;
+  omittedEventRanges: Array<{ fromSequence: number; toSequence: number; reason: string }>;
+  transformRefs: Array<{ id: string; kind: "summary" | "filter" | "redaction"; sourceEventIds: string[] }>;
+  checkpointRefs: string[];
+  cacheKey?: string;
 };
 
 export type ContextBlock = {

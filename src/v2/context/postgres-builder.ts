@@ -1,6 +1,7 @@
 import type { SouthstarDb as PostgresSouthstarDb } from "../db/postgres.ts";
 import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
 import { persistKnowledgeCardInjectionTrace, selectKnowledgeCardsForTask } from "../evolution/context-cards.ts";
+import { buildManagedContextSourceRefs } from "./event-slicing.ts";
 import type { ContextBlock, ContextPacket, TokenEstimate } from "./types.ts";
 
 export type BuildContextPacketWithKnowledgeCardsInput = {
@@ -115,6 +116,13 @@ export async function buildContextPacketWithKnowledgeCards(
     tokenEstimate,
     excludedCandidates: [],
   };
+  const managedSourceRefs = buildManagedContextSourceRefs({
+    rawEventRefs: [],
+    omittedEventRanges: [],
+    transformRefs: [],
+    checkpointRefs: [input.checkpointSummary ? `${packet.id}:checkpoint-summary` : undefined].filter((item): item is string => Boolean(item)),
+  });
+  packet.managedSourceRefs = managedSourceRefs;
 
   const refs = await postgresResourcePersistenceRefs(db, input.runId, input.taskId);
   await db.query(
