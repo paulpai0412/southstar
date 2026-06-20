@@ -1,7 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createExecutorBindingPg } from "../../../src/v2/executor/postgres-bindings.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../../src/v2/ui-api/postgres-run-api.ts";
 import {
   createInitializedRealPostgresE2E,
   createRealRuntimeServer,
@@ -17,19 +15,26 @@ test("06 executor reconcile: lost binding produces reconcile finding and operato
   const env = await createInitializedRealPostgresE2E();
   const server = await createRealRuntimeServer({ db: env.db, infra });
   try {
-    const draft = await createPostgresPlannerDraft(env.db, {
-      goalPrompt: "executor reconcile real E2E: classify lost executor binding and record actions",
+    const draft = await api<{ draftId: string }>(server.port, "/api/v2/planner/drafts", {
+      method: "POST",
+      body: JSON.stringify({ goalPrompt: "executor reconcile real E2E: classify lost executor binding and record actions" }),
     });
-    const run = await createPostgresRunFromDraft(env.db, { draftId: draft.draftId });
+    const run = await api<{ runId: string; taskIds: string[] }>(server.port, "/api/v2/runs", {
+      method: "POST",
+      body: JSON.stringify({ draftId: draft.draftId }),
+    });
     const taskId = run.taskIds[0]!;
-    const binding = await createExecutorBindingPg(env.db, {
-      runId: run.runId,
-      taskId,
-      attemptId: "attempt-1",
-      torkJobId: `missing-job-${Date.now().toString(36)}`,
-      status: "running",
-      queueTimeoutSeconds: 120,
-      hardTimeoutSeconds: 900,
+    const binding = await api<{ id: string }>(server.port, "/api/v2/executor/bindings", {
+      method: "POST",
+      body: JSON.stringify({
+        runId: run.runId,
+        taskId,
+        attemptId: "attempt-1",
+        torkJobId: `missing-job-${Date.now().toString(36)}`,
+        status: "running",
+        queueTimeoutSeconds: 120,
+        hardTimeoutSeconds: 900,
+      }),
     });
 
     const reconcile = await api<{ findings: Array<{ bindingId: string; runId: string; taskId: string; classification: string; actions: string[] }> }>(

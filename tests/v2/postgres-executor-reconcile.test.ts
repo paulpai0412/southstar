@@ -59,6 +59,42 @@ test("Postgres executor reconcile route classifies executor drift and records fi
   });
 });
 
+test("Postgres executor bindings route creates a binding through new API", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db);
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const binding = await post<{ id: string; runId: string; taskId: string; status: string; payload: { torkJobId: string; attemptId: string } }>(
+        server.url,
+        "/api/v2/executor/bindings",
+        {
+          runId: "run-reconcile-pg",
+          taskId: "task-1",
+          attemptId: "attempt-2",
+          torkJobId: "job-api-created",
+          status: "queued",
+          queueTimeoutSeconds: 120,
+          hardTimeoutSeconds: 900,
+        },
+      );
+      assert.equal(binding.id, "executor-run-reconcile-pg-task-1-attempt-2");
+      assert.equal(binding.status, "queued");
+      assert.equal(binding.payload.torkJobId, "job-api-created");
+
+      const loaded = await getExecutorBindingPg(db, binding.id);
+      assert.equal(loaded?.payload.torkJobId, "job-api-created");
+      assert.equal(loaded?.status, "queued");
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 async function seedRunTask(db: SouthstarDb): Promise<void> {
   await createWorkflowRunPg(db, {
     id: "run-reconcile-pg",

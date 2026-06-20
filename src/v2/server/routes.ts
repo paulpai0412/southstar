@@ -1,5 +1,5 @@
 import { evaluateApprovalPolicy } from "../approvals/policy.ts";
-import { getExecutorBindingPg, listExecutorBindingsForRunPg, updateExecutorBindingStatusPg } from "../executor/postgres-bindings.ts";
+import { createExecutorBindingPg, getExecutorBindingPg, listExecutorBindingsForRunPg, updateExecutorBindingStatusPg } from "../executor/postgres-bindings.ts";
 import { dispatchPostgresRunExecutionPg } from "../executor/postgres-run-dispatcher.ts";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../executor/postgres-tork-callback.ts";
@@ -252,6 +252,21 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       return json("executor-reconcile", await reconcileExecutorBindingsPg(context.db, { tork: context.torkObservationClient }));
     }
 
+    if (request.method === "POST" && url.pathname === "/api/v2/executor/bindings") {
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      return json("executor-binding", await createExecutorBindingPg(context.db, {
+        runId: requiredString(body.runId, "runId"),
+        taskId: requiredString(body.taskId, "taskId"),
+        attemptId: requiredString(body.attemptId, "attemptId"),
+        torkJobId: requiredString(body.torkJobId, "torkJobId"),
+        torkTaskId: typeof body.torkTaskId === "string" ? body.torkTaskId : undefined,
+        status: parseExecutorBindingStatus(body.status),
+        now: typeof body.now === "string" ? body.now : undefined,
+        queueTimeoutSeconds: numberFromBody(body.queueTimeoutSeconds, "queueTimeoutSeconds"),
+        hardTimeoutSeconds: numberFromBody(body.hardTimeoutSeconds, "hardTimeoutSeconds"),
+      }));
+    }
+
     if (request.method === "GET" && url.pathname === "/api/v2/executor/bindings") {
       const runId = url.searchParams.get("runId");
       if (runId) return json("executor-bindings", await listExecutorBindingsForRunPg(context.db, runId));
@@ -354,6 +369,33 @@ function validateCallbackEvent(event: unknown): PostgresTaskRunCallbackResult["e
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${field} is required`);
   return value;
+}
+
+function numberFromBody(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) throw new Error(`${field} must be a positive number`);
+  return value;
+}
+
+function parseExecutorBindingStatus(value: unknown): "submitted" | "queued" | "starting" | "running" | "heartbeat-lost" | "queue-timeout" | "hard-timeout" | "callback-missing" | "completed" | "failed" | "cancelled" | "lost" | "orphaned" {
+  const allowed = [
+    "submitted",
+    "queued",
+    "starting",
+    "running",
+    "heartbeat-lost",
+    "queue-timeout",
+    "hard-timeout",
+    "callback-missing",
+    "completed",
+    "failed",
+    "cancelled",
+    "lost",
+    "orphaned",
+  ] as const;
+  if (typeof value !== "string" || !allowed.includes(value as typeof allowed[number])) {
+    throw new Error("status must be a supported executor binding status");
+  }
+  return value as typeof allowed[number];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

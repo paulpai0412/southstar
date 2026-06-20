@@ -1,6 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../../src/v2/ui-api/postgres-run-api.ts";
 import {
   createInitializedRealPostgresE2E,
   createRealRuntimeServer,
@@ -16,10 +15,14 @@ test("07 evolution learning: signal -> card -> delta -> wiki lineage is persiste
   const env = await createInitializedRealPostgresE2E();
   const server = await createRealRuntimeServer({ db: env.db, infra });
   try {
-    const draft = await createPostgresPlannerDraft(env.db, {
-      goalPrompt: "evolution learning real E2E: synthesize lessons from repeated artifact repair signals",
+    const draft = await api<{ draftId: string }>(server.port, "/api/v2/planner/drafts", {
+      method: "POST",
+      body: JSON.stringify({ goalPrompt: "evolution learning real E2E: synthesize lessons from repeated artifact repair signals" }),
     });
-    const run = await createPostgresRunFromDraft(env.db, { draftId: draft.draftId });
+    const run = await api<{ runId: string; taskIds: string[] }>(server.port, "/api/v2/runs", {
+      method: "POST",
+      body: JSON.stringify({ draftId: draft.draftId }),
+    });
     const taskId = run.taskIds[0]!;
 
     const signalResult = await api<{ nodeIds: string[] }>(server.port, "/api/v2/evolution/signals", {
