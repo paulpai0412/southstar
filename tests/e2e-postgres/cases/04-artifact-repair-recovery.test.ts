@@ -1,9 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dispatchRecoveryExecutionPg } from "../../../src/v2/session-recovery/postgres-dispatcher.ts";
-import { TorkClient } from "../../../src/v2/executor/tork-client.ts";
-import { TorkExecutorProvider } from "../../../src/v2/executor/tork-provider.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../../src/v2/ui-api/postgres-run-api.ts";
 import {
   createInitializedRealPostgresE2E,
   createRealRuntimeServer,
@@ -22,8 +18,14 @@ test("04 artifact repair/recovery: failed callback evidence triggers real recove
   const env = await createInitializedRealPostgresE2E();
   const server = await createRealRuntimeServer({ db: env.db, infra });
   try {
-    const draft = await createPostgresPlannerDraft(env.db, { goalPrompt: "artifact recovery real E2E: fail first task and recover with bounded retry" });
-    const run = await createPostgresRunFromDraft(env.db, { draftId: draft.draftId });
+    const draft = await api<{ draftId: string }>(server.port, "/api/v2/planner/drafts", {
+      method: "POST",
+      body: JSON.stringify({ goalPrompt: "artifact recovery real E2E: fail first task and recover with bounded retry" }),
+    });
+    const run = await api<{ runId: string; taskIds: string[] }>(server.port, "/api/v2/runs", {
+      method: "POST",
+      body: JSON.stringify({ draftId: draft.draftId }),
+    });
     const failedTaskId = "understand-repo";
 
     await api(server.port, "/api/v2/tork/callback", {
@@ -34,7 +36,6 @@ test("04 artifact repair/recovery: failed callback evidence triggers real recove
         rootSessionId: `root-${run.runId}-${failedTaskId}`,
         ok: false,
         attempts: 1,
-        attemptId: "attempt-1",
         artifact: { summary: "partial artifact missing required evidence" },
         metrics: { durationMs: 1, toolCalls: 0, retryCount: 0, tokens: 1, costMicrosUsd: 1 },
         events: [{
@@ -53,26 +54,30 @@ test("04 artifact repair/recovery: failed callback evidence triggers real recove
     assert.equal(failedTask.status, "failed");
 
     const callbackBase = dockerReachableUrl(server, infra);
-    const torkClient = new TorkClient({ baseUrl: infra.torkBaseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
-    const recovery = await dispatchRecoveryExecutionPg(env.db, {
-      runId: run.runId,
-      failedTaskId,
-      plan: {
-        strategy: "retry-same-agent",
-        failedTaskId,
-        baseTaskId: failedTaskId,
-        targetTaskIds: [failedTaskId],
-        attemptNumber: 2,
-        requiresOperatorApproval: false,
-        reason: "repair rejected artifact with focused retry",
-        diagnostics: [],
+    const recovery = await api<{ recoveryExecutionId: string; externalJobId: string; targetTaskIds: string[]; attemptId: string }>(
+      server.port,
+      `/api/v2/runs/${encodeURIComponent(run.runId)}/recovery/dispatch`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          failedTaskId,
+          callbackUrl: `${callbackBase}/api/v2/tork/callback`,
+          heartbeatUrl: `${callbackBase}/api/v2/executor/heartbeat`,
+          runRoot: "/tmp/southstar-runs",
+          harnessEndpoint: infra.piHarnessEndpoint,
+          plan: {
+            strategy: "retry-same-agent",
+            failedTaskId,
+            baseTaskId: failedTaskId,
+            targetTaskIds: [failedTaskId],
+            attemptNumber: 2,
+            requiresOperatorApproval: false,
+            reason: "repair rejected artifact with focused retry",
+            diagnostics: [],
+          },
+        }),
       },
-      executorProvider: new TorkExecutorProvider({ torkClient }),
-      callbackUrl: `${callbackBase}/api/v2/tork/callback`,
-      heartbeatUrl: `${callbackBase}/api/v2/executor/heartbeat`,
-      runRoot: "/tmp/southstar-runs",
-      harnessEndpoint: infra.piHarnessEndpoint,
-    });
+    );
 
     assert.equal(recovery.targetTaskIds.length, 1);
     assert.equal(recovery.targetTaskIds[0], failedTaskId);

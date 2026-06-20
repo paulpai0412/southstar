@@ -1,9 +1,5 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dispatchRecoveryExecutionPg } from "../../../src/v2/session-recovery/postgres-dispatcher.ts";
-import { TorkClient } from "../../../src/v2/executor/tork-client.ts";
-import { TorkExecutorProvider } from "../../../src/v2/executor/tork-provider.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../../src/v2/ui-api/postgres-run-api.ts";
 import {
   createInitializedRealPostgresE2E,
   createRealRuntimeServer,
@@ -22,8 +18,14 @@ test("05 session recovery: checkpointed failed session reruns with new root sess
   const env = await createInitializedRealPostgresE2E();
   const server = await createRealRuntimeServer({ db: env.db, infra });
   try {
-    const draft = await createPostgresPlannerDraft(env.db, { goalPrompt: "session recovery real E2E: recover lost session and continue" });
-    const run = await createPostgresRunFromDraft(env.db, { draftId: draft.draftId });
+    const draft = await api<{ draftId: string }>(server.port, "/api/v2/planner/drafts", {
+      method: "POST",
+      body: JSON.stringify({ goalPrompt: "session recovery real E2E: recover lost session and continue" }),
+    });
+    const run = await api<{ runId: string; taskIds: string[] }>(server.port, "/api/v2/runs", {
+      method: "POST",
+      body: JSON.stringify({ draftId: draft.draftId }),
+    });
     const failedTaskId = "understand-repo";
     const initialSessionId = `root-${run.runId}-${failedTaskId}`;
 
@@ -35,7 +37,6 @@ test("05 session recovery: checkpointed failed session reruns with new root sess
         rootSessionId: initialSessionId,
         ok: false,
         attempts: 1,
-        attemptId: "attempt-1",
         artifact: { summary: "session disconnected before required outputs were finalized" },
         metrics: { durationMs: 1, toolCalls: 0, retryCount: 0, tokens: 1, costMicrosUsd: 1 },
         error: "session_lost",
@@ -43,26 +44,30 @@ test("05 session recovery: checkpointed failed session reruns with new root sess
     });
 
     const callbackBase = dockerReachableUrl(server, infra);
-    const torkClient = new TorkClient({ baseUrl: infra.torkBaseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
-    const recovery = await dispatchRecoveryExecutionPg(env.db, {
-      runId: run.runId,
-      failedTaskId,
-      plan: {
-        strategy: "retry-same-agent",
-        failedTaskId,
-        baseTaskId: failedTaskId,
-        targetTaskIds: [failedTaskId],
-        attemptNumber: 2,
-        requiresOperatorApproval: false,
-        reason: "session disconnected; rebuild from checkpointed context",
-        diagnostics: ["root session heartbeat stopped before artifact acceptance"],
+    const recovery = await api<{ recoveryExecutionId: string; externalJobId: string; targetTaskIds: string[]; attemptId: string }>(
+      server.port,
+      `/api/v2/runs/${encodeURIComponent(run.runId)}/recovery/dispatch`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          failedTaskId,
+          callbackUrl: `${callbackBase}/api/v2/tork/callback`,
+          heartbeatUrl: `${callbackBase}/api/v2/executor/heartbeat`,
+          runRoot: "/tmp/southstar-runs",
+          harnessEndpoint: infra.piHarnessEndpoint,
+          plan: {
+            strategy: "retry-same-agent",
+            failedTaskId,
+            baseTaskId: failedTaskId,
+            targetTaskIds: [failedTaskId],
+            attemptNumber: 2,
+            requiresOperatorApproval: false,
+            reason: "session disconnected; rebuild from checkpointed context",
+            diagnostics: ["root session heartbeat stopped before artifact acceptance"],
+          },
+        }),
       },
-      executorProvider: new TorkExecutorProvider({ torkClient }),
-      callbackUrl: `${callbackBase}/api/v2/tork/callback`,
-      heartbeatUrl: `${callbackBase}/api/v2/executor/heartbeat`,
-      runRoot: "/tmp/southstar-runs",
-      harnessEndpoint: infra.piHarnessEndpoint,
-    });
+    );
 
     await waitForTorkJob(infra.torkBaseUrl, recovery.externalJobId);
     const bindingId = `executor-${run.runId}-${failedTaskId}-${recovery.attemptId}`;
