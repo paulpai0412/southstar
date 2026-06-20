@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { rm } from "node:fs/promises";
 import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createLearningEdge, createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
 import { createAssetVersion } from "../../src/v2/evolution/assets.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { recordAssetRegressionObservation, runRegressionMonitor } from "../../src/v2/evolution/regression-monitor.ts";
 
 test("Evolution HTTP API records signals, synthesizes cards, exposes wiki links, and creates deltas", async () => {
@@ -228,6 +230,172 @@ test("Evolution HTTP API handles wiki maintenance and regression alert commands"
       assert.equal(dismissed.status, "dismissed");
     } finally {
       await server.close();
+    }
+  });
+});
+
+test("Evolution sandbox start/evaluator routes honor callback/runRoot/harness overrides", async () => {
+  await withDb(async (db) => {
+    const deltaId = "delta-sandbox-route-contract";
+    await createLearningNode(db, {
+      id: deltaId,
+      nodeType: "delta_proposal",
+      scope: "evolution",
+      status: "validated",
+      payload: { id: deltaId, deltaKind: "prompt_delta", status: "validated" },
+      summaryText: "Sandbox route contract delta",
+    });
+
+    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "sandbox route contract replay run" });
+    const replayRun = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+
+    const submissions: Array<{
+      runId: string;
+      callbackUrl?: string;
+      heartbeatUrl?: string;
+      envelopeBasePath?: string;
+      workflow: { tasks: Array<{ execution: { env: Record<string, string>; mounts: Array<{ source: string; target: string }> } }> };
+    }> = [];
+    const runRoot = `/tmp/southstar-sandbox-route-${randomUUID().slice(0, 8)}`;
+    const callbackUrl = "http://127.0.0.1:9942/custom-callback";
+    const heartbeatUrl = "http://127.0.0.1:9942/custom-heartbeat";
+    const harnessEndpoint = "http://127.0.0.1:9942/pi-harness";
+
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: {
+        executorType: "tork",
+        submit: async (request) => {
+          submissions.push({
+            runId: request.runId,
+            callbackUrl: request.callbackUrl,
+            heartbeatUrl: request.heartbeatUrl,
+            envelopeBasePath: request.envelopeBasePath,
+            workflow: request.workflow as never,
+          });
+          return {
+            executorType: "tork",
+            externalJobId: `job-${request.runId}`,
+            status: "queued",
+            executionProjection: { sandbox: true },
+          };
+        },
+      },
+      runRoot: "/tmp/southstar-should-be-overridden",
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+
+    try {
+      const experiment = await api<{ experimentId: string; decision: string }>(
+        server.url,
+        `/api/v2/evolution/deltas/${encodeURIComponent(deltaId)}/run-sandbox`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: "test-operator",
+            reason: "prepare experiment for start/evaluator route contract",
+            baselineAssetRefs: ["asset@baseline"],
+            candidateAssetRefs: ["asset@candidate"],
+            regressionSuiteRefs: ["software-core-regression"],
+            replayRunRefs: [replayRun.runId],
+            maxCostRegressionPercent: 25,
+            maxDurationRegressionPercent: 30,
+          }),
+        },
+      );
+      assert.equal(experiment.decision, "queued");
+
+      const started = await api<{
+        experimentId: string;
+        runs: {
+          baseline: { runId: string; externalJobId: string };
+          candidate: { runId: string; externalJobId: string };
+        };
+      }>(
+        server.url,
+        `/api/v2/evolution/experiments/${encodeURIComponent(experiment.experimentId)}/start`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: "test-operator",
+            reason: "start sandbox runs with route overrides",
+            callbackUrl,
+            heartbeatUrl,
+            runRoot,
+            harnessEndpoint,
+          }),
+        },
+      );
+      assert.equal(started.experimentId, experiment.experimentId);
+      assert.equal(submissions.length, 2);
+      assert.deepEqual(new Set(submissions.map((submission) => submission.runId)), new Set([started.runs.baseline.runId, started.runs.candidate.runId]));
+      for (const submission of submissions) {
+        assert.equal(submission.callbackUrl, callbackUrl);
+        assert.equal(submission.heartbeatUrl, heartbeatUrl);
+        assert.equal(submission.envelopeBasePath, "/southstar-runs");
+        for (const task of submission.workflow.tasks) {
+          assert.equal(task.execution.env.PI_HARNESS_ENDPOINT, harnessEndpoint);
+          assert.equal(task.execution.env.SOUTHSTAR_HARNESS_ENDPOINT, harnessEndpoint);
+          assert.equal(task.execution.env.SOUTHSTAR_MATERIALIZATION_ROOT, runRoot);
+          assert.equal(task.execution.mounts.some((mount) => mount.source === runRoot && mount.target === "/workspace/sandbox"), true);
+          assert.equal(task.execution.mounts.some((mount) => mount.source === runRoot && mount.target === "/southstar-runs"), true);
+          assert.equal(task.execution.mounts.some((mount) => mount.source === "/tmp/southstar-should-be-overridden"), false);
+        }
+      }
+
+      const baselineDecision = await api<undefined | null | { decision: string }>(
+        server.url,
+        `/api/v2/evolution/experiments/${encodeURIComponent(experiment.experimentId)}/evaluator-output`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: "test-operator",
+            reason: "baseline evaluator output",
+            variant: "baseline",
+            caseRef: replayRun.runId,
+            evaluatorResult: {
+              ok: true,
+              targetedReplayFixed: true,
+              metrics: { durationMs: 1000, tokens: 1000, costMicrosUsd: 1000, repairCount: 0, toolCalls: 3 },
+            },
+          }),
+        },
+      );
+      assert.equal(baselineDecision, undefined);
+
+      const candidateDecision = await api<{ experimentId: string; decision: string; reasons: string[] }>(
+        server.url,
+        `/api/v2/evolution/experiments/${encodeURIComponent(experiment.experimentId)}/evaluator-output`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            actor: "test-operator",
+            reason: "candidate evaluator output",
+            variant: "candidate",
+            caseRef: replayRun.runId,
+            evaluatorResult: {
+              ok: true,
+              targetedReplayFixed: true,
+              metrics: { durationMs: 1010, tokens: 1010, costMicrosUsd: 1010, repairCount: 0, toolCalls: 3 },
+            },
+          }),
+        },
+      );
+      assert.equal(candidateDecision.experimentId, experiment.experimentId);
+      assert.equal(candidateDecision.decision, "passed");
+
+      const row = await db.one<{ status: string; payload_json: { decision?: string; sandboxRunIds?: { baseline?: string; candidate?: string } } }>(
+        "select status, payload_json from southstar.runtime_resources where resource_type = 'sandbox_experiment' and resource_key = $1",
+        [experiment.experimentId],
+      );
+      assert.equal(row.status, "passed");
+      assert.equal(row.payload_json.decision, "passed");
+      assert.equal(typeof row.payload_json.sandboxRunIds?.baseline, "string");
+      assert.equal(typeof row.payload_json.sandboxRunIds?.candidate, "string");
+    } finally {
+      await server.close();
+      await rm(runRoot, { recursive: true, force: true });
     }
   });
 });

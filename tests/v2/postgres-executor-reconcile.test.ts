@@ -69,7 +69,18 @@ test("Postgres executor bindings route creates a binding through new API", async
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
     });
     try {
-      const binding = await post<{ id: string; runId: string; taskId: string; status: string; payload: { torkJobId: string; attemptId: string } }>(
+      const binding = await post<{
+        id: string;
+        runId: string;
+        taskId: string;
+        status: string;
+        payload: {
+          torkJobId: string;
+          attemptId: string;
+          queueTimeoutAt?: string;
+          hardTimeoutAt?: string;
+        };
+      }>(
         server.url,
         "/api/v2/executor/bindings",
         {
@@ -78,6 +89,7 @@ test("Postgres executor bindings route creates a binding through new API", async
           attemptId: "attempt-2",
           torkJobId: "job-api-created",
           status: "queued",
+          now: "2026-06-20T00:00:00.000Z",
           queueTimeoutSeconds: 120,
           hardTimeoutSeconds: 900,
         },
@@ -85,10 +97,52 @@ test("Postgres executor bindings route creates a binding through new API", async
       assert.equal(binding.id, "executor-run-reconcile-pg-task-1-attempt-2");
       assert.equal(binding.status, "queued");
       assert.equal(binding.payload.torkJobId, "job-api-created");
+      assert.equal(binding.payload.queueTimeoutAt, "2026-06-20T00:02:00.000Z");
+      assert.equal(binding.payload.hardTimeoutAt, "2026-06-20T00:15:00.000Z");
 
       const loaded = await getExecutorBindingPg(db, binding.id);
       assert.equal(loaded?.payload.torkJobId, "job-api-created");
+      assert.equal(loaded?.payload.queueTimeoutAt, "2026-06-20T00:02:00.000Z");
+      assert.equal(loaded?.payload.hardTimeoutAt, "2026-06-20T00:15:00.000Z");
       assert.equal(loaded?.status, "queued");
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("Postgres executor bindings route validates status and timeout fields", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db);
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const badStatus = await postError(server.url, "/api/v2/executor/bindings", {
+        runId: "run-reconcile-pg",
+        taskId: "task-1",
+        attemptId: "attempt-3",
+        torkJobId: "job-bad-status",
+        status: "not-a-real-status",
+        queueTimeoutSeconds: 120,
+        hardTimeoutSeconds: 900,
+      });
+      assert.equal(badStatus.status, 400);
+      assert.match(badStatus.body, /supported executor binding status/i);
+
+      const missingTimeout = await postError(server.url, "/api/v2/executor/bindings", {
+        runId: "run-reconcile-pg",
+        taskId: "task-1",
+        attemptId: "attempt-4",
+        torkJobId: "job-missing-timeout",
+        status: "queued",
+        hardTimeoutSeconds: 900,
+      });
+      assert.equal(missingTimeout.status, 400);
+      assert.match(missingTimeout.body, /queueTimeoutSeconds must be a positive number/);
     } finally {
       await server.close();
     }
@@ -124,6 +178,11 @@ async function post<T>(baseUrl: string, path: string, body: unknown): Promise<T>
   const envelope = JSON.parse(text) as { ok: true; result: T } | { ok: false; error: string };
   if (!envelope.ok) throw new Error(envelope.error);
   return envelope.result;
+}
+
+async function postError(baseUrl: string, path: string, body: unknown): Promise<{ status: number; body: string }> {
+  const response = await fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  return { status: response.status, body: await response.text() };
 }
 
 async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
