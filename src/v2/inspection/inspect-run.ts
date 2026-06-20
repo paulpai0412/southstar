@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: retained only for compatibility while Postgres v2 APIs replace this surface.
 import type { RuntimeResourceRecord } from "../stores/resource-store.ts";
 import { listResources } from "../stores/resource-store.ts";
 import type { SouthstarDb } from "../stores/sqlite.ts";

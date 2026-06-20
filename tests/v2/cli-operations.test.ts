@@ -4,7 +4,6 @@ import { executeV2Command, main, parseV2Command } from "../../src/v2/cli.ts";
 import type { CliRuntimeClient } from "../../src/v2/cli-client.ts";
 import { formatRunStatusSummary } from "../../src/v2/cli-format.ts";
 import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
-import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
 
 test("parses phase 1.5 CLI commands", () => {
   assert.deepEqual(parseV2Command(["serve"]), { command: "serve" });
@@ -38,8 +37,7 @@ test("parses phase 1.5 CLI commands", () => {
   });
 });
 
-test("server-backed phase 1.5 CLI commands execute through the runtime client", async () => {
-  const db = openSouthstarDb(":memory:");
+test("server-backed phase 1.5 CLI commands execute through the runtime client without local db fallback", async () => {
   const calls: string[] = [];
   const runtimeClient = {
     runGoal: async () => envelope("run-goal", { runId: "run-1" }, calls),
@@ -69,7 +67,7 @@ test("server-backed phase 1.5 CLI commands execute through the runtime client", 
 
   for (const argv of commands) {
     const parsed = parseV2Command(argv);
-    const result = await executeV2Command(parsed, { db, runtimeClient });
+    const result = await executeV2Command(parsed, { runtimeClient });
     assert.notEqual(result.kind, "serve");
   }
   assert.deepEqual(calls, ["run-goal", "status", "tasks", "task", "artifacts", "sessions", "memory", "logs", "voice-command", "read-model"]);
@@ -83,19 +81,19 @@ test("task-detail read-model CLI requires task id", () => {
 });
 
 test("serve command fails closed because it belongs to the runtime server entrypoint", async () => {
-  const db = openSouthstarDb(":memory:");
-
   await assert.rejects(
-    () => executeV2Command(parseV2Command(["serve"]), { db }),
+    () => executeV2Command(parseV2Command(["serve"]), {}),
     /serve is implemented by src\/v2\/server entrypoint task/,
   );
 });
 
-test("existing status CLI command keeps local SQLite fallback when no runtime client is injected", async () => {
-  const db = openSouthstarDb(":memory:");
+test("main supports injected runtime client and does not need a local database", async () => {
   const writes: string[] = [];
+  const runtimeClient = {
+    getRun: async () => envelope("status", { canvas: { status: "unknown" } }, []),
+  } as unknown as CliRuntimeClient;
   const exitCode = await main(["status", "--run-id", "run-missing"], {
-    db,
+    runtimeClient,
     write: (text) => writes.push(text),
   });
 

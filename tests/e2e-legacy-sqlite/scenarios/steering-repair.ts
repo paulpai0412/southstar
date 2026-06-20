@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createBuiltinAgentHarness } from "../../../src/v2/harness/builtin-agent-harness.ts";
-import { runRootSessionTask } from "../../../src/v2/agent-runner/root-session.ts";
+import { runRootSessionTask } from "../../../src/v2/legacy/sqlite/root-session.ts";
 import { getTaskEnvelope, steerRun } from "../../../src/v2/ui-api/local-api.ts";
 import { listHistoryForRun } from "../../../src/v2/stores/history-store.ts";
 import { listResources } from "../../../src/v2/stores/resource-store.ts";

@@ -86,6 +86,12 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<numb
 
   try {
     const command = buildCliCommand(argv);
+    if (command.command === "db:init") {
+      const { initializeSouthstarSchema } = await import("../v2/db/init.ts");
+      const result = await initializeSouthstarSchema(command.config.runtime.databaseUrl);
+      console.log(JSON.stringify({ type: "db:init", schema: "southstar", version: result.version }));
+      return 0;
+    }
     console.log(JSON.stringify({
       type: command.command,
       args: command.args,

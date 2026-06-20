@@ -1,6 +1,6 @@
 import { createServer, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
 import type { AddressInfo } from "node:net";
-import { reconcileExecutorBindings } from "../executor/reconciler.ts";
+import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { handleRuntimeRoute } from "./routes.ts";
 import { createRuntimeLoopController, type RuntimeLoopController } from "./runtime-loops.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
@@ -59,7 +59,7 @@ function createDefaultReconcileLoop(context: RuntimeServerContext): RuntimeLoopC
   return createRuntimeLoopController({
     intervalMs: context.reconcileIntervalMs ?? 15_000,
     runOnce: async () => {
-      await reconcileExecutorBindings(context.db, {
+      await reconcileExecutorBindingsPg(context.db, {
         tork: context.torkObservationClient as NonNullable<RuntimeServerContext["torkObservationClient"]>,
       });
     },

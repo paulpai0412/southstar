@@ -5,7 +5,7 @@ import { createWorkflowRun } from "../../src/v2/stores/run-store.ts";
 import { createWorkflowTask } from "../../src/v2/stores/task-store.ts";
 import { listHistoryForRun } from "../../src/v2/stores/history-store.ts";
 import { listResources } from "../../src/v2/stores/resource-store.ts";
-import { runRootSessionTask } from "../../src/v2/agent-runner/root-session.ts";
+import { runRootSessionTask } from "../../src/v2/legacy/sqlite/root-session.ts";
 import type { AgentHarness } from "../../src/v2/harness/types.ts";
 import type { TaskEnvelope, TaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
 

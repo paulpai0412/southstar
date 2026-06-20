@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: retained only for compatibility while Postgres v2 APIs replace this surface.
 import type { SouthstarDb } from "../../stores/sqlite.ts";
 import { getResourceByKey, listResources } from "../../stores/resource-store.ts";
 import type { PlannerPageModel } from "./types.ts";

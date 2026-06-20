@@ -1,3 +1,4 @@
+// @legacy-sqlite-quarantine: retained only for compatibility while Postgres v2 APIs replace this surface.
 import { randomUUID } from "node:crypto";
 import type { PiPlannerClient } from "../planner/types.ts";
 import type { SouthstarDb } from "../stores/sqlite.ts";

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadRealE2EEnv } from "../../tests/e2e-real/env.ts";
+import { loadRealE2EEnv } from "../../tests/e2e-legacy-sqlite/env.ts";
 
 test("real E2E env fails closed when required env is missing", async () => {
   await assert.rejects(() => loadRealE2EEnv({}, {

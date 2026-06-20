@@ -1,9 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { executeV2Command, parseV2Command } from "../../src/v2/cli.ts";
-import { openSouthstarDb } from "../../src/v2/stores/sqlite.ts";
-import type { PiPlannerClient } from "../../src/v2/planner/types.ts";
-import type { TorkClient } from "../../src/v2/executor/tork-client.ts";
 
 test("parses v2 plan command", () => {
   assert.deepEqual(parseV2Command(["plan", "--goal", "implement calc sum"]), {
@@ -42,114 +39,30 @@ test("rejects missing v2 command args", () => {
   assert.throws(() => parseV2Command(["unknown"]), /Unknown southstar:v2 command/);
 });
 
-test("executes v2 CLI commands through the local runtime API", async () => {
-  const db = openSouthstarDb(":memory:");
-  const plannerClient = plannerClientFor("implement calc sum");
-  const torkClient = { submit: async () => ({ jobId: "job-1", status: "queued" }) } as TorkClient;
+test("executes v2 CLI plan/run/status/task-envelope through runtime client without local db fallback", async () => {
+  const calls: string[] = [];
+  const runtimeClient = {
+    createPlannerDraft: async () => envelope("planner-draft", { draftId: "draft-1", goalPrompt: "implement calc sum", workflowId: "wf-1" }, calls),
+    createRun: async () => envelope("run", { runId: "run-1", taskIds: ["task-1"] }, calls),
+    getRun: async () => envelope("status", { canvas: { nodes: [] } }, calls),
+    getTaskEnvelope: async () => envelope("task-envelope", { schemaVersion: "southstar.task-envelope.v2", taskId: "task-1" }, calls),
+  } as any;
 
-  const draft = await executeV2Command(parseV2Command(["plan", "--goal", "implement calc sum"]), {
-    db,
-    plannerClient,
-    torkClient,
-  });
-  assert.equal(draft.kind, "planner-draft");
-  assert.match(draft.result.draftId, /^draft-wf-gen-/);
-
-  const run = await executeV2Command(parseV2Command(["run", "--draft-id", draft.result.draftId]), {
-    db,
-    plannerClient,
-    torkClient,
-  });
-  assert.equal(run.kind, "run");
-  assert.match(run.result.runId, /^run-wf-gen-/);
-
-  const status = await executeV2Command(parseV2Command(["status", "--run-id", run.result.runId]), {
-    db,
-    plannerClient,
-    torkClient,
-  });
-  assert.equal(status.kind, "status");
-  assert.deepEqual(status.result.canvas.nodes.map((node) => node.id), [
-    "understand-repo",
-    "implement-feature",
-    "verify-feature",
-    "summarize-completion",
-  ]);
+  assert.equal((await executeV2Command(parseV2Command(["plan", "--goal", "implement calc sum"]), { runtimeClient })).kind, "planner-draft");
+  assert.equal((await executeV2Command(parseV2Command(["run", "--draft-id", "draft-1"]), { runtimeClient })).kind, "run");
+  assert.equal((await executeV2Command(parseV2Command(["status", "--run-id", "run-1"]), { runtimeClient })).kind, "status");
+  assert.equal((await executeV2Command(parseV2Command(["task-envelope", "--run-id", "run-1", "--task-id", "task-1"]), { runtimeClient })).kind, "task-envelope");
+  assert.deepEqual(calls, ["planner-draft", "run", "status", "task-envelope"]);
 });
 
-test("revises planner draft through CLI command", async () => {
-  const db = openSouthstarDb(":memory:");
-  const plannerClient = plannerClientFor("implement calc sum");
-  const torkClient = { submit: async () => ({ jobId: "job-1", status: "queued" }) } as TorkClient;
-  const draft = await executeV2Command(parseV2Command(["plan", "--goal", "implement calc sum"]), {
-    db,
-    plannerClient,
-    torkClient,
-  });
-
-  const revised = await executeV2Command(parseV2Command([
-    "revise",
-    "--draft-id",
-    draft.result.draftId,
-    "--prompt",
-    "add summary task",
-  ]), {
-    db,
-    plannerClient: plannerClientFor("implement calc sum with revision"),
-    torkClient,
-  });
-
-  assert.equal(revised.kind, "planner-draft");
-  assert.match(revised.result.draftId, /^draft-wf-gen-.*-rev-/);
+test("v2 CLI commands fail closed without runtime client instead of using local SQLite fallback", async () => {
+  await assert.rejects(
+    () => executeV2Command(parseV2Command(["status", "--run-id", "run-1"]), {}),
+    /runtime server client is required/,
+  );
 });
 
-function plannerClientFor(goal: string): PiPlannerClient {
-  return {
-    generate: async () => JSON.stringify({
-      workflow: {
-        schemaVersion: "southstar.v2",
-        workflowId: "wf-software-mvp",
-        title: "Software MVP",
-        goalPrompt: goal,
-        tasks: [{
-          id: "task-implement",
-          name: "Implement CLI",
-          domain: "software",
-          dependsOn: [],
-          execution: {
-            engine: "tork",
-            image: "southstar/codex-agent:local",
-            command: ["southstar-agent-runner"],
-            env: {},
-            mounts: [],
-            timeoutSeconds: 900,
-            infraRetry: { maxAttempts: 1 },
-          },
-          rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-          subagents: [{ id: "impl", harnessId: "codex", prompt: "implement", requiredArtifacts: ["implementation-report"] }],
-        }],
-        harnessDefinitions: [{
-          id: "codex",
-          kind: "codex",
-          entrypoint: "southstar-agent-runner",
-          image: "southstar/codex-agent:local",
-          capabilities: ["software"],
-          inputProtocol: "task-envelope-v1",
-          eventProtocol: "southstar-events-v1",
-          supportsCheckpoint: true,
-          supportsSteering: true,
-          supportsProgress: true,
-        }],
-        evaluators: [{ id: "schema-evaluator-v1", kind: "schema", artifactTypes: ["implementation-report"], requiredFields: ["summary"] }],
-        memoryPolicy: { retrievalLimit: 5, writeRequiresApproval: true },
-        vaultPolicy: { leaseTtlSeconds: 900, mountMode: "ephemeral-file" },
-        mcpServers: [],
-        mcpGrants: [],
-        progressPolicy: { firstEventWithinSeconds: 10, minEventsPerLongTask: 3 },
-        steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
-        learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
-      },
-      plannerTrace: { model: "pi-agent", promptHash: "hash", generatedAt: "2026-06-11T00:00:00.000Z" },
-    }),
-  };
+function envelope<T>(kind: string, result: T, calls: string[]) {
+  calls.push(kind);
+  return { ok: true as const, kind, result };
 }

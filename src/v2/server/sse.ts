@@ -1,34 +1,30 @@
-import type { SouthstarDb } from "../stores/sqlite.ts";
-import type { ServerSentRunEvent } from "./types.ts";
+import type { SouthstarDb } from "../db/postgres.ts";
 
-export function readRunEventsSince(db: SouthstarDb, input: { runId: string; afterSequence: number }): ServerSentRunEvent[] {
-  const rows = db.prepare(`
-    select id, sequence, event_type, payload_json, created_at
-    from workflow_history
-    where run_id = ? and sequence > ?
-    order by sequence
-  `).all(input.runId, input.afterSequence) as Array<{
-    id: string;
-    sequence: number;
-    event_type: string;
-    payload_json: string;
-    created_at: string;
-  }>;
-  return rows.map((row) => ({
-    id: row.id,
+export type RuntimeEventFrame = {
+  sequence: number;
+  eventType: string;
+  taskId?: string;
+  payload: unknown;
+  createdAt: string;
+};
+
+export async function readRunEventsSince(db: SouthstarDb, input: { runId: string; afterSequence?: number }): Promise<RuntimeEventFrame[]> {
+  const rows = await db.query<{ sequence: number; event_type: string; task_id: string | null; payload_json: unknown; created_at: Date | string }>(
+    `select sequence, event_type, task_id, payload_json, created_at
+     from southstar.workflow_history
+     where run_id = $1 and sequence > $2
+     order by sequence`,
+    [input.runId, input.afterSequence ?? 0],
+  );
+  return rows.rows.map((row) => ({
     sequence: row.sequence,
     eventType: row.event_type,
-    payload: JSON.parse(row.payload_json),
-    createdAt: row.created_at,
+    taskId: row.task_id ?? undefined,
+    payload: row.payload_json,
+    createdAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
   }));
 }
 
-export function toSseFrame(event: ServerSentRunEvent): string {
-  return [
-    `id: ${event.sequence}`,
-    `event: ${event.eventType}`,
-    `data: ${JSON.stringify(event)}`,
-    "",
-    "",
-  ].join("\n");
+export function toSseFrame(event: RuntimeEventFrame): string {
+  return `id: ${event.sequence}\nevent: ${event.eventType}\ndata: ${JSON.stringify(event)}\n\n`;
 }

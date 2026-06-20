@@ -14,6 +14,7 @@ export interface RuntimeConfig {
   };
   runtime: {
     dbPath: string;
+    databaseUrl: string;
     heartbeatIntervalSeconds: number;
     lockTimeoutSeconds: number;
     taskTimeoutSeconds: number;
@@ -41,7 +42,6 @@ const requiredStringFields = [
   "schema_version",
   "project.name",
   "project.root",
-  "runtime.db_path",
   "workflow.id",
   "workflow.version",
   "workflow.path",
@@ -58,6 +58,9 @@ const requiredIntegerFields = [
 export function validateRuntimeConfig(value: unknown): RuntimeConfig {
   const missing = [...requiredStringFields, ...requiredIntegerFields, "intake.mode", "sources", "projection", "packs.search_paths"]
     .filter((field) => getConfigValue(value, field) === undefined);
+  if (getConfigValue(value, "runtime.db_path") === undefined && getConfigValue(value, "runtime.database_url") === undefined) {
+    missing.push("runtime.db_path or runtime.database_url");
+  }
   if (missing.length > 0) {
     throw new Error(`Missing required config fields: ${missing.join(", ")}`);
   }
@@ -69,7 +72,8 @@ export function validateRuntimeConfig(value: unknown): RuntimeConfig {
       root: stringField(value, "project.root"),
     },
     runtime: {
-      dbPath: stringField(value, "runtime.db_path"),
+      dbPath: optionalStringField(value, "runtime.db_path") ?? optionalStringField(value, "runtime.database_url") ?? "",
+      databaseUrl: optionalStringField(value, "runtime.database_url") ?? optionalStringField(value, "runtime.db_path") ?? "",
       heartbeatIntervalSeconds: nonNegativeIntegerField(value, "runtime.heartbeat_interval_seconds"),
       lockTimeoutSeconds: nonNegativeIntegerField(value, "runtime.lock_timeout_seconds"),
       taskTimeoutSeconds: nonNegativeIntegerField(value, "runtime.task_timeout_seconds"),
@@ -129,6 +133,15 @@ function normalizeProjection(value: unknown): RuntimeConfig["projection"] {
 
 function stringField(value: unknown, field: string): string {
   const fieldValue = getConfigValue(value, field);
+  if (typeof fieldValue !== "string" || fieldValue.length === 0) {
+    throw new Error(`${field} must be a non-empty string`);
+  }
+  return fieldValue;
+}
+
+function optionalStringField(value: unknown, field: string): string | undefined {
+  const fieldValue = getConfigValue(value, field);
+  if (fieldValue === undefined) return undefined;
   if (typeof fieldValue !== "string" || fieldValue.length === 0) {
     throw new Error(`${field} must be a non-empty string`);
   }
