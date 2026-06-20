@@ -1,4 +1,5 @@
 export const ARTIFACT_EVIDENCE_SCHEMA_VERSION = "southstar.runtime.artifact_ref.v1";
+export const ARTIFACT_REF_RESOURCE_TYPE = "artifact_ref";
 export const EVIDENCE_PACKET_SCHEMA_VERSION = "southstar.runtime.evidence_packet.v1";
 export const VALIDATOR_RESULT_SCHEMA_VERSION = "southstar.runtime.validator_result.v1";
 export const DOWNSTREAM_READINESS_SCHEMA_VERSION = "southstar.runtime.downstream_readiness.v1";
@@ -11,6 +12,39 @@ export type ArtifactLifecycleStatus =
   | "accepted"
   | "rejected"
   | "needs_repair";
+
+export type ArtifactRefStatus = "accepted" | "rejected" | "needs_repair";
+
+export type ArtifactRefProducer = {
+  actorType: "hand" | "brain" | "tool-proxy" | "evaluator";
+  providerId: string;
+};
+
+export type ArtifactContentRef = {
+  kind: "runtime_resource" | "secure_blob" | "external_url" | "inline_digest";
+  ref: string;
+  sha256: string;
+};
+
+export type ArtifactRefPayload = {
+  schemaVersion: typeof ARTIFACT_EVIDENCE_SCHEMA_VERSION;
+  artifactRefId: string;
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  handExecutionId: string;
+  producer: ArtifactRefProducer;
+  artifactType: string;
+  status: ArtifactRefStatus;
+  contentRef?: ArtifactContentRef;
+  contractRefs: string[];
+  summary: string;
+  evidenceRefs: string[];
+  evaluatorResultRefs: string[];
+  sourceEventRefs: string[];
+  producedAt: string;
+};
 
 export type EvidenceKind =
   | "file-diff"

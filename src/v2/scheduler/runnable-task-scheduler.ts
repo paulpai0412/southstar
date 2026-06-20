@@ -1,6 +1,7 @@
 import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import type { HandProvider } from "../hands/types.ts";
+import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
 import { persistBrainBindingPg, persistHandBindingPg } from "../meta-harness/postgres-bindings.ts";
 import type { SessionStore } from "../session/types.ts";
 import { appendHistoryEventPg } from "../stores/postgres-runtime-store.ts";
@@ -52,7 +53,7 @@ export function createRunnableTaskScheduler(db: SouthstarDb, deps: RunnableTaskS
           order by sort_order, id`,
         [input.runId],
       );
-      const acceptedArtifactTaskIds = await acceptedArtifactTaskIdsForRun(db, input.runId);
+      const acceptedArtifactTaskIds = await acceptedArtifactTaskIdsForRunPg(db, input.runId);
       const maxParallelTasks = maxParallelTasksForManifest(run.workflow_manifest_json);
       const result: RunnableTaskSchedulerRunResult = { runId: input.runId, dispatchedTaskIds: [], skippedTaskIds: [] };
 
@@ -250,19 +251,6 @@ async function appendHistoryEventOnce(
     if (isUniqueViolation(error)) return;
     throw error;
   }
-}
-
-async function acceptedArtifactTaskIdsForRun(db: SouthstarDb, runId: string): Promise<Set<string>> {
-  const rows = await db.query<{ task_id: string }>(
-    `select distinct task_id
-       from southstar.runtime_resources
-      where run_id = $1
-        and task_id is not null
-        and resource_type = 'artifact_ref'
-        and status = 'accepted'`,
-    [runId],
-  );
-  return new Set(rows.rows.map((row) => row.task_id));
 }
 
 async function contextPacketIdForTask(db: SouthstarDb, runId: string, taskId: string): Promise<string> {
