@@ -39,6 +39,7 @@ await import("./evolution-regression-monitor.test.ts");
 await import("./evolution-sandbox.test.ts");
 await import("./evolution-signals.test.ts");
 await import("./evolution-static-gates.test.ts");
+await import("./managed-static-gates.test.ts");
 await import("./evolution-wiki.test.ts");
 await import("./pi-web-dashboard-renderer.test.ts");
 await import("./meta-harness-taxonomy.test.ts");
