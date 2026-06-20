@@ -17,7 +17,7 @@ test("HandProvider provisions, executes, snapshots, and destroys fake binding", 
 
   assert.equal(binding.providerId, "fake-hand");
   assert.equal(binding.status, "provisioned");
-  assert.deepEqual(binding.payload.resources, { cpu: 2 });
+  assert.deepEqual(binding.payload, { resourceKeys: ["cpu"] });
 
   const result = await provider.execute(binding, { name: "inspect", input: { url: "http://127.0.0.1" } });
   assert.equal(result.ok, true);
@@ -98,6 +98,7 @@ test("Tork hand provider reports missing workflow input", async () => {
 
 test("Tork hand provider submits workflow through executor provider", async () => {
   const submitted: ExecutorSubmitRequest[] = [];
+  const cancelled: Array<{ externalJobId: string; runId?: string; reason?: string }> = [];
   const provider = createTorkHandProvider({
     callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
     heartbeatUrl: "http://127.0.0.1:3000/api/v2/executor/heartbeat",
@@ -111,6 +112,10 @@ test("Tork hand provider submits workflow through executor provider", async () =
           status: "queued",
           projectionFingerprint: "fingerprint-1",
         };
+      },
+      cancel: async (request) => {
+        cancelled.push(request);
+        return { executorType: "tork", externalJobId: request.externalJobId, status: "cancelled" };
       },
     },
   });
@@ -127,6 +132,9 @@ test("Tork hand provider submits workflow through executor provider", async () =
   assert.equal(result.ok, true);
   assert.equal(result.output, "tork-job-1");
   assert.equal(binding.status, "running");
+  assert.equal(binding.payload.externalJobId, "tork-job-1");
+  assert.equal(binding.payload.executorStatus, "queued");
+  assert.equal(binding.payload.projectionFingerprint, "fingerprint-1");
   assert.deepEqual(submitted, [{
     runId: "run-1",
     workflow,
@@ -139,6 +147,62 @@ test("Tork hand provider submits workflow through executor provider", async () =
     executorType: "tork",
     projectionFingerprint: "fingerprint-1",
   });
+  await provider.destroy(binding);
+  assert.deepEqual(cancelled, [{ externalJobId: "tork-job-1", runId: "run-1", reason: "hand binding destroyed" }]);
+  assert.equal(binding.status, "destroyed");
+});
+
+test("Tork hand provider converts submit failures into failed hand results", async () => {
+  const provider = createTorkHandProvider({
+    callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
+    executorProvider: {
+      executorType: "tork",
+      submit: async () => {
+        throw new Error("tork unavailable");
+      },
+    },
+  });
+  const binding = await provider.provision({
+    runId: "run-1",
+    taskId: "task-1",
+    handName: "tork",
+    resources: { tokenRef: "vault-token-1" },
+  });
+
+  const result = await provider.execute(binding, { name: "submit", input: { workflow: workflowManifest() } });
+
+  assert.equal(result.ok, false);
+  assert.equal(binding.status, "failed");
+  assert.equal(binding.payload.lastError, "tork unavailable");
+  assert.deepEqual(binding.payload.resourceKeys, ["tokenRef"]);
+  assert.match(result.output, /Tork hand execution failed: tork unavailable/);
+});
+
+test("Tork hand provider rejects invalid workflow input without submitting", async () => {
+  let submitted = false;
+  const provider = createTorkHandProvider({
+    callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
+    executorProvider: {
+      executorType: "tork",
+      submit: async () => {
+        submitted = true;
+        throw new Error("submit should not be called");
+      },
+    },
+  });
+  const binding = await provider.provision({
+    runId: "run-1",
+    taskId: "task-1",
+    handName: "tork",
+    resources: {},
+  });
+
+  const result = await provider.execute(binding, { name: "submit", input: { workflow: { schemaVersion: "southstar.v2" } } });
+
+  assert.equal(result.ok, false);
+  assert.equal(binding.status, "failed");
+  assert.equal(binding.payload.lastError, "invalid workflow input for Tork hand execution");
+  assert.equal(submitted, false);
 });
 
 function workflowManifest(): SouthstarWorkflowManifest {

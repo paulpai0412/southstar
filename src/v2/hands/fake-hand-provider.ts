@@ -13,7 +13,7 @@ export function createFakeHandProvider(input: { providerId: string; failExecute?
         handName: provisionInput.handName,
         status: "provisioned",
         createdAt: new Date().toISOString(),
-        payload: { resources: provisionInput.resources },
+        payload: { resourceKeys: Object.keys(provisionInput.resources).sort() },
       };
     },
     async execute(binding: HandBinding, call: HandCall): Promise<HandResult> {

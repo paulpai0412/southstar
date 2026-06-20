@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ExecutorProvider } from "../executor/provider.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { validateWorkflowManifest } from "../manifests/validate.ts";
 import type { HandBinding, HandCall, HandProvider, HandResult, HandSnapshotRef, ProvisionHandInput } from "./types.ts";
 
 export function createTorkHandProvider(input: {
@@ -19,29 +20,58 @@ export function createTorkHandProvider(input: {
         handName: provisionInput.handName,
         status: "provisioned",
         createdAt: new Date().toISOString(),
-        payload: { resources: provisionInput.resources },
+        payload: { resourceKeys: Object.keys(provisionInput.resources).sort() },
       };
     },
     async execute(binding: HandBinding, call: HandCall): Promise<HandResult> {
       const workflow = call.input.workflow as SouthstarWorkflowManifest | undefined;
       if (!workflow) return { ok: false, output: "missing workflow input for Tork hand execution", metadata: { callName: call.name } };
-      const submitted = await input.executorProvider.submit({
-        runId: binding.runId,
-        workflow,
-        callbackUrl: input.callbackUrl,
-        heartbeatUrl: input.heartbeatUrl,
-        envelopeBasePath: typeof call.input.envelopeBasePath === "string" ? call.input.envelopeBasePath : "/southstar-runs",
-        attemptId: typeof call.input.attemptId === "string" ? call.input.attemptId : "attempt-1",
-      });
-      binding.status = "running";
-      return {
-        ok: true,
-        output: submitted.externalJobId,
-        metadata: {
+      const validation = validateWorkflowManifest(workflow);
+      if (!validation.ok) {
+        binding.status = "failed";
+        binding.payload = {
+          ...binding.payload,
+          lastError: "invalid workflow input for Tork hand execution",
+          validationIssues: validation.issues,
+        };
+        return {
+          ok: false,
+          output: `invalid workflow input for Tork hand execution: ${validation.issues.map((issue) => issue.path).join(", ")}`,
+          metadata: { callName: call.name, validationIssues: validation.issues },
+        };
+      }
+      try {
+        const submitted = await input.executorProvider.submit({
+          runId: binding.runId,
+          workflow,
+          callbackUrl: input.callbackUrl,
+          heartbeatUrl: input.heartbeatUrl,
+          envelopeBasePath: typeof call.input.envelopeBasePath === "string" ? call.input.envelopeBasePath : "/southstar-runs",
+          attemptId: typeof call.input.attemptId === "string" ? call.input.attemptId : "attempt-1",
+        });
+        binding.status = "running";
+        binding.payload = {
+          ...binding.payload,
           executorType: submitted.executorType,
+          executorStatus: submitted.status,
+          externalJobId: submitted.externalJobId,
           projectionFingerprint: submitted.projectionFingerprint,
-        },
-      };
+          providerPayload: submitted.providerPayload,
+        };
+        return {
+          ok: true,
+          output: submitted.externalJobId,
+          metadata: {
+            executorType: submitted.executorType,
+            projectionFingerprint: submitted.projectionFingerprint,
+          },
+        };
+      } catch (error) {
+        binding.status = "failed";
+        const message = error instanceof Error ? error.message : String(error);
+        binding.payload = { ...binding.payload, lastError: message };
+        return { ok: false, output: `Tork hand execution failed: ${message}`, metadata: { callName: call.name, error: message } };
+      }
     },
     async snapshot(binding: HandBinding): Promise<HandSnapshotRef> {
       return {
@@ -52,6 +82,10 @@ export function createTorkHandProvider(input: {
       };
     },
     async destroy(binding: HandBinding): Promise<void> {
+      const externalJobId = typeof binding.payload.externalJobId === "string" ? binding.payload.externalJobId : undefined;
+      if (externalJobId && input.executorProvider.cancel) {
+        await input.executorProvider.cancel({ externalJobId, runId: binding.runId, reason: "hand binding destroyed" });
+      }
       binding.status = "destroyed";
     },
     capabilities() {
