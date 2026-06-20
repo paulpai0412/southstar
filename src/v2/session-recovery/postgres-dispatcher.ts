@@ -13,6 +13,9 @@ import type { RecoveryExecutionPlan } from "./execution-planner.ts";
 import type { RecoveryStrategy, SessionCheckpointV1 } from "./types.ts";
 import { validateSessionCheckpoint } from "./types.ts";
 
+export { createPostgresRecoveryController } from "./postgres-controller.ts";
+export type { ManagedRecoveryInput, ManagedRecoveryResult, ManagedRecoveryStrategy } from "./postgres-controller.ts";
+
 export type RecoveryDispatchInputPg = {
   runId: string;
   failedTaskId: string;
