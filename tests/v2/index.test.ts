@@ -53,3 +53,4 @@ await import("./postgres-work-items.test.ts");
 await import("./postgres-task-envelope.test.ts");
 await import("./postgres-tork-callback.test.ts");
 await import("./brain-provider.test.ts");
+await import("./hand-provider.test.ts");
