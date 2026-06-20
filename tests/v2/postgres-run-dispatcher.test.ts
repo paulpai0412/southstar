@@ -10,6 +10,7 @@ import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { dispatchPostgresRunExecutionPg } from "../../src/v2/executor/postgres-run-dispatcher.ts";
 import { getExecutorBindingPg, listExecutorBindingsForRunPg } from "../../src/v2/executor/postgres-bindings.ts";
+import { listManagedBindingsForRunPg } from "../../src/v2/meta-harness/postgres-bindings.ts";
 import { listHistoryForRunPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 
@@ -80,6 +81,11 @@ test("Postgres run dispatcher materializes envelopes, submits executor, and reco
       );
       assert.equal(taskRows.rows.find((row) => row.id === "understand-repo")?.status, "running");
       assert.equal(taskRows.rows.filter((row) => row.id !== "understand-repo").every((row) => row.status === "pending"), true);
+      const understandTaskRow = await db.one<{ root_session_id: string }>(
+        "select root_session_id from southstar.workflow_tasks where run_id = $1 and id = 'understand-repo'",
+        [run.runId],
+      );
+      assert.equal(understandTaskRow.root_session_id, `root-${run.runId}-understand-repo`);
 
       const bindings = await listExecutorBindingsForRunPg(db, run.runId);
       assert.equal(bindings.length, run.taskIds.length);
@@ -87,12 +93,26 @@ test("Postgres run dispatcher materializes envelopes, submits executor, and reco
       assert.equal(binding?.payload.torkJobId, "job-normal-run-pg");
       assert.equal(binding?.status, "queued");
 
+      const managedBindings = await listManagedBindingsForRunPg(db, run.runId);
+      assert.deepEqual(managedBindings.brainBindings.map((managedBinding) => managedBinding.taskId), ["understand-repo"]);
+      assert.deepEqual(managedBindings.handBindings.map((managedBinding) => managedBinding.taskId), ["understand-repo"]);
+      assert.equal(managedBindings.brainBindings[0]?.providerId, "pi");
+      assert.equal(managedBindings.handBindings[0]?.providerId, "tork");
+      assert.equal(managedBindings.brainBindings[0]?.sessionId, understandTaskRow.root_session_id);
+
       const envelopeResources = await listResourcesPg(db, { resourceType: "task_envelope" });
       assert.equal(envelopeResources.filter((resource) => resource.runId === run.runId).length, run.taskIds.length);
+      const understandEnvelope = envelopeResources.find((resource) => resource.runId === run.runId && resource.taskId === "understand-repo");
+      assert.equal(understandEnvelope?.sessionId, understandTaskRow.root_session_id);
 
       const history = await listHistoryForRunPg(db, run.runId);
       assert.equal(history.some((event) => event.eventType === "run.execution_submitted"), true);
       assert.equal(history.some((event) => event.eventType === "executor.submitted"), true);
+      assert.equal(history.some((event) =>
+        event.eventType === "task.dispatch_submitted" &&
+        event.taskId === "understand-repo" &&
+        event.sessionId === understandTaskRow.root_session_id
+      ), true);
     } finally {
       await rm(runRoot, { recursive: true, force: true });
     }

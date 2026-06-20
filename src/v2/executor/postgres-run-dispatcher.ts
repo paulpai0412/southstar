@@ -1,6 +1,13 @@
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
+import { createPiBrainProvider } from "../brain/pi-brain-provider.ts";
+import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { createTorkHandProvider } from "../hands/tork-hand-provider.ts";
+import type { HandProvider } from "../hands/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { createRunnableTaskScheduler } from "../scheduler/runnable-task-scheduler.ts";
+import { createPostgresSessionStore } from "../session/postgres-session-store.ts";
+import type { SessionStore } from "../session/types.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
 import { withMaterializationMount } from "./materialization-mount.ts";
@@ -18,6 +25,9 @@ export type PostgresRunDispatchInput = {
   harnessEndpoint?: string;
   contextRefreshUrl?: string;
   attemptId?: string;
+  sessionStore?: SessionStore;
+  brainProvider?: BrainProvider;
+  handProvider?: HandProvider;
 };
 
 export type PostgresRunDispatchResult = {
@@ -89,11 +99,6 @@ export async function dispatchPostgresRunExecutionPg(db: SouthstarDb, input: Pos
     });
 
     for (const task of executableWorkflow.tasks) {
-      const taskStatus = task.dependsOn.length === 0 ? "running" : "pending";
-      await tx.query(
-        "update southstar.workflow_tasks set status = $1, updated_at = now() where run_id = $2 and id = $3",
-        [taskStatus, input.runId, task.id],
-      );
       await createExecutorBindingPg(tx, {
         runId: input.runId,
         taskId: task.id,
@@ -105,6 +110,16 @@ export async function dispatchPostgresRunExecutionPg(db: SouthstarDb, input: Pos
       });
     }
   });
+
+  await createRunnableTaskScheduler(db, {
+    sessionStore: input.sessionStore ?? createPostgresSessionStore(db),
+    brainProvider: input.brainProvider ?? createPiBrainProvider(),
+    handProvider: input.handProvider ?? createTorkHandProvider({
+      executorProvider: input.executorProvider,
+      callbackUrl: input.callbackUrl,
+      heartbeatUrl: input.heartbeatUrl,
+    }),
+  }).runOnce({ runId: input.runId });
 
   return {
     runId: input.runId,
