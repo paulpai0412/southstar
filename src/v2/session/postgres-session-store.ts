@@ -79,6 +79,10 @@ export function createPostgresSessionStore(db: SouthstarDb): SessionStore {
         params.push(query.correlationId);
         filters.push(`correlation_id = $${params.length}`);
       }
+      if (query.artifactRef) {
+        params.push(query.artifactRef);
+        filters.push(`payload_json::text like '%' || $${params.length} || '%'`);
+      }
 
       const limit = query.limit && query.limit > 0 ? query.limit : undefined;
       if (limit) params.push(limit);
@@ -95,46 +99,49 @@ export function createPostgresSessionStore(db: SouthstarDb): SessionStore {
     },
 
     async createCheckpoint(input) {
-      const id = input.id ?? randomUUID();
-      const resourceKey = input.resourceKey ?? id;
-      const payload = {
-        id,
-        checkpointType: input.checkpointType,
-        summary: input.summary,
-        eventRange: input.eventRange,
-        refs: input.refs,
-      };
-      await upsertRuntimeResourcePg(db, {
-        id,
-        resourceType: "session_checkpoint",
-        resourceKey,
-        runId: input.runId,
-        taskId: input.taskId,
-        sessionId: input.sessionId,
-        scope: "session",
-        status: "created",
-        title: input.summary,
-        payload,
-        metrics: input.metrics,
+      return await db.tx(async (tx) => {
+        const resourceKey = input.resourceKey ?? input.id ?? randomUUID();
+        const existing = await loadCheckpointRow(tx, resourceKey);
+        const id = existing?.id ?? input.id ?? resourceKey;
+        const payload = {
+          id,
+          resourceKey,
+          checkpointType: input.checkpointType,
+          summary: input.summary,
+          eventRange: input.eventRange,
+          refs: input.refs,
+        };
+        await upsertRuntimeResourcePg(tx, {
+          id,
+          resourceType: "session_checkpoint",
+          resourceKey,
+          runId: input.runId,
+          taskId: input.taskId,
+          sessionId: input.sessionId,
+          scope: "session",
+          status: "created",
+          title: input.summary,
+          payload,
+          metrics: input.metrics,
+        });
+        const row = await loadCheckpointRow(tx, id);
+        if (!row) throw new Error(`failed to load session checkpoint after create: ${id}`);
+        const checkpoint = mapCheckpoint(row);
+        await appendIdempotentCheckpointHistoryEvent(tx, {
+          runId: input.runId,
+          taskId: input.taskId,
+          sessionId: input.sessionId,
+          idempotencyKey: `checkpoint:${resourceKey}`,
+          payload: {
+            checkpointId: checkpoint.id,
+            checkpointResourceKey: resourceKey,
+            checkpointType: checkpoint.checkpointType,
+            eventRange: checkpoint.eventRange,
+            refs: checkpoint.refs,
+          },
+        });
+        return checkpoint;
       });
-      const row = await loadCheckpointRow(db, id);
-      if (!row) throw new Error(`failed to load session checkpoint after create: ${id}`);
-      const checkpoint = mapCheckpoint(row);
-      await appendHistoryEventPg(db, {
-        runId: input.runId,
-        taskId: input.taskId,
-        eventType: "checkpoint.created",
-        actorType: "orchestrator",
-        sessionId: input.sessionId,
-        payload: {
-          checkpointId: checkpoint.id,
-          checkpointResourceKey: resourceKey,
-          checkpointType: checkpoint.checkpointType,
-          eventRange: checkpoint.eventRange,
-          refs: checkpoint.refs,
-        },
-      });
-      return checkpoint;
     },
 
     async getCheckpoint(checkpointId) {
@@ -142,6 +149,53 @@ export function createPostgresSessionStore(db: SouthstarDb): SessionStore {
       return row ? mapCheckpoint(row) : null;
     },
   };
+}
+
+async function appendIdempotentCheckpointHistoryEvent(
+  db: SouthstarDb,
+  input: {
+    runId: string;
+    taskId?: string;
+    sessionId: string;
+    idempotencyKey: string;
+    payload: Record<string, unknown>;
+  },
+): Promise<{ id: string; sequence: number; createdAt: string }> {
+  const existing = await db.maybeOne<{ id: string; sequence: number; created_at: Date | string }>(
+    "select id, sequence, created_at from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+    [input.runId, input.idempotencyKey],
+  );
+  if (existing) return { id: existing.id, sequence: existing.sequence, createdAt: dateString(existing.created_at) };
+
+  await db.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
+  const next = await db.one<{ next_sequence: number }>(
+    "select coalesce(max(sequence), 0) + 1 as next_sequence from southstar.workflow_history where run_id = $1",
+    [input.runId],
+  );
+  const id = randomUUID();
+  const createdAt = new Date().toISOString();
+  await db.query(
+    `insert into southstar.workflow_history (
+      id, run_id, task_id, sequence, event_type, actor_type, session_id,
+      idempotency_key, correlation_id, causation_id, payload_json, created_at
+    ) values ($1, $2, $3, $4, 'checkpoint.created', 'orchestrator', $5, $6, null, null, $7::jsonb, $8)
+    on conflict do nothing`,
+    [
+      id,
+      input.runId,
+      input.taskId ?? null,
+      next.next_sequence,
+      input.sessionId,
+      input.idempotencyKey,
+      JSON.stringify(input.payload),
+      createdAt,
+    ],
+  );
+  const row = await db.one<{ id: string; sequence: number; created_at: Date | string }>(
+    "select id, sequence, created_at from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+    [input.runId, input.idempotencyKey],
+  );
+  return { id: row.id, sequence: row.sequence, createdAt: dateString(row.created_at) };
 }
 
 async function eventWindowForAnchor(
