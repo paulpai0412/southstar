@@ -16,7 +16,7 @@ type WorkItemRow = {
 };
 
 export async function createWorkItemPg(db: SouthstarDb, input: CreateWorkItemInput): Promise<WorkItemRecord> {
-  const sourceUrl = typeof input.metadata?.sourceUrl === "string" ? input.metadata.sourceUrl : null;
+  const sourceUrl = input.sourceUrl ?? (typeof input.metadata?.sourceUrl === "string" ? input.metadata.sourceUrl : null);
   const metadata = input.metadata ?? {};
   const row = input.sourceRef
     ? await db.one<WorkItemRow>(
@@ -123,12 +123,17 @@ function mapRow(row: WorkItemRow): WorkItemRecord {
 
 function parseRunRefs(value: WorkItemRunRef[] | string): WorkItemRunRef[] {
   const parsed = typeof value === "string" ? JSON.parse(value) : value;
-  return Array.isArray(parsed)
-    ? parsed.map((ref) => ({
-        runId: String((ref as { runId?: unknown }).runId),
-        runAttempt: Number((ref as { runAttempt?: unknown }).runAttempt),
-      }))
-    : [];
+  if (!Array.isArray(parsed)) return [];
+  return parsed.map((ref) => {
+    const raw = ref as { runId?: unknown; runAttempt?: unknown; statusAtLink?: unknown; reason?: unknown; createdAt?: unknown };
+    return {
+      runId: String(raw.runId),
+      runAttempt: Number(raw.runAttempt),
+      ...(typeof raw.statusAtLink === "string" ? { statusAtLink: raw.statusAtLink } : {}),
+      ...(typeof raw.reason === "string" ? { reason: raw.reason } : {}),
+      ...(typeof raw.createdAt === "string" ? { createdAt: raw.createdAt } : {}),
+    };
+  });
 }
 
 function parseMetadata(value: Record<string, unknown> | string): Record<string, unknown> {

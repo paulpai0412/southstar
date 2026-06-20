@@ -14,6 +14,8 @@ import type { ReadModelKind } from "../read-models/types.ts";
 import { appendHistoryEventPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
+import { intakeWorkItemPg } from "../work-items/intake-service.ts";
+import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
 import { handleEvolutionRoute } from "./evolution-routes.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
@@ -29,6 +31,35 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (evolutionResponse) return evolutionResponse;
     const uiResponse = await handleUiRoute(context, request, url);
     if (uiResponse) return uiResponse;
+
+    if (request.method === "POST" && url.pathname === "/api/v2/work-items/intake") {
+      const body = await readJsonBody<{
+        sourceProvider?: unknown;
+        sourceScope?: unknown;
+        sourceRef?: unknown;
+        sourceUrl?: unknown;
+        title?: unknown;
+        body?: unknown;
+        domain?: unknown;
+        priority?: unknown;
+        labels?: unknown;
+        requestedBy?: unknown;
+        metadata?: unknown;
+      }>(request);
+      return json("work-item-intake", await intakeWorkItemPg(context.db, {
+        sourceProvider: requiredWorkItemSourceProvider(body.sourceProvider),
+        sourceScope: optionalString(body.sourceScope),
+        sourceRef: optionalString(body.sourceRef),
+        sourceUrl: optionalString(body.sourceUrl),
+        title: requiredString(body.title, "title"),
+        body: optionalString(body.body) ?? "",
+        domain: requiredString(body.domain, "domain"),
+        priority: optionalPriority(body.priority),
+        labels: optionalStringArray(body.labels),
+        requestedBy: optionalString(body.requestedBy),
+        metadata: isRecord(body.metadata) ? body.metadata : undefined,
+      }));
+    }
 
     if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
       const body = await readJsonBody<{ goalPrompt?: string }>(request);
@@ -370,6 +401,26 @@ function validateCallbackEvent(event: unknown): PostgresTaskRunCallbackResult["e
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${field} is required`);
   return value;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+}
+
+function optionalPriority(value: unknown): WorkItemIntakePriority | undefined {
+  return value === "low" || value === "normal" || value === "high" || value === "urgent" ? value : undefined;
+}
+
+function requiredWorkItemSourceProvider(value: unknown): WorkItemSourceProvider {
+  const allowed = ["local", "github", "linear", "jira", "slack", "api", "custom", "cli", "ui", "scheduler"] as const;
+  if (typeof value !== "string" || !allowed.includes(value as typeof allowed[number])) {
+    throw new Error("sourceProvider is required");
+  }
+  return value as WorkItemSourceProvider;
 }
 
 function numberFromBody(value: unknown, field: string): number {

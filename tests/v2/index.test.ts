@@ -59,6 +59,7 @@ await import("./artifact-ref-store.test.ts");
 await import("./completion-gate.test.ts");
 await import("./postgres-session-store.test.ts");
 await import("./postgres-work-items.test.ts");
+await import("./work-item-intake.test.ts");
 await import("./postgres-task-envelope.test.ts");
 await import("./postgres-tork-callback.test.ts");
 await import("./tool-proxy-security.test.ts");
