@@ -1,5 +1,6 @@
 await import("./domain-pack.test.ts");
 await import("./manifests.test.ts");
+await import("./effort-policy.test.ts");
 await import("./workflow-revision.test.ts");
 await import("./tork-projection.test.ts");
 await import("./executor-provider.test.ts");

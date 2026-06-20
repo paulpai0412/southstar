@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { DomainPack } from "../domain-packs/types.ts";
+import type { EffortPolicy } from "../manifests/types.ts";
 import type { GeneratedTaskPlan, WorkflowGenerationPlan } from "./types.ts";
 import { validateWorkflowGenerationPlan } from "./validator.ts";
 
@@ -46,6 +47,7 @@ export function generateConstrainedWorkflowPlan(input: GenerateConstrainedWorkfl
       phases: broad ? broadFeaturePhases() : narrowFeaturePhases(),
       resumePolicy: "regenerate-from-checkpoint",
     },
+    effortPolicy: effortPolicyForPrompt({ broad, taskCount: tasks.length }),
     estimatedBudget: {
       inputTokens: tasks.length * 6_000,
       outputTokens: tasks.length * 1_500,
@@ -58,6 +60,32 @@ export function generateConstrainedWorkflowPlan(input: GenerateConstrainedWorkfl
     throw new Error(`generated workflow plan failed validation: ${JSON.stringify(validation.issues)}`);
   }
   return plan;
+}
+
+function effortPolicyForPrompt(input: { broad: boolean; taskCount: number }): EffortPolicy {
+  if (input.broad) {
+    return {
+      complexity: "broad",
+      maxBrains: 3,
+      maxHandsPerBrain: 2,
+      maxParallelTasks: 2,
+      maxToolCallsPerTask: 20,
+      maxInputTokensPerBrain: 20_000,
+      maxCostMicrosUsd: input.taskCount * 60_000,
+      stopWhenEvidenceSufficient: true,
+    };
+  }
+
+  return {
+    complexity: "simple",
+    maxBrains: 1,
+    maxHandsPerBrain: 1,
+    maxParallelTasks: 1,
+    maxToolCallsPerTask: 10,
+    maxInputTokensPerBrain: 12_000,
+    maxCostMicrosUsd: input.taskCount * 40_000,
+    stopWhenEvidenceSufficient: true,
+  };
 }
 
 function broadFeatureTasks(goalPrompt: string): GeneratedTaskPlan[] {

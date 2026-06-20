@@ -1,3 +1,5 @@
+import type { EffortPolicy } from "../manifests/types.ts";
+
 export type WorkflowGenerationPlan = {
   id: string;
   runId: string;
@@ -8,6 +10,7 @@ export type WorkflowGenerationPlan = {
   rationale: string;
   tasks: GeneratedTaskPlan[];
   orchestration: OrchestrationPlan;
+  effortPolicy: EffortPolicy;
   estimatedBudget: {
     inputTokens: number;
     outputTokens: number;

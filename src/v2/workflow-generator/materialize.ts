@@ -18,6 +18,7 @@ export function materializeGenerationPlan(input: MaterializeGenerationPlanInput)
     intent: input.plan.intentRef,
     goalPrompt: input.goalPrompt,
     domainPackRef: input.plan.domainPackRef,
+    effortPolicy: input.plan.effortPolicy,
     workflowGeneration: {
       planId: input.plan.id,
       generatorPolicyRef: input.plan.generatorPolicyRef,

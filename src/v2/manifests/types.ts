@@ -120,6 +120,17 @@ export type CompiledFromTemplate = {
   libraryVersionRefs: string[];
 };
 
+export type EffortPolicy = {
+  complexity: "simple" | "standard" | "broad" | "deep";
+  maxBrains: number;
+  maxHandsPerBrain: number;
+  maxParallelTasks: number;
+  maxToolCallsPerTask: number;
+  maxInputTokensPerBrain: number;
+  maxCostMicrosUsd: number;
+  stopWhenEvidenceSufficient: boolean;
+};
+
 export type SouthstarWorkflowManifest = {
   schemaVersion: "southstar.v2";
   workflowId: string;
@@ -169,6 +180,7 @@ export type SouthstarWorkflowManifest = {
   };
   approvalPolicy?: ApprovalPolicy;
   compiledFrom?: CompiledFromTemplate;
+  effortPolicy?: EffortPolicy;
 };
 
 export type PlanBundle = {
