@@ -1,4 +1,4 @@
-export const SOUTHSTAR_SCHEMA_VERSION = "2026_06_17_postgres_evolution_v1";
+export const SOUTHSTAR_SCHEMA_VERSION = "2026_06_20_managed_agents_work_items_v1";
 
 export const SOUTHSTAR_SCHEMA_SQL = `
 create schema if not exists southstar;
@@ -8,6 +8,20 @@ create table if not exists southstar.schema_metadata (
   schema_name text primary key,
   version text not null,
   initialized_at timestamptz not null default now()
+);
+
+create table if not exists southstar.work_items (
+  id text primary key,
+  source_provider text not null,
+  source_ref text,
+  source_url text,
+  title text not null,
+  domain text not null,
+  status text not null,
+  run_refs_json jsonb not null default '[]'::jsonb,
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
 );
 
 create table if not exists southstar.workflow_runs (
@@ -161,6 +175,11 @@ create table if not exists southstar.learning_edges (
   created_at timestamptz not null default now()
 );
 
+create unique index if not exists idx_work_items_source_ref
+  on southstar.work_items(source_provider, source_ref)
+  where source_ref is not null;
+create index if not exists idx_work_items_domain_status
+  on southstar.work_items(domain, status);
 create index if not exists idx_workflow_runs_status on southstar.workflow_runs(status);
 create unique index if not exists idx_workflow_history_idempotency on southstar.workflow_history(run_id, idempotency_key) where idempotency_key is not null;
 create index if not exists idx_runtime_resources_run_type on southstar.runtime_resources(run_id, resource_type);

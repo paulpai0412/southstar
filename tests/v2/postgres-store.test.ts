@@ -12,6 +12,10 @@ type TestDatabase = {
   drop(): Promise<void>;
 };
 
+test("schema version marks managed work item registry migration", () => {
+  assert.equal(SOUTHSTAR_SCHEMA_VERSION, "2026_06_20_managed_agents_work_items_v1");
+});
+
 test("db:init creates simplified southstar Postgres schema without dedicated wiki/evolution tables", async () => {
   const fixture = await createTestDatabase();
   try {
@@ -34,6 +38,7 @@ test("db:init creates simplified southstar Postgres schema without dedicated wik
       "runtime_resources",
       "schema_metadata",
       "secure_blobs",
+      "work_items",
       "workflow_history",
       "workflow_runs",
       "workflow_tasks",
