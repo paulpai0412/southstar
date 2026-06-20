@@ -43,6 +43,8 @@ test("Postgres ContextBuilder injects deterministic Knowledge Cards and persists
       agentProfileRef: "software-maker-pi",
       artifactContractRefs: ["implementation_report"],
       priorArtifactRefs: [],
+      checkpointRef: "checkpoint-builder-1",
+      checkpointSummary: "Recovered from checkpoint.",
       intent: "implement_feature",
       flowTemplateRef: "software.workflow.feature-implementation",
     });
@@ -51,6 +53,7 @@ test("Postgres ContextBuilder injects deterministic Knowledge Cards and persists
     assert.equal(packet.selectedKnowledgeCards[0]?.sourceRef, "card-builder-self-check");
     assert.equal(packet.selectedMemories.length, 0);
     assert.equal(packet.tokenEstimate.bySourceType.knowledge_card > 0, true);
+    assert.deepEqual(packet.managedSourceRefs?.checkpointRefs, ["checkpoint-builder-1"]);
 
     const trace = await db.one<{ payload_json: { selectedCardRefs: string[] } }>(
       "select payload_json from southstar.runtime_resources where resource_type = 'knowledge_card_injection_trace'",
@@ -59,6 +62,11 @@ test("Postgres ContextBuilder injects deterministic Knowledge Cards and persists
 
     const wiki = await getWikiPage(db, "card-builder-self-check");
     assert.equal(wiki.runtimeUsageLinks.some((link) => link.fromNodeId === packet.id), true);
+    const persistedContext = await db.one<{ payload_json: { managedSourceRefs?: { checkpointRefs?: string[] } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'context_packet' and resource_key = $1",
+      [packet.id],
+    );
+    assert.deepEqual(persistedContext.payload_json.managedSourceRefs?.checkpointRefs, ["checkpoint-builder-1"]);
   });
 });
 

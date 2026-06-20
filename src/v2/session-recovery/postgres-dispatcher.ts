@@ -5,6 +5,7 @@ import type { ExecutorProvider } from "../executor/provider.ts";
 import { withMaterializationMount } from "../executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
 import { createExecutorBindingPg } from "../executor/postgres-bindings.ts";
+import { buildManagedContextSourceRefs } from "../context/event-slicing.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
@@ -76,6 +77,12 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
         tokenEstimate: 14,
       },
     };
+    contextPacket.managedSourceRefs = buildManagedContextSourceRefs({
+      rawEventRefs: [],
+      omittedEventRanges: [],
+      transformRefs: [],
+      checkpointRefs: [checkpointId],
+    });
     const envelope = buildTaskEnvelopeV2({
       ...baseEnvelope,
       contextPacket,

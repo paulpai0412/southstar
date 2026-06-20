@@ -65,6 +65,12 @@ test("Postgres recovery dispatcher checkpoints failed sessions, rebuilds envelop
     const envelopes = await listResourcesPg(db, { resourceType: "task_envelope" });
     assert.equal(envelopes.length, 1);
     assert.equal((envelopes[0]?.payload as { envelope?: { session?: { sessionId?: string } } }).envelope?.session?.sessionId, `root-${run.runId}-implement-feature-recovery-2`);
+    const contextPackets = await listResourcesPg(db, { resourceType: "context_packet" });
+    const recoveryContext = contextPackets.find((resource) => resource.id === `ctx-${run.runId}-implement-feature-recovery-2`)?.payload as {
+      managedSourceRefs?: { checkpointRefs?: string[]; cacheKey?: string };
+    } | undefined;
+    assert.deepEqual(recoveryContext?.managedSourceRefs?.checkpointRefs, [checkpoints[0]?.id]);
+    assert.ok(recoveryContext?.managedSourceRefs?.cacheKey);
 
     const executions = await listResourcesPg(db, { resourceType: "recovery_execution" });
     assert.equal(executions.length, 1);

@@ -16,6 +16,7 @@ export type BuildContextPacketWithKnowledgeCardsInput = {
   agentProfileRef: string;
   artifactContractRefs: string[];
   priorArtifactRefs: string[];
+  checkpointRef?: string;
   checkpointSummary?: string;
   workspaceSummary?: string;
   failureSummary?: string;
@@ -68,7 +69,7 @@ export async function buildContextPacketWithKnowledgeCards(
     ? []
     : profile.agentsMdRefs.map((ref) => block("agents-md", ref, `Reference ${ref}.`, ref));
   const priorArtifacts = input.priorArtifactRefs.map((ref) => block("artifact", ref, `Prior artifact ${ref}.`, ref));
-  const checkpointSummary = input.checkpointSummary ? block("checkpoint", "Checkpoint", input.checkpointSummary) : undefined;
+  const checkpointSummary = input.checkpointSummary ? block("checkpoint", "Checkpoint", input.checkpointSummary, input.checkpointRef) : undefined;
   const workspaceSummary = input.workspaceSummary && contextPolicy?.includeWorkspaceSummary !== false
     ? block("workspace", "Workspace", input.workspaceSummary)
     : undefined;
@@ -120,7 +121,7 @@ export async function buildContextPacketWithKnowledgeCards(
     rawEventRefs: [],
     omittedEventRanges: [],
     transformRefs: [],
-    checkpointRefs: [input.checkpointSummary ? `${packet.id}:checkpoint-summary` : undefined].filter((item): item is string => Boolean(item)),
+    checkpointRefs: [checkpointSummary?.sourceRef ?? checkpointSummary?.id].filter((item): item is string => Boolean(item)),
   });
   packet.managedSourceRefs = managedSourceRefs;
 
