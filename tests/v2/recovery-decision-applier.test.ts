@@ -247,6 +247,66 @@ test("reprovision-hand replay does not duplicate checkpoint, hand binding, compl
   }
 });
 
+test("concurrent reprovision-hand replay reuses staged provider evidence without duplicate provision or destroy", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-reprovision-concurrent-replay" });
+    const firstAt = "2026-06-21T14:22:00.000Z";
+    const replayAt = "2026-06-21T14:22:01.000Z";
+    const firstProvisionStarted = deferred<void>();
+    const releaseFirstProvision = deferred<void>();
+    let destroyCount = 0;
+    let provisionCount = 0;
+    const handProvider = createFakeHandProvider({ providerId: "fake-hand" });
+    const applier = createRecoveryDecisionApplier({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider: {
+        ...handProvider,
+        async destroy(binding) {
+          destroyCount += 1;
+          return handProvider.destroy(binding);
+        },
+        async provision(input) {
+          provisionCount += 1;
+          if (provisionCount === 1) {
+            firstProvisionStarted.resolve();
+            await releaseFirstProvision.promise;
+          }
+          return handProvider.provision(input);
+        },
+      },
+    });
+
+    const first = applier.applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now: firstAt });
+    await firstProvisionStarted.promise;
+    const replay = applier.applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now: replayAt });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    releaseFirstProvision.resolve();
+    const [firstResult, replayResult] = await Promise.all([first, replay]);
+
+    assert.equal(firstResult.status, "applied");
+    assert.equal(replayResult.status, "applied");
+    assert.equal(replayResult.executionResourceKey, firstResult.executionResourceKey);
+    assert.equal(provisionCount, 1);
+    assert.equal(destroyCount, 1);
+
+    assert.equal((await listResourcesPg(db, { resourceType: "session_checkpoint" })).filter((resource) => resource.runId === fixture.runId).length, 1);
+    assert.equal((await listResourcesPg(db, { resourceType: "hand_binding" })).filter((resource) => resource.runId === fixture.runId).length, 2);
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_execution" })).filter((resource) => resource.runId === fixture.runId).length, 1);
+
+    const historyTypes = (await listHistoryForRunPg(db, fixture.runId)).map((event) => event.eventType);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.succeeded").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "checkpoint.created").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery.execution_submitted").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_decision.applied").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
 test("requeue-hand-execution applies queue timeout recovery and is idempotent", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -1321,4 +1381,14 @@ async function assertReprovisionHandAndTaskUnchanged(
 function pickKeys(value: unknown, keys: string[]): Record<string, unknown> {
   const source = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   return Object.fromEntries(keys.map((key) => [key, source[key]]));
+}
+
+function deferred<T>(): { promise: Promise<T>; resolve(value: T | PromiseLike<T>): void; reject(error: unknown): void } {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
 }

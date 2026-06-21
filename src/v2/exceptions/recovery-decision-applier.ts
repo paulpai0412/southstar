@@ -2,6 +2,7 @@ import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import type { HandBinding, HandProvider } from "../hands/types.ts";
 import { createPostgresRecoveryController } from "../session-recovery/postgres-controller.ts";
+import { createPostgresSessionStore } from "../session/postgres-session-store.ts";
 import type { SessionStore } from "../session/types.ts";
 import {
   appendHistoryEventPg,
@@ -65,12 +66,6 @@ type RecoveryDecisionApplierDeps = {
   sessionStore?: SessionStore;
   brainProvider?: BrainProvider;
   handProvider?: HandProvider;
-};
-
-type ReprovisionMutationResult = {
-  stateChanges: RecoveryExecutionStateChange[];
-  providerActions: RecoveryExecutionProviderAction[];
-  exceptionResourceKey: string;
 };
 
 type ReprovisionRecoveryContext = {
@@ -210,13 +205,11 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
           return { status: "blocked", executionResourceKey: started.resourceKey, reason };
         }
 
-        let mutation: ReprovisionMutationResult;
         try {
-          mutation = await applyReprovisionMutation(deps as Required<RecoveryDecisionApplierDeps>, {
+          return await applyReprovisionMutation(deps as Required<RecoveryDecisionApplierDeps>, {
             decision: applyingDecision,
             executionResourceKey: started.resourceKey,
             now,
-            stagedEvidence: stagedRecoveryExecutionEvidence(started.payload),
           });
         } catch (error) {
           if (error instanceof Error && isReprovisionBlockableError(error.message, applyingDecision)) {
@@ -230,25 +223,6 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
           }
           throw error;
         }
-
-        await resolveRuntimeExceptionPg(deps.db, {
-          runId: applyingDecision.payload.runId,
-          resourceKey: mutation.exceptionResourceKey,
-          resolvedAt: now,
-          reason: "reprovision-hand applied",
-        });
-
-        await completeRecoveryExecutionPg(deps.db, {
-          runId: applyingDecision.payload.runId,
-          executionResourceKey: started.resourceKey,
-          status: "succeeded",
-          completedAt: recoveryActionTerminalAt(mutation.providerActions, "provision") ?? now,
-          stateChanges: mutation.stateChanges,
-          providerActions: mutation.providerActions,
-        });
-        await finalizeRecoveryDecisionAppliedPg(deps.db, { decision: applyingDecision, executionResourceKey: started.resourceKey, now });
-
-        return { status: "applied", executionResourceKey: started.resourceKey, reason: "reprovision-hand applied" };
       }
 
       let mutation: RequeueMutationResult;
@@ -429,24 +403,38 @@ async function applyReprovisionMutation(
     decision: RuntimeRecoveryDecisionRecord;
     executionResourceKey: string;
     now: string;
-    stagedEvidence: RecoveryExecutionEvidence | null;
   },
-): Promise<ReprovisionMutationResult> {
+): Promise<RecoveryDecisionApplyResult> {
   const { decision, now } = input;
   const taskId = requireDecisionString(decision.payload.taskId, decision.payload.path, "taskId");
   const handExecutionId = requireDecisionString(decision.payload.handExecutionId, decision.payload.path, "handExecutionId");
-  const context = await loadReprovisionRecoveryContext(deps.db, { decision, taskId, handExecutionId });
 
-  const evidence = input.stagedEvidence ??
-    await performAndStageReprovisionRecovery(deps, {
+  return await deps.db.tx(async (tx) => {
+    const execution = await lockRecoveryExecutionForUpdatePg(tx, input.executionResourceKey);
+    if (execution.status !== "started") {
+      if (execution.status === "succeeded") {
+        await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
+        return { status: "applied", executionResourceKey: execution.resourceKey, reason: "reprovision-hand applied" };
+      }
+      if (execution.status === "blocked" || execution.status === "failed" || execution.status === "superseded") {
+        return {
+          status: execution.status,
+          executionResourceKey: execution.resourceKey,
+          reason: `recovery execution already ${execution.status}`,
+        };
+      }
+      throw new Error(`recovery execution ${execution.resourceKey} is ${execution.status}, expected started`);
+    }
+
+    const currentEvidence = stagedRecoveryExecutionEvidence(execution.payload as RecoveryExecutionPayload);
+    const evidence = currentEvidence ?? await performAndStageReprovisionRecovery(tx, deps, {
       decision,
       taskId,
-      context,
+      handExecutionId,
       executionResourceKey: input.executionResourceKey,
       now,
     });
 
-  return await deps.db.tx(async (tx) => {
     const latestContext = await loadReprovisionRecoveryContext(tx, { decision, taskId, handExecutionId });
     const cancelAt = recoveryActionTerminalAt(evidence.providerActions, "cancel") ?? now;
     const destroyAt = recoveryActionTerminalAt(evidence.providerActions, "destroy") ?? now;
@@ -502,53 +490,87 @@ async function applyReprovisionMutation(
       [decision.payload.runId, taskId],
     );
 
-    return {
-      exceptionResourceKey: latestContext.exception.resourceKey,
-      providerActions: evidence.providerActions,
+    await resolveRuntimeExceptionPg(tx, {
+      runId: decision.payload.runId,
+      resourceKey: latestContext.exception.resourceKey,
+      resolvedAt: now,
+      reason: "reprovision-hand applied",
+    });
+
+    await completeRecoveryExecutionPg(tx, {
+      runId: decision.payload.runId,
+      executionResourceKey: input.executionResourceKey,
+      status: "succeeded",
+      completedAt: recoveryActionTerminalAt(evidence.providerActions, "provision") ?? now,
       stateChanges: evidence.stateChanges,
-    };
+      providerActions: evidence.providerActions,
+    });
+    await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+
+    return { status: "applied", executionResourceKey: input.executionResourceKey, reason: "reprovision-hand applied" };
   });
 }
 
+async function lockRecoveryExecutionForUpdatePg(
+  db: SouthstarDb,
+  executionResourceKey: string,
+): Promise<RuntimeResourceRecord> {
+  const execution = mapRuntimeResourceRow(await db.maybeOne<RuntimeResourceRow>(
+    `select * from southstar.runtime_resources
+      where resource_type = $1
+        and resource_key = $2
+      for update`,
+    [RECOVERY_EXECUTION_RESOURCE_TYPE, executionResourceKey],
+  ));
+  if (!execution) throw new Error(`recovery execution ${executionResourceKey} not found`);
+  return execution;
+}
+
 async function performAndStageReprovisionRecovery(
+  db: SouthstarDb,
   deps: Required<RecoveryDecisionApplierDeps>,
   input: {
     decision: RuntimeRecoveryDecisionRecord;
     taskId: string;
-    context: ReprovisionRecoveryContext;
+    handExecutionId: string;
     executionResourceKey: string;
     now: string;
   },
 ): Promise<RecoveryExecutionEvidence> {
+  const context = await loadReprovisionRecoveryContext(db, {
+    decision: input.decision,
+    taskId: input.taskId,
+    handExecutionId: input.handExecutionId,
+  });
   const managed = await createPostgresRecoveryController({
-    db: deps.db,
-    sessionStore: deps.sessionStore,
+    db,
+    sessionStore: createPostgresSessionStore(db),
     brainProvider: deps.brainProvider,
     handProvider: deps.handProvider,
   }).recover({
     runId: input.decision.payload.runId,
     taskId: input.taskId,
-    sessionId: input.context.sessionId,
+    sessionId: context.sessionId,
     strategy: "reprovision-hand",
     reason: input.decision.payload.reason,
-    handName: handNameFromBinding(input.context.oldHandBinding) ?? "workspace",
+    handName: handNameFromBinding(context.oldHandBinding) ?? "workspace",
     handResources: handResourcesFromDecision(input.decision),
   });
 
-  if (input.context.oldHandBinding && input.context.oldHandBinding.status !== "lost") {
-    await deps.handProvider.destroy(input.context.oldHandBinding.payload as HandBinding);
+  if (context.oldHandBinding && context.oldHandBinding.status !== "lost") {
+    await deps.handProvider.destroy(context.oldHandBinding.payload as HandBinding);
   }
 
   const evidence = reprovisionRecoveryExecutionEvidence({
     decision: input.decision,
     taskId: input.taskId,
-    context: input.context,
+    context,
     managed,
     providerId: deps.handProvider.providerId,
     now: input.now,
   });
 
-  return await stageRecoveryExecutionEvidencePg(deps.db, {
+  return await stageRecoveryExecutionEvidencePg(db, {
     executionResourceKey: input.executionResourceKey,
     evidence,
     now: input.now,
