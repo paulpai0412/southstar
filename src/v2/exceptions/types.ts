@@ -143,6 +143,7 @@ export type RecoveryDecisionPayload = {
   runId: string;
   taskId?: string;
   handExecutionId?: string;
+  handBindingId?: string;
   path: RecoveryPath;
   reason: string;
   operatorApprovalRequired: boolean;

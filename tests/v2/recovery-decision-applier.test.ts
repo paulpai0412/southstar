@@ -1,9 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createRecoveryDecisionApplier } from "../../src/v2/exceptions/recovery-decision-applier.ts";
 import { recoveryExecutionResourceKey, startRecoveryExecutionPg } from "../../src/v2/exceptions/recovery-executions.ts";
+import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
+import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
@@ -13,6 +16,196 @@ import {
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("reprovision-hand marks old hand lost, creates replacement hand, checkpoints, and releases task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-reprovision" });
+    const { runId, taskId, handExecutionId, oldHandBindingId, decision, exception } = fixture;
+    const now = "2026-06-21T14:00:00.000Z";
+
+    const result = await createRecoveryDecisionApplier({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
+    }).applyDecision({ decisionResourceKey: decision.resourceKey, now });
+
+    assert.equal(result.status, "applied");
+
+    const oldHand = await getResourceByKeyPg(db, "hand_execution", handExecutionId);
+    assert.equal(oldHand?.status, "lost");
+    assert.deepEqual(pickKeys(oldHand?.payload, ["status", "terminalAt", "lostReason", "recoveryDecisionId"]), {
+      status: "lost",
+      terminalAt: now,
+      lostReason: "reprovision-hand",
+      recoveryDecisionId: decision.decisionId,
+    });
+
+    const oldBinding = await getResourceByKeyPg(db, "hand_binding", oldHandBindingId);
+    assert.equal(oldBinding?.status, "lost");
+    assert.deepEqual(pickKeys(oldBinding?.payload, ["status", "terminalAt", "lostReason", "recoveryDecisionId"]), {
+      status: "lost",
+      terminalAt: now,
+      lostReason: "reprovision-hand",
+      recoveryDecisionId: decision.decisionId,
+    });
+
+    const task = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [runId, taskId],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", decision.resourceKey))?.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", exception.resourceKey))?.status, "resolved");
+
+    const handBindings = (await listResourcesPg(db, { resourceType: "hand_binding" })).filter(
+      (resource) => resource.runId === runId,
+    );
+    assert.equal(handBindings.length, 2);
+    const replacementBinding = handBindings.find((resource) => resource.resourceKey !== oldHandBindingId);
+    assert.match(replacementBinding?.resourceKey ?? "", /^hand-/);
+    assert.equal(replacementBinding?.status, "provisioned");
+    assert.equal((replacementBinding?.payload as { providerId?: string; handName?: string }).providerId, "fake-hand");
+    assert.equal((replacementBinding?.payload as { providerId?: string; handName?: string }).handName, "workspace");
+
+    const checkpoints = (await listResourcesPg(db, { resourceType: "session_checkpoint" })).filter(
+      (resource) => resource.runId === runId,
+    );
+    assert.equal(checkpoints.length, 1);
+    assert.equal((checkpoints[0]?.payload as { checkpointType?: string }).checkpointType, "before-recovery");
+
+    const runtimeExecutions = (await listResourcesPg(db, { resourceType: "recovery_execution" })).filter(
+      (resource) => resource.runId === runId,
+    );
+    assert.equal(runtimeExecutions.length, 1);
+    assert.equal(runtimeExecutions[0]?.status, "succeeded");
+    const executionPayload = runtimeExecutions[0]?.payload as {
+      stateChanges: Array<{ resourceType: string; resourceKey: string; fromStatus?: string; toStatus?: string; reason: string }>;
+      providerActions: Array<{ providerId: string; action: string; status: string; evidenceRef?: string; attemptedAt?: string; succeededAt?: string }>;
+    };
+    assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus]), [
+      ["hand_execution", "lost"],
+      ["hand_binding", "lost"],
+      ["session_checkpoint", "created"],
+      ["hand_binding", "provisioned"],
+      ["workflow_task", "pending"],
+      ["recovery_decision", "applied"],
+      ["runtime_exception", "resolved"],
+    ]);
+    assert.deepEqual(executionPayload.providerActions.map((action) => [action.providerId, action.action, action.status, action.evidenceRef]), [
+      ["fake-hand", "cancel", "succeeded", handExecutionId],
+      ["fake-hand", "destroy", "succeeded", oldHandBindingId],
+      ["fake-hand", "provision", "succeeded", replacementBinding?.resourceKey],
+    ]);
+
+    const history = await listHistoryForRunPg(db, runId);
+    assert.equal(history.filter((event) => event.eventType === "recovery_decision.applied").length, 1);
+    assert.deepEqual(history.find((event) => event.eventType === "recovery_decision.applied")?.payload, {
+      recoveryDecisionId: decision.decisionId,
+      runId,
+      taskId,
+      path: "reprovision-hand",
+      executionResourceKey: result.executionResourceKey,
+      result: "applied",
+      status: "applied",
+      appliedAt: now,
+    });
+
+    const runtimeDecisions = (await listResourcesPg(db, { resourceType: "recovery_decision" })).filter(
+      (resource) => (resource.payload as { schemaVersion?: string }).schemaVersion === "southstar.runtime.recovery_decision.v1",
+    );
+    const managedDecisions = (await listResourcesPg(db, { resourceType: "recovery_decision" })).filter(
+      (resource) => (resource.payload as { schemaVersion?: string }).schemaVersion === "southstar.managed-recovery-decision.v1",
+    );
+    assert.deepEqual(runtimeDecisions.map((resource) => resource.resourceKey), [decision.resourceKey]);
+    assert.equal(managedDecisions.length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("reprovision-hand blocks when dependencies are missing without mutating hand or task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-reprovision-missing-deps" });
+    const now = "2026-06-21T14:10:00.000Z";
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now,
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason, /missing reprovision-hand dependencies/);
+    await assertReprovisionHandAndTaskUnchanged(db, fixture);
+
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.resourceKey === result.executionResourceKey,
+    );
+    assert.equal(recoveryExecution?.status, "blocked");
+    assert.deepEqual((recoveryExecution?.payload as { providerActions?: unknown[] }).providerActions, []);
+    assert.deepEqual((recoveryExecution?.payload as { stateChanges?: Array<{ resourceType: string; toStatus?: string }> }).stateChanges?.map(
+      (change) => [change.resourceType, change.toStatus],
+    ), [["recovery_decision", "blocked"]]);
+    assert.equal((await listResourcesPg(db, { resourceType: "session_checkpoint" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "hand_binding" })).filter((resource) => resource.runId === fixture.runId).length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("reprovision-hand replay does not duplicate checkpoint, hand binding, completion, or applied history", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-reprovision-idempotent" });
+    const firstAt = "2026-06-21T14:20:00.000Z";
+    const retryAt = "2026-06-21T14:21:00.000Z";
+    let destroyCount = 0;
+    let provisionCount = 0;
+    const handProvider = createFakeHandProvider({ providerId: "fake-hand" });
+    const applier = createRecoveryDecisionApplier({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider: {
+        ...handProvider,
+        async destroy(binding) {
+          destroyCount += 1;
+          return handProvider.destroy(binding);
+        },
+        async provision(input) {
+          provisionCount += 1;
+          return handProvider.provision(input);
+        },
+      },
+    });
+
+    const first = await applier.applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now: firstAt });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "applying");
+    const second = await applier.applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now: retryAt });
+
+    assert.equal(first.status, "applied");
+    assert.equal(second.status, "applied");
+    assert.equal(second.executionResourceKey, first.executionResourceKey);
+    assert.equal(destroyCount, 1);
+    assert.equal(provisionCount, 1);
+
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_execution" })).filter((resource) => resource.runId === fixture.runId).length, 1);
+    assert.equal((await listResourcesPg(db, { resourceType: "session_checkpoint" })).filter((resource) => resource.runId === fixture.runId).length, 1);
+    assert.equal((await listResourcesPg(db, { resourceType: "hand_binding" })).filter((resource) => resource.runId === fixture.runId).length, 2);
+
+    const historyTypes = (await listHistoryForRunPg(db, fixture.runId)).map((event) => event.eventType);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.succeeded").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "checkpoint.created").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery.execution_submitted").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_decision.applied").length, 1);
+  } finally {
+    await db.close();
+  }
+});
 
 test("requeue-hand-execution applies queue timeout recovery and is idempotent", async () => {
   const db = await createTestPostgresDb();
@@ -905,6 +1098,120 @@ async function createRequeueDecisionFixture(db: Awaited<ReturnType<typeof create
   return { db, runId, taskId, sessionId, attemptId, handExecutionId, exception, decision };
 }
 
+async function createReprovisionDecisionFixture(db: Awaited<ReturnType<typeof createTestPostgresDb>>, input: { runId: string }) {
+  const runId = input.runId;
+  const taskId = "task-a";
+  const sessionId = "session-a";
+  const attemptId = "attempt-1";
+  const oldHandBindingId = `hand-binding:${runId}:${taskId}:old`;
+  const handExecutionId = `hand-execution:${runId}:${taskId}:${attemptId}`;
+
+  await createWorkflowRunPg(db, {
+    id: runId,
+    status: "running",
+    domain: "software",
+    goalPrompt: "apply reprovision recovery",
+    workflowManifestJson: "{}",
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  await createWorkflowTaskPg(db, {
+    id: taskId,
+    runId,
+    taskKey: taskId,
+    status: "failed",
+    sortOrder: 0,
+    dependsOn: [],
+    rootSessionId: sessionId,
+  });
+  await db.query(
+    "update southstar.workflow_tasks set completed_at = $1, updated_at = now() where run_id = $2 and id = $3",
+    ["2026-06-21T13:55:00.000Z", runId, taskId],
+  );
+  await createPostgresSessionStore(db).emitEvent({
+    eventType: "session.created",
+    actorType: "orchestrator",
+    runId,
+    taskId,
+    sessionId,
+    idempotencyKey: `${runId}:${sessionId}:created`,
+    payload: { reason: "reprovision fixture" },
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: oldHandBindingId,
+    resourceType: "hand_binding",
+    resourceKey: oldHandBindingId,
+    runId,
+    taskId,
+    scope: "hand",
+    status: "running",
+    title: "Old workspace hand",
+    payload: {
+      id: oldHandBindingId,
+      providerId: "fake-hand",
+      runId,
+      taskId,
+      handName: "workspace",
+      status: "running",
+      createdAt: "2026-06-21T13:50:00.000Z",
+      payload: { externalLeaseId: "lease-old" },
+    },
+    summary: { providerId: "fake-hand", handName: "workspace" },
+    metrics: {},
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: handExecutionId,
+    resourceType: "hand_execution",
+    resourceKey: handExecutionId,
+    runId,
+    taskId,
+    sessionId,
+    scope: "hand",
+    status: "running",
+    title: "Hand execution task-a",
+    payload: {
+      schemaVersion: "southstar.runtime.hand_execution.v1",
+      handExecutionId,
+      providerId: "fake-hand",
+      runId,
+      taskId,
+      sessionId,
+      attemptId,
+      brainBindingId: "brain-binding-a",
+      handBindingId: oldHandBindingId,
+      externalJobId: "job-running",
+      status: "running",
+      queuedAt: "2026-06-21T13:51:00.000Z",
+      startedAt: "2026-06-21T13:52:00.000Z",
+      queueTimeoutSeconds: 300,
+      heartbeatTimeoutSeconds: 300,
+    },
+    summary: { providerId: "fake-hand", attemptId },
+    metrics: {},
+  });
+
+  const controller = createRuntimeExceptionController({ db });
+  const exception = await controller.observe({
+    runId,
+    taskId,
+    sessionId,
+    attemptId,
+    handExecutionId,
+    handBindingId: oldHandBindingId,
+    source: "tork-observer",
+    kind: "tork_running_hang",
+    severity: "recoverable",
+    observedAt: "2026-06-21T13:59:00.000Z",
+    evidenceRefs: [handExecutionId, oldHandBindingId],
+    providerEvidence: { externalJobId: "job-running" },
+  });
+  const decision = await controller.decide(await controller.classify(exception));
+
+  return { db, runId, taskId, sessionId, attemptId, oldHandBindingId, handExecutionId, exception, decision };
+}
+
 async function setDecisionStatus(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   decisionResourceKey: string,
@@ -951,4 +1258,27 @@ async function assertHandAndTaskUnchanged(
   );
   assert.equal(task.status, "queued");
   assert.equal(task.completed_at, null);
+}
+
+async function assertReprovisionHandAndTaskUnchanged(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  fixture: Awaited<ReturnType<typeof createReprovisionDecisionFixture>>,
+): Promise<void> {
+  const hand = await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId);
+  assert.equal(hand?.status, "running");
+  assert.equal((hand?.payload as { status?: string }).status, "running");
+  const binding = await getResourceByKeyPg(db, "hand_binding", fixture.oldHandBindingId);
+  assert.equal(binding?.status, "running");
+  assert.equal((binding?.payload as { status?: string }).status, "running");
+  const task = await db.one<{ status: string; completed_at: Date | null }>(
+    "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+    [fixture.runId, fixture.taskId],
+  );
+  assert.equal(task.status, "failed");
+  assert.ok(task.completed_at);
+}
+
+function pickKeys(value: unknown, keys: string[]): Record<string, unknown> {
+  const source = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return Object.fromEntries(keys.map((key) => [key, source[key]]));
 }
