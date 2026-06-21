@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
+import { openSouthstarDb } from "../../src/v2/db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../../src/v2/artifacts/types.ts";
 import { createExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
 import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
@@ -33,6 +34,23 @@ test("tool proxy policy scanner detects credential-shaped keys and tokens with r
   assert.match(openAiFinding?.redactedExcerpt ?? "", /\[REDACTED\]/);
 
   assert.equal(scanForCredentialLeak({ output: "safe artifact", metadata: { status: "ok" } }), null);
+});
+
+test("tool proxy policy redacts entire sensitive-key subtrees before excerpt persistence", () => {
+  const nestedSecret = "raw-secret-not-matching-common-token-regex";
+  const finding = scanForCredentialLeak({
+    env: {
+      GITHUB_TOKEN: {
+        value: nestedSecret,
+        metadata: { source: "vault", nested: ["keep out"] },
+      },
+    },
+  });
+
+  assert.equal(finding?.reason, "raw_credential_in_envelope");
+  assert.match(finding?.redactedExcerpt ?? "", /\[REDACTED\]/);
+  assert.doesNotMatch(finding?.redactedExcerpt ?? "", new RegExp(nestedSecret));
+  assert.doesNotMatch(finding?.redactedExcerpt ?? "", /keep out/);
 });
 
 test("tool proxy policy violation writes blocking security resource and history event", async () => {
@@ -69,6 +87,41 @@ test("tool proxy policy violation writes blocking security resource and history 
   });
 });
 
+test("tool proxy policy violation writes are idempotent under concurrent duplicate attempts", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, "run-tool-policy-concurrent", "task-1");
+    const finding = scanForCredentialLeak({ env: { API_KEY: "sk-1234567890abcdefghijklmnopqrstuvwxyz" } });
+    assert.ok(finding);
+    const input = {
+      runId: "run-tool-policy-concurrent",
+      taskId: "task-1",
+      sessionId: "session-1",
+      handExecutionId: "hand-exec-1",
+      severity: "blocking" as const,
+      reason: finding.reason,
+      evidenceRef: "duplicate-envelope",
+      redactedExcerpt: finding.redactedExcerpt,
+    };
+    const firstDb = await openSouthstarDb((db as SouthstarDb & { databaseUrl: string }).databaseUrl);
+    const secondDb = await openSouthstarDb((db as SouthstarDb & { databaseUrl: string }).databaseUrl);
+    try {
+      const [first, second] = await Promise.all([
+        createToolProxyViolationPg(firstDb, input),
+        createToolProxyViolationPg(secondDb, input),
+      ]);
+
+      assert.equal(first.id, second.id);
+    } finally {
+      await firstDb.close();
+      await secondDb.close();
+    }
+    const violations = await listResourcesPg(db, { resourceType: "tool_proxy_violation" });
+    assert.equal(violations.length, 1);
+    const history = await listHistoryForRunPg(db, "run-tool-policy-concurrent");
+    assert.equal(history.filter((row) => row.eventType === "tool_proxy.violation").length, 1);
+  });
+});
+
 test("raw credential assertion fails closed and persists a blocking callback violation", async () => {
   await withDb(async (db) => {
     await seedRunTask(db, "run-policy-assert", "task-1");
@@ -90,6 +143,98 @@ test("raw credential assertion fails closed and persists a blocking callback vio
     assert.equal(violations[0]?.status, "blocking");
     assert.equal((violations[0]?.payload as { reason?: string }).reason, "callback_payload_leak");
     assert.doesNotMatch(JSON.stringify(violations[0]), /github_pat_11AA22BB33CC44DD55EE66FF77GG88HH99II00JJ/);
+  });
+});
+
+test("callback event payload leak is rejected before history or artifact persistence", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, "run-callback-policy-event-leak", "task-1");
+    await createExecutorBindingPg(db, {
+      runId: "run-callback-policy-event-leak",
+      taskId: "task-1",
+      attemptId: "attempt-1",
+      torkJobId: "job-1",
+      status: "running",
+      now: "2026-06-21T10:00:00.000Z",
+      queueTimeoutSeconds: 60,
+      hardTimeoutSeconds: 600,
+    });
+    const leakedSecret = "ghp_123456789012345678901234567890123456";
+
+    await assert.rejects(
+      () => ingestTaskRunResultPg(db, {
+        runId: "run-callback-policy-event-leak",
+        taskId: "task-1",
+        rootSessionId: "session-1",
+        ok: true,
+        attempts: 1,
+        attemptId: "attempt-1",
+        artifact: { kind: "implementation_report", summary: "safe artifact" },
+        metrics: {},
+        events: [{
+          eventType: "session.entry",
+          actorType: "root-session",
+          sessionId: "session-1",
+          payload: { message: `leaked ${leakedSecret}` },
+        }],
+      }),
+      /raw credential detected/i,
+    );
+
+    const violations = await listResourcesPg(db, { resourceType: "tool_proxy_violation" });
+    assert.equal(violations.length, 1);
+    assert.equal((violations[0]?.payload as { evidenceRef?: string }).evidenceRef, "executor-callback:run-callback-policy-event-leak:task-1:attempt-1:events[0].payload");
+    assert.doesNotMatch(JSON.stringify(violations[0]), new RegExp(leakedSecret));
+
+    const artifacts = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
+    assert.equal(artifacts.length, 0);
+    const history = await listHistoryForRunPg(db, "run-callback-policy-event-leak");
+    assert.equal(history.some((row) => row.eventType === "session.entry"), false);
+    assert.equal(history.some((row) => row.eventType === "executor.callback_received"), false);
+    assert.doesNotMatch(JSON.stringify(history), new RegExp(leakedSecret));
+  });
+});
+
+test("callback metrics leak is rejected before history or artifact persistence", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, "run-callback-policy-metrics-leak", "task-1");
+    await createExecutorBindingPg(db, {
+      runId: "run-callback-policy-metrics-leak",
+      taskId: "task-1",
+      attemptId: "attempt-1",
+      torkJobId: "job-1",
+      status: "running",
+      now: "2026-06-21T10:00:00.000Z",
+      queueTimeoutSeconds: 60,
+      hardTimeoutSeconds: 600,
+    });
+    const leakedSecret = "raw-secret-not-matching-common-token-regex";
+
+    await assert.rejects(
+      () => ingestTaskRunResultPg(db, {
+        runId: "run-callback-policy-metrics-leak",
+        taskId: "task-1",
+        rootSessionId: "session-1",
+        ok: true,
+        attempts: 1,
+        attemptId: "attempt-1",
+        artifact: { kind: "implementation_report", summary: "safe artifact" },
+        metrics: { tokens: 10, GITHUB_TOKEN: { value: leakedSecret } } as never,
+        events: [],
+      }),
+      /raw credential detected/i,
+    );
+
+    const violations = await listResourcesPg(db, { resourceType: "tool_proxy_violation" });
+    assert.equal(violations.length, 1);
+    assert.equal((violations[0]?.payload as { evidenceRef?: string }).evidenceRef, "executor-callback:run-callback-policy-metrics-leak:task-1:attempt-1:metrics");
+    assert.doesNotMatch(JSON.stringify(violations[0]), new RegExp(leakedSecret));
+
+    const artifacts = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
+    assert.equal(artifacts.length, 0);
+    const history = await listHistoryForRunPg(db, "run-callback-policy-metrics-leak");
+    assert.equal(history.some((row) => row.eventType === "executor.callback_received"), false);
+    assert.doesNotMatch(JSON.stringify(history), new RegExp(leakedSecret));
   });
 });
 

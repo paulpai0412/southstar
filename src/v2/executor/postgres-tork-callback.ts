@@ -23,14 +23,7 @@ export type PostgresCallbackIngestionResult = {
 export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTaskRunCallbackResult): Promise<PostgresCallbackIngestionResult> {
   const receipt = callbackReceiptToken(result);
   const handExecutionId = `executor-callback:${result.runId}:${result.taskId}:${result.attemptId ?? result.attempts}`;
-  await assertNoRawCredentialPayloadPg(db, {
-    runId: result.runId,
-    taskId: result.taskId,
-    sessionId: result.rootSessionId,
-    handExecutionId,
-    evidenceRef: handExecutionId,
-    value: result.artifact,
-  });
+  await assertCallbackPersistedSurfacesSafePg(db, result, handExecutionId);
   return await db.tx(async (tx) => {
     const task = await tx.maybeOne<{ status: string; root_session_id: string | null }>(
       "select status, root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
@@ -170,6 +163,39 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
     }
 
     return { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId };
+  });
+}
+
+async function assertCallbackPersistedSurfacesSafePg(
+  db: SouthstarDb,
+  result: PostgresTaskRunCallbackResult,
+  handExecutionId: string,
+): Promise<void> {
+  await assertNoRawCredentialPayloadPg(db, {
+    runId: result.runId,
+    taskId: result.taskId,
+    sessionId: result.rootSessionId,
+    handExecutionId,
+    evidenceRef: `${handExecutionId}:artifact`,
+    value: result.artifact,
+  });
+  for (const [index, event] of result.events.entries()) {
+    await assertNoRawCredentialPayloadPg(db, {
+      runId: result.runId,
+      taskId: result.taskId,
+      sessionId: event.sessionId ?? result.rootSessionId,
+      handExecutionId,
+      evidenceRef: `${handExecutionId}:events[${index}].payload`,
+      value: event.payload,
+    });
+  }
+  await assertNoRawCredentialPayloadPg(db, {
+    runId: result.runId,
+    taskId: result.taskId,
+    sessionId: result.rootSessionId,
+    handExecutionId,
+    evidenceRef: `${handExecutionId}:metrics`,
+    value: result.metrics,
   });
 }
 

@@ -1,6 +1,6 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { ToolProxyViolationPayload, ToolProxyViolationReason } from "./types.ts";
 
 export type CredentialLeakFinding = {
@@ -28,15 +28,14 @@ export type RawCredentialAssertionInput = {
   value: unknown;
 };
 
-const SENSITIVE_KEY_PATTERN = /(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION|API[_-]?KEY)/i;
-const SENSITIVE_KEY_JSON_PATTERN = /"[^"]*(?:TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION|API[_-]?KEY)[^"]*"\s*:/i;
 const COMMON_TOKEN_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/;
 const COMMON_TOKEN_REDACTION_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/g;
 
 export function scanForCredentialLeak(value: unknown): CredentialLeakFinding | null {
-  const text = stringifyForScanning(value);
+  const redacted = redactSensitiveSubtrees(value);
+  const text = stringifyForScanning(redacted.value);
   if (!text) return null;
-  if (SENSITIVE_KEY_JSON_PATTERN.test(text) || COMMON_TOKEN_PATTERN.test(text)) {
+  if (redacted.foundSensitiveKey || COMMON_TOKEN_PATTERN.test(text)) {
     return {
       reason: "raw_credential_in_envelope",
       redactedExcerpt: redactText(text),
@@ -77,21 +76,24 @@ export async function createToolProxyViolationPg(db: SouthstarDb, input: ToolPro
     detectedAt: now,
   };
 
-  await upsertRuntimeResourcePg(db, {
-    id,
-    resourceType: "tool_proxy_violation",
-    resourceKey: id,
-    runId: input.runId,
-    taskId: input.taskId,
-    sessionId: input.sessionId,
-    scope: "security",
-    status: input.severity,
-    title: `Tool proxy violation ${input.reason}`,
-    payload,
-    summary: { reason: input.reason, severity: input.severity },
-    metrics: {},
+  await db.tx(async (tx) => {
+    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
+    await upsertRuntimeResourcePg(tx, {
+      id,
+      resourceType: "tool_proxy_violation",
+      resourceKey: id,
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      scope: "security",
+      status: input.severity,
+      title: `Tool proxy violation ${input.reason}`,
+      payload,
+      summary: { reason: input.reason, severity: input.severity },
+      metrics: {},
+    });
+    await appendViolationHistoryOncePg(tx, input.runId, id, input.taskId, input.sessionId, payload);
   });
-  await appendViolationHistoryOncePg(db, input.runId, id, input.taskId, input.sessionId, payload);
   return { id };
 }
 
@@ -104,19 +106,30 @@ async function appendViolationHistoryOncePg(
   payload: ToolProxyViolationPayload,
 ): Promise<void> {
   const idempotencyKey = `${violationId}:history`;
-  const existing = await db.maybeOne<{ id: string }>(
-    "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
-    [runId, idempotencyKey],
-  );
-  if (existing) return;
-  await appendHistoryEventPg(db, {
-    runId,
-    taskId,
-    sessionId,
-    eventType: "tool_proxy.violation",
-    actorType: "tool-proxy",
-    idempotencyKey,
-    payload,
+  await db.tx(async (tx) => {
+    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [runId]);
+    await tx.query(
+      `insert into southstar.workflow_history (
+        id, run_id, task_id, sequence, event_type, actor_type, session_id,
+        idempotency_key, correlation_id, causation_id, payload_json, created_at
+      ) values (
+        $1, $2, $3,
+        (select coalesce(max(sequence), 0) + 1 from southstar.workflow_history where run_id = $2),
+        $4, $5, $6, $7, null, null, $8::jsonb, $9
+      )
+      on conflict (run_id, idempotency_key) where idempotency_key is not null do nothing`,
+      [
+        randomUUID(),
+        runId,
+        taskId ?? null,
+        "tool_proxy.violation",
+        "tool-proxy",
+        sessionId ?? null,
+        idempotencyKey,
+        JSON.stringify(payload),
+        new Date().toISOString(),
+      ],
+    );
   });
 }
 
@@ -141,6 +154,37 @@ function stringifyForScanning(value: unknown): string {
   } catch {
     return stableStringify(value);
   }
+}
+
+function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): { value: unknown; foundSensitiveKey: boolean } {
+  if (value === null) return { value: null, foundSensitiveKey: false };
+  if (typeof value !== "object") return { value, foundSensitiveKey: false };
+  if (seen.has(value)) return { value: "[Circular]", foundSensitiveKey: false };
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    let foundSensitiveKey = false;
+    const redacted = value.map((item) => {
+      const child = redactSensitiveSubtrees(item, seen);
+      foundSensitiveKey ||= child.foundSensitiveKey;
+      return child.value;
+    });
+    return { value: redacted, foundSensitiveKey };
+  }
+
+  const redacted: Record<string, unknown> = {};
+  let foundSensitiveKey = false;
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (isSensitivePolicyKey(key)) {
+      redacted[key] = "[REDACTED]";
+      foundSensitiveKey = true;
+      continue;
+    }
+    const redactedChild = redactSensitiveSubtrees(child, seen);
+    redacted[key] = redactedChild.value;
+    foundSensitiveKey ||= redactedChild.foundSensitiveKey;
+  }
+  return { value: redacted, foundSensitiveKey };
 }
 
 function redactText(value: string): string {
@@ -172,5 +216,18 @@ function stableStringify(value: unknown, seen = new WeakSet<object>()): string {
 }
 
 export function isSensitivePolicyKey(key: string): boolean {
-  return SENSITIVE_KEY_PATTERN.test(key);
+  const normalized = key
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toUpperCase();
+  const parts = normalized.split(/[^A-Z0-9]+/).filter(Boolean);
+  const joined = parts.join("_");
+  return parts.includes("TOKEN")
+    || parts.includes("SECRET")
+    || parts.includes("SECRETS")
+    || parts.includes("PASSWORD")
+    || parts.includes("CREDENTIAL")
+    || parts.includes("CREDENTIALS")
+    || parts.includes("AUTHORIZATION")
+    || joined.includes("API_KEY")
+    || joined.includes("APIKEY");
 }
