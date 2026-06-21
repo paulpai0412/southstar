@@ -32,6 +32,7 @@
     "test:e2e:postgres:10": "tsx tests/e2e-postgres/cases/10-managed-brain-crash-wake.test.ts",
     "test:e2e:postgres:11": "tsx tests/e2e-postgres/cases/11-managed-hand-reprovision.test.ts",
     "test:e2e:postgres:12": "tsx tests/e2e-postgres/cases/12-managed-credential-isolation.test.ts",
+    "test:e2e:postgres:13": "tsx tests/e2e-postgres/cases/13-managed-per-task-tork-runtime.test.ts",
     "test:e2e:ui": "tsx tests/e2e-ui/index.test.ts",
     "web:dev": "next dev -p 3030 --webpack",
     "web:build": "next build --webpack",

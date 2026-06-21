@@ -20,6 +20,7 @@ const implementedCases = [
   "10-managed-brain-crash-wake.test.ts",
   "11-managed-hand-reprovision.test.ts",
   "12-managed-credential-isolation.test.ts",
+  "13-managed-per-task-tork-runtime.test.ts",
 ];
 
 test("canonical real E2E entrypoint is a static manifest and real cases run one at a time", () => {
