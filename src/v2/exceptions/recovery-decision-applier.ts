@@ -126,6 +126,16 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
         return { status: "blocked", executionResourceKey: started.resourceKey, reason: "requeue-hand-execution decision missing handExecutionId" };
       }
 
+      if (started.status !== "started") {
+        if (started.status === "succeeded") {
+          await finalizeRecoveryDecisionAppliedPg(deps.db, { decision, executionResourceKey: started.resourceKey, now });
+          return { status: "applied", executionResourceKey: started.resourceKey, reason: "requeue-hand-execution applied" };
+        }
+        return { status: started.status, executionResourceKey: started.resourceKey, reason: `recovery execution already ${started.status}` };
+      }
+
+      await claimRecoveryDecisionApplyingPg(deps.db, { decision, now });
+
       let mutation: RequeueMutationResult;
       try {
         mutation = await applyRequeueMutation(deps.db, { decision, now });
@@ -155,16 +165,14 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
         reason: "requeue-hand-execution applied",
       });
 
-      if (started.status === "started") {
-        await completeRecoveryExecutionPg(deps.db, {
-          runId: decision.payload.runId,
-          executionResourceKey: started.resourceKey,
-          status: "succeeded",
-          completedAt: now,
-          stateChanges: mutation.stateChanges,
-          providerActions: mutation.providerActions,
-        });
-      }
+      await completeRecoveryExecutionPg(deps.db, {
+        runId: decision.payload.runId,
+        executionResourceKey: started.resourceKey,
+        status: "succeeded",
+        completedAt: now,
+        stateChanges: mutation.stateChanges,
+        providerActions: mutation.providerActions,
+      });
       await finalizeRecoveryDecisionAppliedPg(deps.db, { decision, executionResourceKey: started.resourceKey, now });
 
       return { status: "applied", executionResourceKey: started.resourceKey, reason: "requeue-hand-execution applied" };
@@ -238,35 +246,13 @@ async function applyRequeueMutation(
       [decision.payload.runId, taskId],
     );
 
-    const decisionPayload = {
-      ...decision.payload,
-      applyingAt: now,
-      statusReason: "requeue-hand-execution applying",
-    };
-    await upsertRuntimeResourcePg(tx, {
-      id: decision.decisionId,
-      resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
-      resourceKey: decision.resourceKey,
-      runId: decision.payload.runId,
-      taskId: decision.payload.taskId,
-      scope: "recovery",
-      status: "applying",
-      title: `Runtime recovery decision: ${decision.payload.path}`,
-      payload: decisionPayload,
-      summary: {
-        exceptionId: decision.payload.exceptionId,
-        path: decision.payload.path,
-        applyingAt: now,
-      },
-    });
-
     return {
       exceptionResourceKey: exception.resourceKey,
       providerActions: [
         {
           providerId,
           action: "cancel",
-          status: "skipped",
+          status: "succeeded",
           evidenceRef: hand.resourceKey,
         },
       ],
@@ -288,12 +274,40 @@ async function applyRequeueMutation(
         {
           resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
           resourceKey: decision.resourceKey,
-          fromStatus: decision.status,
+          fromStatus: "applying",
           toStatus: "applied",
           reason: "requeue-hand-execution applied",
         },
       ],
     };
+  });
+}
+
+async function claimRecoveryDecisionApplyingPg(
+  db: SouthstarDb,
+  input: { decision: RuntimeRecoveryDecisionRecord; now: string },
+): Promise<void> {
+  if (input.decision.status === "applying") return;
+  const payload = {
+    ...input.decision.payload,
+    applyingAt: input.now,
+    statusReason: "requeue-hand-execution applying",
+  };
+  await upsertRuntimeResourcePg(db, {
+    id: input.decision.decisionId,
+    resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+    resourceKey: input.decision.resourceKey,
+    runId: input.decision.payload.runId,
+    taskId: input.decision.payload.taskId,
+    scope: "recovery",
+    status: "applying",
+    title: `Runtime recovery decision: ${input.decision.payload.path}`,
+    payload,
+    summary: {
+      exceptionId: input.decision.payload.exceptionId,
+      path: input.decision.payload.path,
+      applyingAt: input.now,
+    },
   });
 }
 
@@ -396,11 +410,13 @@ async function appendRecoveryDecisionAppliedHistoryOncePg(
     actorType: "orchestrator",
     idempotencyKey,
     payload: {
-      decisionId: input.decision.decisionId,
-      resourceKey: input.decision.resourceKey,
-      exceptionId: input.decision.payload.exceptionId,
-      executionResourceKey: input.executionResourceKey,
+      recoveryDecisionId: input.decision.decisionId,
+      runId: input.decision.payload.runId,
+      taskId: input.decision.payload.taskId,
       path: input.decision.payload.path,
+      executionResourceKey: input.executionResourceKey,
+      result: "applied",
+      status: "applied",
       appliedAt: input.now,
     },
   });
