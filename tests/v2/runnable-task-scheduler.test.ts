@@ -4,7 +4,7 @@ import type { QueryResultRow } from "pg";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
-import type { ExecuteTaskInput, HandProvider } from "../../src/v2/hands/types.ts";
+import type { ExecuteTaskInput, HandBinding, HandProvider } from "../../src/v2/hands/types.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
 import { listManagedBindingsForRunPg } from "../../src/v2/meta-harness/postgres-bindings.ts";
@@ -74,6 +74,52 @@ test("runnable scheduler dispatches a dependent pending task when dependencies h
     const bindingsAfterRetry = await listManagedBindingsForRunPg(db, "run-scheduler-dependent-ready");
     assert.equal(bindingsAfterRetry.brainBindings.length, 1);
     assert.equal(bindingsAfterRetry.handBindings.length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler dispatches recovered task with latest provisioned hand binding after reprovision", async () => {
+  const db = await createTestPostgresDb();
+  const runId = "run-scheduler-reprovisioned-hand";
+  const taskId = "task-a";
+  const lostHandBindingId = "hand-binding-lost-old";
+  const replacementHandBindingId = "hand-binding-replacement-new";
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId,
+      maxParallelTasks: 1,
+      tasks: [
+        { id: taskId, status: "pending", sortOrder: 0, dependsOn: [] },
+      ],
+    });
+    await seedContextPacket(db, runId, taskId);
+    await seedHandBinding(db, {
+      id: lostHandBindingId,
+      runId,
+      taskId,
+      status: "lost",
+      createdAt: "2026-06-21T14:00:00.000Z",
+    });
+    await seedHandBinding(db, {
+      id: replacementHandBindingId,
+      runId,
+      taskId,
+      status: "provisioned",
+      createdAt: "2026-06-21T14:01:00.000Z",
+    });
+
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId });
+
+    assert.deepEqual(result.dispatchedTaskIds, [taskId]);
+    assert.deepEqual(fixture.executeTaskBindings.map((binding) => binding.id), [replacementHandBindingId]);
+    assert.deepEqual(fixture.executeTaskCalls.map((call) => call.handBindingId), [replacementHandBindingId]);
+
+    const handExecutions = await listResourcesPg(db, { resourceType: "hand_execution" });
+    const handExecution = handExecutions.find((resource) => resource.runId === runId && resource.taskId === taskId);
+    assert.equal(handExecution?.payload.handBindingId, replacementHandBindingId);
   } finally {
     await db.close();
   }
@@ -432,9 +478,11 @@ test("runnable scheduler releases unsupported hand providers without writing han
 
 function scheduler(db: SouthstarDb, input: { failExecuteTask?: boolean; executeTaskFailureOutput?: string; failBrainWake?: boolean; omitExecuteTask?: boolean } = {}) {
   const executeTaskCalls: ExecuteTaskInput[] = [];
+  const executeTaskBindings: HandBinding[] = [];
   const handProvider: HandProvider = createFakeHandProvider({ providerId: "fake-hand" });
   if (!input.omitExecuteTask) {
-    handProvider.executeTask = async (_binding, executeTaskInput) => {
+    handProvider.executeTask = async (binding, executeTaskInput) => {
+      executeTaskBindings.push(binding);
       executeTaskCalls.push(executeTaskInput);
       if (input.failExecuteTask || input.executeTaskFailureOutput) {
         return { ok: false, output: input.executeTaskFailureOutput ?? `hand execution failed for ${executeTaskInput.taskId}`, metadata: {} };
@@ -451,6 +499,7 @@ function scheduler(db: SouthstarDb, input: { failExecuteTask?: boolean; executeT
   }
   return {
     executeTaskCalls,
+    executeTaskBindings,
     scheduler: createRunnableTaskScheduler(db, {
     sessionStore: createPostgresSessionStore(db),
     brainProvider: createFakeBrainProvider({ providerId: "fake-brain", failWake: input.failBrainWake }),
@@ -572,6 +621,38 @@ async function seedAcceptedArtifact(db: SouthstarDb, runId: string, taskId: stri
     title: `Artifact ${taskId}`,
     payload: { ref },
   });
+}
+
+async function seedHandBinding(
+  db: SouthstarDb,
+  input: { id: string; runId: string; taskId: string; status: HandBinding["status"]; createdAt: string },
+): Promise<void> {
+  const binding: HandBinding = {
+    id: input.id,
+    providerId: "fake-hand",
+    runId: input.runId,
+    taskId: input.taskId,
+    handName: "workspace",
+    status: input.status,
+    createdAt: input.createdAt,
+    payload: { seeded: true },
+  };
+  await upsertRuntimeResourcePg(db, {
+    id: input.id,
+    resourceType: "hand_binding",
+    resourceKey: input.id,
+    runId: input.runId,
+    taskId: input.taskId,
+    scope: "hand",
+    status: input.status,
+    title: `Hand ${input.id}`,
+    payload: binding,
+    summary: { providerId: binding.providerId, taskId: binding.taskId, handName: binding.handName },
+  });
+  await db.query(
+    "update southstar.runtime_resources set created_at = $1, updated_at = $1 where resource_type = 'hand_binding' and resource_key = $2",
+    [input.createdAt, input.id],
+  );
 }
 
 async function taskRow(db: SouthstarDb, runId: string, taskId: string): Promise<{ status: string; root_session_id: string | null }> {

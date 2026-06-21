@@ -138,11 +138,12 @@ async function dispatchTask(
       payload: { brainBindingId, contextPacketId },
     });
 
-    handBindingId = await ensureHandBinding(db, deps, {
+    const handBinding = await ensureHandBinding(db, deps, {
       runId: input.runId,
       taskId: input.taskId,
       recoveryKey,
     });
+    handBindingId = handBinding.id;
     await emitSessionEventOnce(db, deps.sessionStore, {
       eventType: "hand.provisioned",
       actorType: "orchestrator",
@@ -207,7 +208,6 @@ async function dispatchTask(
 
     if (!deps.handProvider.executeTask) throw new Error(`hand provider ${deps.handProvider.providerId} does not support executeTask`);
 
-    const handBinding = await latestHandBinding(db, input.runId, input.taskId);
     const handResult = await deps.handProvider.executeTask(handBinding, {
       runId: input.runId,
       taskId: input.taskId,
@@ -359,8 +359,8 @@ async function ensureHandBinding(
   db: SouthstarDb,
   deps: RunnableTaskSchedulerDeps,
   input: { runId: string; taskId: string; recoveryKey: string },
-): Promise<string> {
-  const existing = await firstBindingId(db, "hand_binding", input.runId, input.taskId);
+): Promise<HandBinding> {
+  const existing = await latestProvisionedHandBinding(db, input.runId, input.taskId);
   if (existing) return existing;
   const binding = await deps.handProvider.provision({
     runId: input.runId,
@@ -370,7 +370,7 @@ async function ensureHandBinding(
     recoveryKey: input.recoveryKey,
   });
   await persistHandBindingPg(db, binding);
-  return binding.id;
+  return binding;
 }
 
 async function acceptedArtifactRefsForDependencies(db: SouthstarDb, runId: string, dependencyTaskIds: string[]): Promise<string[]> {
@@ -396,17 +396,19 @@ async function acceptedArtifactRefsForDependencies(db: SouthstarDb, runId: strin
   return dependencyTaskIds.flatMap((taskId) => byTaskId.get(taskId) ?? []);
 }
 
-async function latestHandBinding(db: SouthstarDb, runId: string, taskId: string): Promise<HandBinding> {
-  const row = await db.one<{ id: string; status: string; payload_json: unknown; created_at: Date | string }>(
+async function latestProvisionedHandBinding(db: SouthstarDb, runId: string, taskId: string): Promise<HandBinding | null> {
+  const row = await db.maybeOne<{ id: string; status: string; payload_json: unknown; created_at: Date | string }>(
     `select id, status, payload_json, created_at
        from southstar.runtime_resources
       where resource_type = 'hand_binding'
         and run_id = $1
         and task_id = $2
+        and status = 'provisioned'
       order by created_at desc
       limit 1`,
     [runId, taskId],
   );
+  if (!row) return null;
   const payload = asRecord(row.payload_json);
   return {
     id: row.id,
