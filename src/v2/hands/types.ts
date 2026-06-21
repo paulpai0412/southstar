@@ -37,6 +37,59 @@ export type HandResult = {
   metadata: Record<string, unknown>;
 };
 
+export type TaskExecutionIntent = {
+  schemaVersion: "southstar.brain.task_execution_intent.v1";
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  contextPacketId: string;
+  attemptId: string;
+  expectedArtifactContracts: string[];
+  allowedToolNames: string[];
+  toolProxyPolicyRef: string;
+  handProviderId: "tork" | string;
+  executionMode: "single_task";
+  instructionsRef: string;
+  inputArtifactRefs: string[];
+};
+
+export type ExecuteTaskInput = {
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  handExecutionId: string;
+  brainBindingId: string;
+  handBindingId: string;
+  intent: TaskExecutionIntent;
+  contextPacketRef: string;
+  acceptedInputArtifactRefs: string[];
+  toolProxyPolicyRef: string;
+  workflow: unknown;
+  callbackUrl?: string;
+  heartbeatUrl?: string;
+  envelopeBasePath?: string;
+};
+
+export type HandExecutionPayload = {
+  schemaVersion: "southstar.runtime.hand_execution.v1";
+  handExecutionId: string;
+  providerId: string;
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  brainBindingId: string;
+  handBindingId: string;
+  externalJobId?: string;
+  status: "queued" | "running" | "completed" | "failed" | "lost" | "superseded" | "cancelled";
+  queuedAt: string;
+  startedAt?: string;
+  terminalAt?: string;
+  previousAttemptId?: string;
+  supersededBy?: string;
+};
+
 export type HandSnapshotRef = {
   id: string;
   handBindingId: string;
@@ -48,6 +101,7 @@ export type HandProvider = {
   providerId: string;
   provision(input: ProvisionHandInput): Promise<HandBinding>;
   execute(binding: HandBinding, call: HandCall): Promise<HandResult>;
+  executeTask?(binding: HandBinding, input: ExecuteTaskInput): Promise<HandResult>;
   snapshot(binding: HandBinding): Promise<HandSnapshotRef>;
   destroy(binding: HandBinding): Promise<void>;
   capabilities(): HandCapabilities;
