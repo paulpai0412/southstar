@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createRecoveryDecisionApplier } from "../../src/v2/exceptions/recovery-decision-applier.ts";
 import { recoveryExecutionResourceKey, startRecoveryExecutionPg } from "../../src/v2/exceptions/recovery-executions.ts";
+import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
@@ -149,6 +150,7 @@ test("requeue-hand-execution retry completes with original staged evidence after
     const { runId, taskId, handExecutionId, decision, exception } = fixture;
     const startedAt = "2026-06-21T12:35:00.000Z";
     const retryAt = "2026-06-21T12:36:00.000Z";
+    const secondRetryAt = "2026-06-21T12:37:00.000Z";
     const executionResourceKey = recoveryExecutionResourceKey(decision.decisionId);
     const expectedStateChanges = [
       {
@@ -243,6 +245,15 @@ test("requeue-hand-execution retry completes with original staged evidence after
     assert.equal(result.status, "applied");
     assert.equal(result.executionResourceKey, executionResourceKey);
 
+    await setDecisionStatus(db, decision.resourceKey, "applying");
+    const secondResult = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now: secondRetryAt,
+    });
+
+    assert.equal(secondResult.status, "applied");
+    assert.equal(secondResult.executionResourceKey, executionResourceKey);
+
     const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
       (resource) => resource.resourceKey === executionResourceKey,
     );
@@ -254,7 +265,7 @@ test("requeue-hand-execution retry completes with original staged evidence after
     };
     assert.deepEqual(recoveryExecutionPayload.stateChanges, expectedStateChanges);
     assert.deepEqual(recoveryExecutionPayload.providerActions, expectedProviderActions);
-    assert.equal(recoveryExecutionPayload.completedAt, retryAt);
+    assert.equal(recoveryExecutionPayload.completedAt, startedAt);
 
     const appliedDecision = await getResourceByKeyPg(db, "recovery_decision", decision.resourceKey);
     assert.equal(appliedDecision?.status, "applied");
@@ -526,6 +537,59 @@ test("terminal decision repair is idempotent when concurrent callers use differe
 
     const historyTypes = (await listHistoryForRunPg(db, runId)).map((event) => event.eventType);
     assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.blocked").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("applyDecision does not revert a terminal decision observed after a stale pre-lock read", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-stale-terminal-claim" });
+    const { decision } = fixture;
+    const staleReadAt = "2026-06-21T12:44:00.000Z";
+    const blockedAt = "2026-06-21T12:43:30.000Z";
+    const reason = "operator blocked while stale caller was claiming";
+    let injectedTerminalDecision = false;
+    const staleReadDb: SouthstarDb = {
+      query: db.query.bind(db),
+      one: db.one.bind(db),
+      async maybeOne(sql, params = []) {
+        const row = await db.maybeOne(sql, params);
+        if (
+          !injectedTerminalDecision &&
+          String(sql).includes("from southstar.runtime_resources") &&
+          params[0] === "recovery_decision" &&
+          params[1] === decision.resourceKey
+        ) {
+          injectedTerminalDecision = true;
+          await patchDecisionPayload(db, decision.resourceKey, { blockedAt, statusReason: reason });
+          await setDecisionStatus(db, decision.resourceKey, "blocked");
+        }
+        return row;
+      },
+      tx: db.tx.bind(db),
+      close: async () => {},
+    };
+
+    const result = await createRecoveryDecisionApplier({ db: staleReadDb }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now: staleReadAt,
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason, /operator blocked while stale caller was claiming/);
+    await assertHandAndTaskUnchanged(db, fixture);
+
+    const finalDecision = await getResourceByKeyPg(db, "recovery_decision", decision.resourceKey);
+    assert.equal(finalDecision?.status, "blocked");
+    const finalPayload = finalDecision?.payload as { blockedAt?: string; statusReason?: string };
+    assert.equal(finalPayload.blockedAt, blockedAt);
+    assert.equal(finalPayload.statusReason, reason);
+    const recoveryExecutions = (await listResourcesPg(db, { resourceType: "recovery_execution" })).filter(
+      (resource) => resource.runId === fixture.runId,
+    );
+    assert.equal(recoveryExecutions.length, 0);
   } finally {
     await db.close();
   }
