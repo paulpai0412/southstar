@@ -133,7 +133,12 @@ export async function completeRecoveryExecutionPg(
     if (current.payload.runId !== input.runId) {
       throw new Error(`recovery execution ${input.executionResourceKey} does not belong to run ${input.runId}`);
     }
-    if (current.status !== "started") return current;
+    if (current.status !== "started") {
+      if (!isIdempotentTerminalCompletion(current, input)) {
+        throw new Error(`recovery execution ${input.executionResourceKey} already completed with a different result`);
+      }
+      return current;
+    }
 
     const payload: RecoveryExecutionPayload = {
       ...current.payload,
@@ -293,4 +298,48 @@ function assertTerminalRecoveryExecutionStatus(status: unknown): void {
 
 function isRecoveryPath(value: unknown): value is RecoveryPath {
   return typeof value === "string" && RECOVERY_PATH_SET.has(value as RecoveryPath);
+}
+
+function isIdempotentTerminalCompletion(
+  current: RecoveryExecutionRecord,
+  input: CompleteRecoveryExecutionInput,
+): boolean {
+  return (
+    input.status === current.status &&
+    input.completedAt === current.payload.completedAt &&
+    sameJson(input.stateChanges, current.payload.stateChanges) &&
+    sameJson(input.providerActions, current.payload.providerActions)
+  );
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(toStableJsonValue(value));
+}
+
+function toStableJsonValue(value: unknown): unknown {
+  if (value === null) return null;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const stable = toStableJsonValue(item);
+      return stable === undefined ? null : stable;
+    });
+  }
+  if (typeof value === "object") {
+    if (typeof (value as { toJSON?: unknown }).toJSON === "function") {
+      return toStableJsonValue((value as { toJSON: () => unknown }).toJSON());
+    }
+    const record = value as Record<string, unknown>;
+    const output: Record<string, unknown> = {};
+    for (const key of Object.keys(record).sort()) {
+      const stable = toStableJsonValue(record[key]);
+      if (stable !== undefined) output[key] = stable;
+    }
+    return output;
+  }
+  return undefined;
 }

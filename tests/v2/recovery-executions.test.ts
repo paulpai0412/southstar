@@ -100,13 +100,94 @@ test("recovery execution store records idempotent started and succeeded evidence
     const duplicateComplete = await completeRecoveryExecutionPg(db, {
       runId: "run-recovery-execution-store",
       executionResourceKey: started.resourceKey,
-      status: "failed",
-      completedAt: "2026-06-21T11:02:00.000Z",
-      stateChanges: [],
-      providerActions: [],
+      status: "succeeded",
+      completedAt: "2026-06-21T11:01:00.000Z",
+      stateChanges: [
+        {
+          resourceType: "hand_execution",
+          resourceKey: "hand-execution:run-recovery-execution-store:task-a:attempt-1",
+          fromStatus: "queued",
+          toStatus: "lost",
+          reason: "queue timeout requeue",
+        },
+      ],
+      providerActions: [
+        {
+          providerId: "tork",
+          action: "cancel",
+          status: "skipped",
+          evidenceRef: "hand-execution:run-recovery-execution-store:task-a:attempt-1",
+        },
+      ],
     });
 
     assert.deepEqual(duplicateComplete, completed);
+
+    await assert.rejects(
+      completeRecoveryExecutionPg(db, {
+        runId: "run-recovery-execution-store",
+        executionResourceKey: started.resourceKey,
+        status: "failed",
+        completedAt: "2026-06-21T11:02:00.000Z",
+        stateChanges: [],
+        providerActions: [],
+      }),
+      /already completed with a different result/,
+    );
+
+    await assert.rejects(
+      completeRecoveryExecutionPg(db, {
+        runId: "run-recovery-execution-store",
+        executionResourceKey: started.resourceKey,
+        status: "succeeded",
+        completedAt: "2026-06-21T11:01:00.000Z",
+        stateChanges: [
+          {
+            resourceType: "hand_execution",
+            resourceKey: "hand-execution:run-recovery-execution-store:task-a:attempt-1",
+            fromStatus: "queued",
+            toStatus: "failed",
+            reason: "different terminal state",
+          },
+        ],
+        providerActions: [
+          {
+            providerId: "tork",
+            action: "cancel",
+            status: "skipped",
+            evidenceRef: "hand-execution:run-recovery-execution-store:task-a:attempt-1",
+          },
+        ],
+      }),
+      /already completed with a different result/,
+    );
+
+    await assert.rejects(
+      completeRecoveryExecutionPg(db, {
+        runId: "run-recovery-execution-store",
+        executionResourceKey: started.resourceKey,
+        status: "succeeded",
+        completedAt: "2026-06-21T11:01:00.000Z",
+        stateChanges: [
+          {
+            resourceType: "hand_execution",
+            resourceKey: "hand-execution:run-recovery-execution-store:task-a:attempt-1",
+            fromStatus: "queued",
+            toStatus: "lost",
+            reason: "queue timeout requeue",
+          },
+        ],
+        providerActions: [
+          {
+            providerId: "tork",
+            action: "cancel",
+            status: "completed",
+            evidenceRef: "hand-execution:run-recovery-execution-store:task-a:attempt-1",
+          },
+        ],
+      }),
+      /already completed with a different result/,
+    );
 
     await createWorkflowRunPg(db, {
       id: "run-recovery-execution-other",
