@@ -54,8 +54,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         title: requiredString(body.title, "title"),
         body: optionalString(body.body) ?? "",
         domain: requiredString(body.domain, "domain"),
-        priority: optionalPriority(body.priority),
-        labels: optionalStringArray(body.labels),
+        priority: parseOptionalPriority(body.priority),
+        labels: parseOptionalStringArray(body.labels, "labels"),
         requestedBy: optionalString(body.requestedBy),
         metadata: isRecord(body.metadata) ? body.metadata : undefined,
       }));
@@ -407,12 +407,18 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-function optionalStringArray(value: unknown): string[] | undefined {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : undefined;
+function parseOptionalStringArray(value: unknown, field: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${field} must be an array of strings`);
+  }
+  return value;
 }
 
-function optionalPriority(value: unknown): WorkItemIntakePriority | undefined {
-  return value === "low" || value === "normal" || value === "high" || value === "urgent" ? value : undefined;
+function parseOptionalPriority(value: unknown): WorkItemIntakePriority | undefined {
+  if (value === undefined) return undefined;
+  if (value === "low" || value === "normal" || value === "high" || value === "urgent") return value;
+  throw new Error("priority must be one of low, normal, high, urgent");
 }
 
 function requiredWorkItemSourceProvider(value: unknown): WorkItemSourceProvider {

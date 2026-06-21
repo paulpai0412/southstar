@@ -360,6 +360,77 @@ test("work item intake route validates required fields and defaults body", async
   }
 });
 
+test("work item intake route rejects invalid supplied priority", async () => {
+  const db = await createTestPostgresDb();
+  const server = await createSouthstarRuntimeServer({
+    db,
+    plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+    executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+    createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+  });
+  try {
+    const response = await fetch(`${server.url}/api/v2/work-items/intake`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sourceProvider: "api",
+        title: "Invalid priority",
+        domain: "software",
+        priority: "urgnt",
+      }),
+    });
+
+    assert.equal(response.status, 400);
+    const envelope = await response.json() as { ok: false; error: string };
+    assert.match(envelope.error, /priority must be one of low, normal, high, urgent/);
+  } finally {
+    await server.close();
+    await db.close();
+  }
+});
+
+test("work item intake route rejects malformed supplied labels", async () => {
+  const db = await createTestPostgresDb();
+  const server = await createSouthstarRuntimeServer({
+    db,
+    plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+    executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+    createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+  });
+  try {
+    const nonArray = await fetch(`${server.url}/api/v2/work-items/intake`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sourceProvider: "api",
+        title: "Invalid labels shape",
+        domain: "software",
+        labels: "route",
+      }),
+    });
+    assert.equal(nonArray.status, 400);
+    const nonArrayEnvelope = await nonArray.json() as { ok: false; error: string };
+    assert.match(nonArrayEnvelope.error, /labels must be an array of strings/);
+
+    const nonStringEntry = await fetch(`${server.url}/api/v2/work-items/intake`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sourceProvider: "api",
+        title: "Invalid labels entry",
+        domain: "software",
+        labels: ["route", 42],
+      }),
+    });
+    assert.equal(nonStringEntry.status, 400);
+    const nonStringEntryEnvelope = await nonStringEntry.json() as { ok: false; error: string };
+    assert.match(nonStringEntryEnvelope.error, /labels must be an array of strings/);
+  } finally {
+    await server.close();
+    await db.close();
+  }
+});
+
 async function post<T>(baseUrl: string, path: string, body: Record<string, unknown>): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, {
     method: "POST",
