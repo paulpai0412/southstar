@@ -1,12 +1,8 @@
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
-import { createPiBrainProvider } from "../brain/pi-brain-provider.ts";
 import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { createTorkHandProvider } from "../hands/tork-hand-provider.ts";
 import type { HandProvider } from "../hands/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
-import { createRunnableTaskScheduler } from "../scheduler/runnable-task-scheduler.ts";
-import { createPostgresSessionStore } from "../session/postgres-session-store.ts";
 import type { SessionStore } from "../session/types.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
@@ -110,16 +106,6 @@ export async function dispatchPostgresRunExecutionPg(db: SouthstarDb, input: Pos
       });
     }
   });
-
-  await createRunnableTaskScheduler(db, {
-    sessionStore: input.sessionStore ?? createPostgresSessionStore(db),
-    brainProvider: input.brainProvider ?? createPiBrainProvider(),
-    handProvider: input.handProvider ?? createTorkHandProvider({
-      executorProvider: input.executorProvider,
-      callbackUrl: input.callbackUrl,
-      heartbeatUrl: input.heartbeatUrl,
-    }),
-  }).runOnce({ runId: input.runId });
 
   return {
     runId: input.runId,

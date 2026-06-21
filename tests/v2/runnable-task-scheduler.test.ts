@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import type { QueryResultRow } from "pg";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
+import type { ExecuteTaskInput, HandProvider } from "../../src/v2/hands/types.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
 import { listManagedBindingsForRunPg } from "../../src/v2/meta-harness/postgres-bindings.ts";
@@ -10,6 +12,7 @@ import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
   listHistoryForRunPg,
+  listResourcesPg,
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb, initSouthstarSchema } from "./postgres-test-utils.ts";
@@ -29,12 +32,14 @@ test("runnable scheduler dispatches a dependent pending task when dependencies h
     await seedContextPacket(db, "run-scheduler-dependent-ready", "implement");
     await seedAcceptedArtifact(db, "run-scheduler-dependent-ready", "discover");
 
-    const result = await scheduler(db).runOnce({ runId: "run-scheduler-dependent-ready" });
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId: "run-scheduler-dependent-ready" });
 
     assert.deepEqual(result.dispatchedTaskIds, ["implement"]);
+    assert.deepEqual(fixture.executeTaskCalls.map((call) => call.taskId), ["implement"]);
     assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "discover")?.reason, "status:completed");
     const task = await taskRow(db, "run-scheduler-dependent-ready", "implement");
-    assert.equal(task.status, "running");
+    assert.equal(task.status, "queued");
     assert.equal(task.root_session_id, "root-run-scheduler-dependent-ready-implement");
 
     const bindings = await listManagedBindingsForRunPg(db, "run-scheduler-dependent-ready");
@@ -45,12 +50,27 @@ test("runnable scheduler dispatches a dependent pending task when dependencies h
 
     const history = await listHistoryForRunPg(db, "run-scheduler-dependent-ready");
     assert.equal(history.some((event) => event.eventType === "brain.woke" && event.taskId === "implement"), true);
+    assert.equal(history.some((event) => event.eventType === "brain.intent_created" && event.taskId === "implement"), true);
     assert.equal(history.some((event) => event.eventType === "hand.provisioned" && event.taskId === "implement"), true);
     assert.equal(history.some((event) => event.eventType === "task.dispatch_submitted" && event.taskId === "implement"), true);
 
-    const retryResult = await scheduler(db).runOnce({ runId: "run-scheduler-dependent-ready" });
+    const handExecutions = await listResourcesPg(db, { resourceType: "hand_execution" });
+    const implementHandExecution = handExecutions.find((resource) => resource.runId === "run-scheduler-dependent-ready" && resource.taskId === "implement");
+    assert.equal(implementHandExecution?.status, "queued");
+    assert.equal(implementHandExecution?.payload.externalJobId, "job-implement");
+    assert.equal(implementHandExecution?.payload.queueTimeoutSeconds, 120);
+    assert.equal(implementHandExecution?.payload.heartbeatTimeoutSeconds, 60);
+
+    const intents = await listResourcesPg(db, { resourceType: "task_execution_intent" });
+    const implementIntent = intents.find((resource) => resource.runId === "run-scheduler-dependent-ready" && resource.taskId === "implement");
+    assert.equal(implementIntent?.status, "created");
+    assert.equal(implementIntent?.payload.taskId, "implement");
+    assert.deepEqual(implementIntent?.payload.inputArtifactRefs, ["artifact-run-scheduler-dependent-ready-discover"]);
+    assert.deepEqual(fixture.executeTaskCalls[0]?.acceptedInputArtifactRefs, ["artifact-run-scheduler-dependent-ready-discover"]);
+
+    const retryResult = await fixture.scheduler.runOnce({ runId: "run-scheduler-dependent-ready" });
     assert.deepEqual(retryResult.dispatchedTaskIds, []);
-    assert.equal(retryResult.skippedTaskIds.find((entry) => entry.taskId === "implement")?.reason, "status:running");
+    assert.equal(retryResult.skippedTaskIds.find((entry) => entry.taskId === "implement")?.reason, "status:queued");
     const bindingsAfterRetry = await listManagedBindingsForRunPg(db, "run-scheduler-dependent-ready");
     assert.equal(bindingsAfterRetry.brainBindings.length, 1);
     assert.equal(bindingsAfterRetry.handBindings.length, 1);
@@ -73,9 +93,11 @@ test("runnable scheduler leaves a pending task queued when dependency artifacts 
     });
     await seedContextPacket(db, "run-scheduler-dependent-missing", "implement");
 
-    const result = await scheduler(db).runOnce({ runId: "run-scheduler-dependent-missing" });
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId: "run-scheduler-dependent-missing" });
 
     assert.deepEqual(result.dispatchedTaskIds, []);
+    assert.deepEqual(fixture.executeTaskCalls, []);
     assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "implement")?.reason, "dependencies-not-accepted");
     const task = await taskRow(db, "run-scheduler-dependent-missing", "implement");
     assert.equal(task.status, "pending");
@@ -105,14 +127,16 @@ test("runnable scheduler gates ready tasks by manifest maxParallelTasks", async 
     await seedContextPacket(db, "run-scheduler-parallel-limit", "task-b");
     await seedContextPacket(db, "run-scheduler-parallel-limit", "task-c");
 
-    const result = await scheduler(db).runOnce({ runId: "run-scheduler-parallel-limit" });
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId: "run-scheduler-parallel-limit" });
 
     assert.deepEqual(result.dispatchedTaskIds, ["task-a"]);
+    assert.deepEqual(fixture.executeTaskCalls.map((call) => call.taskId), ["task-a"]);
     assert.deepEqual(
       result.skippedTaskIds.filter((entry) => entry.reason === "parallel-limit").map((entry) => entry.taskId),
       ["task-b", "task-c"],
     );
-    assert.equal((await taskRow(db, "run-scheduler-parallel-limit", "task-a")).status, "running");
+    assert.equal((await taskRow(db, "run-scheduler-parallel-limit", "task-a")).status, "queued");
     assert.equal((await taskRow(db, "run-scheduler-parallel-limit", "task-b")).status, "pending");
     assert.equal((await taskRow(db, "run-scheduler-parallel-limit", "task-c")).status, "pending");
   } finally {
@@ -120,37 +144,236 @@ test("runnable scheduler gates ready tasks by manifest maxParallelTasks", async 
   }
 });
 
-test("runnable scheduler counts already running tasks against maxParallelTasks", async () => {
+test("runnable scheduler counts already claimed, queued, and running tasks against maxParallelTasks", async () => {
   const db = await createTestPostgresDb();
   try {
     await initSouthstarSchema(db);
     await seedRun(db, {
-      runId: "run-scheduler-existing-running",
-      maxParallelTasks: 1,
+      runId: "run-scheduler-existing-active",
+      maxParallelTasks: 3,
       tasks: [
-        { id: "task-running", status: "running", sortOrder: 0, dependsOn: [], rootSessionId: "root-running" },
-        { id: "task-ready", status: "pending", sortOrder: 1, dependsOn: [] },
+        { id: "task-claimed", status: "claimed", sortOrder: 0, dependsOn: [], rootSessionId: "root-claimed" },
+        { id: "task-queued", status: "queued", sortOrder: 1, dependsOn: [], rootSessionId: "root-queued" },
+        { id: "task-running", status: "running", sortOrder: 2, dependsOn: [], rootSessionId: "root-running" },
+        { id: "task-ready", status: "pending", sortOrder: 3, dependsOn: [] },
       ],
     });
-    await seedContextPacket(db, "run-scheduler-existing-running", "task-ready");
+    await seedContextPacket(db, "run-scheduler-existing-active", "task-ready");
 
-    const result = await scheduler(db).runOnce({ runId: "run-scheduler-existing-running" });
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId: "run-scheduler-existing-active" });
 
     assert.deepEqual(result.dispatchedTaskIds, []);
+    assert.deepEqual(fixture.executeTaskCalls, []);
+    assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "task-claimed")?.reason, "status:claimed");
+    assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "task-queued")?.reason, "status:queued");
     assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "task-running")?.reason, "status:running");
     assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "task-ready")?.reason, "parallel-limit");
-    assert.equal((await taskRow(db, "run-scheduler-existing-running", "task-ready")).status, "pending");
+    assert.equal((await taskRow(db, "run-scheduler-existing-active", "task-ready")).status, "pending");
   } finally {
     await db.close();
   }
 });
 
-function scheduler(db: SouthstarDb) {
-  return createRunnableTaskScheduler(db, {
+test("runnable scheduler queues two independent tasks when maxParallelTasks allows two active hands", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-parallel-two",
+      maxParallelTasks: 2,
+      tasks: [
+        { id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] },
+        { id: "task-b", status: "pending", sortOrder: 1, dependsOn: [] },
+        { id: "task-c", status: "pending", sortOrder: 2, dependsOn: [] },
+      ],
+    });
+    await seedContextPacket(db, "run-scheduler-parallel-two", "task-a");
+    await seedContextPacket(db, "run-scheduler-parallel-two", "task-b");
+    await seedContextPacket(db, "run-scheduler-parallel-two", "task-c");
+
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId: "run-scheduler-parallel-two" });
+
+    assert.deepEqual(result.dispatchedTaskIds, ["task-a", "task-b"]);
+    assert.deepEqual(fixture.executeTaskCalls.map((call) => call.taskId), ["task-a", "task-b"]);
+    assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "task-c")?.reason, "parallel-limit");
+    assert.equal((await taskRow(db, "run-scheduler-parallel-two", "task-a")).status, "queued");
+    assert.equal((await taskRow(db, "run-scheduler-parallel-two", "task-b")).status, "queued");
+    assert.equal((await taskRow(db, "run-scheduler-parallel-two", "task-c")).status, "pending");
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler does not terminal-fail a task after hand execution was accepted and local queued persistence fails", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-post-submit-failure",
+      maxParallelTasks: 1,
+      tasks: [
+        { id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] },
+      ],
+    });
+    await seedContextPacket(db, "run-scheduler-post-submit-failure", "task-a");
+
+    const fixture = scheduler(dbFailingQueuedTaskUpdate(db));
+    await assert.rejects(
+      () => fixture.scheduler.runOnce({ runId: "run-scheduler-post-submit-failure" }),
+      /queued task update failed/,
+    );
+
+    assert.deepEqual(fixture.executeTaskCalls.map((call) => call.taskId), ["task-a"]);
+    assert.equal((await taskRow(db, "run-scheduler-post-submit-failure", "task-a")).status, "claimed");
+
+    const handExecutions = await listResourcesPg(db, { resourceType: "hand_execution" });
+    const handExecution = handExecutions.find((resource) => resource.runId === "run-scheduler-post-submit-failure" && resource.taskId === "task-a");
+    assert.equal(handExecution?.status, "queued");
+
+    const history = await listHistoryForRunPg(db, "run-scheduler-post-submit-failure");
+    assert.equal(history.some((event) => event.eventType === "hand.execute_failed" && event.taskId === "task-a"), false);
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler releases claimed task without hand execution when dispatch preparation fails before hand acceptance", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-pre-hand-failure",
+      maxParallelTasks: 1,
+      tasks: [
+        { id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] },
+      ],
+    });
+    await seedContextPacket(db, "run-scheduler-pre-hand-failure", "task-a");
+
+    const fixture = scheduler(db, { failBrainWake: true });
+    await assert.rejects(
+      () => fixture.scheduler.runOnce({ runId: "run-scheduler-pre-hand-failure" }),
+      /fake brain wake failed/,
+    );
+
+    assert.deepEqual(fixture.executeTaskCalls, []);
+    assert.equal((await taskRow(db, "run-scheduler-pre-hand-failure", "task-a")).status, "pending");
+
+    const handExecutions = await listResourcesPg(db, { resourceType: "hand_execution" });
+    assert.equal(handExecutions.some((resource) => resource.runId === "run-scheduler-pre-hand-failure" && resource.taskId === "task-a"), false);
+
+    const history = await listHistoryForRunPg(db, "run-scheduler-pre-hand-failure");
+    assert.equal(history.some((event) => event.eventType === "task.dispatch_prepare_failed" && event.taskId === "task-a"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler marks dispatch failure explicitly instead of leaving claimed task stuck", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-hand-fails",
+      maxParallelTasks: 1,
+      tasks: [
+        { id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] },
+      ],
+    });
+    await seedContextPacket(db, "run-scheduler-hand-fails", "task-a");
+
+    const fixture = scheduler(db, { failExecuteTask: true });
+    await assert.rejects(
+      () => fixture.scheduler.runOnce({ runId: "run-scheduler-hand-fails" }),
+      /hand execution failed for task-a/,
+    );
+
+    assert.deepEqual(fixture.executeTaskCalls.map((call) => call.taskId), ["task-a"]);
+    assert.equal((await taskRow(db, "run-scheduler-hand-fails", "task-a")).status, "failed");
+    const history = await listHistoryForRunPg(db, "run-scheduler-hand-fails");
+    assert.equal(history.some((event) => event.eventType === "hand.execute_failed" && event.taskId === "task-a"), true);
+    const handExecutions = await listResourcesPg(db, { resourceType: "hand_execution" });
+    const handExecution = handExecutions.find((resource) => resource.runId === "run-scheduler-hand-fails" && resource.taskId === "task-a");
+    assert.equal(handExecution?.status, "failed");
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler releases unsupported hand providers without writing hand execution", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-hand-unsupported",
+      maxParallelTasks: 1,
+      tasks: [
+        { id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] },
+      ],
+    });
+    await seedContextPacket(db, "run-scheduler-hand-unsupported", "task-a");
+
+    const fixture = scheduler(db, { omitExecuteTask: true });
+    await assert.rejects(
+      () => fixture.scheduler.runOnce({ runId: "run-scheduler-hand-unsupported" }),
+      /does not support executeTask/,
+    );
+
+    assert.equal((await taskRow(db, "run-scheduler-hand-unsupported", "task-a")).status, "pending");
+    const history = await listHistoryForRunPg(db, "run-scheduler-hand-unsupported");
+    assert.equal(history.some((event) => event.eventType === "task.dispatch_prepare_failed" && event.taskId === "task-a"), true);
+    assert.equal(history.some((event) => event.eventType === "hand.execute_failed" && event.taskId === "task-a"), false);
+    const handExecutions = await listResourcesPg(db, { resourceType: "hand_execution" });
+    assert.equal(handExecutions.some((resource) => resource.runId === "run-scheduler-hand-unsupported" && resource.taskId === "task-a"), false);
+  } finally {
+    await db.close();
+  }
+});
+
+function scheduler(db: SouthstarDb, input: { failExecuteTask?: boolean; failBrainWake?: boolean; omitExecuteTask?: boolean } = {}) {
+  const executeTaskCalls: ExecuteTaskInput[] = [];
+  const handProvider: HandProvider = createFakeHandProvider({ providerId: "fake-hand" });
+  if (!input.omitExecuteTask) {
+    handProvider.executeTask = async (_binding, executeTaskInput) => {
+      executeTaskCalls.push(executeTaskInput);
+      if (input.failExecuteTask) {
+        return { ok: false, output: `hand execution failed for ${executeTaskInput.taskId}`, metadata: {} };
+      }
+      return {
+        ok: true,
+        output: `job-${executeTaskInput.taskId}`,
+        metadata: {
+          externalJobId: `job-${executeTaskInput.taskId}`,
+          handExecutionId: executeTaskInput.handExecutionId,
+        },
+      };
+    };
+  }
+  return {
+    executeTaskCalls,
+    scheduler: createRunnableTaskScheduler(db, {
     sessionStore: createPostgresSessionStore(db),
-    brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
-    handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
-  });
+    brainProvider: createFakeBrainProvider({ providerId: "fake-brain", failWake: input.failBrainWake }),
+      handProvider,
+    }),
+  };
+}
+
+function dbFailingQueuedTaskUpdate(db: SouthstarDb): SouthstarDb {
+  return {
+    async query<T extends QueryResultRow = QueryResultRow>(sql: string, params?: unknown[]) {
+      if (sql.includes("update southstar.workflow_tasks set status = 'queued'")) {
+        throw new Error("queued task update failed");
+      }
+      return await db.query<T>(sql, params);
+    },
+    one: db.one.bind(db),
+    maybeOne: db.maybeOne.bind(db),
+    tx: db.tx.bind(db),
+    close: db.close.bind(db),
+  };
 }
 
 async function seedRun(
