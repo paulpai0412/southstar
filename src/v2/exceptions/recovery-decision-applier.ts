@@ -87,6 +87,9 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
         return { status: decision.status, reason: `decision already ${decision.status}` };
       }
 
+      await claimRecoveryDecisionApplyingPg(deps.db, { decision, now });
+      const applyingDecision: RuntimeRecoveryDecisionRecord = { ...decision, status: "applying" };
+
       const started = await startRecoveryExecutionPg(deps.db, {
         decisionId: decision.decisionId,
         exceptionId: decision.payload.exceptionId,
@@ -98,7 +101,7 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
 
       if (decision.payload.path !== "requeue-hand-execution") {
         await blockDecision(deps.db, {
-          decision,
+          decision: applyingDecision,
           executionResourceKey: started.resourceKey,
           now,
           reason: `unsupported recovery path ${decision.payload.path}`,
@@ -108,7 +111,7 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
 
       if (!decision.payload.taskId) {
         await blockDecision(deps.db, {
-          decision,
+          decision: applyingDecision,
           executionResourceKey: started.resourceKey,
           now,
           reason: "requeue-hand-execution decision missing taskId",
@@ -118,7 +121,7 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
 
       if (!decision.payload.handExecutionId) {
         await blockDecision(deps.db, {
-          decision,
+          decision: applyingDecision,
           executionResourceKey: started.resourceKey,
           now,
           reason: "requeue-hand-execution decision missing handExecutionId",
@@ -128,21 +131,19 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
 
       if (started.status !== "started") {
         if (started.status === "succeeded") {
-          await finalizeRecoveryDecisionAppliedPg(deps.db, { decision, executionResourceKey: started.resourceKey, now });
+          await finalizeRecoveryDecisionAppliedPg(deps.db, { decision: applyingDecision, executionResourceKey: started.resourceKey, now });
           return { status: "applied", executionResourceKey: started.resourceKey, reason: "requeue-hand-execution applied" };
         }
         return { status: started.status, executionResourceKey: started.resourceKey, reason: `recovery execution already ${started.status}` };
       }
 
-      await claimRecoveryDecisionApplyingPg(deps.db, { decision, now });
-
       let mutation: RequeueMutationResult;
       try {
-        mutation = await applyRequeueMutation(deps.db, { decision, now });
+        mutation = await applyRequeueMutation(deps.db, { decision: applyingDecision, now });
       } catch (error) {
         if (error instanceof Error && error.message === `hand execution ${decision.payload.handExecutionId} not found`) {
           await blockDecision(deps.db, {
-            decision,
+            decision: applyingDecision,
             executionResourceKey: started.resourceKey,
             now,
             reason: error.message,
@@ -254,6 +255,8 @@ async function applyRequeueMutation(
           action: "cancel",
           status: "succeeded",
           evidenceRef: hand.resourceKey,
+          attemptedAt: now,
+          succeededAt: now,
         },
       ],
       stateChanges: [
@@ -316,6 +319,7 @@ async function finalizeRecoveryDecisionAppliedPg(
   input: { decision: RuntimeRecoveryDecisionRecord; executionResourceKey: string; now: string },
 ): Promise<void> {
   await db.tx(async (tx) => {
+    await appendRecoveryDecisionAppliedHistoryOncePg(tx, input);
     const payload = {
       ...input.decision.payload,
       appliedAt: input.now,
@@ -337,7 +341,6 @@ async function finalizeRecoveryDecisionAppliedPg(
         appliedAt: input.now,
       },
     });
-    await appendRecoveryDecisionAppliedHistoryOncePg(tx, input);
   });
 }
 

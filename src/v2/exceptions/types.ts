@@ -180,7 +180,11 @@ export type RecoveryExecutionProviderAction = {
   action: RecoveryProviderActionName;
   status: RecoveryProviderActionStatus;
   evidenceRef?: string;
+  attemptedAt?: string;
+  succeededAt?: string;
+  completedAt?: string;
   errorExcerpt?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type RecoveryExecutionPayload = {

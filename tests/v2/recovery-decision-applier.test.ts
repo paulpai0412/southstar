@@ -62,7 +62,14 @@ test("requeue-hand-execution applies queue timeout recovery and is idempotent", 
     assert.equal(recoveryExecution?.status, "succeeded");
     const recoveryExecutionPayload = recoveryExecution?.payload as {
       stateChanges: Array<{ toStatus?: string }>;
-      providerActions: Array<{ providerId?: string; action?: string; status?: string; evidenceRef?: string }>;
+      providerActions: Array<{
+        providerId?: string;
+        action?: string;
+        status?: string;
+        evidenceRef?: string;
+        attemptedAt?: string;
+        succeededAt?: string;
+      }>;
     };
     assert.deepEqual(
       recoveryExecutionPayload.stateChanges.map((change) => change.toStatus),
@@ -74,6 +81,8 @@ test("requeue-hand-execution applies queue timeout recovery and is idempotent", 
         action: "cancel",
         status: "succeeded",
         evidenceRef: handExecutionId,
+        attemptedAt: now,
+        succeededAt: now,
       },
     ]);
 
@@ -126,6 +135,101 @@ test("requeue-hand-execution resumes an applying decision and finalizes evidence
     assert.equal(recoveryExecution?.status, "succeeded");
 
     const historyTypes = (await listHistoryForRunPg(db, runId)).map((event) => event.eventType);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_decision.applied").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("applyDecision claims a recorded requeue decision before starting recovery execution", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-claim-before-execution" });
+    const { handExecutionId, decision } = fixture;
+    const now = "2026-06-21T12:45:00.000Z";
+    await db.query("drop trigger if exists assert_recovery_decision_claimed_before_execution_start on southstar.runtime_resources");
+    await db.query("drop function if exists southstar.assert_recovery_decision_claimed_before_execution_start()");
+    await db.query(`
+      create function southstar.assert_recovery_decision_claimed_before_execution_start()
+      returns trigger
+      language plpgsql
+      as $$
+      declare
+        decision_status text;
+      begin
+        if new.resource_type = 'recovery_execution' and new.status = 'started' then
+          select status into decision_status
+            from southstar.runtime_resources
+           where resource_type = 'recovery_decision'
+             and resource_key = '${decision.resourceKey}';
+          if decision_status <> 'applying' then
+            raise exception 'decision was % before recovery execution start', decision_status;
+          end if;
+        end if;
+        return new;
+      end
+      $$;
+    `);
+    await db.query(`
+      create trigger assert_recovery_decision_claimed_before_execution_start
+      before insert or update on southstar.runtime_resources
+      for each row execute function southstar.assert_recovery_decision_claimed_before_execution_start()
+    `);
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now,
+    });
+
+    assert.equal(result.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "hand_execution", handExecutionId))?.status, "lost");
+  } finally {
+    await db.close();
+  }
+});
+
+test("applyDecision writes applied history before marking the decision applied", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-history-before-applied" });
+    const { decision } = fixture;
+    const now = "2026-06-21T12:50:00.000Z";
+    await db.query("drop trigger if exists assert_recovery_decision_applied_history_first on southstar.runtime_resources");
+    await db.query("drop function if exists southstar.assert_recovery_decision_applied_history_first()");
+    await db.query(`
+      create function southstar.assert_recovery_decision_applied_history_first()
+      returns trigger
+      language plpgsql
+      as $$
+      declare
+        applied_history_count integer;
+      begin
+        if new.resource_type = 'recovery_decision' and new.resource_key = '${decision.resourceKey}' and new.status = 'applied' then
+          select count(*) into applied_history_count
+            from southstar.workflow_history
+           where run_id = '${fixture.runId}'
+             and idempotency_key = '${decision.resourceKey}:applied';
+          if applied_history_count <> 1 then
+            raise exception 'applied history count was % before decision applied', applied_history_count;
+          end if;
+        end if;
+        return new;
+      end
+      $$;
+    `);
+    await db.query(`
+      create trigger assert_recovery_decision_applied_history_first
+      before update on southstar.runtime_resources
+      for each row execute function southstar.assert_recovery_decision_applied_history_first()
+    `);
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now,
+    });
+
+    assert.equal(result.status, "applied");
+    const historyTypes = (await listHistoryForRunPg(db, fixture.runId)).map((event) => event.eventType);
     assert.equal(historyTypes.filter((eventType) => eventType === "recovery_decision.applied").length, 1);
   } finally {
     await db.close();
