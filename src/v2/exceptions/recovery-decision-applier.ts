@@ -18,6 +18,7 @@ import {
 import {
   RECOVERY_EXECUTION_RESOURCE_TYPE,
   RECOVERY_DECISION_RESOURCE_TYPE,
+  RECOVERY_DECISION_SCHEMA_VERSION,
   RUNTIME_EXCEPTION_RESOURCE_TYPE,
   type RecoveryDecisionPayload,
   type RecoveryDecisionStatus,
@@ -90,11 +91,12 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         `select resource_key
            from southstar.runtime_resources
           where resource_type = $1
+            and payload_json->>'schemaVersion' = $2
             and status in ('recorded', 'approved', 'applying')
-            and ($2::text is null or run_id = $2)
+            and ($3::text is null or run_id = $3)
           order by created_at, resource_key
           limit 1`,
-        [RECOVERY_DECISION_RESOURCE_TYPE, input.runId ?? null],
+        [RECOVERY_DECISION_RESOURCE_TYPE, RECOVERY_DECISION_SCHEMA_VERSION, input.runId ?? null],
       );
       if (!row) return null;
       return await this.applyDecision({ decisionResourceKey: row.resource_key, now: input.now });

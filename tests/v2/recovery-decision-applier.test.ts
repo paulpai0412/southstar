@@ -4,6 +4,7 @@ import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createRecoveryDecisionApplier } from "../../src/v2/exceptions/recovery-decision-applier.ts";
 import { recoveryExecutionResourceKey, startRecoveryExecutionPg } from "../../src/v2/exceptions/recovery-executions.ts";
+import { RECOVERY_DECISION_SCHEMA_VERSION } from "../../src/v2/exceptions/types.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
@@ -122,6 +123,45 @@ test("reprovision-hand marks old hand lost, creates replacement hand, checkpoint
     );
     assert.deepEqual(runtimeDecisions.map((resource) => resource.resourceKey), [decision.resourceKey]);
     assert.equal(managedDecisions.length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("applyNext skips managed recovery decisions left after reprovision-hand", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-next-skips-managed-recovery" });
+    const applier = createRecoveryDecisionApplier({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
+    });
+
+    const applied = await applier.applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T14:05:00.000Z",
+    });
+    assert.equal(applied.status, "applied");
+
+    const next = await applier.applyNext({
+      runId: fixture.runId,
+      now: "2026-06-21T14:06:00.000Z",
+    });
+    assert.equal(next, null);
+
+    const decisions = await listResourcesPg(db, { resourceType: "recovery_decision" });
+    const runtimeDecisions = decisions.filter(
+      (resource) => (resource.payload as { schemaVersion?: string }).schemaVersion === RECOVERY_DECISION_SCHEMA_VERSION,
+    );
+    const managedDecisions = decisions.filter(
+      (resource) => (resource.payload as { schemaVersion?: string }).schemaVersion === "southstar.managed-recovery-decision.v1",
+    );
+
+    assert.deepEqual(runtimeDecisions.map((resource) => [resource.resourceKey, resource.status]), [[fixture.decision.resourceKey, "applied"]]);
+    assert.equal(managedDecisions.length, 1);
+    assert.equal(managedDecisions[0]?.status, "recorded");
   } finally {
     await db.close();
   }
