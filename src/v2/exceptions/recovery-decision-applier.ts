@@ -232,7 +232,7 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         }
       }
 
-      let mutation: RequeueMutationResult;
+      let mutation: RequeueMutationResult | RecoveryDecisionApplyResult;
       try {
         const stagedEvidence = stagedRecoveryExecutionEvidence(started.payload);
         mutation = await applyRequeueMutation(deps.db, {
@@ -253,6 +253,7 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         }
         throw error;
       }
+      if ("status" in mutation) return mutation;
       await resolveRuntimeExceptionPg(deps.db, {
         runId: applyingDecision.payload.runId,
         resourceKey: mutation.exceptionResourceKey,
@@ -329,7 +330,7 @@ async function applyRequeueMutation(
     now: string;
     stagedEvidence: RecoveryExecutionEvidence | null;
   },
-): Promise<RequeueMutationResult> {
+): Promise<RequeueMutationResult | RecoveryDecisionApplyResult> {
   return await db.tx(async (tx) => {
     const { decision, now } = input;
     const taskId = requireString(decision.payload.taskId, "taskId");
@@ -341,6 +342,12 @@ async function applyRequeueMutation(
       [decision.payload.runId, taskId],
     );
     if (!task) throw new Error(`workflow task ${taskId} does not belong to run ${decision.payload.runId}`);
+    const completedTaskPrecondition = await applyCompletedTaskPreconditionPg(tx, {
+      decision,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+    if (completedTaskPrecondition) return completedTaskPrecondition;
 
     const hand = mapRuntimeResourceRow(await tx.maybeOne<RuntimeResourceRow>(
       `select * from southstar.runtime_resources
@@ -478,6 +485,13 @@ async function applyReprovisionMutation(
       }
       throw new Error(`recovery execution ${execution.resourceKey} is ${execution.status}, expected started`);
     }
+
+    const completedTaskPrecondition = await applyCompletedTaskPreconditionPg(tx, {
+      decision,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+    if (completedTaskPrecondition) return completedTaskPrecondition;
 
     const currentEvidence = stagedRecoveryExecutionEvidence(execution.payload as RecoveryExecutionPayload);
     const evidence = currentEvidence ?? await performAndStageReprovisionRecovery(tx, deps, {

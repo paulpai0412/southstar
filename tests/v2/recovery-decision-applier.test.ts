@@ -347,6 +347,80 @@ test("concurrent reprovision-hand replay reuses staged provider evidence without
   }
 });
 
+test("completed task with accepted artifact after stale requeue precondition supersedes without mutating hand or task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-race-superseded" });
+    const completedAt = "2026-06-21T13:24:30.000Z";
+    const supersededAt = "2026-06-21T13:25:00.000Z";
+    const raceDb = completeTaskAfterOuterCompletedPreconditionDb(db, fixture, completedAt);
+
+    const result = await createRecoveryDecisionApplier({ db: raceDb }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: supersededAt,
+    });
+
+    assert.equal(result.status, "superseded");
+    assert.equal(result.executionResourceKey, recoveryExecutionResourceKey(fixture.decision.decisionId));
+    assert.match(result.reason, /completed task has accepted artifact_ref/);
+    await assertCompletedTaskAndHandUnchanged(db, fixture, completedAt);
+
+    const recoveryExecution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(recoveryExecution?.status, "superseded");
+    assert.deepEqual((recoveryExecution?.payload as { providerActions?: unknown[] }).providerActions, []);
+    assert.deepEqual((recoveryExecution?.payload as { stateChanges?: Array<{ resourceType: string; toStatus?: string }> }).stateChanges?.map(
+      (change) => [change.resourceType, change.toStatus],
+    ), [["recovery_decision", "superseded"]]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completed task with accepted artifact after stale reprovision precondition supersedes without mutating hand or binding", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-reprovision-race-superseded" });
+    const completedAt = "2026-06-21T13:25:30.000Z";
+    const supersededAt = "2026-06-21T13:26:00.000Z";
+    const raceDb = completeTaskAfterOuterCompletedPreconditionDb(db, fixture, completedAt);
+    let provisionCount = 0;
+    const handProvider = createFakeHandProvider({ providerId: "fake-hand" });
+
+    const result = await createRecoveryDecisionApplier({
+      db: raceDb,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider: {
+        ...handProvider,
+        async provision(input) {
+          provisionCount += 1;
+          return handProvider.provision(input);
+        },
+      },
+    }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: supersededAt,
+    });
+
+    assert.equal(result.status, "superseded");
+    assert.equal(result.executionResourceKey, recoveryExecutionResourceKey(fixture.decision.decisionId));
+    assert.equal(provisionCount, 0);
+    assert.match(result.reason, /completed task has accepted artifact_ref/);
+    await assertCompletedTaskAndReprovisionHandUnchanged(db, fixture, completedAt);
+
+    const recoveryExecution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(recoveryExecution?.status, "superseded");
+    assert.deepEqual((recoveryExecution?.payload as { providerActions?: unknown[] }).providerActions, []);
+    assert.deepEqual((recoveryExecution?.payload as { stateChanges?: Array<{ resourceType: string; toStatus?: string }> }).stateChanges?.map(
+      (change) => [change.resourceType, change.toStatus],
+    ), [["recovery_decision", "superseded"]]);
+    assert.equal((await listResourcesPg(db, { resourceType: "session_checkpoint" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "hand_binding" })).filter((resource) => resource.runId === fixture.runId).length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
 test("requeue-hand-execution applies queue timeout recovery and is idempotent", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -1476,7 +1550,7 @@ async function createRollbackDecisionFixture(db: Awaited<ReturnType<typeof creat
 
 async function completeTaskWithAcceptedArtifact(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
-  input: Awaited<ReturnType<typeof createRequeueDecisionFixture>> & { completedAt: string },
+  input: CompletionFixture & { completedAt: string },
 ): Promise<void> {
   await db.query(
     "update southstar.workflow_tasks set status = 'completed', completed_at = $1, updated_at = now() where run_id = $2 and id = $3",
@@ -1497,6 +1571,42 @@ async function completeTaskWithAcceptedArtifact(
     evidenceRefs: [input.handExecutionId],
     producedAt: input.completedAt,
   });
+}
+
+type CompletionFixture = {
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  handExecutionId: string;
+};
+
+function completeTaskAfterOuterCompletedPreconditionDb(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  fixture: CompletionFixture,
+  completedAt: string,
+): SouthstarDb {
+  let injected = false;
+  return {
+    query: db.query.bind(db),
+    one: db.one.bind(db),
+    async maybeOne(sql, params = []) {
+      const row = await db.maybeOne(sql, params);
+      if (
+        !injected &&
+        String(sql).includes("select status from southstar.workflow_tasks") &&
+        String(sql).includes("for update") &&
+        params[0] === fixture.runId &&
+        params[1] === fixture.taskId
+      ) {
+        injected = true;
+        await completeTaskWithAcceptedArtifact(db, { ...fixture, completedAt });
+      }
+      return row;
+    },
+    tx: db.tx.bind(db),
+    close: async () => {},
+  };
 }
 
 async function setDecisionStatus(
@@ -1573,6 +1683,25 @@ async function assertCompletedTaskAndHandUnchanged(
   const hand = await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId);
   assert.equal(hand?.status, "queued");
   assert.equal((hand?.payload as { status?: string }).status, "queued");
+  const task = await db.one<{ status: string; completed_at: Date | string | null }>(
+    "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+    [fixture.runId, fixture.taskId],
+  );
+  assert.equal(task.status, "completed");
+  assert.equal(new Date(task.completed_at ?? "").toISOString(), completedAt);
+}
+
+async function assertCompletedTaskAndReprovisionHandUnchanged(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  fixture: Awaited<ReturnType<typeof createReprovisionDecisionFixture>>,
+  completedAt: string,
+): Promise<void> {
+  const hand = await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId);
+  assert.equal(hand?.status, "running");
+  assert.equal((hand?.payload as { status?: string }).status, "running");
+  const binding = await getResourceByKeyPg(db, "hand_binding", fixture.oldHandBindingId);
+  assert.equal(binding?.status, "running");
+  assert.equal((binding?.payload as { status?: string }).status, "running");
   const task = await db.one<{ status: string; completed_at: Date | string | null }>(
     "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
     [fixture.runId, fixture.taskId],
