@@ -66,6 +66,8 @@ export type ExecuteTaskInput = {
   acceptedInputArtifactRefs: string[];
   toolProxyPolicyRef: string;
   workflow: unknown;
+  queueTimeoutSeconds: number;
+  heartbeatTimeoutSeconds: number;
   callbackUrl?: string;
   heartbeatUrl?: string;
   envelopeBasePath?: string;
@@ -84,6 +86,8 @@ export type HandExecutionPayload = {
   externalJobId?: string;
   status: "queued" | "running" | "completed" | "failed" | "lost" | "superseded" | "cancelled";
   queuedAt: string;
+  queueTimeoutSeconds: number;
+  heartbeatTimeoutSeconds: number;
   startedAt?: string;
   terminalAt?: string;
   previousAttemptId?: string;
