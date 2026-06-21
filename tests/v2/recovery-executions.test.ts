@@ -209,3 +209,73 @@ test("recovery execution store rejects malformed canonical status rows", async (
     await db.close();
   }
 });
+
+test("complete recovery execution rejects started as a terminal status at runtime", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-recovery-execution-started-terminal",
+      status: "running",
+      domain: "software",
+      goalPrompt: "reject invalid terminal recovery execution status",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+
+    const started = await startRecoveryExecutionPg(db, {
+      decisionId: "decision-started-terminal",
+      exceptionId: "exception-started-terminal",
+      runId: "run-recovery-execution-started-terminal",
+      path: "none-observe-only",
+      now: "2026-06-21T11:00:00.000Z",
+    });
+
+    await assert.rejects(
+      completeRecoveryExecutionPg(db, {
+        runId: "run-recovery-execution-started-terminal",
+        executionResourceKey: started.resourceKey,
+        status: "started" as any,
+        completedAt: "2026-06-21T11:01:00.000Z",
+        stateChanges: [],
+        providerActions: [],
+      }),
+      /terminal recovery execution status/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("start recovery execution rejects task ids that do not belong to the run", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-recovery-execution-missing-task",
+      status: "running",
+      domain: "software",
+      goalPrompt: "reject recovery execution task from outside run",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+
+    await assert.rejects(
+      startRecoveryExecutionPg(db, {
+        decisionId: "decision-missing-task",
+        exceptionId: "exception-missing-task",
+        runId: "run-recovery-execution-missing-task",
+        taskId: "missing-task",
+        path: "requeue-hand-execution",
+        now: "2026-06-21T11:00:00.000Z",
+      }),
+      /workflow task missing-task does not belong to run run-recovery-execution-missing-task/,
+    );
+  } finally {
+    await db.close();
+  }
+});

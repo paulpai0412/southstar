@@ -58,6 +58,15 @@ export async function startRecoveryExecutionPg(
 
   return await db.tx(async (tx) => {
     await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
+    if (input.taskId) {
+      const task = await tx.maybeOne<{ id: string }>(
+        "select id from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
+        [input.runId, input.taskId],
+      );
+      if (!task) {
+        throw new Error(`workflow task ${input.taskId} does not belong to run ${input.runId}`);
+      }
+    }
     const existing = toRecoveryExecutionRecord(await getResourceByKeyPg(tx, RECOVERY_EXECUTION_RESOURCE_TYPE, resourceKey));
     if (existing) {
       if (
@@ -114,6 +123,8 @@ export async function completeRecoveryExecutionPg(
   db: SouthstarDb,
   input: CompleteRecoveryExecutionInput,
 ): Promise<RecoveryExecutionRecord> {
+  assertTerminalRecoveryExecutionStatus(input.status);
+
   return await db.tx(async (tx) => {
     await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
     const current = requireRecoveryExecutionRecord(
@@ -272,6 +283,12 @@ function toRecoveryExecutionRecord(resource: RuntimeResourceRecord | null): Reco
 
 function isRecoveryExecutionStatus(value: unknown): value is RecoveryExecutionStatus {
   return typeof value === "string" && RECOVERY_EXECUTION_STATUS_SET.has(value as RecoveryExecutionStatus);
+}
+
+function assertTerminalRecoveryExecutionStatus(status: unknown): void {
+  if (String(status) === "started") {
+    throw new Error("terminal recovery execution status cannot be started");
+  }
 }
 
 function isRecoveryPath(value: unknown): value is RecoveryPath {
