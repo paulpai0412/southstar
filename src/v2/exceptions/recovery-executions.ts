@@ -30,6 +30,8 @@ const RECOVERY_PATH_SET = new Set<RecoveryPath>([
   "fail-task",
   "fail-run",
 ]);
+const RECOVERY_PROVIDER_ACTION_NAME_SET = new Set(["poll", "cancel", "destroy", "provision", "snapshot", "rollback", "wake"]);
+const RECOVERY_PROVIDER_ACTION_STATUS_SET = new Set(["requested", "succeeded", "failed", "skipped"]);
 
 type StartRecoveryExecutionInput = {
   decisionId: string;
@@ -139,6 +141,8 @@ export async function completeRecoveryExecutionPg(
       }
       return current;
     }
+    assertValidRecoveryExecutionStateChanges(input.stateChanges);
+    assertValidRecoveryExecutionProviderActions(input.providerActions);
 
     const payload: RecoveryExecutionPayload = {
       ...current.payload,
@@ -273,6 +277,8 @@ function toRecoveryExecutionRecord(resource: RuntimeResourceRecord | null): Reco
     payloadStatus !== resourceStatus ||
     !Array.isArray(payload.stateChanges) ||
     !Array.isArray(payload.providerActions) ||
+    !isValidRecoveryExecutionStateChanges(payload.stateChanges) ||
+    !isValidRecoveryExecutionProviderActions(payload.providerActions) ||
     typeof payload.createdAt !== "string"
   ) {
     return null;
@@ -298,6 +304,58 @@ function assertTerminalRecoveryExecutionStatus(status: unknown): void {
 
 function isRecoveryPath(value: unknown): value is RecoveryPath {
   return typeof value === "string" && RECOVERY_PATH_SET.has(value as RecoveryPath);
+}
+
+function assertValidRecoveryExecutionStateChanges(value: unknown): asserts value is RecoveryExecutionStateChange[] {
+  if (!isValidRecoveryExecutionStateChanges(value)) {
+    throw new Error("invalid recovery execution state change");
+  }
+}
+
+function isValidRecoveryExecutionStateChanges(value: unknown): value is RecoveryExecutionStateChange[] {
+  return Array.isArray(value) && value.every(isValidRecoveryExecutionStateChange);
+}
+
+function isValidRecoveryExecutionStateChange(value: unknown): value is RecoveryExecutionStateChange {
+  if (!isPlainObject(value)) return false;
+  return (
+    isNonEmptyString(value.resourceType) &&
+    isNonEmptyString(value.resourceKey) &&
+    isNonEmptyString(value.reason) &&
+    (value.fromStatus === undefined || typeof value.fromStatus === "string") &&
+    (value.toStatus === undefined || typeof value.toStatus === "string")
+  );
+}
+
+function assertValidRecoveryExecutionProviderActions(value: unknown): asserts value is RecoveryExecutionProviderAction[] {
+  if (!isValidRecoveryExecutionProviderActions(value)) {
+    throw new Error("invalid recovery execution provider action");
+  }
+}
+
+function isValidRecoveryExecutionProviderActions(value: unknown): value is RecoveryExecutionProviderAction[] {
+  return Array.isArray(value) && value.every(isValidRecoveryExecutionProviderAction);
+}
+
+function isValidRecoveryExecutionProviderAction(value: unknown): value is RecoveryExecutionProviderAction {
+  if (!isPlainObject(value)) return false;
+  return (
+    isNonEmptyString(value.providerId) &&
+    typeof value.action === "string" &&
+    RECOVERY_PROVIDER_ACTION_NAME_SET.has(value.action) &&
+    typeof value.status === "string" &&
+    RECOVERY_PROVIDER_ACTION_STATUS_SET.has(value.status) &&
+    (value.evidenceRef === undefined || typeof value.evidenceRef === "string") &&
+    (value.errorExcerpt === undefined || typeof value.errorExcerpt === "string")
+  );
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isIdempotentTerminalCompletion(

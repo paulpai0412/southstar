@@ -291,6 +291,96 @@ test("recovery execution store rejects malformed canonical status rows", async (
   }
 });
 
+test("complete recovery execution rejects invalid provider action status on first completion", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-recovery-execution-invalid-provider-status",
+      status: "running",
+      domain: "software",
+      goalPrompt: "reject invalid recovery execution provider status",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+
+    const started = await startRecoveryExecutionPg(db, {
+      decisionId: "decision-invalid-provider-status",
+      exceptionId: "exception-invalid-provider-status",
+      runId: "run-recovery-execution-invalid-provider-status",
+      path: "requeue-hand-execution",
+      now: "2026-06-21T11:00:00.000Z",
+    });
+
+    await assert.rejects(
+      completeRecoveryExecutionPg(db, {
+        runId: "run-recovery-execution-invalid-provider-status",
+        executionResourceKey: started.resourceKey,
+        status: "succeeded",
+        completedAt: "2026-06-21T11:01:00.000Z",
+        stateChanges: [],
+        providerActions: [
+          {
+            providerId: "tork",
+            action: "cancel",
+            status: "completed" as any,
+          },
+        ],
+      }),
+      /invalid recovery execution provider action/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("complete recovery execution rejects invalid provider action name on first completion", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-recovery-execution-invalid-provider-action",
+      status: "running",
+      domain: "software",
+      goalPrompt: "reject invalid recovery execution provider action",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+
+    const started = await startRecoveryExecutionPg(db, {
+      decisionId: "decision-invalid-provider-action",
+      exceptionId: "exception-invalid-provider-action",
+      runId: "run-recovery-execution-invalid-provider-action",
+      path: "requeue-hand-execution",
+      now: "2026-06-21T11:00:00.000Z",
+    });
+
+    await assert.rejects(
+      completeRecoveryExecutionPg(db, {
+        runId: "run-recovery-execution-invalid-provider-action",
+        executionResourceKey: started.resourceKey,
+        status: "succeeded",
+        completedAt: "2026-06-21T11:01:00.000Z",
+        stateChanges: [],
+        providerActions: [
+          {
+            providerId: "tork",
+            action: "submit" as any,
+            status: "requested",
+          },
+        ],
+      }),
+      /invalid recovery execution provider action/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 test("complete recovery execution rejects started as a terminal status at runtime", async () => {
   const db = await createTestPostgresDb();
   try {
