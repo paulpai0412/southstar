@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref-store.ts";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createRecoveryDecisionApplier } from "../../src/v2/exceptions/recovery-decision-applier.ts";
@@ -1161,6 +1162,106 @@ test("waiting operator approval is not auto-applied and leaves hand and task unc
   }
 });
 
+test("operator-required rollback decision waits without starting recovery execution", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRollbackDecisionFixture(db, { runId: "run-apply-rollback-waits" });
+
+    assert.equal(fixture.decision.status, "waiting_operator_approval");
+    assert.equal(fixture.decision.payload.operatorApprovalRequired, true);
+
+    const next = await createRecoveryDecisionApplier({ db }).applyNext({
+      runId: fixture.runId,
+      now: "2026-06-21T13:25:00.000Z",
+    });
+    assert.equal(next, null);
+
+    const direct = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T13:25:00.000Z",
+    });
+    assert.equal(direct.status, "skipped");
+    assert.match(direct.reason, /waiting for operator approval/);
+
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey))?.status, "waiting_operator_approval");
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_execution" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    await assertReprovisionHandAndTaskUnchanged(db, fixture);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completed task with accepted artifact supersedes stale requeue decision without mutating hand or task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-stale-requeue-superseded" });
+    const completedAt = "2026-06-21T13:27:00.000Z";
+    const supersededAt = "2026-06-21T13:28:00.000Z";
+
+    await completeTaskWithAcceptedArtifact(db, { ...fixture, completedAt });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: supersededAt,
+    });
+
+    assert.equal(result.status, "superseded");
+    assert.equal(result.executionResourceKey, recoveryExecutionResourceKey(fixture.decision.decisionId));
+    assert.match(result.reason, /completed task has accepted artifact_ref/);
+
+    const decision = await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey);
+    assert.equal(decision?.status, "superseded");
+    assert.equal((decision?.payload as { supersededAt?: string; statusReason?: string }).supersededAt, supersededAt);
+    assert.match((decision?.payload as { statusReason?: string }).statusReason ?? "", /completed task has accepted artifact_ref/);
+
+    const recoveryExecution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(recoveryExecution?.status, "superseded");
+    const executionPayload = recoveryExecution?.payload as {
+      completedAt?: string;
+      stateChanges: Array<{ resourceType: string; resourceKey: string; fromStatus?: string; toStatus?: string; reason: string }>;
+      providerActions: unknown[];
+    };
+    assert.equal(executionPayload.completedAt, supersededAt);
+    assert.deepEqual(executionPayload.providerActions, []);
+    assert.deepEqual(executionPayload.stateChanges, [
+      {
+        resourceType: "recovery_decision",
+        resourceKey: fixture.decision.resourceKey,
+        fromStatus: "applying",
+        toStatus: "superseded",
+        reason: "completed task has accepted artifact_ref for recovery decision task",
+      },
+    ]);
+
+    await assertCompletedTaskAndHandUnchanged(db, fixture, completedAt);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completed task without accepted artifact blocks stale requeue decision without mutating hand or task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-completed-requeue-missing-artifact" });
+    const completedAt = "2026-06-21T13:30:00.000Z";
+    await db.query(
+      "update southstar.workflow_tasks set status = 'completed', completed_at = $1, updated_at = now() where run_id = $2 and id = $3",
+      [completedAt, fixture.runId, fixture.taskId],
+    );
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T13:31:00.000Z",
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason, /completed task is missing accepted artifact_ref/);
+    await assertCompletedTaskAndHandUnchanged(db, fixture, completedAt);
+  } finally {
+    await db.close();
+  }
+});
+
 async function createRequeueDecisionFixture(db: Awaited<ReturnType<typeof createTestPostgresDb>>, input: { runId: string }) {
   const runId = input.runId;
   const taskId = "task-a";
@@ -1351,6 +1452,53 @@ async function createReprovisionDecisionFixture(db: Awaited<ReturnType<typeof cr
   return { db, runId, taskId, sessionId, attemptId, oldHandBindingId, handExecutionId, exception, decision };
 }
 
+async function createRollbackDecisionFixture(db: Awaited<ReturnType<typeof createTestPostgresDb>>, input: { runId: string }) {
+  const fixture = await createReprovisionDecisionFixture(db, input);
+  await setDecisionStatus(db, fixture.decision.resourceKey, "waiting_operator_approval");
+  const controller = createRuntimeExceptionController({ db });
+  const rollbackException = await controller.observe({
+    runId: fixture.runId,
+    taskId: fixture.taskId,
+    sessionId: fixture.sessionId,
+    attemptId: "attempt-rollback",
+    handExecutionId: fixture.handExecutionId,
+    handBindingId: fixture.oldHandBindingId,
+    source: "tork-observer",
+    kind: "tork_running_hang",
+    severity: "recoverable",
+    observedAt: "2026-06-21T13:59:30.000Z",
+    evidenceRefs: [fixture.handExecutionId, fixture.oldHandBindingId, "workspace-snapshot:dirty"],
+    providerEvidence: { externalJobId: "job-running", workspaceUnsafe: true },
+  });
+  const rollbackDecision = await controller.decide(await controller.classify(rollbackException));
+  return { ...fixture, exception: rollbackException, decision: rollbackDecision };
+}
+
+async function completeTaskWithAcceptedArtifact(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  input: Awaited<ReturnType<typeof createRequeueDecisionFixture>> & { completedAt: string },
+): Promise<void> {
+  await db.query(
+    "update southstar.workflow_tasks set status = 'completed', completed_at = $1, updated_at = now() where run_id = $2 and id = $3",
+    [input.completedAt, input.runId, input.taskId],
+  );
+  await acceptOrRejectArtifactRefPg(db, {
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    attemptId: input.attemptId,
+    handExecutionId: input.handExecutionId,
+    producer: { actorType: "hand", providerId: "tork" },
+    artifactType: "implementation_result",
+    status: "accepted",
+    content: { summary: "task completed before stale recovery applied" },
+    contractRefs: ["contract:implementation_result"],
+    summary: "accepted implementation result",
+    evidenceRefs: [input.handExecutionId],
+    producedAt: input.completedAt,
+  });
+}
+
 async function setDecisionStatus(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   decisionResourceKey: string,
@@ -1415,6 +1563,22 @@ async function assertReprovisionHandAndTaskUnchanged(
   );
   assert.equal(task.status, "failed");
   assert.ok(task.completed_at);
+}
+
+async function assertCompletedTaskAndHandUnchanged(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  fixture: Awaited<ReturnType<typeof createRequeueDecisionFixture>>,
+  completedAt: string,
+): Promise<void> {
+  const hand = await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId);
+  assert.equal(hand?.status, "queued");
+  assert.equal((hand?.payload as { status?: string }).status, "queued");
+  const task = await db.one<{ status: string; completed_at: Date | string | null }>(
+    "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+    [fixture.runId, fixture.taskId],
+  );
+  assert.equal(task.status, "completed");
+  assert.equal(new Date(task.completed_at ?? "").toISOString(), completedAt);
 }
 
 function pickKeys(value: unknown, keys: string[]): Record<string, unknown> {

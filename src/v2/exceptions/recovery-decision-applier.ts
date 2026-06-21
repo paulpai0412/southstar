@@ -192,6 +192,13 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         return { status: started.status, executionResourceKey: started.resourceKey, reason: `recovery execution already ${started.status}` };
       }
 
+      const completedTaskPrecondition = await applyCompletedTaskPreconditionPg(deps.db, {
+        decision: applyingDecision,
+        executionResourceKey: started.resourceKey,
+        now,
+      });
+      if (completedTaskPrecondition) return completedTaskPrecondition;
+
       if (applyingDecision.payload.path === "reprovision-hand") {
         const missingDeps = missingReprovisionDeps(deps);
         if (missingDeps.length > 0) {
@@ -266,6 +273,52 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
       return { status: "applied", executionResourceKey: started.resourceKey, reason: "requeue-hand-execution applied" };
     },
   };
+}
+
+async function applyCompletedTaskPreconditionPg(
+  db: SouthstarDb,
+  input: { decision: RuntimeRecoveryDecisionRecord; executionResourceKey: string; now: string },
+): Promise<RecoveryDecisionApplyResult | null> {
+  const taskId = input.decision.payload.taskId;
+  if (!taskId) return null;
+
+  const task = await db.maybeOne<{ status: string }>(
+    "select status from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
+    [input.decision.payload.runId, taskId],
+  );
+  if (task?.status !== "completed") return null;
+
+  const acceptedArtifact = await db.maybeOne<{ resource_key: string }>(
+    `select resource_key
+       from southstar.runtime_resources
+      where resource_type = 'artifact_ref'
+        and run_id = $1
+        and task_id = $2
+        and status = 'accepted'
+      order by created_at, resource_key
+      limit 1`,
+    [input.decision.payload.runId, taskId],
+  );
+
+  if (!acceptedArtifact) {
+    const reason = "completed task is missing accepted artifact_ref for recovery decision task";
+    await blockDecision(db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+      reason,
+    });
+    return { status: "blocked", executionResourceKey: input.executionResourceKey, reason };
+  }
+
+  const reason = "completed task has accepted artifact_ref for recovery decision task";
+  await supersedeDecision(db, {
+    decision: input.decision,
+    executionResourceKey: input.executionResourceKey,
+    now: input.now,
+    reason,
+  });
+  return { status: "superseded", executionResourceKey: input.executionResourceKey, reason };
 }
 
 async function applyRequeueMutation(
@@ -1019,6 +1072,58 @@ async function blockDecision(
         resourceKey: input.decision.resourceKey,
         fromStatus: input.decision.status,
         toStatus: "blocked",
+        reason: input.reason,
+      },
+    ],
+    providerActions: [],
+  });
+}
+
+async function supersedeDecision(
+  db: SouthstarDb,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    executionResourceKey: string;
+    now: string;
+    reason: string;
+  },
+): Promise<void> {
+  await db.tx(async (tx) => {
+    const payload = {
+      ...input.decision.payload,
+      supersededAt: input.now,
+      statusReason: input.reason,
+    };
+    await upsertRuntimeResourcePg(tx, {
+      id: input.decision.decisionId,
+      resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+      resourceKey: input.decision.resourceKey,
+      runId: input.decision.payload.runId,
+      taskId: input.decision.payload.taskId,
+      scope: "recovery",
+      status: "superseded",
+      title: `Runtime recovery decision: ${input.decision.payload.path}`,
+      payload,
+      summary: {
+        exceptionId: input.decision.payload.exceptionId,
+        path: input.decision.payload.path,
+        reason: input.reason,
+        supersededAt: input.now,
+      },
+    });
+  });
+
+  await completeRecoveryExecutionPg(db, {
+    runId: input.decision.payload.runId,
+    executionResourceKey: input.executionResourceKey,
+    status: "superseded",
+    completedAt: input.now,
+    stateChanges: [
+      {
+        resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+        resourceKey: input.decision.resourceKey,
+        fromStatus: input.decision.status,
+        toStatus: "superseded",
         reason: input.reason,
       },
     ],

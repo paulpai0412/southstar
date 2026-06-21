@@ -84,7 +84,7 @@ async function recordRecoveryDecisionPg(
       taskId: classification.taskId,
       sessionId: classification.sessionId,
       scope: "recovery",
-      status: "recorded",
+      status: classification.operatorApprovalRequired ? "waiting_operator_approval" : "recorded",
       title: `Runtime recovery decision: ${classification.recoveryPath}`,
       payload,
       summary: {

@@ -406,6 +406,7 @@ test("runtime exception controller requires operator approval for rollback decis
 
     assert.equal(decision.payload.path, "rollback-workspace");
     assert.equal(decision.payload.operatorApprovalRequired, true);
+    assert.equal(decision.status, "waiting_operator_approval");
   } finally {
     await db.close();
   }
