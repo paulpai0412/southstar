@@ -4,7 +4,7 @@ import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createRecoveryDecisionApplier } from "../../src/v2/exceptions/recovery-decision-applier.ts";
-import { recoveryExecutionResourceKey, startRecoveryExecutionPg } from "../../src/v2/exceptions/recovery-executions.ts";
+import { completeRecoveryExecutionPg, recoveryExecutionResourceKey, startRecoveryExecutionPg } from "../../src/v2/exceptions/recovery-executions.ts";
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../../src/v2/exceptions/types.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
@@ -1313,6 +1313,63 @@ test("completed task with accepted artifact supersedes stale requeue decision wi
   }
 });
 
+test("stale completed-task supersede replay does not overwrite terminal payload or conflict with completion", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-stale-requeue-superseded-replay" });
+    const completedAt = "2026-06-21T13:28:30.000Z";
+    const firstSupersededAt = "2026-06-21T13:29:00.000Z";
+    const staleCallerNow = "2026-06-21T13:29:30.000Z";
+    const reason = "completed task has accepted artifact_ref for recovery decision task";
+    const executionResourceKey = recoveryExecutionResourceKey(fixture.decision.decisionId);
+
+    await completeTaskWithAcceptedArtifact(db, { ...fixture, completedAt });
+
+    const staleDb = terminalizeDecisionAfterCompletedPreconditionReadDb(db, fixture, async () => {
+      await patchDecisionPayload(db, fixture.decision.resourceKey, { supersededAt: firstSupersededAt, statusReason: reason });
+      await setDecisionStatus(db, fixture.decision.resourceKey, "superseded");
+      await completeRecoveryExecutionPg(db, {
+        runId: fixture.runId,
+        executionResourceKey,
+        status: "superseded",
+        completedAt: firstSupersededAt,
+        stateChanges: [{
+          resourceType: "recovery_decision",
+          resourceKey: fixture.decision.resourceKey,
+          fromStatus: "applying",
+          toStatus: "superseded",
+          reason,
+        }],
+        providerActions: [],
+      });
+    });
+
+    const result = await createRecoveryDecisionApplier({ db: staleDb }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: staleCallerNow,
+    });
+
+    assert.equal(result.status, "superseded");
+    assert.equal(result.executionResourceKey, executionResourceKey);
+
+    const decision = await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey);
+    assert.equal(decision?.status, "superseded");
+    assert.equal((decision?.payload as { supersededAt?: string }).supersededAt, firstSupersededAt);
+
+    const recoveryExecutions = (await listResourcesPg(db, { resourceType: "recovery_execution" })).filter(
+      (resource) => resource.resourceKey === executionResourceKey,
+    );
+    assert.equal(recoveryExecutions.length, 1);
+    assert.equal(recoveryExecutions[0]?.status, "superseded");
+    assert.equal((recoveryExecutions[0]?.payload as { completedAt?: string }).completedAt, firstSupersededAt);
+
+    const historyTypes = (await listHistoryForRunPg(db, fixture.runId)).map((event) => event.eventType);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.superseded").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
 test("completed task without accepted artifact blocks stale requeue decision without mutating hand or task", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -1331,6 +1388,65 @@ test("completed task without accepted artifact blocks stale requeue decision wit
     assert.equal(result.status, "blocked");
     assert.match(result.reason, /completed task is missing accepted artifact_ref/);
     await assertCompletedTaskAndHandUnchanged(db, fixture, completedAt);
+  } finally {
+    await db.close();
+  }
+});
+
+test("stale completed-task missing-artifact block replay does not overwrite terminal payload or conflict with completion", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-stale-requeue-blocked-replay" });
+    const completedAt = "2026-06-21T13:31:30.000Z";
+    const firstBlockedAt = "2026-06-21T13:32:00.000Z";
+    const staleCallerNow = "2026-06-21T13:32:30.000Z";
+    const reason = "completed task is missing accepted artifact_ref for recovery decision task";
+    const executionResourceKey = recoveryExecutionResourceKey(fixture.decision.decisionId);
+    await db.query(
+      "update southstar.workflow_tasks set status = 'completed', completed_at = $1, updated_at = now() where run_id = $2 and id = $3",
+      [completedAt, fixture.runId, fixture.taskId],
+    );
+
+    const staleDb = terminalizeDecisionAfterCompletedPreconditionReadDb(db, fixture, async () => {
+      await patchDecisionPayload(db, fixture.decision.resourceKey, { blockedAt: firstBlockedAt, statusReason: reason });
+      await setDecisionStatus(db, fixture.decision.resourceKey, "blocked");
+      await completeRecoveryExecutionPg(db, {
+        runId: fixture.runId,
+        executionResourceKey,
+        status: "blocked",
+        completedAt: firstBlockedAt,
+        stateChanges: [{
+          resourceType: "recovery_decision",
+          resourceKey: fixture.decision.resourceKey,
+          fromStatus: "applying",
+          toStatus: "blocked",
+          reason,
+        }],
+        providerActions: [],
+      });
+    });
+
+    const result = await createRecoveryDecisionApplier({ db: staleDb }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: staleCallerNow,
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.equal(result.executionResourceKey, executionResourceKey);
+
+    const decision = await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey);
+    assert.equal(decision?.status, "blocked");
+    assert.equal((decision?.payload as { blockedAt?: string }).blockedAt, firstBlockedAt);
+
+    const recoveryExecutions = (await listResourcesPg(db, { resourceType: "recovery_execution" })).filter(
+      (resource) => resource.resourceKey === executionResourceKey,
+    );
+    assert.equal(recoveryExecutions.length, 1);
+    assert.equal(recoveryExecutions[0]?.status, "blocked");
+    assert.equal((recoveryExecutions[0]?.payload as { completedAt?: string }).completedAt, firstBlockedAt);
+
+    const historyTypes = (await listHistoryForRunPg(db, fixture.runId)).map((event) => event.eventType);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.blocked").length, 1);
   } finally {
     await db.close();
   }
@@ -1601,6 +1717,34 @@ function completeTaskAfterOuterCompletedPreconditionDb(
       ) {
         injected = true;
         await completeTaskWithAcceptedArtifact(db, { ...fixture, completedAt });
+      }
+      return row;
+    },
+    tx: db.tx.bind(db),
+    close: async () => {},
+  };
+}
+
+function terminalizeDecisionAfterCompletedPreconditionReadDb(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  fixture: CompletionFixture,
+  terminalize: () => Promise<void>,
+): SouthstarDb {
+  let injected = false;
+  return {
+    query: db.query.bind(db),
+    one: db.one.bind(db),
+    async maybeOne(sql, params = []) {
+      const row = await db.maybeOne(sql, params);
+      if (
+        !injected &&
+        String(sql).includes("select status from southstar.workflow_tasks") &&
+        String(sql).includes("for update") &&
+        params[0] === fixture.runId &&
+        params[1] === fixture.taskId
+      ) {
+        injected = true;
+        await terminalize();
       }
       return row;
     },

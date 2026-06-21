@@ -153,35 +153,35 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
       });
 
       if (applyingDecision.payload.path !== "requeue-hand-execution" && applyingDecision.payload.path !== "reprovision-hand") {
-        await blockDecision(deps.db, {
+        const terminalDecision = await blockDecision(deps.db, {
           decision: applyingDecision,
           executionResourceKey: started.resourceKey,
           now,
           reason: `unsupported recovery path ${applyingDecision.payload.path}`,
         });
-        return { status: "blocked", executionResourceKey: started.resourceKey, reason: `unsupported recovery path ${applyingDecision.payload.path}` };
+        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
       }
 
       if (!applyingDecision.payload.taskId) {
         const reason = `${applyingDecision.payload.path} decision missing taskId`;
-        await blockDecision(deps.db, {
+        const terminalDecision = await blockDecision(deps.db, {
           decision: applyingDecision,
           executionResourceKey: started.resourceKey,
           now,
           reason,
         });
-        return { status: "blocked", executionResourceKey: started.resourceKey, reason };
+        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
       }
 
       if (!applyingDecision.payload.handExecutionId) {
         const reason = `${applyingDecision.payload.path} decision missing handExecutionId`;
-        await blockDecision(deps.db, {
+        const terminalDecision = await blockDecision(deps.db, {
           decision: applyingDecision,
           executionResourceKey: started.resourceKey,
           now,
           reason,
         });
-        return { status: "blocked", executionResourceKey: started.resourceKey, reason };
+        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
       }
 
       if (started.status !== "started") {
@@ -203,13 +203,13 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         const missingDeps = missingReprovisionDeps(deps);
         if (missingDeps.length > 0) {
           const reason = `missing reprovision-hand dependencies: ${missingDeps.join(", ")}`;
-          await blockDecision(deps.db, {
+          const terminalDecision = await blockDecision(deps.db, {
             decision: applyingDecision,
             executionResourceKey: started.resourceKey,
             now,
             reason,
           });
-          return { status: "blocked", executionResourceKey: started.resourceKey, reason };
+          return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
         }
 
         try {
@@ -220,13 +220,13 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
           });
         } catch (error) {
           if (error instanceof Error && isReprovisionBlockableError(error.message, applyingDecision)) {
-            await blockDecision(deps.db, {
+            const terminalDecision = await blockDecision(deps.db, {
               decision: applyingDecision,
               executionResourceKey: started.resourceKey,
               now,
               reason: error.message,
             });
-            return { status: "blocked", executionResourceKey: started.resourceKey, reason: error.message };
+            return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
           }
           throw error;
         }
@@ -243,13 +243,13 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         });
       } catch (error) {
         if (error instanceof Error && error.message === `hand execution ${applyingDecision.payload.handExecutionId} not found`) {
-          await blockDecision(deps.db, {
+          const terminalDecision = await blockDecision(deps.db, {
             decision: applyingDecision,
             executionResourceKey: started.resourceKey,
             now,
             reason: error.message,
           });
-          return { status: "blocked", executionResourceKey: started.resourceKey, reason: error.message };
+          return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
         }
         throw error;
       }
@@ -303,23 +303,23 @@ async function applyCompletedTaskPreconditionPg(
 
   if (!acceptedArtifact) {
     const reason = "completed task is missing accepted artifact_ref for recovery decision task";
-    await blockDecision(db, {
+    const terminalDecision = await blockDecision(db, {
       decision: input.decision,
       executionResourceKey: input.executionResourceKey,
       now: input.now,
       reason,
     });
-    return { status: "blocked", executionResourceKey: input.executionResourceKey, reason };
+    return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
   }
 
   const reason = "completed task has accepted artifact_ref for recovery decision task";
-  await supersedeDecision(db, {
+  const terminalDecision = await supersedeDecision(db, {
     decision: input.decision,
     executionResourceKey: input.executionResourceKey,
     now: input.now,
     reason,
   });
-  return { status: "superseded", executionResourceKey: input.executionResourceKey, reason };
+  return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
 }
 
 async function applyRequeueMutation(
@@ -877,7 +877,7 @@ async function repairTerminalRecoveryExecutionPg(
 
 function terminalDecisionCompletedAt(
   decision: RuntimeRecoveryDecisionRecord,
-  execution: RuntimeResourceRecord,
+  execution: RuntimeResourceRecord | null,
   fallback: string,
 ): string {
   const payload = decision.payload as RecoveryDecisionPayload & Record<string, unknown>;
@@ -886,8 +886,8 @@ function terminalDecisionCompletedAt(
     payload.failedAt ??
     payload.supersededAt ??
     payload.appliedAt ??
-    (execution.payload as Partial<RecoveryExecutionPayload>).completedAt ??
-    (execution.payload as Partial<RecoveryExecutionPayload>).createdAt;
+    (execution?.payload as Partial<RecoveryExecutionPayload> | undefined)?.completedAt ??
+    (execution?.payload as Partial<RecoveryExecutionPayload> | undefined)?.createdAt;
   return typeof terminalAt === "string" && terminalAt.trim().length > 0 ? terminalAt : fallback;
 }
 
@@ -896,6 +896,29 @@ function terminalDecisionReason(decision: RuntimeRecoveryDecisionRecord): string
   return typeof statusReason === "string" && statusReason.trim().length > 0
     ? statusReason
     : `decision already ${decision.status}`;
+}
+
+function terminalDecisionApplyResult(
+  decision: RuntimeRecoveryDecisionRecord,
+  executionResourceKey: string,
+): RecoveryDecisionApplyResult {
+  if (!isTerminalDecisionStatus(decision.status)) {
+    throw new Error(`recovery decision ${decision.resourceKey} is not terminal`);
+  }
+  return {
+    status: decision.status,
+    executionResourceKey,
+    reason: terminalDecisionReason(decision),
+  };
+}
+
+function isTerminalDecisionStatus(status: RecoveryDecisionStatus): status is "applied" | "blocked" | "failed" | "superseded" {
+  return status === "applied" || status === "blocked" || status === "failed" || status === "superseded";
+}
+
+function recoveryExecutionStatusForTerminalDecision(status: RecoveryDecisionStatus): "blocked" | "failed" | "superseded" | null {
+  if (status === "blocked" || status === "failed" || status === "superseded") return status;
+  return null;
 }
 
 function stagedRecoveryExecutionEvidence(payload: RecoveryExecutionPayload): RecoveryExecutionEvidence | null {
@@ -1050,46 +1073,11 @@ async function blockDecision(
     now: string;
     reason: string;
   },
-): Promise<void> {
-  await db.tx(async (tx) => {
-    const payload = {
-      ...input.decision.payload,
-      blockedAt: input.now,
-      statusReason: input.reason,
-    };
-    await upsertRuntimeResourcePg(tx, {
-      id: input.decision.decisionId,
-      resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
-      resourceKey: input.decision.resourceKey,
-      runId: input.decision.payload.runId,
-      taskId: input.decision.payload.taskId,
-      scope: "recovery",
-      status: "blocked",
-      title: `Runtime recovery decision: ${input.decision.payload.path}`,
-      payload,
-      summary: {
-        exceptionId: input.decision.payload.exceptionId,
-        path: input.decision.payload.path,
-        reason: input.reason,
-      },
-    });
-  });
-
-  await completeRecoveryExecutionPg(db, {
-    runId: input.decision.payload.runId,
-    executionResourceKey: input.executionResourceKey,
+): Promise<RuntimeRecoveryDecisionRecord> {
+  return await transitionDecisionTerminalPg(db, {
+    ...input,
     status: "blocked",
-    completedAt: input.now,
-    stateChanges: [
-      {
-        resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
-        resourceKey: input.decision.resourceKey,
-        fromStatus: input.decision.status,
-        toStatus: "blocked",
-        reason: input.reason,
-      },
-    ],
-    providerActions: [],
+    terminalAtField: "blockedAt",
   });
 }
 
@@ -1101,48 +1089,95 @@ async function supersedeDecision(
     now: string;
     reason: string;
   },
-): Promise<void> {
-  await db.tx(async (tx) => {
-    const payload = {
-      ...input.decision.payload,
-      supersededAt: input.now,
-      statusReason: input.reason,
-    };
-    await upsertRuntimeResourcePg(tx, {
-      id: input.decision.decisionId,
-      resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
-      resourceKey: input.decision.resourceKey,
-      runId: input.decision.payload.runId,
-      taskId: input.decision.payload.taskId,
-      scope: "recovery",
-      status: "superseded",
-      title: `Runtime recovery decision: ${input.decision.payload.path}`,
-      payload,
-      summary: {
-        exceptionId: input.decision.payload.exceptionId,
-        path: input.decision.payload.path,
-        reason: input.reason,
-        supersededAt: input.now,
-      },
-    });
-  });
-
-  await completeRecoveryExecutionPg(db, {
-    runId: input.decision.payload.runId,
-    executionResourceKey: input.executionResourceKey,
+): Promise<RuntimeRecoveryDecisionRecord> {
+  return await transitionDecisionTerminalPg(db, {
+    ...input,
     status: "superseded",
-    completedAt: input.now,
-    stateChanges: [
-      {
-        resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
-        resourceKey: input.decision.resourceKey,
-        fromStatus: input.decision.status,
-        toStatus: "superseded",
-        reason: input.reason,
-      },
-    ],
-    providerActions: [],
+    terminalAtField: "supersededAt",
   });
+}
+
+async function transitionDecisionTerminalPg(
+  db: SouthstarDb,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    executionResourceKey: string;
+    now: string;
+    reason: string;
+    status: "blocked" | "superseded";
+    terminalAtField: "blockedAt" | "supersededAt";
+  },
+): Promise<RuntimeRecoveryDecisionRecord> {
+  return await db.tx(async (tx) => {
+    const current = requireRecoveryDecision(await getRecoveryDecisionByKeyForUpdatePg(tx, input.decision.resourceKey));
+    const terminalDecision = isTerminalDecisionStatus(current.status)
+      ? current
+      : await writeTerminalDecisionPg(tx, {
+        decision: current,
+        now: input.now,
+        reason: input.reason,
+        status: input.status,
+        terminalAtField: input.terminalAtField,
+      });
+
+    const completionStatus = recoveryExecutionStatusForTerminalDecision(terminalDecision.status);
+    if (completionStatus) {
+      const execution = await getResourceByKeyPg(tx, RECOVERY_EXECUTION_RESOURCE_TYPE, input.executionResourceKey);
+      await completeRecoveryExecutionPg(tx, {
+        runId: terminalDecision.payload.runId,
+        executionResourceKey: input.executionResourceKey,
+        status: completionStatus,
+        completedAt: terminalDecisionCompletedAt(terminalDecision, execution, input.now),
+        stateChanges: [
+          {
+            resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+            resourceKey: terminalDecision.resourceKey,
+            fromStatus: "applying",
+            toStatus: terminalDecision.status,
+            reason: terminalDecisionReason(terminalDecision),
+          },
+        ],
+        providerActions: [],
+      });
+    }
+
+    return terminalDecision;
+  });
+}
+
+async function writeTerminalDecisionPg(
+  db: SouthstarDb,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    now: string;
+    reason: string;
+    status: "blocked" | "superseded";
+    terminalAtField: "blockedAt" | "supersededAt";
+  },
+): Promise<RuntimeRecoveryDecisionRecord> {
+  const payload = {
+    ...input.decision.payload,
+    [input.terminalAtField]: input.now,
+    statusReason: input.reason,
+  };
+  await upsertRuntimeResourcePg(db, {
+    id: input.decision.decisionId,
+    resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+    resourceKey: input.decision.resourceKey,
+    runId: input.decision.payload.runId,
+    taskId: input.decision.payload.taskId,
+    scope: "recovery",
+    status: input.status,
+    title: `Runtime recovery decision: ${input.decision.payload.path}`,
+    payload,
+    summary: {
+      exceptionId: input.decision.payload.exceptionId,
+      path: input.decision.payload.path,
+      reason: input.reason,
+      [input.terminalAtField]: input.now,
+    },
+  });
+  return requireRecoveryDecision(await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, input.decision.resourceKey));
 }
 
 async function appendRecoveryDecisionAppliedHistoryOncePg(
