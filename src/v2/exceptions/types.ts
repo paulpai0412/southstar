@@ -120,8 +120,24 @@ export type RuntimeExceptionClassification = RuntimeExceptionRecord & {
   reason: string;
 };
 
+export const RECOVERY_DECISION_RESOURCE_TYPE = "recovery_decision";
+export const RECOVERY_DECISION_SCHEMA_VERSION = "southstar.runtime.recovery_decision.v1";
+
+export const RECOVERY_DECISION_STATUSES = [
+  "recorded",
+  "waiting_operator_approval",
+  "approved",
+  "applying",
+  "applied",
+  "blocked",
+  "failed",
+  "superseded",
+] as const;
+
+export type RecoveryDecisionStatus = typeof RECOVERY_DECISION_STATUSES[number];
+
 export type RecoveryDecisionPayload = {
-  schemaVersion: "southstar.runtime.recovery_decision.v1";
+  schemaVersion: typeof RECOVERY_DECISION_SCHEMA_VERSION;
   decisionId: string;
   exceptionId: string;
   runId: string;
@@ -140,6 +156,51 @@ export type RecoveryDecisionPayload = {
 export type RuntimeRecoveryDecisionRecord = {
   decisionId: string;
   resourceKey: string;
-  status: "recorded" | "approved" | "applied" | "blocked" | "failed";
+  status: RecoveryDecisionStatus;
   payload: RecoveryDecisionPayload;
+};
+
+export const RECOVERY_EXECUTION_RESOURCE_TYPE = "recovery_execution";
+export const RECOVERY_EXECUTION_SCHEMA_VERSION = "southstar.runtime.recovery_execution.v1";
+
+export type RecoveryExecutionStatus = "started" | "succeeded" | "failed" | "superseded" | "blocked";
+export type RecoveryProviderActionName = "poll" | "cancel" | "destroy" | "provision" | "snapshot" | "rollback" | "wake";
+export type RecoveryProviderActionStatus = "requested" | "succeeded" | "failed" | "skipped";
+
+export type RecoveryExecutionStateChange = {
+  resourceType: string;
+  resourceKey: string;
+  fromStatus?: string;
+  toStatus?: string;
+  reason: string;
+};
+
+export type RecoveryExecutionProviderAction = {
+  providerId: string;
+  action: RecoveryProviderActionName;
+  status: RecoveryProviderActionStatus;
+  evidenceRef?: string;
+  errorExcerpt?: string;
+};
+
+export type RecoveryExecutionPayload = {
+  schemaVersion: typeof RECOVERY_EXECUTION_SCHEMA_VERSION;
+  executionId: string;
+  decisionId: string;
+  exceptionId: string;
+  runId: string;
+  taskId?: string;
+  path: RecoveryPath;
+  status: RecoveryExecutionStatus;
+  stateChanges: RecoveryExecutionStateChange[];
+  providerActions: RecoveryExecutionProviderAction[];
+  createdAt: string;
+  completedAt?: string;
+};
+
+export type RecoveryExecutionRecord = {
+  executionId: string;
+  resourceKey: string;
+  status: RecoveryExecutionStatus;
+  payload: RecoveryExecutionPayload;
 };
