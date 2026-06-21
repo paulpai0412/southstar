@@ -11,6 +11,7 @@ import { listManagedBindingsForRunPg } from "../../src/v2/meta-harness/postgres-
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
+  appendHistoryEventPg,
   listHistoryForRunPg,
   listResourcesPg,
   upsertRuntimeResourcePg,
@@ -83,8 +84,12 @@ test("runnable scheduler dispatches recovered task with latest provisioned hand 
   const db = await createTestPostgresDb();
   const runId = "run-scheduler-reprovisioned-hand";
   const taskId = "task-a";
+  const sessionId = `root-${runId}-${taskId}`;
+  const oldAttemptId = `${taskId}-attempt-1`;
+  const oldHandExecutionId = `hand-execution:${runId}:${taskId}:${oldAttemptId}`;
   const lostHandBindingId = "hand-binding-lost-old";
   const replacementHandBindingId = "hand-binding-replacement-new";
+  const dispatchRecoveryKey = `task-dispatch:${runId}:${taskId}`;
   try {
     await initSouthstarSchema(db);
     await seedRun(db, {
@@ -95,6 +100,34 @@ test("runnable scheduler dispatches recovered task with latest provisioned hand 
       ],
     });
     await seedContextPacket(db, runId, taskId);
+    await seedHandExecution(db, {
+      handExecutionId: oldHandExecutionId,
+      runId,
+      taskId,
+      sessionId,
+      attemptId: oldAttemptId,
+      handBindingId: lostHandBindingId,
+      status: "lost",
+      externalJobId: "job-lost-old",
+    });
+    await appendHistoryEventPg(db, {
+      runId,
+      taskId,
+      sessionId,
+      eventType: "hand.execute_queued",
+      actorType: "hand",
+      idempotencyKey: `${dispatchRecoveryKey}:hand-execute-queued`,
+      payload: { attemptId: oldAttemptId, handExecutionId: oldHandExecutionId, externalJobId: "job-lost-old" },
+    });
+    await appendHistoryEventPg(db, {
+      runId,
+      taskId,
+      sessionId,
+      eventType: "task.dispatch_submitted",
+      actorType: "orchestrator",
+      idempotencyKey: `${dispatchRecoveryKey}:dispatch-submitted`,
+      payload: { attemptId: oldAttemptId, handExecutionId: oldHandExecutionId, handBindingId: lostHandBindingId },
+    });
     await seedHandBinding(db, {
       id: lostHandBindingId,
       runId,
@@ -118,8 +151,39 @@ test("runnable scheduler dispatches recovered task with latest provisioned hand 
     assert.deepEqual(fixture.executeTaskCalls.map((call) => call.handBindingId), [replacementHandBindingId]);
 
     const handExecutions = await listResourcesPg(db, { resourceType: "hand_execution" });
-    const handExecution = handExecutions.find((resource) => resource.runId === runId && resource.taskId === taskId);
-    assert.equal(handExecution?.payload.handBindingId, replacementHandBindingId);
+    const oldHandExecution = handExecutions.find((resource) => resource.resourceKey === oldHandExecutionId);
+    assert.equal(oldHandExecution?.status, "lost");
+    assert.equal(oldHandExecution?.payload.handBindingId, lostHandBindingId);
+
+    const newHandExecution = handExecutions.find((resource) => (
+      resource.runId === runId &&
+      resource.taskId === taskId &&
+      resource.resourceKey !== oldHandExecutionId
+    ));
+    assert.ok(newHandExecution, "expected recovered dispatch to create a distinct hand_execution resource");
+    assert.equal(newHandExecution.payload.attemptId, `${taskId}-attempt-2`);
+    assert.equal(newHandExecution.payload.handBindingId, replacementHandBindingId);
+    assert.deepEqual(fixture.executeTaskCalls.map((call) => call.attemptId), [`${taskId}-attempt-2`]);
+
+    const history = await listHistoryForRunPg(db, runId);
+    assert.equal(
+      history.filter((event) => event.eventType === "hand.execute_queued").length,
+      2,
+      "expected old queued history and new recovered queued history",
+    );
+    assert.equal(
+      history.filter((event) => event.eventType === "task.dispatch_submitted").length,
+      2,
+      "expected old dispatch history and new recovered dispatch history",
+    );
+    assert.equal(
+      history.some((event) => event.eventType === "hand.execute_queued" && event.idempotencyKey === `${dispatchRecoveryKey}:${taskId}-attempt-2:hand-execute-queued`),
+      true,
+    );
+    assert.equal(
+      history.some((event) => event.eventType === "task.dispatch_submitted" && event.idempotencyKey === `${dispatchRecoveryKey}:${taskId}-attempt-2:dispatch-submitted`),
+      true,
+    );
   } finally {
     await db.close();
   }
@@ -653,6 +717,50 @@ async function seedHandBinding(
     "update southstar.runtime_resources set created_at = $1, updated_at = $1 where resource_type = 'hand_binding' and resource_key = $2",
     [input.createdAt, input.id],
   );
+}
+
+async function seedHandExecution(
+  db: SouthstarDb,
+  input: {
+    handExecutionId: string;
+    runId: string;
+    taskId: string;
+    sessionId: string;
+    attemptId: string;
+    handBindingId: string;
+    status: "queued" | "running" | "lost" | "failed";
+    externalJobId: string;
+  },
+): Promise<void> {
+  await upsertRuntimeResourcePg(db, {
+    id: input.handExecutionId,
+    resourceType: "hand_execution",
+    resourceKey: input.handExecutionId,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    scope: "hand",
+    status: input.status,
+    title: `Hand execution ${input.taskId}`,
+    payload: {
+      schemaVersion: "southstar.runtime.hand_execution.v1",
+      handExecutionId: input.handExecutionId,
+      providerId: "fake-hand",
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId: input.attemptId,
+      brainBindingId: "brain-binding-old",
+      handBindingId: input.handBindingId,
+      externalJobId: input.externalJobId,
+      status: input.status,
+      queuedAt: "2026-06-21T14:00:00.000Z",
+      queueTimeoutSeconds: 120,
+      heartbeatTimeoutSeconds: 60,
+    },
+    summary: { providerId: "fake-hand", attemptId: input.attemptId },
+    metrics: {},
+  });
 }
 
 async function taskRow(db: SouthstarDb, runId: string, taskId: string): Promise<{ status: string; root_session_id: string | null }> {

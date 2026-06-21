@@ -38,6 +38,11 @@ type ExistingHistoryRow = {
   sequence: number;
 };
 
+type HandExecutionAttemptRow = {
+  resource_key: string;
+  attempt_id: string | null;
+};
+
 const PROVIDER_ERROR_EXCERPT_LIMIT = 500;
 const COMMON_TOKEN_REDACTION_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/g;
 
@@ -106,8 +111,9 @@ async function dispatchTask(
   deps: RunnableTaskSchedulerDeps,
   input: { runId: string; taskId: string; sessionId: string; manifest: SouthstarWorkflowManifest; dependsOn: string[] },
 ): Promise<void> {
-  const recoveryKey = `task-dispatch:${input.runId}:${input.taskId}`;
-  const attemptId = `${input.taskId}-attempt-1`;
+  const attemptId = await nextDispatchAttemptId(db, input.runId, input.taskId);
+  const baseRecoveryKey = `task-dispatch:${input.runId}:${input.taskId}`;
+  const recoveryKey = attemptId === firstDispatchAttemptId(input.taskId) ? baseRecoveryKey : `${baseRecoveryKey}:${attemptId}`;
   const handExecutionId = `hand-execution:${input.runId}:${input.taskId}:${attemptId}`;
   const queueTimeoutSeconds = 120;
   const heartbeatTimeoutSeconds = 60;
@@ -301,6 +307,27 @@ async function dispatchTask(
     });
     throw error;
   }
+}
+
+async function nextDispatchAttemptId(db: SouthstarDb, runId: string, taskId: string): Promise<string> {
+  const rows = await db.query<HandExecutionAttemptRow>(
+    `select resource_key, payload_json ->> 'attemptId' as attempt_id
+       from southstar.runtime_resources
+      where resource_type = 'hand_execution'
+        and run_id = $1
+        and task_id = $2`,
+    [runId, taskId],
+  );
+  let maxAttemptNumber = 0;
+  for (const row of rows.rows) {
+    maxAttemptNumber = Math.max(
+      maxAttemptNumber,
+      attemptNumber(row.attempt_id),
+      attemptNumber(row.resource_key),
+    );
+  }
+  const nextAttemptNumber = maxAttemptNumber > 0 ? maxAttemptNumber + 1 : rows.rows.length + 1;
+  return dispatchAttemptId(taskId, nextAttemptNumber);
 }
 
 async function claimRunnableTask(
@@ -683,6 +710,22 @@ function effortPolicyForBrain(manifest: SouthstarWorkflowManifest): {
 
 function validPositiveInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : undefined;
+}
+
+function firstDispatchAttemptId(taskId: string): string {
+  return dispatchAttemptId(taskId, 1);
+}
+
+function dispatchAttemptId(taskId: string, attemptNumberValue: number): string {
+  return `${taskId}-attempt-${attemptNumberValue}`;
+}
+
+function attemptNumber(value: string | null | undefined): number {
+  const matches = [...(value ?? "").matchAll(/(?:^|-)attempt-(\d+)(?=$|[:_-])/g)];
+  const match = matches[matches.length - 1];
+  if (!match?.[1]) return 0;
+  const parsed = Number(match[1]);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
