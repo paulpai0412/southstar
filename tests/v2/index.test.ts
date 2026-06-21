@@ -68,6 +68,7 @@ await import("./tool-proxy-security.test.ts");
 await import("./brain-provider.test.ts");
 await import("./brain-task-intent.test.ts");
 await import("./hand-provider.test.ts");
+await import("./tork-hand-provider.test.ts");
 await import("./managed-bindings.test.ts");
 await import("./managed-context-builder.test.ts");
 await import("./managed-agents-read-model.test.ts");

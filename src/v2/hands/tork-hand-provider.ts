@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ExecutorProvider } from "../executor/provider.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { validateWorkflowManifest } from "../manifests/validate.ts";
-import type { HandBinding, HandCall, HandProvider, HandResult, HandSnapshotRef, ProvisionHandInput } from "./types.ts";
+import type { ExecuteTaskInput, HandBinding, HandCall, HandProvider, HandResult, HandSnapshotRef, ProvisionHandInput } from "./types.ts";
 
 export function createTorkHandProvider(input: {
   executorProvider: ExecutorProvider;
@@ -78,6 +78,108 @@ export function createTorkHandProvider(input: {
         const message = error instanceof Error ? error.message : String(error);
         binding.payload = { ...binding.payload, lastError: message };
         return { ok: false, output: `Tork hand execution failed: ${message}`, metadata: { callName: call.name, error: message } };
+      }
+    },
+    async executeTask(binding: HandBinding, taskInput: ExecuteTaskInput): Promise<HandResult> {
+      const workflow = taskInput.workflow as SouthstarWorkflowManifest | undefined;
+      if (!workflow || typeof workflow !== "object") {
+        binding.status = "failed";
+        binding.payload = { ...binding.payload, lastError: "missing workflow input for Tork task execution" };
+        return {
+          ok: false,
+          output: "missing workflow input for Tork task execution",
+          metadata: { handExecutionId: taskInput.handExecutionId },
+        };
+      }
+
+      const task = Array.isArray(workflow.tasks)
+        ? workflow.tasks.find((candidate) => candidate.id === taskInput.taskId)
+        : undefined;
+      if (!task) {
+        binding.status = "failed";
+        binding.payload = { ...binding.payload, lastError: `task not found in workflow: ${taskInput.taskId}` };
+        return {
+          ok: false,
+          output: `task not found in workflow: ${taskInput.taskId}`,
+          metadata: { handExecutionId: taskInput.handExecutionId },
+        };
+      }
+
+      const singleTaskWorkflow: SouthstarWorkflowManifest & { runtime: Record<string, unknown> } = {
+        ...workflow,
+        tasks: [{ ...task, dependsOn: [] }],
+        runtime: {
+          runId: taskInput.runId,
+          taskId: taskInput.taskId,
+          sessionId: taskInput.sessionId,
+          attemptId: taskInput.attemptId,
+          handExecutionId: taskInput.handExecutionId,
+          brainBindingId: taskInput.brainBindingId,
+          handBindingId: taskInput.handBindingId,
+          contextPacketRef: taskInput.contextPacketRef,
+          acceptedInputArtifactRefs: taskInput.acceptedInputArtifactRefs,
+          toolProxyPolicyRef: taskInput.toolProxyPolicyRef,
+          queueTimeoutSeconds: taskInput.queueTimeoutSeconds,
+          heartbeatTimeoutSeconds: taskInput.heartbeatTimeoutSeconds,
+          intent: taskInput.intent,
+        },
+      };
+
+      const validation = validateWorkflowManifest(singleTaskWorkflow);
+      if (!validation.ok) {
+        binding.status = "failed";
+        binding.payload = {
+          ...binding.payload,
+          lastError: "invalid single-task workflow input",
+          validationIssues: validation.issues,
+        };
+        return {
+          ok: false,
+          output: `invalid single-task workflow input: ${validation.issues.map((issue) => issue.path).join(", ")}`,
+          metadata: { handExecutionId: taskInput.handExecutionId, validationIssues: validation.issues },
+        };
+      }
+
+      try {
+        const submitted = await input.executorProvider.submit({
+          runId: binding.runId,
+          workflow: singleTaskWorkflow,
+          callbackUrl: taskInput.callbackUrl ?? input.callbackUrl,
+          heartbeatUrl: taskInput.heartbeatUrl ?? input.heartbeatUrl,
+          envelopeBasePath: taskInput.envelopeBasePath ?? "/southstar-runs",
+          attemptId: taskInput.attemptId,
+        });
+        binding.status = "running";
+        binding.payload = {
+          ...binding.payload,
+          handExecutionId: taskInput.handExecutionId,
+          executorType: submitted.executorType,
+          executorStatus: submitted.status,
+          externalJobId: submitted.externalJobId,
+          projectionFingerprint: submitted.projectionFingerprint,
+          providerPayload: submitted.providerPayload,
+          queueTimeoutSeconds: taskInput.queueTimeoutSeconds,
+          heartbeatTimeoutSeconds: taskInput.heartbeatTimeoutSeconds,
+        };
+        return {
+          ok: true,
+          output: submitted.externalJobId,
+          metadata: {
+            handExecutionId: taskInput.handExecutionId,
+            executorType: submitted.executorType,
+            externalJobId: submitted.externalJobId,
+            projectionFingerprint: submitted.projectionFingerprint,
+          },
+        };
+      } catch (error) {
+        binding.status = "failed";
+        const message = error instanceof Error ? error.message : String(error);
+        binding.payload = { ...binding.payload, lastError: message };
+        return {
+          ok: false,
+          output: `Tork task execution failed: ${message}`,
+          metadata: { handExecutionId: taskInput.handExecutionId, error: message },
+        };
       }
     },
     async snapshot(binding: HandBinding): Promise<HandSnapshotRef> {

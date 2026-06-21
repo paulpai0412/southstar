@@ -4,7 +4,7 @@ export type ExecutorType = "tork";
 
 export type ExecutorSubmitRequest = {
   runId: string;
-  workflow: SouthstarWorkflowManifest;
+  workflow: SouthstarWorkflowManifest & { runtime?: Record<string, unknown> };
   callbackUrl?: string;
   heartbeatUrl?: string;
   envelopeBasePath?: string;
