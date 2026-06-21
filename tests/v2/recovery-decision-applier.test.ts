@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createRecoveryDecisionApplier } from "../../src/v2/exceptions/recovery-decision-applier.ts";
+import { recoveryExecutionResourceKey, startRecoveryExecutionPg } from "../../src/v2/exceptions/recovery-executions.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
@@ -136,6 +137,192 @@ test("requeue-hand-execution resumes an applying decision and finalizes evidence
 
     const historyTypes = (await listHistoryForRunPg(db, runId)).map((event) => event.eventType);
     assert.equal(historyTypes.filter((eventType) => eventType === "recovery_decision.applied").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("requeue-hand-execution retry completes with original staged evidence after side-effect crash", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-side-effect-crash" });
+    const { runId, taskId, handExecutionId, decision, exception } = fixture;
+    const startedAt = "2026-06-21T12:35:00.000Z";
+    const retryAt = "2026-06-21T12:36:00.000Z";
+    const executionResourceKey = recoveryExecutionResourceKey(decision.decisionId);
+    const expectedStateChanges = [
+      {
+        resourceType: "hand_execution",
+        resourceKey: handExecutionId,
+        fromStatus: "queued",
+        toStatus: "lost",
+        reason: "requeue-hand-execution",
+      },
+      {
+        resourceType: "workflow_task",
+        resourceKey: `${runId}:${taskId}`,
+        fromStatus: "queued",
+        toStatus: "pending",
+        reason: "requeue-hand-execution",
+      },
+      {
+        resourceType: "recovery_decision",
+        resourceKey: decision.resourceKey,
+        fromStatus: "applying",
+        toStatus: "applied",
+        reason: "requeue-hand-execution applied",
+      },
+      {
+        resourceType: "runtime_exception",
+        resourceKey: exception.resourceKey,
+        fromStatus: "observed",
+        toStatus: "resolved",
+        reason: "requeue-hand-execution applied",
+      },
+    ];
+    const expectedProviderActions = [
+      {
+        providerId: "tork",
+        action: "cancel",
+        status: "succeeded",
+        evidenceRef: handExecutionId,
+        attemptedAt: startedAt,
+        succeededAt: startedAt,
+      },
+    ];
+
+    await setDecisionStatus(db, decision.resourceKey, "applying");
+    await startRecoveryExecutionPg(db, {
+      decisionId: decision.decisionId,
+      exceptionId: decision.payload.exceptionId,
+      runId,
+      taskId,
+      path: decision.payload.path,
+      now: startedAt,
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(
+                jsonb_set(payload_json, '{stateChanges}', $1::jsonb),
+                '{providerActions}',
+                $2::jsonb
+              ),
+              updated_at = now()
+        where resource_type = 'recovery_execution'
+          and resource_key = $3
+          and status = 'started'`,
+      [JSON.stringify(expectedStateChanges), JSON.stringify(expectedProviderActions), executionResourceKey],
+    );
+    await db.query(
+      `update southstar.runtime_resources
+          set status = 'lost',
+              payload_json = payload_json || $1::jsonb,
+              updated_at = now()
+        where resource_type = 'hand_execution'
+          and resource_key = $2`,
+      [
+        JSON.stringify({
+          status: "lost",
+          terminalAt: startedAt,
+          lostReason: "requeue-hand-execution",
+          recoveryDecisionId: decision.decisionId,
+        }),
+        handExecutionId,
+      ],
+    );
+    await db.query(
+      "update southstar.workflow_tasks set status = 'pending', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
+      [runId, taskId],
+    );
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now: retryAt,
+    });
+
+    assert.equal(result.status, "applied");
+    assert.equal(result.executionResourceKey, executionResourceKey);
+
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.resourceKey === executionResourceKey,
+    );
+    assert.equal(recoveryExecution?.status, "succeeded");
+    const recoveryExecutionPayload = recoveryExecution?.payload as {
+      stateChanges: unknown[];
+      providerActions: unknown[];
+      completedAt?: string;
+    };
+    assert.deepEqual(recoveryExecutionPayload.stateChanges, expectedStateChanges);
+    assert.deepEqual(recoveryExecutionPayload.providerActions, expectedProviderActions);
+    assert.equal(recoveryExecutionPayload.completedAt, retryAt);
+
+    const appliedDecision = await getResourceByKeyPg(db, "recovery_decision", decision.resourceKey);
+    assert.equal(appliedDecision?.status, "applied");
+    const resolvedException = await getResourceByKeyPg(db, "runtime_exception", exception.resourceKey);
+    assert.equal(resolvedException?.status, "resolved");
+
+    const historyTypes = (await listHistoryForRunPg(db, runId)).map((event) => event.eventType);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.started").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.succeeded").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "runtime_exception.resolved").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_decision.applied").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("blocked decision retry completes paired started recovery execution without mutating hand or task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-blocked-repair" });
+    const { runId, taskId, decision } = fixture;
+    const startedAt = "2026-06-21T12:40:00.000Z";
+    const retryAt = "2026-06-21T12:41:00.000Z";
+    const executionResourceKey = recoveryExecutionResourceKey(decision.decisionId);
+    const reason = "operator blocked retry";
+
+    await setDecisionStatus(db, decision.resourceKey, "applying");
+    await startRecoveryExecutionPg(db, {
+      decisionId: decision.decisionId,
+      exceptionId: decision.payload.exceptionId,
+      runId,
+      taskId,
+      path: decision.payload.path,
+      now: startedAt,
+    });
+    await patchDecisionPayload(db, decision.resourceKey, { statusReason: reason, blockedAt: startedAt });
+    await setDecisionStatus(db, decision.resourceKey, "blocked");
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now: retryAt,
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.equal(result.executionResourceKey, executionResourceKey);
+    assert.match(result.reason, /operator blocked retry/);
+    await assertHandAndTaskUnchanged(db, fixture);
+
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.resourceKey === executionResourceKey,
+    );
+    assert.equal(recoveryExecution?.status, "blocked");
+    const recoveryExecutionPayload = recoveryExecution?.payload as {
+      stateChanges: unknown[];
+      providerActions: unknown[];
+      completedAt?: string;
+    };
+    assert.deepEqual(recoveryExecutionPayload.stateChanges, [
+      {
+        resourceType: "recovery_decision",
+        resourceKey: decision.resourceKey,
+        fromStatus: "applying",
+        toStatus: "blocked",
+        reason,
+      },
+    ]);
+    assert.deepEqual(recoveryExecutionPayload.providerActions, []);
+    assert.equal(recoveryExecutionPayload.completedAt, retryAt);
   } finally {
     await db.close();
   }

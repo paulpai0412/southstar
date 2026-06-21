@@ -12,10 +12,12 @@ import {
   startRecoveryExecutionPg,
 } from "./recovery-executions.ts";
 import {
+  RECOVERY_EXECUTION_RESOURCE_TYPE,
   RECOVERY_DECISION_RESOURCE_TYPE,
   RUNTIME_EXCEPTION_RESOURCE_TYPE,
   type RecoveryDecisionPayload,
   type RecoveryDecisionStatus,
+  type RecoveryExecutionPayload,
   type RecoveryExecutionProviderAction,
   type RecoveryExecutionStateChange,
   type RuntimeRecoveryDecisionRecord,
@@ -51,6 +53,8 @@ type RequeueMutationResult = {
   exceptionResourceKey: string;
 };
 
+type RecoveryExecutionEvidence = Pick<RequeueMutationResult, "stateChanges" | "providerActions">;
+
 export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
   applyNext(input?: { runId?: string; now?: string }): Promise<RecoveryDecisionApplyResult | null>;
   applyDecision(input: { decisionResourceKey: string; now?: string }): Promise<RecoveryDecisionApplyResult>;
@@ -84,7 +88,16 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
         return { status: "skipped", reason: "decision waiting for operator approval" };
       }
       if (decision.status === "blocked" || decision.status === "failed" || decision.status === "superseded") {
-        return { status: decision.status, reason: `decision already ${decision.status}` };
+        const repairedExecutionResourceKey = await repairTerminalRecoveryExecutionPg(deps.db, {
+          decision,
+          executionResourceKey,
+          now,
+        });
+        return {
+          status: decision.status,
+          ...(repairedExecutionResourceKey ? { executionResourceKey: repairedExecutionResourceKey } : {}),
+          reason: terminalDecisionReason(decision),
+        };
       }
 
       await claimRecoveryDecisionApplyingPg(deps.db, { decision, now });
@@ -139,7 +152,13 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
 
       let mutation: RequeueMutationResult;
       try {
-        mutation = await applyRequeueMutation(deps.db, { decision: applyingDecision, now });
+        const stagedEvidence = stagedRecoveryExecutionEvidence(started.payload);
+        mutation = await applyRequeueMutation(deps.db, {
+          decision: applyingDecision,
+          executionResourceKey: started.resourceKey,
+          now,
+          stagedEvidence,
+        });
       } catch (error) {
         if (error instanceof Error && error.message === `hand execution ${decision.payload.handExecutionId} not found`) {
           await blockDecision(deps.db, {
@@ -156,13 +175,6 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
         runId: decision.payload.runId,
         resourceKey: mutation.exceptionResourceKey,
         resolvedAt: now,
-        reason: "requeue-hand-execution applied",
-      });
-      mutation.stateChanges.push({
-        resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
-        resourceKey: mutation.exceptionResourceKey,
-        fromStatus: "observed",
-        toStatus: "resolved",
         reason: "requeue-hand-execution applied",
       });
 
@@ -183,7 +195,12 @@ export function createRecoveryDecisionApplier(deps: { db: SouthstarDb }): {
 
 async function applyRequeueMutation(
   db: SouthstarDb,
-  input: { decision: RuntimeRecoveryDecisionRecord; now: string },
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    executionResourceKey: string;
+    now: string;
+    stagedEvidence: RecoveryExecutionEvidence | null;
+  },
 ): Promise<RequeueMutationResult> {
   return await db.tx(async (tx) => {
     const { decision, now } = input;
@@ -220,35 +237,7 @@ async function applyRequeueMutation(
 
     const handPayload = hand.payload as Record<string, unknown>;
     const providerId = typeof handPayload.providerId === "string" ? handPayload.providerId : "tork";
-    await upsertRuntimeResourcePg(tx, {
-      id: hand.id,
-      resourceType: "hand_execution",
-      resourceKey: hand.resourceKey,
-      runId: hand.runId,
-      taskId: hand.taskId,
-      sessionId: hand.sessionId,
-      scope: hand.scope,
-      status: "lost",
-      title: hand.title,
-      payload: {
-        ...handPayload,
-        status: "lost",
-        terminalAt: now,
-        lostReason: "requeue-hand-execution",
-        recoveryDecisionId: decision.decisionId,
-      },
-      summary: hand.summary,
-      metrics: hand.metrics,
-      expiresAt: hand.expiresAt,
-    });
-
-    await tx.query(
-      "update southstar.workflow_tasks set status = 'pending', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
-      [decision.payload.runId, taskId],
-    );
-
-    return {
-      exceptionResourceKey: exception.resourceKey,
+    const evidence = input.stagedEvidence ?? {
       providerActions: [
         {
           providerId,
@@ -281,9 +270,150 @@ async function applyRequeueMutation(
           toStatus: "applied",
           reason: "requeue-hand-execution applied",
         },
+        {
+          resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
+          resourceKey: exception.resourceKey,
+          fromStatus: exception.status,
+          toStatus: "resolved",
+          reason: "requeue-hand-execution applied",
+        },
       ],
     };
+    if (!input.stagedEvidence) {
+      await stageRecoveryExecutionEvidencePg(tx, {
+        executionResourceKey: input.executionResourceKey,
+        evidence,
+        now,
+      });
+    }
+    const terminalAt = requeueTerminalAt(evidence.providerActions) ?? now;
+    await upsertRuntimeResourcePg(tx, {
+      id: hand.id,
+      resourceType: "hand_execution",
+      resourceKey: hand.resourceKey,
+      runId: hand.runId,
+      taskId: hand.taskId,
+      sessionId: hand.sessionId,
+      scope: hand.scope,
+      status: "lost",
+      title: hand.title,
+      payload: {
+        ...handPayload,
+        status: "lost",
+        terminalAt,
+        lostReason: "requeue-hand-execution",
+        recoveryDecisionId: decision.decisionId,
+      },
+      summary: hand.summary,
+      metrics: hand.metrics,
+      expiresAt: hand.expiresAt,
+    });
+
+    await tx.query(
+      "update southstar.workflow_tasks set status = 'pending', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
+      [decision.payload.runId, taskId],
+    );
+
+    return {
+      exceptionResourceKey: exception.resourceKey,
+      providerActions: evidence.providerActions,
+      stateChanges: evidence.stateChanges,
+    };
   });
+}
+
+async function stageRecoveryExecutionEvidencePg(
+  db: SouthstarDb,
+  input: { executionResourceKey: string; evidence: RecoveryExecutionEvidence; now: string },
+): Promise<void> {
+  const execution = mapRuntimeResourceRow(await db.maybeOne<RuntimeResourceRow>(
+    `select * from southstar.runtime_resources
+      where resource_type = $1
+        and resource_key = $2
+      for update`,
+    [RECOVERY_EXECUTION_RESOURCE_TYPE, input.executionResourceKey],
+  ));
+  if (!execution) throw new Error(`recovery execution ${input.executionResourceKey} not found`);
+  if (execution.status !== "started") {
+    throw new Error(`recovery execution ${input.executionResourceKey} is ${execution.status}, expected started`);
+  }
+
+  const payload = execution.payload as RecoveryExecutionPayload;
+  const existingEvidence = stagedRecoveryExecutionEvidence(payload);
+  if (existingEvidence) return;
+
+  await upsertRuntimeResourcePg(db, {
+    id: execution.id,
+    resourceType: RECOVERY_EXECUTION_RESOURCE_TYPE,
+    resourceKey: execution.resourceKey,
+    runId: execution.runId,
+    taskId: execution.taskId,
+    sessionId: execution.sessionId,
+    scope: execution.scope,
+    status: "started",
+    title: execution.title,
+    payload: {
+      ...payload,
+      stateChanges: input.evidence.stateChanges,
+      providerActions: input.evidence.providerActions,
+    },
+    summary: {
+      ...(isPlainObject(execution.summary) ? execution.summary : {}),
+      evidenceStagedAt: input.now,
+      stateChangeCount: input.evidence.stateChanges.length,
+      providerActionCount: input.evidence.providerActions.length,
+    },
+    metrics: execution.metrics,
+    expiresAt: execution.expiresAt,
+  });
+}
+
+async function repairTerminalRecoveryExecutionPg(
+  db: SouthstarDb,
+  input: { decision: RuntimeRecoveryDecisionRecord; executionResourceKey: string; now: string },
+): Promise<string | undefined> {
+  const execution = await getResourceByKeyPg(db, RECOVERY_EXECUTION_RESOURCE_TYPE, input.executionResourceKey);
+  if (!execution) return undefined;
+  if (execution.status !== "started") return execution.resourceKey;
+
+  const reason = terminalDecisionReason(input.decision);
+  await completeRecoveryExecutionPg(db, {
+    runId: input.decision.payload.runId,
+    executionResourceKey: input.executionResourceKey,
+    status: input.decision.status,
+    completedAt: input.now,
+    stateChanges: [
+      {
+        resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+        resourceKey: input.decision.resourceKey,
+        fromStatus: "applying",
+        toStatus: input.decision.status,
+        reason,
+      },
+    ],
+    providerActions: [],
+  });
+  return execution.resourceKey;
+}
+
+function terminalDecisionReason(decision: RuntimeRecoveryDecisionRecord): string {
+  const statusReason = (decision.payload as RecoveryDecisionPayload & { statusReason?: unknown }).statusReason;
+  return typeof statusReason === "string" && statusReason.trim().length > 0
+    ? statusReason
+    : `decision already ${decision.status}`;
+}
+
+function stagedRecoveryExecutionEvidence(payload: RecoveryExecutionPayload): RecoveryExecutionEvidence | null {
+  if (payload.stateChanges.length === 0 && payload.providerActions.length === 0) return null;
+  return {
+    stateChanges: payload.stateChanges,
+    providerActions: payload.providerActions,
+  };
+}
+
+function requeueTerminalAt(providerActions: RecoveryExecutionProviderAction[]): string | undefined {
+  const cancelAction = providerActions.find((action) => action.action === "cancel" && action.status === "succeeded");
+  return cancelAction?.succeededAt ?? cancelAction?.completedAt ?? cancelAction?.attemptedAt;
 }
 
 async function claimRecoveryDecisionApplyingPg(
@@ -473,4 +603,8 @@ function requireString(value: string | undefined, label: string): string {
 
 function dateString(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : String(value);
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
