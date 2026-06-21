@@ -7,6 +7,7 @@ import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../ex
 import { type RecoveryExecutionPlan } from "../session-recovery/execution-planner.ts";
 import { dispatchRecoveryExecutionPg } from "../session-recovery/postgres-dispatcher.ts";
 import { isRecoveryStrategy } from "../session-recovery/types.ts";
+import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-control-center.ts";
 import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read-models/postgres-core.ts";
 import { buildRunInspectionReadModelPg } from "../read-models/postgres-run-inspection.ts";
@@ -15,6 +16,7 @@ import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistory
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
+import { materializeRunFromWorkItemPg } from "../work-items/run-materialization.ts";
 import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
 import { handleEvolutionRoute } from "./evolution-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
@@ -61,6 +63,38 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         labels: parseOptionalStringArray(body.labels, "labels"),
         requestedBy: optionalString(body.requestedBy),
         metadata: isRecord(body.metadata) ? body.metadata : undefined,
+      }));
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/v2/work-items/materialize-run") {
+      const body = await readJsonBody<{
+        sourceProvider?: unknown;
+        sourceScope?: unknown;
+        sourceRef?: unknown;
+        sourceUrl?: unknown;
+        title?: unknown;
+        body?: unknown;
+        domain?: unknown;
+        runId?: unknown;
+        workflowManifest?: unknown;
+        executionProjection?: unknown;
+        metadata?: unknown;
+      }>(request);
+      if (!isRecord(body.workflowManifest)) throw new Error("workflowManifest is required");
+      if (!isRecord(body.executionProjection)) throw new Error("executionProjection is required");
+      if (body.metadata !== undefined && !isRecord(body.metadata)) throw new Error("metadata must be an object");
+      return json("work-item-run-materialization", await materializeRunFromWorkItemPg(context.db, {
+        sourceProvider: requiredWorkItemSourceProvider(body.sourceProvider),
+        sourceScope: optionalString(body.sourceScope),
+        sourceRef: optionalString(body.sourceRef),
+        sourceUrl: optionalString(body.sourceUrl),
+        title: requiredString(body.title, "title"),
+        body: requiredString(body.body, "body"),
+        domain: requiredString(body.domain, "domain"),
+        runId: requiredString(body.runId, "runId"),
+        workflowManifest: body.workflowManifest as SouthstarWorkflowManifest,
+        executionProjection: body.executionProjection,
+        metadata: body.metadata,
       }));
     }
 

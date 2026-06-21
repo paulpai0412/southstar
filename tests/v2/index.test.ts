@@ -64,6 +64,7 @@ await import("./completion-gate-exceptions.test.ts");
 await import("./postgres-session-store.test.ts");
 await import("./postgres-work-items.test.ts");
 await import("./work-item-intake.test.ts");
+await import("./work-item-run-materialization.test.ts");
 await import("./postgres-task-envelope.test.ts");
 await import("./postgres-tork-callback.test.ts");
 await import("./tork-callback-managed-state.test.ts");
