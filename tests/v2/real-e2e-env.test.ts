@@ -1,23 +1,23 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadRealE2EEnv } from "../../tests/e2e-legacy-sqlite/env.ts";
+import { loadRealPostgresE2EEnv } from "../e2e-postgres/postgres-real-harness.ts";
 
 test("real E2E env fails closed when required env is missing", async () => {
-  await assert.rejects(() => loadRealE2EEnv({}, {
+  await assert.rejects(() => loadRealPostgresE2EEnv({}, {
     dockerVersion: async () => {},
     southstarTaskContainersIdle: async () => {},
     torkHealth: async () => {},
     torkQueueIdle: async () => {},
     piConfig: async () => {},
-  }), /Real E2E missing required env: TORK_BASE_URL, SOUTHSTAR_DB/);
+  }), /Real Postgres E2E missing required env: SOUTHSTAR_TEST_ADMIN_DATABASE_URL, TORK_BASE_URL/);
 });
 
 test("real E2E env probes Docker, Tork, and Pi SDK config when endpoints are absent", async () => {
   const probes: string[] = [];
-  const env = await loadRealE2EEnv({
+  const env = await loadRealPostgresE2EEnv({
+    SOUTHSTAR_TEST_ADMIN_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
     TORK_BASE_URL: "http://127.0.0.1:8000",
-    SOUTHSTAR_DB: "/tmp/southstar-real-e2e/southstar.sqlite3",
-    SOUTHSTAR_E2E_WORKSPACE: "/tmp/southstar-real-e2e",
+    SOUTHSTAR_E2E_WORKSPACE: "/tmp/southstar-postgres-e2e",
   }, {
     dockerVersion: async () => { probes.push("docker"); },
     southstarTaskContainersIdle: async () => { probes.push("containers-idle"); },
@@ -27,16 +27,17 @@ test("real E2E env probes Docker, Tork, and Pi SDK config when endpoints are abs
   });
 
   assert.deepEqual(probes, ["docker", "containers-idle", "tork", "queue-idle", "pi-sdk"]);
-  assert.equal(env.workspaceRoot, "/tmp/southstar-real-e2e");
+  assert.equal(env.postgresAdminUrl, "postgres://postgres:postgres@127.0.0.1:5432/postgres");
+  assert.equal(env.workspaceRoot, "/tmp/southstar-postgres-e2e");
   assert.equal(env.piPlannerMode, "sdk");
   assert.equal(env.piHarnessMode, "sdk");
 });
 
 test("real E2E env probes HTTP Pi config when endpoints are present", async () => {
   const probes: string[] = [];
-  const env = await loadRealE2EEnv({
+  const env = await loadRealPostgresE2EEnv({
+    SOUTHSTAR_TEST_ADMIN_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
     TORK_BASE_URL: "http://127.0.0.1:8000",
-    SOUTHSTAR_DB: "/tmp/southstar-real-e2e/southstar.sqlite3",
     PI_PLANNER_ENDPOINT: "http://127.0.0.1:9000/plan",
     PI_HARNESS_ENDPOINT: "http://127.0.0.1:9000/harness",
   }, {
@@ -53,9 +54,9 @@ test("real E2E env probes HTTP Pi config when endpoints are present", async () =
 });
 
 test("real E2E env fails closed when shared Tork queue is not idle", async () => {
-  await assert.rejects(() => loadRealE2EEnv({
+  await assert.rejects(() => loadRealPostgresE2EEnv({
+    SOUTHSTAR_TEST_ADMIN_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:5432/postgres",
     TORK_BASE_URL: "http://127.0.0.1:8000",
-    SOUTHSTAR_DB: "/tmp/southstar-real-e2e/southstar.sqlite3",
   }, {
     dockerVersion: async () => {},
     southstarTaskContainersIdle: async () => {},

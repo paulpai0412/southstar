@@ -58,8 +58,8 @@ test("Postgres real E2E suite contains no SQLite/local API coupling or fake shor
   }
 });
 
-test("legacy SQLite real E2E suite is physically isolated and explicitly non-canonical", () => {
+test("legacy SQLite real E2E suite is removed from the runnable tree", () => {
   assert.equal(existsSync(join(root, "tests/e2e-real")), false);
-  assert.match(source("tests/e2e-legacy-sqlite/README.md"), /not canonical/i);
-  assert.match(source("tests/e2e-legacy-sqlite/index.test.ts"), /@legacy-sqlite-quarantine/);
+  assert.equal(existsSync(join(root, "tests/e2e-legacy-sqlite")), false);
+  assert.equal(existsSync(join(root, "tests/e2e-ui")), false);
 });

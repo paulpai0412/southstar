@@ -33,11 +33,9 @@ test("canonical v2 test index and CLI tests do not import legacy SQLite-backed t
   assert.deepEqual(cliTests.filter(isLegacySqliteTest), []);
 });
 
-test("active root-session artifact gate stays pure and DB-backed loop remains quarantined", () => {
+test("active root-session artifact gate stays pure and legacy DB-backed loop is removed", () => {
   const activeRootSession = source("src/v2/agent-runner/root-session.ts");
   assert.doesNotMatch(activeRootSession, /runRootSessionTask|stores\/sqlite|appendHistoryEvent|upsertRuntimeResource|\.prepare\(/);
-  assert.match(source("src/v2/legacy/sqlite/root-session.ts"), /@legacy-sqlite-quarantine/);
-  assert.match(source("src/v2/legacy/sqlite/root-session.ts"), /runRootSessionTask/);
 });
 
 test("active v2 runtime entrypoints do not import legacy SQLite/local API modules", () => {
@@ -59,11 +57,25 @@ test("active v2 runtime entrypoints do not import legacy SQLite/local API module
   assert.deepEqual(matches, []);
 });
 
-test("production SQLite surface is explicitly quarantined and new evolution/Postgres code stays clean", () => {
+test("Southstar v2 production no longer carries SQLite/local API source", () => {
+  const removedFiles = [
+    "src/v2/inspection/inspect-run.ts",
+    "src/v2/legacy/sqlite/root-session.ts",
+    "src/v2/memory/sqlite-provider.ts",
+    "src/v2/session-graph/sqlite-provider.ts",
+    "src/v2/stores/history-store.ts",
+    "src/v2/stores/resource-store.ts",
+    "src/v2/stores/run-store.ts",
+    "src/v2/stores/sqlite.ts",
+    "src/v2/stores/task-store.ts",
+    "src/v2/ui-api/local-api.ts",
+  ];
+  assert.deepEqual(removedFiles.filter((file) => productionFiles.includes(file)), []);
+
   const sqlitePattern = /node:sqlite|sqlite-provider|createSqliteSessionGraphProvider|\.prepare\(|openSouthstarDb\(\":memory:\"/;
   const matches = grep(productionFiles, sqlitePattern)
     .filter((file) => file !== "src/runtime/store.ts")
-    .filter((file) => !readFileSync(join(root, file), "utf8").includes("@legacy-sqlite-quarantine"));
+    .filter((file) => !file.startsWith("src/operator-dashboard/"));
   assert.deepEqual(matches, []);
 
   const forbiddenNewCode = productionFiles
@@ -77,6 +89,7 @@ function source(file: string): string {
 }
 
 function isLegacySqliteTest(file: string): boolean {
+  if (file === "tests/v2/evolution-static-gates.test.ts") return false;
   const content = readFileSync(join(root, file), "utf8");
   return /openSouthstarDb\(\":memory:\"|src\/v2\/stores\/sqlite|\.\.\/\.\.\/src\/v2\/stores\/sqlite/.test(content);
 }

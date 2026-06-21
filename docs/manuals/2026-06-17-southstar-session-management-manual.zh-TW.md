@@ -90,8 +90,8 @@ flowchart TD
 - `session_fork` / `session_reset` / `session_rollback`（UI lineage command 層）
 
 參考：
-- `src/v2/session-graph/sqlite-provider.ts`
-- `src/v2/ui-api/commands/session-memory-commands.ts`
+- `src/v2/session/postgres-session-store.ts`
+- `src/v2/read-models/postgres-core.ts`
 
 ---
 
@@ -105,8 +105,8 @@ flowchart TD
    callback ingestion 接受 artifact 後建立
 
 參考：
-- `src/v2/ui-api/local-api.ts`（task-start）
-- `src/v2/executor/tork-callback.ts`（artifact-accepted）
+- `src/v2/executor/postgres-run-dispatcher.ts`（task-start / recovery materialization）
+- `src/v2/executor/postgres-tork-callback.ts`（artifact-accepted）
 - `src/v2/agent-runner/root-session.ts`（root-session loop 也會建 checkpoint）
 
 > `sessionPolicies.checkpointOn` 雖有 `before-recovery` 宣告，但目前尚未完整自動接線。
@@ -128,9 +128,9 @@ flowchart TD
 
 參考：
 - `src/v2/server/ui-routes.ts`
-- `src/v2/ui-api/commands/task-commands.ts`
-- `src/v2/ui-api/commands/session-memory-commands.ts`
-- `src/v2/ui-api/commands/worktree-commands.ts`
+- `src/v2/server/routes.ts`
+- `src/v2/session-recovery/postgres-controller.ts`
+- `src/v2/session-recovery/postgres-dispatcher.ts`
 
 ---
 
@@ -174,18 +174,18 @@ flowchart TD
 
 ## 8. 主要程式碼索引
 
-- Session graph provider：`src/v2/session-graph/sqlite-provider.ts`
+- Session store：`src/v2/session/postgres-session-store.ts`
 - Session 型別：`src/v2/session-graph/types.ts`
-- Run 建立與 materialization：`src/v2/ui-api/local-api.ts`
-- Callback ingestion：`src/v2/executor/tork-callback.ts`
+- Run 建立與 materialization：`src/v2/ui-api/postgres-run-api.ts`、`src/v2/executor/postgres-run-dispatcher.ts`
+- Callback ingestion：`src/v2/executor/postgres-tork-callback.ts`
 - UI command routes：`src/v2/server/ui-routes.ts`
-- Session/Memory commands：`src/v2/ui-api/commands/session-memory-commands.ts`
-- Task recovery commands：`src/v2/ui-api/commands/task-commands.ts`
-- Worktree commands：`src/v2/ui-api/commands/worktree-commands.ts`
+- Runtime command routes：`src/v2/server/routes.ts`
+- Recovery controller：`src/v2/session-recovery/postgres-controller.ts`
+- Recovery dispatcher：`src/v2/session-recovery/postgres-dispatcher.ts`
 - Read model（Sessions/Memory）：
-  - `src/v2/read-models/sessions-memory.ts`
-  - `src/v2/ui-api/page-models/sessions-memory.ts`
-- 資料表 schema：`src/v2/stores/schema.ts`
+  - `src/v2/read-models/postgres-core.ts`
+  - `src/v2/read-models/managed-agents.ts`
+- 資料表 schema：`src/v2/db/schema.ts`
 
 ## 9. v1 Recovery Semantics Update
 

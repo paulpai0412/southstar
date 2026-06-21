@@ -5,7 +5,7 @@ This directory is the canonical real E2E surface for the new Southstar v2 Postgr
 ## Rules
 
 - Run **one case at a time**. Do not aggregate real workflow cases into one long suite.
-- Do **not** mix with legacy SQLite E2E. Legacy scenarios live in `tests/e2e-legacy-sqlite/`.
+- Do **not** reintroduce legacy SQLite E2E or local API harnesses.
 - Do **not** add UI/browser flows here. Future UI flows will be redesigned separately.
 - No fake/mock/smoke/test-only shortcuts in real cases.
 - Cases must fail closed when required real infra is missing.

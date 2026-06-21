@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
@@ -19,6 +19,20 @@ export type RealPostgresInfra = {
   piPlannerEndpoint?: string;
   piHarnessEndpoint?: string;
   callbackHost: string;
+};
+
+export type RealPostgresE2EEnv = RealPostgresInfra & {
+  piPlannerMode: "http" | "sdk";
+  piHarnessMode: "http" | "sdk";
+  workspaceRoot: string;
+};
+
+export type RealPostgresE2EProbes = {
+  dockerVersion(): Promise<void>;
+  southstarTaskContainersIdle(): Promise<void>;
+  torkHealth(baseUrl: string): Promise<void>;
+  torkQueueIdle(baseUrl: string): Promise<void>;
+  piConfig(env: RealPostgresE2EEnv): Promise<void>;
 };
 
 export type RealPostgresE2E = {
@@ -134,6 +148,113 @@ export function requireRealPostgresInfra(): RealPostgresInfra {
     callbackHost: process.env.SOUTHSTAR_CALLBACK_HOST ?? "172.17.0.1",
   };
 }
+
+export async function loadRealPostgresE2EEnv(
+  input: Record<string, string | undefined> = process.env,
+  probes: RealPostgresE2EProbes = defaultRealPostgresE2EProbes,
+): Promise<RealPostgresE2EEnv> {
+  const missing: string[] = [];
+  if (!input.SOUTHSTAR_TEST_ADMIN_DATABASE_URL) missing.push("SOUTHSTAR_TEST_ADMIN_DATABASE_URL");
+  if (!input.TORK_BASE_URL) missing.push("TORK_BASE_URL");
+  if (missing.length > 0) {
+    throw new Error(`Real Postgres E2E missing required env: ${missing.join(", ")}`);
+  }
+
+  const env: RealPostgresE2EEnv = {
+    postgresAdminUrl: input.SOUTHSTAR_TEST_ADMIN_DATABASE_URL as string,
+    torkBaseUrl: input.TORK_BASE_URL as string,
+    piPlannerEndpoint: input.PI_PLANNER_ENDPOINT,
+    piHarnessEndpoint: input.PI_HARNESS_ENDPOINT,
+    piPlannerMode: input.PI_PLANNER_ENDPOINT ? "http" : "sdk",
+    piHarnessMode: input.PI_HARNESS_ENDPOINT ? "http" : "sdk",
+    callbackHost: input.SOUTHSTAR_CALLBACK_HOST ?? "172.17.0.1",
+    workspaceRoot: input.SOUTHSTAR_E2E_WORKSPACE ?? "/tmp/southstar-postgres-e2e",
+  };
+
+  await probes.dockerVersion();
+  await probes.southstarTaskContainersIdle();
+  await probes.torkHealth(env.torkBaseUrl);
+  await probes.torkQueueIdle(env.torkBaseUrl);
+  await probes.piConfig(env);
+  return env;
+}
+
+const defaultRealPostgresE2EProbes: RealPostgresE2EProbes = {
+  async dockerVersion() {
+    execFileSync("docker", ["version"], { stdio: "pipe" });
+  },
+  async southstarTaskContainersIdle() {
+    const output = execFileSync("docker", [
+      "ps",
+      "--filter",
+      "ancestor=southstar/pi-agent:local",
+      "--format",
+      "{{.ID}} {{.Status}} {{.Names}}",
+    ], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    if (output.length > 0) {
+      throw new Error([
+        "Real Postgres E2E requires no active southstar/pi-agent task containers before starting.",
+        "Stop stale task containers or restart the local Tork test environment.",
+        output,
+      ].join("\n"));
+    }
+  },
+  async torkHealth(baseUrl: string) {
+    const root = baseUrl.replace(/\/$/, "");
+    for (const path of ["/health", "/api/v1/health"]) {
+      let response: Response;
+      try {
+        response = await fetch(`${root}${path}`);
+      } catch (error) {
+        throw new Error(`Tork health failed: cannot connect to ${root}${path}: ${(error as Error).message}`);
+      }
+      if (response.ok) return;
+      if (response.status !== 404) {
+        throw new Error(`Tork health failed: ${response.status} ${await response.text()}`);
+      }
+    }
+    throw new Error("Tork health failed: no supported health endpoint responded");
+  },
+  async torkQueueIdle(baseUrl: string) {
+    const root = baseUrl.replace(/\/$/, "");
+    const response = await fetch(`${root}/jobs`);
+    if (!response.ok) {
+      throw new Error(`Tork queue preflight failed: ${response.status} ${await response.text()}`);
+    }
+    const payload = await response.json() as {
+      items?: Array<{ name?: string; state?: string; id?: string }>;
+    };
+    const activeSouthstarJobs = (payload.items ?? []).filter((job) => {
+      const state = (job.state ?? "").toUpperCase();
+      return typeof job.name === "string"
+        && job.name.startsWith("run-wf-")
+        && ["CREATED", "PENDING", "SCHEDULED", "RUNNING"].includes(state);
+    });
+    if (activeSouthstarJobs.length > 0) {
+      throw new Error([
+        "Tork queue contains active Southstar jobs; real E2E requires an idle shared Tork queue.",
+        ...activeSouthstarJobs.map((job) => `${job.id ?? "unknown"} ${job.state ?? "unknown"} ${job.name}`),
+      ].join("\n"));
+    }
+  },
+  async piConfig(env: RealPostgresE2EEnv) {
+    if (env.piPlannerEndpoint) {
+      const plannerResponse = await fetch(env.piPlannerEndpoint, { method: "OPTIONS" });
+      if (!plannerResponse.ok && plannerResponse.status !== 405) {
+        throw new Error(`Pi planner endpoint probe failed: ${plannerResponse.status} ${await plannerResponse.text()}`);
+      }
+    }
+    if (env.piHarnessEndpoint) {
+      const harnessResponse = await fetch(env.piHarnessEndpoint, { method: "OPTIONS" });
+      if (!harnessResponse.ok && harnessResponse.status !== 405) {
+        throw new Error(`Pi harness endpoint probe failed: ${harnessResponse.status} ${await harnessResponse.text()}`);
+      }
+    }
+    if (!env.piPlannerEndpoint || !env.piHarnessEndpoint) {
+      await import("@earendil-works/pi-coding-agent");
+    }
+  },
+};
 
 export async function probeRealPostgresTorkPi(infra: RealPostgresInfra): Promise<void> {
   const torkRoot = infra.torkBaseUrl.replace(/\/$/, "");
