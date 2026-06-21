@@ -111,3 +111,35 @@ export type RuntimeExceptionRecord = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type RuntimeObservation = RuntimeExceptionRecordInput;
+
+export type RuntimeExceptionClassification = RuntimeExceptionRecord & {
+  recoveryPath: RecoveryPath;
+  operatorApprovalRequired: boolean;
+  reason: string;
+};
+
+export type RecoveryDecisionPayload = {
+  schemaVersion: "southstar.runtime.recovery_decision.v1";
+  decisionId: string;
+  exceptionId: string;
+  runId: string;
+  taskId?: string;
+  handExecutionId?: string;
+  path: RecoveryPath;
+  reason: string;
+  operatorApprovalRequired: boolean;
+  previousAttemptId?: string;
+  nextAttemptId?: string;
+  supersedes?: string[];
+  evidenceRefs: string[];
+  createdAt: string;
+};
+
+export type RuntimeRecoveryDecisionRecord = {
+  decisionId: string;
+  resourceKey: string;
+  status: "recorded" | "approved" | "applied" | "blocked" | "failed";
+  payload: RecoveryDecisionPayload;
+};

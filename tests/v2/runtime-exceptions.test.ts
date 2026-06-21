@@ -10,6 +10,7 @@ import {
   recordRuntimeExceptionPg,
   resolveRuntimeExceptionPg,
 } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
+import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("runtime exception store records idempotent exception resources and history", async () => {
@@ -280,6 +281,120 @@ test("runtime exception unresolved listing is run-scoped and excludes resolved r
     const runB = await listUnresolvedRuntimeExceptionsPg(db, { runId: "run-exception-list-b" });
     assert.deepEqual(runA.map((exception) => exception.runId), ["run-exception-list-a"]);
     assert.equal(runB.length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("runtime exception controller maps queue timeout to requeue-hand-execution decision", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-exception-controller",
+      status: "running",
+      domain: "software",
+      goalPrompt: "recover queue timeout",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    const controller = createRuntimeExceptionController({ db });
+
+    const exception = await controller.observe({
+      runId: "run-exception-controller",
+      taskId: "task-a",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-execution:run-exception-controller:task-a:attempt-1",
+      source: "tork-observer",
+      kind: "tork_queue_timeout",
+      severity: "recoverable",
+      observedAt: "2026-06-21T10:00:00.000Z",
+      evidenceRefs: ["hand-execution:run-exception-controller:task-a:attempt-1"],
+      providerEvidence: { externalJobId: "job-timeout" },
+    });
+    const classification = await controller.classify(exception);
+    const decision = await controller.decide(classification);
+
+    assert.equal(classification.recoveryPath, "requeue-hand-execution");
+    assert.equal(decision.payload.path, "requeue-hand-execution");
+    assert.equal(decision.payload.exceptionId, exception.exceptionId);
+    assert.equal(decision.payload.operatorApprovalRequired, false);
+    assert.equal(decision.status, "recorded");
+  } finally {
+    await db.close();
+  }
+});
+
+test("runtime exception controller requires operator approval for rollback decisions", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-exception-rollback",
+      status: "running",
+      domain: "software",
+      goalPrompt: "recover hang",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    const controller = createRuntimeExceptionController({ db });
+    const exception = await controller.observe({
+      runId: "run-exception-rollback",
+      taskId: "task-a",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-execution:run-exception-rollback:task-a:attempt-1",
+      source: "tork-observer",
+      kind: "tork_running_hang",
+      severity: "recoverable",
+      observedAt: "2026-06-21T10:00:00.000Z",
+      evidenceRefs: ["workspace-snapshot:dirty"],
+      providerEvidence: { workspaceUnsafe: true },
+    });
+    const decision = await controller.decide(await controller.classify(exception));
+
+    assert.equal(decision.payload.path, "rollback-workspace");
+    assert.equal(decision.payload.operatorApprovalRequired, true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("runtime exception controller decision is idempotent for the same exception and path", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, minimalRun("run-exception-decision-idempotent"));
+    const controller = createRuntimeExceptionController({ db });
+    const exception = await controller.observe({
+      runId: "run-exception-decision-idempotent",
+      taskId: "task-a",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-execution:run-exception-decision-idempotent:task-a:attempt-1",
+      source: "tork-observer",
+      kind: "tork_terminal_without_callback",
+      severity: "recoverable",
+      observedAt: "2026-06-21T10:00:00.000Z",
+      evidenceRefs: ["hand-execution:run-exception-decision-idempotent:task-a:attempt-1"],
+      providerEvidence: { externalJobId: "job-terminal" },
+    });
+    const classification = await controller.classify(exception);
+
+    const first = await controller.decide(classification);
+    const second = await controller.decide(classification);
+
+    assert.equal(second.decisionId, first.decisionId);
+    assert.equal(second.resourceKey, first.resourceKey);
+    const history = await listHistoryForRunPg(db, "run-exception-decision-idempotent");
+    assert.equal(
+      history.filter((event) => event.eventType === "runtime_exception.recovery_decided").length,
+      1,
+    );
   } finally {
     await db.close();
   }
