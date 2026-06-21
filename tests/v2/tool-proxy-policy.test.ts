@@ -183,7 +183,7 @@ test("callback event payload leak is rejected before history or artifact persist
 
     const violations = await listResourcesPg(db, { resourceType: "tool_proxy_violation" });
     assert.equal(violations.length, 1);
-    assert.equal((violations[0]?.payload as { evidenceRef?: string }).evidenceRef, "executor-callback:run-callback-policy-event-leak:task-1:attempt-1:events[0].payload");
+    assert.equal((violations[0]?.payload as { evidenceRef?: string }).evidenceRef, "hand-execution:run-callback-policy-event-leak:task-1:attempt-1:events[0].payload");
     assert.doesNotMatch(JSON.stringify(violations[0]), new RegExp(leakedSecret));
 
     const artifacts = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
@@ -227,7 +227,7 @@ test("callback metrics leak is rejected before history or artifact persistence",
 
     const violations = await listResourcesPg(db, { resourceType: "tool_proxy_violation" });
     assert.equal(violations.length, 1);
-    assert.equal((violations[0]?.payload as { evidenceRef?: string }).evidenceRef, "executor-callback:run-callback-policy-metrics-leak:task-1:attempt-1:metrics");
+    assert.equal((violations[0]?.payload as { evidenceRef?: string }).evidenceRef, "hand-execution:run-callback-policy-metrics-leak:task-1:attempt-1:metrics");
     assert.doesNotMatch(JSON.stringify(violations[0]), new RegExp(leakedSecret));
 
     const artifacts = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });

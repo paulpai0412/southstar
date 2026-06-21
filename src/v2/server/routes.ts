@@ -1,5 +1,6 @@
 import { evaluateApprovalPolicy } from "../approvals/policy.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
+import type { SouthstarDb } from "../db/postgres.ts";
 import { createExecutorBindingPg, getExecutorBindingPg, listExecutorBindingsForRunPg, updateExecutorBindingStatusPg } from "../executor/postgres-bindings.ts";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../executor/postgres-tork-callback.ts";
@@ -10,7 +11,7 @@ import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-c
 import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read-models/postgres-core.ts";
 import { buildRunInspectionReadModelPg } from "../read-models/postgres-run-inspection.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
-import { appendHistoryEventPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
@@ -21,6 +22,8 @@ import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import { readRunEventsSince, toSseFrame } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
+
+const TERMINAL_HAND_EXECUTION_STATUSES = ["completed", "failed", "cancelled", "lost", "superseded"] as const;
 
 export async function handleRuntimeRoute(context: RuntimeServerContext, request: Request): Promise<Response> {
   const url = new URL(request.url);
@@ -244,18 +247,39 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
 
     if (request.method === "POST" && url.pathname === "/api/v2/executor/heartbeat") {
       const body = await readJsonBody<Record<string, unknown>>(request);
-      const bindingId = `executor-${requiredString(body.runId, "runId")}-${requiredString(body.taskId, "taskId")}-${requiredString(body.attemptId, "attemptId")}`;
-      return json("executor-heartbeat", await updateExecutorBindingStatusPg(context.db, {
-        bindingId,
-        status: "running",
-        eventType: "executor.heartbeat",
-        payloadPatch: {
-          lastHeartbeatAt: typeof body.observedAt === "string" ? body.observedAt : new Date().toISOString(),
-          heartbeatSeq: typeof body.heartbeatSeq === "number" && Number.isFinite(body.heartbeatSeq) ? body.heartbeatSeq : 1,
-          runnerPhase: requiredString(body.phase, "phase") as never,
-        },
-        eventPayload: { message: typeof body.message === "string" ? body.message : undefined },
-      }));
+      const runId = requiredString(body.runId, "runId");
+      const taskId = requiredString(body.taskId, "taskId");
+      const attemptId = requiredString(body.attemptId, "attemptId");
+      const observedAt = typeof body.observedAt === "string" ? body.observedAt : new Date().toISOString();
+      const heartbeatSeq = typeof body.heartbeatSeq === "number" && Number.isFinite(body.heartbeatSeq) ? body.heartbeatSeq : 1;
+      const runnerPhase = requiredString(body.phase, "phase") as never;
+      const bindingId = `executor-${runId}-${taskId}-${attemptId}`;
+      const managedResult = await patchManagedHandExecutionHeartbeatPg(context.db, {
+        runId,
+        taskId,
+        attemptId,
+        sessionId: optionalString(body.sessionId) ?? optionalString(body.rootSessionId),
+        observedAt,
+        heartbeatSeq,
+      });
+      if (managedResult?.ignoredTerminal) return json("executor-heartbeat", managedResult);
+
+      const binding = await getExecutorBindingPg(context.db, bindingId);
+      if (!managedResult && !binding) throw new Error(`managed hand execution not found: hand-execution:${runId}:${taskId}:${attemptId}`);
+      const result = binding
+        ? await updateExecutorBindingStatusPg(context.db, {
+          bindingId,
+          status: "running",
+          eventType: "executor.heartbeat",
+          payloadPatch: {
+            lastHeartbeatAt: observedAt,
+            heartbeatSeq,
+            runnerPhase,
+          },
+          eventPayload: { message: typeof body.message === "string" ? body.message : undefined },
+        })
+        : managedResult!;
+      return json("executor-heartbeat", result);
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/executor/reconcile") {
@@ -299,6 +323,98 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
   } catch (error) {
     return errorResponse((error as Error).message, 400);
   }
+}
+
+async function patchManagedHandExecutionHeartbeatPg(
+  db: SouthstarDb,
+  input: { runId: string; taskId: string; attemptId: string; sessionId?: string; observedAt: string; heartbeatSeq: number },
+): Promise<{ id: string; runId: string; taskId: string; status: string; payload: Record<string, unknown>; ignoredTerminal?: boolean } | null> {
+  const handExecutionId = `hand-execution:${input.runId}:${input.taskId}:${input.attemptId}`;
+  const existing = await getResourceByKeyPg(db, "hand_execution", handExecutionId);
+  if (!existing) return null;
+  if (isTerminalHandExecutionStatus(existing.status)) {
+    return {
+      id: existing.id,
+      runId: input.runId,
+      taskId: input.taskId,
+      status: existing.status,
+      payload: asRecord(existing.payload),
+      ignoredTerminal: true,
+    };
+  }
+  const existingPayload = asRecord(existing.payload);
+  const sessionId = input.sessionId ?? stringValue(existingPayload.sessionId);
+  const nextPayload = {
+    ...existingPayload,
+    schemaVersion: "southstar.runtime.hand_execution.v1",
+    handExecutionId,
+    providerId: "tork",
+    runId: input.runId,
+    taskId: input.taskId,
+    ...(sessionId ? { sessionId } : {}),
+    attemptId: input.attemptId,
+    status: "running",
+    startedAt: stringValue(existingPayload.startedAt) ?? input.observedAt,
+    lastHeartbeatAt: input.observedAt,
+    heartbeatSeq: input.heartbeatSeq,
+  };
+  const summary = {
+    ...asRecord(existing.summary),
+    providerId: "tork",
+    attemptId: input.attemptId,
+    status: "running",
+  };
+  const update = await db.query<{ id: string }>(
+    `update southstar.runtime_resources
+     set run_id = $2,
+         task_id = $3,
+         session_id = $4,
+         scope = 'hand',
+         status = 'running',
+         title = coalesce(title, $5),
+         payload_json = $6::jsonb,
+         summary_json = $7::jsonb,
+         metrics_json = $8::jsonb,
+         updated_at = now()
+     where id = $1
+       and status <> all($9::text[])
+     returning id`,
+    [
+      existing.id,
+      input.runId,
+      input.taskId,
+      sessionId ?? null,
+      `Hand execution ${input.taskId}`,
+      JSON.stringify(nextPayload),
+      JSON.stringify(summary),
+      JSON.stringify(existing.metrics ?? {}),
+      TERMINAL_HAND_EXECUTION_STATUSES,
+    ],
+  );
+  const id = update.rows[0]?.id;
+  if (!id) {
+    const latest = await getResourceByKeyPg(db, "hand_execution", handExecutionId);
+    if (latest && isTerminalHandExecutionStatus(latest.status)) {
+      return {
+        id: latest.id,
+        runId: input.runId,
+        taskId: input.taskId,
+        status: latest.status,
+        payload: asRecord(latest.payload),
+        ignoredTerminal: true,
+      };
+    }
+    throw new Error(`managed hand execution heartbeat update lost race: ${handExecutionId}`);
+  }
+  await db.query(
+    "update southstar.workflow_tasks set status = 'running', updated_at = now() where run_id = $1 and id = $2 and status in ('queued', 'claimed')",
+    [input.runId, input.taskId],
+  );
+  await db.query(
+    "update southstar.workflow_runs set status = 'running', updated_at = now() where id = $1 and status = 'scheduling'",
+    [input.runId],
+  );
+  return { id, runId: input.runId, taskId: input.taskId, status: "running", payload: nextPayload };
 }
 
 async function createApprovalPg(context: RuntimeServerContext, input: { runId: string; actionType: string; riskTags: string[]; title: string; payload: Record<string, unknown> }) {
@@ -435,8 +551,20 @@ function parseExecutorBindingStatus(value: unknown): "submitted" | "queued" | "s
   return value as typeof allowed[number];
 }
 
+function isTerminalHandExecutionStatus(status: string): boolean {
+  return (TERMINAL_HAND_EXECUTION_STATUSES as readonly string[]).includes(status);
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function json<T>(kind: string, result: T): Response {

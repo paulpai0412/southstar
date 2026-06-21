@@ -3,10 +3,10 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import { acceptOrRejectArtifactRefPg } from "../artifacts/artifact-ref-store.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
-import { appendHistoryEventPg, listResourcesPg } from "../stores/postgres-runtime-store.ts";
+import { appendHistoryEventPg, getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
 import { assertNoRawCredentialPayloadPg } from "../tool-proxy/policy-enforcer.ts";
-import { updateExecutorBindingStatusPg } from "./postgres-bindings.ts";
+import { getExecutorBindingPg, updateExecutorBindingStatusPg } from "./postgres-bindings.ts";
 import type { TaskRunCallbackResult } from "./tork-callback.ts";
 
 export type PostgresTaskRunCallbackResult = TaskRunCallbackResult & {
@@ -21,8 +21,9 @@ export type PostgresCallbackIngestionResult = {
 };
 
 export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTaskRunCallbackResult): Promise<PostgresCallbackIngestionResult> {
-  const receipt = callbackReceiptToken(result);
-  const handExecutionId = `executor-callback:${result.runId}:${result.taskId}:${result.attemptId ?? result.attempts}`;
+  const attemptId = normalizedAttemptId(result);
+  const handExecutionId = canonicalHandExecutionId(result.runId, result.taskId, attemptId);
+  const receipt = callbackReceiptToken(result, handExecutionId);
   await assertCallbackPersistedSurfacesSafePg(db, result, handExecutionId);
   return await db.tx(async (tx) => {
     const task = await tx.maybeOne<{ status: string; root_session_id: string | null }>(
@@ -91,9 +92,9 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
       runId: result.runId,
       taskId: result.taskId,
       sessionId: result.rootSessionId,
-      attemptId: result.attemptId ?? `attempt-${result.attempts}`,
+      attemptId,
       handExecutionId,
-      producer: { actorType: "hand", providerId: "tork-callback" },
+      producer: { actorType: "hand", providerId: "tork" },
       artifactType: artifactType(result.artifact),
       status: result.ok ? "accepted" : "rejected",
       content: result.artifact,
@@ -120,20 +121,32 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
 
     if (result.attemptId) {
       const bindingId = `executor-${result.runId}-${result.taskId}-${result.attemptId}`;
-      await updateExecutorBindingStatusPg(tx, {
-        bindingId,
-        status: result.ok ? "completed" : "failed",
-        eventType: "executor.callback_completed",
-        payloadPatch: {
-          callbackReceivedAt: result.receivedAt ?? new Date().toISOString(),
-          terminalObservedAt: result.receivedAt ?? new Date().toISOString(),
-        },
-        eventPayload: {
-          accepted: result.ok,
-          artifactResourceId: artifactRef.resourceId,
-          artifactRefId: artifactRef.artifactRefId,
-        },
-      });
+      const binding = await getExecutorBindingPg(tx, bindingId);
+      if (binding) {
+        await updateExecutorBindingStatusPg(tx, {
+          bindingId,
+          status: result.ok ? "completed" : "failed",
+          eventType: "executor.callback_completed",
+          payloadPatch: {
+            callbackReceivedAt: result.receivedAt ?? new Date().toISOString(),
+            terminalObservedAt: result.receivedAt ?? new Date().toISOString(),
+          },
+          eventPayload: {
+            accepted: result.ok,
+            artifactResourceId: artifactRef.resourceId,
+            artifactRefId: artifactRef.artifactRefId,
+          },
+        });
+      } else {
+        await appendHistoryEventPg(tx, {
+          runId: result.runId,
+          taskId: result.taskId,
+          sessionId: result.rootSessionId,
+          eventType: "executor.callback_completed",
+          actorType: "orchestrator",
+          payload: { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId, legacyBindingMissing: true },
+        });
+      }
     } else {
       await appendHistoryEventPg(tx, {
         runId: result.runId,
@@ -144,6 +157,14 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
         payload: { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId },
       });
     }
+
+    await patchManagedHandExecutionTerminalPg(tx, {
+      result,
+      attemptId,
+      handExecutionId,
+      artifactRefId: artifactRef.artifactRefId,
+      artifactResourceId: artifactRef.resourceId,
+    });
 
     await tx.query(
       "update southstar.workflow_tasks set status = $1, updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $2 and id = $3",
@@ -163,6 +184,59 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
     }
 
     return { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId };
+  });
+}
+
+async function patchManagedHandExecutionTerminalPg(
+  db: SouthstarDb,
+  input: {
+    result: PostgresTaskRunCallbackResult;
+    attemptId: string;
+    handExecutionId: string;
+    artifactRefId: string;
+    artifactResourceId: string;
+  },
+): Promise<void> {
+  const existing = await getResourceByKeyPg(db, "hand_execution", input.handExecutionId);
+  if (!existing) return;
+  if (isHandExecutionTerminalStatus(existing.status)) return;
+  const existingPayload = asRecord(existing?.payload);
+  const terminalAt = input.result.receivedAt ?? new Date().toISOString();
+  const status = input.result.ok ? "completed" : "failed";
+  await upsertRuntimeResourcePg(db, {
+    id: existing?.id ?? input.handExecutionId,
+    resourceType: "hand_execution",
+    resourceKey: input.handExecutionId,
+    runId: input.result.runId,
+    taskId: input.result.taskId,
+    sessionId: input.result.rootSessionId,
+    scope: "hand",
+    status,
+    title: existing?.title ?? `Hand execution ${input.result.taskId}`,
+    payload: {
+      ...existingPayload,
+      schemaVersion: "southstar.runtime.hand_execution.v1",
+      handExecutionId: input.handExecutionId,
+      providerId: "tork",
+      runId: input.result.runId,
+      taskId: input.result.taskId,
+      sessionId: input.result.rootSessionId,
+      attemptId: input.attemptId,
+      status,
+      terminalAt,
+    },
+    summary: {
+      ...asRecord(existing?.summary),
+      providerId: "tork",
+      attemptId: input.attemptId,
+      accepted: input.result.ok,
+      artifactRefId: input.artifactRefId,
+      artifactResourceId: input.artifactResourceId,
+    },
+    metrics: {
+      ...asRecord(existing.metrics),
+      ...input.result.metrics,
+    },
   });
 }
 
@@ -201,16 +275,26 @@ async function assertCallbackPersistedSurfacesSafePg(
 
 export async function callbackBindingExistsPg(db: SouthstarDb, input: { runId: string; taskId: string; attemptId?: string }): Promise<boolean> {
   if (!input.attemptId) return true;
-  const bindings = await listResourcesPg(db, { resourceType: "executor_binding" });
-  return bindings.some((binding) => binding.resourceKey === `executor-${input.runId}-${input.taskId}-${input.attemptId}`);
+  const handExecution = await getResourceByKeyPg(db, "hand_execution", canonicalHandExecutionId(input.runId, input.taskId, input.attemptId));
+  if (handExecution) return true;
+  const binding = await getResourceByKeyPg(db, "executor_binding", `executor-${input.runId}-${input.taskId}-${input.attemptId}`);
+  return Boolean(binding);
 }
 
-function callbackReceiptToken(result: PostgresTaskRunCallbackResult): { idempotencyKey: string; artifactHash: string } {
+function callbackReceiptToken(result: PostgresTaskRunCallbackResult, handExecutionId: string): { idempotencyKey: string; artifactHash: string } {
   const artifactHash = createHash("sha256").update(stableStringify(result.artifact)).digest("hex");
   return {
     artifactHash,
-    idempotencyKey: `executor-callback:${result.runId}:${result.taskId}:${result.attemptId ?? result.attempts}:${artifactHash}`,
+    idempotencyKey: `${handExecutionId}:callback:${artifactHash}`,
   };
+}
+
+function normalizedAttemptId(result: PostgresTaskRunCallbackResult): string {
+  return result.attemptId ?? `attempt-${result.attempts}`;
+}
+
+function canonicalHandExecutionId(runId: string, taskId: string, attemptId: string): string {
+  return `hand-execution:${runId}:${taskId}:${attemptId}`;
 }
 
 function artifactType(artifact: unknown): string {
@@ -249,7 +333,7 @@ async function staleAttemptReasonPg(
   result: PostgresTaskRunCallbackResult,
   currentRootSessionId?: string,
 ): Promise<{ callbackAttemptId: string; latestAttemptId: string } | undefined> {
-  const latestAttemptId = await latestExecutorAttemptIdPg(db, result.runId, result.taskId);
+  const latestAttemptId = await latestCallbackAttemptIdPg(db, result.runId, result.taskId);
   if (!latestAttemptId) return undefined;
 
   if (!result.attemptId) {
@@ -263,13 +347,13 @@ async function staleAttemptReasonPg(
   return undefined;
 }
 
-async function latestExecutorAttemptIdPg(db: SouthstarDb, runId: string, taskId: string): Promise<string | undefined> {
+async function latestCallbackAttemptIdPg(db: SouthstarDb, runId: string, taskId: string): Promise<string | undefined> {
   const rows = await db.query<{ attempt_id: string | null }>(
     `select payload_json ->> 'attemptId' as attempt_id
        from southstar.runtime_resources
       where run_id = $1
         and task_id = $2
-        and resource_type = 'executor_binding'`,
+        and resource_type in ('hand_execution', 'executor_binding')`,
     [runId, taskId],
   );
   return rows.rows
@@ -285,6 +369,14 @@ function attemptNumber(value: string): number {
 
 function isTaskTerminalStatus(status: string): boolean {
   return ["completed", "failed", "cancelled", "lost", "blocked"].includes(status);
+}
+
+function isHandExecutionTerminalStatus(status: string): boolean {
+  return ["completed", "failed", "cancelled", "lost", "superseded"].includes(status);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function stableStringify(value: unknown): string {
