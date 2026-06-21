@@ -8,6 +8,7 @@ import { persistBrainBindingPg, persistHandBindingPg } from "../meta-harness/pos
 import type { SessionStore } from "../session/types.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { enforcePreExecutionToolProxyPolicyPg, isPreExecutionToolProxyPolicyError } from "../tool-proxy/runtime-enforcement.ts";
 import type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
 
 export type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
@@ -167,6 +168,18 @@ async function dispatchTask(
       instructionsRef: contextPacketId,
       inputArtifactRefs: acceptedInputArtifactRefs,
     });
+    await enforcePreExecutionToolProxyPolicyPg(db, {
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      handExecutionId,
+      value: {
+        intent,
+        acceptedInputArtifactRefs,
+        toolProxyPolicyRef,
+        contextPacketId,
+      },
+    });
     const intentResourceKey = `task-intent:${input.runId}:${input.taskId}:${attemptId}`;
     await upsertRuntimeResourcePg(db, {
       id: intentResourceKey,
@@ -268,6 +281,16 @@ async function dispatchTask(
       payload: { brainBindingId, handBindingId, contextPacketId, attemptId, handExecutionId },
     });
   } catch (error) {
+    if (isPreExecutionToolProxyPolicyError(error)) {
+      await blockTaskDispatchPreparation(db, {
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        recoveryKey,
+        errorMessage: errorMessage(error),
+      });
+      throw error;
+    }
     if (handAccepted || handRejected) throw error;
     await releaseTaskDispatchPreparation(db, {
       runId: input.runId,
@@ -515,6 +538,25 @@ function redactedProviderErrorExcerpt(errorMessage: string): string {
       "$1[REDACTED]",
     )
     .slice(0, PROVIDER_ERROR_EXCERPT_LIMIT);
+}
+
+async function blockTaskDispatchPreparation(
+  db: SouthstarDb,
+  input: { runId: string; taskId: string; sessionId: string; recoveryKey: string; errorMessage: string },
+): Promise<void> {
+  await db.query(
+    "update southstar.workflow_tasks set status = 'blocked', updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $1 and id = $2 and status = 'claimed'",
+    [input.runId, input.taskId],
+  );
+  await appendHistoryEventOnce(db, {
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    eventType: "task.dispatch_blocked",
+    actorType: "orchestrator",
+    idempotencyKey: `${input.recoveryKey}:dispatch-blocked`,
+    payload: { reason: "tool_proxy_violation", error: input.errorMessage },
+  });
 }
 
 async function releaseTaskDispatchPreparation(

@@ -349,6 +349,57 @@ test("runnable scheduler records runtime exception and reprovision decision when
   }
 });
 
+test("runnable scheduler blocks pre-execution tool proxy violations without persisting leaked intent or retrying", async () => {
+  const db = await createTestPostgresDb();
+  const rawToken = "ghp_abcdefghijklmnopqrstuvwxyz123456";
+  const runId = "run-scheduler-tool-proxy-pre-exec-block";
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId,
+      maxParallelTasks: 1,
+      tasks: [
+        { id: "discover", status: "completed", sortOrder: 0, dependsOn: [] },
+        { id: "implement", status: "pending", sortOrder: 1, dependsOn: ["discover"] },
+      ],
+    });
+    await seedContextPacket(db, runId, "implement");
+    await seedAcceptedArtifact(db, runId, "discover", rawToken);
+
+    const fixture = scheduler(db);
+    await assert.rejects(
+      () => fixture.scheduler.runOnce({ runId }),
+      /raw credential payload/i,
+    );
+
+    assert.deepEqual(fixture.executeTaskCalls, []);
+    assert.equal((await taskRow(db, runId, "implement")).status, "blocked");
+
+    const intents = (await listResourcesPg(db, { resourceType: "task_execution_intent" }))
+      .filter((resource) => resource.runId === runId);
+    assert.equal(intents.length, 0);
+    assert.doesNotMatch(JSON.stringify(intents), new RegExp(rawToken));
+
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === runId);
+    const decisions = (await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === runId);
+    assert.equal(exceptions.length, 1);
+    assert.equal(decisions.length, 1);
+
+    const retryResult = await fixture.scheduler.runOnce({ runId });
+    assert.deepEqual(retryResult.dispatchedTaskIds, []);
+    assert.equal(retryResult.skippedTaskIds.find((entry) => entry.taskId === "implement")?.reason, "status:blocked");
+    assert.deepEqual(fixture.executeTaskCalls, []);
+    assert.equal((await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === runId).length, 1);
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === runId).length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
 test("runnable scheduler releases unsupported hand providers without writing hand execution", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -510,7 +561,7 @@ async function seedContextPacket(db: SouthstarDb, runId: string, taskId: string)
   });
 }
 
-async function seedAcceptedArtifact(db: SouthstarDb, runId: string, taskId: string): Promise<void> {
+async function seedAcceptedArtifact(db: SouthstarDb, runId: string, taskId: string, ref = `artifact-${runId}-${taskId}`): Promise<void> {
   await upsertRuntimeResourcePg(db, {
     resourceType: "artifact_ref",
     resourceKey: `artifact-${runId}-${taskId}`,
@@ -519,7 +570,7 @@ async function seedAcceptedArtifact(db: SouthstarDb, runId: string, taskId: stri
     scope: "task",
     status: "accepted",
     title: `Artifact ${taskId}`,
-    payload: { ref: `artifact-${runId}-${taskId}` },
+    payload: { ref },
   });
 }
 

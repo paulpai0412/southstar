@@ -69,6 +69,7 @@ await import("./postgres-tork-callback.test.ts");
 await import("./tork-callback-managed-state.test.ts");
 await import("./tool-proxy-policy.test.ts");
 await import("./tool-proxy-security.test.ts");
+await import("./tool-proxy-runtime-enforcement.test.ts");
 await import("./brain-provider.test.ts");
 await import("./brain-task-intent.test.ts");
 await import("./hand-provider.test.ts");
