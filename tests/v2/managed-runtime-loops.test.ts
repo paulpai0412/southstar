@@ -73,6 +73,65 @@ test("managed runtime loop dispatches runnable Postgres tasks through scheduler"
   }
 });
 
+test("managed runtime loop dispatches scheduling Postgres runs through scheduler", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await createWorkflowRunPg(db, {
+      id: "run-managed-loop-scheduling",
+      status: "scheduling",
+      domain: "software",
+      goalPrompt: "managed loop scheduling",
+      workflowManifestJson: JSON.stringify({
+        schemaVersion: "southstar.v2",
+        workflowId: "wf-managed-loop-scheduling",
+        tasks: [],
+        effortPolicy: { maxParallelTasks: 1, complexity: "standard", maxToolCallsPerTask: 20 },
+      }),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: "task-managed-loop-scheduling",
+      runId: "run-managed-loop-scheduling",
+      taskKey: "task-managed-loop-scheduling",
+      status: "pending",
+      sortOrder: 0,
+      dependsOn: [],
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "context_packet",
+      resourceKey: "ctx-managed-loop-scheduling",
+      runId: "run-managed-loop-scheduling",
+      taskId: "task-managed-loop-scheduling",
+      scope: "task",
+      status: "created",
+      payload: { id: "ctx-managed-loop-scheduling" },
+    });
+
+    const loop = createManagedRuntimeLoopController({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain-loop-scheduling" }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand-loop-scheduling" }),
+      schedulerIntervalMs: 10,
+      recoveryIntervalMs: 50,
+    });
+    loop.start();
+    await sleep(120);
+    await loop.stop();
+
+    const brainBindings = await listResourcesPg(db, { resourceType: "brain_binding" });
+    const handBindings = await listResourcesPg(db, { resourceType: "hand_binding" });
+    assert.equal(brainBindings.some((resource) => resource.runId === "run-managed-loop-scheduling"), true);
+    assert.equal(handBindings.some((resource) => resource.runId === "run-managed-loop-scheduling"), true);
+  } finally {
+    await db.close();
+  }
+});
+
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
 }

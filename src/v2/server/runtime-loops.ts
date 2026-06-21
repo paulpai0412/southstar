@@ -156,7 +156,7 @@ async function sleep(ms: number): Promise<void> {
 
 async function listActiveRunIds(db: SouthstarDb): Promise<string[]> {
   const rows = await db.query<ActiveRunRow>(
-    "select id from southstar.workflow_runs where status in ('running') order by updated_at, id",
+    "select id from southstar.workflow_runs where status in ('scheduling', 'running') order by updated_at, id",
   );
   return rows.rows.map((row) => row.id);
 }
