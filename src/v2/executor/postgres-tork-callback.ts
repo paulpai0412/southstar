@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { acceptOrRejectArtifactRefPg } from "../artifacts/artifact-ref-store.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
+import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
@@ -62,6 +63,18 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
         actorType: "orchestrator",
         payload: staleAttempt,
       });
+      await recordCallbackExceptionDecisionPg(tx, {
+        result,
+        attemptId,
+        handExecutionId,
+        receiptIdempotencyKey: receipt.idempotencyKey,
+        kind: "stale_callback",
+        providerEvidence: {
+          ...staleAttempt,
+          rootSessionId: result.rootSessionId,
+          currentRootSessionId: task.root_session_id,
+        },
+      });
       return { accepted: false };
     }
 
@@ -73,6 +86,14 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
         eventType: "executor.callback_ignored_terminal",
         actorType: "orchestrator",
         payload: { status: task.status },
+      });
+      await recordCallbackExceptionDecisionPg(tx, {
+        result,
+        attemptId,
+        handExecutionId,
+        receiptIdempotencyKey: receipt.idempotencyKey,
+        kind: "late_callback",
+        providerEvidence: { status: task.status },
       });
       return { accepted: false };
     }
@@ -185,6 +206,34 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
 
     return { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId };
   });
+}
+
+async function recordCallbackExceptionDecisionPg(
+  db: SouthstarDb,
+  input: {
+    result: PostgresTaskRunCallbackResult;
+    attemptId: string;
+    handExecutionId: string;
+    receiptIdempotencyKey: string;
+    kind: "stale_callback" | "late_callback";
+    providerEvidence: Record<string, unknown>;
+  },
+): Promise<void> {
+  const controller = createRuntimeExceptionController({ db });
+  const exception = await controller.observe({
+    runId: input.result.runId,
+    taskId: input.result.taskId,
+    sessionId: input.result.rootSessionId,
+    attemptId: input.attemptId,
+    handExecutionId: input.handExecutionId,
+    source: "callback",
+    kind: input.kind,
+    severity: "warning",
+    observedAt: input.result.receivedAt ?? new Date().toISOString(),
+    evidenceRefs: [input.receiptIdempotencyKey],
+    providerEvidence: input.providerEvidence,
+  });
+  await controller.decide(await controller.classify(exception));
 }
 
 async function patchManagedHandExecutionTerminalPg(

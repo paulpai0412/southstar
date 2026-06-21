@@ -302,6 +302,53 @@ test("runnable scheduler marks dispatch failure explicitly instead of leaving cl
   }
 });
 
+test("runnable scheduler records runtime exception and reprovision decision when hand submit fails", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-hand-submit-exception",
+      maxParallelTasks: 1,
+      tasks: [
+        { id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] },
+      ],
+    });
+    await seedContextPacket(db, "run-scheduler-hand-submit-exception", "task-a");
+
+    const rawFailure = "Tork task execution failed: provider unreachable token sk-1234567890abcdefghijklmnopqrstuvwxyz";
+    const fixture = scheduler(db, { executeTaskFailureOutput: rawFailure });
+    await assert.rejects(
+      () => fixture.scheduler.runOnce({ runId: "run-scheduler-hand-submit-exception" }),
+      /provider unreachable/,
+    );
+
+    assert.deepEqual(fixture.executeTaskCalls.map((call) => call.taskId), ["task-a"]);
+    assert.equal((await taskRow(db, "run-scheduler-hand-submit-exception", "task-a")).status, "failed");
+    const history = await listHistoryForRunPg(db, "run-scheduler-hand-submit-exception");
+    assert.equal(history.some((event) => event.eventType === "hand.execute_failed" && event.taskId === "task-a"), true);
+
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === "run-scheduler-hand-submit-exception");
+    assert.equal(exceptions.length, 1);
+    assert.equal(exceptions[0]?.payload.kind, "hand_submit_failed");
+    assert.equal(exceptions[0]?.payload.source, "scheduler");
+    assert.equal(exceptions[0]?.payload.severity, "recoverable");
+    assert.equal(exceptions[0]?.payload.handExecutionId, "hand-execution:run-scheduler-hand-submit-exception:task-a:task-a-attempt-1");
+    assert.deepEqual(exceptions[0]?.payload.evidenceRefs, ["hand-execution:run-scheduler-hand-submit-exception:task-a:task-a-attempt-1"]);
+    assert.deepEqual(exceptions[0]?.payload.providerEvidence, {
+      errorExcerpt: "Tork task execution failed: provider unreachable token [REDACTED]",
+    });
+
+    const decisions = (await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === "run-scheduler-hand-submit-exception");
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]?.payload.path, "reprovision-hand");
+    assert.equal(decisions[0]?.payload.exceptionId, exceptions[0]?.payload.exceptionId);
+  } finally {
+    await db.close();
+  }
+});
+
 test("runnable scheduler releases unsupported hand providers without writing hand execution", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -332,14 +379,14 @@ test("runnable scheduler releases unsupported hand providers without writing han
   }
 });
 
-function scheduler(db: SouthstarDb, input: { failExecuteTask?: boolean; failBrainWake?: boolean; omitExecuteTask?: boolean } = {}) {
+function scheduler(db: SouthstarDb, input: { failExecuteTask?: boolean; executeTaskFailureOutput?: string; failBrainWake?: boolean; omitExecuteTask?: boolean } = {}) {
   const executeTaskCalls: ExecuteTaskInput[] = [];
   const handProvider: HandProvider = createFakeHandProvider({ providerId: "fake-hand" });
   if (!input.omitExecuteTask) {
     handProvider.executeTask = async (_binding, executeTaskInput) => {
       executeTaskCalls.push(executeTaskInput);
-      if (input.failExecuteTask) {
-        return { ok: false, output: `hand execution failed for ${executeTaskInput.taskId}`, metadata: {} };
+      if (input.failExecuteTask || input.executeTaskFailureOutput) {
+        return { ok: false, output: input.executeTaskFailureOutput ?? `hand execution failed for ${executeTaskInput.taskId}`, metadata: {} };
       }
       return {
         ok: true,

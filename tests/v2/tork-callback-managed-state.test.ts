@@ -452,6 +452,129 @@ test("ignored stale and terminal callbacks do not mutate current hand_execution"
   });
 });
 
+test("stale callback records runtime exception and observe-only recovery decision", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, { runId: "run-callback-stale-exception", taskId: "task-a", runStatus: "running", taskStatus: "running", sessionId: "session-2" });
+    await seedHandExecution(db, {
+      runId: "run-callback-stale-exception",
+      taskId: "task-a",
+      sessionId: "session-1",
+      attemptId: "attempt-1",
+      status: "queued",
+      queuedAt: "2026-06-20T08:00:00.000Z",
+      externalJobId: "job-1",
+    });
+    await seedHandExecution(db, {
+      runId: "run-callback-stale-exception",
+      taskId: "task-a",
+      sessionId: "session-2",
+      attemptId: "attempt-2",
+      status: "running",
+      queuedAt: "2026-06-20T08:01:00.000Z",
+      externalJobId: "job-2",
+    });
+    const callback = {
+      runId: "run-callback-stale-exception",
+      taskId: "task-a",
+      rootSessionId: "session-1",
+      ok: true,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: { kind: "implementation_report", summary: "old attempt passed" },
+      metrics: {},
+      events: [],
+      receivedAt: "2026-06-20T08:05:00.000Z",
+    };
+
+    const stale = await ingestTaskRunResultPg(db, callback);
+    const duplicate = await ingestTaskRunResultPg(db, callback);
+
+    assert.equal(stale.accepted, false);
+    assert.equal(duplicate.duplicate, true);
+    assert.equal(duplicate.accepted, false);
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === "run-callback-stale-exception");
+    assert.equal(exceptions.length, 1);
+    assert.equal(exceptions[0]?.payload.kind, "stale_callback");
+    assert.equal(exceptions[0]?.payload.source, "callback");
+    assert.equal(exceptions[0]?.payload.severity, "warning");
+    assert.equal(exceptions[0]?.payload.observedAt, "2026-06-20T08:05:00.000Z");
+    assert.equal(exceptions[0]?.payload.evidenceRefs.length, 1);
+    assert.match(
+      String(exceptions[0]?.payload.evidenceRefs[0]),
+      /^hand-execution:run-callback-stale-exception:task-a:attempt-1:callback:[a-f0-9]{64}$/,
+    );
+    assert.deepEqual(exceptions[0]?.payload.providerEvidence, {
+      callbackAttemptId: "attempt-1",
+      latestAttemptId: "attempt-2",
+      rootSessionId: "session-1",
+      currentRootSessionId: "session-2",
+    });
+
+    const decisions = (await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === "run-callback-stale-exception");
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]?.payload.path, "none-observe-only");
+    assert.equal(decisions[0]?.payload.exceptionId, exceptions[0]?.payload.exceptionId);
+  });
+});
+
+test("late terminal callback records runtime exception and observe-only recovery decision", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, { runId: "run-callback-late-exception", taskId: "task-a", runStatus: "running", taskStatus: "running", sessionId: "session-a" });
+    await seedHandExecution(db, {
+      runId: "run-callback-late-exception",
+      taskId: "task-a",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      status: "running",
+      queuedAt: "2026-06-20T08:00:00.000Z",
+      externalJobId: "job-1",
+    });
+    await ingestTaskRunResultPg(db, {
+      runId: "run-callback-late-exception",
+      taskId: "task-a",
+      rootSessionId: "session-a",
+      ok: true,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: { kind: "implementation_report", summary: "first passed" },
+      metrics: {},
+      events: [],
+      receivedAt: "2026-06-20T08:03:00.000Z",
+    });
+
+    const late = await ingestTaskRunResultPg(db, {
+      runId: "run-callback-late-exception",
+      taskId: "task-a",
+      rootSessionId: "session-a",
+      ok: false,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: { kind: "implementation_report", summary: "different late failed" },
+      metrics: {},
+      events: [],
+      receivedAt: "2026-06-20T08:04:00.000Z",
+    });
+
+    assert.equal(late.accepted, false);
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === "run-callback-late-exception");
+    assert.equal(exceptions.length, 1);
+    assert.equal(exceptions[0]?.payload.kind, "late_callback");
+    assert.equal(exceptions[0]?.payload.source, "callback");
+    assert.equal(exceptions[0]?.payload.severity, "warning");
+    assert.equal(exceptions[0]?.payload.observedAt, "2026-06-20T08:04:00.000Z");
+    assert.deepEqual(exceptions[0]?.payload.providerEvidence, { status: "completed" });
+
+    const decisions = (await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === "run-callback-late-exception");
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]?.payload.path, "none-observe-only");
+    assert.equal(decisions[0]?.payload.exceptionId, exceptions[0]?.payload.exceptionId);
+  });
+});
+
 test("stale callback detection uses canonical hand_execution attempts without executor_binding", async () => {
   await withDb(async (db) => {
     await seedRunTask(db, { runId: "run-callback-hand-primary", taskId: "task-a", runStatus: "running", taskStatus: "running", sessionId: "session-2" });

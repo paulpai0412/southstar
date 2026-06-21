@@ -1,6 +1,7 @@
 import type { BrainProvider } from "../brain/types.ts";
 import { createDefaultTaskExecutionIntent } from "../brain/task-intent.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import type { HandBinding, HandExecutionPayload, HandProvider } from "../hands/types.ts";
 import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
 import { persistBrainBindingPg, persistHandBindingPg } from "../meta-harness/postgres-bindings.ts";
@@ -35,6 +36,9 @@ type ExistingHistoryRow = {
   run_id: string;
   sequence: number;
 };
+
+const PROVIDER_ERROR_EXCERPT_LIMIT = 500;
+const COMMON_TOKEN_REDACTION_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/g;
 
 export function createRunnableTaskScheduler(db: SouthstarDb, deps: RunnableTaskSchedulerDeps): {
   runOnce(input: RunnableTaskSchedulerRunInput): Promise<RunnableTaskSchedulerRunResult>;
@@ -474,6 +478,23 @@ async function markTaskDispatchFailed(
     queueTimeoutSeconds: input.queueTimeoutSeconds,
     heartbeatTimeoutSeconds: input.heartbeatTimeoutSeconds,
   });
+  const controller = createRuntimeExceptionController({ db });
+  const exception = await controller.observe({
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    attemptId: input.attemptId,
+    handExecutionId: input.handExecutionId,
+    brainBindingId: input.brainBindingId,
+    handBindingId: input.handBindingId,
+    source: "scheduler",
+    kind: "hand_submit_failed",
+    severity: "recoverable",
+    observedAt: new Date().toISOString(),
+    evidenceRefs: [input.handExecutionId],
+    providerEvidence: { errorExcerpt: redactedProviderErrorExcerpt(input.errorMessage) },
+  });
+  await controller.decide(await controller.classify(exception));
   await db.query("update southstar.workflow_tasks set status = 'failed', updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $1 and id = $2 and status = 'claimed'", [input.runId, input.taskId]);
   await appendHistoryEventOnce(db, {
     runId: input.runId,
@@ -484,6 +505,16 @@ async function markTaskDispatchFailed(
     idempotencyKey: `${input.recoveryKey}:hand-execute-failed`,
     payload: { attemptId: input.attemptId, handExecutionId: input.handExecutionId, error: input.errorMessage },
   });
+}
+
+function redactedProviderErrorExcerpt(errorMessage: string): string {
+  return errorMessage
+    .replace(COMMON_TOKEN_REDACTION_PATTERN, "[REDACTED]")
+    .replace(
+      /((?:TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION|API[_-]?KEY)\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      "$1[REDACTED]",
+    )
+    .slice(0, PROVIDER_ERROR_EXCERPT_LIMIT);
 }
 
 async function releaseTaskDispatchPreparation(
