@@ -10,8 +10,8 @@ import { createTestPostgresDb, initSouthstarSchema } from "./postgres-test-utils
 test("managed runtime loop plan includes scheduler and recovery loops", () => {
   const plan = createManagedRuntimeLoopPlan({ schedulerIntervalMs: 1000, recoveryIntervalMs: 5000 });
 
-  assert.deepEqual(plan.map((item) => item.id), ["executor-reconciler", "runnable-task-scheduler", "recovery-controller"]);
-  assert.deepEqual(plan.map((item) => item.intervalMs), [30_000, 1000, 5000]);
+  assert.deepEqual(plan.map((item) => item.id), ["executor-reconciler", "runnable-task-scheduler", "recovery-controller", "tork-exception-observer"]);
+  assert.deepEqual(plan.map((item) => item.intervalMs), [30_000, 1000, 5000, 5000]);
 });
 
 test("managed runtime loop dispatches runnable Postgres tasks through scheduler", async () => {

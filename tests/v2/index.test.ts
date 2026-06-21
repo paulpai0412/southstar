@@ -57,6 +57,7 @@ await import("./managed-docs-static.test.ts");
 await import("./postgres-run-inspection-api.test.ts");
 await import("./postgres-runtime-store.test.ts");
 await import("./runtime-exceptions.test.ts");
+await import("./tork-observer.test.ts");
 await import("./artifact-ref-store.test.ts");
 await import("./completion-gate.test.ts");
 await import("./postgres-session-store.test.ts");

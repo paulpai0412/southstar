@@ -1,5 +1,6 @@
 import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { observeTorkHandExecutionExceptionsPg } from "../executor/tork-observer.ts";
 import type { HandProvider } from "../hands/types.ts";
 import { createRunnableTaskScheduler } from "../scheduler/runnable-task-scheduler.ts";
 import { createPostgresRecoveryController } from "../session-recovery/postgres-controller.ts";
@@ -11,7 +12,7 @@ export type RuntimeLoopController = {
 };
 
 export type ManagedRuntimeLoopPlanItem = {
-  id: "executor-reconciler" | "runnable-task-scheduler" | "recovery-controller";
+  id: "executor-reconciler" | "runnable-task-scheduler" | "recovery-controller" | "tork-exception-observer";
   intervalMs: number;
 };
 
@@ -41,6 +42,7 @@ export function createManagedRuntimeLoopPlan(input: { schedulerIntervalMs: numbe
     { id: "executor-reconciler", intervalMs: 30_000 },
     { id: "runnable-task-scheduler", intervalMs: input.schedulerIntervalMs },
     { id: "recovery-controller", intervalMs: input.recoveryIntervalMs },
+    { id: "tork-exception-observer", intervalMs: input.recoveryIntervalMs },
   ];
 }
 
@@ -89,6 +91,12 @@ export function createManagedRuntimeLoopController(input: ManagedRuntimeLoopDeps
             reason: `managed runtime loop recovery for ${binding.resource_key}`,
           });
         }
+      },
+    }),
+    createRuntimeLoopController({
+      intervalMs: input.recoveryIntervalMs,
+      runOnce: async () => {
+        await observeTorkHandExecutionExceptionsPg(input.db);
       },
     }),
   ]);
