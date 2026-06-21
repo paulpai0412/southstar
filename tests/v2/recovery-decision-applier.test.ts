@@ -98,7 +98,7 @@ test("reprovision-hand marks old hand lost, creates replacement hand, checkpoint
     ]);
     assert.deepEqual(executionPayload.providerActions.map((action) => [action.providerId, action.action, action.status, action.evidenceRef]), [
       ["fake-hand", "cancel", "succeeded", handExecutionId],
-      ["fake-hand", "destroy", "succeeded", oldHandBindingId],
+      ["fake-hand", "destroy", "requested", oldHandBindingId],
       ["fake-hand", "provision", "succeeded", replacementBinding?.resourceKey],
     ]);
 
@@ -167,6 +167,45 @@ test("applyNext skips managed recovery decisions left after reprovision-hand", a
   }
 });
 
+test("reprovision-hand records old binding destroy intent without calling provider destroy", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-reprovision-destroy-intent" });
+    const now = "2026-06-21T14:07:00.000Z";
+    let destroyCount = 0;
+    const handProvider = createFakeHandProvider({ providerId: "fake-hand" });
+    const result = await createRecoveryDecisionApplier({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider: {
+        ...handProvider,
+        async destroy(binding) {
+          destroyCount += 1;
+          return handProvider.destroy(binding);
+        },
+      },
+    }).applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now });
+
+    assert.equal(result.status, "applied");
+    assert.equal(destroyCount, 0);
+
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.runId === fixture.runId,
+    );
+    const providerActions = (recoveryExecution?.payload as {
+      providerActions: Array<{ providerId: string; action: string; status: string; evidenceRef?: string; attemptedAt?: string; succeededAt?: string }>;
+    }).providerActions;
+    assert.deepEqual(providerActions.map((action) => [action.providerId, action.action, action.status, action.evidenceRef, action.succeededAt]), [
+      ["fake-hand", "cancel", "succeeded", fixture.handExecutionId, now],
+      ["fake-hand", "destroy", "requested", fixture.oldHandBindingId, undefined],
+      ["fake-hand", "provision", "succeeded", providerActions[2]?.evidenceRef, now],
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("reprovision-hand blocks when dependencies are missing without mutating hand or task", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -230,7 +269,7 @@ test("reprovision-hand replay does not duplicate checkpoint, hand binding, compl
     assert.equal(first.status, "applied");
     assert.equal(second.status, "applied");
     assert.equal(second.executionResourceKey, first.executionResourceKey);
-    assert.equal(destroyCount, 1);
+    assert.equal(destroyCount, 0);
     assert.equal(provisionCount, 1);
 
     assert.equal((await listResourcesPg(db, { resourceType: "recovery_execution" })).filter((resource) => resource.runId === fixture.runId).length, 1);
@@ -291,7 +330,7 @@ test("concurrent reprovision-hand replay reuses staged provider evidence without
     assert.equal(replayResult.status, "applied");
     assert.equal(replayResult.executionResourceKey, firstResult.executionResourceKey);
     assert.equal(provisionCount, 1);
-    assert.equal(destroyCount, 1);
+    assert.equal(destroyCount, 0);
 
     assert.equal((await listResourcesPg(db, { resourceType: "session_checkpoint" })).filter((resource) => resource.runId === fixture.runId).length, 1);
     assert.equal((await listResourcesPg(db, { resourceType: "hand_binding" })).filter((resource) => resource.runId === fixture.runId).length, 2);

@@ -1,6 +1,6 @@
 import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { HandBinding, HandProvider } from "../hands/types.ts";
+import type { HandProvider } from "../hands/types.ts";
 import { createPostgresRecoveryController } from "../session-recovery/postgres-controller.ts";
 import { createPostgresSessionStore } from "../session/postgres-session-store.ts";
 import type { SessionStore } from "../session/types.ts";
@@ -557,10 +557,6 @@ async function performAndStageReprovisionRecovery(
     handResources: handResourcesFromDecision(input.decision),
   });
 
-  if (context.oldHandBinding && context.oldHandBinding.status !== "lost") {
-    await deps.handProvider.destroy(context.oldHandBinding.payload as HandBinding);
-  }
-
   const evidence = reprovisionRecoveryExecutionEvidence({
     decision: input.decision,
     taskId: input.taskId,
@@ -714,10 +710,9 @@ function reprovisionRecoveryExecutionEvidence(input: {
     providerActions.push({
       providerId: oldBindingProviderId,
       action: "destroy",
-      status: input.context.oldHandBinding.status === "lost" ? "skipped" : "succeeded",
+      status: input.context.oldHandBinding.status === "lost" ? "skipped" : "requested",
       evidenceRef: input.context.oldHandBinding.resourceKey,
       attemptedAt: input.now,
-      ...(input.context.oldHandBinding.status === "lost" ? {} : { succeededAt: input.now }),
     });
   }
   providerActions.push({
