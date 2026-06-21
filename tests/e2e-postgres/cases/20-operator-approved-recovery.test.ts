@@ -39,7 +39,7 @@ test("20 operator approved recovery path: rollback decision is marked approval-r
     const decision = findRuntimeResource(decisions, (resource) => resource.payload.exceptionId === exception.exceptionId);
     assert.equal(decision.payload.path, "rollback-workspace");
     assert.equal(decision.payload.operatorApprovalRequired, true);
-    assert.equal(decision.status, "recorded");
+    assert.equal(decision.status, "waiting_operator_approval");
 
     const readModel = await getJson<{
       runId: string;
