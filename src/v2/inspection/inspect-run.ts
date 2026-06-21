@@ -70,16 +70,17 @@ export function inspectRun(db: SouthstarDb, input: { runId: string }): RunInspec
 }
 
 function inspectTask(task: WorkflowTaskRow, resources: RunResources): InspectedTask {
-  const artifacts = resources.artifacts.filter((resource) => resource.taskId === task.id);
+  const artifacts = [...resources.artifacts, ...resources.artifactRefs].filter((resource) => resource.taskId === task.id);
   const evidencePackets = resources.evidencePackets.filter((resource) => resource.taskId === task.id);
   const validators = resources.validators.filter((resource) => resource.taskId === task.id);
   const binding = resources.executorBindings.filter((resource) => resource.taskId === task.id).at(-1);
+  const handExecution = resources.handExecutions.filter((resource) => resource.taskId === task.id).at(-1);
   const causes: InspectionCause[] = [];
 
   if (task.status === "failed") {
     causes.push({ code: "task_failed", severity: "blocking", taskId: task.id, message: `Task failed: ${task.id}` });
   }
-  if (!binding && ["running", "pending"].includes(task.status)) {
+  if (!binding && !handExecution && ["running", "pending", "queued", "claimed"].includes(task.status)) {
     causes.push({ code: "executor_issue", severity: "blocking", taskId: task.id, message: `Task has no executor binding: ${task.id}` });
   }
 
@@ -111,6 +112,7 @@ function inspectTask(task: WorkflowTaskRow, resources: RunResources): InspectedT
   }
 
   const bindingPayload = asRecord(binding?.payload);
+  const handExecutionPayload = asRecord(handExecution?.payload);
   return {
     taskId: task.id,
     taskKey: task.task_key,
@@ -119,11 +121,11 @@ function inspectTask(task: WorkflowTaskRow, resources: RunResources): InspectedT
     dependsOn: parseStringArray(task.depends_on_json),
     executor: {
       bindingId: binding?.id,
-      status: binding?.status,
-      executorType: stringField(bindingPayload, "executorType"),
-      externalJobId: stringField(bindingPayload, "externalJobId") ?? stringField(bindingPayload, "torkJobId"),
-      runnerPhase: stringField(bindingPayload, "runnerPhase"),
-      lastHeartbeatAt: stringField(bindingPayload, "lastHeartbeatAt"),
+      status: binding?.status ?? handExecution?.status,
+      executorType: stringField(bindingPayload, "executorType") ?? stringField(handExecutionPayload, "providerId"),
+      externalJobId: stringField(bindingPayload, "externalJobId") ?? stringField(bindingPayload, "torkJobId") ?? stringField(handExecutionPayload, "externalJobId"),
+      runnerPhase: stringField(bindingPayload, "runnerPhase") ?? stringField(handExecutionPayload, "status"),
+      lastHeartbeatAt: stringField(bindingPayload, "lastHeartbeatAt") ?? stringField(handExecutionPayload, "lastHeartbeatAt"),
       issue: executorIssue,
     },
     artifact: {
@@ -154,14 +156,19 @@ function resourcesForRun(db: SouthstarDb, runId: string): RunResources {
   return {
     executorBindings: listResources(db, { resourceType: "executor_binding" }).filter((resource) => resource.runId === runId),
     artifacts: listResources(db, { resourceType: "artifact" }).filter((resource) => resource.runId === runId),
+    artifactRefs: listResources(db, { resourceType: "artifact_ref" }).filter((resource) => resource.runId === runId),
+    handExecutions: listResources(db, { resourceType: "hand_execution" }).filter((resource) => resource.runId === runId),
+    taskExecutionIntents: listResources(db, { resourceType: "task_execution_intent" }).filter((resource) => resource.runId === runId),
     evidencePackets: listResources(db, { resourceType: "evidence_packet" }).filter((resource) => resource.runId === runId),
     validators: listResources(db, { resourceType: "validator_result" }).filter((resource) => resource.runId === runId),
     stopConditions: listResources(db, { resourceType: "stop_condition_result" }).filter((resource) => resource.runId === runId),
+    toolProxyViolations: listResources(db, { resourceType: "tool_proxy_violation" }).filter((resource) => resource.runId === runId),
   };
 }
 
 function countInspection(tasks: WorkflowTaskRow[], resources: RunResources): RunInspectionCounts {
-  const oversizedPayloadRows = [...resources.artifacts, ...resources.evidencePackets, ...resources.validators]
+  const oversizedPayloadRows = [...resources.artifacts, ...resources.artifactRefs, ...resources.evidencePackets, ...resources.validators]
+    .concat(resources.handExecutions, resources.taskExecutionIntents, resources.toolProxyViolations)
     .filter((resource) => JSON.stringify(resource.payload).length > 50_000).length;
   return {
     tasks: {
@@ -173,8 +180,12 @@ function countInspection(tasks: WorkflowTaskRow[], resources: RunResources): Run
     },
     resources: {
       acceptedArtifacts: resources.artifacts.filter((resource) => resource.status === "accepted").length,
+      acceptedArtifactRefs: resources.artifactRefs.filter((resource) => resource.status === "accepted").length,
       needsRepairArtifacts: resources.artifacts.filter((resource) => resource.status === "needs_repair").length,
       rejectedArtifacts: resources.artifacts.filter((resource) => resource.status === "rejected").length,
+      handExecutions: resources.handExecutions.length,
+      taskExecutionIntents: resources.taskExecutionIntents.length,
+      blockingToolProxyViolations: resources.toolProxyViolations.filter((resource) => resource.status === "blocking").length,
       completeEvidencePackets: resources.evidencePackets.filter((resource) => resource.status === "complete").length,
       incompleteEvidencePackets: resources.evidencePackets.filter((resource) => resource.status === "incomplete").length,
       blockingValidatorFailures: resources.validators.filter((resource) => resource.status === "failed" && asRecord(resource.payload)?.blocking === true).length,
@@ -185,6 +196,41 @@ function countInspection(tasks: WorkflowTaskRow[], resources: RunResources): Run
 
 function gateCauses(gates: ReturnType<typeof evaluateRuntimeInspectionGates>): InspectionCause[] {
   const causes: InspectionCause[] = [];
+  if (gates.completedTasks.verdict === "failed") {
+    causes.push({
+      code: "completed_tasks_gate_failed",
+      severity: "blocking",
+      message: `Completed tasks gate failed: expected ${gates.completedTasks.expected}; actual ${String(gates.completedTasks.actual)}`,
+    });
+  }
+  if (gates.acceptedArtifactRefsEqualCompletedTasks.verdict === "failed") {
+    causes.push({
+      code: "artifact_ref_gate_failed",
+      severity: "blocking",
+      message: `Artifact ref gate failed: expected ${gates.acceptedArtifactRefsEqualCompletedTasks.expected}; actual ${JSON.stringify(gates.acceptedArtifactRefsEqualCompletedTasks.actual)}`,
+    });
+  }
+  if (gates.completeEvidenceEqualAcceptedArtifacts.verdict === "failed") {
+    causes.push({
+      code: "evidence_gate_failed",
+      severity: "blocking",
+      message: `Evidence gate failed: expected ${gates.completeEvidenceEqualAcceptedArtifacts.expected}; actual ${JSON.stringify(gates.completeEvidenceEqualAcceptedArtifacts.actual)}`,
+    });
+  }
+  if (gates.blockingToolProxyViolationsZero.verdict === "failed") {
+    causes.push({
+      code: "tool_proxy_violation",
+      severity: "blocking",
+      message: `Tool proxy gate failed: expected ${gates.blockingToolProxyViolationsZero.expected}; actual ${String(gates.blockingToolProxyViolationsZero.actual)}`,
+    });
+  }
+  if (gates.payloadSizeWithinLimit.verdict === "failed") {
+    causes.push({
+      code: "payload_too_large",
+      severity: "blocking",
+      message: `Payload size gate failed: expected ${gates.payloadSizeWithinLimit.expected}; actual ${String(gates.payloadSizeWithinLimit.actual)}`,
+    });
+  }
   if (gates.stopConditionPassed.verdict === "failed") {
     causes.push({
       code: gates.stopConditionPassed.actual === "missing" ? "stop_condition_missing" : "stop_condition_failed",
@@ -208,6 +254,7 @@ function healthForRun(status: string, primaryCause: InspectionCause | null, gate
   if (status === "missing") return "unknown";
   if (["failed", "cancelled"].includes(status)) return "failed";
   if (["passed", "completed"].includes(status) && !primaryCause && allRuntimeGatesPassed(gates)) return "healthy";
+  if (["passed", "completed"].includes(status) && !allRuntimeGatesPassed(gates)) return "failed";
   if (primaryCause?.severity === "blocking") return ["passed", "completed"].includes(status) ? "failed" : "blocked";
   if (["running", "pending", "created"].includes(status)) return "running";
   return "unknown";
@@ -250,8 +297,12 @@ function emptyCounts(): RunInspectionCounts {
     tasks: { total: 0, completed: 0, failed: 0, running: 0, pending: 0 },
     resources: {
       acceptedArtifacts: 0,
+      acceptedArtifactRefs: 0,
       needsRepairArtifacts: 0,
       rejectedArtifacts: 0,
+      handExecutions: 0,
+      taskExecutionIntents: 0,
+      blockingToolProxyViolations: 0,
       completeEvidencePackets: 0,
       incompleteEvidencePackets: 0,
       blockingValidatorFailures: 0,
@@ -296,9 +347,13 @@ function stringField(record: Record<string, unknown> | undefined, key: string): 
 type RunResources = {
   executorBindings: RuntimeResourceRecord[];
   artifacts: RuntimeResourceRecord[];
+  artifactRefs: RuntimeResourceRecord[];
+  handExecutions: RuntimeResourceRecord[];
+  taskExecutionIntents: RuntimeResourceRecord[];
   evidencePackets: RuntimeResourceRecord[];
   validators: RuntimeResourceRecord[];
   stopConditions: RuntimeResourceRecord[];
+  toolProxyViolations: RuntimeResourceRecord[];
 };
 
 type WorkflowRunRow = {

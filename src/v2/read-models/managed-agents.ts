@@ -21,6 +21,19 @@ export type ManagedAgentRunReadModel = {
   handBindings: Array<{ id: string; taskId?: string; sessionId?: string; status: string; payload: unknown }>;
   checkpoints: Array<{ id: string; taskId?: string; sessionId?: string; status: string; payload: unknown }>;
   toolGrants: Array<{ id: string; sessionId?: string; status: string; payload: unknown }>;
+  resources: ManagedRuntimeResourceReadModel[];
+};
+
+export type ManagedRuntimeResourceReadModel = {
+  id: string;
+  resourceType: string;
+  taskId?: string;
+  sessionId?: string;
+  status: string;
+  scope: string;
+  title?: string;
+  payload: unknown;
+  summary: unknown;
 };
 
 export async function getManagedAgentRunReadModelPg(db: SouthstarDb, runId: string): Promise<ManagedAgentRunReadModel> {
@@ -28,7 +41,7 @@ export async function getManagedAgentRunReadModelPg(db: SouthstarDb, runId: stri
     `select * from southstar.runtime_resources
      where run_id = $1 and resource_type = any($2::text[])
      order by updated_at, resource_type, resource_key`,
-    [runId, ["brain_binding", "hand_binding", "session_checkpoint", "vault_lease", "tool_grant"]],
+    [runId, [...managedResourceTypes]],
   );
   return {
     runId,
@@ -36,8 +49,28 @@ export async function getManagedAgentRunReadModelPg(db: SouthstarDb, runId: stri
     handBindings: rows.rows.filter((row) => row.resource_type === "hand_binding").map(mapBinding),
     checkpoints: rows.rows.filter((row) => row.resource_type === "session_checkpoint").map(mapBinding),
     toolGrants: rows.rows.filter((row) => row.resource_type === "vault_lease" || row.resource_type === "tool_grant").map(mapGrant),
+    resources: rows.rows.filter((row) => managedContractResourceTypes.has(row.resource_type)).map(mapResource),
   };
 }
+
+const managedContractResourceTypes = new Set([
+  "artifact_ref",
+  "brain_binding",
+  "hand_binding",
+  "hand_execution",
+  "task_execution_intent",
+  "evaluator_result",
+  "tool_proxy_policy",
+  "tool_proxy_violation",
+  "recovery_decision",
+]);
+
+const managedResourceTypes = new Set([
+  ...managedContractResourceTypes,
+  "session_checkpoint",
+  "vault_lease",
+  "tool_grant",
+]);
 
 function mapBinding(row: ResourceRow) {
   return {
@@ -55,5 +88,19 @@ function mapGrant(row: ResourceRow) {
     sessionId: row.session_id ?? undefined,
     status: row.status,
     payload: row.payload_json,
+  };
+}
+
+function mapResource(row: ResourceRow): ManagedRuntimeResourceReadModel {
+  return {
+    id: row.resource_key,
+    resourceType: row.resource_type,
+    taskId: row.task_id ?? undefined,
+    sessionId: row.session_id ?? undefined,
+    status: row.status,
+    scope: row.scope,
+    title: row.title ?? undefined,
+    payload: row.payload_json,
+    summary: row.summary_json,
   };
 }

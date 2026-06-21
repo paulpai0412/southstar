@@ -8,6 +8,11 @@ export type InspectionCauseCode =
   | "artifact_rejected"
   | "incomplete_evidence"
   | "blocking_validator_failed"
+  | "completed_tasks_gate_failed"
+  | "artifact_ref_gate_failed"
+  | "evidence_gate_failed"
+  | "tool_proxy_violation"
+  | "payload_too_large"
   | "stop_condition_failed"
   | "stop_condition_missing"
   | "design_library_lineage_unavailable"
@@ -30,8 +35,10 @@ export type GateVerdict = {
 export type RuntimeGateVerdicts = {
   completedTasks: GateVerdict;
   acceptedArtifactsEqualCompletedTasks: GateVerdict;
+  acceptedArtifactRefsEqualCompletedTasks: GateVerdict;
   completeEvidenceEqualAcceptedArtifacts: GateVerdict;
   blockingValidatorFailuresZero: GateVerdict;
+  blockingToolProxyViolationsZero: GateVerdict;
   stopConditionPassed: GateVerdict;
   payloadSizeWithinLimit: GateVerdict;
 };
@@ -46,8 +53,12 @@ export type RunInspectionCounts = {
   };
   resources: {
     acceptedArtifacts: number;
+    acceptedArtifactRefs: number;
     needsRepairArtifacts: number;
     rejectedArtifacts: number;
+    handExecutions: number;
+    taskExecutionIntents: number;
+    blockingToolProxyViolations: number;
     completeEvidencePackets: number;
     incompleteEvidencePackets: number;
     blockingValidatorFailures: number;

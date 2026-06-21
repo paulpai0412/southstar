@@ -30,13 +30,13 @@ test("new read-model run-inspection API uses Postgres runtime store", async () =
       dependsOn: [],
     });
     await upsertRuntimeResourcePg(db, {
-      resourceType: "artifact",
-      resourceKey: "artifact-1",
+      resourceType: ARTIFACT_REF_RESOURCE_TYPE,
+      resourceKey: "artifact-ref-healthy-1",
       runId: "run-inspect-pg-1",
       taskId: "task-1",
       scope: "software",
       status: "accepted",
-      payload: { artifactType: "implementation_report" },
+      payload: { artifactRefId: "artifact_ref:run-inspect-pg-1:task-1:attempt-1:sha" },
     });
     await upsertRuntimeResourcePg(db, {
       resourceType: "evidence_packet",
@@ -72,7 +72,7 @@ test("new read-model run-inspection API uses Postgres runtime store", async () =
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
     });
     try {
-      const model = await api<{ schemaVersion: string; kind: string; data: { runId: string; health: string; counts: { tasks: { completed: number } }; tasks: Array<{ taskId: string; artifact: { accepted: number } }> } }>(
+      const model = await api<{ schemaVersion: string; kind: string; data: { runId: string; health: string; counts: { tasks: { completed: number }; resources: { acceptedArtifacts: number; acceptedArtifactRefs: number } }; gates: { acceptedArtifactRefsEqualCompletedTasks: { verdict: string }; completeEvidenceEqualAcceptedArtifacts: { verdict: string } }; tasks: Array<{ taskId: string; artifact: { accepted: number } }> } }>(
         server.url,
         "/api/v2/read-models/run-inspection/run-inspect-pg-1",
       );
@@ -81,6 +81,10 @@ test("new read-model run-inspection API uses Postgres runtime store", async () =
       assert.equal(model.data.runId, "run-inspect-pg-1");
       assert.equal(model.data.health, "healthy");
       assert.equal(model.data.counts.tasks.completed, 1);
+      assert.equal(model.data.counts.resources.acceptedArtifacts, 0);
+      assert.equal(model.data.counts.resources.acceptedArtifactRefs, 1);
+      assert.equal(model.data.gates.acceptedArtifactRefsEqualCompletedTasks.verdict, "passed");
+      assert.equal(model.data.gates.completeEvidenceEqualAcceptedArtifacts.verdict, "passed");
       assert.equal(model.data.tasks[0]?.artifact.accepted, 1);
     } finally {
       await server.close();
@@ -156,7 +160,8 @@ test("new read-model run-inspection API counts accepted artifact_ref resources a
       const model = await api<{
         data: {
           health: string;
-          counts: { resources: { acceptedArtifacts: number; completeEvidencePackets: number } };
+          counts: { resources: { acceptedArtifacts: number; acceptedArtifactRefs: number; completeEvidencePackets: number } };
+          gates: { acceptedArtifactRefsEqualCompletedTasks: { verdict: string } };
           tasks: Array<{ artifact: { accepted: number; resourceRefs: string[] } }>;
         };
       }>(
@@ -164,10 +169,177 @@ test("new read-model run-inspection API counts accepted artifact_ref resources a
         "/api/v2/read-models/run-inspection/run-inspect-pg-artifact-ref",
       );
       assert.equal(model.data.health, "healthy");
-      assert.equal(model.data.counts.resources.acceptedArtifacts, 1);
+      assert.equal(model.data.counts.resources.acceptedArtifacts, 0);
+      assert.equal(model.data.counts.resources.acceptedArtifactRefs, 1);
       assert.equal(model.data.counts.resources.completeEvidencePackets, 1);
+      assert.equal(model.data.gates.acceptedArtifactRefsEqualCompletedTasks.verdict, "passed");
       assert.equal(model.data.tasks[0]?.artifact.accepted, 1);
       assert.deepEqual(model.data.tasks[0]?.artifact.resourceRefs, ["artifact-ref-1"]);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("new read-model run-inspection API rejects legacy artifact-only completion", async () => {
+  await withDb(async (db) => {
+    await createWorkflowRunPg(db, {
+      id: "run-inspect-pg-legacy-artifact",
+      status: "completed",
+      domain: "software",
+      goalPrompt: "inspect legacy artifact-only run",
+      workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2" }),
+      executionProjectionJson: JSON.stringify({ executor: "tork" }),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "task-1",
+      runId: "run-inspect-pg-legacy-artifact",
+      taskKey: "implement-feature",
+      status: "completed",
+      sortOrder: 1,
+      dependsOn: [],
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "artifact",
+      resourceKey: "legacy-artifact-1",
+      runId: "run-inspect-pg-legacy-artifact",
+      taskId: "task-1",
+      scope: "software",
+      status: "accepted",
+      payload: { artifactType: "implementation_report" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "evidence_packet",
+      resourceKey: "evidence-1",
+      runId: "run-inspect-pg-legacy-artifact",
+      taskId: "task-1",
+      scope: "software",
+      status: "complete",
+      payload: { evidence: [{ kind: "test-result" }] },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "validator_result",
+      resourceKey: "validator-1",
+      runId: "run-inspect-pg-legacy-artifact",
+      taskId: "task-1",
+      scope: "software",
+      status: "passed",
+      payload: { blocking: true },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "stop_condition_result",
+      resourceKey: "stop-1",
+      runId: "run-inspect-pg-legacy-artifact",
+      scope: "software",
+      status: "passed",
+      payload: { ok: true },
+    });
+
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const model = await api<{
+        data: {
+          health: string;
+          primaryCause: { code: string; severity: string; message: string } | null;
+          counts: { resources: { acceptedArtifacts: number; acceptedArtifactRefs: number } };
+          gates: { acceptedArtifactRefsEqualCompletedTasks: { verdict: string; actual: unknown } };
+        };
+      }>(
+        server.url,
+        "/api/v2/read-models/run-inspection/run-inspect-pg-legacy-artifact",
+      );
+      assert.equal(model.data.counts.resources.acceptedArtifacts, 1);
+      assert.equal(model.data.counts.resources.acceptedArtifactRefs, 0);
+      assert.equal(model.data.gates.acceptedArtifactRefsEqualCompletedTasks.verdict, "failed");
+      assert.equal(model.data.health, "failed");
+      assert.equal(model.data.primaryCause?.code, "artifact_ref_gate_failed");
+      assert.equal(model.data.primaryCause?.severity, "blocking");
+      assert.match(model.data.primaryCause?.message ?? "", /accepted artifact_ref resources/);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("new read-model run-inspection API reports oversized artifact_ref payloads", async () => {
+  await withDb(async (db) => {
+    await createWorkflowRunPg(db, {
+      id: "run-inspect-pg-large-artifact-ref",
+      status: "completed",
+      domain: "software",
+      goalPrompt: "inspect oversized artifact ref",
+      workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2" }),
+      executionProjectionJson: JSON.stringify({ executor: "tork" }),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "task-1",
+      runId: "run-inspect-pg-large-artifact-ref",
+      taskKey: "implement-feature",
+      status: "completed",
+      sortOrder: 1,
+      dependsOn: [],
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: ARTIFACT_REF_RESOURCE_TYPE,
+      resourceKey: "artifact-ref-large-1",
+      runId: "run-inspect-pg-large-artifact-ref",
+      taskId: "task-1",
+      scope: "software",
+      status: "accepted",
+      payload: { artifactRef: "artifact_ref:run-inspect-pg-large-artifact-ref:task-1:attempt-1:sha", details: "x".repeat(50_001) },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "evidence_packet",
+      resourceKey: "evidence-1",
+      runId: "run-inspect-pg-large-artifact-ref",
+      taskId: "task-1",
+      scope: "software",
+      status: "complete",
+      payload: { evidence: [{ kind: "test-result" }] },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "stop_condition_result",
+      resourceKey: "stop-1",
+      runId: "run-inspect-pg-large-artifact-ref",
+      scope: "software",
+      status: "passed",
+      payload: { ok: true },
+    });
+
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const model = await api<{
+        data: {
+          health: string;
+          primaryCause: { code: string; message: string } | null;
+          counts: { resources: { oversizedPayloadRows: number } };
+          gates: { payloadSizeWithinLimit: { verdict: string } };
+        };
+      }>(
+        server.url,
+        "/api/v2/read-models/run-inspection/run-inspect-pg-large-artifact-ref",
+      );
+      assert.equal(model.data.health, "failed");
+      assert.equal(model.data.counts.resources.oversizedPayloadRows, 1);
+      assert.equal(model.data.gates.payloadSizeWithinLimit.verdict, "failed");
+      assert.equal(model.data.primaryCause?.code, "payload_too_large");
+      assert.match(model.data.primaryCause?.message ?? "", /runtime resource payload_json rows/);
     } finally {
       await server.close();
     }

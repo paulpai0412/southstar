@@ -88,6 +88,120 @@ test("incomplete evidence outranks blocking validator failure as primary cause",
   assert.equal(inspection.tasks[0]?.evidence.missingKinds.includes("test-result"), true);
 });
 
+test("inspectRun accepts hand_execution-only managed running tasks", () => {
+  const db = seededInspectionDb({ runStatus: "running", taskStatus: "running" });
+  upsertRuntimeResource(db, {
+    resourceType: "hand_execution",
+    resourceKey: `hand-execution-${runId}-task-1-attempt-1`,
+    runId,
+    taskId: "task-1",
+    scope: "hand",
+    status: "running",
+    title: "Managed hand execution",
+    payload: {
+      providerId: "tork",
+      externalJobId: "job-1",
+      status: "running",
+      lastHeartbeatAt: "2026-06-20T08:01:00.000Z",
+    },
+  });
+
+  const inspection = inspectRun(db, { runId });
+
+  assert.equal(inspection.tasks[0]?.causes.some((cause) => cause.code === "executor_issue"), false);
+  assert.equal(inspection.tasks[0]?.executor.status, "running");
+  assert.equal(inspection.tasks[0]?.executor.executorType, "tork");
+  assert.equal(inspection.tasks[0]?.executor.externalJobId, "job-1");
+  assert.equal(inspection.tasks[0]?.executor.lastHeartbeatAt, "2026-06-20T08:01:00.000Z");
+  assert.equal(inspection.tasks[0]?.executor.issue, "none");
+});
+
+test("inspectRun reports canonical artifact_ref gate failure as primary cause", () => {
+  const db = seededInspectionDb({ runStatus: "passed", taskStatus: "completed" });
+  upsertRuntimeResource(db, {
+    resourceType: "evidence_packet",
+    resourceKey: `evidence-${runId}-task-1`,
+    runId,
+    taskId: "task-1",
+    scope: "task",
+    status: "complete",
+    title: "Complete evidence",
+    payload: { completeness: { missingKinds: [] } },
+  });
+  upsertRuntimeResource(db, {
+    resourceType: "validator_result",
+    resourceKey: `validator-${runId}-task-1-schema`,
+    runId,
+    taskId: "task-1",
+    scope: "task",
+    status: "passed",
+    title: "Schema validator",
+    payload: { verdict: "passed", blocking: true },
+  });
+  seedStopCondition(db, "passed");
+
+  const inspection = inspectRun(db, { runId });
+
+  assert.equal(inspection.health, "failed");
+  assert.equal(inspection.primaryCause?.code, "artifact_ref_gate_failed");
+  assert.equal(inspection.primaryCause?.severity, "blocking");
+  assert.match(inspection.primaryCause?.message ?? "", /accepted artifact_ref resources/);
+});
+
+test("inspectRun reports completed task gate failure as primary cause", () => {
+  const db = openSouthstarDb(":memory:");
+  createWorkflowRun(db, {
+    id: runId,
+    status: "passed",
+    domain: "software",
+    goalPrompt: "inspect run",
+    workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2" }),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  seedStopCondition(db, "passed");
+
+  const inspection = inspectRun(db, { runId });
+
+  assert.equal(inspection.health, "failed");
+  assert.equal(inspection.primaryCause?.code, "completed_tasks_gate_failed");
+  assert.match(inspection.primaryCause?.message ?? "", />= 1 completed task/);
+});
+
+test("inspectRun counts oversized canonical artifact_ref payloads", () => {
+  const db = seededInspectionDb({ runStatus: "passed", taskStatus: "completed" });
+  upsertRuntimeResource(db, {
+    resourceType: "artifact_ref",
+    resourceKey: `artifact-ref-${runId}-task-1-large`,
+    runId,
+    taskId: "task-1",
+    scope: "artifact",
+    status: "accepted",
+    title: "Large artifact ref",
+    payload: { artifactRefId: `artifact_ref:${runId}:task-1:attempt-1:sha`, details: "x".repeat(50_001) },
+  });
+  upsertRuntimeResource(db, {
+    resourceType: "evidence_packet",
+    resourceKey: `evidence-${runId}-task-1`,
+    runId,
+    taskId: "task-1",
+    scope: "task",
+    status: "complete",
+    title: "Complete evidence",
+    payload: { completeness: { missingKinds: [] } },
+  });
+  seedStopCondition(db, "passed");
+
+  const inspection = inspectRun(db, { runId });
+
+  assert.equal(inspection.counts.resources.oversizedPayloadRows, 1);
+  assert.equal(inspection.gates.payloadSizeWithinLimit.verdict, "failed");
+  assert.equal(inspection.primaryCause?.code, "payload_too_large");
+  assert.match(inspection.primaryCause?.message ?? "", /runtime resource payload_json rows/);
+});
+
 test("Design Library lineage is tolerant when library tables are absent", () => {
   const db = seededInspectionDb({
     runStatus: "running",
@@ -198,14 +312,14 @@ function seedAcceptedArtifactEvidenceValidator(db: SouthstarDb, taskId: string):
     payload: { executorType: "tork", torkJobId: "job-1", southstarExecutorStatus: "submitted", runnerPhase: "shutdown" },
   });
   upsertRuntimeResource(db, {
-    resourceType: "artifact",
-    resourceKey: `artifact-${runId}-${taskId}`,
+    resourceType: "artifact_ref",
+    resourceKey: `artifact-ref-${runId}-${taskId}`,
     runId,
     taskId,
-    scope: "task",
+    scope: "artifact",
     status: "accepted",
-    title: "Accepted artifact",
-    payload: { summary: "done" },
+    title: "Accepted artifact ref",
+    payload: { artifactRefId: `artifact_ref:${runId}:${taskId}:attempt-1:sha` },
   });
   upsertRuntimeResource(db, {
     resourceType: "evidence_packet",
