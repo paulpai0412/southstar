@@ -46,6 +46,14 @@ export async function startRecoveryExecutionPg(
     await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
     const existing = toRecoveryExecutionRecord(await getResourceByKeyPg(tx, RECOVERY_EXECUTION_RESOURCE_TYPE, resourceKey));
     if (existing) {
+      if (
+        existing.payload.runId !== input.runId ||
+        existing.payload.exceptionId !== input.exceptionId ||
+        existing.payload.path !== input.path ||
+        existing.payload.taskId !== input.taskId
+      ) {
+        throw new Error(`recovery execution ${resourceKey} conflicts with requested start input`);
+      }
       await appendStartedHistoryOncePg(tx, existing);
       return existing;
     }

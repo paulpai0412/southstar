@@ -55,6 +55,18 @@ test("recovery execution store records idempotent started and succeeded evidence
     assert.equal(duplicate.executionId, started.executionId);
     assert.equal(duplicate.resourceKey, started.resourceKey);
 
+    await assert.rejects(
+      startRecoveryExecutionPg(db, {
+        decisionId: "decision-a",
+        exceptionId: "exception-b",
+        runId: "run-recovery-execution-store",
+        taskId: "task-a",
+        path: "requeue-hand-execution",
+        now: "2026-06-21T11:00:45.000Z",
+      }),
+      /recovery execution recovery_execution:decision-a:attempt-1 conflicts with requested start input/,
+    );
+
     const completed = await completeRecoveryExecutionPg(db, {
       runId: "run-recovery-execution-store",
       executionResourceKey: started.resourceKey,
@@ -83,6 +95,40 @@ test("recovery execution store records idempotent started and succeeded evidence
     assert.equal(completed.payload.status, "succeeded");
     assert.equal(completed.payload.stateChanges.length, 1);
     assert.equal(completed.payload.providerActions.length, 1);
+
+    const duplicateComplete = await completeRecoveryExecutionPg(db, {
+      runId: "run-recovery-execution-store",
+      executionResourceKey: started.resourceKey,
+      status: "failed",
+      completedAt: "2026-06-21T11:02:00.000Z",
+      stateChanges: [],
+      providerActions: [],
+    });
+
+    assert.deepEqual(duplicateComplete, completed);
+
+    await createWorkflowRunPg(db, {
+      id: "run-recovery-execution-other",
+      status: "running",
+      domain: "software",
+      goalPrompt: "apply recovery decision elsewhere",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await assert.rejects(
+      completeRecoveryExecutionPg(db, {
+        runId: "run-recovery-execution-other",
+        executionResourceKey: started.resourceKey,
+        status: "failed",
+        completedAt: "2026-06-21T11:03:00.000Z",
+        stateChanges: [],
+        providerActions: [],
+      }),
+      /recovery execution recovery_execution:decision-a:attempt-1 does not belong to run run-recovery-execution-other/,
+    );
 
     const resources = await listResourcesPg(db, { resourceType: "recovery_execution" });
     assert.equal(resources.length, 1);
