@@ -147,6 +147,52 @@ test("runtime exception resolve is idempotent and preserves first resolution met
   }
 });
 
+test("runtime exception resolve locks workflow run before exception resource", async () => {
+  const queries: string[] = [];
+  const stopAfterExceptionLock = new Error("stop after exception lock");
+  const db: SouthstarDb = {
+    async query(sql) {
+      queries.push(normalizeSql(sql));
+      return { rows: [], rowCount: 0 };
+    },
+    async one() {
+      throw new Error("unexpected one query");
+    },
+    async maybeOne(sql) {
+      const normalized = normalizeSql(sql);
+      queries.push(normalized);
+      if (
+        normalized.includes("from southstar.runtime_resources") &&
+        normalized.includes("for update")
+      ) {
+        throw stopAfterExceptionLock;
+      }
+      return null;
+    },
+    async tx(fn) {
+      return await fn(this);
+    },
+    async close() {},
+  };
+
+  await assert.rejects(
+    () => resolveRuntimeExceptionPg(db, {
+      runId: "run-exception-lock-order",
+      resourceKey: "runtime_exception:run-exception-lock-order:hand:abc123",
+      resolvedAt: "2026-06-21T11:05:00.000Z",
+      reason: "operator resolved",
+    }),
+    stopAfterExceptionLock,
+  );
+
+  assert.equal(queries[0], "select id from southstar.workflow_runs where id = $1 for update");
+  assert.equal(
+    queries[1]?.includes("from southstar.runtime_resources") &&
+      queries[1]?.includes("for update"),
+    true,
+  );
+});
+
 test("runtime exception idempotency key includes hand binding identity", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -412,4 +458,8 @@ function minimalRun(id: string) {
     runtimeContextJson: "{}",
     metricsJson: "{}",
   };
+}
+
+function normalizeSql(sql: string): string {
+  return sql.replace(/\s+/g, " ").trim();
 }

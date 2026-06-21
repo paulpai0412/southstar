@@ -107,6 +107,7 @@ export async function resolveRuntimeExceptionPg(
   input: { runId: string; resourceKey: string; resolvedAt: string; reason: string },
 ): Promise<RuntimeExceptionRecord> {
   return await db.tx(async (tx) => {
+    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
     const current = requireRuntimeExceptionRecord(await getRuntimeExceptionByKeyForUpdatePg(tx, input.resourceKey));
     if (current.runId !== input.runId) throw new Error(`runtime exception ${input.resourceKey} does not belong to run ${input.runId}`);
     if (current.status === "resolved") return current;

@@ -60,6 +60,7 @@ await import("./runtime-exceptions.test.ts");
 await import("./tork-observer.test.ts");
 await import("./artifact-ref-store.test.ts");
 await import("./completion-gate.test.ts");
+await import("./completion-gate-exceptions.test.ts");
 await import("./postgres-session-store.test.ts");
 await import("./postgres-work-items.test.ts");
 await import("./work-item-intake.test.ts");

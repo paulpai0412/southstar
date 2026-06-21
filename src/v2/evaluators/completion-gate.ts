@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
+import { listUnresolvedRuntimeExceptionsPg } from "../exceptions/postgres-runtime-exceptions.ts";
 import {
   appendHistoryEventPg,
   updateWorkflowRunStatusPg,
@@ -74,11 +75,17 @@ export async function evaluateRunCompletionGatePg(
       findings.push(`blocking tool proxy violation ${violation.id}`);
     }
 
+    const unresolvedRuntimeExceptions = await listUnresolvedRuntimeExceptionsPg(tx, { runId: input.runId });
+    for (const exception of unresolvedRuntimeExceptions) {
+      findings.push(`unresolved runtime exception ${exception.resourceKey}: ${exception.payload.kind}`);
+    }
+
     const status = findings.length === 0 ? "passed" : "failed";
     const evaluationFingerprint = shortHash(stableStringify({
       tasks,
       acceptedArtifactRefs: acceptedArtifactRefRows,
       blockingViolations,
+      unresolvedRuntimeExceptions,
       status,
       findings,
     }));
