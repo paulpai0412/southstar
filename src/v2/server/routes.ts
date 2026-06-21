@@ -10,7 +10,7 @@ import { isRecoveryStrategy } from "../session-recovery/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-control-center.ts";
 import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read-models/postgres-core.ts";
-import { buildRunInspectionReadModelPg } from "../read-models/postgres-run-inspection.ts";
+import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from "../read-models/postgres-run-inspection.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
@@ -181,6 +181,11 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (request.method === "GET" && eventsMatch) {
       const after = Number(url.searchParams.get("after") ?? "0");
       return json("events", await readRunEventsSince(context.db, { runId: decodeURIComponent(eventsMatch[1]!), afterSequence: Number.isFinite(after) ? after : 0 }));
+    }
+
+    const exceptionsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/exceptions$/);
+    if (request.method === "GET" && exceptionsMatch) {
+      return json("runtime-exceptions", await buildRuntimeExceptionReadModelPg(context.db, { runId: decodeURIComponent(exceptionsMatch[1]!) }));
     }
 
     const streamMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/events\/stream$/);
