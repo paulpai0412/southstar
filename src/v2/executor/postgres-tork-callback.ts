@@ -5,6 +5,7 @@ import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
 import { appendHistoryEventPg, listResourcesPg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
+import { assertNoRawCredentialPayloadPg } from "../tool-proxy/policy-enforcer.ts";
 import { updateExecutorBindingStatusPg } from "./postgres-bindings.ts";
 import type { TaskRunCallbackResult } from "./tork-callback.ts";
 
@@ -21,6 +22,15 @@ export type PostgresCallbackIngestionResult = {
 
 export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTaskRunCallbackResult): Promise<PostgresCallbackIngestionResult> {
   const receipt = callbackReceiptToken(result);
+  const handExecutionId = `executor-callback:${result.runId}:${result.taskId}:${result.attemptId ?? result.attempts}`;
+  await assertNoRawCredentialPayloadPg(db, {
+    runId: result.runId,
+    taskId: result.taskId,
+    sessionId: result.rootSessionId,
+    handExecutionId,
+    evidenceRef: handExecutionId,
+    value: result.artifact,
+  });
   return await db.tx(async (tx) => {
     const task = await tx.maybeOne<{ status: string; root_session_id: string | null }>(
       "select status, root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
@@ -89,7 +99,7 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
       taskId: result.taskId,
       sessionId: result.rootSessionId,
       attemptId: result.attemptId ?? `attempt-${result.attempts}`,
-      handExecutionId: `executor-callback:${result.runId}:${result.taskId}:${result.attemptId ?? result.attempts}`,
+      handExecutionId,
       producer: { actorType: "hand", providerId: "tork-callback" },
       artifactType: artifactType(result.artifact),
       status: result.ok ? "accepted" : "rejected",

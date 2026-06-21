@@ -49,3 +49,37 @@ export type ToolProxyResult = {
 export type ToolProxy = {
   execute(input: ToolProxyCallInput): Promise<ToolProxyResult>;
 };
+
+export type ToolProxyViolationReason =
+  | "raw_credential_in_context"
+  | "raw_credential_in_envelope"
+  | "direct_tool_without_proxy"
+  | "callback_payload_leak"
+  | "missing_required_lease"
+  | "expired_lease";
+
+export type ToolProxyPolicyPayload = {
+  schemaVersion: "southstar.tool_proxy_policy.v1";
+  runId: string;
+  sessionId: string;
+  allowedTools: string[];
+  requiredProxyTools: string[];
+  forbiddenDirectEnvKeys: string[];
+  vaultLeaseRefs: string[];
+  maxLeaseTtlSeconds: number;
+  redactResultPayloads: true;
+  failClosed: true;
+};
+
+export type ToolProxyViolationPayload = {
+  schemaVersion: "southstar.tool_proxy_violation.v1";
+  runId: string;
+  taskId?: string;
+  sessionId?: string;
+  handExecutionId?: string;
+  severity: "blocking" | "warning";
+  reason: ToolProxyViolationReason;
+  evidenceRef: string;
+  redactedExcerpt?: string;
+  detectedAt: string;
+};
