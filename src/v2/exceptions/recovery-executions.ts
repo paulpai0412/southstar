@@ -17,6 +17,20 @@ import {
   type RecoveryPath,
 } from "./types.ts";
 
+const RECOVERY_EXECUTION_STATUS_SET = new Set<RecoveryExecutionStatus>(["started", "succeeded", "failed", "superseded", "blocked"]);
+const RECOVERY_PATH_SET = new Set<RecoveryPath>([
+  "none-observe-only",
+  "requeue-hand-execution",
+  "reprovision-hand",
+  "wake-new-brain",
+  "retry-same-task-new-attempt",
+  "repair-artifact",
+  "rollback-workspace",
+  "block-for-operator",
+  "fail-task",
+  "fail-run",
+]);
+
 type StartRecoveryExecutionInput = {
   decisionId: string;
   exceptionId: string;
@@ -227,10 +241,23 @@ function requireRecoveryExecutionRecord(resource: RuntimeResourceRecord | null):
 function toRecoveryExecutionRecord(resource: RuntimeResourceRecord | null): RecoveryExecutionRecord | null {
   if (!resource) return null;
   const payload = resource.payload as Partial<RecoveryExecutionPayload>;
+  const resourceStatus = resource.status;
+  const payloadStatus = payload.status;
   if (
     resource.resourceType !== RECOVERY_EXECUTION_RESOURCE_TYPE ||
     typeof payload.executionId !== "string" ||
-    payload.schemaVersion !== RECOVERY_EXECUTION_SCHEMA_VERSION
+    typeof payload.decisionId !== "string" ||
+    typeof payload.exceptionId !== "string" ||
+    typeof payload.runId !== "string" ||
+    (payload.taskId !== undefined && typeof payload.taskId !== "string") ||
+    payload.schemaVersion !== RECOVERY_EXECUTION_SCHEMA_VERSION ||
+    !isRecoveryPath(payload.path) ||
+    !isRecoveryExecutionStatus(resourceStatus) ||
+    !isRecoveryExecutionStatus(payloadStatus) ||
+    payloadStatus !== resourceStatus ||
+    !Array.isArray(payload.stateChanges) ||
+    !Array.isArray(payload.providerActions) ||
+    typeof payload.createdAt !== "string"
   ) {
     return null;
   }
@@ -238,7 +265,15 @@ function toRecoveryExecutionRecord(resource: RuntimeResourceRecord | null): Reco
   return {
     executionId: payload.executionId,
     resourceKey: resource.resourceKey,
-    status: resource.status as RecoveryExecutionStatus,
+    status: resourceStatus,
     payload: payload as RecoveryExecutionPayload,
   };
+}
+
+function isRecoveryExecutionStatus(value: unknown): value is RecoveryExecutionStatus {
+  return typeof value === "string" && RECOVERY_EXECUTION_STATUS_SET.has(value as RecoveryExecutionStatus);
+}
+
+function isRecoveryPath(value: unknown): value is RecoveryPath {
+  return typeof value === "string" && RECOVERY_PATH_SET.has(value as RecoveryPath);
 }

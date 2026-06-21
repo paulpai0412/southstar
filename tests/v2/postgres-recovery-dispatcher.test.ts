@@ -74,7 +74,19 @@ test("Postgres recovery dispatcher checkpoints failed sessions, rebuilds envelop
 
     const executions = await listResourcesPg(db, { resourceType: "recovery_execution" });
     assert.equal(executions.length, 1);
-    assert.equal((executions[0]?.payload as { strategy?: string }).strategy, "retry-same-agent");
+    const recoveryExecution = executions[0]?.payload as {
+      schemaVersion?: string;
+      path?: string;
+      strategy?: string;
+      attemptId?: string;
+      externalJobId?: string;
+    };
+    assert.equal(executions[0]?.status, "started");
+    assert.equal(recoveryExecution.schemaVersion, "southstar.runtime.recovery_execution.v1");
+    assert.equal(recoveryExecution.path, "retry-same-task-new-attempt");
+    assert.equal(recoveryExecution.strategy, "retry-same-agent");
+    assert.equal(recoveryExecution.attemptId, "attempt-2");
+    assert.equal(recoveryExecution.externalJobId, "job-recovery-pg");
 
     const history = await listHistoryForRunPg(db, run.runId);
     assert.equal(history.some((event) => event.eventType === "checkpoint.created"), true);

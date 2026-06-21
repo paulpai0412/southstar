@@ -5,6 +5,7 @@ import {
   createWorkflowTaskPg,
   listHistoryForRunPg,
   listResourcesPg,
+  upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import {
   completeRecoveryExecutionPg,
@@ -140,6 +141,70 @@ test("recovery execution store records idempotent started and succeeded evidence
       "recovery_execution.started",
       "recovery_execution.succeeded",
     ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("recovery execution store rejects malformed canonical status rows", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-recovery-execution-malformed",
+      status: "running",
+      domain: "software",
+      goalPrompt: "complete malformed recovery execution",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: "task-a",
+      runId: "run-recovery-execution-malformed",
+      taskKey: "task-a",
+      status: "queued",
+      sortOrder: 0,
+      dependsOn: [],
+    });
+
+    await upsertRuntimeResourcePg(db, {
+      id: "recovery-execution-malformed",
+      resourceType: "recovery_execution",
+      resourceKey: "recovery_execution:decision-malformed:attempt-1",
+      runId: "run-recovery-execution-malformed",
+      taskId: "task-a",
+      scope: "recovery",
+      status: "submitted",
+      title: "Malformed recovery execution",
+      payload: {
+        schemaVersion: "southstar.runtime.recovery_execution.v1",
+        executionId: "recovery-execution-malformed",
+        decisionId: "decision-malformed",
+        exceptionId: "exception-malformed",
+        runId: "run-recovery-execution-malformed",
+        taskId: "task-a",
+        path: "retry-same-task-new-attempt",
+        status: "submitted",
+        stateChanges: [],
+        providerActions: [],
+        createdAt: "2026-06-21T11:00:00.000Z",
+      },
+      summary: {},
+    });
+
+    await assert.rejects(
+      completeRecoveryExecutionPg(db, {
+        runId: "run-recovery-execution-malformed",
+        executionResourceKey: "recovery_execution:decision-malformed:attempt-1",
+        status: "failed",
+        completedAt: "2026-06-21T11:01:00.000Z",
+        stateChanges: [],
+        providerActions: [],
+      }),
+      /recovery execution not found/,
+    );
   } finally {
     await db.close();
   }

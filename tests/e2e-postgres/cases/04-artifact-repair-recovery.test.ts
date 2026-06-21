@@ -101,11 +101,13 @@ test("04 artifact repair/recovery: failed callback evidence triggers real recove
     assert.equal(history.rows.some((event) => event.event_type === "recovery.execution_submitted" && event.task_id === failedTaskId), true);
     assert.equal(history.rows.some((event) => event.event_type === "executor.callback_received" && event.task_id === failedTaskId), true);
 
-    const recoveryResource = await env.db.maybeOne<{ status: string; payload_json: { attemptId?: string; strategy?: string } }>(
+    const recoveryResource = await env.db.maybeOne<{ status: string; payload_json: { attemptId?: string; path?: string; schemaVersion?: string; strategy?: string } }>(
       "select status, payload_json from southstar.runtime_resources where resource_type = 'recovery_execution' and run_id = $1 order by created_at desc limit 1",
       [run.runId],
     );
-    assert.equal(recoveryResource?.status, "submitted");
+    assert.equal(recoveryResource?.status, "started");
+    assert.equal(recoveryResource?.payload_json.schemaVersion, "southstar.runtime.recovery_execution.v1");
+    assert.equal(recoveryResource?.payload_json.path, "retry-same-task-new-attempt");
     assert.equal(recoveryResource?.payload_json.strategy, "retry-same-agent");
     assert.equal(recoveryResource?.payload_json.attemptId, "attempt-2");
   } finally {

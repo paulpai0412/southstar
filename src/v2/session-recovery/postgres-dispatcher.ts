@@ -9,6 +9,7 @@ import { buildManagedContextSourceRefs } from "../context/event-slicing.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { RECOVERY_EXECUTION_SCHEMA_VERSION, type RecoveryPath } from "../exceptions/types.ts";
 import type { RecoveryExecutionPlan } from "./execution-planner.ts";
 import type { RecoveryStrategy, SessionCheckpointV1 } from "./types.ts";
 import { validateSessionCheckpoint } from "./types.ts";
@@ -152,6 +153,8 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
   }
 
   const recoveryExecutionId = `recovery-execution-${input.runId}-${input.failedTaskId}-${attemptId}`;
+  const recoveryPath = recoveryPathForStrategy(input.plan.strategy);
+  const createdAt = new Date().toISOString();
   await upsertRuntimeResourcePg(db, {
     id: recoveryExecutionId,
     resourceType: "recovery_execution",
@@ -159,10 +162,25 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
     runId: input.runId,
     taskId: input.failedTaskId,
     scope: "recovery",
-    status: "submitted",
+    status: "started",
     title: `Recovery execution ${attemptId}`,
     payload: {
+      schemaVersion: RECOVERY_EXECUTION_SCHEMA_VERSION,
+      executionId: recoveryExecutionId,
+      decisionId: `legacy-recovery-decision:${input.runId}:${input.failedTaskId}:${attemptId}`,
+      exceptionId: `legacy-recovery-exception:${input.runId}:${input.failedTaskId}:${attemptId}`,
       runId: input.runId,
+      taskId: input.failedTaskId,
+      path: recoveryPath,
+      status: "started",
+      stateChanges: [],
+      providerActions: [{
+        providerId: submission.executorType,
+        action: "provision",
+        status: "succeeded",
+        evidenceRef: submission.externalJobId,
+      }],
+      createdAt,
       failedTaskId: input.failedTaskId,
       targetTaskIds,
       attemptId,
@@ -172,7 +190,15 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
       executionProjection: submission.executionProjection,
       baseCheckpointId: checkpointId,
     },
-    summary: { targetTaskIds, attemptId, strategy: input.plan.strategy, externalJobId: submission.externalJobId },
+    summary: {
+      schemaVersion: RECOVERY_EXECUTION_SCHEMA_VERSION,
+      path: recoveryPath,
+      status: "started",
+      targetTaskIds,
+      attemptId,
+      strategy: input.plan.strategy,
+      externalJobId: submission.externalJobId,
+    },
   });
   await appendHistoryEventPg(db, {
     runId: input.runId,
@@ -183,6 +209,20 @@ export async function dispatchRecoveryExecutionPg(db: SouthstarDb, input: Recove
   });
 
   return { recoveryExecutionId, externalJobId: submission.externalJobId, targetTaskIds, attemptId };
+}
+
+function recoveryPathForStrategy(strategy: string): RecoveryPath {
+  switch (strategy) {
+    case "repair-artifact":
+      return "repair-artifact";
+    case "rollback-workspace":
+      return "rollback-workspace";
+    case "ask-human":
+      return "block-for-operator";
+    case "retry-same-agent":
+    default:
+      return "retry-same-task-new-attempt";
+  }
 }
 
 async function readWorkflowManifest(db: SouthstarDb, runId: string): Promise<SouthstarWorkflowManifest> {
