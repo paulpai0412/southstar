@@ -164,7 +164,7 @@ export type SessionPolicy = SessionPolicyDefinition;
 
 export type MemoryPolicyDefinition = {
   id: string;
-  providerRef: "sqlite" | "mem0" | string;
+  providerRef: "postgres" | "mem0" | string;
   scopes: string[];
   maxInjectedTokens: number;
   maxCandidates: number;

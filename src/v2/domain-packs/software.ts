@@ -329,7 +329,7 @@ export const softwareDomainPack: DomainPack = {
   memoryPolicies: [
     {
       id: "software-memory-default",
-      providerRef: "sqlite",
+      providerRef: "postgres",
       scopes: ["software", "project"],
       maxInjectedTokens: 1_500,
       maxCandidates: 8,

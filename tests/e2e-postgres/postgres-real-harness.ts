@@ -57,7 +57,7 @@ export async function createRealPostgresE2E(): Promise<RealPostgresE2E> {
 
   const databaseUrl = replaceDatabase(adminUrl, databaseName);
   const workdir = await mkdtemp(join(tmpdir(), "southstar-postgres-e2e-"));
-  const configPath = join(workdir, ".northstar.yaml");
+  const configPath = join(workdir, ".southstar.yaml");
   await writeFile(configPath, [
     'schema_version: "1.0"',
     "project:",
@@ -80,13 +80,13 @@ export async function createRealPostgresE2E(): Promise<RealPostgresE2E> {
     "    blocks_runtime: false",
     "packs:",
     "  search_paths:",
-    "    - .northstar/packs",
+    "    - .southstar/packs",
     "workflow:",
     "  id: issue_to_pr_release",
     '  version: "1.0"',
-    "  path: .northstar/workflows/issue-to-pr-release.yaml",
+    "  path: .southstar/workflows/issue-to-pr-release.yaml",
     "agents:",
-    "  path: .northstar/agents",
+    "  path: .southstar/agents",
     "",
   ].join("\n"));
 

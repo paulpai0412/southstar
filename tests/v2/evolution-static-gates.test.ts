@@ -73,9 +73,7 @@ test("Southstar v2 production no longer carries SQLite/local API source", () => 
   assert.deepEqual(removedFiles.filter((file) => productionFiles.includes(file)), []);
 
   const sqlitePattern = /node:sqlite|sqlite-provider|createSqliteSessionGraphProvider|\.prepare\(|openSouthstarDb\(\":memory:\"/;
-  const matches = grep(productionFiles, sqlitePattern)
-    .filter((file) => file !== "src/runtime/store.ts")
-    .filter((file) => !file.startsWith("src/operator-dashboard/"));
+  const matches = grep(productionFiles, sqlitePattern);
   assert.deepEqual(matches, []);
 
   const forbiddenNewCode = productionFiles

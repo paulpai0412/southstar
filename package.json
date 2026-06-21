@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "bin": {
-    "southstar": "src/cli/entrypoint.ts",
+    "southstar": "src/v2/cli.ts",
     "southstar-agent-runner": "src/v2/agent-runner/cli.ts"
   },
   "engines": {
@@ -34,17 +34,17 @@
     "web:build": "next build --webpack",
     "web:start": "next start -p 3030",
     "southstar:v2": "tsx src/v2/cli.ts",
-    "southstar": "tsx src/cli/entrypoint.ts"
+    "southstar": "tsx src/v2/cli.ts"
   },
   "c8": {
     "all": true,
     "include": [
-      "src/runtime/**/*.ts",
-      "src/adapters/**/*.ts",
-      "src/cli/**/*.ts",
-      "src/config/**/*.ts",
-      "src/intake/**/*.ts",
-      "src/types/**/*.ts"
+      "src/v2/**/*.ts",
+      "app/**/*.ts",
+      "app/**/*.tsx",
+      "components/**/*.ts",
+      "components/**/*.tsx",
+      "lib/**/*.ts"
     ],
     "exclude": [
       "tests/**",
@@ -63,9 +63,7 @@
     "statements": 85
   },
   "optionalDependencies": {
-    "@earendil-works/pi-coding-agent": "^0.78.1",
-    "@openai/codex-sdk": "^0.135.0",
-    "@opencode-ai/sdk": "^1.15.12"
+    "@earendil-works/pi-coding-agent": "^0.78.1"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

@@ -1,8 +1,11 @@
+import { readFile } from "node:fs/promises";
 import { loadSouthstarEnv } from "./config/env.ts";
 import { createCliRuntimeClient, type CliRuntimeClient } from "./cli-client.ts";
+import { initializeSouthstarSchema } from "./db/init.ts";
 import type { ReadModelKind } from "./read-models/types.ts";
 
 export type V2Command =
+  | { command: "db:init"; databaseUrl?: string; configPath?: string }
   | { command: "plan"; goal: string }
   | { command: "run"; draftId: string }
   | { command: "status"; runId: string }
@@ -22,6 +25,8 @@ export type V2Command =
 
 export type V2CliDependencies = {
   runtimeClient?: CliRuntimeClient;
+  initializeSchema?: (databaseUrl: string) => Promise<{ version: string }>;
+  readFile?: (path: string) => Promise<string>;
 };
 
 export type V2CommandResult = { kind: string; result: unknown };
@@ -29,6 +34,13 @@ export type V2CommandResult = { kind: string; result: unknown };
 export function parseV2Command(argv: string[]): V2Command {
   const [command, ...args] = argv;
   switch (command) {
+    case "db:init": {
+      const databaseUrl = optionalFlag(args, "--database-url");
+      const configPath = optionalFlag(args, "--config");
+      if (!databaseUrl && !configPath) throw new Error("--database-url or --config is required");
+      if (configPath && databaseUrl) return { command, databaseUrl, configPath };
+      return configPath ? { command, configPath } : { command, databaseUrl };
+    }
     case "plan":
       return { command, goal: requireFlag(args, "--goal") };
     case "run":
@@ -72,6 +84,12 @@ export function parseV2Command(argv: string[]): V2Command {
 }
 
 export async function executeV2Command(command: V2Command, dependencies: V2CliDependencies): Promise<V2CommandResult> {
+  if (command.command === "db:init") {
+    const databaseUrl = command.databaseUrl ?? await readDatabaseUrlFromConfig(command.configPath!, dependencies);
+    const initializer = dependencies.initializeSchema ?? initializeSouthstarSchema;
+    const initialized = await initializer(databaseUrl);
+    return { kind: "db:init", result: { type: "db:init", schemaVersion: initialized.version } };
+  }
   if (command.command === "serve") throw new Error("serve is implemented by src/v2/server entrypoint task");
   const client = requireRuntimeClient(dependencies);
   switch (command.command) {
@@ -112,7 +130,7 @@ export async function main(argv = process.argv.slice(2), dependencies?: Partial<
     const parsed = parseV2Command(argv);
     const deps = { ...dependencies, runtimeClient: dependencies?.runtimeClient ?? createCliRuntimeClient({ baseUrl: loadSouthstarEnv().serverUrl }) };
     const result = await executeV2Command(parsed, deps);
-    (dependencies?.write ?? console.log)(JSON.stringify(result, null, 2));
+    (dependencies?.write ?? console.log)(JSON.stringify(result));
     return 0;
   } catch (error) {
     console.error((error as Error).message);
@@ -140,6 +158,14 @@ function requireRuntimeClient(dependencies: V2CliDependencies): CliRuntimeClient
 
 function unwrapServerEnvelope<T>(envelope: { kind: string; result: T }): V2CommandResult {
   return { kind: envelope.kind, result: envelope.result };
+}
+
+async function readDatabaseUrlFromConfig(configPath: string, dependencies: V2CliDependencies): Promise<string> {
+  const text = await (dependencies.readFile ?? ((path) => readFile(path, "utf8")))(configPath);
+  const match = text.match(/^\s*database_url:\s*(.+?)\s*$/m);
+  const value = match?.[1]?.trim().replace(/^["']|["']$/g, "");
+  if (!value) throw new Error(`runtime.database_url is required in ${configPath}`);
+  return value;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

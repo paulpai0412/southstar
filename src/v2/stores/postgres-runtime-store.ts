@@ -1,9 +1,90 @@
 import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { WorkflowRunInput, WorkflowRunRecord } from "./run-store.ts";
-import type { WorkflowTaskInput } from "./task-store.ts";
-import type { AppendHistoryInput, WorkflowHistoryEvent } from "./history-store.ts";
-import type { RuntimeResourceInput, RuntimeResourceRecord } from "./resource-store.ts";
+
+export type WorkflowRunInput = {
+  id: string;
+  status: string;
+  domain: string;
+  goalPrompt: string;
+  workflowManifestJson: string;
+  executionProjectionJson: string;
+  snapshotJson: string;
+  runtimeContextJson: string;
+  metricsJson: string;
+};
+
+export type WorkflowRunRecord = WorkflowRunInput & {
+  executorJobId: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completedAt: string | null;
+};
+
+export type WorkflowTaskInput = {
+  id: string;
+  runId: string;
+  taskKey: string;
+  status: string;
+  sortOrder: number;
+  dependsOn: string[];
+  rootSessionId?: string;
+  subagentSessionIds?: string[];
+  executorTaskId?: string;
+  snapshot?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+};
+
+export type AppendHistoryInput = {
+  runId: string;
+  taskId?: string;
+  eventType: string;
+  actorType: string;
+  sessionId?: string;
+  idempotencyKey?: string;
+  correlationId?: string;
+  causationId?: string;
+  payload: unknown;
+};
+
+export type WorkflowHistoryEvent = {
+  id: string;
+  runId: string;
+  taskId: string | null;
+  sequence: number;
+  eventType: string;
+  actorType: string;
+  sessionId: string | null;
+  idempotencyKey: string | null;
+  payload: unknown;
+  createdAt: string;
+};
+
+export type RuntimeResourceInput = {
+  id?: string;
+  resourceType: string;
+  resourceKey: string;
+  runId?: string;
+  taskId?: string;
+  sessionId?: string;
+  scope: string;
+  status: string;
+  title?: string;
+  payload: unknown;
+  summary?: unknown;
+  metrics?: unknown;
+  expiresAt?: string;
+};
+
+export type RuntimeResourceRecord = Required<Omit<RuntimeResourceInput, "id" | "runId" | "taskId" | "sessionId" | "title" | "expiresAt">> & {
+  id: string;
+  runId?: string;
+  taskId?: string;
+  sessionId?: string;
+  title?: string;
+  expiresAt?: string;
+  createdAt: string;
+  updatedAt: string;
+};
 
 export async function createWorkflowRunPg(db: SouthstarDb, input: WorkflowRunInput): Promise<WorkflowRunRecord> {
   const now = new Date().toISOString();

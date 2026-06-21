@@ -6,6 +6,14 @@ import { formatRunStatusSummary } from "../../src/v2/cli-format.ts";
 import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
 
 test("parses phase 1.5 CLI commands", () => {
+  assert.deepEqual(parseV2Command(["db:init", "--database-url", "postgres://db/southstar"]), {
+    command: "db:init",
+    databaseUrl: "postgres://db/southstar",
+  });
+  assert.deepEqual(parseV2Command(["db:init", "--config", "/tmp/southstar.yaml"]), {
+    command: "db:init",
+    configPath: "/tmp/southstar.yaml",
+  });
   assert.deepEqual(parseV2Command(["serve"]), { command: "serve" });
   assert.deepEqual(parseV2Command(["run-goal", "--goal", "Add calc sum"]), { command: "run-goal", goal: "Add calc sum" });
   assert.deepEqual(parseV2Command(["wait", "--run-id", "run-1"]), { command: "wait", runId: "run-1" });
@@ -34,6 +42,22 @@ test("parses phase 1.5 CLI commands", () => {
     kind: "task-detail",
     runId: "run-1",
     taskId: "task-1",
+  });
+});
+
+test("db:init executes through the V2 Postgres schema initializer", async () => {
+  const initialized: string[] = [];
+  const result = await executeV2Command(parseV2Command(["db:init", "--database-url", "postgres://db/southstar"]), {
+    initializeSchema: async (databaseUrl) => {
+      initialized.push(databaseUrl);
+      return { version: "2026_06_17_test" };
+    },
+  });
+
+  assert.deepEqual(initialized, ["postgres://db/southstar"]);
+  assert.deepEqual(result, {
+    kind: "db:init",
+    result: { type: "db:init", schemaVersion: "2026_06_17_test" },
   });
 });
 
