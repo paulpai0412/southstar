@@ -21,6 +21,13 @@ const implementedCases = [
   "11-managed-hand-reprovision.test.ts",
   "12-managed-credential-isolation.test.ts",
   "13-managed-per-task-tork-runtime.test.ts",
+  "14-tork-queue-timeout-recovery.test.ts",
+  "15-tork-running-hang-recovery.test.ts",
+  "16-late-callback-superseded-attempt.test.ts",
+  "17-tool-proxy-runtime-enforcement.test.ts",
+  "18-work-item-intake-run-execution.test.ts",
+  "19-completion-gate-unresolved-exception.test.ts",
+  "20-operator-approved-recovery.test.ts",
 ];
 
 test("canonical real E2E entrypoint is a static manifest and real cases run one at a time", () => {
@@ -47,6 +54,7 @@ test("Postgres real E2E suite contains no SQLite/local API coupling or fake shor
   const executablePaths = [
     "tests/e2e-postgres/index.test.ts",
     "tests/e2e-postgres/postgres-real-harness.ts",
+    "tests/e2e-postgres/runtime-hardening-fixtures.ts",
     ...implementedCases.map((caseFile) => `tests/e2e-postgres/cases/${caseFile}`),
   ];
   for (const path of ["tests/e2e-postgres/README.md", ...executablePaths]) {

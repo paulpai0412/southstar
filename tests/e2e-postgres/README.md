@@ -8,6 +8,7 @@ This directory is the canonical real E2E surface for the new Southstar v2 Postgr
 - Do **not** reintroduce legacy SQLite E2E or local API harnesses.
 - Do **not** add UI/browser flows here. Future UI flows will be redesigned separately.
 - No fake/mock/smoke/test-only shortcuts in real cases.
+- Deterministic in-process providers are allowed only when the asserted behavior is Southstar's durable Postgres state, not external Tork/Pi provider behavior.
 - Cases must fail closed when required real infra is missing.
 - Prefer lifecycle evidence from Postgres tables/read-models over console output.
 
@@ -36,6 +37,17 @@ npm run test:e2e:postgres:06   # executor binding drift/lost reconcile
 npm run test:e2e:postgres:07   # evolution learning signals/cards/deltas/wiki
 npm run test:e2e:postgres:08   # evolution sandbox baseline/candidate through Tork/Pi
 npm run test:e2e:postgres:09   # regression monitor rollback/alert policy
+npm run test:e2e:postgres:10   # managed brain crash wake
+npm run test:e2e:postgres:11   # managed hand reprovision
+npm run test:e2e:postgres:12   # managed credential isolation
+npm run test:e2e:postgres:13   # per-task Tork hand runtime scheduling
+npm run test:e2e:postgres:14   # stale queued Tork hand execution recovery
+npm run test:e2e:postgres:15   # stale running Tork hand execution recovery
+npm run test:e2e:postgres:16   # stale callback from superseded attempt
+npm run test:e2e:postgres:17   # tool proxy runtime enforcement
+npm run test:e2e:postgres:18   # work item intake to run execution
+npm run test:e2e:postgres:19   # completion gate blocks unresolved exception
+npm run test:e2e:postgres:20   # operator-approved recovery path
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
@@ -54,6 +66,17 @@ npm run test:e2e:postgres:09   # regression monitor rollback/alert policy
 | 07 evolution learning | implemented | Runtime-linked signals synthesize cards, deltas, and wiki backlinks with read-model evidence | `learning_nodes`, `learning_edges`, delta resource, evolution control center counts |
 | 08 evolution sandbox | implemented | Baseline/candidate sandbox jobs execute through Tork/Pi and evaluate decision | sandbox run contexts, callback history, decision resource |
 | 09 regression rollback | implemented | Regression monitor auto-rolls back low-risk asset and raises high-risk approval alert | rolled_back/active asset statuses, rollback lineage edges, acknowledged alert |
+| 10 managed brain wake | implemented | Session log failure evidence wakes a replacement managed brain | brain binding resource, recovery decision |
+| 11 managed hand reprovision | implemented | Hand failure evidence provisions a replacement managed hand | hand binding resource, recovery decision |
+| 12 managed credential isolation | implemented | Tool proxy lease/call surfaces keep credential values out of persisted runtime evidence | vault lease, tool proxy call, redacted persisted surfaces |
+| 13 per-task Tork runtime | implemented | Runnable task scheduling queues a per-task hand execution and callback gates completion | hand execution, task intent, accepted artifact, completed run |
+| 14 Tork queue timeout recovery | implemented | Stale queued hand execution is observed and classified for requeue | `tork_queue_timeout`, `requeue-hand-execution`, history |
+| 15 Tork running hang recovery | implemented | Stale running hand execution is observed and classified for reprovision | `tork_running_hang`, `reprovision-hand`, read-model/history |
+| 16 stale callback superseded attempt | implemented | Older attempt callback is recorded but does not reopen the current task/hand | `stale_callback`, observe-only decision, current hand unchanged |
+| 17 tool proxy runtime enforcement | implemented | Pre-execution raw credential payload blocks hand execution and redacts evidence | `tool_proxy_violation`, blocking exception, operator decision |
+| 18 work item intake to run execution | implemented | Work item materialization links provenance before per-task scheduling and callback completion | work item run refs, run context, hand execution, accepted artifact |
+| 19 completion gate unresolved exception | implemented | Completion gate fails completed work while a runtime exception is unresolved, then passes after resolution | failed/passed evaluator results, exception resolution history |
+| 20 operator-approved recovery path | implemented | Operator-required rollback decision is exposed through the exception read model | rollback decision, `operatorApprovalRequired`, operator read model |
 
 ## Adding a new case
 
