@@ -271,6 +271,122 @@ test("requeue-hand-execution retry completes with original staged evidence after
   }
 });
 
+test("requeue-hand-execution completes with canonical staged evidence after a stale start read", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-stale-start-read" });
+    const { runId, taskId, handExecutionId, decision, exception } = fixture;
+    const startedAt = "2026-06-21T12:37:00.000Z";
+    const executionResourceKey = recoveryExecutionResourceKey(decision.decisionId);
+    const expectedStateChanges = [
+      {
+        resourceType: "hand_execution",
+        resourceKey: handExecutionId,
+        fromStatus: "queued",
+        toStatus: "lost",
+        reason: "requeue-hand-execution",
+      },
+      {
+        resourceType: "workflow_task",
+        resourceKey: `${runId}:${taskId}`,
+        fromStatus: "queued",
+        toStatus: "pending",
+        reason: "requeue-hand-execution",
+      },
+      {
+        resourceType: "recovery_decision",
+        resourceKey: decision.resourceKey,
+        fromStatus: "applying",
+        toStatus: "applied",
+        reason: "requeue-hand-execution applied",
+      },
+      {
+        resourceType: "runtime_exception",
+        resourceKey: exception.resourceKey,
+        fromStatus: "observed",
+        toStatus: "resolved",
+        reason: "requeue-hand-execution applied",
+      },
+    ];
+    const expectedProviderActions = [
+      {
+        providerId: "tork",
+        action: "cancel",
+        status: "succeeded",
+        evidenceRef: handExecutionId,
+        attemptedAt: startedAt,
+        succeededAt: startedAt,
+      },
+    ];
+
+    await db.query("drop trigger if exists stage_recovery_evidence_after_started_history on southstar.workflow_history");
+    await db.query("drop function if exists southstar.stage_recovery_evidence_after_started_history()");
+    await db.query(`
+      create function southstar.stage_recovery_evidence_after_started_history()
+      returns trigger
+      language plpgsql
+      as $$
+      begin
+        if new.run_id = '${runId}' and new.event_type = 'recovery_execution.started' then
+          update southstar.runtime_resources
+             set payload_json = jsonb_set(
+                   jsonb_set(payload_json, '{stateChanges}', '${JSON.stringify(expectedStateChanges)}'::jsonb),
+                   '{providerActions}',
+                   '${JSON.stringify(expectedProviderActions)}'::jsonb
+                 ),
+                 summary_json = summary_json || '{"evidenceStagedAt":"${startedAt}","stateChangeCount":4,"providerActionCount":1}'::jsonb,
+                 updated_at = now()
+           where resource_type = 'recovery_execution'
+             and resource_key = '${executionResourceKey}'
+             and status = 'started';
+
+          update southstar.runtime_resources
+             set status = 'lost',
+                 payload_json = payload_json || '{"status":"lost","terminalAt":"${startedAt}","lostReason":"requeue-hand-execution","recoveryDecisionId":"${decision.decisionId}"}'::jsonb,
+                 updated_at = now()
+           where resource_type = 'hand_execution'
+             and resource_key = '${handExecutionId}';
+
+          update southstar.workflow_tasks
+             set status = 'pending',
+                 completed_at = null,
+                 updated_at = now()
+           where run_id = '${runId}'
+             and id = '${taskId}';
+        end if;
+        return new;
+      end
+      $$;
+    `);
+    await db.query(`
+      create trigger stage_recovery_evidence_after_started_history
+      after insert on southstar.workflow_history
+      for each row execute function southstar.stage_recovery_evidence_after_started_history()
+    `);
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now: startedAt,
+    });
+
+    assert.equal(result.status, "applied");
+    assert.equal(result.executionResourceKey, executionResourceKey);
+
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.resourceKey === executionResourceKey,
+    );
+    assert.equal(recoveryExecution?.status, "succeeded");
+    const recoveryExecutionPayload = recoveryExecution?.payload as {
+      stateChanges: unknown[];
+      providerActions: unknown[];
+    };
+    assert.deepEqual(recoveryExecutionPayload.stateChanges, expectedStateChanges);
+    assert.deepEqual(recoveryExecutionPayload.providerActions, expectedProviderActions);
+  } finally {
+    await db.close();
+  }
+});
+
 test("blocked decision retry completes paired started recovery execution without mutating hand or task", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -322,7 +438,94 @@ test("blocked decision retry completes paired started recovery execution without
       },
     ]);
     assert.deepEqual(recoveryExecutionPayload.providerActions, []);
-    assert.equal(recoveryExecutionPayload.completedAt, retryAt);
+    assert.equal(recoveryExecutionPayload.completedAt, startedAt);
+  } finally {
+    await db.close();
+  }
+});
+
+test("terminal decision repair is idempotent when concurrent callers use different timestamps", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-terminal-repair-race" });
+    const { runId, taskId, decision } = fixture;
+    const blockedAt = "2026-06-21T12:42:00.000Z";
+    const laterAt = "2026-06-21T12:43:00.000Z";
+    const executionResourceKey = recoveryExecutionResourceKey(decision.decisionId);
+    const reason = "operator blocked retry";
+
+    await setDecisionStatus(db, decision.resourceKey, "applying");
+    await startRecoveryExecutionPg(db, {
+      decisionId: decision.decisionId,
+      exceptionId: decision.payload.exceptionId,
+      runId,
+      taskId,
+      path: decision.payload.path,
+      now: blockedAt,
+    });
+    await patchDecisionPayload(db, decision.resourceKey, { statusReason: reason, blockedAt });
+    await setDecisionStatus(db, decision.resourceKey, "blocked");
+
+    await db.query("drop trigger if exists delay_terminal_recovery_completion on southstar.runtime_resources");
+    await db.query("drop function if exists southstar.delay_terminal_recovery_completion()");
+    await db.query(`
+      create function southstar.delay_terminal_recovery_completion()
+      returns trigger
+      language plpgsql
+      as $$
+      begin
+        if old.resource_type = 'recovery_execution'
+          and old.resource_key = '${executionResourceKey}'
+          and old.status = 'started'
+          and new.status = 'blocked'
+          and new.payload_json->>'completedAt' = '${blockedAt}' then
+          perform pg_sleep(0.25);
+        end if;
+        return new;
+      end
+      $$;
+    `);
+    await db.query(`
+      create trigger delay_terminal_recovery_completion
+      before update on southstar.runtime_resources
+      for each row execute function southstar.delay_terminal_recovery_completion()
+    `);
+
+    const applier = createRecoveryDecisionApplier({ db });
+    const [first, second] = await Promise.all([
+      applier.applyDecision({ decisionResourceKey: decision.resourceKey, now: blockedAt }),
+      applier.applyDecision({ decisionResourceKey: decision.resourceKey, now: laterAt }),
+    ]);
+
+    assert.equal(first.status, "blocked");
+    assert.equal(second.status, "blocked");
+    assert.equal(first.executionResourceKey, executionResourceKey);
+    assert.equal(second.executionResourceKey, executionResourceKey);
+
+    const recoveryExecutions = (await listResourcesPg(db, { resourceType: "recovery_execution" })).filter(
+      (resource) => resource.resourceKey === executionResourceKey,
+    );
+    assert.equal(recoveryExecutions.length, 1);
+    assert.equal(recoveryExecutions[0]?.status, "blocked");
+    const recoveryExecutionPayload = recoveryExecutions[0]?.payload as {
+      stateChanges: unknown[];
+      providerActions: unknown[];
+      completedAt?: string;
+    };
+    assert.equal(recoveryExecutionPayload.completedAt, blockedAt);
+    assert.deepEqual(recoveryExecutionPayload.stateChanges, [
+      {
+        resourceType: "recovery_decision",
+        resourceKey: decision.resourceKey,
+        fromStatus: "applying",
+        toStatus: "blocked",
+        reason,
+      },
+    ]);
+    assert.deepEqual(recoveryExecutionPayload.providerActions, []);
+
+    const historyTypes = (await listHistoryForRunPg(db, runId)).map((event) => event.eventType);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.blocked").length, 1);
   } finally {
     await db.close();
   }

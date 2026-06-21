@@ -237,7 +237,7 @@ async function applyRequeueMutation(
 
     const handPayload = hand.payload as Record<string, unknown>;
     const providerId = typeof handPayload.providerId === "string" ? handPayload.providerId : "tork";
-    const evidence = input.stagedEvidence ?? {
+    const recomputedEvidence: RecoveryExecutionEvidence = {
       providerActions: [
         {
           providerId,
@@ -279,13 +279,13 @@ async function applyRequeueMutation(
         },
       ],
     };
-    if (!input.stagedEvidence) {
-      await stageRecoveryExecutionEvidencePg(tx, {
+    const evidence =
+      input.stagedEvidence ??
+      (await stageRecoveryExecutionEvidencePg(tx, {
         executionResourceKey: input.executionResourceKey,
-        evidence,
+        evidence: recomputedEvidence,
         now,
-      });
-    }
+      }));
     const terminalAt = requeueTerminalAt(evidence.providerActions) ?? now;
     await upsertRuntimeResourcePg(tx, {
       id: hand.id,
@@ -325,7 +325,7 @@ async function applyRequeueMutation(
 async function stageRecoveryExecutionEvidencePg(
   db: SouthstarDb,
   input: { executionResourceKey: string; evidence: RecoveryExecutionEvidence; now: string },
-): Promise<void> {
+): Promise<RecoveryExecutionEvidence> {
   const execution = mapRuntimeResourceRow(await db.maybeOne<RuntimeResourceRow>(
     `select * from southstar.runtime_resources
       where resource_type = $1
@@ -340,7 +340,7 @@ async function stageRecoveryExecutionEvidencePg(
 
   const payload = execution.payload as RecoveryExecutionPayload;
   const existingEvidence = stagedRecoveryExecutionEvidence(payload);
-  if (existingEvidence) return;
+  if (existingEvidence) return existingEvidence;
 
   await upsertRuntimeResourcePg(db, {
     id: execution.id,
@@ -366,6 +366,7 @@ async function stageRecoveryExecutionEvidencePg(
     metrics: execution.metrics,
     expiresAt: execution.expiresAt,
   });
+  return input.evidence;
 }
 
 async function repairTerminalRecoveryExecutionPg(
@@ -377,11 +378,12 @@ async function repairTerminalRecoveryExecutionPg(
   if (execution.status !== "started") return execution.resourceKey;
 
   const reason = terminalDecisionReason(input.decision);
+  const completedAt = terminalDecisionCompletedAt(input.decision, execution, input.now);
   await completeRecoveryExecutionPg(db, {
     runId: input.decision.payload.runId,
     executionResourceKey: input.executionResourceKey,
     status: input.decision.status,
-    completedAt: input.now,
+    completedAt,
     stateChanges: [
       {
         resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
@@ -394,6 +396,22 @@ async function repairTerminalRecoveryExecutionPg(
     providerActions: [],
   });
   return execution.resourceKey;
+}
+
+function terminalDecisionCompletedAt(
+  decision: RuntimeRecoveryDecisionRecord,
+  execution: RuntimeResourceRecord,
+  fallback: string,
+): string {
+  const payload = decision.payload as RecoveryDecisionPayload & Record<string, unknown>;
+  const terminalAt =
+    payload.blockedAt ??
+    payload.failedAt ??
+    payload.supersededAt ??
+    payload.appliedAt ??
+    (execution.payload as Partial<RecoveryExecutionPayload>).completedAt ??
+    (execution.payload as Partial<RecoveryExecutionPayload>).createdAt;
+  return typeof terminalAt === "string" && terminalAt.trim().length > 0 ? terminalAt : fallback;
 }
 
 function terminalDecisionReason(decision: RuntimeRecoveryDecisionRecord): string {
