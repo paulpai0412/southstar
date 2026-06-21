@@ -49,6 +49,7 @@ await import("./postgres-executor-reconcile.test.ts");
 await import("./postgres-recovery-dispatcher.test.ts");
 await import("./postgres-recovery-controller.test.ts");
 await import("./postgres-run-api.test.ts");
+await import("./run-execution-controller.test.ts");
 await import("./postgres-run-dispatcher.test.ts");
 await import("./runnable-task-scheduler.test.ts");
 await import("./managed-runtime-loops.test.ts");

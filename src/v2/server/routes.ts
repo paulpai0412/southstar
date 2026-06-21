@@ -1,7 +1,6 @@
 import { evaluateApprovalPolicy } from "../approvals/policy.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { createExecutorBindingPg, getExecutorBindingPg, listExecutorBindingsForRunPg, updateExecutorBindingStatusPg } from "../executor/postgres-bindings.ts";
-import { dispatchPostgresRunExecutionPg } from "../executor/postgres-run-dispatcher.ts";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../executor/postgres-tork-callback.ts";
 import { type RecoveryExecutionPlan } from "../session-recovery/execution-planner.ts";
@@ -17,6 +16,7 @@ import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
 import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
 import { handleEvolutionRoute } from "./evolution-routes.ts";
+import { startRunSchedulingPg } from "./run-execution-controller.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import { readRunEventsSince, toSseFrame } from "./sse.ts";
@@ -83,29 +83,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
 
     const executeMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/execute$/);
     if (request.method === "POST" && executeMatch) {
-      const body = await readJsonBody<{
-        callbackUrl?: string;
-        heartbeatUrl?: string;
-        runRoot?: string;
-        envelopeBasePath?: string;
-        harnessEndpoint?: string;
-        contextRefreshUrl?: string;
-        attemptId?: string;
-      }>(request);
       const runId = decodeURIComponent(executeMatch[1]!);
-      const callbackUrl = body.callbackUrl ?? context.callbackUrl ?? (context.serverUrl ? `${context.serverUrl}/api/v2/tork/callback` : undefined);
-      if (!callbackUrl) throw new Error("callbackUrl is required");
-      return json("run-execute", await dispatchPostgresRunExecutionPg(context.db, {
-        runId,
-        executorProvider: context.executorProvider,
-        callbackUrl,
-        heartbeatUrl: body.heartbeatUrl ?? (context.serverUrl ? `${context.serverUrl}/api/v2/executor/heartbeat` : undefined),
-        runRoot: body.runRoot ?? context.runRoot,
-        envelopeBasePath: body.envelopeBasePath,
-        harnessEndpoint: body.harnessEndpoint,
-        contextRefreshUrl: body.contextRefreshUrl,
-        attemptId: body.attemptId,
-      }));
+      return json("run-execute", await startRunSchedulingPg(context.db, { runId }));
     }
 
     const recoveryDispatchMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/recovery\/dispatch$/);
