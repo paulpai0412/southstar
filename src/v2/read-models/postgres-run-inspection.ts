@@ -1,5 +1,9 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import { RUNTIME_EXCEPTION_RESOURCE_TYPE } from "../exceptions/types.ts";
+import {
+  RECOVERY_DECISION_RESOURCE_TYPE,
+  RECOVERY_EXECUTION_RESOURCE_TYPE,
+  RUNTIME_EXCEPTION_RESOURCE_TYPE,
+} from "../exceptions/types.ts";
 import { inspectRunPg } from "../inspection/postgres-inspect-run.ts";
 import { envelopeReadModel } from "./envelope.ts";
 
@@ -30,9 +34,17 @@ export type RuntimeExceptionRunReadModel = {
     exceptionId?: string;
     operatorApprovalRequired?: boolean;
   }>;
+  recoveryExecutions: Array<{
+    resourceKey: string;
+    status: string;
+    decisionId?: string;
+    exceptionId?: string;
+    path?: string;
+    taskId?: string;
+    providerActionCount?: number;
+    stateChangeCount?: number;
+  }>;
 };
-
-const RECOVERY_DECISION_RESOURCE_TYPE = "recovery_decision";
 
 export async function buildRunInspectionReadModelPg(db: SouthstarDb, runId: string) {
   return envelopeReadModel({
@@ -58,7 +70,7 @@ export async function buildRuntimeExceptionReadModelPg(
      where run_id = $1
        and resource_type = any($2::text[])
      order by created_at, resource_key`,
-    [input.runId, [RUNTIME_EXCEPTION_RESOURCE_TYPE, RECOVERY_DECISION_RESOURCE_TYPE]],
+    [input.runId, [RUNTIME_EXCEPTION_RESOURCE_TYPE, RECOVERY_DECISION_RESOURCE_TYPE, RECOVERY_EXECUTION_RESOURCE_TYPE]],
   );
   return {
     runId: input.runId,
@@ -68,6 +80,9 @@ export async function buildRuntimeExceptionReadModelPg(
     recoveryDecisions: rows.rows
       .filter((row) => row.resource_type === RECOVERY_DECISION_RESOURCE_TYPE)
       .map(mapRecoveryDecisionResource),
+    recoveryExecutions: rows.rows
+      .filter((row) => row.resource_type === RECOVERY_EXECUTION_RESOURCE_TYPE)
+      .map(mapRecoveryExecutionResource),
   };
 }
 
@@ -93,6 +108,22 @@ function mapRecoveryDecisionResource(row: RuntimeExceptionResourceRow): RuntimeE
     path: stringValue(payload.path),
     exceptionId: stringValue(payload.exceptionId),
     operatorApprovalRequired: typeof payload.operatorApprovalRequired === "boolean" ? payload.operatorApprovalRequired : undefined,
+  };
+}
+
+function mapRecoveryExecutionResource(row: RuntimeExceptionResourceRow): RuntimeExceptionRunReadModel["recoveryExecutions"][number] {
+  const payload = asRecord(row.payload_json);
+  const providerActions = payload.providerActions;
+  const stateChanges = payload.stateChanges;
+  return {
+    resourceKey: row.resource_key,
+    status: row.status,
+    decisionId: stringValue(payload.decisionId),
+    exceptionId: stringValue(payload.exceptionId),
+    path: stringValue(payload.path),
+    taskId: row.task_id ?? stringValue(payload.taskId),
+    providerActionCount: Array.isArray(providerActions) ? providerActions.length : undefined,
+    stateChangeCount: Array.isArray(stateChanges) ? stateChanges.length : undefined,
   };
 }
 

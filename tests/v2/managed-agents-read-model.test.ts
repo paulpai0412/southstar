@@ -20,6 +20,7 @@ test("managed-agent read model lists brain and hand bindings", async () => {
     assert.equal(model.resources.some((resource) => resource.resourceType === "hand_execution"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "task_execution_intent"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "evaluator_result"), true);
+    assert.equal(model.resources.some((resource) => resource.resourceType === "recovery_execution"), true);
 
     const server = await createSouthstarRuntimeServer({
       db,
@@ -35,6 +36,7 @@ test("managed-agent read model lists brain and hand bindings", async () => {
       assert.equal(envelope.result.brainBindings[0]?.id, "brain-1");
       assert.equal(envelope.result.handBindings[0]?.id, "hand-1");
       assert.equal(envelope.result.resources.some((resource) => resource.resourceType === "tool_proxy_violation"), true);
+      assert.equal(envelope.result.resources.some((resource) => resource.resourceType === "recovery_execution"), true);
     } finally {
       await server.close();
     }
@@ -80,5 +82,6 @@ async function seedManagedAgentRun(db: Parameters<typeof createWorkflowRunPg>[0]
   await upsertRuntimeResourcePg(db, { resourceType: "hand_execution", resourceKey: "hand-execution-1", runId, taskId: "task-1", sessionId: "session-1", scope: "hand", status: "running", title: "hand execution", payload: { handExecutionId: "hand-execution-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "task_execution_intent", resourceKey: "intent-1", runId, taskId: "task-1", sessionId: "session-1", scope: "brain", status: "created", title: "intent", payload: { intentId: "intent-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "evaluator_result", resourceKey: "eval-1", runId, taskId: "task-1", sessionId: "session-1", scope: "evaluator", status: "passed", title: "evaluator", payload: { verdict: "passed" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "recovery_execution", resourceKey: "recovery-execution-1", runId, taskId: "task-1", sessionId: "session-1", scope: "recovery", status: "succeeded", title: "recovery execution", payload: { decisionId: "decision-1", path: "retry-same-task-new-attempt" } });
   await upsertRuntimeResourcePg(db, { resourceType: "tool_proxy_violation", resourceKey: "violation-1", runId, taskId: "task-1", sessionId: "session-1", scope: "tool", status: "blocking", title: "violation", payload: { evidenceRef: "hand-execution-1:artifact" } });
 }

@@ -63,6 +63,7 @@ const managedContractResourceTypes = new Set([
   "tool_proxy_policy",
   "tool_proxy_violation",
   "recovery_decision",
+  "recovery_execution",
 ]);
 
 const managedResourceTypes = new Set([
