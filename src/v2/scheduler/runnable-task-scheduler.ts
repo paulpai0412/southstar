@@ -4,6 +4,7 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import type { HandBinding, HandExecutionPayload, HandProvider } from "../hands/types.ts";
 import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
+import { createManagedContextAssembler } from "../context/managed-context-assembler.ts";
 import { persistBrainBindingPg, persistHandBindingPg } from "../meta-harness/postgres-bindings.ts";
 import type { SessionStore } from "../session/types.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
@@ -25,11 +26,6 @@ type TaskRow = {
   sort_order: number;
   depends_on_json: unknown;
   root_session_id: string | null;
-};
-
-type ContextPacketRow = {
-  resource_key: string;
-  payload_json: unknown;
 };
 
 type ExistingHistoryRow = {
@@ -118,13 +114,44 @@ async function dispatchTask(
   const queueTimeoutSeconds = 120;
   const heartbeatTimeoutSeconds = 60;
   let contextPacketId = `context-${input.runId}-${input.taskId}`;
+  let taskEnvelopeId = "";
+  let taskStartCheckpointId = "";
   let brainBindingId = "";
   let handBindingId = "";
   let handAccepted = false;
   let handRejected = false;
 
   try {
-    contextPacketId = await contextPacketIdForTask(db, input.runId, input.taskId);
+    const assembler = createManagedContextAssembler(db);
+    const assembly = await assembler.buildForTask({
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId,
+      handExecutionId,
+      dependsOn: input.dependsOn,
+    });
+    contextPacketId = assembly.contextPacket.id;
+    taskEnvelopeId = assembly.taskEnvelopeId;
+
+    const taskStartCheckpoint = await deps.sessionStore.createCheckpoint({
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      resourceKey: `checkpoint:${input.runId}:${input.taskId}:${attemptId}:task-start`,
+      checkpointType: "task-start",
+      summary: `Task ${input.taskId} start for ${attemptId}`,
+      eventRange: { fromSequence: 0, toSequence: 0 },
+      refs: {
+        contextPacketIds: [contextPacketId],
+        taskEnvelopeIds: [taskEnvelopeId],
+        artifactRefs: assembly.contextPacket.priorArtifacts
+          .map((block) => block.sourceRef)
+          .filter((value): value is string => Boolean(value)),
+      },
+      metrics: { tokenEstimate: assembly.contextPacket.tokenEstimate.total },
+    });
+    taskStartCheckpointId = taskStartCheckpoint.id;
 
     brainBindingId = await ensureBrainBinding(db, deps, {
       runId: input.runId,
@@ -275,7 +302,7 @@ async function dispatchTask(
       eventType: "hand.execute_queued",
       actorType: "hand",
       idempotencyKey: `${recoveryKey}:hand-execute-queued`,
-      payload: { attemptId, handExecutionId, externalJobId },
+      payload: { attemptId, handExecutionId, externalJobId, taskStartCheckpointId },
     });
     await appendHistoryEventOnce(db, {
       runId: input.runId,
@@ -284,7 +311,7 @@ async function dispatchTask(
       eventType: "task.dispatch_submitted",
       actorType: "orchestrator",
       idempotencyKey: `${recoveryKey}:dispatch-submitted`,
-      payload: { brainBindingId, handBindingId, contextPacketId, attemptId, handExecutionId },
+      payload: { brainBindingId, handBindingId, contextPacketId, taskEnvelopeId, taskStartCheckpointId, attemptId, handExecutionId },
     });
   } catch (error) {
     if (isPreExecutionToolProxyPolicyError(error)) {
@@ -642,21 +669,6 @@ async function appendHistoryEventOnce(
     if (isUniqueViolation(error)) return;
     throw error;
   }
-}
-
-async function contextPacketIdForTask(db: SouthstarDb, runId: string, taskId: string): Promise<string> {
-  const row = await db.maybeOne<ContextPacketRow>(
-    `select resource_key, payload_json
-       from southstar.runtime_resources
-      where run_id = $1
-        and task_id = $2
-        and resource_type = 'context_packet'
-      order by created_at desc
-      limit 1`,
-    [runId, taskId],
-  );
-  const payload = asRecord(row?.payload_json);
-  return stringValue(payload.id) ?? row?.resource_key ?? `context-${runId}-${taskId}`;
 }
 
 async function firstBindingId(db: SouthstarDb, resourceType: "brain_binding" | "hand_binding", runId: string, taskId: string): Promise<string | null> {
