@@ -162,8 +162,7 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
 
       if (started.status !== "started") {
         if (started.status === "succeeded") {
-          await finalizeRecoveryDecisionAppliedPg(deps.db, { decision: applyingDecision, executionResourceKey: started.resourceKey, now });
-          return { status: "applied", executionResourceKey: started.resourceKey, reason: `${applyingDecision.payload.path} applied` };
+          return await finalizeRecoveryDecisionAppliedPg(deps.db, { decision: applyingDecision, executionResourceKey: started.resourceKey, now });
         }
         return { status: started.status, executionResourceKey: started.resourceKey, reason: `recovery execution already ${started.status}` };
       }
@@ -330,9 +329,7 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         stateChanges: mutation.stateChanges,
         providerActions: mutation.providerActions,
       });
-      await finalizeRecoveryDecisionAppliedPg(deps.db, { decision: applyingDecision, executionResourceKey: started.resourceKey, now });
-
-      return { status: "applied", executionResourceKey: started.resourceKey, reason: "requeue-hand-execution applied" };
+      return await finalizeRecoveryDecisionAppliedPg(deps.db, { decision: applyingDecision, executionResourceKey: started.resourceKey, now });
     },
   };
 }
@@ -531,8 +528,7 @@ async function applySimpleRecoveryMutation(
     const execution = await lockRecoveryExecutionForUpdatePg(tx, input.executionResourceKey);
     if (execution.status !== "started") {
       if (execution.status === "succeeded") {
-        await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
-        return { status: "applied", executionResourceKey: execution.resourceKey, reason: `${decision.payload.path} applied` };
+        return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
       }
       return {
         status: execution.status,
@@ -624,8 +620,7 @@ async function applySimpleRecoveryMutation(
         stateChanges: evidence.stateChanges,
         providerActions: evidence.providerActions,
       });
-      await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
-      return { status: "applied", executionResourceKey: input.executionResourceKey, reason: `${path} applied` };
+      return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
     }
 
     const blockedDecision = await writeTerminalDecisionPg(tx, {
@@ -662,8 +657,7 @@ async function applyWakeNewBrainMutation(
     const execution = await lockRecoveryExecutionForUpdatePg(tx, input.executionResourceKey);
     if (execution.status !== "started") {
       if (execution.status === "succeeded") {
-        await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
-        return { status: "applied", executionResourceKey: execution.resourceKey, reason: "wake-new-brain applied" };
+        return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
       }
       return {
         status: execution.status,
@@ -713,9 +707,7 @@ async function applyWakeNewBrainMutation(
       stateChanges: evidence.stateChanges,
       providerActions: evidence.providerActions,
     });
-    await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
-
-    return { status: "applied", executionResourceKey: input.executionResourceKey, reason: "wake-new-brain applied" };
+    return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
   });
 }
 
@@ -735,8 +727,7 @@ async function applyReprovisionMutation(
     const execution = await lockRecoveryExecutionForUpdatePg(tx, input.executionResourceKey);
     if (execution.status !== "started") {
       if (execution.status === "succeeded") {
-        await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
-        return { status: "applied", executionResourceKey: execution.resourceKey, reason: "reprovision-hand applied" };
+        return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
       }
       if (execution.status === "blocked" || execution.status === "failed" || execution.status === "superseded") {
         return {
@@ -834,9 +825,7 @@ async function applyReprovisionMutation(
       stateChanges: evidence.stateChanges,
       providerActions: evidence.providerActions,
     });
-    await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
-
-    return { status: "applied", executionResourceKey: input.executionResourceKey, reason: "reprovision-hand applied" };
+    return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
   });
 }
 
@@ -914,24 +903,27 @@ async function performAndStageWakeNewBrainRecovery(
     now: string;
   },
 ): Promise<RecoveryExecutionEvidence> {
-  const managed = await createPostgresRecoveryController({
-    db,
-    sessionStore: createPostgresSessionStore(db),
-    brainProvider: deps.brainProvider,
-    handProvider: deps.handProvider,
-  }).recover({
+  const checkpoint = await createPostgresSessionStore(db).createCheckpoint({
+    id: `checkpoint-${input.decision.decisionId}-wake-new-brain`,
     runId: input.decision.payload.runId,
     taskId: input.taskId,
     sessionId: input.sessionId,
-    strategy: "wake-new-brain",
-    reason: input.decision.payload.reason,
+    resourceKey: `${input.decision.resourceKey}:wake-new-brain:before-recovery`,
+    checkpointType: "before-recovery",
+    summary: `Before recovery wake-new-brain: ${input.decision.payload.reason}`,
+    eventRange: {
+      fromSequence: 0,
+      toSequence: await maxSessionSequence(db, input.decision.payload.runId, input.sessionId, 0),
+    },
+    refs: { recoveryDecisionIds: [input.decision.decisionId] },
+    metrics: { strategy: "wake-new-brain", providerAction: "requested" },
   });
 
   const evidence = wakeNewBrainRecoveryExecutionEvidence({
     decision: input.decision,
     taskId: input.taskId,
     context: input.context,
-    managed,
+    checkpointId: checkpoint.id,
     providerId: deps.brainProvider.providerId,
     now: input.now,
   });
@@ -1129,12 +1121,7 @@ function wakeNewBrainRecoveryExecutionEvidence(input: {
   decision: RuntimeRecoveryDecisionRecord;
   taskId: string;
   context: SimpleRecoveryContext;
-  managed: {
-    recoveryDecisionId: string;
-    beforeRecoveryCheckpointId: string;
-    brainBindingId?: string;
-    executionEventId: string;
-  };
+  checkpointId: string;
   providerId: string;
   now: string;
 }): RecoveryExecutionEvidence {
@@ -1142,18 +1129,10 @@ function wakeNewBrainRecoveryExecutionEvidence(input: {
     stateChanges: [
       {
         resourceType: "session_checkpoint",
-        resourceKey: input.managed.beforeRecoveryCheckpointId,
+        resourceKey: input.checkpointId,
         toStatus: "created",
         reason: "wake-new-brain before-recovery checkpoint",
       },
-      ...(input.managed.brainBindingId
-        ? [{
-          resourceType: "brain_binding",
-          resourceKey: input.managed.brainBindingId,
-          toStatus: "running",
-          reason: "wake-new-brain replacement",
-        }]
-        : []),
       {
         resourceType: "workflow_task",
         resourceKey: `${input.decision.payload.runId}:${input.taskId}`,
@@ -1180,14 +1159,11 @@ function wakeNewBrainRecoveryExecutionEvidence(input: {
       {
         providerId: input.providerId,
         action: "wake",
-        status: "succeeded",
-        evidenceRef: input.managed.brainBindingId,
-        attemptedAt: input.now,
-        succeededAt: input.now,
+        status: "requested",
         metadata: {
-          managedRecoveryDecisionId: input.managed.recoveryDecisionId,
-          beforeRecoveryCheckpointId: input.managed.beforeRecoveryCheckpointId,
-          executionEventId: input.managed.executionEventId,
+          checkpointId: input.checkpointId,
+          requestedAt: input.now,
+          recoveryDecisionId: input.decision.decisionId,
         },
       },
     ],
@@ -1443,6 +1419,15 @@ function recoveryActionTerminalAt(
   return action?.succeededAt ?? action?.completedAt ?? action?.attemptedAt;
 }
 
+async function maxSessionSequence(db: SouthstarDb, runId: string, sessionId: string, fallback: number): Promise<number> {
+  const row = await db.maybeOne<{ max_sequence: number | string | null }>(
+    "select max(sequence) as max_sequence from southstar.workflow_history where run_id = $1 and session_id = $2",
+    [runId, sessionId],
+  );
+  const value = Number(row?.max_sequence ?? fallback);
+  return Number.isFinite(value) ? Math.max(value, fallback) : fallback;
+}
+
 function simpleRecoveryTerminalAt(
   evidence: RecoveryExecutionEvidence,
   executionPayload: RecoveryExecutionPayload,
@@ -1480,7 +1465,6 @@ function missingWakeNewBrainDeps(deps: RecoveryDecisionApplierDeps): string[] {
   const missing: string[] = [];
   if (!deps.sessionStore) missing.push("sessionStore");
   if (!deps.brainProvider) missing.push("brainProvider");
-  if (!deps.handProvider) missing.push("handProvider");
   return missing;
 }
 
@@ -1587,9 +1571,12 @@ async function getRecoveryDecisionByKeyForUpdatePg(
 async function finalizeRecoveryDecisionAppliedPg(
   db: SouthstarDb,
   input: { decision: RuntimeRecoveryDecisionRecord; executionResourceKey: string; now: string },
-): Promise<void> {
-  await db.tx(async (tx) => {
+): Promise<RecoveryDecisionApplyResult> {
+  return await db.tx(async (tx) => {
     const current = requireRecoveryDecision(await getRecoveryDecisionByKeyForUpdatePg(tx, input.decision.resourceKey));
+    if (current.status === "blocked" || current.status === "failed" || current.status === "superseded") {
+      return terminalDecisionApplyResult(current, input.executionResourceKey);
+    }
     const currentPayload = current.payload as RecoveryDecisionPayload & { appliedAt?: unknown; statusReason?: unknown };
     const appliedAt = typeof currentPayload.appliedAt === "string" && currentPayload.appliedAt.trim().length > 0
       ? currentPayload.appliedAt
@@ -1618,6 +1605,7 @@ async function finalizeRecoveryDecisionAppliedPg(
         appliedAt,
       },
     });
+    return { status: "applied", executionResourceKey: input.executionResourceKey, reason: `${current.payload.path} applied` };
   });
 }
 
