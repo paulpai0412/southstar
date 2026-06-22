@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { acceptOrRejectArtifactRefPg } from "../artifacts/artifact-ref-store.ts";
+import { recordArtifactRepairMarkerPg } from "../artifacts/lineage.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
@@ -150,6 +151,11 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
       artifactRefId: artifactRef.artifactRefId,
       artifactResourceId: artifactRef.resourceId,
     });
+    await recordCallbackArtifactRepairMarkersPg(tx, {
+      result,
+      rejectedArtifactRefId: artifactRef.artifactRefId,
+      rejectedArtifactResourceId: artifactRef.resourceId,
+    });
 
     if (result.attemptId) {
       const bindingId = `executor-${result.runId}-${result.taskId}-${result.attemptId}`;
@@ -217,6 +223,60 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
 
     return { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId };
   });
+}
+
+async function recordCallbackArtifactRepairMarkersPg(
+  db: SouthstarDb,
+  input: { result: PostgresTaskRunCallbackResult; rejectedArtifactRefId: string; rejectedArtifactResourceId: string },
+): Promise<void> {
+  if (input.result.ok) return;
+  const refs = failedArtifactRepairRefs(input.result.artifact);
+  if (refs.length === 0) return;
+
+  for (const ref of refs) {
+    const producer = await db.maybeOne<{ task_id: string | null; session_id: string | null }>(
+      `select task_id, session_id
+         from southstar.runtime_resources
+        where resource_type = $1
+          and resource_key = $2
+          and run_id = $3
+        limit 1`,
+      [ARTIFACT_REF_RESOURCE_TYPE, ref.artifactRefId, input.result.runId],
+    );
+    if (!producer?.task_id) continue;
+
+    await recordArtifactRepairMarkerPg(db, {
+      runId: input.result.runId,
+      taskId: producer.task_id,
+      sessionId: producer.session_id ?? input.result.rootSessionId,
+      artifactRefId: ref.artifactRefId,
+      reason: ref.reason,
+      sourceRefs: [input.rejectedArtifactRefId, input.rejectedArtifactResourceId],
+      payload: {
+        consumerTaskId: input.result.taskId,
+        rejectedArtifactRefId: input.rejectedArtifactRefId,
+        rejectedArtifactResourceId: input.rejectedArtifactResourceId,
+      },
+    });
+  }
+}
+
+function failedArtifactRepairRefs(artifact: unknown): Array<{ artifactRefId: string; reason: string }> {
+  const payload = asRecord(artifact);
+  const summary = nonEmptyString(payload.summary) ?? "consumer validation rejected producer artifact";
+  const refs = new Map<string, string>();
+  for (const artifactRefId of stringArray(payload.failedArtifactRefs)) {
+    refs.set(artifactRefId, summary);
+  }
+  for (const finding of arrayOfRecords(payload.findings)) {
+    const artifactRefId = nonEmptyString(finding.artifactRefId)
+      ?? nonEmptyString(finding.failedArtifactRef)
+      ?? nonEmptyString(finding.sourceArtifactRef)
+      ?? nonEmptyString(finding.artifactRef);
+    if (!artifactRefId) continue;
+    refs.set(artifactRefId, nonEmptyString(finding.reason) ?? nonEmptyString(finding.message) ?? summary);
+  }
+  return [...refs.entries()].map(([artifactRefId, reason]) => ({ artifactRefId, reason }));
 }
 
 async function recordCallbackExceptionDecisionPg(
@@ -437,6 +497,18 @@ function isHandExecutionTerminalStatus(status: string): boolean {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function arrayOfRecords(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value) ? value.map(asRecord).filter((item) => Object.keys(item).length > 0) : [];
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function stableStringify(value: unknown): string {

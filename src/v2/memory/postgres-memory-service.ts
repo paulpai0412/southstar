@@ -204,7 +204,8 @@ export async function invalidateRunLocalMemoryPg(db: SouthstarDb, input: Invalid
 }
 
 export async function searchMemoryForContextPg(db: SouthstarDb, input: ContextMemorySearchInput): Promise<ContextMemoryCandidate[]> {
-  if (input.scopes.length === 0 || input.allowedKinds.length === 0) return [];
+  if (input.allowedKinds.length === 0) return [];
+  const scopes = uniqueStrings([...input.scopes, `run:${input.runId}`]);
   const rows = (
     await db.query<MemoryResourceRow>(
       `select * from southstar.runtime_resources
@@ -215,7 +216,7 @@ export async function searchMemoryForContextPg(db: SouthstarDb, input: ContextMe
            or status = 'approved'
          )
        order by created_at, resource_key`,
-      [input.scopes, input.runId],
+      [scopes, input.runId],
     )
   ).rows;
   const allowedKinds = new Set(input.allowedKinds);
@@ -333,6 +334,10 @@ function objectPayload(value: unknown): Record<string, unknown> {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function stringValue(value: unknown): string | undefined {
