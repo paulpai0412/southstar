@@ -16,6 +16,22 @@ export type MemoryCandidate = {
   sourceRef?: string;
 };
 
+export type ContextMemorySearchInput = {
+  runId: string;
+  scope: string;
+  query: string;
+  maxCandidates: number;
+};
+
+export type ContextMemoryCandidate = MemoryCandidate & {
+  lifecycle: "run-local" | "approved";
+  runId?: string;
+  taskId?: string;
+  sessionId?: string;
+  tags: string[];
+  sourceRefs: string[];
+};
+
 export type MemoryWriteRequest = {
   scope: string;
   kind: string;
