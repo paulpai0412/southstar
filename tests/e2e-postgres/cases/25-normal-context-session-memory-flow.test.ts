@@ -80,7 +80,7 @@ test("25 normal context/session/memory flow: downstream task receives managed so
       taskId: taskAId,
       sessionId: firstTask.root_session_id,
       scope: "software",
-      kind: "workflow_context",
+      kind: "artifact_summary",
       text: "normal managed context memory artifact: downstream task should inspect accepted producer evidence before completing",
       tags: ["normal", "managed", "context", "memory", "artifact"],
       sourceRefs: [firstArtifact.resourceKey],
@@ -202,8 +202,17 @@ function workflowManifest(input: { runId: string; taskAId: string; taskBId: stri
     progressPolicy: { firstEventWithinSeconds: 30, minEventsPerLongTask: 1 },
     steeringPolicy: { enabled: true, acceptedSignals: [] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
-    executionPolicy: { maxParallelTasks: 1 },
-  } as SouthstarWorkflowManifest;
+    effortPolicy: {
+      complexity: "standard",
+      maxBrains: 1,
+      maxHandsPerBrain: 1,
+      maxParallelTasks: 1,
+      maxToolCallsPerTask: 10,
+      maxInputTokensPerBrain: 20_000,
+      maxCostMicrosUsd: 500_000,
+      stopWhenEvidenceSufficient: true,
+    },
+  };
 }
 
 function workflowTask(id: string, name: string, dependsOn: string[]): SouthstarWorkflowManifest["tasks"][number] {

@@ -71,6 +71,14 @@ test("Postgres real E2E suite contains no SQLite/local API coupling or fake shor
   }
 });
 
+test("managed context E2E cases use retrievable memory kinds and typed manifest policies", () => {
+  const normalContextCase = source("tests/e2e-postgres/cases/25-normal-context-session-memory-flow.test.ts");
+  assert.doesNotMatch(normalContextCase, /kind:\s*"workflow_context"/);
+  assert.match(normalContextCase, /kind:\s*"artifact_summary"/);
+  assert.doesNotMatch(normalContextCase, /executionPolicy/);
+  assert.match(normalContextCase, /effortPolicy/);
+});
+
 test("legacy SQLite real E2E suite is removed from the runnable tree", () => {
   assert.equal(existsSync(join(root, "tests/e2e-real")), false);
   assert.equal(existsSync(join(root, "tests/e2e-legacy-sqlite")), false);
