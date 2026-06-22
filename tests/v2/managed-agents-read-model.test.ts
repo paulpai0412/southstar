@@ -29,6 +29,7 @@ test("managed-agent read model lists brain and hand bindings", async () => {
     assert.equal(model.resources.some((resource) => resource.resourceType === "evaluator_result"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "recovery_execution"), true);
     assertRecoveryExecutionPayloadRedacted(model.resources);
+    assertTaskEnvelopePayloadRedacted(model.resources);
 
     const server = await createSouthstarRuntimeServer({
       db,
@@ -46,6 +47,7 @@ test("managed-agent read model lists brain and hand bindings", async () => {
       assert.equal(envelope.result.resources.some((resource) => resource.resourceType === "tool_proxy_violation"), true);
       assert.equal(envelope.result.resources.some((resource) => resource.resourceType === "recovery_execution"), true);
       assertRecoveryExecutionPayloadRedacted(envelope.result.resources);
+      assertTaskEnvelopePayloadRedacted(envelope.result.resources);
     } finally {
       await server.close();
     }
@@ -91,7 +93,54 @@ async function seedManagedAgentRun(db: Parameters<typeof createWorkflowRunPg>[0]
   await upsertRuntimeResourcePg(db, { resourceType: "hand_execution", resourceKey: "hand-execution-1", runId, taskId: "task-1", sessionId: "session-1", scope: "hand", status: "running", title: "hand execution", payload: { handExecutionId: "hand-execution-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "task_execution_intent", resourceKey: "intent-1", runId, taskId: "task-1", sessionId: "session-1", scope: "brain", status: "created", title: "intent", payload: { intentId: "intent-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "context_packet", resourceKey: "context-packet-1", runId, taskId: "task-1", sessionId: "session-1", scope: "context", status: "created", title: "context packet", payload: { id: "context-packet-1" } });
-  await upsertRuntimeResourcePg(db, { resourceType: "task_envelope", resourceKey: "task-envelope-1", runId, taskId: "task-1", sessionId: "session-1", scope: "context", status: "created", title: "task envelope", payload: { id: "task-envelope-1" } });
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "task_envelope",
+    resourceKey: "task-envelope-1",
+    runId,
+    taskId: "task-1",
+    sessionId: "session-1",
+    scope: "context",
+    status: "created",
+    title: "task envelope",
+    payload: {
+      envelope: {
+        schemaVersion: "southstar.task-envelope.v2",
+        envelopeId: "task-envelope-1",
+        runId,
+        taskId: "task-1",
+        session: { sessionId: "session-1", attemptId: "attempt-1" },
+        status: "materialized",
+        contextPacket: {
+          id: "context-packet-1",
+          tokenEstimate: { total: 1234 },
+          selectedMemories: [
+            {
+              sourceRef: "memory-secret-1",
+              summary: "raw prompt-like selected memory text must not leak",
+              raw: "SELECTED_MEMORY_RAW_SECRET",
+            },
+          ],
+          selectedKnowledgeCards: [
+            {
+              sourceRef: "card-secret-1",
+              content: "knowledge card content must not leak",
+            },
+          ],
+          selectedFiles: [
+            {
+              sourceRef: "file-secret-1",
+              path: "/tmp/secret-plan.md",
+              raw: "FILE_RAW_SECRET",
+            },
+          ],
+        },
+        agentPrompt: "AGENT_PROMPT_SECRET with full ContextPacket details",
+        systemPrompt: "SYSTEM_PROMPT_SECRET",
+        raw: "TASK_ENVELOPE_RAW_SECRET",
+      },
+    },
+    summary: { schemaVersion: "southstar.task-envelope.v2", contextPacketId: "context-packet-1", attemptId: "attempt-1" },
+  });
   await upsertRuntimeResourcePg(db, { resourceType: "context_assembly_trace", resourceKey: "context-trace-1", runId, taskId: "task-1", sessionId: "session-1", scope: "context", status: "created", title: "context trace", payload: { id: "context-trace-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "memory_item", resourceKey: "memory-item-1", runId, taskId: "task-1", sessionId: "session-1", scope: "memory", status: "active", title: "memory item", payload: { id: "memory-item-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "memory_delta", resourceKey: "memory-delta-1", runId, taskId: "task-1", sessionId: "session-1", scope: "memory", status: "pending_approval", title: "memory delta", payload: { id: "memory-delta-1" } });
@@ -173,4 +222,32 @@ function assertRecoveryExecutionPayloadRedacted(resources: Awaited<ReturnType<ty
   assert.equal(serializedResource.includes("do-not-return"), false);
   assert.equal(serializedResource.includes("secret-evidence-ref"), false);
   assert.equal(serializedResource.includes("secret-hand"), false);
+}
+
+function assertTaskEnvelopePayloadRedacted(resources: Awaited<ReturnType<typeof getManagedAgentRunReadModelPg>>["resources"]): void {
+  const resource = resources.find((candidate) => candidate.resourceType === "task_envelope");
+  assert.ok(resource, "expected task_envelope managed resource");
+  assert.equal((resource.payload as { schemaVersion?: unknown }).schemaVersion, "southstar.task-envelope.v2");
+  assert.equal((resource.payload as { envelopeId?: unknown }).envelopeId, "task-envelope-1");
+  assert.equal((resource.payload as { runId?: unknown }).runId, "run-read-model-1");
+  assert.equal((resource.payload as { taskId?: unknown }).taskId, "task-1");
+  assert.equal((resource.payload as { sessionId?: unknown }).sessionId, "session-1");
+  assert.equal((resource.payload as { attemptId?: unknown }).attemptId, "attempt-1");
+  assert.equal((resource.payload as { status?: unknown }).status, "materialized");
+  assert.equal((resource.payload as { contextPacketId?: unknown }).contextPacketId, "context-packet-1");
+  assert.equal((resource.payload as { selectedMemoryCount?: unknown }).selectedMemoryCount, 1);
+  assert.equal((resource.payload as { selectedKnowledgeCardCount?: unknown }).selectedKnowledgeCardCount, 1);
+  assert.equal((resource.payload as { selectedFileCount?: unknown }).selectedFileCount, 1);
+
+  const serializedResource = JSON.stringify(resource);
+  assert.equal(serializedResource.includes('"envelope"'), false);
+  assert.equal(serializedResource.includes('"contextPacket"'), false);
+  assert.equal(serializedResource.includes('"selectedMemories"'), false);
+  assert.equal(serializedResource.includes("raw prompt-like selected memory text must not leak"), false);
+  assert.equal(serializedResource.includes("SELECTED_MEMORY_RAW_SECRET"), false);
+  assert.equal(serializedResource.includes("knowledge card content must not leak"), false);
+  assert.equal(serializedResource.includes("FILE_RAW_SECRET"), false);
+  assert.equal(serializedResource.includes("AGENT_PROMPT_SECRET"), false);
+  assert.equal(serializedResource.includes("SYSTEM_PROMPT_SECRET"), false);
+  assert.equal(serializedResource.includes("TASK_ENVELOPE_RAW_SECRET"), false);
 }

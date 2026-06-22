@@ -100,7 +100,7 @@ function mapGrant(row: ResourceRow) {
 }
 
 function mapResource(row: ResourceRow): ManagedRuntimeResourceReadModel {
-  const payload = row.resource_type === "recovery_execution" ? mapRecoveryExecutionPayload(row.payload_json) : row.payload_json;
+  const payload = mapResourcePayload(row);
   return {
     id: row.resource_key,
     resourceType: row.resource_type,
@@ -110,8 +110,20 @@ function mapResource(row: ResourceRow): ManagedRuntimeResourceReadModel {
     scope: row.scope,
     title: row.title ?? undefined,
     payload,
-    summary: row.resource_type === "recovery_execution" ? mapRecoveryExecutionSummary(payload) : row.summary_json,
+    summary: mapResourceSummary(row, payload),
   };
+}
+
+function mapResourcePayload(row: ResourceRow): unknown {
+  if (row.resource_type === "recovery_execution") return mapRecoveryExecutionPayload(row.payload_json);
+  if (row.resource_type === "task_envelope") return mapTaskEnvelopePayload(row);
+  return row.payload_json;
+}
+
+function mapResourceSummary(row: ResourceRow, payload: unknown): unknown {
+  if (row.resource_type === "recovery_execution") return mapRecoveryExecutionSummary(payload);
+  if (row.resource_type === "task_envelope") return mapTaskEnvelopeSummary(row, payload);
+  return row.summary_json;
 }
 
 function mapRecoveryExecutionPayload(payload: unknown): Record<string, string | number> {
@@ -151,10 +163,61 @@ function mapRecoveryExecutionSummary(payload: unknown): { providerActionCount?: 
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+function mapTaskEnvelopePayload(row: ResourceRow): Record<string, string | number> {
+  const payload = asRecord(row.payload_json);
+  const envelope = asRecord(payload.envelope);
+  const source = Object.keys(envelope).length > 0 ? envelope : payload;
+  const session = asRecord(source.session);
+  const contextPacket = asRecord(source.contextPacket);
+  const tokenEstimate = asRecord(contextPacket.tokenEstimate);
+  const summary = asRecord(row.summary_json);
+
+  const projected: Record<string, string | number> = {};
+  setString(projected, "schemaVersion", source.schemaVersion ?? summary.schemaVersion);
+  setString(projected, "envelopeId", source.envelopeId ?? source.id ?? row.resource_key);
+  setString(projected, "runId", source.runId ?? row.run_id);
+  setString(projected, "taskId", source.taskId ?? row.task_id);
+  setString(projected, "sessionId", session.sessionId ?? source.sessionId ?? row.session_id);
+  setString(projected, "attemptId", session.attemptId ?? source.attemptId ?? summary.attemptId);
+  setString(projected, "status", source.status ?? row.status);
+  setString(projected, "contextPacketId", contextPacket.id ?? source.contextPacketId ?? summary.contextPacketId);
+
+  const selectedMemoryCount = arrayLength(contextPacket.selectedMemories);
+  const selectedKnowledgeCardCount = arrayLength(contextPacket.selectedKnowledgeCards);
+  const selectedFileCount = arrayLength(contextPacket.selectedFiles);
+  const sourceCount = selectedMemoryCount + selectedKnowledgeCardCount + selectedFileCount;
+
+  if (selectedMemoryCount > 0) projected.selectedMemoryCount = selectedMemoryCount;
+  if (selectedKnowledgeCardCount > 0) projected.selectedKnowledgeCardCount = selectedKnowledgeCardCount;
+  if (selectedFileCount > 0) projected.selectedFileCount = selectedFileCount;
+  if (sourceCount > 0) projected.sourceCount = sourceCount;
+  if (typeof tokenEstimate.total === "number") projected.tokenEstimateTotal = tokenEstimate.total;
+
+  return projected;
+}
+
+function mapTaskEnvelopeSummary(row: ResourceRow, payload: unknown): Record<string, string | number> {
+  const summary = asRecord(row.summary_json);
+  const projected = { ...(payload as Record<string, string | number>) };
+  setString(projected, "schemaVersion", summary.schemaVersion ?? projected.schemaVersion);
+  setString(projected, "contextPacketId", summary.contextPacketId ?? projected.contextPacketId);
+  setString(projected, "attemptId", summary.attemptId ?? projected.attemptId);
+  return projected;
+}
+
 function asRecord(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function setString(target: Record<string, string | number>, field: string, value: unknown): void {
+  const parsed = stringValue(value);
+  if (parsed !== undefined) target[field] = parsed;
+}
+
+function arrayLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
 }
