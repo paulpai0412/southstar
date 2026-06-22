@@ -34,6 +34,31 @@
 6. 若 workspace 需要 rollback，先確認 `hand_snapshot` 或 workspace snapshot ref，再執行 rollback 類 recovery。
 7. 若 reprovision 成功但 task 沒有繼續 dispatch，檢查 runnable-task scheduler 是否看到 runnable task 與 active brain/hand binding。
 
+## 4.1 recovery decision apply
+
+1. 查詢 `GET /api/v2/runs/:runId/exceptions`，確認 exception、decision、latest recovery execution。
+2. 若 decision status 是 `recorded`，runtime loop 應自動 apply。
+3. 若 decision status 是 `waiting_operator_approval`，operator 必須先核准或拒絕。
+4. 核准：
+
+```bash
+curl -X POST "$SOUTHSTAR_URL/api/v2/runs/$RUN_ID/recovery-decisions/$DECISION_ID/approval" \
+  -H 'content-type: application/json' \
+  -d '{"decision":"approved","reason":"operator approved recovery"}'
+```
+
+5. 手動觸發 apply：
+
+```bash
+curl -X POST "$SOUTHSTAR_URL/api/v2/runs/$RUN_ID/recovery-decisions/$DECISION_ID/apply"
+```
+
+6. apply 後確認：
+   - `recovery_execution.status` 是 `succeeded`、`blocked`、`failed` 或 `superseded`。
+   - 對應 task/hand state 有 state change evidence。
+   - exception 已 resolved，或保留 blocked evidence。
+   - completion gate 沒有 unresolved exception 或 unapplied decision。
+
 ## 5. credential isolation
 
 1. 檢查 task envelope、sandbox env、hand provider payload 不含 token-shaped value。
