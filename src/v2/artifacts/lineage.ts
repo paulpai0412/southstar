@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { appendHistoryEventOncePg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 
 export type RecordArtifactRepairMarkerInput = {
   runId: string;
@@ -75,13 +75,7 @@ async function appendRepairMarkerRecordedOncePg(
   },
 ): Promise<void> {
   const idempotencyKey = `${input.markerId}:repair-marker-recorded`;
-  const existing = await db.maybeOne<{ id: string }>(
-    "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
-    [input.runId, idempotencyKey],
-  );
-  if (existing) return;
-
-  await appendHistoryEventPg(db, {
+  await appendHistoryEventOncePg(db, {
     runId: input.runId,
     taskId: input.taskId,
     sessionId: input.sessionId,

@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import {
+  appendHistoryEventOncePg,
   appendHistoryEventPg,
   createWorkflowRunPg,
   createWorkflowTaskPg,
@@ -47,6 +48,27 @@ test("Postgres runtime store persists runs, tasks, resources, and ordered histor
     assert.equal(first.sequence, 1);
     assert.equal(second.sequence, 2);
     assert.deepEqual((await listHistoryForRunPg(db, "run-1")).map((event) => event.eventType), ["task.created", "run.updated"]);
+
+    const onceFirst = await appendHistoryEventOncePg(db, {
+      runId: "run-1",
+      taskId: "task-1",
+      eventType: "memory.writeback_recorded",
+      actorType: "memory-service",
+      idempotencyKey: "run-1:task-1:writeback",
+      payload: { ok: true },
+    });
+    const onceDuplicate = await appendHistoryEventOncePg(db, {
+      runId: "run-1",
+      taskId: "task-1",
+      eventType: "memory.writeback_recorded",
+      actorType: "memory-service",
+      idempotencyKey: "run-1:task-1:writeback",
+      payload: { ok: false },
+    });
+    assert.equal(onceFirst.sequence, 3);
+    assert.equal(onceDuplicate.sequence, 3);
+    assert.equal(onceDuplicate.duplicate, true);
+    assert.equal((await listHistoryForRunPg(db, "run-1")).filter((event) => event.eventType === "memory.writeback_recorded").length, 1);
 
     await upsertRuntimeResourcePg(db, {
       resourceType: "context_packet",

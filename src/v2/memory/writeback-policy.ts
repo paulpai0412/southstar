@@ -1,5 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import { appendHistoryEventPg } from "../stores/postgres-runtime-store.ts";
+import { appendHistoryEventOncePg } from "../stores/postgres-runtime-store.ts";
 import { createMemoryDeltaPg, writeRunLocalMemoryPg } from "./postgres-memory-service.ts";
 
 export type CallbackMemoryWritebackInput = {
@@ -133,13 +133,7 @@ async function appendWritebackRecordedOncePg(
     payload: CallbackMemoryWritebackResult;
   },
 ): Promise<void> {
-  const existing = await db.maybeOne<{ id: string }>(
-    "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
-    [input.runId, input.idempotencyKey],
-  );
-  if (existing) return;
-
-  await appendHistoryEventPg(db, {
+  await appendHistoryEventOncePg(db, {
     runId: input.runId,
     taskId: input.taskId,
     sessionId: input.sessionId,

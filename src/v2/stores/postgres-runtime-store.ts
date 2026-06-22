@@ -188,6 +188,52 @@ export async function appendHistoryEventPg(db: SouthstarDb, input: AppendHistory
   });
 }
 
+export async function appendHistoryEventOncePg(db: SouthstarDb, input: AppendHistoryInput & { idempotencyKey: string }): Promise<{ id: string; sequence: number; createdAt: string; duplicate: boolean }> {
+  return await db.tx(async (tx) => {
+    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
+    const existing = await tx.maybeOne<{ id: string; sequence: number; created_at: Date | string }>(
+      "select id, sequence, created_at from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+      [input.runId, input.idempotencyKey],
+    );
+    if (existing) {
+      return {
+        id: existing.id,
+        sequence: Number(existing.sequence),
+        createdAt: dateString(existing.created_at),
+        duplicate: true,
+      };
+    }
+
+    const next = await tx.one<{ next_sequence: number }>(
+      "select coalesce(max(sequence), 0) + 1 as next_sequence from southstar.workflow_history where run_id = $1",
+      [input.runId],
+    );
+    const id = randomUUID();
+    const createdAt = new Date().toISOString();
+    await tx.query(
+      `insert into southstar.workflow_history (
+        id, run_id, task_id, sequence, event_type, actor_type, session_id,
+        idempotency_key, correlation_id, causation_id, payload_json, created_at
+      ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12)`,
+      [
+        id,
+        input.runId,
+        input.taskId ?? null,
+        next.next_sequence,
+        input.eventType,
+        input.actorType,
+        input.sessionId ?? null,
+        input.idempotencyKey,
+        input.correlationId ?? null,
+        input.causationId ?? null,
+        JSON.stringify(input.payload),
+        createdAt,
+      ],
+    );
+    return { id, sequence: next.next_sequence, createdAt, duplicate: false };
+  });
+}
+
 export async function listHistoryForRunPg(db: SouthstarDb, runId: string): Promise<WorkflowHistoryEvent[]> {
   const rows = await db.query<WorkflowHistoryRow>("select * from southstar.workflow_history where run_id = $1 order by sequence", [runId]);
   return rows.rows.map(mapHistoryEvent);
