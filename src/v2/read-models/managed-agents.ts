@@ -93,6 +93,7 @@ function mapGrant(row: ResourceRow) {
 }
 
 function mapResource(row: ResourceRow): ManagedRuntimeResourceReadModel {
+  const payload = row.resource_type === "recovery_execution" ? mapRecoveryExecutionPayload(row.payload_json) : row.payload_json;
   return {
     id: row.resource_key,
     resourceType: row.resource_type,
@@ -101,8 +102,8 @@ function mapResource(row: ResourceRow): ManagedRuntimeResourceReadModel {
     status: row.status,
     scope: row.scope,
     title: row.title ?? undefined,
-    payload: row.resource_type === "recovery_execution" ? mapRecoveryExecutionPayload(row.payload_json) : row.payload_json,
-    summary: row.summary_json,
+    payload,
+    summary: row.resource_type === "recovery_execution" ? mapRecoveryExecutionSummary(payload) : row.summary_json,
   };
 }
 
@@ -131,6 +132,16 @@ function mapRecoveryExecutionPayload(payload: unknown): Record<string, string | 
   if (Array.isArray(source.stateChanges)) projected.stateChangeCount = source.stateChanges.length;
 
   return projected;
+}
+
+function mapRecoveryExecutionSummary(payload: unknown): { providerActionCount?: number; stateChangeCount?: number } | null {
+  const source = asRecord(payload);
+  const summary: { providerActionCount?: number; stateChangeCount?: number } = {};
+
+  if (typeof source.providerActionCount === "number") summary.providerActionCount = source.providerActionCount;
+  if (typeof source.stateChangeCount === "number") summary.stateChangeCount = source.stateChangeCount;
+
+  return Object.keys(summary).length > 0 ? summary : null;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

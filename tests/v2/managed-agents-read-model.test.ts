@@ -127,6 +127,14 @@ async function seedManagedAgentRun(db: Parameters<typeof createWorkflowRunPg>[0]
       evidenceRefs: ["secret-evidence-ref"],
       errorExcerpt: "token=secret-value",
     },
+    summary: {
+      summarySecret: "summarySecret",
+      providerActions: [{ evidenceRef: "summary-evidence-ref", errorExcerpt: "summary-error-excerpt" }],
+      stateChanges: [{ resourceKey: "summary-secret-hand" }],
+      evidenceRef: "summary-evidence-ref",
+      errorExcerpt: "summary-error-excerpt",
+      metadata: { raw: "summary-raw-value", nested: { raw: "nested-summary-raw-value" } },
+    },
   });
   await upsertRuntimeResourcePg(db, { resourceType: "tool_proxy_violation", resourceKey: "violation-1", runId, taskId: "task-1", sessionId: "session-1", scope: "tool", status: "blocking", title: "violation", payload: { evidenceRef: "hand-execution-1:artifact" } });
 }
@@ -137,11 +145,18 @@ function assertRecoveryExecutionPayloadRedacted(resources: Awaited<ReturnType<ty
   assert.equal((resource.payload as { providerActionCount?: unknown }).providerActionCount, 1);
   assert.equal((resource.payload as { stateChangeCount?: unknown }).stateChangeCount, 1);
 
-  const serializedPayload = JSON.stringify(resource.payload);
-  assert.equal(serializedPayload.includes("providerActions"), false);
-  assert.equal(serializedPayload.includes("stateChanges"), false);
-  assert.equal(serializedPayload.includes("token=secret-value"), false);
-  assert.equal(serializedPayload.includes("do-not-return"), false);
-  assert.equal(serializedPayload.includes("secret-evidence-ref"), false);
-  assert.equal(serializedPayload.includes("secret-hand"), false);
+  const serializedResource = JSON.stringify(resource);
+  assert.equal(serializedResource.includes('"providerActions"'), false);
+  assert.equal(serializedResource.includes('"stateChanges"'), false);
+  assert.equal(serializedResource.includes('"evidenceRef"'), false);
+  assert.equal(serializedResource.includes('"errorExcerpt"'), false);
+  assert.equal(serializedResource.includes('"metadata"'), false);
+  assert.equal(serializedResource.includes("summarySecret"), false);
+  assert.equal(serializedResource.includes("summary-evidence-ref"), false);
+  assert.equal(serializedResource.includes("summary-error-excerpt"), false);
+  assert.equal(serializedResource.includes("summary-raw-value"), false);
+  assert.equal(serializedResource.includes("token=secret-value"), false);
+  assert.equal(serializedResource.includes("do-not-return"), false);
+  assert.equal(serializedResource.includes("secret-evidence-ref"), false);
+  assert.equal(serializedResource.includes("secret-hand"), false);
 }
