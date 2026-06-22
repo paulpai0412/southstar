@@ -80,12 +80,44 @@ export async function evaluateRunCompletionGatePg(
       findings.push(`unresolved runtime exception ${exception.resourceKey}: ${exception.payload.kind}`);
     }
 
+    const unappliedRecoveryDecisions = (await tx.query<{
+      resource_key: string;
+      status: string;
+      payload_json: { path?: string };
+    }>(
+      `select resource_key, status, payload_json
+         from southstar.runtime_resources
+        where run_id = $1
+          and resource_type = 'recovery_decision'
+          and status in ('recorded', 'waiting_operator_approval', 'approved', 'applying', 'failed', 'blocked')
+        order by created_at, resource_key`,
+      [input.runId],
+    )).rows;
+    for (const decision of unappliedRecoveryDecisions) {
+      findings.push(`unapplied recovery decision ${decision.resource_key}: ${decision.payload_json.path ?? decision.status}`);
+    }
+
+    const startedRecoveryExecutions = (await tx.query<{ resource_key: string }>(
+      `select resource_key
+         from southstar.runtime_resources
+        where run_id = $1
+          and resource_type = 'recovery_execution'
+          and status = 'started'
+        order by created_at, resource_key`,
+      [input.runId],
+    )).rows;
+    for (const execution of startedRecoveryExecutions) {
+      findings.push(`started recovery execution ${execution.resource_key}`);
+    }
+
     const status = findings.length === 0 ? "passed" : "failed";
     const evaluationFingerprint = shortHash(stableStringify({
       tasks,
       acceptedArtifactRefs: acceptedArtifactRefRows,
       blockingViolations,
       unresolvedRuntimeExceptions,
+      unappliedRecoveryDecisions,
+      startedRecoveryExecutions,
       status,
       findings,
     }));

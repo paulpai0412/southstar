@@ -10,6 +10,7 @@ import {
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
+  upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -73,6 +74,79 @@ test("completion gate passes completed runs after runtime exceptions are resolve
       status: "passed",
       findings: [],
     });
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion gate fails while recovery decision is unapplied", async () => {
+  const db = await createTestPostgresDb();
+  const runId = "run-gate-unapplied-recovery-decision";
+  try {
+    await seedCompletedRunWithAcceptedArtifactRef(db, runId);
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_decision",
+      resourceKey: "recovery_decision:exception-a:retry-same-task-new-attempt",
+      runId,
+      taskId: "task-a",
+      scope: "recovery",
+      status: "recorded",
+      title: "Recovery decision for task-a",
+      payload: {
+        schemaVersion: "southstar.runtime.recovery_decision.v1",
+        decisionId: "decision-a",
+        exceptionId: "exception-a",
+        runId,
+        taskId: "task-a",
+        path: "retry-same-task-new-attempt",
+        reason: "task attempt failed before artifact was repaired",
+        operatorApprovalRequired: false,
+        evidenceRefs: [],
+        createdAt: "2026-06-21T11:00:00.000Z",
+      },
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.findings.some((finding) => finding.includes("unapplied recovery decision")), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion gate fails while recovery execution is started", async () => {
+  const db = await createTestPostgresDb();
+  const runId = "run-gate-started-recovery-execution";
+  try {
+    await seedCompletedRunWithAcceptedArtifactRef(db, runId);
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_execution",
+      resourceKey: "recovery_execution:decision-a:attempt-1",
+      runId,
+      taskId: "task-a",
+      scope: "recovery",
+      status: "started",
+      title: "Recovery execution for task-a",
+      payload: {
+        schemaVersion: "southstar.runtime.recovery_execution.v1",
+        executionId: "execution-a",
+        decisionId: "decision-a",
+        exceptionId: "exception-a",
+        runId,
+        taskId: "task-a",
+        path: "retry-same-task-new-attempt",
+        status: "started",
+        stateChanges: [],
+        providerActions: [],
+        createdAt: "2026-06-21T11:05:00.000Z",
+      },
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.status, "failed");
+    assert.equal(result.findings.some((finding) => finding.includes("started recovery execution")), true);
   } finally {
     await db.close();
   }
