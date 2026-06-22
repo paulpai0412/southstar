@@ -98,7 +98,7 @@ test("reprovision-hand marks old hand lost, creates replacement hand, checkpoint
       ["runtime_exception", "resolved"],
     ]);
     assert.deepEqual(executionPayload.providerActions.map((action) => [action.providerId, action.action, action.status, action.evidenceRef]), [
-      ["fake-hand", "cancel", "succeeded", handExecutionId],
+      ["fake-hand", "cancel", "skipped", handExecutionId],
       ["fake-hand", "destroy", "requested", oldHandBindingId],
       ["fake-hand", "provision", "succeeded", replacementBinding?.resourceKey],
     ]);
@@ -198,7 +198,7 @@ test("reprovision-hand records old binding destroy intent without calling provid
       providerActions: Array<{ providerId: string; action: string; status: string; evidenceRef?: string; attemptedAt?: string; succeededAt?: string }>;
     }).providerActions;
     assert.deepEqual(providerActions.map((action) => [action.providerId, action.action, action.status, action.evidenceRef, action.succeededAt]), [
-      ["fake-hand", "cancel", "succeeded", fixture.handExecutionId, now],
+      ["fake-hand", "cancel", "skipped", fixture.handExecutionId, undefined],
       ["fake-hand", "destroy", "requested", fixture.oldHandBindingId, undefined],
       ["fake-hand", "provision", "succeeded", providerActions[2]?.evidenceRef, now],
     ]);
@@ -488,10 +488,8 @@ test("requeue-hand-execution applies queue timeout recovery and is idempotent", 
       {
         providerId: "tork",
         action: "cancel",
-        status: "succeeded",
+        status: "skipped",
         evidenceRef: handExecutionId,
-        attemptedAt: now,
-        succeededAt: now,
       },
     ]);
 
@@ -512,6 +510,56 @@ test("requeue-hand-execution applies queue timeout recovery and is idempotent", 
       status: "applied",
       appliedAt: now,
     });
+  } finally {
+    await db.close();
+  }
+});
+
+test("requeue-hand-execution records provider cancel failure without blocking requeue", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-cancel-failure" });
+    const { runId, taskId, handExecutionId, decision } = fixture;
+    const now = "2026-06-21T12:10:00.000Z";
+
+    const result = await createRecoveryDecisionApplier({
+      db,
+      providerActions: {
+        async cancel() {
+          throw new Error("Tork cancel endpoint unreachable: secret=abc123 token=secret-value");
+        },
+      },
+    }).applyDecision({ decisionResourceKey: decision.resourceKey, now });
+
+    assert.equal(result.status, "applied");
+
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.runId === runId,
+    );
+    assert.equal(recoveryExecution?.status, "succeeded");
+    const serializedPayload = JSON.stringify(recoveryExecution?.payload);
+    assert.equal(serializedPayload.includes("secret=abc123"), false);
+    assert.equal(serializedPayload.includes("token=secret-value"), false);
+    assert.equal(serializedPayload.includes("[REDACTED]"), true);
+
+    const providerActions = (recoveryExecution?.payload as {
+      providerActions: Array<{ action?: string; status?: string; errorExcerpt?: string }>;
+    }).providerActions;
+    const cancelAction = providerActions.find((action) => action.action === "cancel");
+    assert.equal(cancelAction?.status, "failed");
+    assert.equal(cancelAction?.errorExcerpt?.includes("secret=abc123"), false);
+    assert.equal(cancelAction?.errorExcerpt?.includes("token=secret-value"), false);
+
+    const task = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [runId, taskId],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+
+    const hand = await getResourceByKeyPg(db, "hand_execution", handExecutionId);
+    assert.equal(hand?.status, "lost");
+    assert.equal((hand?.payload as { lostReason?: string }).lostReason, "requeue-hand-execution");
   } finally {
     await db.close();
   }
