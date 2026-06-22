@@ -126,11 +126,12 @@ async function seedManagedAgentRun(db: Parameters<typeof createWorkflowRunPg>[0]
               content: "knowledge card content must not leak",
             },
           ],
-          selectedFiles: [
+          priorArtifacts: [
             {
-              sourceRef: "file-secret-1",
-              path: "/tmp/secret-plan.md",
-              raw: "FILE_RAW_SECRET",
+              sourceRef: "artifact-secret-1",
+              title: "Prior implementation artifact",
+              text: "artifact text must not leak",
+              raw: "ARTIFACT_RAW_SECRET",
             },
           ],
         },
@@ -237,7 +238,7 @@ function assertTaskEnvelopePayloadRedacted(resources: Awaited<ReturnType<typeof 
   assert.equal((resource.payload as { contextPacketId?: unknown }).contextPacketId, "context-packet-1");
   assert.equal((resource.payload as { selectedMemoryCount?: unknown }).selectedMemoryCount, 1);
   assert.equal((resource.payload as { selectedKnowledgeCardCount?: unknown }).selectedKnowledgeCardCount, 1);
-  assert.equal((resource.payload as { selectedFileCount?: unknown }).selectedFileCount, 1);
+  assert.equal((resource.payload as { priorArtifactCount?: unknown }).priorArtifactCount, 1);
 
   const serializedResource = JSON.stringify(resource);
   assert.equal(serializedResource.includes('"envelope"'), false);
@@ -246,7 +247,8 @@ function assertTaskEnvelopePayloadRedacted(resources: Awaited<ReturnType<typeof 
   assert.equal(serializedResource.includes("raw prompt-like selected memory text must not leak"), false);
   assert.equal(serializedResource.includes("SELECTED_MEMORY_RAW_SECRET"), false);
   assert.equal(serializedResource.includes("knowledge card content must not leak"), false);
-  assert.equal(serializedResource.includes("FILE_RAW_SECRET"), false);
+  assert.equal(serializedResource.includes("artifact text must not leak"), false);
+  assert.equal(serializedResource.includes("ARTIFACT_RAW_SECRET"), false);
   assert.equal(serializedResource.includes("AGENT_PROMPT_SECRET"), false);
   assert.equal(serializedResource.includes("SYSTEM_PROMPT_SECRET"), false);
   assert.equal(serializedResource.includes("TASK_ENVELOPE_RAW_SECRET"), false);

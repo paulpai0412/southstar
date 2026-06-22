@@ -184,12 +184,12 @@ function mapTaskEnvelopePayload(row: ResourceRow): Record<string, string | numbe
 
   const selectedMemoryCount = arrayLength(contextPacket.selectedMemories);
   const selectedKnowledgeCardCount = arrayLength(contextPacket.selectedKnowledgeCards);
-  const selectedFileCount = arrayLength(contextPacket.selectedFiles);
-  const sourceCount = selectedMemoryCount + selectedKnowledgeCardCount + selectedFileCount;
+  const priorArtifactCount = arrayLength(contextPacket.priorArtifacts);
+  const sourceCount = selectedMemoryCount + selectedKnowledgeCardCount + priorArtifactCount;
 
   if (selectedMemoryCount > 0) projected.selectedMemoryCount = selectedMemoryCount;
   if (selectedKnowledgeCardCount > 0) projected.selectedKnowledgeCardCount = selectedKnowledgeCardCount;
-  if (selectedFileCount > 0) projected.selectedFileCount = selectedFileCount;
+  if (priorArtifactCount > 0) projected.priorArtifactCount = priorArtifactCount;
   if (sourceCount > 0) projected.sourceCount = sourceCount;
   if (typeof tokenEstimate.total === "number") projected.tokenEstimateTotal = tokenEstimate.total;
 
