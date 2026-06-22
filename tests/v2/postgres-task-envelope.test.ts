@@ -60,6 +60,17 @@ test("Postgres task envelope API returns the latest persisted task envelope befo
       payload: { envelope: persistedEnvelope },
       summary: { contextPacketId: "ctx-persisted-envelope" },
     });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "task_envelope",
+      resourceKey: "task-envelope-legacy-metadata-only",
+      runId: run.runId,
+      taskId: "implement-feature",
+      sessionId: "session-legacy",
+      scope: "task",
+      status: "materialized",
+      payload: { envelopePath: "/tmp/legacy-envelope.json", taskDir: "/tmp/legacy-task", attemptId: "legacy-attempt" },
+      summary: { contextPacketId: "ctx-legacy-metadata-only" },
+    });
 
     const envelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
 

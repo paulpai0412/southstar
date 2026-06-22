@@ -58,6 +58,55 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
   }
 });
 
+test("ManagedContextAssembler applies assembly policy to failure summaries", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-managed-context-failure-policy",
+      status: "running",
+      domain: "software",
+      goalPrompt: "build managed context",
+      workflowManifestJson: JSON.stringify(manifest()),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-managed-context-failure-policy",
+      taskKey: "implement-feature",
+      status: "claimed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: "session-managed-context",
+    });
+
+    const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+    const assembled = await assembler.buildForTask({
+      runId: "run-managed-context-failure-policy",
+      taskId: "implement-feature",
+      sessionId: "session-managed-context",
+      attemptId: "implement-feature-attempt-1",
+      handExecutionId: "hand-execution:run-managed-context-failure-policy:implement-feature:implement-feature-attempt-1",
+      dependsOn: [],
+      failureSummary: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+    });
+
+    assert.equal(assembled.contextPacket.failureSummary, undefined);
+    assert.equal(
+      assembled.contextPacket.excludedCandidates.some((item) => item.sourceRef === "failure-summary:implement-feature-attempt-1" && item.reason === "kind-mismatch"),
+      true,
+    );
+    assert.equal(
+      assembled.trace.excludedCandidates.some((item) => item.sourceRef === "failure-summary:implement-feature-attempt-1" && item.reason === "kind-mismatch"),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 function manifest() {
   return {
     schemaVersion: "southstar.v2",

@@ -20,6 +20,7 @@ async function latestPersistedTaskEnvelope(db: SouthstarDb, input: { runId: stri
       where resource_type = 'task_envelope'
         and run_id = $1
         and task_id = $2
+        and payload_json ? 'envelope'
       order by created_at desc
       limit 1`,
     [input.runId, input.taskId],

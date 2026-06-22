@@ -13,6 +13,7 @@ import {
   CONTEXT_ASSEMBLY_TRACE_SCHEMA_VERSION,
   type ContextAssemblyTrace,
   type ContextBlock,
+  type ContextBlockCandidate,
   type ContextPacket,
 } from "./types.ts";
 
@@ -66,7 +67,10 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         checkpointRefs: input.checkpointRefs ?? [],
       });
       const assembly = assembleContextBlocks({
-        candidates: sources.candidates,
+        candidates: [
+          ...sources.candidates,
+          ...failureSummaryCandidates(input),
+        ],
         maxInputTokens: contextPolicy?.maxInputTokens ?? agentProfile.budgetPolicy.maxInputTokens,
         maxMemoryTokens: memoryPolicy?.maxInjectedTokens ?? 1_500,
         pendingMemoryRefs: sources.pendingMemoryRefs,
@@ -96,7 +100,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         selectedKnowledgeCards: assembly.selected.filter((block) => block.sourceType === "knowledge_card"),
         priorArtifacts: assembly.selected.filter((block) => block.sourceType === "artifact"),
         checkpointSummary: assembly.selected.find((block) => block.sourceType === "checkpoint"),
-        failureSummary: input.failureSummary ? failureBlock(input) : undefined,
+        failureSummary: assembly.selected.find((block) => block.sourceType === "failure"),
         skillInstructions: [],
         mcpGrantSummary: [],
         forbiddenActions: agentProfile.toolPolicy.deniedTools,
@@ -227,15 +231,18 @@ function artifactContractBlocks(contracts: ArtifactContract[]): ContextBlock[] {
   }));
 }
 
-function failureBlock(input: BuildManagedTaskContextInput): ContextBlock {
-  const text = input.failureSummary ?? "";
-  return {
+function failureSummaryCandidates(input: BuildManagedTaskContextInput): ContextBlockCandidate[] {
+  const text = input.failureSummary;
+  if (!text) return [];
+  return [{
     id: `failure-${input.runId}-${input.taskId}-${input.attemptId}`,
     sourceType: "failure",
     title: "Failure summary",
     text,
+    sourceRef: `failure-summary:${input.attemptId}`,
     tokenEstimate: estimateTokens(text),
-  };
+    score: 1,
+  }];
 }
 
 function skillSnapshots(skillRefs: string[]): ResolvedSkillSnapshot[] {
