@@ -4,6 +4,7 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import { createExecutorBindingPg, getExecutorBindingPg, listExecutorBindingsForRunPg, updateExecutorBindingStatusPg } from "../executor/postgres-bindings.ts";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../executor/postgres-tork-callback.ts";
+import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approval-service.ts";
 import { type RecoveryExecutionPlan } from "../session-recovery/execution-planner.ts";
 import { dispatchRecoveryExecutionPg } from "../session-recovery/postgres-dispatcher.ts";
 import { isRecoveryStrategy } from "../session-recovery/types.ts";
@@ -174,6 +175,18 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         runRoot: body.runRoot ?? context.runRoot,
         harnessEndpoint: body.harnessEndpoint,
         contextRefreshUrl: body.contextRefreshUrl,
+      }));
+    }
+
+    const recoveryDecisionApprovalMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/recovery-decisions\/([^/]+)\/approval$/);
+    if (request.method === "POST" && recoveryDecisionApprovalMatch) {
+      const body = await readJsonBody<{ decision?: unknown; reason?: unknown }>(request);
+      if (body.decision !== "approved" && body.decision !== "rejected") throw new Error("decision must be approved or rejected");
+      return json("recovery-decision-approval", await decideRecoveryDecisionApprovalPg(context.db, {
+        runId: decodeURIComponent(recoveryDecisionApprovalMatch[1]!),
+        decisionId: decodeURIComponent(recoveryDecisionApprovalMatch[2]!),
+        decision: body.decision,
+        reason: requiredString(body.reason, "reason"),
       }));
     }
 
