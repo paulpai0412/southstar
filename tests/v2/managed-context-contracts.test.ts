@@ -62,11 +62,15 @@ test("managed context contracts expose attempt lineage, trace, memory refs, and 
     excludedCandidates: [{ sourceRef: "memory_delta:pending-1", reason: "scope-mismatch", tokenEstimate: 20 }],
     tokenEstimate: { total: 12, bySourceType: { memory: 12 } },
     validation: { ok: true, errors: [] },
+    rollbackMarkerRefs: ["rollback-marker-1"],
+    resetMarkerRefs: ["reset-marker-1"],
     createdAt: "2026-06-22T00:00:00.000Z",
   };
 
   assert.equal(trace.validation.ok, true);
   assert.equal(trace.schemaVersion, "southstar.context_assembly_trace.v1");
+  assert.deepEqual(trace.rollbackMarkerRefs, ["rollback-marker-1"]);
+  assert.deepEqual(trace.resetMarkerRefs, ["reset-marker-1"]);
 });
 
 test("runtime exception contracts include managed context recovery paths", () => {

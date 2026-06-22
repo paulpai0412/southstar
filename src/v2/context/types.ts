@@ -115,5 +115,7 @@ export type ContextAssemblyTrace = {
   excludedCandidates: ContextExclusion[];
   tokenEstimate: TokenEstimate;
   validation: ContextAssemblyValidation;
+  rollbackMarkerRefs?: string[];
+  resetMarkerRefs?: string[];
   createdAt: string;
 };
