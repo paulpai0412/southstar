@@ -48,6 +48,10 @@ npm run test:e2e:postgres:17   # tool proxy runtime enforcement
 npm run test:e2e:postgres:18   # work item intake to run execution
 npm run test:e2e:postgres:19   # completion gate blocks unresolved exception
 npm run test:e2e:postgres:20   # operator-approved recovery path
+npm run test:e2e:postgres:21   # recovery decision apply requeue
+npm run test:e2e:postgres:22   # recovery decision apply reprovision
+npm run test:e2e:postgres:23   # operator-approved recovery apply
+npm run test:e2e:postgres:24   # provider unreachable apply failure
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
@@ -77,6 +81,10 @@ npm run test:e2e:postgres:20   # operator-approved recovery path
 | 18 work item intake to run execution | implemented | Work item materialization links provenance before per-task scheduling and callback completion | work item run refs, run context, hand execution, accepted artifact |
 | 19 completion gate unresolved exception | implemented | Completion gate fails completed work while a runtime exception is unresolved, then passes after resolution | failed/passed evaluator results, exception resolution history |
 | 20 operator-approved recovery path | implemented | Operator-required rollback decision is exposed through the exception read model | rollback decision, `operatorApprovalRequired`, operator read model |
+| 21 recovery decision apply requeue | implemented | Applying a queued hand recovery decision releases the task and marks the stale hand lost | pending task, lost hand execution, succeeded recovery execution, resolved exception |
+| 22 recovery decision apply reprovision | implemented | Applying a running hand recovery decision provisions a replacement hand and releases the task | replacement hand binding, checkpoint, lost old hand, succeeded recovery execution |
+| 23 operator-approved recovery apply | implemented | Operator approval gates an operator-required recovery decision before apply | skipped pre-approval apply, approval resource/history, blocked task/execution after approval |
+| 24 provider unreachable apply failure | implemented | Provider cancel failure is retained as redacted action evidence while the task is released | redacted provider action, pending task, lost hand, succeeded recovery execution |
 
 ## Adding a new case
 

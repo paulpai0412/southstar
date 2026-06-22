@@ -28,6 +28,10 @@ const implementedCases = [
   "18-work-item-intake-run-execution.test.ts",
   "19-completion-gate-unresolved-exception.test.ts",
   "20-operator-approved-recovery.test.ts",
+  "21-recovery-decision-apply-requeue.test.ts",
+  "22-recovery-decision-apply-reprovision.test.ts",
+  "23-operator-approved-recovery-apply.test.ts",
+  "24-provider-unreachable-apply-failure.test.ts",
 ];
 
 test("canonical real E2E entrypoint is a static manifest and real cases run one at a time", () => {
