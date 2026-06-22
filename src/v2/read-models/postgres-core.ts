@@ -87,7 +87,14 @@ async function taskDetail(db: SouthstarDb, runId: string, taskId: string) {
 async function sessionsMemory(db: SouthstarDb, runId: string) {
   const sessions = await resources(db, runId, "session");
   const memory = await resources(db, runId, "memory_item");
-  return { sessions: sessions.map(mapResource), memory: memory.map(mapResource) };
+  const memoryDeltas = await resources(db, runId, "memory_delta");
+  const rollbacks = await resources(db, runId, "rollback_marker");
+  return {
+    sessions: sessions.map(mapResource),
+    memory: memory.map(mapResource),
+    memoryDeltas: memoryDeltas.map(mapResource),
+    rollbacks: rollbacks.map(mapResource),
+  };
 }
 
 async function vaultMcp(db: SouthstarDb, runId: string) {

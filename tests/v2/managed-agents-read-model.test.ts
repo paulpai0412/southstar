@@ -19,6 +19,13 @@ test("managed-agent read model lists brain and hand bindings", async () => {
     assert.equal(model.resources.some((resource) => resource.resourceType === "artifact_ref"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "hand_execution"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "task_execution_intent"), true);
+    assert.equal(model.resources.some((resource) => resource.resourceType === "context_packet"), true);
+    assert.equal(model.resources.some((resource) => resource.resourceType === "task_envelope"), true);
+    assert.equal(model.resources.some((resource) => resource.resourceType === "context_assembly_trace"), true);
+    assert.equal(model.resources.some((resource) => resource.resourceType === "memory_item"), true);
+    assert.equal(model.resources.some((resource) => resource.resourceType === "memory_delta"), true);
+    assert.equal(model.resources.some((resource) => resource.resourceType === "rollback_marker"), true);
+    assert.equal(model.resources.some((resource) => resource.resourceType === "artifact_repair_marker"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "evaluator_result"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "recovery_execution"), true);
     assertRecoveryExecutionPayloadRedacted(model.resources);
@@ -83,6 +90,13 @@ async function seedManagedAgentRun(db: Parameters<typeof createWorkflowRunPg>[0]
   await upsertRuntimeResourcePg(db, { resourceType: "artifact_ref", resourceKey: "artifact-ref-1", runId, taskId: "task-1", sessionId: "session-1", scope: "artifact", status: "accepted", title: "artifact ref", payload: { artifactRefId: "artifact-ref-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "hand_execution", resourceKey: "hand-execution-1", runId, taskId: "task-1", sessionId: "session-1", scope: "hand", status: "running", title: "hand execution", payload: { handExecutionId: "hand-execution-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "task_execution_intent", resourceKey: "intent-1", runId, taskId: "task-1", sessionId: "session-1", scope: "brain", status: "created", title: "intent", payload: { intentId: "intent-1" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "context_packet", resourceKey: "context-packet-1", runId, taskId: "task-1", sessionId: "session-1", scope: "context", status: "created", title: "context packet", payload: { id: "context-packet-1" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "task_envelope", resourceKey: "task-envelope-1", runId, taskId: "task-1", sessionId: "session-1", scope: "context", status: "created", title: "task envelope", payload: { id: "task-envelope-1" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "context_assembly_trace", resourceKey: "context-trace-1", runId, taskId: "task-1", sessionId: "session-1", scope: "context", status: "created", title: "context trace", payload: { id: "context-trace-1" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "memory_item", resourceKey: "memory-item-1", runId, taskId: "task-1", sessionId: "session-1", scope: "memory", status: "active", title: "memory item", payload: { id: "memory-item-1" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "memory_delta", resourceKey: "memory-delta-1", runId, taskId: "task-1", sessionId: "session-1", scope: "memory", status: "pending_approval", title: "memory delta", payload: { id: "memory-delta-1" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "rollback_marker", resourceKey: "rollback-marker-1", runId, taskId: "task-1", sessionId: "session-1", scope: "recovery", status: "created", title: "rollback marker", payload: { id: "rollback-marker-1" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "artifact_repair_marker", resourceKey: "artifact-repair-marker-1", runId, taskId: "task-1", sessionId: "session-1", scope: "artifact", status: "created", title: "artifact repair marker", payload: { id: "artifact-repair-marker-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "evaluator_result", resourceKey: "eval-1", runId, taskId: "task-1", sessionId: "session-1", scope: "evaluator", status: "passed", title: "evaluator", payload: { verdict: "passed" } });
   await upsertRuntimeResourcePg(db, {
     resourceType: "recovery_execution",

@@ -37,9 +37,14 @@ test("Postgres read-model API exposes workflow canvas, runtime monitor, executor
       assert.equal(detail.data.taskKey, "implement-feature");
       assert.equal(detail.data.contextPacket?.id, "ctx-1");
 
-      const sessions = await readModel<{ data: { sessions: unknown[]; memory: unknown[] } }>(server.url, "sessions-memory", runId);
+      const sessions = await readModel<{ data: { sessions: unknown[]; memory: Array<{ id: string; status: string }>; memoryDeltas?: unknown[]; rollbacks?: unknown[] } }>(server.url, "sessions-memory", runId);
       assert.equal(sessions.data.sessions.length, 1);
       assert.equal(sessions.data.memory.length, 1);
+      assert.equal(sessions.data.memory.some((item) => item.id === "memory-1" && item.status === "active"), true);
+      assert.equal(Array.isArray(sessions.data.memoryDeltas), true);
+      assert.equal(sessions.data.memoryDeltas?.some((item) => isResourceStatus(item, "pending_approval")), true);
+      assert.equal(Array.isArray(sessions.data.rollbacks), true);
+      assert.equal(sessions.data.rollbacks?.some((item) => isResourceStatus(item, "created")), true);
 
       const vault = await readModel<{ data: { vaultLeases: unknown[]; mcpGrants: unknown[] } }>(server.url, "vault-mcp", runId);
       assert.equal(vault.data.vaultLeases.length, 1);
@@ -74,7 +79,9 @@ async function seedRuntime(db: SouthstarDb): Promise<void> {
   await upsertRuntimeResourcePg(db, { resourceType: "executor_binding", resourceKey: "binding-1", runId, taskId: "task-1", scope: "executor", status: "running", payload: { executorType: "tork", externalJobId: "job-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "context_packet", resourceKey: "ctx-1", runId, taskId: "task-1", scope: "software", status: "created", payload: { id: "ctx-1", selectedKnowledgeCards: [] } });
   await upsertRuntimeResourcePg(db, { resourceType: "session", resourceKey: "session-1", runId, taskId: "task-1", sessionId: "session-1", scope: "task", status: "active", payload: { summary: "root" } });
-  await upsertRuntimeResourcePg(db, { resourceType: "memory_item", resourceKey: "memory-1", runId, scope: "software", status: "approved", payload: { preference: "minimal" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "memory_item", resourceKey: "memory-1", runId, scope: "software", status: "active", payload: { preference: "minimal" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "memory_delta", resourceKey: "memory-delta-1", runId, taskId: "task-1", scope: "software", status: "pending_approval", payload: { preference: "record more context" } });
+  await upsertRuntimeResourcePg(db, { resourceType: "rollback_marker", resourceKey: "rollback-1", runId, taskId: "task-1", scope: "software", status: "created", payload: { reason: "bad candidate" } });
   await upsertRuntimeResourcePg(db, { resourceType: "vault_lease", resourceKey: "lease-1", runId, taskId: "task-1", scope: "task", status: "active", payload: { secretRef: "github-token" } });
   await upsertRuntimeResourcePg(db, { resourceType: "mcp_grant", resourceKey: "mcp-1", runId, taskId: "task-1", scope: "task", status: "active", payload: { serverId: "github" } });
 }
@@ -132,4 +139,8 @@ function replaceDatabase(adminUrl: string, db: string): string {
 
 function quoteIdent(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
+}
+
+function isResourceStatus(value: unknown, status: string): value is { status: string } {
+  return typeof value === "object" && value !== null && "status" in value && (value as { status?: unknown }).status === status;
 }
