@@ -3,7 +3,7 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { ContextMemoryCandidate, ContextMemorySearchInput } from "./provider.ts";
 
-type MemoryLifecycle = "run-local" | "approved";
+type MemoryLifecycle = "run-local" | "pending_approval" | "approved";
 
 export type WriteRunLocalMemoryInput = {
   runId: string;
@@ -84,7 +84,7 @@ export async function writeRunLocalMemoryPg(db: SouthstarDb, input: WriteRunLoca
 }
 
 export async function createMemoryDeltaPg(db: SouthstarDb, input: CreateMemoryDeltaInput): Promise<{ id: string }> {
-  const payload = memoryPayload(input, "approved");
+  const payload = memoryPayload(input, "pending_approval");
   const id = memoryResourceId("delta", input.runId, input.scope, input.kind, input.text, payload.sourceRefs);
   const result = await upsertRuntimeResourcePg(db, {
     id,
@@ -113,8 +113,14 @@ export async function approveMemoryDeltaPg(db: SouthstarDb, input: ApproveMemory
     if (!delta) throw new Error(`memory delta not found: ${input.deltaId}`);
     if (delta.status !== "pending_approval" && delta.status !== "approved") throw new Error(`memory delta is not approvable: ${delta.status}`);
 
-    const now = new Date().toISOString();
     const deltaPayload = parseMemoryPayload(delta.payload_json);
+    if (delta.status === "approved") {
+      const approvedMemoryItemId = stringValue(objectPayload(delta.payload_json).approvedMemoryItemId)
+        ?? memoryResourceId("approved", delta.scope, deltaPayload.kind, deltaPayload.text, deltaPayload.sourceRefs);
+      return { deltaId: input.deltaId, memoryItemId: approvedMemoryItemId };
+    }
+
+    const now = new Date().toISOString();
     const approvedPayload: MemoryPayload = {
       ...deltaPayload,
       lifecycle: "approved",
@@ -295,7 +301,7 @@ function terms(value: string): string[] {
 function parseMemoryPayload(value: unknown): MemoryPayload {
   const payload = objectPayload(value);
   return {
-    lifecycle: payload.lifecycle === "approved" ? "approved" : "run-local",
+    lifecycle: payload.lifecycle === "approved" ? "approved" : payload.lifecycle === "pending_approval" ? "pending_approval" : "run-local",
     kind: typeof payload.kind === "string" ? payload.kind : "memory",
     text: typeof payload.text === "string" ? payload.text : "",
     tags: stringArray(payload.tags),

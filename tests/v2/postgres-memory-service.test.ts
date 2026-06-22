@@ -71,11 +71,30 @@ test("Postgres memory service keeps run-local memory separate from approved long
     });
     assert.deepEqual(beforeApproval, []);
 
+    const pendingDelta = await db.one<{ status: string; payload_json: { lifecycle?: string } }>(
+      "select status, payload_json from southstar.runtime_resources where id = $1 and resource_type = 'memory_delta'",
+      [delta.id],
+    );
+    assert.equal(pendingDelta.status, "pending_approval");
+    assert.equal(pendingDelta.payload_json.lifecycle, "pending_approval");
+
     const approved = await approveMemoryDeltaPg(db, {
       deltaId: delta.id,
       approvedBy: "operator",
       reason: "useful cross-run repair guidance",
     });
+    const repeatedApproval = await approveMemoryDeltaPg(db, {
+      deltaId: delta.id,
+      approvedBy: "operator",
+      reason: "useful cross-run repair guidance",
+    });
+    assert.deepEqual(repeatedApproval, approved);
+
+    const approvalHistory = await db.one<{ count: string }>(
+      "select count(*)::text as count from southstar.workflow_history where run_id = $1 and event_type = 'memory.delta_approved'",
+      ["run-1"],
+    );
+    assert.equal(approvalHistory.count, "1");
 
     const afterApproval = await searchMemoryForContextPg(db, {
       runId: "run-2",

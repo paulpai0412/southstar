@@ -49,6 +49,6 @@ export type MemoryWriteResult = {
 };
 
 export interface MemoryProvider {
-  add(input: MemoryWriteRequest): MemoryWriteResult;
-  search(input: MemorySearchRequest): MemoryCandidate[];
+  add(input: MemoryWriteRequest): Promise<MemoryWriteResult>;
+  search(input: MemorySearchRequest): Promise<MemoryCandidate[]>;
 }
