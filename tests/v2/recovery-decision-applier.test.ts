@@ -2039,6 +2039,95 @@ test("completed task without accepted artifact blocks stale requeue decision wit
   }
 });
 
+test("reset-session recovery decision applies session operation and resolves runtime exception", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-apply-reset-session";
+    const taskId = "task-a";
+    const sessionId = "session-reset-old";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "apply reset session recovery",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: taskId,
+      runId,
+      taskKey: taskId,
+      status: "failed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: sessionId,
+    });
+    await db.query(
+      "update southstar.workflow_tasks set completed_at = $1, updated_at = now() where run_id = $2 and id = $3",
+      ["2026-06-21T15:00:00.000Z", runId, taskId],
+    );
+
+    const controller = createRuntimeExceptionController({ db });
+    const exception = await controller.observe({
+      runId,
+      taskId,
+      sessionId,
+      attemptId: "attempt-reset",
+      source: "completion-gate",
+      kind: "validation_failed",
+      severity: "recoverable",
+      observedAt: "2026-06-21T15:01:00.000Z",
+      evidenceRefs: ["checkpoint-reset-base"],
+    });
+    const decision = await controller.decide(await controller.classify(exception));
+    await patchDecisionPayload(db, decision.resourceKey, { checkpointId: "checkpoint-reset-base" });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now: "2026-06-21T15:02:00.000Z",
+    });
+
+    assert.equal(result.status, "applied");
+
+    const task = await db.one<{ status: string; completed_at: Date | null; root_session_id: string | null }>(
+      "select status, completed_at, root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [runId, taskId],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+    assert.match(task.root_session_id ?? "", /^root-run-apply-reset-session-task-a-reset-session-/);
+
+    const reset = (await listResourcesPg(db, { resourceType: "session_reset" })).find((resource) => resource.runId === runId);
+    assert.equal(reset?.status, "succeeded");
+    assert.equal((reset?.payload as { checkpointId?: string }).checkpointId, "checkpoint-reset-base");
+    assert.equal((reset?.payload as { newRootSessionId?: string }).newRootSessionId, task.root_session_id);
+
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", decision.resourceKey))?.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", exception.resourceKey))?.status, "resolved");
+
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "succeeded");
+    const executionPayload = execution?.payload as {
+      stateChanges: Array<{ resourceType: string; resourceKey: string; toStatus?: string; reason: string }>;
+    };
+    assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus]), [
+      ["session_reset", "succeeded"],
+      ["workflow_task", "pending"],
+      ["recovery_decision", "applied"],
+      ["runtime_exception", "resolved"],
+    ]);
+
+    const history = await listHistoryForRunPg(db, runId);
+    assert.equal(history.some((event) => event.eventType === "session.reset"), true);
+    assert.equal(history.some((event) => event.eventType === "recovery_decision.applied"), true);
+  } finally {
+    await db.close();
+  }
+});
+
 test("stale completed-task missing-artifact block replay does not overwrite terminal payload or conflict with completion", async () => {
   const db = await createTestPostgresDb();
   try {

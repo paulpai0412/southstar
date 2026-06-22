@@ -7,6 +7,7 @@ import {
 } from "../executor/provider-actions.ts";
 import type { HandProvider } from "../hands/types.ts";
 import { createPostgresRecoveryController } from "../session-recovery/postgres-controller.ts";
+import { applySessionRecoveryOperationPg } from "../session-recovery/session-operations.ts";
 import { createPostgresSessionStore } from "../session/postgres-session-store.ts";
 import type { SessionStore } from "../session/types.ts";
 import {
@@ -302,6 +303,28 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
           });
         } catch (error) {
           if (error instanceof Error && isSimpleRecoveryBlockableError(error.message, applyingDecision)) {
+            const terminalDecision = await blockDecision(deps.db, {
+              decision: applyingDecision,
+              executionResourceKey: started.resourceKey,
+              now,
+              reason: error.message,
+            });
+            return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
+          }
+          throw error;
+        }
+      }
+
+      if (isSessionRecoveryPath(applyingDecision.payload.path)) {
+        try {
+          return await applySessionRecoveryMutation(deps.db, {
+            decision: applyingDecision,
+            decisionWasApproved: decision.status === "approved",
+            executionResourceKey: started.resourceKey,
+            now,
+          });
+        } catch (error) {
+          if (error instanceof Error && isSessionRecoveryBlockableError(error.message, applyingDecision)) {
             const terminalDecision = await blockDecision(deps.db, {
               decision: applyingDecision,
               executionResourceKey: started.resourceKey,
@@ -901,6 +924,123 @@ async function applyWakeNewBrainMutation(
       providerActions: evidence.providerActions,
     });
     return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+  });
+}
+
+async function applySessionRecoveryMutation(
+  db: SouthstarDb,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    decisionWasApproved: boolean;
+    executionResourceKey: string;
+    now: string;
+  },
+): Promise<RecoveryDecisionApplyResult> {
+  const { decision, now } = input;
+  const taskId = requireDecisionString(decision.payload.taskId, decision.payload.path, "taskId");
+
+  return await db.tx(async (tx) => {
+    const execution = await lockRecoveryExecutionForUpdatePg(tx, input.executionResourceKey);
+    if (execution.status !== "started") {
+      if (execution.status === "succeeded") {
+        return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
+      }
+      return {
+        status: execution.status,
+        executionResourceKey: execution.resourceKey,
+        reason: `recovery execution already ${execution.status}`,
+      };
+    }
+
+    const completedTaskPrecondition = await applyCompletedTaskPreconditionPg(tx, {
+      decision,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+    if (completedTaskPrecondition) return completedTaskPrecondition;
+
+    const context = await loadSimpleRecoveryContext(tx, decision);
+    const currentEvidence = stagedRecoveryExecutionEvidence(execution.payload as RecoveryExecutionPayload);
+    const evidence = currentEvidence ?? await performAndStageSessionRecovery(tx, {
+      decision,
+      taskId,
+      decisionWasApproved: input.decisionWasApproved,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+
+    await resolveRuntimeExceptionPg(tx, {
+      runId: decision.payload.runId,
+      resourceKey: context.exception.resourceKey,
+      resolvedAt: now,
+      reason: `${decision.payload.path} applied`,
+    });
+
+    await completeRecoveryExecutionPg(tx, {
+      runId: decision.payload.runId,
+      executionResourceKey: input.executionResourceKey,
+      status: "succeeded",
+      completedAt: now,
+      stateChanges: [
+        ...evidence.stateChanges,
+        {
+          resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+          resourceKey: decision.resourceKey,
+          fromStatus: "applying",
+          toStatus: "applied",
+          reason: `${decision.payload.path} applied`,
+        },
+        {
+          resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
+          resourceKey: context.exception.resourceKey,
+          fromStatus: context.exception.status,
+          toStatus: "resolved",
+          reason: `${decision.payload.path} applied`,
+        },
+      ],
+      providerActions: evidence.providerActions,
+    });
+    return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+  });
+}
+
+async function performAndStageSessionRecovery(
+  db: SouthstarDb,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    taskId: string;
+    decisionWasApproved: boolean;
+    executionResourceKey: string;
+    now: string;
+  },
+): Promise<RecoveryExecutionEvidence> {
+  const payload = input.decision.payload as RecoveryDecisionPayload & Record<string, unknown>;
+  const operatorDecision = typeof payload.operatorDecision === "string" ? payload.operatorDecision : undefined;
+  const approved = input.decision.payload.path === "rollback-session"
+    ? input.decisionWasApproved || operatorDecision === "approved"
+    : true;
+  const result = await applySessionRecoveryOperationPg(db, {
+    operationId: input.decision.decisionId,
+    runId: input.decision.payload.runId,
+    taskId: input.taskId,
+    path: input.decision.payload.path as "fork-session" | "reset-session" | "rollback-session",
+    approved,
+    checkpointId: stringValue(payload.checkpointId) ?? firstEvidenceRef(input.decision.payload.evidenceRefs, /^session_checkpoint:|^checkpoint[-:]/),
+    workspaceSnapshotRef: stringValue(payload.workspaceSnapshotRef) ?? firstEvidenceRef(input.decision.payload.evidenceRefs, /^workspace[_-]snapshot:/),
+    invalidatedSourceRefs: arrayOfStrings(payload.invalidatedSourceRefs),
+    reason: input.decision.payload.reason,
+    now: input.now,
+  });
+  if (result.status !== "succeeded") {
+    throw new Error(`${input.decision.payload.path} requires operator approval`);
+  }
+  return await stageRecoveryExecutionEvidencePg(db, {
+    executionResourceKey: input.executionResourceKey,
+    evidence: {
+      stateChanges: result.stateChanges,
+      providerActions: result.providerActions,
+    },
+    now: input.now,
   });
 }
 
@@ -1715,6 +1855,10 @@ function isSimpleRecoveryPath(path: string): boolean {
     || path === "fail-run";
 }
 
+function isSessionRecoveryPath(path: string): boolean {
+  return path === "fork-session" || path === "reset-session" || path === "rollback-session";
+}
+
 function missingTaskOrHandReason(decision: RuntimeRecoveryDecisionRecord): string | null {
   if (!decision.payload.taskId) return `${decision.payload.path} decision missing taskId`;
   if (!decision.payload.handExecutionId) return `${decision.payload.path} decision missing handExecutionId`;
@@ -1758,6 +1902,15 @@ function isWakeNewBrainBlockableError(message: string, decision: RuntimeRecovery
     || message === `runtime exception ${decision.payload.exceptionId} not found`
     || message === "wake-new-brain decision missing sessionId"
     || message === "wake-new-brain decision missing taskId";
+}
+
+function isSessionRecoveryBlockableError(message: string, decision: RuntimeRecoveryDecisionRecord): boolean {
+  return message === `workflow run ${decision.payload.runId} not found`
+    || message === `workflow task ${decision.payload.taskId} does not belong to run ${decision.payload.runId}`
+    || message === `runtime exception ${decision.payload.exceptionId} not found`
+    || message === `${decision.payload.path} decision missing taskId`
+    || message === "rollback-session requires workspaceSnapshotRef"
+    || message === "rollback-session requires operator approval";
 }
 
 function oldHandBindingIdForRecovery(
@@ -2075,6 +2228,14 @@ function requireDecisionString(value: string | undefined, path: string, label: s
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function firstEvidenceRef(values: string[], pattern: RegExp): string | undefined {
+  return values.find((value) => pattern.test(value));
+}
+
+function arrayOfStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
 }
 
 function dateString(value: Date | string): string {

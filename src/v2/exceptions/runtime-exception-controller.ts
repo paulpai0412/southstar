@@ -116,6 +116,8 @@ function classifyRecoveryPath(exception: RuntimeExceptionRecord): RecoveryPath {
     case "callback_contract_violation":
     case "artifact_rejected":
       return "repair-artifact";
+    case "validation_failed":
+      return "reset-session";
     case "tool_proxy_violation":
     case "completion_gate_failed":
     case "provider_unreachable":
@@ -129,6 +131,8 @@ function classifyRecoveryPath(exception: RuntimeExceptionRecord): RecoveryPath {
       return "retry-same-task-new-attempt";
     case "intake_invalid":
       return "block-for-operator";
+    case "context_assembly_failed":
+      return "fork-session";
   }
 }
 
