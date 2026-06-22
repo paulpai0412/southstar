@@ -59,6 +59,15 @@ curl -X POST "$SOUTHSTAR_URL/api/v2/runs/$RUN_ID/recovery-decisions/$DECISION_ID
    - exception 已 resolved，或保留 blocked evidence。
    - completion gate 沒有 unresolved exception 或 unapplied decision。
 
+## 4.2 managed context / session / memory
+
+1. 每個 executable attempt 都應有 `context_packet`、`task_envelope`、`context_assembly_trace`。
+2. `task_envelope.payload.envelope.contextPacket.id` 必須等於同 task 最新 `context_packet.resource_key`。
+3. normal downstream task 應只讀 accepted `artifact_ref`、active run-local memory、approved long-term memory。
+4. reset-session recovery 會從 checkpoint 重建 session，排除 failed suffix；rollback-session 會以 rollback marker 排除被覆蓋的 refs。
+5. recovery applier 不直接 submit Tork；它只把 durable state 改回可排程狀態，之後由 runnable-task scheduler 重建 context 並 per-task submit。
+6. callback 後必須回寫 `artifact_ref`、memory delta、history event、hand/task state；checkpoint refs 由 scheduler/recovery path 建立，讓下一個 normal task 或 recovery task 都能用同一套 durable context 讀取。
+
 ## 5. credential isolation
 
 1. 檢查 task envelope、sandbox env、hand provider payload 不含 token-shaped value。

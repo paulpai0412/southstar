@@ -66,8 +66,8 @@ npm run test:e2e:postgres:26   # abnormal managed context/session/memory recover
 | 01 db schema init | implemented | Verify `db:init`, schema metadata, simplified table model | `southstar.schema_metadata`, no dedicated forbidden tables |
 | 02 runtime API contract | implemented | Verify planner draft, run creation, task envelope, run inspection | Postgres rows + `/api/v2/read-models/...` |
 | 03 normal software run | implemented | Real software task through planner -> Tork -> Pi -> callback -> completed artifact | `workflow_history`, accepted artifact, completed task/run |
-| 04 artifact repair/recovery | implemented | Failed callback evidence triggers repair/recovery execution and successful retry | `repair.requested`, `recovery.execution_submitted`, recovered executor binding/task |
-| 05 session recovery | implemented | Failed session callback gets checkpointed and rerun under new root session id | checkpoint resource, rerun context packet/envelope, `checkpoint.created`, `recovery.execution_submitted` |
+| 04 artifact repair/recovery | implemented | Failed callback evidence triggers repair/recovery decision apply and successful retry | `repair.requested`, `recovery_decision.applied`, recovered hand execution/task |
+| 05 session recovery | implemented | Failed session callback gets checkpointed and rerun under new root session id | checkpoint resource, rerun context packet/envelope, `checkpoint.created`, scheduler resubmission |
 | 06 executor reconcile | implemented | Lost executor binding is classified and actioned without mutating run/task lifecycle | lost binding status, reconcile result resource, executor action commands/history |
 | 07 evolution learning | implemented | Runtime-linked signals synthesize cards, deltas, and wiki backlinks with read-model evidence | `learning_nodes`, `learning_edges`, delta resource, evolution control center counts |
 | 08 evolution sandbox | implemented | Baseline/candidate sandbox jobs execute through Tork/Pi and evaluate decision | sandbox run contexts, callback history, decision resource |
@@ -88,6 +88,7 @@ npm run test:e2e:postgres:26   # abnormal managed context/session/memory recover
 | 23 operator-approved recovery apply | implemented | Operator approval gates an operator-required recovery decision before apply | skipped pre-approval apply, approval resource/history, blocked task/execution after approval |
 | 24 provider unreachable apply failure | implemented | Provider cancel failure is retained as redacted action evidence while the task is released | redacted provider action, pending task, lost hand, succeeded recovery execution |
 | 25 normal context/session/memory flow | implemented | Downstream task receives prior artifact and run-local memory through managed context | context packet refs, task envelope, completed hands/tasks, accepted artifacts |
+| 26 abnormal context/session/memory recovery | implemented | Failed validation resets the session and rebuilds retry context from checkpoint and run-local memory | rejected artifact, session reset, checkpoint refs, memory refs, retry envelope, resolved exception |
 
 ## Adding a new case
 

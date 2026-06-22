@@ -22,7 +22,9 @@ import {
 } from "../postgres-real-harness.ts";
 import {
   createRealRecoveryScheduler,
+  firstAttemptId,
   latestHandExecutionForTask,
+  seedRunningHandAttempt,
   waitForHandExecutionStatus,
 } from "../recovery-scheduler-helpers.ts";
 
@@ -59,34 +61,17 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
       callbackBase: dockerReachableUrl(server, infra),
     });
 
-    const firstDispatch = await scheduler.runOnce({ runId });
-    assert.deepEqual(firstDispatch.dispatchedTaskIds, [taskId]);
-
-    const firstHand = await latestHandExecutionForTask(env.db, { runId, taskId });
-    assert.equal(firstHand.attemptId, `${taskId}-attempt-1`);
-    await waitForTorkJob(infra.torkBaseUrl, firstHand.externalJobId);
-    const firstHandStatus = await waitForHandExecutionStatus(env.db, firstHand.resourceKey, ["completed", "failed"]);
-    assert.equal(firstHandStatus, "completed");
-
-    const firstTask = await taskRow(env.db, { runId, taskId });
-    assert.equal(firstTask.status, "completed");
-    assert.ok(firstTask.root_session_id);
-
-    const firstAcceptedArtifact = await latestArtifact(env.db, {
+    const initialSessionId = `root-${runId}-${taskId}`;
+    const initialAttemptId = firstAttemptId(taskId);
+    const initialHandExecutionId = await seedRunningHandAttempt(env.db, {
       runId,
       taskId,
-      status: "accepted",
+      sessionId: initialSessionId,
+      attemptId: initialAttemptId,
     });
-
-    await env.db.query(
-      `update southstar.workflow_tasks
-          set status = 'running',
-              completed_at = null,
-              updated_at = now()
-        where run_id = $1
-          and id = $2`,
-      [runId, taskId],
-    );
+    const firstTask = await taskRow(env.db, { runId, taskId });
+    assert.equal(firstTask.status, "running");
+    assert.equal(firstTask.root_session_id, initialSessionId);
 
     await api(server.port, "/api/v2/tork/callback", {
       method: "POST",
@@ -96,18 +81,18 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
         rootSessionId: firstTask.root_session_id,
         ok: false,
         attempts: 1,
-        attemptId: firstHand.attemptId,
+        attemptId: initialAttemptId,
         artifact: {
           kind: "validation_report",
           summary: "Validator rejected the producer artifact because command evidence was absent.",
-          failedArtifactRefs: [firstAcceptedArtifact.resourceKey],
+          failedArtifactRefs: [initialHandExecutionId],
         },
         metrics: { durationMs: 1, toolCalls: 0, retryCount: 0, tokens: 1, costMicrosUsd: 1 },
         events: [{
           eventType: "validator.finding",
           actorType: "evaluator",
           sessionId: firstTask.root_session_id,
-          payload: { failedArtifactRefs: [firstAcceptedArtifact.resourceKey] },
+          payload: { failedHandExecutionId: initialHandExecutionId },
         }],
         receivedAt: "2026-06-22T02:00:00.000Z",
       }),
@@ -118,7 +103,7 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
       taskId,
       status: "rejected",
     });
-    assert.notEqual(rejectedArtifact.resourceKey, firstAcceptedArtifact.resourceKey);
+    assert.notEqual(rejectedArtifact.resourceKey, initialHandExecutionId);
 
     const checkpointResourceKey = `checkpoint:${runId}:${taskId}:before-recovery`;
     await createPostgresSessionStore(env.db).createCheckpoint({
@@ -156,8 +141,8 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
       runId,
       taskId,
       sessionId: firstTask.root_session_id,
-      attemptId: firstHand.attemptId,
-      handExecutionId: firstHand.resourceKey,
+      attemptId: initialAttemptId,
+      handExecutionId: initialHandExecutionId,
       source: "callback",
       kind: "validation_failed",
       severity: "recoverable",
@@ -217,7 +202,7 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
       taskId,
       status: "accepted",
     });
-    assert.notEqual(retryAcceptedArtifact.resourceKey, firstAcceptedArtifact.resourceKey);
+    assert.notEqual(retryAcceptedArtifact.resourceKey, rejectedArtifact.resourceKey);
 
     const rejectedArtifacts = artifactsForTask(await listResourcesPg(env.db, { resourceType: "artifact_ref" }), {
       runId,
@@ -225,13 +210,10 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
       status: "rejected",
     });
     assert.equal(rejectedArtifacts.some((artifact) => artifact.resourceKey === rejectedArtifact.resourceKey), true);
-    assert.equal(
-      rejectedArtifacts.some((artifact) => {
-        const payload = artifact.payload as { content?: { failedArtifactRefs?: string[] } };
-        return payload.content?.failedArtifactRefs?.includes(firstAcceptedArtifact.resourceKey) === true;
-      }),
-      true,
-    );
+    assert.equal(rejectedArtifacts.some((artifact) => {
+      const payload = artifact.payload as { handExecutionId?: string };
+      return payload.handExecutionId === initialHandExecutionId;
+    }), true);
 
     assert.equal((await latestResource(env.db, { runId, taskId, resourceType: "recovery_execution" })).status, "succeeded");
     assert.equal((await latestResource(env.db, { runId, taskId, resourceType: "runtime_exception" })).status, "resolved");

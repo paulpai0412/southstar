@@ -82,6 +82,8 @@ test("managed context E2E cases use retrievable memory kinds and typed manifest 
   assert.match(abnormalContextCase, /kind:\s*"failure_lesson"/);
   assert.doesNotMatch(abnormalContextCase, /executionPolicy/);
   assert.match(abnormalContextCase, /effortPolicy/);
+  assert.doesNotMatch(abnormalContextCase, /update\s+southstar\.workflow_tasks/i);
+  assert.match(source("tests/e2e-postgres/README.md"), /\| 26 abnormal context\/session\/memory recovery \| implemented \|/);
 });
 
 test("legacy SQLite real E2E suite is removed from the runnable tree", () => {
