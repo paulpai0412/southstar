@@ -187,6 +187,40 @@ test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/approval rejects m
   }
 });
 
+test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/approval rejects mismatched payload run ids without writes", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const routeRunId = "run-operator-payload-run-mismatch";
+    const payloadRunId = "run-operator-payload-other";
+    const decision = await seedWaitingRuntimeDecision(db, { runId: routeRunId });
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(payload_json, '{runId}', $1::jsonb, false)
+        where resource_type = $2
+          and resource_key = $3`,
+      [JSON.stringify(payloadRunId), RECOVERY_DECISION_RESOURCE_TYPE, decision.resourceKey],
+    );
+
+    const response = await postRecoveryDecisionApproval(db, routeRunId, decision.decisionId, {
+      decision: "approved",
+      reason: "operator should not approve mismatched payload",
+    });
+
+    assert.equal(response.status, 400);
+    const envelope = await response.json() as { ok: false; error: string };
+    assert.equal(envelope.ok, false);
+    assert.match(envelope.error, /runtime recovery decision payload runId mismatch/);
+
+    const persistedDecision = await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, decision.resourceKey);
+    assert.equal(persistedDecision?.status, "waiting_operator_approval");
+    assert.equal(pickKeys(persistedDecision?.payload, ["runId", "operatorDecision", "operatorReason"]).runId, payloadRunId);
+    assert.equal((await listResourcesPg(db, { resourceType: "operator_approval" })).filter((resource) => resource.runId === routeRunId).length, 0);
+    assert.equal((await listHistoryForRunPg(db, routeRunId)).filter((event) => event.eventType === "recovery_decision.operator_decided").length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
 test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/approval returns an error envelope for invalid bodies", async () => {
   const db = await createTestPostgresDb();
   try {

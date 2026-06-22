@@ -56,6 +56,9 @@ export async function decideRecoveryDecisionApprovalPg(
     if (!row) throw new Error(`runtime recovery decision not found: ${input.decisionId}`);
 
     const payload = requireRuntimeRecoveryDecisionPayload(row, input.decisionId);
+    if (payload.runId !== input.runId) {
+      throw new Error(`runtime recovery decision payload runId mismatch: ${input.decisionId}`);
+    }
     const nextStatus = input.decision === "approved" ? "approved" : "blocked";
     assertTransitionAllowed(row.status as RecoveryDecisionStatus, payload, input, nextStatus);
 
