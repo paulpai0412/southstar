@@ -86,6 +86,44 @@ test("rollback-session waits for approval without rollback marker or task mutati
   }
 });
 
+test("fork-session releases failed task with durable fork evidence", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createSessionRecoveryFixture(db);
+
+    const result = await applySessionRecoveryOperationPg(db, {
+      operationId: "session-op-fork-1",
+      runId: "run-session-ops",
+      taskId: "implement",
+      path: "fork-session",
+      approved: true,
+      checkpointId: "checkpoint-base",
+      reason: "fork from stable checkpoint",
+      now: "2026-06-22T08:02:00.000Z",
+    });
+
+    assert.equal(result.status, "succeeded");
+    assert.match(result.newRootSessionId ?? "", /^root-run-session-ops-implement-fork-session-/);
+
+    const task = await db.one<{ status: string; completed_at: Date | null; root_session_id: string | null }>(
+      "select status, completed_at, root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2",
+      ["run-session-ops", "implement"],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+    assert.equal(task.root_session_id, result.newRootSessionId);
+
+    const fork = await getResourceByKeyPg(db, "session_fork", "session_fork:session-op-fork-1");
+    assert.equal(fork?.status, "succeeded");
+    assert.equal((fork?.payload as { checkpointId?: string }).checkpointId, "checkpoint-base");
+
+    const history = await listHistoryForRunPg(db, "run-session-ops");
+    assert.equal(history.filter((event) => event.eventType === "session.fork").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
 test("rollback-session requires workspace snapshot evidence and records rollback marker when approved", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -166,6 +204,53 @@ test("rollback-session requires workspace snapshot evidence and records rollback
       reason: "rollback to known good workspace",
       appliedAt: "2026-06-22T08:03:00.000Z",
     });
+  } finally {
+    await db.close();
+  }
+});
+
+test("stale unapproved rollback replay does not downgrade succeeded rollback operation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createSessionRecoveryFixture(db);
+
+    const approved = await applySessionRecoveryOperationPg(db, {
+      operationId: "session-op-rollback-replay",
+      runId: "run-session-ops",
+      taskId: "implement",
+      path: "rollback-session",
+      approved: true,
+      checkpointId: "checkpoint-base",
+      workspaceSnapshotRef: "workspace_snapshot:base",
+      invalidatedSourceRefs: ["artifact_ref:stale-result"],
+      reason: "rollback to known good workspace",
+      now: "2026-06-22T08:04:00.000Z",
+    });
+    assert.equal(approved.status, "succeeded");
+
+    const replay = await applySessionRecoveryOperationPg(db, {
+      operationId: "session-op-rollback-replay",
+      runId: "run-session-ops",
+      taskId: "implement",
+      path: "rollback-session",
+      approved: false,
+      checkpointId: "checkpoint-base",
+      workspaceSnapshotRef: "workspace_snapshot:base",
+      reason: "stale approval read",
+      now: "2026-06-22T08:05:00.000Z",
+    });
+
+    assert.equal(replay.status, "succeeded");
+    assert.equal(replay.newRootSessionId, approved.newRootSessionId);
+
+    const rollback = await getResourceByKeyPg(db, "session_rollback", "session_rollback:session-op-rollback-replay");
+    assert.equal(rollback?.status, "succeeded");
+    assert.equal((rollback?.payload as { reason?: string }).reason, "rollback to known good workspace");
+
+    const markers = await listResourcesPg(db, { resourceType: "rollback_marker" });
+    assert.equal(markers.length, 1);
+    const history = await listHistoryForRunPg(db, "run-session-ops");
+    assert.equal(history.filter((event) => event.eventType === "session.rollback").length, 1);
   } finally {
     await db.close();
   }

@@ -1947,6 +1947,29 @@ async function claimRecoveryDecisionApplyingPg(
 ): Promise<RuntimeRecoveryDecisionRecord> {
   return await db.tx(async (tx) => {
     const current = requireRecoveryDecision(await getRecoveryDecisionByKeyForUpdatePg(tx, input.decision.resourceKey));
+    if (shouldWaitForRollbackSessionApproval(current)) {
+      const payload = {
+        ...current.payload,
+        statusReason: "rollback-session waiting for operator approval",
+      };
+      await upsertRuntimeResourcePg(tx, {
+        id: current.decisionId,
+        resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+        resourceKey: current.resourceKey,
+        runId: current.payload.runId,
+        taskId: current.payload.taskId,
+        scope: "recovery",
+        status: "waiting_operator_approval",
+        title: "Runtime recovery decision: rollback-session",
+        payload,
+        summary: {
+          exceptionId: current.payload.exceptionId,
+          path: current.payload.path,
+          waitingAt: input.now,
+        },
+      });
+      return requireRecoveryDecision(await getResourceByKeyPg(tx, RECOVERY_DECISION_RESOURCE_TYPE, current.resourceKey));
+    }
     if (current.status === "applying") return current;
     if (current.status !== "recorded" && current.status !== "approved") return current;
 
@@ -1973,6 +1996,14 @@ async function claimRecoveryDecisionApplyingPg(
     });
     return requireRecoveryDecision(await getResourceByKeyPg(tx, RECOVERY_DECISION_RESOURCE_TYPE, current.resourceKey));
   });
+}
+
+function shouldWaitForRollbackSessionApproval(decision: RuntimeRecoveryDecisionRecord): boolean {
+  const payload = decision.payload as RecoveryDecisionPayload & Record<string, unknown>;
+  return (decision.status === "recorded" || decision.status === "applying")
+    && decision.payload.path === "rollback-session"
+    && decision.payload.operatorApprovalRequired === true
+    && payload.operatorDecision !== "approved";
 }
 
 async function getRecoveryDecisionByKeyForUpdatePg(

@@ -1911,6 +1911,127 @@ test("operator-required rollback decision waits without starting recovery execut
   }
 });
 
+test("recorded rollback decision requiring approval is moved back to waiting without starting execution", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRollbackDecisionFixture(db, { runId: "run-apply-recorded-rollback-waits" });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "recorded");
+    await patchDecisionPayload(db, fixture.decision.resourceKey, {
+      path: "rollback-session",
+      operatorApprovalRequired: true,
+      checkpointId: "checkpoint-rollback-base",
+      workspaceSnapshotRef: "workspace_snapshot:dirty",
+    });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T13:26:00.000Z",
+    });
+
+    assert.equal(result.status, "skipped");
+    assert.match(result.reason, /waiting for operator approval/);
+
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey))?.status, "waiting_operator_approval");
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_execution" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "session_rollback" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "rollback_marker" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    await assertReprovisionHandAndTaskUnchanged(db, fixture);
+  } finally {
+    await db.close();
+  }
+});
+
+test("applying rollback decision without approval returns to waiting without terminal blocking", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRollbackDecisionFixture(db, { runId: "run-apply-applying-rollback-waits" });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "applying");
+    await patchDecisionPayload(db, fixture.decision.resourceKey, {
+      path: "rollback-session",
+      operatorApprovalRequired: true,
+      checkpointId: "checkpoint-rollback-base",
+      workspaceSnapshotRef: "workspace_snapshot:dirty",
+    });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T13:26:15.000Z",
+    });
+
+    assert.equal(result.status, "skipped");
+    assert.match(result.reason, /waiting for operator approval/);
+
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey))?.status, "waiting_operator_approval");
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_execution" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "session_rollback" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "rollback_marker" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    await assertReprovisionHandAndTaskUnchanged(db, fixture);
+  } finally {
+    await db.close();
+  }
+});
+
+test("approved rollback-session recovery decision applies rollback marker and resolves runtime exception", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRollbackDecisionFixture(db, { runId: "run-apply-rollback-approved" });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "approved");
+    await patchDecisionPayload(db, fixture.decision.resourceKey, {
+      path: "rollback-session",
+      operatorApprovalRequired: true,
+      operatorDecision: "approved",
+      checkpointId: "checkpoint-rollback-base",
+      workspaceSnapshotRef: "workspace_snapshot:dirty",
+      invalidatedSourceRefs: ["artifact_ref:stale-result"],
+    });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T13:26:30.000Z",
+    });
+
+    assert.equal(result.status, "applied");
+
+    const task = await db.one<{ status: string; completed_at: Date | null; root_session_id: string | null }>(
+      "select status, completed_at, root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [fixture.runId, fixture.taskId],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+    assert.match(task.root_session_id ?? "", /^root-run-apply-rollback-approved-task-a-rollback-session-/);
+
+    const rollback = (await listResourcesPg(db, { resourceType: "session_rollback" })).find((resource) => resource.runId === fixture.runId);
+    assert.equal(rollback?.status, "succeeded");
+    assert.equal((rollback?.payload as { workspaceSnapshotRef?: string }).workspaceSnapshotRef, "workspace_snapshot:dirty");
+
+    const marker = (await listResourcesPg(db, { resourceType: "rollback_marker" })).find((resource) => resource.runId === fixture.runId);
+    assert.equal(marker?.status, "recorded");
+    assert.deepEqual((marker?.payload as { invalidatedSourceRefs?: string[] }).invalidatedSourceRefs, ["artifact_ref:stale-result"]);
+
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey))?.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", fixture.exception.resourceKey))?.status, "resolved");
+
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "succeeded");
+    const executionPayload = execution?.payload as {
+      stateChanges: Array<{ resourceType: string; toStatus?: string }>;
+    };
+    assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus]), [
+      ["rollback_marker", "recorded"],
+      ["session_rollback", "succeeded"],
+      ["workflow_task", "pending"],
+      ["recovery_decision", "applied"],
+      ["runtime_exception", "resolved"],
+    ]);
+
+    const history = await listHistoryForRunPg(db, fixture.runId);
+    assert.equal(history.some((event) => event.eventType === "session.rollback"), true);
+    assert.equal(history.some((event) => event.eventType === "recovery_decision.applied"), true);
+  } finally {
+    await db.close();
+  }
+});
+
 test("completed task with accepted artifact supersedes stale requeue decision without mutating hand or task", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -2122,6 +2243,86 @@ test("reset-session recovery decision applies session operation and resolves run
 
     const history = await listHistoryForRunPg(db, runId);
     assert.equal(history.some((event) => event.eventType === "session.reset"), true);
+    assert.equal(history.some((event) => event.eventType === "recovery_decision.applied"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("fork-session recovery decision applies session fork and resolves runtime exception", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-apply-fork-session";
+    const taskId = "task-a";
+    const sessionId = "session-fork-old";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "apply fork session recovery",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: taskId,
+      runId,
+      taskKey: taskId,
+      status: "failed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: sessionId,
+    });
+    await db.query(
+      "update southstar.workflow_tasks set completed_at = $1, updated_at = now() where run_id = $2 and id = $3",
+      ["2026-06-21T15:03:00.000Z", runId, taskId],
+    );
+
+    const controller = createRuntimeExceptionController({ db });
+    const exception = await controller.observe({
+      runId,
+      taskId,
+      sessionId,
+      attemptId: "attempt-fork",
+      source: "completion-gate",
+      kind: "context_assembly_failed",
+      severity: "recoverable",
+      observedAt: "2026-06-21T15:04:00.000Z",
+      evidenceRefs: ["checkpoint-fork-base"],
+    });
+    const decision = await controller.decide(await controller.classify(exception));
+    await patchDecisionPayload(db, decision.resourceKey, {
+      path: "fork-session",
+      checkpointId: "checkpoint-fork-base",
+      reason: "fork failed context from checkpoint",
+    });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: decision.resourceKey,
+      now: "2026-06-21T15:05:00.000Z",
+    });
+
+    assert.equal(result.status, "applied");
+
+    const task = await db.one<{ status: string; completed_at: Date | null; root_session_id: string | null }>(
+      "select status, completed_at, root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [runId, taskId],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+    assert.match(task.root_session_id ?? "", /^root-run-apply-fork-session-task-a-fork-session-/);
+
+    const fork = (await listResourcesPg(db, { resourceType: "session_fork" })).find((resource) => resource.runId === runId);
+    assert.equal(fork?.status, "succeeded");
+    assert.equal((fork?.payload as { checkpointId?: string }).checkpointId, "checkpoint-fork-base");
+
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", decision.resourceKey))?.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", exception.resourceKey))?.status, "resolved");
+
+    const history = await listHistoryForRunPg(db, runId);
+    assert.equal(history.some((event) => event.eventType === "session.fork"), true);
     assert.equal(history.some((event) => event.eventType === "recovery_decision.applied"), true);
   } finally {
     await db.close();

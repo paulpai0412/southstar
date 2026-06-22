@@ -74,6 +74,28 @@ export async function applySessionRecoveryOperationPg(
     if (!task) throw new Error(`workflow task ${input.taskId} does not belong to run ${input.runId}`);
     const previousTaskStatus = task.status;
 
+    const existing = await getResourceByKeyPg(tx, operationResourceType, operationResourceKey);
+    if (existing?.status === "succeeded") {
+      const payload = isPlainObject(existing.payload) ? existing.payload : {};
+      return {
+        status: "succeeded",
+        operationId: input.operationId,
+        operationResourceType,
+        operationResourceKey,
+        previousRootSessionId: stringValue(payload.previousRootSessionId) ?? task.root_session_id ?? undefined,
+        newRootSessionId: stringValue(payload.newRootSessionId) ?? newRootSessionId,
+        rollbackMarkerRef: stringValue(payload.rollbackMarkerRef) ?? rollbackMarkerRef,
+        stateChanges: sessionOperationStateChanges({
+          input,
+          taskStatus: stringValue(payload.previousTaskStatus) ?? previousTaskStatus,
+          operationResourceKey,
+          operationResourceType,
+          rollbackMarkerRef: stringValue(payload.rollbackMarkerRef) ?? rollbackMarkerRef,
+        }),
+        providerActions: [],
+      };
+    }
+
     if (input.path === "rollback-session" && !input.approved) {
       await upsertRuntimeResourcePg(tx, {
         resourceType: operationResourceType,
@@ -102,28 +124,6 @@ export async function applySessionRecoveryOperationPg(
         operationResourceKey,
         previousRootSessionId: task.root_session_id ?? undefined,
         stateChanges: [],
-        providerActions: [],
-      };
-    }
-
-    const existing = await getResourceByKeyPg(tx, operationResourceType, operationResourceKey);
-    if (existing?.status === "succeeded") {
-      const payload = isPlainObject(existing.payload) ? existing.payload : {};
-      return {
-        status: "succeeded",
-        operationId: input.operationId,
-        operationResourceType,
-        operationResourceKey,
-        previousRootSessionId: stringValue(payload.previousRootSessionId) ?? task.root_session_id ?? undefined,
-        newRootSessionId: stringValue(payload.newRootSessionId) ?? newRootSessionId,
-        rollbackMarkerRef: stringValue(payload.rollbackMarkerRef) ?? rollbackMarkerRef,
-        stateChanges: sessionOperationStateChanges({
-          input,
-          taskStatus: stringValue(payload.previousTaskStatus) ?? previousTaskStatus,
-          operationResourceKey,
-          operationResourceType,
-          rollbackMarkerRef: stringValue(payload.rollbackMarkerRef) ?? rollbackMarkerRef,
-        }),
         providerActions: [],
       };
     }
