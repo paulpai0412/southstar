@@ -48,15 +48,81 @@ test("assembly policy fails validation when required source refs are missing", (
   assert.match(result.validation.errors[0]?.message ?? "", /required source ref missing: artifact-a/);
 });
 
+test("assembly policy reserves budget for required refs before optional candidates", () => {
+  const result = assembleContextBlocks({
+    candidates: [
+      candidate("artifact", "optional-artifact", "Optional artifact consumes the full budget.", 20, 0.99),
+      candidate("memory", "required-memory", "Required memory should win budget.", 10, 0.2),
+      candidate("knowledge_card", "optional-card", "Optional card can fit after required memory.", 10, 0.9),
+    ],
+    maxInputTokens: 20,
+    maxMemoryTokens: 20,
+    pendingMemoryRefs: [],
+    invalidatedSourceRefs: [],
+    requiredSourceRefs: ["required-memory"],
+  });
+
+  assert.equal(result.validation.ok, true);
+  assert.deepEqual(result.selected.map((block) => block.sourceRef), ["required-memory", "optional-card"]);
+  assertExclusion(result.excludedCandidates, "optional-artifact", "over-budget");
+});
+
+test("assembly policy selects only the highest-scored duplicate source ref", () => {
+  const result = assembleContextBlocks({
+    candidates: [
+      candidate("memory", "memory-same", "Lower score duplicate.", 4, 0.2),
+      candidate("memory", "memory-same", "Higher score duplicate.", 4, 0.9, "memory-same-best"),
+      candidate("artifact", "artifact-a", "Artifact summary.", 4, 0.5),
+    ],
+    maxInputTokens: 20,
+    maxMemoryTokens: 10,
+    pendingMemoryRefs: [],
+    invalidatedSourceRefs: [],
+    requiredSourceRefs: ["artifact-a"],
+  });
+
+  assert.equal(result.validation.ok, true);
+  assert.deepEqual(result.selected.map((block) => [block.sourceRef, block.text]), [
+    ["artifact-a", "Artifact summary."],
+    ["memory-same", "Higher score duplicate."],
+  ]);
+  assertExclusion(result.excludedCandidates, "memory-same", "duplicate");
+});
+
+test("assembly policy blocks common secret-shaped content before final context assembly", () => {
+  const secretCases = [
+    "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+    "password = hunter2-secret-value",
+    "token=ghp_abcdefghijklmnopqrstuvwxyz123456",
+    "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----",
+  ];
+
+  for (const [index, text] of secretCases.entries()) {
+    const sourceRef = `secret-${index}`;
+    const result = assembleContextBlocks({
+      candidates: [candidate("memory", sourceRef, text, 4, 0.9)],
+      maxInputTokens: 20,
+      maxMemoryTokens: 20,
+      pendingMemoryRefs: [],
+      invalidatedSourceRefs: [],
+      requiredSourceRefs: [],
+    });
+
+    assert.deepEqual(result.selected, []);
+    assertExclusion(result.excludedCandidates, sourceRef, "kind-mismatch");
+  }
+});
+
 function candidate(
   sourceType: ContextBlockCandidate["sourceType"],
   sourceRef: string,
   text: string,
   tokenEstimate: number,
   score: number,
+  id?: string,
 ): ContextBlockCandidate {
   return {
-    id: `${sourceType}-${sourceRef}`,
+    id: id ?? `${sourceType}-${sourceRef}`,
     sourceType,
     title: sourceRef,
     text,
