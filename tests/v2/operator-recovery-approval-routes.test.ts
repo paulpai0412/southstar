@@ -8,6 +8,7 @@ import {
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import {
   createWorkflowRunPg,
+  createWorkflowTaskPg,
   getResourceByKeyPg,
   listHistoryForRunPg,
   listResourcesPg,
@@ -55,6 +56,40 @@ test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/approval approves 
       operatorDecision: "approved",
       reason: "operator reviewed workspace rollback",
     });
+  } finally {
+    await db.close();
+  }
+});
+
+test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/apply applies an approved runtime decision", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const decision = await seedWaitingRuntimeDecision(db, { runId: "run-operator-apply-approved" });
+    await createWorkflowTaskPg(db, {
+      id: decision.payload.taskId ?? "task-a",
+      runId: decision.payload.runId,
+      taskKey: decision.payload.taskId ?? "task-a",
+      status: "running",
+      sortOrder: 0,
+      dependsOn: [],
+    });
+    const approval = await postRecoveryDecisionApproval(db, decision.payload.runId, decision.decisionId, {
+      decision: "approved",
+      reason: "operator approved workspace rollback",
+    });
+    assert.equal(approval.status, 200);
+
+    const response = await postRecoveryDecisionApply(db, decision.payload.runId, decision.decisionId);
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json() as ApplyEnvelope;
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.kind, "recovery-decision-apply");
+    assert.equal(envelope.result.status, "blocked");
+    assert.match(envelope.result.reason, /unsupported recovery path rollback-workspace/);
+
+    const persistedDecision = await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, decision.resourceKey);
+    assert.equal(persistedDecision?.status, "blocked");
   } finally {
     await db.close();
   }
@@ -293,6 +328,21 @@ async function postRecoveryDecisionApproval(
   }));
 }
 
+async function postRecoveryDecisionApply(
+  db: TestPostgresDb,
+  runId: string,
+  decisionId: string,
+): Promise<Response> {
+  return await handleRuntimeRoute({
+    db,
+    plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+    executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+  }, new Request(`http://127.0.0.1/api/v2/runs/${encodeURIComponent(runId)}/recovery-decisions/${encodeURIComponent(decisionId)}/apply`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+  }));
+}
+
 function pickKeys(value: unknown, keys: string[]): Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return {};
   const record = value as Record<string, unknown>;
@@ -307,5 +357,15 @@ type ApprovalEnvelope = {
     resourceKey: string;
     status: "approved" | "blocked";
     operatorApprovalResourceKey: string;
+  };
+};
+
+type ApplyEnvelope = {
+  ok: true;
+  kind: "recovery-decision-apply";
+  result: {
+    status: "applied" | "skipped" | "blocked" | "failed" | "superseded";
+    executionResourceKey?: string;
+    reason: string;
   };
 };

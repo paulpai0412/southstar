@@ -1,17 +1,21 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
+import {
+  RECOVERY_DECISION_RESOURCE_TYPE,
+  RECOVERY_DECISION_SCHEMA_VERSION,
+} from "../../src/v2/exceptions/types.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { createManagedRuntimeLoopController, createManagedRuntimeLoopPlan } from "../../src/v2/server/runtime-loops.ts";
-import { createWorkflowRunPg, createWorkflowTaskPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createWorkflowRunPg, createWorkflowTaskPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb, initSouthstarSchema } from "./postgres-test-utils.ts";
 
 test("managed runtime loop plan includes scheduler and recovery loops", () => {
   const plan = createManagedRuntimeLoopPlan({ schedulerIntervalMs: 1000, recoveryIntervalMs: 5000 });
 
-  assert.deepEqual(plan.map((item) => item.id), ["executor-reconciler", "runnable-task-scheduler", "recovery-controller", "tork-exception-observer"]);
-  assert.deepEqual(plan.map((item) => item.intervalMs), [30_000, 1000, 5000, 5000]);
+  assert.deepEqual(plan.map((item) => item.id), ["executor-reconciler", "runnable-task-scheduler", "recovery-controller", "tork-exception-observer", "recovery-decision-applier"]);
+  assert.deepEqual(plan.map((item) => item.intervalMs), [30_000, 1000, 5000, 5000, 5000]);
 });
 
 test("managed runtime loop dispatches runnable Postgres tasks through scheduler", async () => {
@@ -132,6 +136,84 @@ test("managed runtime loop dispatches scheduling Postgres runs through scheduler
   }
 });
 
+test("managed runtime loop drains applicable recovery decisions on each tick", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await createWorkflowRunPg(db, {
+      id: "run-managed-loop-apply-decisions",
+      status: "running",
+      domain: "software",
+      goalPrompt: "managed loop applies decisions",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await seedApprovedRecoveryDecision(db, {
+      runId: "run-managed-loop-apply-decisions",
+      decisionId: "decision-managed-loop-apply-a",
+      resourceKey: "runtime_exception_recovery_decision:exception-managed-loop-a:rollback-workspace",
+      exceptionId: "exception-managed-loop-a",
+    });
+    await seedApprovedRecoveryDecision(db, {
+      runId: "run-managed-loop-apply-decisions",
+      decisionId: "decision-managed-loop-apply-b",
+      resourceKey: "runtime_exception_recovery_decision:exception-managed-loop-b:rollback-workspace",
+      exceptionId: "exception-managed-loop-b",
+    });
+
+    const loop = createManagedRuntimeLoopController({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain-loop-apply" }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand-loop-apply" }),
+      schedulerIntervalMs: 60_000,
+      recoveryIntervalMs: 60_000,
+    });
+    loop.start();
+    await sleep(120);
+    await loop.stop();
+
+    assert.equal((await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, "runtime_exception_recovery_decision:exception-managed-loop-a:rollback-workspace"))?.status, "blocked");
+    assert.equal((await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, "runtime_exception_recovery_decision:exception-managed-loop-b:rollback-workspace"))?.status, "blocked");
+  } finally {
+    await db.close();
+  }
+});
+
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function seedApprovedRecoveryDecision(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  input: { runId: string; decisionId: string; resourceKey: string; exceptionId: string },
+): Promise<void> {
+  await upsertRuntimeResourcePg(db, {
+    id: input.decisionId,
+    resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+    resourceKey: input.resourceKey,
+    runId: input.runId,
+    scope: "recovery",
+    status: "approved",
+    title: "Runtime recovery decision: rollback-workspace",
+    payload: {
+      schemaVersion: RECOVERY_DECISION_SCHEMA_VERSION,
+      decisionId: input.decisionId,
+      exceptionId: input.exceptionId,
+      runId: input.runId,
+      path: "rollback-workspace",
+      reason: "operator approved rollback",
+      operatorApprovalRequired: true,
+      evidenceRefs: [],
+      createdAt: "2026-06-21T10:00:00.000Z",
+    },
+    summary: {
+      exceptionId: input.exceptionId,
+      path: "rollback-workspace",
+      operatorApprovalRequired: true,
+    },
+  });
 }

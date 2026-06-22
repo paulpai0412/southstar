@@ -1,5 +1,6 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import type { BrainProvider } from "../brain/types.ts";
+import type { RecoveryProviderActions } from "../executor/provider-actions.ts";
 import type { ExecutorProvider, TorkObservationClient } from "../executor/provider.ts";
 import type { HandProvider } from "../hands/types.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
@@ -16,10 +17,12 @@ export type RuntimeServerContext = {
   runRoot?: string;
   reconcileIntervalMs?: number;
   createReconcileLoop?: () => RuntimeLoopController;
+  providerActions?: RecoveryProviderActions;
   managedRuntime?: {
     sessionStore: SessionStore;
     brainProvider: BrainProvider;
     handProvider: HandProvider;
+    providerActions?: RecoveryProviderActions;
     schedulerIntervalMs?: number;
     recoveryIntervalMs?: number;
   };

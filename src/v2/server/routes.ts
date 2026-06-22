@@ -5,6 +5,7 @@ import { createExecutorBindingPg, getExecutorBindingPg, listExecutorBindingsForR
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../executor/postgres-tork-callback.ts";
 import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approval-service.ts";
+import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
 import { type RecoveryExecutionPlan } from "../session-recovery/execution-planner.ts";
 import { dispatchRecoveryExecutionPg } from "../session-recovery/postgres-dispatcher.ts";
 import { isRecoveryStrategy } from "../session-recovery/types.ts";
@@ -175,6 +176,32 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         runRoot: body.runRoot ?? context.runRoot,
         harnessEndpoint: body.harnessEndpoint,
         contextRefreshUrl: body.contextRefreshUrl,
+      }));
+    }
+
+    const recoveryDecisionApplyMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/recovery-decisions\/([^/]+)\/apply$/);
+    if (request.method === "POST" && recoveryDecisionApplyMatch) {
+      const runId = decodeURIComponent(recoveryDecisionApplyMatch[1]!);
+      const decisionId = decodeURIComponent(recoveryDecisionApplyMatch[2]!);
+      const decision = await context.db.maybeOne<{ resource_key: string }>(
+        `select resource_key
+           from southstar.runtime_resources
+          where run_id = $1
+            and resource_type = 'recovery_decision'
+            and payload_json->>'decisionId' = $2`,
+        [runId, decisionId],
+      );
+      if (!decision) throw new Error(`recovery decision not found: ${decisionId}`);
+      const providerActions = context.managedRuntime?.providerActions ?? context.providerActions;
+      const applier = createRecoveryDecisionApplier({
+        db: context.db,
+        ...(context.managedRuntime?.sessionStore ? { sessionStore: context.managedRuntime.sessionStore } : {}),
+        ...(context.managedRuntime?.brainProvider ? { brainProvider: context.managedRuntime.brainProvider } : {}),
+        ...(context.managedRuntime?.handProvider ? { handProvider: context.managedRuntime.handProvider } : {}),
+        ...(providerActions ? { providerActions } : {}),
+      });
+      return json("recovery-decision-apply", await applier.applyDecision({
+        decisionResourceKey: decision.resource_key,
       }));
     }
 

@@ -1,6 +1,8 @@
 import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
 import { observeTorkHandExecutionExceptionsPg } from "../executor/tork-observer.ts";
+import type { RecoveryProviderActions } from "../executor/provider-actions.ts";
 import type { HandProvider } from "../hands/types.ts";
 import { createRunnableTaskScheduler } from "../scheduler/runnable-task-scheduler.ts";
 import { createPostgresRecoveryController } from "../session-recovery/postgres-controller.ts";
@@ -12,7 +14,7 @@ export type RuntimeLoopController = {
 };
 
 export type ManagedRuntimeLoopPlanItem = {
-  id: "executor-reconciler" | "runnable-task-scheduler" | "recovery-controller" | "tork-exception-observer";
+  id: "executor-reconciler" | "runnable-task-scheduler" | "recovery-controller" | "tork-exception-observer" | "recovery-decision-applier";
   intervalMs: number;
 };
 
@@ -21,6 +23,7 @@ export type ManagedRuntimeLoopDeps = {
   sessionStore: SessionStore;
   brainProvider: BrainProvider;
   handProvider: HandProvider;
+  providerActions?: RecoveryProviderActions;
   schedulerIntervalMs: number;
   recoveryIntervalMs: number;
 };
@@ -43,6 +46,7 @@ export function createManagedRuntimeLoopPlan(input: { schedulerIntervalMs: numbe
     { id: "runnable-task-scheduler", intervalMs: input.schedulerIntervalMs },
     { id: "recovery-controller", intervalMs: input.recoveryIntervalMs },
     { id: "tork-exception-observer", intervalMs: input.recoveryIntervalMs },
+    { id: "recovery-decision-applier", intervalMs: input.recoveryIntervalMs },
   ];
 }
 
@@ -68,6 +72,13 @@ export function createManagedRuntimeLoopController(input: ManagedRuntimeLoopDeps
     sessionStore: input.sessionStore,
     brainProvider: input.brainProvider,
     handProvider: input.handProvider,
+  });
+  const recoveryDecisionApplier = createRecoveryDecisionApplier({
+    db: input.db,
+    sessionStore: input.sessionStore,
+    brainProvider: input.brainProvider,
+    handProvider: input.handProvider,
+    ...(input.providerActions ? { providerActions: input.providerActions } : {}),
   });
   return createCompositeRuntimeLoopController([
     createRuntimeLoopController({
@@ -97,6 +108,14 @@ export function createManagedRuntimeLoopController(input: ManagedRuntimeLoopDeps
       intervalMs: input.recoveryIntervalMs,
       runOnce: async () => {
         await observeTorkHandExecutionExceptionsPg(input.db);
+      },
+    }),
+    createRuntimeLoopController({
+      intervalMs: input.recoveryIntervalMs,
+      runOnce: async () => {
+        while (await recoveryDecisionApplier.applyNext()) {
+          // Drain all currently applicable decisions before waiting for the next tick.
+        }
       },
     }),
   ]);
