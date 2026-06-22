@@ -222,6 +222,51 @@ test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/approval rejects m
   }
 });
 
+test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/apply rejects managed recovery decisions without writes", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-operator-managed-apply-rejected";
+    const decisionId = "managed-decision-apply-test";
+    const resourceKey = "managed-recovery:run-operator-managed-apply-rejected:task-a";
+    await seedRun(db, runId);
+    await upsertRuntimeResourcePg(db, {
+      id: decisionId,
+      resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+      resourceKey,
+      runId,
+      taskId: "task-a",
+      sessionId: "session-a",
+      scope: "recovery",
+      status: "approved",
+      title: "Managed recovery decision",
+      payload: {
+        schemaVersion: "southstar.managed-recovery-decision.v1",
+        decisionId,
+        recoveryDecisionId: decisionId,
+        recoveryKey: resourceKey,
+        runId,
+        taskId: "task-a",
+        sessionId: "session-a",
+        strategy: "reprovision-hand",
+        reason: "managed recovery remains separate",
+      },
+      summary: { strategy: "reprovision-hand" },
+    });
+
+    const response = await postRecoveryDecisionApply(db, runId, decisionId);
+
+    assert.equal(response.status, 400);
+    const envelope = await response.json() as { ok: false; error: string };
+    assert.equal(envelope.ok, false);
+    assert.match(envelope.error, /runtime recovery decision not found: managed-decision-apply-test/);
+    const managed = await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, resourceKey);
+    assert.equal(managed?.status, "approved");
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_execution" })).filter((resource) => resource.runId === runId).length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
 test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/approval rejects mismatched payload run ids without writes", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -251,6 +296,39 @@ test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/approval rejects m
     assert.equal(pickKeys(persistedDecision?.payload, ["runId", "operatorDecision", "operatorReason"]).runId, payloadRunId);
     assert.equal((await listResourcesPg(db, { resourceType: "operator_approval" })).filter((resource) => resource.runId === routeRunId).length, 0);
     assert.equal((await listHistoryForRunPg(db, routeRunId)).filter((event) => event.eventType === "recovery_decision.operator_decided").length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("POST /api/v2/runs/:runId/recovery-decisions/:decisionId/apply rejects mismatched payload run ids without writes", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const routeRunId = "run-operator-apply-payload-run-mismatch";
+    const payloadRunId = "run-operator-apply-payload-other";
+    const decision = await seedWaitingRuntimeDecision(db, { runId: routeRunId });
+    await db.query(
+      `update southstar.runtime_resources
+          set status = 'approved',
+              payload_json = jsonb_set(payload_json, '{runId}', $1::jsonb, false)
+        where resource_type = $2
+          and resource_key = $3`,
+      [JSON.stringify(payloadRunId), RECOVERY_DECISION_RESOURCE_TYPE, decision.resourceKey],
+    );
+
+    const response = await postRecoveryDecisionApply(db, routeRunId, decision.decisionId);
+
+    assert.equal(response.status, 400);
+    const envelope = await response.json() as { ok: false; error: string };
+    assert.equal(envelope.ok, false);
+    assert.match(envelope.error, /runtime recovery decision payload runId mismatch/);
+
+    const persistedDecision = await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, decision.resourceKey);
+    assert.equal(persistedDecision?.status, "approved");
+    assert.equal(pickKeys(persistedDecision?.payload, ["runId", "appliedAt", "statusReason"]).runId, payloadRunId);
+    const executions = await listResourcesPg(db, { resourceType: "recovery_execution" });
+    assert.equal(executions.filter((resource) => resource.runId === routeRunId || resource.runId === payloadRunId).length, 0);
+    assert.equal((await listHistoryForRunPg(db, routeRunId)).filter((event) => event.eventType === "recovery_decision.applied").length, 0);
   } finally {
     await db.close();
   }

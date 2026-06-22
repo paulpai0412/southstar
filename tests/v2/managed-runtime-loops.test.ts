@@ -1,12 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
+import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import {
   RECOVERY_DECISION_RESOURCE_TYPE,
   RECOVERY_DECISION_SCHEMA_VERSION,
 } from "../../src/v2/exceptions/types.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
+import { createDefaultManagedRuntimeLoop } from "../../src/v2/server/http-server.ts";
 import { createManagedRuntimeLoopController, createManagedRuntimeLoopPlan } from "../../src/v2/server/runtime-loops.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb, initSouthstarSchema } from "./postgres-test-utils.ts";
@@ -183,8 +185,133 @@ test("managed runtime loop drains applicable recovery decisions on each tick", a
   }
 });
 
+test("default managed runtime loop forwards managed provider actions to recovery decision applier", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-managed-loop-provider-actions" });
+    const cancelInputs: Array<{ externalJobId: string; runId: string; reason: string }> = [];
+    const loop = createDefaultManagedRuntimeLoop({
+      db,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      managedRuntime: {
+        sessionStore: createPostgresSessionStore(db),
+        brainProvider: createFakeBrainProvider({ providerId: "fake-brain-loop-provider-actions" }),
+        handProvider: createFakeHandProvider({ providerId: "fake-hand-loop-provider-actions" }),
+        providerActions: {
+          async cancel(input) {
+            cancelInputs.push(input);
+          },
+        },
+        schedulerIntervalMs: 60_000,
+        recoveryIntervalMs: 10,
+      },
+    });
+    assert.ok(loop);
+
+    loop.start();
+    await sleep(120);
+    await loop.stop();
+
+    assert.deepEqual(cancelInputs, [{
+      externalJobId: "job-queued",
+      runId: fixture.runId,
+      reason: "requeue-hand-execution",
+    }]);
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.runId === fixture.runId,
+    );
+    const providerActions = recoveryExecution?.payload as {
+      providerActions?: Array<{ action?: string; status?: string; succeededAt?: string }>;
+    };
+    assert.equal(providerActions.providerActions?.find((action) => action.action === "cancel")?.status, "succeeded");
+  } finally {
+    await db.close();
+  }
+});
+
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function createRequeueDecisionFixture(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  input: { runId: string },
+) {
+  const runId = input.runId;
+  const taskId = "task-a";
+  const sessionId = "session-a";
+  const attemptId = "attempt-1";
+  const handExecutionId = `hand-execution:${runId}:${taskId}:${attemptId}`;
+
+  await createWorkflowRunPg(db, {
+    id: runId,
+    status: "running",
+    domain: "software",
+    goalPrompt: "apply queue timeout recovery",
+    workflowManifestJson: "{}",
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  await createWorkflowTaskPg(db, {
+    id: taskId,
+    runId,
+    taskKey: taskId,
+    status: "queued",
+    sortOrder: 0,
+    dependsOn: [],
+    rootSessionId: sessionId,
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: handExecutionId,
+    resourceType: "hand_execution",
+    resourceKey: handExecutionId,
+    runId,
+    taskId,
+    sessionId,
+    scope: "hand",
+    status: "queued",
+    title: "Hand execution task-a",
+    payload: {
+      schemaVersion: "southstar.runtime.hand_execution.v1",
+      handExecutionId,
+      providerId: "tork",
+      runId,
+      taskId,
+      sessionId,
+      attemptId,
+      brainBindingId: "brain-binding-a",
+      handBindingId: "hand-binding-a",
+      externalJobId: "job-queued",
+      status: "queued",
+      queuedAt: "2026-06-21T11:50:00.000Z",
+      queueTimeoutSeconds: 300,
+      heartbeatTimeoutSeconds: 300,
+    },
+    summary: { providerId: "tork", attemptId },
+    metrics: {},
+  });
+
+  const controller = createRuntimeExceptionController({ db });
+  const exception = await controller.observe({
+    runId,
+    taskId,
+    sessionId,
+    attemptId,
+    handExecutionId,
+    source: "tork-observer",
+    kind: "tork_queue_timeout",
+    severity: "recoverable",
+    observedAt: "2026-06-21T11:59:00.000Z",
+    evidenceRefs: [handExecutionId],
+    providerEvidence: { externalJobId: "job-queued" },
+  });
+  const decision = await controller.decide(await controller.classify(exception));
+
+  return { runId, taskId, sessionId, attemptId, handExecutionId, exception, decision };
 }
 
 async function seedApprovedRecoveryDecision(

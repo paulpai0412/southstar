@@ -6,6 +6,7 @@ import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts"
 import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../executor/postgres-tork-callback.ts";
 import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approval-service.ts";
 import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
+import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import { type RecoveryExecutionPlan } from "../session-recovery/execution-planner.ts";
 import { dispatchRecoveryExecutionPg } from "../session-recovery/postgres-dispatcher.ts";
 import { isRecoveryStrategy } from "../session-recovery/types.ts";
@@ -183,15 +184,20 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (request.method === "POST" && recoveryDecisionApplyMatch) {
       const runId = decodeURIComponent(recoveryDecisionApplyMatch[1]!);
       const decisionId = decodeURIComponent(recoveryDecisionApplyMatch[2]!);
-      const decision = await context.db.maybeOne<{ resource_key: string }>(
-        `select resource_key
+      const decision = await context.db.maybeOne<{ resource_key: string; payload_json: unknown }>(
+        `select resource_key, payload_json
            from southstar.runtime_resources
           where run_id = $1
             and resource_type = 'recovery_decision'
-            and payload_json->>'decisionId' = $2`,
-        [runId, decisionId],
+            and payload_json->>'decisionId' = $2
+            and payload_json->>'schemaVersion' = $3`,
+        [runId, decisionId, RECOVERY_DECISION_SCHEMA_VERSION],
       );
-      if (!decision) throw new Error(`recovery decision not found: ${decisionId}`);
+      if (!decision) throw new Error(`runtime recovery decision not found: ${decisionId}`);
+      if (!isRecord(decision.payload_json)) throw new Error(`runtime recovery decision payload invalid: ${decisionId}`);
+      if (decision.payload_json.runId !== runId) {
+        throw new Error(`runtime recovery decision payload runId mismatch: route run ${runId} payload run ${String(decision.payload_json.runId)}`);
+      }
       const providerActions = context.managedRuntime?.providerActions ?? context.providerActions;
       const applier = createRecoveryDecisionApplier({
         db: context.db,

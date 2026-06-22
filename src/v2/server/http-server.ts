@@ -76,13 +76,14 @@ function createDefaultReconcileLoop(context: RuntimeServerContext): RuntimeLoopC
   });
 }
 
-function createDefaultManagedRuntimeLoop(context: RuntimeServerContext): RuntimeLoopController | undefined {
+export function createDefaultManagedRuntimeLoop(context: RuntimeServerContext): RuntimeLoopController | undefined {
   if (!context.managedRuntime) return undefined;
   return createManagedRuntimeLoopController({
     db: context.db,
     sessionStore: context.managedRuntime.sessionStore,
     brainProvider: context.managedRuntime.brainProvider,
     handProvider: context.managedRuntime.handProvider,
+    ...(context.managedRuntime.providerActions ? { providerActions: context.managedRuntime.providerActions } : {}),
     schedulerIntervalMs: context.managedRuntime.schedulerIntervalMs ?? 5_000,
     recoveryIntervalMs: context.managedRuntime.recoveryIntervalMs ?? 15_000,
   });
