@@ -31,6 +31,8 @@ export const RUNTIME_EXCEPTION_KINDS = [
   "intake_invalid",
   "completion_gate_failed",
   "provider_unreachable",
+  "validation_failed",
+  "context_assembly_failed",
 ] as const;
 
 export type RuntimeExceptionKind = typeof RUNTIME_EXCEPTION_KINDS[number];
@@ -65,6 +67,9 @@ export type RecoveryPath =
   | "retry-same-task-new-attempt"
   | "repair-artifact"
   | "rollback-workspace"
+  | "fork-session"
+  | "reset-session"
+  | "rollback-session"
   | "block-for-operator"
   | "fail-task"
   | "fail-run";

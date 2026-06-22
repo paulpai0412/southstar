@@ -81,4 +81,5 @@ await import("./hand-provider.test.ts");
 await import("./tork-hand-provider.test.ts");
 await import("./managed-bindings.test.ts");
 await import("./managed-context-builder.test.ts");
+await import("./managed-context-contracts.test.ts");
 await import("./managed-agents-read-model.test.ts");

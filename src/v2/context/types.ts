@@ -1,5 +1,8 @@
 import type { BudgetPolicy } from "../domain-packs/types.ts";
 
+export const CONTEXT_ASSEMBLY_TRACE_RESOURCE_TYPE = "context_assembly_trace";
+export const CONTEXT_ASSEMBLY_TRACE_SCHEMA_VERSION = "southstar.context_assembly_trace.v1";
+
 export type ContextPacket = {
   id: string;
   runId: string;
@@ -33,6 +36,10 @@ export type ManagedContextSourceRefs = {
   omittedEventRanges: Array<{ fromSequence: number; toSequence: number; reason: string }>;
   transformRefs: Array<{ id: string; kind: "summary" | "filter" | "redaction"; sourceEventIds: string[] }>;
   checkpointRefs: string[];
+  artifactRefs?: string[];
+  memoryRefs?: string[];
+  rollbackMarkerRefs?: string[];
+  resetMarkerRefs?: string[];
   cacheKey?: string;
 };
 
@@ -65,4 +72,48 @@ export type ContextExclusion = {
   sourceRef: string;
   reason: "duplicate" | "over-budget" | "low-score" | "scope-mismatch" | "kind-mismatch";
   tokenEstimate: number;
+};
+
+export type AttemptLineageRefs = {
+  runId: string;
+  taskId?: string;
+  sessionId?: string;
+  attemptId?: string;
+  handExecutionId?: string;
+  contextPacketId?: string;
+  taskEnvelopeId?: string;
+  artifactRefIds?: string[];
+  checkpointId?: string;
+  correlationId?: string;
+  causationId?: string;
+};
+
+export type ContextBlockCandidate = ContextBlock & {
+  score: number;
+  confidence?: number;
+  successScore?: number;
+  recencyScore?: number;
+  lineage?: AttemptLineageRefs;
+};
+
+export type ContextAssemblyValidation = {
+  ok: boolean;
+  errors: Array<{ code: string; message: string; sourceRef?: string }>;
+};
+
+export type ContextAssemblyTrace = {
+  schemaVersion: typeof CONTEXT_ASSEMBLY_TRACE_SCHEMA_VERSION;
+  traceId: string;
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  handExecutionId: string;
+  contextPacketId: string;
+  taskEnvelopeId: string;
+  selectedSourceRefs: string[];
+  excludedCandidates: ContextExclusion[];
+  tokenEstimate: TokenEstimate;
+  validation: ContextAssemblyValidation;
+  createdAt: string;
 };
