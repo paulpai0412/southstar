@@ -32,6 +32,7 @@ const implementedCases = [
   "22-recovery-decision-apply-reprovision.test.ts",
   "23-operator-approved-recovery-apply.test.ts",
   "24-provider-unreachable-apply-failure.test.ts",
+  "25-normal-context-session-memory-flow.test.ts",
 ];
 
 test("canonical real E2E entrypoint is a static manifest and real cases run one at a time", () => {

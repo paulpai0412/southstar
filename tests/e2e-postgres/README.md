@@ -52,6 +52,7 @@ npm run test:e2e:postgres:21   # recovery decision apply requeue
 npm run test:e2e:postgres:22   # recovery decision apply reprovision
 npm run test:e2e:postgres:23   # operator-approved recovery apply
 npm run test:e2e:postgres:24   # provider unreachable apply failure
+npm run test:e2e:postgres:25   # normal managed context/session/memory propagation
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
@@ -85,6 +86,7 @@ npm run test:e2e:postgres:24   # provider unreachable apply failure
 | 22 recovery decision apply reprovision | implemented | Applying a running hand recovery decision provisions a replacement hand and releases the task | replacement hand binding, checkpoint, lost old hand, succeeded recovery execution |
 | 23 operator-approved recovery apply | implemented | Operator approval gates an operator-required recovery decision before apply | skipped pre-approval apply, approval resource/history, blocked task/execution after approval |
 | 24 provider unreachable apply failure | implemented | Provider cancel failure is retained as redacted action evidence while the task is released | redacted provider action, pending task, lost hand, succeeded recovery execution |
+| 25 normal context/session/memory flow | implemented | Downstream task receives prior artifact and run-local memory through managed context | context packet refs, task envelope, completed hands/tasks, accepted artifacts |
 
 ## Adding a new case
 

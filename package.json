@@ -41,6 +41,7 @@
     "test:e2e:postgres:22": "tsx tests/e2e-postgres/cases/22-recovery-decision-apply-reprovision.test.ts",
     "test:e2e:postgres:23": "tsx tests/e2e-postgres/cases/23-operator-approved-recovery-apply.test.ts",
     "test:e2e:postgres:24": "tsx tests/e2e-postgres/cases/24-provider-unreachable-apply-failure.test.ts",
+    "test:e2e:postgres:25": "tsx tests/e2e-postgres/cases/25-normal-context-session-memory-flow.test.ts",
     "web:dev": "next dev -p 3030 --webpack",
     "web:build": "next build --webpack",
     "web:start": "next start -p 3030",
