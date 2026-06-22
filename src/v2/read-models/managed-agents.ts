@@ -101,7 +101,42 @@ function mapResource(row: ResourceRow): ManagedRuntimeResourceReadModel {
     status: row.status,
     scope: row.scope,
     title: row.title ?? undefined,
-    payload: row.payload_json,
+    payload: row.resource_type === "recovery_execution" ? mapRecoveryExecutionPayload(row.payload_json) : row.payload_json,
     summary: row.summary_json,
   };
+}
+
+function mapRecoveryExecutionPayload(payload: unknown): Record<string, string | number> {
+  const source = asRecord(payload);
+  const projected: Record<string, string | number> = {};
+  const stringFields = [
+    "schemaVersion",
+    "executionId",
+    "decisionId",
+    "exceptionId",
+    "runId",
+    "taskId",
+    "path",
+    "status",
+    "createdAt",
+    "completedAt",
+  ];
+
+  for (const field of stringFields) {
+    const value = stringValue(source[field]);
+    if (value !== undefined) projected[field] = value;
+  }
+
+  if (Array.isArray(source.providerActions)) projected.providerActionCount = source.providerActions.length;
+  if (Array.isArray(source.stateChanges)) projected.stateChangeCount = source.stateChanges.length;
+
+  return projected;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }

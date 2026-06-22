@@ -21,6 +21,7 @@ test("managed-agent read model lists brain and hand bindings", async () => {
     assert.equal(model.resources.some((resource) => resource.resourceType === "task_execution_intent"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "evaluator_result"), true);
     assert.equal(model.resources.some((resource) => resource.resourceType === "recovery_execution"), true);
+    assertRecoveryExecutionPayloadRedacted(model.resources);
 
     const server = await createSouthstarRuntimeServer({
       db,
@@ -37,6 +38,7 @@ test("managed-agent read model lists brain and hand bindings", async () => {
       assert.equal(envelope.result.handBindings[0]?.id, "hand-1");
       assert.equal(envelope.result.resources.some((resource) => resource.resourceType === "tool_proxy_violation"), true);
       assert.equal(envelope.result.resources.some((resource) => resource.resourceType === "recovery_execution"), true);
+      assertRecoveryExecutionPayloadRedacted(envelope.result.resources);
     } finally {
       await server.close();
     }
@@ -82,6 +84,64 @@ async function seedManagedAgentRun(db: Parameters<typeof createWorkflowRunPg>[0]
   await upsertRuntimeResourcePg(db, { resourceType: "hand_execution", resourceKey: "hand-execution-1", runId, taskId: "task-1", sessionId: "session-1", scope: "hand", status: "running", title: "hand execution", payload: { handExecutionId: "hand-execution-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "task_execution_intent", resourceKey: "intent-1", runId, taskId: "task-1", sessionId: "session-1", scope: "brain", status: "created", title: "intent", payload: { intentId: "intent-1" } });
   await upsertRuntimeResourcePg(db, { resourceType: "evaluator_result", resourceKey: "eval-1", runId, taskId: "task-1", sessionId: "session-1", scope: "evaluator", status: "passed", title: "evaluator", payload: { verdict: "passed" } });
-  await upsertRuntimeResourcePg(db, { resourceType: "recovery_execution", resourceKey: "recovery-execution-1", runId, taskId: "task-1", sessionId: "session-1", scope: "recovery", status: "succeeded", title: "recovery execution", payload: { decisionId: "decision-1", path: "retry-same-task-new-attempt" } });
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "recovery_execution",
+    resourceKey: "recovery-execution-1",
+    runId,
+    taskId: "task-1",
+    sessionId: "session-1",
+    scope: "recovery",
+    status: "succeeded",
+    title: "recovery execution",
+    payload: {
+      schemaVersion: "southstar.recovery-execution.v1",
+      executionId: "recovery-execution-1",
+      decisionId: "decision-1",
+      exceptionId: "exception-1",
+      runId,
+      taskId: "task-1",
+      path: "retry-same-task-new-attempt",
+      status: "succeeded",
+      providerActions: [
+        {
+          providerId: "tork",
+          action: "cancel",
+          status: "failed",
+          evidenceRef: "secret-evidence-ref",
+          errorExcerpt: "token=secret-value",
+          metadata: { raw: "do-not-return" },
+        },
+      ],
+      stateChanges: [
+        {
+          resourceType: "hand_execution",
+          resourceKey: "secret-hand",
+          fromStatus: "running",
+          toStatus: "lost",
+          reason: "recovery",
+        },
+      ],
+      completedAt: "2026-06-22T08:30:00.000Z",
+      createdAt: "2026-06-22T08:29:00.000Z",
+      metadata: { raw: "do-not-return" },
+      evidenceRefs: ["secret-evidence-ref"],
+      errorExcerpt: "token=secret-value",
+    },
+  });
   await upsertRuntimeResourcePg(db, { resourceType: "tool_proxy_violation", resourceKey: "violation-1", runId, taskId: "task-1", sessionId: "session-1", scope: "tool", status: "blocking", title: "violation", payload: { evidenceRef: "hand-execution-1:artifact" } });
+}
+
+function assertRecoveryExecutionPayloadRedacted(resources: Awaited<ReturnType<typeof getManagedAgentRunReadModelPg>>["resources"]): void {
+  const resource = resources.find((candidate) => candidate.resourceType === "recovery_execution");
+  assert.ok(resource, "expected recovery_execution managed resource");
+  assert.equal((resource.payload as { providerActionCount?: unknown }).providerActionCount, 1);
+  assert.equal((resource.payload as { stateChangeCount?: unknown }).stateChangeCount, 1);
+
+  const serializedPayload = JSON.stringify(resource.payload);
+  assert.equal(serializedPayload.includes("providerActions"), false);
+  assert.equal(serializedPayload.includes("stateChanges"), false);
+  assert.equal(serializedPayload.includes("token=secret-value"), false);
+  assert.equal(serializedPayload.includes("do-not-return"), false);
+  assert.equal(serializedPayload.includes("secret-evidence-ref"), false);
+  assert.equal(serializedPayload.includes("secret-hand"), false);
 }
