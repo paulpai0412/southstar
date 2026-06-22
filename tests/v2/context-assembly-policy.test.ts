@@ -48,6 +48,20 @@ test("assembly policy fails validation when required source refs are missing", (
   assert.match(result.validation.errors[0]?.message ?? "", /required source ref missing: artifact-a/);
 });
 
+test("assembly policy treats duplicate required source refs as one required candidate", () => {
+  const result = assembleContextBlocks({
+    candidates: [candidate("artifact", "artifact-a", "Artifact summary.", 10, 0.8)],
+    maxInputTokens: 10,
+    maxMemoryTokens: 0,
+    pendingMemoryRefs: [],
+    invalidatedSourceRefs: [],
+    requiredSourceRefs: ["artifact-a", "artifact-a"],
+  });
+
+  assert.equal(result.validation.ok, true);
+  assert.deepEqual(result.selected.map((block) => block.sourceRef), ["artifact-a"]);
+});
+
 test("assembly policy reserves budget for required refs before optional candidates", () => {
   const result = assembleContextBlocks({
     candidates: [

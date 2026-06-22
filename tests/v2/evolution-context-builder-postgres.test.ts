@@ -70,6 +70,62 @@ test("Postgres ContextBuilder injects deterministic Knowledge Cards and persists
   });
 });
 
+test("Postgres ContextBuilder applies assembly policy before persisting Knowledge Cards", async () => {
+  await withDb(async (db) => {
+    await seedRunAndTask(db, "run-builder-policy", "implement-feature");
+    await createLearningNode(db, {
+      id: "card-builder-secret",
+      nodeType: "knowledge_card",
+      scope: softwareDomainPack.id,
+      status: "active",
+      payload: {
+        cardType: "failure_lesson",
+        topicKey: "builder-secret",
+        scope: softwareDomainPack.id,
+        title: "Secret card",
+        summary: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+        appliesTo: { intents: ["implement_feature"], roles: ["maker"], artifactTypes: ["implementation-report"], agentProfiles: ["software-maker-pi"] },
+        claims: [{ text: "Secret-shaped content must not enter context.", evidenceNodeRefs: ["card-builder-secret"] }],
+        confidence: 0.99,
+        successScore: 0.99,
+        status: "active",
+        riskTier: "low",
+      },
+      summaryText: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456",
+    });
+
+    const packet = await buildContextPacketWithKnowledgeCards(db, {
+      runId: "run-builder-policy",
+      taskId: "implement-feature",
+      rootSessionId: "root-builder-policy",
+      goalPrompt: "implement feature and return implementation_report",
+      domainPack: softwareDomainPack,
+      roleRef: "maker",
+      agentProfileRef: "software-maker-pi",
+      artifactContractRefs: ["implementation_report"],
+      priorArtifactRefs: [],
+      intent: "implement_feature",
+      flowTemplateRef: "software.workflow.feature-implementation",
+    });
+
+    assert.deepEqual(packet.selectedKnowledgeCards, []);
+    assert.equal(
+      packet.excludedCandidates.some((item) => item.sourceRef === "card-builder-secret" && item.reason === "kind-mismatch"),
+      true,
+    );
+
+    const persistedContext = await db.one<{ payload_json: { selectedKnowledgeCards?: unknown[]; excludedCandidates?: Array<{ sourceRef: string; reason: string }> } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'context_packet' and resource_key = $1",
+      [packet.id],
+    );
+    assert.deepEqual(persistedContext.payload_json.selectedKnowledgeCards, []);
+    assert.equal(
+      persistedContext.payload_json.excludedCandidates?.some((item) => item.sourceRef === "card-builder-secret" && item.reason === "kind-mismatch"),
+      true,
+    );
+  });
+});
+
 async function seedRunAndTask(db: SouthstarDb, runId: string, taskId: string): Promise<void> {
   await db.query(
     `insert into southstar.workflow_runs (

@@ -37,7 +37,7 @@ export function assembleContextBlocks(input: ContextAssemblyPolicyInput): Contex
   const requiredSourceRefs = new Set(input.requiredSourceRefs);
   const errors: ContextAssemblyValidation["errors"] = [];
 
-  for (const sourceRef of input.requiredSourceRefs) {
+  for (const sourceRef of requiredSourceRefs) {
     const candidate = validCandidates.find((item) => sourceRefOf(item) === sourceRef);
     if (!candidate) {
       errors.push({ code: "required-source-missing", message: `required source ref missing: ${sourceRef}`, sourceRef });

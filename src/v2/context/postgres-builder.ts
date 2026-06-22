@@ -1,8 +1,9 @@
 import type { SouthstarDb as PostgresSouthstarDb } from "../db/postgres.ts";
 import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
 import { persistKnowledgeCardInjectionTrace, selectKnowledgeCardsForTask } from "../evolution/context-cards.ts";
+import { assembleContextBlocks } from "./assembly-policy.ts";
 import { buildManagedContextSourceRefs } from "./event-slicing.ts";
-import type { ContextBlock, ContextPacket, TokenEstimate } from "./types.ts";
+import type { ContextBlock, ContextBlockCandidate, ContextPacket, TokenEstimate } from "./types.ts";
 
 export type BuildContextPacketWithKnowledgeCardsInput = {
   contextPacketId?: string;
@@ -40,6 +41,9 @@ export async function buildContextPacketWithKnowledgeCards(
   );
   const contextPolicy = input.domainPack.contextPolicies.find((candidate) => candidate.id === profile.contextPolicyRef)
     ?? input.domainPack.contextPolicies[0];
+  const memoryPolicy = contextPolicy
+    ? input.domainPack.memoryPolicies.find((candidate) => candidate.id === contextPolicy.memoryPolicyRef)
+    : undefined;
 
   const artifactContracts = input.artifactContractRefs.map((artifactRef) =>
     artifactContractBlock(required(
@@ -76,20 +80,45 @@ export async function buildContextPacketWithKnowledgeCards(
   const failureSummary = input.failureSummary ? block("failure", "Failure", input.failureSummary) : undefined;
   const contextSourceSummary = input.contextSourceSummary ? block("workspace", "Context Sources", input.contextSourceSummary) : undefined;
 
-  const tokenEstimate = estimatePacketTokens([
+  const baseBlocks = [
     block("prompt", "Goal", input.goalPrompt, input.runId),
     block("role", role.id, role.responsibility, role.id),
     ...agentsMdBlocks,
     ...artifactContracts,
-    ...selected.selectedCards,
-    ...priorArtifacts,
     ...skillInstructions,
     ...mcpGrantSummary,
-    ...definedBlocks([checkpointSummary, workspaceSummary, failureSummary, contextSourceSummary]),
-  ]);
-  if (contextPolicy && tokenEstimate.total > contextPolicy.maxInputTokens) {
-    throw new Error(`context packet exceeds maxInputTokens: ${tokenEstimate.total} > ${contextPolicy.maxInputTokens}`);
+  ];
+  const baseTokenEstimate = estimatePacketTokens(baseBlocks);
+  if (contextPolicy && baseTokenEstimate.total > contextPolicy.maxInputTokens) {
+    throw new Error(`context packet exceeds maxInputTokens: ${baseTokenEstimate.total} > ${contextPolicy.maxInputTokens}`);
   }
+
+  const optionalAssembly = assembleContextBlocks({
+    candidates: [
+      ...selected.selectedCards.map((item) => candidateFromBlock(item, 1)),
+      ...priorArtifacts.map((item) => candidateFromBlock(item, 0.9)),
+      ...definedBlocks([checkpointSummary, workspaceSummary, failureSummary, contextSourceSummary]).map((item) => candidateFromBlock(item, 0.95)),
+    ],
+    maxInputTokens: contextPolicy ? contextPolicy.maxInputTokens - baseTokenEstimate.total : Number.MAX_SAFE_INTEGER,
+    maxMemoryTokens: memoryPolicy?.maxInjectedTokens ?? 0,
+    pendingMemoryRefs: [],
+    invalidatedSourceRefs: [],
+    requiredSourceRefs: [],
+  });
+  if (!optionalAssembly.validation.ok) {
+    throw new Error(`context assembly failed: ${optionalAssembly.validation.errors.map((error) => error.message).join("; ")}`);
+  }
+  const selectedKnowledgeCards = optionalAssembly.selected.filter((item) => item.sourceType === "knowledge_card");
+  const selectedKnowledgeCardRefs = selectedKnowledgeCards
+    .map((item) => item.sourceRef)
+    .filter((item): item is string => Boolean(item));
+  const selectedPriorArtifacts = optionalAssembly.selected.filter((item) => item.sourceType === "artifact");
+  const selectedCheckpointSummary = optionalAssembly.selected.find((item) => item.sourceType === "checkpoint");
+  const selectedWorkspaceBlocks = optionalAssembly.selected.filter((item) => item.sourceType === "workspace");
+  const selectedWorkspaceSummary = selectedWorkspaceBlocks.find((item) => item.title === "Workspace");
+  const selectedContextSourceSummary = selectedWorkspaceBlocks.find((item) => item.title === "Context Sources");
+  const selectedFailureSummary = optionalAssembly.selected.find((item) => item.sourceType === "failure");
+  const tokenEstimate = mergeTokenEstimates(baseTokenEstimate, optionalAssembly.tokenEstimate);
 
   const packet: ContextPacket = {
     id: input.contextPacketId ?? `ctx-${input.runId}-${input.taskId}-attempt-${executionAttempt}`,
@@ -105,23 +134,23 @@ export async function buildContextPacketWithKnowledgeCards(
     agentsMdBlocks,
     artifactContracts,
     selectedMemories: [],
-    selectedKnowledgeCards: selected.selectedCards,
-    priorArtifacts: contextSourceSummary ? [...priorArtifacts, contextSourceSummary] : priorArtifacts,
-    checkpointSummary,
-    workspaceSummary,
-    failureSummary,
+    selectedKnowledgeCards,
+    priorArtifacts: selectedContextSourceSummary ? [...selectedPriorArtifacts, selectedContextSourceSummary] : selectedPriorArtifacts,
+    checkpointSummary: selectedCheckpointSummary,
+    workspaceSummary: selectedWorkspaceSummary,
+    failureSummary: selectedFailureSummary,
     skillInstructions,
     mcpGrantSummary,
     forbiddenActions: profile.toolPolicy.deniedTools,
     budget: profile.budgetPolicy,
     tokenEstimate,
-    excludedCandidates: [],
+    excludedCandidates: optionalAssembly.excludedCandidates,
   };
   const managedSourceRefs = buildManagedContextSourceRefs({
     rawEventRefs: [],
     omittedEventRanges: [],
     transformRefs: [],
-    checkpointRefs: [checkpointSummary?.sourceRef ?? checkpointSummary?.id].filter((item): item is string => Boolean(item)),
+    checkpointRefs: [selectedCheckpointSummary?.sourceRef ?? selectedCheckpointSummary?.id].filter((item): item is string => Boolean(item)),
   });
   packet.managedSourceRefs = managedSourceRefs;
 
@@ -149,7 +178,7 @@ export async function buildContextPacketWithKnowledgeCards(
       input.domainPack.id,
       `Context for ${input.taskId}`,
       JSON.stringify(packet),
-      JSON.stringify({ tokenEstimate: tokenEstimate.total, selectedKnowledgeCards: selected.selectedCardRefs.length }),
+      JSON.stringify({ tokenEstimate: tokenEstimate.total, selectedKnowledgeCards: selectedKnowledgeCardRefs.length }),
     ],
   );
   await persistKnowledgeCardInjectionTrace(db, {
@@ -159,10 +188,10 @@ export async function buildContextPacketWithKnowledgeCards(
     sessionId: input.rootSessionId,
     scope: input.domainPack.id,
     matchedTaskMetadata: selected.matchedTaskMetadata,
-    selectedCards: selected.selectedCards,
-    selectedCardRefs: selected.selectedCardRefs,
+    selectedCards: selectedKnowledgeCards,
+    selectedCardRefs: selectedKnowledgeCardRefs,
     excludedCards: selected.excludedCards,
-    tokenEstimate: selected.tokenEstimate,
+    tokenEstimate: selectedKnowledgeCards.reduce((sum, item) => sum + item.tokenEstimate, 0),
   });
   return packet;
 }
@@ -208,6 +237,18 @@ function estimatePacketTokens(blocks: ContextBlock[]): TokenEstimate {
   const bySourceType: Record<string, number> = {};
   for (const item of blocks) bySourceType[item.sourceType] = (bySourceType[item.sourceType] ?? 0) + item.tokenEstimate;
   return { total: Object.values(bySourceType).reduce((sum, next) => sum + next, 0), bySourceType };
+}
+
+function mergeTokenEstimates(left: TokenEstimate, right: TokenEstimate): TokenEstimate {
+  const bySourceType: Record<string, number> = { ...left.bySourceType };
+  for (const [sourceType, tokens] of Object.entries(right.bySourceType)) {
+    bySourceType[sourceType] = (bySourceType[sourceType] ?? 0) + tokens;
+  }
+  return { total: left.total + right.total, bySourceType };
+}
+
+function candidateFromBlock(block: ContextBlock, score: number): ContextBlockCandidate {
+  return { ...block, score };
 }
 
 function estimateTokens(text: string): number {
