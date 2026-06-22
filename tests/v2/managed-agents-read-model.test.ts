@@ -115,23 +115,32 @@ async function seedManagedAgentRun(db: Parameters<typeof createWorkflowRunPg>[0]
           tokenEstimate: { total: 1234 },
           selectedMemories: [
             {
+              id: "memory-secret-1",
+              sourceType: "memory",
+              title: "Selected memory",
+              text: "raw prompt-like selected memory text must not leak",
               sourceRef: "memory-secret-1",
-              summary: "raw prompt-like selected memory text must not leak",
-              raw: "SELECTED_MEMORY_RAW_SECRET",
+              tokenEstimate: 7,
             },
           ],
           selectedKnowledgeCards: [
             {
+              id: "card-secret-1",
+              sourceType: "knowledge_card",
+              title: "Selected knowledge card",
+              text: "knowledge card content must not leak",
               sourceRef: "card-secret-1",
-              content: "knowledge card content must not leak",
+              tokenEstimate: 8,
             },
           ],
           priorArtifacts: [
             {
-              sourceRef: "artifact-secret-1",
+              id: "artifact-secret-1",
+              sourceType: "artifact",
               title: "Prior implementation artifact",
               text: "artifact text must not leak",
-              raw: "ARTIFACT_RAW_SECRET",
+              sourceRef: "artifact-secret-1",
+              tokenEstimate: 9,
             },
           ],
         },
@@ -239,16 +248,18 @@ function assertTaskEnvelopePayloadRedacted(resources: Awaited<ReturnType<typeof 
   assert.equal((resource.payload as { selectedMemoryCount?: unknown }).selectedMemoryCount, 1);
   assert.equal((resource.payload as { selectedKnowledgeCardCount?: unknown }).selectedKnowledgeCardCount, 1);
   assert.equal((resource.payload as { priorArtifactCount?: unknown }).priorArtifactCount, 1);
+  assert.equal((resource.payload as { sourceCount?: unknown }).sourceCount, 3);
 
   const serializedResource = JSON.stringify(resource);
   assert.equal(serializedResource.includes('"envelope"'), false);
   assert.equal(serializedResource.includes('"contextPacket"'), false);
   assert.equal(serializedResource.includes('"selectedMemories"'), false);
+  assert.equal(serializedResource.includes("Selected memory"), false);
   assert.equal(serializedResource.includes("raw prompt-like selected memory text must not leak"), false);
-  assert.equal(serializedResource.includes("SELECTED_MEMORY_RAW_SECRET"), false);
+  assert.equal(serializedResource.includes("Selected knowledge card"), false);
   assert.equal(serializedResource.includes("knowledge card content must not leak"), false);
+  assert.equal(serializedResource.includes("Prior implementation artifact"), false);
   assert.equal(serializedResource.includes("artifact text must not leak"), false);
-  assert.equal(serializedResource.includes("ARTIFACT_RAW_SECRET"), false);
   assert.equal(serializedResource.includes("AGENT_PROMPT_SECRET"), false);
   assert.equal(serializedResource.includes("SYSTEM_PROMPT_SECRET"), false);
   assert.equal(serializedResource.includes("TASK_ENVELOPE_RAW_SECRET"), false);
