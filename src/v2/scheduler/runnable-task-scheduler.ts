@@ -122,6 +122,10 @@ async function dispatchTask(
   let handRejected = false;
 
   try {
+    const checkpointRefs = await latestSessionRecoveryCheckpointRefsForTask(db, {
+      runId: input.runId,
+      taskId: input.taskId,
+    });
     const assembler = createManagedContextAssembler(db);
     const assembly = await assembler.buildForTask({
       runId: input.runId,
@@ -130,6 +134,7 @@ async function dispatchTask(
       attemptId,
       handExecutionId,
       dependsOn: input.dependsOn,
+      checkpointRefs,
     });
     contextPacketId = assembly.contextPacket.id;
     taskEnvelopeId = assembly.taskEnvelopeId;
@@ -334,6 +339,25 @@ async function dispatchTask(
     });
     throw error;
   }
+}
+
+async function latestSessionRecoveryCheckpointRefsForTask(
+  db: SouthstarDb,
+  input: { runId: string; taskId: string },
+): Promise<string[]> {
+  const rows = await db.query<{ payload_json: unknown }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where run_id = $1
+        and task_id = $2
+        and resource_type = any($3::text[])
+        and status = 'succeeded'
+      order by updated_at desc, created_at desc, resource_key desc
+      limit 1`,
+    [input.runId, input.taskId, ["session_fork", "session_reset", "session_rollback"]],
+  );
+  const checkpointId = stringValue(asRecord(rows.rows[0]?.payload_json).checkpointId);
+  return checkpointId ? [checkpointId] : [];
 }
 
 async function nextDispatchAttemptId(db: SouthstarDb, runId: string, taskId: string): Promise<string> {

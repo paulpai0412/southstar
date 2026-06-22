@@ -87,6 +87,107 @@ test("runnable scheduler builds fresh managed context before hand submit", async
   }
 });
 
+test("runnable scheduler passes recovery checkpoint refs into managed context assembly", async () => {
+  const db = await createTestPostgresDb();
+  const runId = "run-scheduler-recovery-checkpoint-context";
+  const taskId = "implement-feature";
+  const legacyContextPacketId = "legacy-context-recovery-should-not-be-used";
+  const checkpointRef = `checkpoint:${runId}:${taskId}:before-recovery`;
+  try {
+    await seedRun(db, { runId, taskId, legacyContextPacketId });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "session_checkpoint",
+      resourceKey: checkpointRef,
+      runId,
+      taskId,
+      sessionId: `root-${runId}-${taskId}-reset-session-1`,
+      scope: "session",
+      status: "created",
+      title: "Before recovery checkpoint",
+      payload: {
+        checkpointType: "before-recovery",
+        summary: "Recover from the failed session checkpoint.",
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "session_reset",
+      resourceKey: `session_reset:recovery-${runId}-${taskId}`,
+      runId,
+      taskId,
+      sessionId: `root-${runId}-${taskId}-reset-session-1`,
+      scope: "session-recovery",
+      status: "succeeded",
+      title: "Session reset recovery operation",
+      payload: {
+        schemaVersion: "southstar.session_recovery.operation.v1",
+        path: "reset-session",
+        checkpointId: checkpointRef,
+      },
+    });
+    await db.query(
+      "update southstar.workflow_tasks set root_session_id = $1 where run_id = $2 and id = $3",
+      [`root-${runId}-${taskId}-reset-session-1`, runId, taskId],
+    );
+
+    const scheduler = createRunnableTaskScheduler(db, {
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: {
+        providerId: "test-brain",
+        wake: async (input) => ({
+          id: `brain-${input.taskId}`,
+          providerId: "test-brain",
+          runId: input.runId,
+          taskId: input.taskId,
+          sessionId: input.sessionId,
+          status: "running",
+          createdAt: new Date().toISOString(),
+          payload: {},
+        }),
+      } satisfies BrainProvider,
+      handProvider: {
+        providerId: "test-hand",
+        provision: async (input) => ({
+          id: `hand-${input.taskId}`,
+          providerId: "test-hand",
+          runId: input.runId,
+          taskId: input.taskId,
+          handName: input.handName,
+          status: "provisioned",
+          createdAt: new Date().toISOString(),
+          payload: {},
+        }),
+        executeTask: async (_binding, input) => ({ ok: true, output: `job-${input.taskId}`, metadata: { externalJobId: `job-${input.taskId}` } }),
+        capabilities: () => ({
+          supportsSnapshot: true,
+          supportsDestroy: true,
+          supportsReprovision: true,
+          keepsCredentialsOutOfSandbox: true,
+        }),
+      } satisfies HandProvider,
+    });
+
+    const result = await scheduler.runOnce({ runId });
+    assert.deepEqual(result.dispatchedTaskIds, [taskId]);
+
+    const packets = (await listResourcesPg(db, { resourceType: "context_packet" }))
+      .filter((packet) => packet.resourceKey !== legacyContextPacketId);
+    assert.equal(packets.length, 1);
+    assert.equal((packets[0]?.payload as { checkpointSummary?: { sourceRef?: string } }).checkpointSummary?.sourceRef, checkpointRef);
+    assert.deepEqual(
+      (packets[0]?.payload as { managedSourceRefs?: { checkpointRefs?: string[] } }).managedSourceRefs?.checkpointRefs,
+      [checkpointRef],
+    );
+
+    const envelope = (await listResourcesPg(db, { resourceType: "task_envelope" }))[0];
+    assert.equal(
+      (envelope?.payload as { envelope?: { session?: { baseCheckpointId?: string } } }).envelope?.session?.baseCheckpointId,
+      checkpointRef,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 async function seedRun(
   db: TestPostgresDb,
   input: { runId: string; taskId: string; legacyContextPacketId: string },

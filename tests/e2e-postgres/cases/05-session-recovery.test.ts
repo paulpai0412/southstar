@@ -132,12 +132,14 @@ test("05 session recovery: checkpointed failed session reruns with new root sess
     );
     assert.equal(contextPacket?.payload_json.rootSessionId, task.root_session_id);
     assert.equal(contextPacket?.payload_json.executionAttempt, 2);
+    assert.equal(contextPacket?.payload_json.checkpointSummary?.sourceRef, checkpointResourceKey);
 
     const envelope = await env.db.maybeOne<{ payload_json: { envelope?: { session?: { sessionId?: string; baseCheckpointId?: string } } } }>(
       "select payload_json from southstar.runtime_resources where resource_type = 'task_envelope' and run_id = $1 and task_id = $2 order by created_at desc limit 1",
       [run.runId, failedTaskId],
     );
     assert.equal(envelope?.payload_json.envelope?.session?.sessionId, task.root_session_id);
+    assert.equal(envelope?.payload_json.envelope?.session?.baseCheckpointId, checkpointResourceKey);
 
     const acceptedArtifacts = (await listResourcesPg(env.db, { resourceType: "artifact_ref" }))
       .filter((resource) => resource.runId === run.runId && resource.taskId === failedTaskId && resource.status === "accepted");
