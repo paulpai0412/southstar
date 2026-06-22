@@ -7,9 +7,6 @@ import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../ex
 import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approval-service.ts";
 import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
-import { type RecoveryExecutionPlan } from "../session-recovery/execution-planner.ts";
-import { dispatchRecoveryExecutionPg } from "../session-recovery/postgres-dispatcher.ts";
-import { isRecoveryStrategy } from "../session-recovery/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-control-center.ts";
 import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read-models/postgres-core.ts";
@@ -125,59 +122,6 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (request.method === "POST" && executeMatch) {
       const runId = decodeURIComponent(executeMatch[1]!);
       return json("run-execute", await startRunSchedulingPg(context.db, { runId }));
-    }
-
-    const recoveryDispatchMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/recovery\/dispatch$/);
-    if (request.method === "POST" && recoveryDispatchMatch) {
-      const body = await readJsonBody<{
-        failedTaskId?: string;
-        plan?: Partial<RecoveryExecutionPlan>;
-        callbackUrl?: string;
-        heartbeatUrl?: string;
-        runRoot?: string;
-        harnessEndpoint?: string;
-        contextRefreshUrl?: string;
-      }>(request);
-      const runId = decodeURIComponent(recoveryDispatchMatch[1]!);
-      const failedTaskId = body.failedTaskId ?? (typeof body.plan?.failedTaskId === "string" ? body.plan.failedTaskId : undefined);
-      if (!failedTaskId) throw new Error("failedTaskId is required");
-      const strategy = body.plan?.strategy;
-      if (!isRecoveryStrategy(strategy)) throw new Error("plan.strategy is required");
-      const attemptNumber = typeof body.plan?.attemptNumber === "number" && Number.isInteger(body.plan.attemptNumber)
-        ? body.plan.attemptNumber
-        : 2;
-      if (attemptNumber < 2) throw new Error("plan.attemptNumber must be >= 2");
-      const callbackUrl = body.callbackUrl ?? context.callbackUrl ?? (context.serverUrl ? `${context.serverUrl}/api/v2/tork/callback` : undefined);
-      if (!callbackUrl) throw new Error("callbackUrl is required");
-      const plan: RecoveryExecutionPlan = {
-        strategy,
-        failedTaskId,
-        baseTaskId: typeof body.plan?.baseTaskId === "string" ? body.plan.baseTaskId : failedTaskId,
-        targetTaskIds: Array.isArray(body.plan?.targetTaskIds) && body.plan.targetTaskIds.length > 0
-          ? body.plan.targetTaskIds.filter((taskId): taskId is string => typeof taskId === "string")
-          : [failedTaskId],
-        attemptNumber,
-        requiresOperatorApproval: typeof body.plan?.requiresOperatorApproval === "boolean"
-          ? body.plan.requiresOperatorApproval
-          : strategy === "rollback-workspace" || strategy === "ask-human",
-        reason: typeof body.plan?.reason === "string" && body.plan.reason.trim().length > 0
-          ? body.plan.reason
-          : `Strategy ${strategy} reruns ${failedTaskId}`,
-        diagnostics: Array.isArray(body.plan?.diagnostics)
-          ? body.plan.diagnostics.filter((item): item is string => typeof item === "string")
-          : [],
-      };
-      return json("recovery-dispatch", await dispatchRecoveryExecutionPg(context.db, {
-        runId,
-        failedTaskId,
-        plan,
-        executorProvider: context.executorProvider,
-        callbackUrl,
-        heartbeatUrl: body.heartbeatUrl ?? (context.serverUrl ? `${context.serverUrl}/api/v2/executor/heartbeat` : undefined),
-        runRoot: body.runRoot ?? context.runRoot,
-        harnessEndpoint: body.harnessEndpoint,
-        contextRefreshUrl: body.contextRefreshUrl,
-      }));
     }
 
     const recoveryDecisionApplyMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/recovery-decisions\/([^/]+)\/apply$/);

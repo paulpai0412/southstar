@@ -47,7 +47,7 @@ await import("./meta-harness-taxonomy.test.ts");
 await import("./postgres-core-read-models-api.test.ts");
 await import("./postgres-executor-bindings.test.ts");
 await import("./postgres-executor-reconcile.test.ts");
-await import("./postgres-recovery-dispatcher.test.ts");
+await import("./legacy-recovery-dispatcher-removal.test.ts");
 await import("./postgres-recovery-controller.test.ts");
 await import("./postgres-run-api.test.ts");
 await import("./run-execution-controller.test.ts");
