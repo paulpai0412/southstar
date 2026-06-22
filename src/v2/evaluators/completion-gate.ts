@@ -83,18 +83,21 @@ export async function evaluateRunCompletionGatePg(
     const unappliedRecoveryDecisions = (await tx.query<{
       resource_key: string;
       status: string;
-      payload_json: { path?: string };
+      payload_json: unknown;
     }>(
       `select resource_key, status, payload_json
          from southstar.runtime_resources
         where run_id = $1
           and resource_type = 'recovery_decision'
+          and payload_json->>'schemaVersion' = 'southstar.runtime.recovery_decision.v1'
           and status in ('recorded', 'waiting_operator_approval', 'approved', 'applying', 'failed', 'blocked')
         order by created_at, resource_key`,
       [input.runId],
     )).rows;
     for (const decision of unappliedRecoveryDecisions) {
-      findings.push(`unapplied recovery decision ${decision.resource_key}: ${decision.payload_json.path ?? decision.status}`);
+      const payload = asRecord(decision.payload_json);
+      const path = payload ? stringValue(payload.path) : undefined;
+      findings.push(`unapplied recovery decision ${decision.resource_key}: ${path ?? decision.status}`);
     }
 
     const startedRecoveryExecutions = (await tx.query<{ resource_key: string }>(
@@ -187,4 +190,13 @@ function stableStringify(value: unknown): string {
     return `{${Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => `${JSON.stringify(key)}:${stableStringify(child)}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined;
 }

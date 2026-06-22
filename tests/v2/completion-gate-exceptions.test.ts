@@ -115,6 +115,42 @@ test("completion gate fails while recovery decision is unapplied", async () => {
   }
 });
 
+test("completion gate ignores recorded managed recovery decisions", async () => {
+  const db = await createTestPostgresDb();
+  const runId = "run-gate-managed-recovery-decision";
+  try {
+    await seedCompletedRunWithAcceptedArtifactRef(db, runId);
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_decision",
+      resourceKey: "managed-recovery:exception-a:skip",
+      runId,
+      taskId: "task-a",
+      scope: "recovery",
+      status: "recorded",
+      title: "Managed recovery decision for task-a",
+      payload: {
+        schemaVersion: "southstar.managed-recovery-decision.v1",
+        decisionId: "managed-decision-a",
+        runId,
+        taskId: "task-a",
+        action: "skip",
+        reason: "managed session recovery recorded separately",
+        createdAt: "2026-06-21T11:03:00.000Z",
+      },
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.deepEqual(result, {
+      runId,
+      status: "passed",
+      findings: [],
+    });
+  } finally {
+    await db.close();
+  }
+});
+
 test("completion gate fails while recovery execution is started", async () => {
   const db = await createTestPostgresDb();
   const runId = "run-gate-started-recovery-execution";
