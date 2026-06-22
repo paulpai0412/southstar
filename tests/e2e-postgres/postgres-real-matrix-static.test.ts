@@ -33,6 +33,7 @@ const implementedCases = [
   "23-operator-approved-recovery-apply.test.ts",
   "24-provider-unreachable-apply-failure.test.ts",
   "25-normal-context-session-memory-flow.test.ts",
+  "26-abnormal-context-session-memory-recovery.test.ts",
 ];
 
 test("canonical real E2E entrypoint is a static manifest and real cases run one at a time", () => {
@@ -73,10 +74,14 @@ test("Postgres real E2E suite contains no SQLite/local API coupling or fake shor
 
 test("managed context E2E cases use retrievable memory kinds and typed manifest policies", () => {
   const normalContextCase = source("tests/e2e-postgres/cases/25-normal-context-session-memory-flow.test.ts");
+  const abnormalContextCase = source("tests/e2e-postgres/cases/26-abnormal-context-session-memory-recovery.test.ts");
   assert.doesNotMatch(normalContextCase, /kind:\s*"workflow_context"/);
   assert.match(normalContextCase, /kind:\s*"artifact_summary"/);
   assert.doesNotMatch(normalContextCase, /executionPolicy/);
   assert.match(normalContextCase, /effortPolicy/);
+  assert.match(abnormalContextCase, /kind:\s*"failure_lesson"/);
+  assert.doesNotMatch(abnormalContextCase, /executionPolicy/);
+  assert.match(abnormalContextCase, /effortPolicy/);
 });
 
 test("legacy SQLite real E2E suite is removed from the runnable tree", () => {

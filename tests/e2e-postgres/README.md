@@ -53,6 +53,7 @@ npm run test:e2e:postgres:22   # recovery decision apply reprovision
 npm run test:e2e:postgres:23   # operator-approved recovery apply
 npm run test:e2e:postgres:24   # provider unreachable apply failure
 npm run test:e2e:postgres:25   # normal managed context/session/memory propagation
+npm run test:e2e:postgres:26   # abnormal managed context/session/memory recovery
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
