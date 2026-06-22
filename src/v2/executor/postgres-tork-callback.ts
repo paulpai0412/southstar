@@ -4,6 +4,7 @@ import { acceptOrRejectArtifactRefPg } from "../artifacts/artifact-ref-store.ts"
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
+import { writeCallbackMemoryPg } from "../memory/writeback-policy.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
 import { assertNoRawCredentialPayloadPg } from "../tool-proxy/policy-enforcer.ts";
@@ -138,6 +139,16 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
         attempts: result.attempts,
         accepted: result.ok,
       },
+    });
+
+    await writeCallbackMemoryPg(tx, {
+      runId: result.runId,
+      taskId: result.taskId,
+      sessionId: result.rootSessionId,
+      ok: result.ok,
+      artifact: result.artifact,
+      artifactRefId: artifactRef.artifactRefId,
+      artifactResourceId: artifactRef.resourceId,
     });
 
     if (result.attemptId) {

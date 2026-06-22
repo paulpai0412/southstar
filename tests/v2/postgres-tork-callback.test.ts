@@ -97,6 +97,8 @@ test("Postgres Tork callback route ingests task result, artifacts, binding statu
         "session.entry",
         "artifact.accepted",
         "artifact.created",
+        "memory.run_local_written",
+        "memory.writeback_recorded",
         "executor.callback_completed",
         "run.evaluating_started",
         "run.completed",
