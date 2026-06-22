@@ -1,6 +1,6 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 
 export type RecordArtifactRepairMarkerInput = {
   runId: string;
@@ -24,16 +24,16 @@ export async function recordArtifactRepairMarkerPg(
 ): Promise<RecordArtifactRepairMarkerResult> {
   const markerKind = nonEmptyString(input.markerKind) ?? "artifact_repair";
   const status = input.status ?? "open";
-  const sourceRefs = stringArray(input.sourceRefs);
+  const sourceRefs = sortedUniqueStrings(input.sourceRefs);
   const markerId = artifactRepairMarkerId(input.runId, input.taskId, input.artifactRefId, markerKind, input.reason, sourceRefs);
   const payload = {
+    ...objectPayload(input.payload),
     schemaVersion: "southstar.artifact.lineage.repair_marker.v1",
     markerId,
     markerKind,
     artifactRefId: input.artifactRefId,
     reason: input.reason,
     sourceRefs,
-    ...objectPayload(input.payload),
   };
 
   await upsertRuntimeResourcePg(db, {
@@ -74,26 +74,22 @@ async function appendRepairMarkerRecordedOncePg(
     payload: Record<string, unknown>;
   },
 ): Promise<void> {
-  await db.query(
-    `insert into southstar.workflow_history (
-      id, run_id, task_id, sequence, event_type, actor_type, session_id,
-      idempotency_key, correlation_id, causation_id, payload_json, created_at
-    ) values (
-      $1, $2, $3,
-      (select coalesce(max(sequence), 0) + 1 from southstar.workflow_history where run_id = $2),
-      'artifact.repair_marker_recorded', 'orchestrator', $4, $5, null, null, $6::jsonb, $7
-    )
-    on conflict (run_id, idempotency_key) where idempotency_key is not null do nothing`,
-    [
-      randomUUID(),
-      input.runId,
-      input.taskId ?? null,
-      input.sessionId ?? null,
-      `${input.markerId}:repair-marker-recorded`,
-      JSON.stringify({ markerId: input.markerId, ...input.payload }),
-      new Date().toISOString(),
-    ],
+  const idempotencyKey = `${input.markerId}:repair-marker-recorded`;
+  const existing = await db.maybeOne<{ id: string }>(
+    "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+    [input.runId, idempotencyKey],
   );
+  if (existing) return;
+
+  await appendHistoryEventPg(db, {
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    eventType: "artifact.repair_marker_recorded",
+    actorType: "orchestrator",
+    idempotencyKey,
+    payload: input.payload,
+  });
 }
 
 function artifactRepairMarkerId(...parts: unknown[]): string {
@@ -110,6 +106,10 @@ function objectPayload(value: unknown): Record<string, unknown> {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.length > 0) : [];
+}
+
+function sortedUniqueStrings(value: unknown): string[] {
+  return [...new Set(stringArray(value))].sort();
 }
 
 function nonEmptyString(value: unknown): string | undefined {

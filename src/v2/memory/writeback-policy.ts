@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { appendHistoryEventPg } from "../stores/postgres-runtime-store.ts";
 import { createMemoryDeltaPg, writeRunLocalMemoryPg } from "./postgres-memory-service.ts";
 
 export type CallbackMemoryWritebackInput = {
@@ -133,26 +133,21 @@ async function appendWritebackRecordedOncePg(
     payload: CallbackMemoryWritebackResult;
   },
 ): Promise<void> {
-  await db.query(
-    `insert into southstar.workflow_history (
-      id, run_id, task_id, sequence, event_type, actor_type, session_id,
-      idempotency_key, correlation_id, causation_id, payload_json, created_at
-    ) values (
-      $1, $2, $3,
-      (select coalesce(max(sequence), 0) + 1 from southstar.workflow_history where run_id = $2),
-      'memory.writeback_recorded', 'memory-service', $4, $5, null, null, $6::jsonb, $7
-    )
-    on conflict (run_id, idempotency_key) where idempotency_key is not null do nothing`,
-    [
-      randomUUID(),
-      input.runId,
-      input.taskId,
-      input.sessionId,
-      input.idempotencyKey,
-      JSON.stringify(input.payload),
-      new Date().toISOString(),
-    ],
+  const existing = await db.maybeOne<{ id: string }>(
+    "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+    [input.runId, input.idempotencyKey],
   );
+  if (existing) return;
+
+  await appendHistoryEventPg(db, {
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    eventType: "memory.writeback_recorded",
+    actorType: "memory-service",
+    idempotencyKey: input.idempotencyKey,
+    payload: input.payload,
+  });
 }
 
 function writebackIdempotencyKey(artifactRefId: string): string {

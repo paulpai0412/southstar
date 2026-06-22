@@ -34,7 +34,7 @@ test("artifact lineage records deterministic repair markers idempotently", async
       sessionId: "session-1",
       artifactRefId: "artifact_ref:run-artifact-lineage:task-1:attempt-1:abc",
       reason: "missing artifact evidence",
-      sourceRefs: ["history:artifact.created"],
+      sourceRefs: ["history:validator.finding", "history:artifact.created"],
     });
     const second = await recordArtifactRepairMarkerPg(db, {
       runId: "run-artifact-lineage",
@@ -42,7 +42,13 @@ test("artifact lineage records deterministic repair markers idempotently", async
       sessionId: "session-1",
       artifactRefId: "artifact_ref:run-artifact-lineage:task-1:attempt-1:abc",
       reason: "missing artifact evidence",
-      sourceRefs: ["history:artifact.created"],
+      sourceRefs: ["history:artifact.created", "history:validator.finding"],
+      payload: {
+        artifactRefId: "artifact_ref:wrong",
+        markerId: "wrong-marker",
+        reason: "wrong reason",
+        sourceRefs: ["history:wrong"],
+      },
     });
 
     assert.deepEqual(second, first);
@@ -63,7 +69,7 @@ test("artifact lineage records deterministic repair markers idempotently", async
     assert.equal(marker.status, "open");
     assert.equal(marker.payload_json.artifactRefId, "artifact_ref:run-artifact-lineage:task-1:attempt-1:abc");
     assert.equal(marker.payload_json.reason, "missing artifact evidence");
-    assert.deepEqual(marker.payload_json.sourceRefs, ["history:artifact.created"]);
+    assert.deepEqual(marker.payload_json.sourceRefs, ["history:artifact.created", "history:validator.finding"]);
 
     const history = await listHistoryForRunPg(db, "run-artifact-lineage");
     assert.equal(history.filter((event) => event.eventType === "artifact.repair_marker_recorded").length, 1);

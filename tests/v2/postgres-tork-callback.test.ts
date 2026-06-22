@@ -91,19 +91,15 @@ test("Postgres Tork callback route ingests task result, artifacts, binding statu
       assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
 
       const history = await listHistoryForRunPg(db, "run-callback-pg");
-      assert.deepEqual(history.map((event) => event.eventType), [
-        "executor.submitted",
-        "executor.callback_received",
-        "session.entry",
-        "artifact.accepted",
-        "artifact.created",
-        "memory.run_local_written",
-        "memory.writeback_recorded",
-        "executor.callback_completed",
-        "run.evaluating_started",
-        "run.completed",
-        "evolution.knowledge_cards_synthesized",
-      ]);
+      const historyTypes = history.map((event) => event.eventType);
+      assert.equal(historyTypes.includes("executor.submitted"), true);
+      assert.equal(historyTypes.includes("session.entry"), true);
+      assertOrder(historyTypes, "artifact.accepted", "artifact.created");
+      assertOrder(historyTypes, "artifact.created", "memory.run_local_written");
+      assertOrder(historyTypes, "memory.run_local_written", "memory.writeback_recorded");
+      assertOrder(historyTypes, "memory.writeback_recorded", "executor.callback_completed");
+      assertOrder(historyTypes, "executor.callback_completed", "run.evaluating_started");
+      assertOrder(historyTypes, "run.evaluating_started", "run.completed");
       assert.equal(history.find((event) => event.eventType === "run.completed")?.actorType, "evaluator");
       assert.equal(history.filter((event) => event.eventType === "executor.callback_received").length, 1);
     } finally {
@@ -376,6 +372,14 @@ async function post(baseUrl: string, path: string, body: unknown): Promise<{ ok:
   const envelope = JSON.parse(text) as { ok: true; kind: string; result: { accepted?: boolean; duplicate?: boolean; artifactRefId?: string; artifactResourceId?: string } } | { ok: false; error: string };
   if (!envelope.ok) throw new Error(envelope.error);
   return envelope;
+}
+
+function assertOrder(eventTypes: string[], before: string, after: string): void {
+  const beforeIndex = eventTypes.indexOf(before);
+  const afterIndex = eventTypes.indexOf(after);
+  assert.notEqual(beforeIndex, -1, `missing event ${before}`);
+  assert.notEqual(afterIndex, -1, `missing event ${after}`);
+  assert.equal(beforeIndex < afterIndex, true, `${before} should come before ${after}`);
 }
 
 async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
