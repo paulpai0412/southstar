@@ -11,15 +11,13 @@ export type RecoveryProviderActions = {
   cancel?: (input: RecoveryProviderActionInput) => Promise<unknown>;
 };
 
-export async function recordBestEffortCancelAction(input: {
+export function requestedCancelAction(input: {
   providerId: string;
   externalJobId?: string;
-  runId: string;
   evidenceRef?: string;
-  reason: string;
   now: string;
   providerActions?: RecoveryProviderActions;
-}): Promise<RecoveryExecutionProviderAction> {
+}): RecoveryExecutionProviderAction {
   const base = {
     providerId: input.providerId,
     action: "cancel" as const,
@@ -33,8 +31,31 @@ export async function recordBestEffortCancelAction(input: {
     };
   }
 
+  return {
+    ...base,
+    status: "requested",
+    attemptedAt: input.now,
+  };
+}
+
+export async function executeBestEffortCancelAction(input: {
+  providerId: string;
+  externalJobId: string;
+  runId: string;
+  evidenceRef?: string;
+  reason: string;
+  now: string;
+  providerActions: RecoveryProviderActions;
+}): Promise<RecoveryExecutionProviderAction> {
+  const base = {
+    providerId: input.providerId,
+    action: "cancel" as const,
+    evidenceRef: input.evidenceRef,
+    attemptedAt: input.now,
+  };
+
   try {
-    await input.providerActions.cancel({
+    await input.providerActions.cancel?.({
       externalJobId: input.externalJobId,
       runId: input.runId,
       reason: input.reason,
@@ -42,7 +63,6 @@ export async function recordBestEffortCancelAction(input: {
     return {
       ...base,
       status: "succeeded",
-      attemptedAt: input.now,
       completedAt: input.now,
       succeededAt: input.now,
     };
@@ -50,11 +70,22 @@ export async function recordBestEffortCancelAction(input: {
     return {
       ...base,
       status: "failed",
-      attemptedAt: input.now,
       completedAt: input.now,
       errorExcerpt: redactAndTruncateError(error),
     };
   }
+}
+
+export async function recordBestEffortCancelAction(input: {
+  providerId: string;
+  externalJobId?: string;
+  runId: string;
+  evidenceRef?: string;
+  reason: string;
+  now: string;
+  providerActions?: RecoveryProviderActions;
+}): Promise<RecoveryExecutionProviderAction> {
+  return requestedCancelAction(input);
 }
 
 function redactAndTruncateError(error: unknown): string {

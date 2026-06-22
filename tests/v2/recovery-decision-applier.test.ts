@@ -207,6 +207,58 @@ test("reprovision-hand records old binding destroy intent without calling provid
   }
 });
 
+test("reprovision-hand records successful provider cancel once and replay does not cancel again", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-reprovision-cancel-success" });
+    const now = "2026-06-21T14:08:00.000Z";
+    const replayAt = "2026-06-21T14:09:00.000Z";
+    const cancelInputs: Array<{ externalJobId: string; runId: string; reason: string }> = [];
+    const handProvider = createFakeHandProvider({ providerId: "fake-hand" });
+    const applier = createRecoveryDecisionApplier({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider,
+      providerActions: {
+        async cancel(input) {
+          cancelInputs.push(input);
+        },
+      },
+    });
+
+    const first = await applier.applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "applying");
+    const replay = await applier.applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now: replayAt });
+
+    assert.equal(first.status, "applied");
+    assert.equal(replay.status, "applied");
+    assert.equal(replay.executionResourceKey, first.executionResourceKey);
+    assert.deepEqual(cancelInputs, [
+      {
+        externalJobId: "job-running",
+        runId: fixture.runId,
+        reason: "reprovision-hand",
+      },
+    ]);
+
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.runId === fixture.runId,
+    );
+    assert.equal(recoveryExecution?.status, "succeeded");
+    const providerActions = (recoveryExecution?.payload as {
+      providerActions: Array<{ providerId?: string; action?: string; status?: string; evidenceRef?: string; completedAt?: string; succeededAt?: string }>;
+    }).providerActions;
+    assert.deepEqual(providerActions.map((action) => [action.providerId, action.action, action.status, action.evidenceRef, action.completedAt, action.succeededAt]), [
+      ["fake-hand", "cancel", "succeeded", fixture.handExecutionId, now, now],
+      ["fake-hand", "destroy", "requested", fixture.oldHandBindingId, undefined, undefined],
+      ["fake-hand", "provision", "succeeded", providerActions[2]?.evidenceRef, undefined, now],
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("reprovision-hand blocks when dependencies are missing without mutating hand or task", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -510,6 +562,63 @@ test("requeue-hand-execution applies queue timeout recovery and is idempotent", 
       status: "applied",
       appliedAt: now,
     });
+  } finally {
+    await db.close();
+  }
+});
+
+test("requeue-hand-execution records successful provider cancel once and replay does not cancel again", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-requeue-cancel-success" });
+    const { runId, handExecutionId, decision } = fixture;
+    const now = "2026-06-21T12:05:00.000Z";
+    const cancelInputs: Array<{ externalJobId: string; runId: string; reason: string }> = [];
+    const applier = createRecoveryDecisionApplier({
+      db,
+      providerActions: {
+        async cancel(input) {
+          cancelInputs.push(input);
+        },
+      },
+    });
+
+    const first = await applier.applyDecision({ decisionResourceKey: decision.resourceKey, now });
+    const second = await applier.applyDecision({ decisionResourceKey: decision.resourceKey, now: "2026-06-21T12:06:00.000Z" });
+    await setDecisionStatus(db, decision.resourceKey, "applying");
+    const replay = await applier.applyDecision({ decisionResourceKey: decision.resourceKey, now: "2026-06-21T12:07:00.000Z" });
+
+    assert.equal(first.status, "applied");
+    assert.equal(second.status, "applied");
+    assert.equal(replay.status, "applied");
+    assert.equal(second.executionResourceKey, first.executionResourceKey);
+    assert.equal(replay.executionResourceKey, first.executionResourceKey);
+    assert.deepEqual(cancelInputs, [
+      {
+        externalJobId: "job-queued",
+        runId,
+        reason: "requeue-hand-execution",
+      },
+    ]);
+
+    const recoveryExecution = (await listResourcesPg(db, { resourceType: "recovery_execution" })).find(
+      (resource) => resource.runId === runId,
+    );
+    assert.equal(recoveryExecution?.status, "succeeded");
+    const providerActions = (recoveryExecution?.payload as {
+      providerActions: Array<{ providerId?: string; action?: string; status?: string; evidenceRef?: string; attemptedAt?: string; completedAt?: string; succeededAt?: string }>;
+    }).providerActions;
+    assert.deepEqual(providerActions, [
+      {
+        providerId: "tork",
+        action: "cancel",
+        status: "succeeded",
+        evidenceRef: handExecutionId,
+        attemptedAt: now,
+        completedAt: now,
+        succeededAt: now,
+      },
+    ]);
   } finally {
     await db.close();
   }
@@ -830,7 +939,15 @@ test("requeue-hand-execution completes with canonical staged evidence after a st
       for each row execute function southstar.stage_recovery_evidence_after_started_history()
     `);
 
-    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+    let cancelCount = 0;
+    const result = await createRecoveryDecisionApplier({
+      db,
+      providerActions: {
+        async cancel() {
+          cancelCount += 1;
+        },
+      },
+    }).applyDecision({
       decisionResourceKey: decision.resourceKey,
       now: startedAt,
     });
@@ -848,6 +965,7 @@ test("requeue-hand-execution completes with canonical staged evidence after a st
     };
     assert.deepEqual(recoveryExecutionPayload.stateChanges, expectedStateChanges);
     assert.deepEqual(recoveryExecutionPayload.providerActions, expectedProviderActions);
+    assert.equal(cancelCount, 0);
   } finally {
     await db.close();
   }

@@ -1,7 +1,8 @@
 import type { BrainProvider } from "../brain/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import {
-  recordBestEffortCancelAction,
+  executeBestEffortCancelAction,
+  requestedCancelAction,
   type RecoveryProviderActions,
 } from "../executor/provider-actions.ts";
 import type { HandProvider } from "../hands/types.ts";
@@ -39,6 +40,10 @@ export type RecoveryDecisionApplyResult = {
   reason: string;
 };
 
+type RecoveryDecisionApplyResultWithCancel = RecoveryDecisionApplyResult & {
+  cancelExecution?: ProviderCancelExecution;
+};
+
 type RuntimeResourceRow = {
   id: string;
   resource_type: string;
@@ -64,6 +69,23 @@ type RequeueMutationResult = {
 };
 
 type RecoveryExecutionEvidence = Pick<RequeueMutationResult, "stateChanges" | "providerActions">;
+
+type StagedRecoveryExecutionEvidence = {
+  evidence: RecoveryExecutionEvidence;
+  staged: boolean;
+};
+
+type ProviderCancelExecution = {
+  providerId: string;
+  externalJobId: string;
+  runId: string;
+  evidenceRef?: string;
+  reason: string;
+};
+
+type PreparedRecoveryExecutionEvidence = StagedRecoveryExecutionEvidence & {
+  cancelExecution?: ProviderCancelExecution;
+};
 
 type RecoveryDecisionApplierDeps = {
   db: SouthstarDb;
@@ -242,11 +264,21 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         }
 
         try {
-          return await applyReprovisionMutation(deps as ManagedRecoveryDecisionApplierDeps, {
+          const result = await applyReprovisionMutation(deps as ManagedRecoveryDecisionApplierDeps, {
             decision: applyingDecision,
             executionResourceKey: started.resourceKey,
             now,
           });
+          const { cancelExecution, ...applyResult } = result;
+          if (cancelExecution) {
+            await executeAndUpdateStagedCancelActionPg(deps.db, {
+              executionResourceKey: started.resourceKey,
+              cancelExecution,
+              now,
+              providerActions: deps.providerActions,
+            });
+          }
+          return applyResult;
         } catch (error) {
           if (error instanceof Error && isReprovisionBlockableError(error.message, applyingDecision)) {
             const terminalDecision = await blockDecision(deps.db, {
@@ -305,13 +337,26 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
 
       let mutation: RequeueMutationResult | RecoveryDecisionApplyResult;
       try {
-        const stagedEvidence = stagedRecoveryExecutionEvidence(started.payload);
+        const preparedEvidence = await stageRequeueRecoveryEvidencePg(deps.db, {
+          decision: applyingDecision,
+          executionResourceKey: started.resourceKey,
+          now,
+          providerActions: deps.providerActions,
+        });
+        if ("status" in preparedEvidence) return preparedEvidence;
+        const stagedEvidence = preparedEvidence.cancelExecution
+          ? await executeAndUpdateStagedCancelActionPg(deps.db, {
+            executionResourceKey: started.resourceKey,
+            cancelExecution: preparedEvidence.cancelExecution,
+            now,
+            providerActions: deps.providerActions,
+          })
+          : preparedEvidence.evidence;
         mutation = await applyRequeueMutation(deps.db, {
           decision: applyingDecision,
           executionResourceKey: started.resourceKey,
           now,
           stagedEvidence,
-          providerActions: deps.providerActions,
         });
       } catch (error) {
         if (error instanceof Error && error.message === `hand execution ${applyingDecision.payload.handExecutionId} not found`) {
@@ -392,6 +437,176 @@ async function applyCompletedTaskPreconditionPg(
   return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
 }
 
+async function stageRequeueRecoveryEvidencePg(
+  db: SouthstarDb,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    executionResourceKey: string;
+    now: string;
+    providerActions?: RecoveryProviderActions;
+  },
+): Promise<PreparedRecoveryExecutionEvidence | RecoveryDecisionApplyResult> {
+  return await db.tx(async (tx) => {
+    const { decision, now } = input;
+    const taskId = requireString(decision.payload.taskId, "taskId");
+    const handExecutionId = requireString(decision.payload.handExecutionId, "handExecutionId");
+
+    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [decision.payload.runId]);
+    const task = await tx.maybeOne<{ status: string }>(
+      "select status from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
+      [decision.payload.runId, taskId],
+    );
+    if (!task) throw new Error(`workflow task ${taskId} does not belong to run ${decision.payload.runId}`);
+    const completedTaskPrecondition = await applyCompletedTaskPreconditionPg(tx, {
+      decision,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+    if (completedTaskPrecondition) return completedTaskPrecondition;
+
+    const hand = mapRuntimeResourceRow(await tx.maybeOne<RuntimeResourceRow>(
+      `select * from southstar.runtime_resources
+        where resource_type = 'hand_execution'
+          and resource_key = $1
+        for update`,
+      [handExecutionId],
+    ));
+    if (!hand) throw new Error(`hand execution ${handExecutionId} not found`);
+
+    const exception = mapRuntimeResourceRow(await tx.maybeOne<RuntimeResourceRow>(
+      `select * from southstar.runtime_resources
+        where resource_type = $1
+          and run_id = $2
+          and payload_json->>'exceptionId' = $3
+        for update`,
+      [RUNTIME_EXCEPTION_RESOURCE_TYPE, decision.payload.runId, decision.payload.exceptionId],
+    ));
+    if (!exception) throw new Error(`runtime exception ${decision.payload.exceptionId} not found`);
+
+    const handPayload = isPlainObject(hand.payload) ? hand.payload : {};
+    const providerId = typeof handPayload.providerId === "string" ? handPayload.providerId : "tork";
+    const externalJobId = stringValue(handPayload.externalJobId);
+    const cancelAction = requestedCancelAction({
+      providerActions: input.providerActions,
+      providerId,
+      externalJobId,
+      evidenceRef: hand.resourceKey,
+      now,
+    });
+    const staged = await stageRecoveryExecutionEvidenceWithStatusPg(tx, {
+      executionResourceKey: input.executionResourceKey,
+      evidence: requeueRecoveryExecutionEvidence({ decision, task, hand, exception, cancelAction }),
+      now,
+    });
+
+    return {
+      ...staged,
+      ...(staged.staged && cancelAction.status === "requested" && externalJobId
+        ? {
+          cancelExecution: {
+            providerId,
+            externalJobId,
+            runId: decision.payload.runId,
+            evidenceRef: hand.resourceKey,
+            reason: "requeue-hand-execution",
+          },
+        }
+        : {}),
+    };
+  });
+}
+
+async function executeAndUpdateStagedCancelActionPg(
+  db: SouthstarDb,
+  input: {
+    executionResourceKey: string;
+    cancelExecution: ProviderCancelExecution;
+    now: string;
+    providerActions?: RecoveryProviderActions;
+  },
+): Promise<RecoveryExecutionEvidence> {
+  if (!input.providerActions?.cancel) {
+    return await loadLatestStagedRecoveryExecutionEvidencePg(db, input.executionResourceKey);
+  }
+
+  const result = await executeBestEffortCancelAction({
+    providerActions: input.providerActions,
+    providerId: input.cancelExecution.providerId,
+    externalJobId: input.cancelExecution.externalJobId,
+    runId: input.cancelExecution.runId,
+    evidenceRef: input.cancelExecution.evidenceRef,
+    reason: input.cancelExecution.reason,
+    now: input.now,
+  });
+  return await updateStagedCancelActionResultPg(db, {
+    executionResourceKey: input.executionResourceKey,
+    result,
+    now: input.now,
+  });
+}
+
+async function updateStagedCancelActionResultPg(
+  db: SouthstarDb,
+  input: { executionResourceKey: string; result: RecoveryExecutionProviderAction; now: string },
+): Promise<RecoveryExecutionEvidence> {
+  return await db.tx(async (tx) => {
+    const execution = await lockRecoveryExecutionForUpdatePg(tx, input.executionResourceKey);
+    if (execution.status !== "started" && execution.status !== "succeeded") {
+      throw new Error(`recovery execution ${input.executionResourceKey} is ${execution.status}, expected started or succeeded`);
+    }
+
+    const payload = execution.payload as RecoveryExecutionPayload;
+    const existingEvidence = stagedRecoveryExecutionEvidence(payload);
+    if (!existingEvidence) {
+      throw new Error(`recovery execution ${input.executionResourceKey} has no staged evidence`);
+    }
+
+    const providerActions = existingEvidence.providerActions.map((action) => {
+      if (action.action !== "cancel" || action.status !== "requested") return action;
+      if (action.evidenceRef !== input.result.evidenceRef) return action;
+      return input.result;
+    });
+
+    await upsertRuntimeResourcePg(tx, {
+      id: execution.id,
+      resourceType: RECOVERY_EXECUTION_RESOURCE_TYPE,
+      resourceKey: execution.resourceKey,
+      runId: execution.runId,
+      taskId: execution.taskId,
+      sessionId: execution.sessionId,
+      scope: execution.scope,
+      status: execution.status,
+      title: execution.title,
+      payload: {
+        ...payload,
+        providerActions,
+      },
+      summary: {
+        ...(isPlainObject(execution.summary) ? execution.summary : {}),
+        evidenceUpdatedAt: input.now,
+      },
+      metrics: execution.metrics,
+      expiresAt: execution.expiresAt,
+    });
+
+    return {
+      stateChanges: existingEvidence.stateChanges,
+      providerActions,
+    };
+  });
+}
+
+async function loadLatestStagedRecoveryExecutionEvidencePg(
+  db: SouthstarDb,
+  executionResourceKey: string,
+): Promise<RecoveryExecutionEvidence> {
+  const execution = await getResourceByKeyPg(db, RECOVERY_EXECUTION_RESOURCE_TYPE, executionResourceKey);
+  if (!execution) throw new Error(`recovery execution ${executionResourceKey} not found`);
+  const evidence = stagedRecoveryExecutionEvidence(execution.payload as RecoveryExecutionPayload);
+  if (!evidence) throw new Error(`recovery execution ${executionResourceKey} has no staged evidence`);
+  return evidence;
+}
+
 async function applyRequeueMutation(
   db: SouthstarDb,
   input: {
@@ -399,7 +614,6 @@ async function applyRequeueMutation(
     executionResourceKey: string;
     now: string;
     stagedEvidence: RecoveryExecutionEvidence | null;
-    providerActions?: RecoveryProviderActions;
   },
 ): Promise<RequeueMutationResult | RecoveryDecisionApplyResult> {
   return await db.tx(async (tx) => {
@@ -445,48 +659,13 @@ async function applyRequeueMutation(
     const providerId = typeof handPayload.providerId === "string" ? handPayload.providerId : "tork";
     let evidence = input.stagedEvidence;
     if (!evidence) {
-      const cancelAction = await recordBestEffortCancelAction({
-        providerActions: input.providerActions,
+      const cancelAction = requestedCancelAction({
         providerId,
         externalJobId: stringValue(handPayload.externalJobId),
-        runId: decision.payload.runId,
         evidenceRef: hand.resourceKey,
-        reason: "requeue-hand-execution",
         now,
       });
-      const recomputedEvidence: RecoveryExecutionEvidence = {
-        providerActions: [cancelAction],
-        stateChanges: [
-          {
-            resourceType: "hand_execution",
-            resourceKey: hand.resourceKey,
-            fromStatus: hand.status,
-            toStatus: "lost",
-            reason: "requeue-hand-execution",
-          },
-          {
-            resourceType: "workflow_task",
-            resourceKey: `${decision.payload.runId}:${taskId}`,
-            fromStatus: task.status,
-            toStatus: "pending",
-            reason: "requeue-hand-execution",
-          },
-          {
-            resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
-            resourceKey: decision.resourceKey,
-            fromStatus: "applying",
-            toStatus: "applied",
-            reason: "requeue-hand-execution applied",
-          },
-          {
-            resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
-            resourceKey: exception.resourceKey,
-            fromStatus: exception.status,
-            toStatus: "resolved",
-            reason: "requeue-hand-execution applied",
-          },
-        ],
-      };
+      const recomputedEvidence = requeueRecoveryExecutionEvidence({ decision, task, hand, exception, cancelAction });
       evidence = await stageRecoveryExecutionEvidencePg(tx, {
         executionResourceKey: input.executionResourceKey,
         evidence: recomputedEvidence,
@@ -732,7 +911,7 @@ async function applyReprovisionMutation(
     executionResourceKey: string;
     now: string;
   },
-): Promise<RecoveryDecisionApplyResult> {
+): Promise<RecoveryDecisionApplyResultWithCancel> {
   const { decision, now } = input;
   const taskId = requireDecisionString(decision.payload.taskId, decision.payload.path, "taskId");
   const handExecutionId = requireDecisionString(decision.payload.handExecutionId, decision.payload.path, "handExecutionId");
@@ -761,13 +940,16 @@ async function applyReprovisionMutation(
     if (completedTaskPrecondition) return completedTaskPrecondition;
 
     const currentEvidence = stagedRecoveryExecutionEvidence(execution.payload as RecoveryExecutionPayload);
-    const evidence = currentEvidence ?? await performAndStageReprovisionRecovery(tx, deps, {
-      decision,
-      taskId,
-      handExecutionId,
-      executionResourceKey: input.executionResourceKey,
-      now,
-    });
+    const preparedEvidence: PreparedRecoveryExecutionEvidence = currentEvidence
+      ? { evidence: currentEvidence, staged: false }
+      : await performAndStageReprovisionRecovery(tx, deps, {
+        decision,
+        taskId,
+        handExecutionId,
+        executionResourceKey: input.executionResourceKey,
+        now,
+      });
+    const evidence = preparedEvidence.evidence;
 
     const latestContext = await loadReprovisionRecoveryContext(tx, { decision, taskId, handExecutionId });
     const cancelAt = recoveryActionTerminalAt(evidence.providerActions, "cancel") ?? now;
@@ -839,7 +1021,11 @@ async function applyReprovisionMutation(
       stateChanges: evidence.stateChanges,
       providerActions: evidence.providerActions,
     });
-    return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+    const result = await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+    return {
+      ...result,
+      ...(preparedEvidence.cancelExecution ? { cancelExecution: preparedEvidence.cancelExecution } : {}),
+    };
   });
 }
 
@@ -868,7 +1054,7 @@ async function performAndStageReprovisionRecovery(
     executionResourceKey: string;
     now: string;
   },
-): Promise<RecoveryExecutionEvidence> {
+): Promise<PreparedRecoveryExecutionEvidence> {
   const context = await loadReprovisionRecoveryContext(db, {
     decision: input.decision,
     taskId: input.taskId,
@@ -899,11 +1085,28 @@ async function performAndStageReprovisionRecovery(
     now: input.now,
   });
 
-  return await stageRecoveryExecutionEvidencePg(db, {
+  const staged = await stageRecoveryExecutionEvidenceWithStatusPg(db, {
     executionResourceKey: input.executionResourceKey,
     evidence,
     now: input.now,
   });
+  const cancelAction = staged.evidence.providerActions.find((action) => action.action === "cancel");
+  const handPayload = isPlainObject(context.hand.payload) ? context.hand.payload : {};
+  const externalJobId = stringValue(handPayload.externalJobId);
+  return {
+    ...staged,
+    ...(staged.staged && cancelAction?.status === "requested" && externalJobId
+      ? {
+        cancelExecution: {
+          providerId: cancelAction.providerId,
+          externalJobId,
+          runId: input.decision.payload.runId,
+          evidenceRef: context.hand.resourceKey,
+          reason: "reprovision-hand",
+        },
+      }
+      : {}),
+  };
 }
 
 async function performAndStageWakeNewBrainRecovery(
@@ -1132,6 +1335,48 @@ function simpleRecoveryExecutionEvidence(input: {
   return { stateChanges, providerActions: [] };
 }
 
+function requeueRecoveryExecutionEvidence(input: {
+  decision: RuntimeRecoveryDecisionRecord;
+  task: { status: string };
+  hand: RuntimeResourceRecord;
+  exception: RuntimeResourceRecord;
+  cancelAction: RecoveryExecutionProviderAction;
+}): RecoveryExecutionEvidence {
+  return {
+    providerActions: [input.cancelAction],
+    stateChanges: [
+      {
+        resourceType: "hand_execution",
+        resourceKey: input.hand.resourceKey,
+        fromStatus: input.hand.status,
+        toStatus: "lost",
+        reason: "requeue-hand-execution",
+      },
+      {
+        resourceType: "workflow_task",
+        resourceKey: `${input.decision.payload.runId}:${input.decision.payload.taskId}`,
+        fromStatus: input.task.status,
+        toStatus: "pending",
+        reason: "requeue-hand-execution",
+      },
+      {
+        resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+        resourceKey: input.decision.resourceKey,
+        fromStatus: "applying",
+        toStatus: "applied",
+        reason: "requeue-hand-execution applied",
+      },
+      {
+        resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
+        resourceKey: input.exception.resourceKey,
+        fromStatus: input.exception.status,
+        toStatus: "resolved",
+        reason: "requeue-hand-execution applied",
+      },
+    ],
+  };
+}
+
 function wakeNewBrainRecoveryExecutionEvidence(input: {
   decision: RuntimeRecoveryDecisionRecord;
   taskId: string;
@@ -1258,13 +1503,11 @@ async function reprovisionRecoveryExecutionEvidence(input: {
 
   const handPayload = isPlainObject(input.context.hand.payload) ? input.context.hand.payload : {};
   const providerActions: RecoveryExecutionProviderAction[] = [
-    await recordBestEffortCancelAction({
+    requestedCancelAction({
       providerActions: input.providerActions,
       providerId: oldBindingProviderId,
       externalJobId: stringValue(handPayload.externalJobId),
-      runId: input.decision.payload.runId,
       evidenceRef: input.context.hand.resourceKey,
-      reason: "reprovision-hand",
       now: input.now,
     }),
   ];
@@ -1298,6 +1541,13 @@ async function stageRecoveryExecutionEvidencePg(
   db: SouthstarDb,
   input: { executionResourceKey: string; evidence: RecoveryExecutionEvidence; now: string },
 ): Promise<RecoveryExecutionEvidence> {
+  return (await stageRecoveryExecutionEvidenceWithStatusPg(db, input)).evidence;
+}
+
+async function stageRecoveryExecutionEvidenceWithStatusPg(
+  db: SouthstarDb,
+  input: { executionResourceKey: string; evidence: RecoveryExecutionEvidence; now: string },
+): Promise<StagedRecoveryExecutionEvidence> {
   const execution = mapRuntimeResourceRow(await db.maybeOne<RuntimeResourceRow>(
     `select * from southstar.runtime_resources
       where resource_type = $1
@@ -1312,7 +1562,7 @@ async function stageRecoveryExecutionEvidencePg(
 
   const payload = execution.payload as RecoveryExecutionPayload;
   const existingEvidence = stagedRecoveryExecutionEvidence(payload);
-  if (existingEvidence) return existingEvidence;
+  if (existingEvidence) return { evidence: existingEvidence, staged: false };
 
   await upsertRuntimeResourcePg(db, {
     id: execution.id,
@@ -1338,7 +1588,7 @@ async function stageRecoveryExecutionEvidencePg(
     metrics: execution.metrics,
     expiresAt: execution.expiresAt,
   });
-  return input.evidence;
+  return { evidence: input.evidence, staged: true };
 }
 
 async function repairTerminalRecoveryExecutionPg(
