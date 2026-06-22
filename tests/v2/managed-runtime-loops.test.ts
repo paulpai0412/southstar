@@ -29,12 +29,7 @@ test("managed runtime loop dispatches runnable Postgres tasks through scheduler"
       status: "running",
       domain: "software",
       goalPrompt: "managed loop",
-      workflowManifestJson: JSON.stringify({
-        schemaVersion: "southstar.v2",
-        workflowId: "wf-managed-loop",
-        tasks: [],
-        effortPolicy: { maxParallelTasks: 1, complexity: "standard", maxToolCallsPerTask: 20 },
-      }),
+      workflowManifestJson: JSON.stringify(managedLoopManifest("wf-managed-loop", "task-managed-loop-1")),
       executionProjectionJson: "{}",
       snapshotJson: "{}",
       runtimeContextJson: "{}",
@@ -88,12 +83,7 @@ test("managed runtime loop dispatches scheduling Postgres runs through scheduler
       status: "scheduling",
       domain: "software",
       goalPrompt: "managed loop scheduling",
-      workflowManifestJson: JSON.stringify({
-        schemaVersion: "southstar.v2",
-        workflowId: "wf-managed-loop-scheduling",
-        tasks: [],
-        effortPolicy: { maxParallelTasks: 1, complexity: "standard", maxToolCallsPerTask: 20 },
-      }),
+      workflowManifestJson: JSON.stringify(managedLoopManifest("wf-managed-loop-scheduling", "task-managed-loop-scheduling")),
       executionProjectionJson: "{}",
       snapshotJson: "{}",
       runtimeContextJson: "{}",
@@ -233,6 +223,62 @@ test("default managed runtime loop forwards managed provider actions to recovery
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function managedLoopManifest(workflowId: string, taskId: string): unknown {
+  return {
+    schemaVersion: "southstar.v2",
+    workflowId,
+    title: workflowId,
+    goalPrompt: "managed loop",
+    domain: "software",
+    intent: "implement_feature",
+    tasks: [{
+      id: taskId,
+      name: "Implement",
+      domain: "software",
+      dependsOn: [],
+      roleRef: "maker",
+      agentProfileRef: "software-maker-pi",
+      evaluatorPipelineRef: "software-feature-quality",
+      requiredArtifactRefs: ["implementation_report"],
+      skillRefs: ["software.implementation"],
+      mcpGrantRefs: [],
+      rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
+      execution: {
+        engine: "tork",
+        image: "southstar/pi-agent:local",
+        command: ["southstar-agent-runner"],
+        env: {},
+        mounts: [],
+        timeoutSeconds: 600,
+        infraRetry: { maxAttempts: 1 },
+      },
+      subagents: [],
+    }],
+    harnessDefinitions: [{
+      id: "pi",
+      kind: "pi-agent",
+      entrypoint: "southstar-agent-runner",
+      image: "southstar/pi-agent:local",
+      capabilities: ["software"],
+      inputProtocol: "task-envelope-v2",
+      eventProtocol: "southstar-events-v1",
+      supportsCheckpoint: true,
+      supportsSteering: true,
+      supportsProgress: true,
+    }],
+    evaluators: [],
+    memoryPolicy: { retrievalLimit: 5, writeRequiresApproval: true },
+    vaultPolicy: { leaseTtlSeconds: 60, mountMode: "env" },
+    mcpServers: [],
+    mcpGrants: [],
+    progressPolicy: { firstEventWithinSeconds: 30, minEventsPerLongTask: 1 },
+    steeringPolicy: { enabled: true, acceptedSignals: [] },
+    learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+    executionPolicy: { maxParallelTasks: 1 },
+    effortPolicy: { maxParallelTasks: 1, complexity: "standard", maxToolCallsPerTask: 20 },
+  };
 }
 
 async function createRequeueDecisionFixture(
