@@ -98,8 +98,21 @@ test("GET /api/v2/runs/:runId/exceptions returns safe exception and recovery dec
           taskId: "task-a",
           path: "requeue-hand-execution",
           status: "succeeded",
-          stateChanges: [{ resourceType: "recovery_decision", resourceKey: decision.resourceKey, toStatus: "applied", reason: "route fixture" }],
-          providerActions: [{ providerId: "fake-hand", action: "poll", status: "succeeded" }],
+          stateChanges: [{
+            resourceType: "hand_execution",
+            resourceKey: "secret-hand-resource",
+            fromStatus: "running",
+            toStatus: "lost",
+            reason: "recovery",
+          }],
+          providerActions: [{
+            providerId: "tork",
+            action: "cancel",
+            status: "failed",
+            evidenceRef: "secret-execution-evidence",
+            errorExcerpt: "token=secret-value",
+            metadata: { raw: "do-not-return-execution-metadata" },
+          }],
           createdAt: "2026-06-21T10:02:00.000Z",
           completedAt: "2026-06-21T10:02:10.000Z",
         },
@@ -118,6 +131,12 @@ test("GET /api/v2/runs/:runId/exceptions returns safe exception and recovery dec
       assert.equal(executionResponseBody.includes("job-secret"), false);
       assert.equal(executionResponseBody.includes("rawProviderPayload"), false);
       assert.equal(executionResponseBody.includes("do-not-return"), false);
+      assert.equal(executionResponseBody.includes("providerActions"), false);
+      assert.equal(executionResponseBody.includes("stateChanges"), false);
+      assert.equal(executionResponseBody.includes("secret-execution-evidence"), false);
+      assert.equal(executionResponseBody.includes("token=secret-value"), false);
+      assert.equal(executionResponseBody.includes("do-not-return-execution-metadata"), false);
+      assert.equal(executionResponseBody.includes("secret-hand-resource"), false);
       const executionEnvelope = JSON.parse(executionResponseBody) as typeof envelope;
       assert.equal(executionEnvelope.result.recoveryExecutions.length, 1);
       assert.equal(executionEnvelope.result.recoveryExecutions[0]?.status, "succeeded");
