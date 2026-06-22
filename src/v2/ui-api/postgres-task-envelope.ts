@@ -8,6 +8,26 @@ import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manif
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 
 export async function getPostgresTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId: string }): Promise<TaskEnvelopeV2> {
+  const persisted = await latestPersistedTaskEnvelope(db, input);
+  if (persisted) return persisted;
+  return await buildPostgresTaskEnvelopeFromLatestContext(db, input);
+}
+
+async function latestPersistedTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId: string }): Promise<TaskEnvelopeV2 | null> {
+  const row = await db.maybeOne<{ payload_json: { envelope?: TaskEnvelopeV2 } }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where resource_type = 'task_envelope'
+        and run_id = $1
+        and task_id = $2
+      order by created_at desc
+      limit 1`,
+    [input.runId, input.taskId],
+  );
+  return row?.payload_json.envelope ?? null;
+}
+
+async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input: { runId: string; taskId: string }): Promise<TaskEnvelopeV2> {
   const workflow = await readWorkflow(db, input.runId);
   const task = required(workflow.tasks.find((candidate) => candidate.id === input.taskId), `unknown task: ${input.taskId}`);
   const taskRow = await db.maybeOne<{ root_session_id: string | null }>(

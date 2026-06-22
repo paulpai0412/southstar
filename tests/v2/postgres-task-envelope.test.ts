@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
+import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envelope.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
@@ -27,6 +28,43 @@ test("Postgres task envelope API builds TaskEnvelopeV2 from Postgres run, task, 
     assert.match(envelope.agentPrompt, /commandsRun and risks/);
     assert.equal(envelope.artifactContracts.some((contract) => contract.id === "implementation_report"), true);
     assert.equal(envelope.evaluatorPipeline.id, "software-feature-quality");
+  });
+});
+
+test("Postgres task envelope API returns the latest persisted task envelope before fallback building", async () => {
+  await withDb(async (db) => {
+    await seedKnowledgeCard(db);
+    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const fallbackEnvelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
+    const persistedEnvelope = {
+      ...fallbackEnvelope,
+      contextPacket: {
+        ...fallbackEnvelope.contextPacket,
+        id: "ctx-persisted-envelope",
+      },
+      session: {
+        ...fallbackEnvelope.session,
+        sessionId: "session-persisted-envelope",
+      },
+    };
+
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "task_envelope",
+      resourceKey: "task-envelope-persisted",
+      runId: run.runId,
+      taskId: "implement-feature",
+      sessionId: "session-persisted-envelope",
+      scope: "task",
+      status: "materialized",
+      payload: { envelope: persistedEnvelope },
+      summary: { contextPacketId: "ctx-persisted-envelope" },
+    });
+
+    const envelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
+
+    assert.equal(envelope.contextPacket.id, "ctx-persisted-envelope");
+    assert.equal(envelope.session.sessionId, "session-persisted-envelope");
   });
 });
 

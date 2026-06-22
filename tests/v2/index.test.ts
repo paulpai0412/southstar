@@ -85,4 +85,5 @@ await import("./managed-context-contracts.test.ts");
 await import("./postgres-memory-service.test.ts");
 await import("./context-assembly-policy.test.ts");
 await import("./context-source-builder.test.ts");
+await import("./managed-context-assembler.test.ts");
 await import("./managed-agents-read-model.test.ts");
