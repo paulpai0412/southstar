@@ -1177,10 +1177,10 @@ test("requeue-hand-execution fail-closed cases do not silently mutate hand or ta
     {
       name: "unsupported path",
       async mutate({ db, decision }) {
-        await patchDecisionPayload(db, decision.resourceKey, { path: "wake-new-brain" });
+        await patchDecisionPayload(db, decision.resourceKey, { path: "rollback-workspace" });
       },
       expectedStatus: "blocked",
-      expectedReason: /unsupported recovery path wake-new-brain/,
+      expectedReason: /unsupported recovery path rollback-workspace/,
     },
     {
       name: "failed status",
@@ -1209,6 +1209,363 @@ test("requeue-hand-execution fail-closed cases do not silently mutate hand or ta
     } finally {
       await db.close();
     }
+  }
+});
+
+test("retry-same-task-new-attempt supersedes current hand execution and releases task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-retry-new-attempt" });
+    await patchDecisionPayload(db, fixture.decision.resourceKey, { path: "retry-same-task-new-attempt" });
+    const now = "2026-06-21T15:00:00.000Z";
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now,
+    });
+
+    assert.equal(result.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey))?.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", fixture.exception.resourceKey))?.status, "resolved");
+
+    const hand = await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId);
+    assert.equal(hand?.status, "superseded");
+    assert.deepEqual(pickKeys(hand?.payload, ["status", "terminalAt", "supersededReason", "recoveryDecisionId"]), {
+      status: "superseded",
+      terminalAt: now,
+      supersededReason: "retry-same-task-new-attempt",
+      recoveryDecisionId: fixture.decision.decisionId,
+    });
+
+    const task = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [fixture.runId, fixture.taskId],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "succeeded");
+    const executionPayload = execution?.payload as {
+      stateChanges: Array<{ resourceType: string; toStatus?: string; reason: string }>;
+      providerActions: unknown[];
+      completedAt?: string;
+    };
+    assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus, change.reason]), [
+      ["hand_execution", "superseded", "retry-same-task-new-attempt"],
+      ["workflow_task", "pending", "retry-same-task-new-attempt"],
+      ["recovery_decision", "applied", "retry-same-task-new-attempt applied"],
+      ["runtime_exception", "resolved", "retry-same-task-new-attempt applied"],
+    ]);
+    assert.deepEqual(executionPayload.providerActions, []);
+    assert.equal(executionPayload.completedAt, now);
+  } finally {
+    await db.close();
+  }
+});
+
+test("repair-artifact preserves rejected evidence and releases task without superseding hand", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-repair-artifact" });
+    await patchDecisionPayload(db, fixture.decision.resourceKey, { path: "repair-artifact" });
+    await acceptOrRejectArtifactRefPg(db, {
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      sessionId: fixture.sessionId,
+      attemptId: fixture.attemptId,
+      handExecutionId: fixture.handExecutionId,
+      producer: { actorType: "hand", providerId: "fake-hand" },
+      artifactType: "implementation_result",
+      status: "rejected",
+      content: { summary: "invalid artifact" },
+      contractRefs: ["contract:implementation_result"],
+      summary: "rejected implementation result",
+      evidenceRefs: [fixture.handExecutionId],
+      producedAt: "2026-06-21T15:04:00.000Z",
+    });
+    const now = "2026-06-21T15:05:00.000Z";
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now,
+    });
+
+    assert.equal(result.status, "applied");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", fixture.exception.resourceKey))?.status, "resolved");
+    assert.equal((await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId))?.status, "running");
+    assert.equal((await listResourcesPg(db, { resourceType: "artifact_ref" })).filter((resource) => resource.runId === fixture.runId && resource.status === "rejected").length, 1);
+
+    const task = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [fixture.runId, fixture.taskId],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "succeeded");
+    const executionPayload = execution?.payload as {
+      stateChanges: Array<{ resourceType: string; toStatus?: string; reason: string }>;
+      providerActions: unknown[];
+    };
+    assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus, change.reason]), [
+      ["workflow_task", "pending", "repair-artifact"],
+      ["recovery_decision", "applied", "repair-artifact applied"],
+      ["runtime_exception", "resolved", "repair-artifact applied"],
+    ]);
+    assert.deepEqual(executionPayload.providerActions, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("block-for-operator direct apply blocks task and keeps exception unresolved", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRequeueDecisionFixture(db, { runId: "run-apply-block-for-operator" });
+    await patchDecisionPayload(db, fixture.decision.resourceKey, { path: "block-for-operator", operatorApprovalRequired: true });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "approved");
+    const now = "2026-06-21T15:10:00.000Z";
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now,
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey))?.status, "blocked");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", fixture.exception.resourceKey))?.status, "observed");
+    assert.equal((await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId))?.status, "queued");
+
+    const task = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [fixture.runId, fixture.taskId],
+    );
+    assert.equal(task.status, "blocked");
+    assert.equal(task.completed_at, null);
+
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "blocked");
+    const executionPayload = execution?.payload as {
+      stateChanges: Array<{ resourceType: string; toStatus?: string; reason: string }>;
+      providerActions: unknown[];
+      completedAt?: string;
+    };
+    assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus, change.reason]), [
+      ["workflow_task", "blocked", "block-for-operator"],
+      ["recovery_decision", "blocked", "block-for-operator blocked"],
+    ]);
+    assert.deepEqual(executionPayload.providerActions, []);
+    assert.equal(executionPayload.completedAt, now);
+  } finally {
+    await db.close();
+  }
+});
+
+test("forced fail-task and fail-run prepare terminal state and resolve exception", async () => {
+  const cases: Array<{
+    path: "fail-task" | "fail-run";
+    runId: string;
+    expectedTaskStatus: string;
+    expectedRunStatus: string;
+    expectedStateChanges: Array<[string, string | undefined, string]>;
+  }> = [
+    {
+      path: "fail-task",
+      runId: "run-apply-forced-fail-task",
+      expectedTaskStatus: "failed",
+      expectedRunStatus: "running",
+      expectedStateChanges: [
+        ["workflow_task", "failed", "fail-task"],
+        ["recovery_decision", "applied", "fail-task applied"],
+        ["runtime_exception", "resolved", "fail-task applied"],
+      ],
+    },
+    {
+      path: "fail-run",
+      runId: "run-apply-forced-fail-run",
+      expectedTaskStatus: "queued",
+      expectedRunStatus: "failed",
+      expectedStateChanges: [
+        ["workflow_run", "failed", "fail-run"],
+        ["recovery_decision", "applied", "fail-run applied"],
+        ["runtime_exception", "resolved", "fail-run applied"],
+      ],
+    },
+  ];
+
+  for (const item of cases) {
+    const db = await createTestPostgresDb();
+    try {
+      const fixture = await createRequeueDecisionFixture(db, { runId: item.runId });
+      await patchDecisionPayload(db, fixture.decision.resourceKey, { path: item.path });
+      await setDecisionStatus(db, fixture.decision.resourceKey, "approved");
+
+      const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+        decisionResourceKey: fixture.decision.resourceKey,
+        now: "2026-06-21T15:15:00.000Z",
+      });
+
+      assert.equal(result.status, "applied", item.path);
+      assert.equal((await getResourceByKeyPg(db, "runtime_exception", fixture.exception.resourceKey))?.status, "resolved", item.path);
+      assert.equal((await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId))?.status, "queued", item.path);
+
+      const task = await db.one<{ status: string }>(
+        "select status from southstar.workflow_tasks where run_id = $1 and id = $2",
+        [fixture.runId, fixture.taskId],
+      );
+      const run = await db.one<{ status: string }>(
+        "select status from southstar.workflow_runs where id = $1",
+        [fixture.runId],
+      );
+      assert.equal(task.status, item.expectedTaskStatus, item.path);
+      assert.equal(run.status, item.expectedRunStatus, item.path);
+
+      const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+      assert.equal(execution?.status, "succeeded", item.path);
+      const executionPayload = execution?.payload as {
+        stateChanges: Array<{ resourceType: string; toStatus?: string; reason: string }>;
+        providerActions: unknown[];
+      };
+      assert.deepEqual(
+        executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus, change.reason]),
+        item.expectedStateChanges,
+        item.path,
+      );
+      assert.deepEqual(executionPayload.providerActions, [], item.path);
+    } finally {
+      await db.close();
+    }
+  }
+});
+
+test("wake-new-brain uses managed recovery primitive and records provider evidence", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-wake-new-brain" });
+    await patchDecisionPayload(db, fixture.decision.resourceKey, { path: "wake-new-brain" });
+    const now = "2026-06-21T15:20:00.000Z";
+    let wakeCount = 0;
+    const brainProvider = createFakeBrainProvider({ providerId: "fake-brain" });
+
+    const result = await createRecoveryDecisionApplier({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: {
+        ...brainProvider,
+        async wake(input) {
+          wakeCount += 1;
+          return brainProvider.wake(input);
+        },
+      },
+      handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
+    }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now,
+    });
+
+    assert.equal(result.status, "applied");
+    assert.equal(wakeCount, 1);
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", fixture.exception.resourceKey))?.status, "resolved");
+
+    const task = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [fixture.runId, fixture.taskId],
+    );
+    assert.equal(task.status, "pending");
+    assert.equal(task.completed_at, null);
+
+    const brainBindings = (await listResourcesPg(db, { resourceType: "brain_binding" })).filter(
+      (resource) => resource.runId === fixture.runId,
+    );
+    assert.equal(brainBindings.length, 1);
+    assert.equal(brainBindings[0]?.status, "running");
+    assert.equal((brainBindings[0]?.payload as { providerId?: string }).providerId, "fake-brain");
+
+    const checkpoints = (await listResourcesPg(db, { resourceType: "session_checkpoint" })).filter(
+      (resource) => resource.runId === fixture.runId,
+    );
+    assert.equal(checkpoints.length, 1);
+    assert.equal((checkpoints[0]?.payload as { checkpointType?: string }).checkpointType, "before-recovery");
+
+    const managedDecisions = (await listResourcesPg(db, { resourceType: "recovery_decision" })).filter(
+      (resource) => (resource.payload as { schemaVersion?: string }).schemaVersion === "southstar.managed-recovery-decision.v1",
+    );
+    assert.equal(managedDecisions.length, 1);
+    assert.equal((managedDecisions[0]?.payload as { strategy?: string }).strategy, "wake-new-brain");
+
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "succeeded");
+    const executionPayload = execution?.payload as {
+      stateChanges: Array<{ resourceType: string; toStatus?: string; reason: string }>;
+      providerActions: Array<{ providerId?: string; action?: string; status?: string; evidenceRef?: string; succeededAt?: string }>;
+    };
+    assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus, change.reason]), [
+      ["session_checkpoint", "created", "wake-new-brain before-recovery checkpoint"],
+      ["brain_binding", "running", "wake-new-brain replacement"],
+      ["workflow_task", "pending", "wake-new-brain"],
+      ["recovery_decision", "applied", "wake-new-brain applied"],
+      ["runtime_exception", "resolved", "wake-new-brain applied"],
+    ]);
+    assert.deepEqual(executionPayload.providerActions.map((action) => [action.providerId, action.action, action.status, action.evidenceRef, action.succeededAt]), [
+      ["fake-brain", "wake", "succeeded", brainBindings[0]?.resourceKey, now],
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("wake-new-brain blocks safely when managed recovery dependencies are missing", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-wake-new-brain-missing-deps" });
+    await patchDecisionPayload(db, fixture.decision.resourceKey, { path: "wake-new-brain" });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T15:25:00.000Z",
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason, /missing wake-new-brain dependencies/);
+    await assertReprovisionHandAndTaskUnchanged(db, fixture);
+    assert.equal((await listResourcesPg(db, { resourceType: "brain_binding" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "session_checkpoint" })).filter((resource) => resource.runId === fixture.runId).length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("simple recovery path replay keeps original terminal timestamp with different now values", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-repair-artifact-idempotent" });
+    await patchDecisionPayload(db, fixture.decision.resourceKey, { path: "repair-artifact" });
+    const firstAt = "2026-06-21T15:30:00.000Z";
+    const replayAt = "2026-06-21T15:31:00.000Z";
+    const applier = createRecoveryDecisionApplier({ db });
+
+    const first = await applier.applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now: firstAt });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "applying");
+    const replay = await applier.applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now: replayAt });
+
+    assert.equal(first.status, "applied");
+    assert.equal(replay.status, "applied");
+    assert.equal(replay.executionResourceKey, first.executionResourceKey);
+
+    const execution = await getResourceByKeyPg(db, "recovery_execution", first.executionResourceKey ?? "");
+    assert.equal(execution?.status, "succeeded");
+    assert.equal((execution?.payload as { completedAt?: string }).completedAt, firstAt);
+
+    const decision = await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey);
+    assert.equal((decision?.payload as { appliedAt?: string }).appliedAt, firstAt);
+
+    const historyTypes = (await listHistoryForRunPg(db, fixture.runId)).map((event) => event.eventType);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_execution.succeeded").length, 1);
+    assert.equal(historyTypes.filter((eventType) => eventType === "recovery_decision.applied").length, 1);
+  } finally {
+    await db.close();
   }
 });
 

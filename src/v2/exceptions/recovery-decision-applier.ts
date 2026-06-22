@@ -76,6 +76,14 @@ type ReprovisionRecoveryContext = {
   sessionId: string;
 };
 
+type SimpleRecoveryContext = {
+  task: { status: string } | null;
+  run: { status: string };
+  exception: RuntimeResourceRecord;
+  hand: RuntimeResourceRecord | null;
+  sessionId?: string;
+};
+
 export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps): {
   applyNext(input?: { runId?: string; now?: string }): Promise<RecoveryDecisionApplyResult | null>;
   applyDecision(input: { decisionResourceKey: string; now?: string }): Promise<RecoveryDecisionApplyResult>;
@@ -152,38 +160,6 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         now,
       });
 
-      if (applyingDecision.payload.path !== "requeue-hand-execution" && applyingDecision.payload.path !== "reprovision-hand") {
-        const terminalDecision = await blockDecision(deps.db, {
-          decision: applyingDecision,
-          executionResourceKey: started.resourceKey,
-          now,
-          reason: `unsupported recovery path ${applyingDecision.payload.path}`,
-        });
-        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-      }
-
-      if (!applyingDecision.payload.taskId) {
-        const reason = `${applyingDecision.payload.path} decision missing taskId`;
-        const terminalDecision = await blockDecision(deps.db, {
-          decision: applyingDecision,
-          executionResourceKey: started.resourceKey,
-          now,
-          reason,
-        });
-        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-      }
-
-      if (!applyingDecision.payload.handExecutionId) {
-        const reason = `${applyingDecision.payload.path} decision missing handExecutionId`;
-        const terminalDecision = await blockDecision(deps.db, {
-          decision: applyingDecision,
-          executionResourceKey: started.resourceKey,
-          now,
-          reason,
-        });
-        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-      }
-
       if (started.status !== "started") {
         if (started.status === "succeeded") {
           await finalizeRecoveryDecisionAppliedPg(deps.db, { decision: applyingDecision, executionResourceKey: started.resourceKey, now });
@@ -199,7 +175,50 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
       });
       if (completedTaskPrecondition) return completedTaskPrecondition;
 
+      if (applyingDecision.payload.path === "wake-new-brain") {
+        const missingDeps = missingWakeNewBrainDeps(deps);
+        if (missingDeps.length > 0) {
+          const reason = `missing wake-new-brain dependencies: ${missingDeps.join(", ")}`;
+          const terminalDecision = await blockDecision(deps.db, {
+            decision: applyingDecision,
+            executionResourceKey: started.resourceKey,
+            now,
+            reason,
+          });
+          return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
+        }
+
+        try {
+          return await applyWakeNewBrainMutation(deps as Required<RecoveryDecisionApplierDeps>, {
+            decision: applyingDecision,
+            executionResourceKey: started.resourceKey,
+            now,
+          });
+        } catch (error) {
+          if (error instanceof Error && isWakeNewBrainBlockableError(error.message, applyingDecision)) {
+            const terminalDecision = await blockDecision(deps.db, {
+              decision: applyingDecision,
+              executionResourceKey: started.resourceKey,
+              now,
+              reason: error.message,
+            });
+            return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
+          }
+          throw error;
+        }
+      }
+
       if (applyingDecision.payload.path === "reprovision-hand") {
+        const missingFieldReason = missingTaskOrHandReason(applyingDecision);
+        if (missingFieldReason) {
+          const terminalDecision = await blockDecision(deps.db, {
+            decision: applyingDecision,
+            executionResourceKey: started.resourceKey,
+            now,
+            reason: missingFieldReason,
+          });
+          return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
+        }
         const missingDeps = missingReprovisionDeps(deps);
         if (missingDeps.length > 0) {
           const reason = `missing reprovision-hand dependencies: ${missingDeps.join(", ")}`;
@@ -230,6 +249,48 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
           }
           throw error;
         }
+      }
+
+      if (isSimpleRecoveryPath(applyingDecision.payload.path)) {
+        try {
+          return await applySimpleRecoveryMutation(deps.db, {
+            decision: applyingDecision,
+            executionResourceKey: started.resourceKey,
+            now,
+          });
+        } catch (error) {
+          if (error instanceof Error && isSimpleRecoveryBlockableError(error.message, applyingDecision)) {
+            const terminalDecision = await blockDecision(deps.db, {
+              decision: applyingDecision,
+              executionResourceKey: started.resourceKey,
+              now,
+              reason: error.message,
+            });
+            return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
+          }
+          throw error;
+        }
+      }
+
+      if (applyingDecision.payload.path !== "requeue-hand-execution") {
+        const terminalDecision = await blockDecision(deps.db, {
+          decision: applyingDecision,
+          executionResourceKey: started.resourceKey,
+          now,
+          reason: `unsupported recovery path ${applyingDecision.payload.path}`,
+        });
+        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
+      }
+
+      const missingFieldReason = missingTaskOrHandReason(applyingDecision);
+      if (missingFieldReason) {
+        const terminalDecision = await blockDecision(deps.db, {
+          decision: applyingDecision,
+          executionResourceKey: started.resourceKey,
+          now,
+          reason: missingFieldReason,
+        });
+        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
       }
 
       let mutation: RequeueMutationResult | RecoveryDecisionApplyResult;
@@ -457,6 +518,207 @@ async function applyRequeueMutation(
   });
 }
 
+async function applySimpleRecoveryMutation(
+  db: SouthstarDb,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    executionResourceKey: string;
+    now: string;
+  },
+): Promise<RecoveryDecisionApplyResult> {
+  const { decision, now } = input;
+  return await db.tx(async (tx) => {
+    const execution = await lockRecoveryExecutionForUpdatePg(tx, input.executionResourceKey);
+    if (execution.status !== "started") {
+      if (execution.status === "succeeded") {
+        await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
+        return { status: "applied", executionResourceKey: execution.resourceKey, reason: `${decision.payload.path} applied` };
+      }
+      return {
+        status: execution.status,
+        executionResourceKey: execution.resourceKey,
+        reason: `recovery execution already ${execution.status}`,
+      };
+    }
+
+    const completedTaskPrecondition = await applyCompletedTaskPreconditionPg(tx, {
+      decision,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+    if (completedTaskPrecondition) return completedTaskPrecondition;
+
+    const context = await loadSimpleRecoveryContext(tx, decision);
+    const currentEvidence = stagedRecoveryExecutionEvidence(execution.payload as RecoveryExecutionPayload);
+    const evidence = currentEvidence ?? await stageRecoveryExecutionEvidencePg(tx, {
+      executionResourceKey: input.executionResourceKey,
+      evidence: simpleRecoveryExecutionEvidence({ decision, context }),
+      now,
+    });
+
+    const path = decision.payload.path;
+    const taskId = decision.payload.taskId;
+    if ((path === "retry-same-task-new-attempt" || path === "repair-artifact" || path === "block-for-operator" || path === "fail-task") && !taskId) {
+      throw new Error(`${path} decision missing taskId`);
+    }
+
+    if (path === "retry-same-task-new-attempt" && context.hand) {
+      const handPayload = isPlainObject(context.hand.payload) ? context.hand.payload : {};
+      await upsertRuntimeResourcePg(tx, {
+        id: context.hand.id,
+        resourceType: "hand_execution",
+        resourceKey: context.hand.resourceKey,
+        runId: context.hand.runId,
+        taskId: context.hand.taskId,
+        sessionId: context.hand.sessionId,
+        scope: context.hand.scope,
+        status: "superseded",
+        title: context.hand.title,
+        payload: {
+          ...handPayload,
+          status: "superseded",
+          terminalAt: simpleRecoveryTerminalAt(evidence, execution.payload as RecoveryExecutionPayload, now),
+          supersededReason: path,
+          recoveryDecisionId: decision.decisionId,
+        },
+        summary: context.hand.summary,
+        metrics: context.hand.metrics,
+        expiresAt: context.hand.expiresAt,
+      });
+    }
+
+    if (path === "retry-same-task-new-attempt" || path === "repair-artifact") {
+      await tx.query(
+        "update southstar.workflow_tasks set status = 'pending', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
+        [decision.payload.runId, taskId],
+      );
+    } else if (path === "block-for-operator") {
+      await tx.query(
+        "update southstar.workflow_tasks set status = 'blocked', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
+        [decision.payload.runId, taskId],
+      );
+    } else if (path === "fail-task") {
+      await tx.query(
+        "update southstar.workflow_tasks set status = 'failed', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
+        [decision.payload.runId, taskId],
+      );
+    } else if (path === "fail-run") {
+      await tx.query(
+        "update southstar.workflow_runs set status = 'failed', completed_at = null, updated_at = now() where id = $1",
+        [decision.payload.runId],
+      );
+    }
+
+    if (path !== "block-for-operator") {
+      await resolveRuntimeExceptionPg(tx, {
+        runId: decision.payload.runId,
+        resourceKey: context.exception.resourceKey,
+        resolvedAt: now,
+        reason: `${path} applied`,
+      });
+      await completeRecoveryExecutionPg(tx, {
+        runId: decision.payload.runId,
+        executionResourceKey: input.executionResourceKey,
+        status: "succeeded",
+        completedAt: simpleRecoveryTerminalAt(evidence, execution.payload as RecoveryExecutionPayload, now),
+        stateChanges: evidence.stateChanges,
+        providerActions: evidence.providerActions,
+      });
+      await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+      return { status: "applied", executionResourceKey: input.executionResourceKey, reason: `${path} applied` };
+    }
+
+    const blockedDecision = await writeTerminalDecisionPg(tx, {
+      decision,
+      now,
+      reason: "block-for-operator blocked",
+      status: "blocked",
+      terminalAtField: "blockedAt",
+    });
+    await completeRecoveryExecutionPg(tx, {
+      runId: decision.payload.runId,
+      executionResourceKey: input.executionResourceKey,
+      status: "blocked",
+      completedAt: simpleRecoveryTerminalAt(evidence, execution.payload as RecoveryExecutionPayload, now),
+      stateChanges: evidence.stateChanges,
+      providerActions: evidence.providerActions,
+    });
+    return terminalDecisionApplyResult(blockedDecision, input.executionResourceKey);
+  });
+}
+
+async function applyWakeNewBrainMutation(
+  deps: Required<RecoveryDecisionApplierDeps>,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    executionResourceKey: string;
+    now: string;
+  },
+): Promise<RecoveryDecisionApplyResult> {
+  const { decision, now } = input;
+  const taskId = requireDecisionString(decision.payload.taskId, decision.payload.path, "taskId");
+
+  return await deps.db.tx(async (tx) => {
+    const execution = await lockRecoveryExecutionForUpdatePg(tx, input.executionResourceKey);
+    if (execution.status !== "started") {
+      if (execution.status === "succeeded") {
+        await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: execution.resourceKey, now });
+        return { status: "applied", executionResourceKey: execution.resourceKey, reason: "wake-new-brain applied" };
+      }
+      return {
+        status: execution.status,
+        executionResourceKey: execution.resourceKey,
+        reason: `recovery execution already ${execution.status}`,
+      };
+    }
+
+    const completedTaskPrecondition = await applyCompletedTaskPreconditionPg(tx, {
+      decision,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+    if (completedTaskPrecondition) return completedTaskPrecondition;
+
+    const context = await loadSimpleRecoveryContext(tx, decision);
+    const sessionId = context.sessionId;
+    if (!sessionId) throw new Error("wake-new-brain decision missing sessionId");
+
+    const currentEvidence = stagedRecoveryExecutionEvidence(execution.payload as RecoveryExecutionPayload);
+    const evidence = currentEvidence ?? await performAndStageWakeNewBrainRecovery(tx, deps, {
+      decision,
+      taskId,
+      sessionId,
+      context,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+
+    await tx.query(
+      "update southstar.workflow_tasks set status = 'pending', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
+      [decision.payload.runId, taskId],
+    );
+
+    await resolveRuntimeExceptionPg(tx, {
+      runId: decision.payload.runId,
+      resourceKey: context.exception.resourceKey,
+      resolvedAt: now,
+      reason: "wake-new-brain applied",
+    });
+
+    await completeRecoveryExecutionPg(tx, {
+      runId: decision.payload.runId,
+      executionResourceKey: input.executionResourceKey,
+      status: "succeeded",
+      completedAt: recoveryActionTerminalAt(evidence.providerActions, "wake") ?? simpleRecoveryTerminalAt(evidence, execution.payload as RecoveryExecutionPayload, now),
+      stateChanges: evidence.stateChanges,
+      providerActions: evidence.providerActions,
+    });
+    await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+
+    return { status: "applied", executionResourceKey: input.executionResourceKey, reason: "wake-new-brain applied" };
+  });
+}
+
 async function applyReprovisionMutation(
   deps: Required<RecoveryDecisionApplierDeps>,
   input: {
@@ -640,6 +902,97 @@ async function performAndStageReprovisionRecovery(
   });
 }
 
+async function performAndStageWakeNewBrainRecovery(
+  db: SouthstarDb,
+  deps: Required<RecoveryDecisionApplierDeps>,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    taskId: string;
+    sessionId: string;
+    context: SimpleRecoveryContext;
+    executionResourceKey: string;
+    now: string;
+  },
+): Promise<RecoveryExecutionEvidence> {
+  const managed = await createPostgresRecoveryController({
+    db,
+    sessionStore: createPostgresSessionStore(db),
+    brainProvider: deps.brainProvider,
+    handProvider: deps.handProvider,
+  }).recover({
+    runId: input.decision.payload.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    strategy: "wake-new-brain",
+    reason: input.decision.payload.reason,
+  });
+
+  const evidence = wakeNewBrainRecoveryExecutionEvidence({
+    decision: input.decision,
+    taskId: input.taskId,
+    context: input.context,
+    managed,
+    providerId: deps.brainProvider.providerId,
+    now: input.now,
+  });
+
+  return await stageRecoveryExecutionEvidencePg(db, {
+    executionResourceKey: input.executionResourceKey,
+    evidence,
+    now: input.now,
+  });
+}
+
+async function loadSimpleRecoveryContext(
+  db: SouthstarDb,
+  decision: RuntimeRecoveryDecisionRecord,
+): Promise<SimpleRecoveryContext> {
+  const run = await db.maybeOne<{ status: string }>(
+    "select status from southstar.workflow_runs where id = $1 for update",
+    [decision.payload.runId],
+  );
+  if (!run) throw new Error(`workflow run ${decision.payload.runId} not found`);
+
+  const task = decision.payload.taskId
+    ? await db.maybeOne<{ status: string }>(
+      "select status from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
+      [decision.payload.runId, decision.payload.taskId],
+    )
+    : null;
+  if (decision.payload.taskId && !task) {
+    throw new Error(`workflow task ${decision.payload.taskId} does not belong to run ${decision.payload.runId}`);
+  }
+
+  const exception = mapRuntimeResourceRow(await db.maybeOne<RuntimeResourceRow>(
+    `select * from southstar.runtime_resources
+      where resource_type = $1
+        and run_id = $2
+        and payload_json->>'exceptionId' = $3
+      for update`,
+    [RUNTIME_EXCEPTION_RESOURCE_TYPE, decision.payload.runId, decision.payload.exceptionId],
+  ));
+  if (!exception) throw new Error(`runtime exception ${decision.payload.exceptionId} not found`);
+
+  const hand = decision.payload.handExecutionId
+    ? mapRuntimeResourceRow(await db.maybeOne<RuntimeResourceRow>(
+      `select * from southstar.runtime_resources
+        where resource_type = 'hand_execution'
+          and resource_key = $1
+        for update`,
+      [decision.payload.handExecutionId],
+    ))
+    : null;
+
+  const handPayload = isPlainObject(hand?.payload) ? hand.payload : {};
+  const exceptionPayload = isPlainObject(exception.payload) ? exception.payload : {};
+  const sessionId = stringValue(hand?.sessionId)
+    ?? stringValue(handPayload.sessionId)
+    ?? stringValue(exception.sessionId)
+    ?? stringValue(exceptionPayload.sessionId);
+
+  return { task, run, exception, hand, sessionId };
+}
+
 async function loadReprovisionRecoveryContext(
   db: SouthstarDb,
   input: { decision: RuntimeRecoveryDecisionRecord; taskId: string; handExecutionId: string },
@@ -691,6 +1044,154 @@ async function loadReprovisionRecoveryContext(
   if (!sessionId) throw new Error("reprovision-hand decision missing sessionId");
 
   return { task, hand, exception, oldHandBinding, sessionId };
+}
+
+function simpleRecoveryExecutionEvidence(input: {
+  decision: RuntimeRecoveryDecisionRecord;
+  context: SimpleRecoveryContext;
+}): RecoveryExecutionEvidence {
+  const path = input.decision.payload.path;
+  const stateChanges: RecoveryExecutionStateChange[] = [];
+  if (path === "retry-same-task-new-attempt" && input.context.hand) {
+    stateChanges.push({
+      resourceType: "hand_execution",
+      resourceKey: input.context.hand.resourceKey,
+      fromStatus: input.context.hand.status,
+      toStatus: "superseded",
+      reason: path,
+    });
+  }
+  if (path === "retry-same-task-new-attempt" || path === "repair-artifact") {
+    stateChanges.push({
+      resourceType: "workflow_task",
+      resourceKey: `${input.decision.payload.runId}:${input.decision.payload.taskId}`,
+      fromStatus: input.context.task?.status,
+      toStatus: "pending",
+      reason: path,
+    });
+  } else if (path === "block-for-operator") {
+    stateChanges.push({
+      resourceType: "workflow_task",
+      resourceKey: `${input.decision.payload.runId}:${input.decision.payload.taskId}`,
+      fromStatus: input.context.task?.status,
+      toStatus: "blocked",
+      reason: path,
+    });
+  } else if (path === "fail-task") {
+    stateChanges.push({
+      resourceType: "workflow_task",
+      resourceKey: `${input.decision.payload.runId}:${input.decision.payload.taskId}`,
+      fromStatus: input.context.task?.status,
+      toStatus: "failed",
+      reason: path,
+    });
+  } else if (path === "fail-run") {
+    stateChanges.push({
+      resourceType: "workflow_run",
+      resourceKey: input.decision.payload.runId,
+      fromStatus: input.context.run.status,
+      toStatus: "failed",
+      reason: path,
+    });
+  }
+
+  if (path === "block-for-operator") {
+    stateChanges.push({
+      resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+      resourceKey: input.decision.resourceKey,
+      fromStatus: "applying",
+      toStatus: "blocked",
+      reason: "block-for-operator blocked",
+    });
+    return { stateChanges, providerActions: [] };
+  }
+
+  stateChanges.push(
+    {
+      resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+      resourceKey: input.decision.resourceKey,
+      fromStatus: "applying",
+      toStatus: "applied",
+      reason: `${path} applied`,
+    },
+    {
+      resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
+      resourceKey: input.context.exception.resourceKey,
+      fromStatus: input.context.exception.status,
+      toStatus: "resolved",
+      reason: `${path} applied`,
+    },
+  );
+  return { stateChanges, providerActions: [] };
+}
+
+function wakeNewBrainRecoveryExecutionEvidence(input: {
+  decision: RuntimeRecoveryDecisionRecord;
+  taskId: string;
+  context: SimpleRecoveryContext;
+  managed: {
+    recoveryDecisionId: string;
+    beforeRecoveryCheckpointId: string;
+    brainBindingId?: string;
+    executionEventId: string;
+  };
+  providerId: string;
+  now: string;
+}): RecoveryExecutionEvidence {
+  return {
+    stateChanges: [
+      {
+        resourceType: "session_checkpoint",
+        resourceKey: input.managed.beforeRecoveryCheckpointId,
+        toStatus: "created",
+        reason: "wake-new-brain before-recovery checkpoint",
+      },
+      ...(input.managed.brainBindingId
+        ? [{
+          resourceType: "brain_binding",
+          resourceKey: input.managed.brainBindingId,
+          toStatus: "running",
+          reason: "wake-new-brain replacement",
+        }]
+        : []),
+      {
+        resourceType: "workflow_task",
+        resourceKey: `${input.decision.payload.runId}:${input.taskId}`,
+        fromStatus: input.context.task?.status,
+        toStatus: "pending",
+        reason: "wake-new-brain",
+      },
+      {
+        resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
+        resourceKey: input.decision.resourceKey,
+        fromStatus: "applying",
+        toStatus: "applied",
+        reason: "wake-new-brain applied",
+      },
+      {
+        resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
+        resourceKey: input.context.exception.resourceKey,
+        fromStatus: input.context.exception.status,
+        toStatus: "resolved",
+        reason: "wake-new-brain applied",
+      },
+    ],
+    providerActions: [
+      {
+        providerId: input.providerId,
+        action: "wake",
+        status: "succeeded",
+        evidenceRef: input.managed.brainBindingId,
+        attemptedAt: input.now,
+        succeededAt: input.now,
+        metadata: {
+          managedRecoveryDecisionId: input.managed.recoveryDecisionId,
+          beforeRecoveryCheckpointId: input.managed.beforeRecoveryCheckpointId,
+          executionEventId: input.managed.executionEventId,
+        },
+      },
+    ],
+  };
 }
 
 function reprovisionRecoveryExecutionEvidence(input: {
@@ -942,7 +1443,40 @@ function recoveryActionTerminalAt(
   return action?.succeededAt ?? action?.completedAt ?? action?.attemptedAt;
 }
 
+function simpleRecoveryTerminalAt(
+  evidence: RecoveryExecutionEvidence,
+  executionPayload: RecoveryExecutionPayload,
+  fallback: string,
+): string {
+  const providerTerminalAt = evidence.providerActions
+    .map((action) => action.succeededAt ?? action.completedAt ?? action.attemptedAt)
+    .find((value): value is string => typeof value === "string" && value.trim().length > 0);
+  return providerTerminalAt ?? executionPayload.createdAt ?? fallback;
+}
+
+function isSimpleRecoveryPath(path: string): boolean {
+  return path === "retry-same-task-new-attempt"
+    || path === "repair-artifact"
+    || path === "block-for-operator"
+    || path === "fail-task"
+    || path === "fail-run";
+}
+
+function missingTaskOrHandReason(decision: RuntimeRecoveryDecisionRecord): string | null {
+  if (!decision.payload.taskId) return `${decision.payload.path} decision missing taskId`;
+  if (!decision.payload.handExecutionId) return `${decision.payload.path} decision missing handExecutionId`;
+  return null;
+}
+
 function missingReprovisionDeps(deps: RecoveryDecisionApplierDeps): string[] {
+  const missing: string[] = [];
+  if (!deps.sessionStore) missing.push("sessionStore");
+  if (!deps.brainProvider) missing.push("brainProvider");
+  if (!deps.handProvider) missing.push("handProvider");
+  return missing;
+}
+
+function missingWakeNewBrainDeps(deps: RecoveryDecisionApplierDeps): string[] {
   const missing: string[] = [];
   if (!deps.sessionStore) missing.push("sessionStore");
   if (!deps.brainProvider) missing.push("brainProvider");
@@ -957,6 +1491,21 @@ function isReprovisionBlockableError(message: string, decision: RuntimeRecoveryD
     || message === "reprovision-hand decision missing sessionId"
     || message === "reprovision-hand decision missing taskId"
     || message === "reprovision-hand decision missing handExecutionId";
+}
+
+function isSimpleRecoveryBlockableError(message: string, decision: RuntimeRecoveryDecisionRecord): boolean {
+  return message === `workflow run ${decision.payload.runId} not found`
+    || message === `workflow task ${decision.payload.taskId} does not belong to run ${decision.payload.runId}`
+    || message === `runtime exception ${decision.payload.exceptionId} not found`
+    || message === `${decision.payload.path} decision missing taskId`;
+}
+
+function isWakeNewBrainBlockableError(message: string, decision: RuntimeRecoveryDecisionRecord): boolean {
+  return message === `workflow run ${decision.payload.runId} not found`
+    || message === `workflow task ${decision.payload.taskId} does not belong to run ${decision.payload.runId}`
+    || message === `runtime exception ${decision.payload.exceptionId} not found`
+    || message === "wake-new-brain decision missing sessionId"
+    || message === "wake-new-brain decision missing taskId";
 }
 
 function oldHandBindingIdForRecovery(
@@ -1040,26 +1589,33 @@ async function finalizeRecoveryDecisionAppliedPg(
   input: { decision: RuntimeRecoveryDecisionRecord; executionResourceKey: string; now: string },
 ): Promise<void> {
   await db.tx(async (tx) => {
-    await appendRecoveryDecisionAppliedHistoryOncePg(tx, input);
+    const current = requireRecoveryDecision(await getRecoveryDecisionByKeyForUpdatePg(tx, input.decision.resourceKey));
+    const currentPayload = current.payload as RecoveryDecisionPayload & { appliedAt?: unknown; statusReason?: unknown };
+    const appliedAt = typeof currentPayload.appliedAt === "string" && currentPayload.appliedAt.trim().length > 0
+      ? currentPayload.appliedAt
+      : input.now;
+    await appendRecoveryDecisionAppliedHistoryOncePg(tx, { ...input, decision: current, now: appliedAt });
     const payload = {
-      ...input.decision.payload,
-      appliedAt: input.now,
-      statusReason: `${input.decision.payload.path} applied`,
+      ...current.payload,
+      appliedAt,
+      statusReason: typeof currentPayload.statusReason === "string" && currentPayload.statusReason.trim().length > 0
+        ? currentPayload.statusReason
+        : `${current.payload.path} applied`,
     };
     await upsertRuntimeResourcePg(tx, {
-      id: input.decision.decisionId,
+      id: current.decisionId,
       resourceType: RECOVERY_DECISION_RESOURCE_TYPE,
-      resourceKey: input.decision.resourceKey,
-      runId: input.decision.payload.runId,
-      taskId: input.decision.payload.taskId,
+      resourceKey: current.resourceKey,
+      runId: current.payload.runId,
+      taskId: current.payload.taskId,
       scope: "recovery",
       status: "applied",
-      title: `Runtime recovery decision: ${input.decision.payload.path}`,
+      title: `Runtime recovery decision: ${current.payload.path}`,
       payload,
       summary: {
-        exceptionId: input.decision.payload.exceptionId,
-        path: input.decision.payload.path,
-        appliedAt: input.now,
+        exceptionId: current.payload.exceptionId,
+        path: current.payload.path,
+        appliedAt,
       },
     });
   });
