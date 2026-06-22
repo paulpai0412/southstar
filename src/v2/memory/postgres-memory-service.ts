@@ -197,23 +197,25 @@ export async function invalidateRunLocalMemoryPg(db: SouthstarDb, input: Invalid
   });
 }
 
-export async function searchContextMemoryPg(db: SouthstarDb, input: ContextMemorySearchInput): Promise<ContextMemoryCandidate[]> {
+export async function searchMemoryForContextPg(db: SouthstarDb, input: ContextMemorySearchInput): Promise<ContextMemoryCandidate[]> {
+  if (input.scopes.length === 0 || input.allowedKinds.length === 0) return [];
   const rows = (
     await db.query<MemoryResourceRow>(
       `select * from southstar.runtime_resources
        where resource_type = 'memory_item'
-         and scope = $1
+         and scope = any($1::text[])
          and (
            (status = 'active' and run_id = $2)
            or status = 'approved'
          )
        order by created_at, resource_key`,
-      [input.scope, input.runId],
+      [input.scopes, input.runId],
     )
   ).rows;
+  const allowedKinds = new Set(input.allowedKinds);
   return rows
     .map((row) => toCandidate(row, input.query))
-    .filter((candidate): candidate is ContextMemoryCandidate => Boolean(candidate) && candidate.score > 0)
+    .filter((candidate): candidate is ContextMemoryCandidate => Boolean(candidate) && allowedKinds.has(candidate.kind) && candidate.score > 0)
     .sort((left, right) => right.score - left.score || left.id.localeCompare(right.id))
     .slice(0, Math.max(0, input.maxCandidates));
 }
@@ -265,7 +267,7 @@ function toCandidate(row: MemoryResourceRow, query: string): ContextMemoryCandid
     text: payload.text,
     tags: payload.tags,
     sourceRefs: payload.sourceRefs,
-    lifecycle: payload.lifecycle,
+    status: row.status === "approved" ? "approved" : "active",
     runId: row.run_id ?? undefined,
     taskId: row.task_id ?? undefined,
     sessionId: row.session_id ?? undefined,

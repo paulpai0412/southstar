@@ -6,7 +6,7 @@ import {
   approveMemoryDeltaPg,
   createMemoryDeltaPg,
   invalidateRunLocalMemoryPg,
-  searchContextMemoryPg,
+  searchMemoryForContextPg,
   writeRunLocalMemoryPg,
 } from "../../src/v2/memory/postgres-memory-service.ts";
 
@@ -29,19 +29,21 @@ test("Postgres memory service keeps run-local memory separate from approved long
       successScore: 0.7,
     });
 
-    const sameRun = await searchContextMemoryPg(db, {
+    const sameRun = await searchMemoryForContextPg(db, {
       runId: "run-1",
-      scope: "software",
+      scopes: ["software"],
+      allowedKinds: ["repair_hint"],
       query: "validator checkpoint",
       maxCandidates: 10,
     });
     assert.deepEqual(sameRun.map((candidate) => candidate.id), [runLocal.id]);
-    assert.equal(sameRun[0]?.lifecycle, "run-local");
+    assert.equal(sameRun[0]?.status, "active");
     assert.equal(sameRun[0]?.sourceRef, `memory_item:${runLocal.id}`);
 
-    const otherRunBeforeApproval = await searchContextMemoryPg(db, {
+    const otherRunBeforeApproval = await searchMemoryForContextPg(db, {
       runId: "run-2",
-      scope: "software",
+      scopes: ["software"],
+      allowedKinds: ["repair_hint"],
       query: "validator checkpoint",
       maxCandidates: 10,
     });
@@ -60,9 +62,10 @@ test("Postgres memory service keeps run-local memory separate from approved long
       successScore: 0.8,
     });
 
-    const beforeApproval = await searchContextMemoryPg(db, {
+    const beforeApproval = await searchMemoryForContextPg(db, {
       runId: "run-2",
-      scope: "software",
+      scopes: ["software"],
+      allowedKinds: ["repair_hint"],
       query: "ledger checkpoint",
       maxCandidates: 10,
     });
@@ -74,24 +77,35 @@ test("Postgres memory service keeps run-local memory separate from approved long
       reason: "useful cross-run repair guidance",
     });
 
-    const afterApproval = await searchContextMemoryPg(db, {
+    const afterApproval = await searchMemoryForContextPg(db, {
       runId: "run-2",
-      scope: "software",
+      scopes: ["software"],
+      allowedKinds: ["repair_hint"],
       query: "ledger checkpoint",
       maxCandidates: 10,
     });
     assert.deepEqual(afterApproval.map((candidate) => candidate.id), [approved.memoryItemId]);
-    assert.equal(afterApproval[0]?.lifecycle, "approved");
+    assert.equal(afterApproval[0]?.status, "approved");
     assert.equal(afterApproval[0]?.sourceRef, `memory_item:${approved.memoryItemId}`);
     assert.equal(afterApproval[0]?.scope, "software");
 
-    const otherScope = await searchContextMemoryPg(db, {
+    const otherScope = await searchMemoryForContextPg(db, {
       runId: "run-2",
-      scope: "docs",
+      scopes: ["docs"],
+      allowedKinds: ["repair_hint"],
       query: "ledger checkpoint",
       maxCandidates: 10,
     });
     assert.deepEqual(otherScope, []);
+
+    const disallowedKind = await searchMemoryForContextPg(db, {
+      runId: "run-2",
+      scopes: ["software"],
+      allowedKinds: ["failure_lesson"],
+      query: "ledger checkpoint",
+      maxCandidates: 10,
+    });
+    assert.deepEqual(disallowedKind, []);
 
     const invalidated = await invalidateRunLocalMemoryPg(db, {
       runId: "run-1",
@@ -100,9 +114,10 @@ test("Postgres memory service keeps run-local memory separate from approved long
     });
     assert.deepEqual(invalidated.invalidatedIds, [runLocal.id]);
 
-    const sameRunAfterInvalidation = await searchContextMemoryPg(db, {
+    const sameRunAfterInvalidation = await searchMemoryForContextPg(db, {
       runId: "run-1",
-      scope: "software",
+      scopes: ["software"],
+      allowedKinds: ["repair_hint"],
       query: "validator checkpoint",
       maxCandidates: 10,
     });

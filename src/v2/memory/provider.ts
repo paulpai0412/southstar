@@ -18,13 +18,14 @@ export type MemoryCandidate = {
 
 export type ContextMemorySearchInput = {
   runId: string;
-  scope: string;
   query: string;
+  scopes: string[];
+  allowedKinds: string[];
   maxCandidates: number;
 };
 
 export type ContextMemoryCandidate = MemoryCandidate & {
-  lifecycle: "run-local" | "approved";
+  status: "active" | "approved";
   runId?: string;
   taskId?: string;
   sessionId?: string;
