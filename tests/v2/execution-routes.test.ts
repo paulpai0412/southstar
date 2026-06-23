@@ -435,10 +435,22 @@ test("runtime server client exposes execution projection API URLs", async () => 
     const client = createRuntimeServerClient({ baseUrl: "http://127.0.0.1/" });
     await client.listExecutions("run/a");
     await client.getExecution({ runId: "run/a", executionId: "hand-execution:run/a:task/a:attempt/1" });
+    await client.getExecutorJobActions({ runId: "run/a", jobId: "job/a" });
+    await client.reconcileExecutorJob({ runId: "run/a", jobId: "job/a" });
+    await client.cancelExecutorJob({
+      runId: "run/a",
+      jobId: "job/a",
+      commandId: "cmd/a",
+      actor: { type: "user", id: "operator-a" },
+      reason: "cancel job",
+    });
 
     assert.deepEqual(calls, [
       "http://127.0.0.1/api/v2/runs/run%2Fa/hand-executions",
       "http://127.0.0.1/api/v2/runs/run%2Fa/hand-executions/hand-execution%3Arun%2Fa%3Atask%2Fa%3Aattempt%2F1",
+      "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/actions",
+      "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/reconcile",
+      "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/cancel",
     ]);
   } finally {
     globalThis.fetch = originalFetch;

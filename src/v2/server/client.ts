@@ -32,6 +32,12 @@ type SearchMemoryRequest = {
   allowedKinds: string[];
   maxCandidates?: number;
 };
+type RuntimeLoopId =
+  | "executor-reconciler"
+  | "runnable-task-scheduler"
+  | "recovery-controller"
+  | "tork-exception-observer"
+  | "recovery-decision-applier";
 
 export function createRuntimeServerClient(input: { baseUrl: string }) {
   const baseUrl = input.baseUrl.replace(/\/$/, "");
@@ -139,6 +145,15 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     getExecution(body: { runId: string; executionId: string }) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/hand-executions/${encodeURIComponent(body.executionId)}`);
     },
+    getExecutorJobActions(body: { runId: string; jobId: string }) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/executor-jobs/${encodeURIComponent(body.jobId)}/actions`);
+    },
+    reconcileExecutorJob(body: { runId: string; jobId: string }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/executor-jobs/${encodeURIComponent(body.jobId)}/reconcile`, {});
+    },
+    cancelExecutorJob(body: RuntimeCommandRequest & { runId: string; jobId: string }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/executor-jobs/${encodeURIComponent(body.jobId)}/cancel`, runtimeCommandBody(body));
+    },
     listLogs(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/logs`);
     },
@@ -147,6 +162,15 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     decideApproval(body: { runId: string; approvalId: string; decision: "approved" | "rejected"; reason: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/approvals/${encodeURIComponent(body.approvalId)}/decision`, { decision: body.decision, reason: body.reason });
+    },
+    approveRecoveryDecision(body: { runId: string; decisionId: string; decision: "approved" | "rejected"; reason: string }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/recovery-decisions/${encodeURIComponent(body.decisionId)}/approval`, {
+        decision: body.decision,
+        reason: body.reason,
+      });
+    },
+    applyRecoveryDecision(body: { runId: string; decisionId: string }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/recovery-decisions/${encodeURIComponent(body.decisionId)}/apply`, {});
     },
     steerRun(body: { runId: string; message: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/steering`, { message: body.message });
@@ -182,6 +206,18 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     cancelRun(body: RunRuntimeCommandRequest) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/cancel`, runtimeCommandBody(body));
+    },
+    getRuntimeHealth() {
+      return get(`${baseUrl}/api/v2/runtime/health`);
+    },
+    getRuntimeLoops() {
+      return get(`${baseUrl}/api/v2/runtime/loops`);
+    },
+    tickRuntimeLoop(body: { loopId: RuntimeLoopId }) {
+      return post(`${baseUrl}/api/v2/runtime/loops/${encodeURIComponent(body.loopId)}/tick`, {});
+    },
+    wakeRuntime(body: { runId?: string; taskId?: string } = {}) {
+      return post(`${baseUrl}/api/v2/runtime/wake`, body);
     },
     submitTorkCallback(body: unknown) {
       return post(`${baseUrl}/api/v2/tork/callback`, body);

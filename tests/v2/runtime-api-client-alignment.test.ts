@@ -22,6 +22,15 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "invalidateRunMemory",
     "listExecutions",
     "getExecution",
+    "getExecutorJobActions",
+    "reconcileExecutorJob",
+    "cancelExecutorJob",
+    "approveRecoveryDecision",
+    "applyRecoveryDecision",
+    "getRuntimeHealth",
+    "getRuntimeLoops",
+    "tickRuntimeLoop",
+    "wakeRuntime",
     "getTaskActions",
     "retryTask",
     "resetTaskSession",
@@ -154,6 +163,70 @@ test("generic read-model API routes run summary, executions, and exceptions", as
     assert.deepEqual(legacyExceptions.result.exceptions.map((exception) => exception.resourceKey), ["runtime-exception-b"]);
   } finally {
     await db.close();
+  }
+});
+
+test("runtime server client exposes operator route URLs and bodies", async () => {
+  const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({
+      url: String(input),
+      method: init?.method,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
+    return new Response(JSON.stringify({ ok: true, kind: "test", result: {} }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const client = createRuntimeServerClient({ baseUrl: "http://127.0.0.1/" });
+    await client.getExecutorJobActions({ runId: "run/a", jobId: "job/a" });
+    await client.reconcileExecutorJob({ runId: "run/a", jobId: "job/a" });
+    await client.cancelExecutorJob({
+      runId: "run/a",
+      jobId: "job/a",
+      commandId: "cmd/a",
+      actor: { type: "user", id: "operator-a" },
+      reason: "cancel job",
+      payload: { source: "test" },
+    });
+    await client.approveRecoveryDecision({
+      runId: "run/a",
+      decisionId: "decision/a",
+      decision: "approved",
+      reason: "safe",
+    });
+    await client.applyRecoveryDecision({ runId: "run/a", decisionId: "decision/a" });
+    await client.getRuntimeHealth();
+    await client.getRuntimeLoops();
+    await client.tickRuntimeLoop({ loopId: "runnable-task-scheduler" });
+    await client.wakeRuntime({ runId: "run/a", taskId: "task/a" });
+
+    assert.deepEqual(calls, [
+      { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/actions", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/reconcile", method: "POST", body: {} },
+      {
+        url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/cancel",
+        method: "POST",
+        body: {
+          commandId: "cmd/a",
+          actor: { type: "user", id: "operator-a" },
+          reason: "cancel job",
+          payload: { source: "test" },
+        },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/runs/run%2Fa/recovery-decisions/decision%2Fa/approval",
+        method: "POST",
+        body: { decision: "approved", reason: "safe" },
+      },
+      { url: "http://127.0.0.1/api/v2/runs/run%2Fa/recovery-decisions/decision%2Fa/apply", method: "POST", body: {} },
+      { url: "http://127.0.0.1/api/v2/runtime/health", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/runtime/loops", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/runtime/loops/runnable-task-scheduler/tick", method: "POST", body: {} },
+      { url: "http://127.0.0.1/api/v2/runtime/wake", method: "POST", body: { runId: "run/a", taskId: "task/a" } },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 
