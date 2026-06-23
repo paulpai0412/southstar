@@ -10,6 +10,8 @@ import {
   appendHistoryEventPg,
   createWorkflowRunPg,
   createWorkflowTaskPg,
+  getResourceByKeyPg,
+  listHistoryForRunPg,
   upsertRuntimeResourcePg,
 } from "../../../src/v2/stores/postgres-runtime-store.ts";
 import { createInitializedRealPostgresE2E, probeRealPostgresTorkPi, requireRealPostgresInfra } from "../postgres-real-harness.ts";
@@ -80,6 +82,50 @@ test("27 runtime API completeness: operator APIs cover lifecycle, stream, execut
       `/api/v2/runs/${encodeURIComponent(runId)}/hand-executions`,
     );
     assert.equal(handExecutions.executions.some((execution) => execution.externalJobId === externalJobId), true);
+
+    const executorJobActions = await api<{
+      actions: Array<{ action: string; allowed: boolean }>;
+    }>(
+      server.url,
+      `/api/v2/runs/${encodeURIComponent(runId)}/executor-jobs/${encodeURIComponent(externalJobId)}/actions`,
+    );
+    assert.equal(executorJobActions.actions.some((action) => action.action === "cancel" && action.allowed), true);
+
+    const cancel = await api<{
+      commandId: string;
+      status: string;
+      resourceRefs: Array<{ resourceType: string; resourceKey: string }>;
+      eventRefs: Array<{ eventType: string }>;
+    }>(
+      server.url,
+      `/api/v2/runs/${encodeURIComponent(runId)}/executor-jobs/${encodeURIComponent(externalJobId)}/cancel`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          commandId: "cmd-runtime-api-completeness-job-cancel",
+          actor: { type: "user", id: "operator-case-27" },
+          reason: "case 27 cancels seeded executor job through runtime API",
+        }),
+      },
+    );
+    assert.equal(cancel.commandId, "cmd-runtime-api-completeness-job-cancel");
+    assert.equal(cancel.status, "applied");
+    assert.equal(cancel.resourceRefs.length > 0, true);
+    assert.equal(cancel.eventRefs.some((event) => event.eventType === "executor_job.cancel_requested"), true);
+
+    const executionsAfterCancel = await api<{ data: { executions: Array<{ externalJobId?: string; rawStatus?: string }> } }>(
+      server.url,
+      `/api/v2/read-models/executions/${encodeURIComponent(runId)}`,
+    );
+    const canceledExecution = executionsAfterCancel.data.executions.find((execution) => execution.externalJobId === externalJobId);
+    assert.ok(canceledExecution);
+    assert.equal(canceledExecution.rawStatus, "cancel_requested");
+
+    const cancelCommandResource = await getResourceByKeyPg(env.db, "runtime_command", "cmd-runtime-api-completeness-job-cancel");
+    assert.ok(cancelCommandResource);
+
+    const runHistoryEvents = await listHistoryForRunPg(env.db, runId);
+    assert.equal(runHistoryEvents.some((event) => event.eventType === "executor_job.cancel_requested"), true);
 
     const sessionEvents = await api<{ events: Array<{ eventType: string }> }>(
       server.url,
