@@ -23,7 +23,8 @@ import { handleRunLifecycleRoute } from "./run-lifecycle-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
-import { readRunEventsSince, toSseFrame } from "./sse.ts";
+import { createRuntimeEventStreamResponse } from "./runtime-event-stream.ts";
+import { parseRuntimeEventSequence, readRunEventsSince } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 
 const TERMINAL_HAND_EXECUTION_STATUSES = ["completed", "failed", "cancelled", "lost", "superseded"] as const;
@@ -173,8 +174,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
 
     const eventsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/events$/);
     if (request.method === "GET" && eventsMatch) {
-      const after = Number(url.searchParams.get("after") ?? "0");
-      return json("events", await readRunEventsSince(context.db, { runId: decodeURIComponent(eventsMatch[1]!), afterSequence: Number.isFinite(after) ? after : 0 }));
+      const after = parseRuntimeEventSequence(url.searchParams.get("after"));
+      return json("events", await readRunEventsSince(context.db, { runId: decodeURIComponent(eventsMatch[1]!), afterSequence: after }));
     }
 
     const exceptionsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/exceptions$/);
@@ -184,9 +185,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
 
     const streamMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/events\/stream$/);
     if (request.method === "GET" && streamMatch) {
-      const after = Number(url.searchParams.get("after") ?? "0");
-      const events = await readRunEventsSince(context.db, { runId: decodeURIComponent(streamMatch[1]!), afterSequence: Number.isFinite(after) ? after : 0 });
-      return new Response(events.map(toSseFrame).join(""), { headers: { "content-type": "text/event-stream", "cache-control": "no-cache", ...corsHeaders() } });
+      return createRuntimeEventStreamResponse(context, request, url, decodeURIComponent(streamMatch[1]!));
     }
 
     const readModelMatch = url.pathname.match(/^\/api\/v2\/read-models\/([^/]+)\/([^/]+)(?:\/([^/]+))?$/);
@@ -617,5 +616,5 @@ function isReadModelKind(kind: string): kind is ReadModelKind {
 }
 
 function corsHeaders(): Record<string, string> {
-  return { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,authorization" };
+  return { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,authorization,last-event-id" };
 }
