@@ -110,7 +110,7 @@ test("27 runtime API completeness: operator APIs cover lifecycle, stream, execut
     );
     assert.equal(cancel.commandId, "cmd-runtime-api-completeness-job-cancel");
     assert.equal(cancel.status, "applied");
-    assert.equal(cancel.resourceRefs.length > 0, true);
+    assert.equal(cancel.resourceRefs.some((ref) => ref.resourceType === "hand_execution"), true);
     assert.equal(cancel.eventRefs.some((event) => event.eventType === "executor_job.cancel_requested"), true);
 
     const executionsAfterCancel = await api<{ data: { executions: Array<{ externalJobId?: string; rawStatus?: string }> } }>(
