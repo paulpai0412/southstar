@@ -21,11 +21,14 @@ export async function evaluateRunCompletionGatePg(
   input: { runId: string },
 ): Promise<CompletionGateResult> {
   return await db.tx(async (tx) => {
-    const run = await tx.maybeOne<{ id: string }>(
-      "select id from southstar.workflow_runs where id = $1 for update",
+    const run = await tx.maybeOne<{ id: string; status: string }>(
+      "select id, status from southstar.workflow_runs where id = $1 for update",
       [input.runId],
     );
     if (!run) throw new Error(`run not found: ${input.runId}`);
+    if (run.status === "cancelled") {
+      return { runId: input.runId, status: "not_ready", findings: ["run is cancelled"] };
+    }
 
     const tasks = (await tx.query<{ id: string; status: string }>(
       "select id, status from southstar.workflow_tasks where run_id = $1 order by sort_order, id for update",

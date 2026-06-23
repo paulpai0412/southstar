@@ -31,6 +31,7 @@ export async function createExecutorBindingPg(db: SouthstarDb, input: {
     executorType: "tork",
     torkJobId: input.torkJobId,
     ...(input.torkTaskId ? { torkTaskId: input.torkTaskId } : {}),
+    status: input.status,
     southstarExecutorStatus: input.status,
     submittedAt: nowIso,
     queueTimeoutAt: new Date(nowMs + input.queueTimeoutSeconds * 1000).toISOString(),
@@ -93,45 +94,55 @@ export async function updateExecutorBindingStatusPg(db: SouthstarDb, input: {
   payloadPatch?: Partial<ExecutorBindingPayload>;
   eventPayload?: Record<string, unknown>;
 }): Promise<ExecutorBindingRecordPg> {
-  const current = await getExecutorBindingPg(db, input.bindingId);
-  if (!current) throw new Error(`executor binding not found: ${input.bindingId}`);
+  return await db.tx(async (tx) => {
+    await tx.query(
+      "select id from southstar.runtime_resources where resource_type = 'executor_binding' and resource_key = $1 for update",
+      [input.bindingId],
+    );
+    const current = await getExecutorBindingPg(tx, input.bindingId);
+    if (!current) throw new Error(`executor binding not found: ${input.bindingId}`);
+    const status = current.status === "cancel_requested" && input.status !== "cancelled"
+      ? "cancel_requested"
+      : input.status;
 
-  const payload: ExecutorBindingPayload = {
-    ...current.payload,
-    ...(input.payloadPatch ?? {}),
-    southstarExecutorStatus: input.status,
-  };
+    const payload: ExecutorBindingPayload = {
+      ...current.payload,
+      ...(input.payloadPatch ?? {}),
+      status,
+      southstarExecutorStatus: status,
+    };
 
-  const { id } = await upsertRuntimeResourcePg(db, {
-    id: current.id,
-    resourceType: "executor_binding",
-    resourceKey: current.id,
-    runId: current.runId,
-    taskId: current.taskId,
-    scope: "executor",
-    status: input.status,
-    title: `Tork binding ${current.taskId}`,
-    payload,
-    summary: {
-      torkJobId: payload.torkJobId,
-      status: input.status,
-      runnerPhase: payload.runnerPhase ?? "no-heartbeat-yet",
-    },
+    const { id } = await upsertRuntimeResourcePg(tx, {
+      id: current.id,
+      resourceType: "executor_binding",
+      resourceKey: current.id,
+      runId: current.runId,
+      taskId: current.taskId,
+      scope: "executor",
+      status,
+      title: `Tork binding ${current.taskId}`,
+      payload,
+      summary: {
+        torkJobId: payload.torkJobId,
+        status,
+        runnerPhase: payload.runnerPhase ?? "no-heartbeat-yet",
+      },
+    });
+
+    await appendHistoryEventPg(tx, {
+      runId: current.runId,
+      taskId: current.taskId,
+      eventType: input.eventType,
+      actorType: "orchestrator",
+      payload: {
+        bindingId: id,
+        status,
+        ...(input.eventPayload ?? {}),
+      },
+    });
+
+    return { id, runId: current.runId, taskId: current.taskId, status, payload };
   });
-
-  await appendHistoryEventPg(db, {
-    runId: current.runId,
-    taskId: current.taskId,
-    eventType: input.eventType,
-    actorType: "orchestrator",
-    payload: {
-      bindingId: id,
-      status: input.status,
-      ...(input.eventPayload ?? {}),
-    },
-  });
-
-  return { id, runId: current.runId, taskId: current.taskId, status: input.status, payload };
 }
 
 function toRecord(resource: { id: string; runId: string | null; taskId: string | null; status: string; payload: unknown }): ExecutorBindingRecordPg | null {

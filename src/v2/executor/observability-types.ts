@@ -7,6 +7,7 @@ export type SouthstarExecutorStatus =
   | "queue-timeout"
   | "hard-timeout"
   | "callback-missing"
+  | "cancel_requested"
   | "completed"
   | "failed"
   | "cancelled"
@@ -28,6 +29,7 @@ export type ExecutorBindingPayload = {
   executorType: "tork";
   torkJobId: string;
   torkTaskId?: string;
+  status?: SouthstarExecutorStatus;
   containerId?: string;
   southstarExecutorStatus: SouthstarExecutorStatus;
   torkObservedStatus?: string;
@@ -84,6 +86,7 @@ const ALL_STATUSES: SouthstarExecutorStatus[] = [
   "queue-timeout",
   "hard-timeout",
   "callback-missing",
+  "cancel_requested",
   "completed",
   "failed",
   "cancelled",

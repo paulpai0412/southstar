@@ -2,13 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../../src/v2/artifacts/types.ts";
-import { createExecutorBindingPg, getExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
+import { createExecutorBindingPg, getExecutorBindingPg, updateExecutorBindingStatusPg } from "../../src/v2/executor/postgres-bindings.ts";
 import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
   getResourceByKeyPg,
+  listHistoryForRunPg,
   listResourcesPg,
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -329,6 +330,79 @@ test("late heartbeat does not reopen completed hand_execution", async () => {
   });
 });
 
+test("heartbeat and binding status updates preserve cancel_requested execution resources", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, { runId: "run-heartbeat-cancel-requested", taskId: "task-a", runStatus: "cancelled", taskStatus: "running" });
+    await seedExecutorBinding(db, { runId: "run-heartbeat-cancel-requested", taskId: "task-a", attemptId: "attempt-1", status: "running" });
+    await seedHandExecution(db, {
+      runId: "run-heartbeat-cancel-requested",
+      taskId: "task-a",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      status: "running",
+      queuedAt: "2026-06-20T08:00:00.000Z",
+      externalJobId: "job-cancel-requested",
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set status = 'cancel_requested',
+              payload_json = case
+                when resource_type = 'executor_binding' then
+                  jsonb_set(jsonb_set(payload_json, '{status}', to_jsonb('cancel_requested'::text), true), '{southstarExecutorStatus}', to_jsonb('cancel_requested'::text), true)
+                else jsonb_set(payload_json, '{status}', to_jsonb('cancel_requested'::text), true)
+              end,
+              summary_json = jsonb_set(summary_json, '{status}', to_jsonb('cancel_requested'::text), true)
+        where run_id = $1
+          and resource_type in ('hand_execution', 'executor_binding')`,
+      ["run-heartbeat-cancel-requested"],
+    );
+
+    const directBindingUpdate = await updateExecutorBindingStatusPg(db, {
+      bindingId: "executor-run-heartbeat-cancel-requested-task-a-attempt-1",
+      status: "running",
+      eventType: "executor.reconcile_completed",
+      payloadPatch: {
+        lastHeartbeatAt: "2026-06-20T08:01:00.000Z",
+        heartbeatSeq: 99,
+        runnerPhase: "subagent-running",
+      },
+    });
+    assert.equal(directBindingUpdate.status, "cancel_requested");
+    assert.equal(directBindingUpdate.payload.southstarExecutorStatus, "cancel_requested");
+
+    const server = await createTestServer(db);
+    try {
+      const response = await post(server.url, "/api/v2/executor/heartbeat", {
+        runId: "run-heartbeat-cancel-requested",
+        taskId: "task-a",
+        sessionId: "session-a",
+        attemptId: "attempt-1",
+        observedAt: "2026-06-20T08:02:00.000Z",
+        heartbeatSeq: 100,
+        phase: "running",
+      });
+      assert.equal(response.result.status, "cancel_requested");
+    } finally {
+      await server.close();
+    }
+
+    const handExecution = await getHandExecution(db, "run-heartbeat-cancel-requested", "task-a", "attempt-1");
+    assert.equal(handExecution.status, "cancel_requested");
+    assert.equal(asRecord(handExecution.payload).status, "cancel_requested");
+    assert.equal(asRecord(handExecution.summary).status, "cancel_requested");
+    assert.equal(asRecord(handExecution.payload).lastHeartbeatAt, undefined);
+
+    const binding = await getExecutorBindingPg(db, "executor-run-heartbeat-cancel-requested-task-a-attempt-1");
+    assert.equal(binding?.status, "cancel_requested");
+    assert.equal(binding?.payload.southstarExecutorStatus, "cancel_requested");
+    const bindingResource = await getResourceByKeyPg(db, "executor_binding", "executor-run-heartbeat-cancel-requested-task-a-attempt-1");
+    assert.ok(bindingResource);
+    assert.equal(asRecord(bindingResource.payload).status, "cancel_requested");
+    assert.equal(asRecord(bindingResource.payload).southstarExecutorStatus, "cancel_requested");
+    assert.equal(asRecord(bindingResource.summary).status, "cancel_requested");
+  });
+});
+
 test("heartbeat preserves first startedAt and advances lastHeartbeatAt", async () => {
   await withDb(async (db) => {
     await seedRunTask(db, { runId: "run-heartbeat-started-at", taskId: "task-a", runStatus: "scheduling", taskStatus: "queued" });
@@ -572,6 +646,70 @@ test("late terminal callback records runtime exception and observe-only recovery
     assert.equal(decisions.length, 1);
     assert.equal(decisions[0]?.payload.path, "none-observe-only");
     assert.equal(decisions[0]?.payload.exceptionId, exceptions[0]?.payload.exceptionId);
+  });
+});
+
+test("cancelled run callback is audited and cannot mutate task run resources or artifacts", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db, { runId: "run-callback-cancelled-terminal", taskId: "task-a", runStatus: "cancelled", taskStatus: "running", sessionId: "session-a" });
+    await seedExecutorBinding(db, { runId: "run-callback-cancelled-terminal", taskId: "task-a", attemptId: "attempt-1", status: "running" });
+    await seedHandExecution(db, {
+      runId: "run-callback-cancelled-terminal",
+      taskId: "task-a",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      status: "running",
+      queuedAt: "2026-06-20T08:00:00.000Z",
+      externalJobId: "job-cancelled-terminal",
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set status = 'cancel_requested',
+              payload_json = case
+                when resource_type = 'executor_binding' then
+                  jsonb_set(jsonb_set(payload_json, '{status}', to_jsonb('cancel_requested'::text), true), '{southstarExecutorStatus}', to_jsonb('cancel_requested'::text), true)
+                else jsonb_set(payload_json, '{status}', to_jsonb('cancel_requested'::text), true)
+              end,
+              summary_json = jsonb_set(summary_json, '{status}', to_jsonb('cancel_requested'::text), true)
+        where run_id = $1
+          and resource_type in ('hand_execution', 'executor_binding')`,
+      ["run-callback-cancelled-terminal"],
+    );
+
+    const ignored: { accepted: boolean; ignoredRunStatus?: string } = await ingestTaskRunResultPg(db, {
+      runId: "run-callback-cancelled-terminal",
+      taskId: "task-a",
+      rootSessionId: "session-a",
+      ok: true,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: { kind: "implementation_report", summary: "late success after cancellation" },
+      metrics: { tokens: 42 },
+      events: [{ eventType: "progress.commentary", actorType: "hand", payload: { message: "late" } }],
+      receivedAt: "2026-06-20T08:04:00.000Z",
+    });
+
+    assert.equal(ignored.accepted, false);
+    assert.equal(ignored.ignoredRunStatus, "cancelled");
+    const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = $1", ["run-callback-cancelled-terminal"]);
+    assert.equal(run.status, "cancelled");
+    const task = await db.one<{ status: string }>("select status from southstar.workflow_tasks where run_id = $1 and id = $2", ["run-callback-cancelled-terminal", "task-a"]);
+    assert.equal(task.status, "running");
+
+    const historyTypes = (await listHistoryForRunPg(db, "run-callback-cancelled-terminal")).map((event) => event.eventType);
+    assert.equal(historyTypes.includes("executor.callback_ignored_cancelled_run"), true);
+    assert.equal(historyTypes.includes("progress.commentary"), false);
+    assert.equal(historyTypes.includes("artifact.created"), false);
+    assert.equal((await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE })).filter((resource) => resource.runId === "run-callback-cancelled-terminal").length, 0);
+
+    const handExecution = await getHandExecution(db, "run-callback-cancelled-terminal", "task-a", "attempt-1");
+    assert.equal(handExecution.status, "cancel_requested");
+    assert.equal(asRecord(handExecution.payload).status, "cancel_requested");
+    assert.equal(asRecord(handExecution.summary).status, "cancel_requested");
+    assert.equal(asRecord(handExecution.payload).terminalAt, undefined);
+    const binding = await getExecutorBindingPg(db, "executor-run-callback-cancelled-terminal-task-a-attempt-1");
+    assert.equal(binding?.status, "cancel_requested");
+    assert.equal(binding?.payload.southstarExecutorStatus, "cancel_requested");
   });
 });
 

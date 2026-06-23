@@ -1,5 +1,6 @@
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
+import type { RuntimeCommandRequest } from "../ui-api/commands/runtime-command.ts";
 
 export type RuntimeServerClient = ReturnType<typeof createRuntimeServerClient>;
 
@@ -8,6 +9,8 @@ type RunGoalResult = {
   runId: string;
   taskIds: string[];
 };
+
+type RunRuntimeCommandRequest = RuntimeCommandRequest & { runId: string };
 
 export function createRuntimeServerClient(input: { baseUrl: string }) {
   const baseUrl = input.baseUrl.replace(/\/$/, "");
@@ -23,6 +26,9 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     getRun(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}`);
+    },
+    getRunActions(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/actions`);
     },
     getRunEvents(body: { runId: string; afterSequence?: number }) {
       const after = body.afterSequence ?? 0;
@@ -78,14 +84,14 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     getUiRuntimeMonitor(runId: string) {
       return get(`${baseUrl}/api/v2/ui/runtime-monitor?runId=${encodeURIComponent(runId)}`);
     },
-    pauseRun(body: { runId: string; commandId: string; actor: { type: "user" | "system" | "root-session"; id?: string }; reason?: string; payload: Record<string, unknown> }) {
-      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/pause`, { commandId: body.commandId, actor: body.actor, reason: body.reason, payload: body.payload });
+    pauseRun(body: RunRuntimeCommandRequest) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/pause`, runtimeCommandBody(body));
     },
-    resumeRun(body: { runId: string; commandId: string; actor: { type: "user" | "system" | "root-session"; id?: string }; reason?: string; payload: Record<string, unknown> }) {
-      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/resume`, { commandId: body.commandId, actor: body.actor, reason: body.reason, payload: body.payload });
+    resumeRun(body: RunRuntimeCommandRequest) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/resume`, runtimeCommandBody(body));
     },
-    cancelRun(body: { runId: string; commandId: string; actor: { type: "user" | "system" | "root-session"; id?: string }; reason?: string; payload: Record<string, unknown> }) {
-      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/cancel`, { commandId: body.commandId, actor: body.actor, reason: body.reason, payload: body.payload });
+    cancelRun(body: RunRuntimeCommandRequest) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/cancel`, runtimeCommandBody(body));
     },
     submitTorkCallback(body: unknown) {
       return post(`${baseUrl}/api/v2/tork/callback`, body);
@@ -96,6 +102,16 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
 function requiredTaskId(taskId: string | undefined): string {
   if (!taskId) throw new Error("taskId is required for task-detail read model");
   return taskId;
+}
+
+function runtimeCommandBody(body: RunRuntimeCommandRequest): RuntimeCommandRequest {
+  return {
+    commandId: body.commandId,
+    actor: body.actor,
+    ...(body.reason !== undefined ? { reason: body.reason } : {}),
+    ...(body.dryRun !== undefined ? { dryRun: body.dryRun } : {}),
+    ...(body.payload !== undefined ? { payload: body.payload } : {}),
+  };
 }
 
 async function post<T = unknown>(url: string, body: unknown): Promise<ApiEnvelope<T>> {

@@ -46,6 +46,7 @@ export type RecordRuntimeCommandInput = {
   resourceRefs?: RuntimeCommandResourceRef[];
   eventType: string;
   eventPayload?: unknown;
+  eventSequence?: Array<{ eventType: string; eventPayload?: unknown }>;
   nextSuggestedActions?: string[];
   message?: string;
 };
@@ -104,18 +105,23 @@ export async function recordRuntimeCommandPg(
         resourceRefs,
       },
     });
-    const actionEvent = await appendHistoryEventOncePg(tx, {
-      runId: input.runId,
-      taskId: input.taskId,
-      sessionId: input.sessionId,
-      eventType: input.eventType,
-      actorType: input.actor.type,
-      idempotencyKey: `runtime-command:${input.commandId}:${input.eventType}`,
-      payload: input.eventPayload ?? {},
-    });
+    const actionEvents = input.eventSequence ?? [{ eventType: input.eventType, eventPayload: input.eventPayload }];
+    const actionEventRefs: RuntimeCommandEventRef[] = [];
+    for (const event of actionEvents) {
+      const actionEvent = await appendHistoryEventOncePg(tx, {
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        eventType: event.eventType,
+        actorType: input.actor.type,
+        idempotencyKey: `runtime-command:${input.commandId}:${event.eventType}`,
+        payload: event.eventPayload ?? {},
+      });
+      actionEventRefs.push({ runId: input.runId, sequence: actionEvent.sequence, eventType: event.eventType });
+    }
     const result = runtimeCommandResult(input, resourceRefs, [
       { runId: input.runId, sequence: requestedEvent.sequence, eventType: "run.command_requested" },
-      { runId: input.runId, sequence: actionEvent.sequence, eventType: input.eventType },
+      ...actionEventRefs,
     ]);
 
     await insertRuntimeCommandResourceOncePg(tx, input, result);

@@ -21,25 +21,70 @@ export type PostgresCallbackIngestionResult = {
   duplicate?: boolean;
   artifactResourceId?: string;
   artifactRefId?: string;
+  ignoredRunStatus?: string;
 };
 
 export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTaskRunCallbackResult): Promise<PostgresCallbackIngestionResult> {
   const attemptId = normalizedAttemptId(result);
   const handExecutionId = canonicalHandExecutionId(result.runId, result.taskId, attemptId);
   const receipt = callbackReceiptToken(result, handExecutionId);
-  await assertCallbackPersistedSurfacesSafePg(db, result, handExecutionId);
-  return await db.tx(async (tx) => {
-    const task = await tx.maybeOne<{ status: string; root_session_id: string | null }>(
-      "select status, root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
-      [result.runId, result.taskId],
+  const preflight = await db.tx(async (tx) => {
+    const run = await tx.maybeOne<{ status: string }>(
+      "select status from southstar.workflow_runs where id = $1 for update",
+      [result.runId],
     );
-    if (!task) throw new Error(`callback task not found: ${result.runId}/${result.taskId}`);
+    if (!run) throw new Error(`callback run not found: ${result.runId}`);
+
+    const existingReceipt = await tx.maybeOne<{ id: string }>(
+      "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+      [result.runId, receipt.idempotencyKey],
+    );
+    if (existingReceipt) {
+      return {
+        kind: "result" as const,
+        result: {
+          ...(await duplicateCallbackOutcome(tx, result, receipt.idempotencyKey)),
+          duplicate: true,
+          ...(run.status === "cancelled" ? { ignoredRunStatus: run.status } : {}),
+        },
+      };
+    }
+
+    if (run.status === "cancelled") {
+      return { kind: "result" as const, result: await recordCancelledRunCallbackAuditPg(tx, result, receipt) };
+    }
+
+    try {
+      await assertCallbackPersistedSurfacesSafePg(tx, result, handExecutionId);
+    } catch (error) {
+      return { kind: "error" as const, error };
+    }
+
+    return { kind: "continue" as const };
+  });
+
+  if (preflight.kind === "result") return preflight.result;
+  if (preflight.kind === "error") throw preflight.error;
+
+  return await db.tx(async (tx) => {
+    const run = await tx.maybeOne<{ status: string }>(
+      "select status from southstar.workflow_runs where id = $1 for update",
+      [result.runId],
+    );
+    if (!run) throw new Error(`callback run not found: ${result.runId}`);
 
     const existingReceipt = await tx.maybeOne<{ id: string }>(
       "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
       [result.runId, receipt.idempotencyKey],
     );
     if (existingReceipt) return { ...(await duplicateCallbackOutcome(tx, result, receipt.idempotencyKey)), duplicate: true };
+    if (run.status === "cancelled") return await recordCancelledRunCallbackAuditPg(tx, result, receipt);
+
+    const task = await tx.maybeOne<{ status: string; root_session_id: string | null }>(
+      "select status, root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
+      [result.runId, result.taskId],
+    );
+    if (!task) throw new Error(`callback task not found: ${result.runId}/${result.taskId}`);
 
     await appendHistoryEventPg(tx, {
       runId: result.runId,
@@ -224,6 +269,36 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
 
     return { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId };
   });
+}
+
+async function recordCancelledRunCallbackAuditPg(
+  db: SouthstarDb,
+  result: PostgresTaskRunCallbackResult,
+  receipt: { idempotencyKey: string; artifactHash: string },
+): Promise<PostgresCallbackIngestionResult> {
+  await appendHistoryEventPg(db, {
+    runId: result.runId,
+    taskId: result.taskId,
+    sessionId: result.rootSessionId,
+    eventType: "executor.callback_received",
+    actorType: "executor",
+    idempotencyKey: receipt.idempotencyKey,
+    payload: {
+      attempts: result.attempts,
+      attemptId: result.attemptId,
+      artifactHash: receipt.artifactHash,
+    },
+  });
+  await appendHistoryEventPg(db, {
+    runId: result.runId,
+    taskId: result.taskId,
+    sessionId: result.rootSessionId,
+    eventType: "executor.callback_ignored_cancelled_run",
+    actorType: "orchestrator",
+    idempotencyKey: `${receipt.idempotencyKey}:ignored-cancelled-run`,
+    payload: { status: "cancelled", attemptId: result.attemptId, attempts: result.attempts },
+  });
+  return { accepted: false, ignoredRunStatus: "cancelled" };
 }
 
 async function recordCallbackArtifactRepairMarkersPg(

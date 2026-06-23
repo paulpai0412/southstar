@@ -19,6 +19,7 @@ import { intakeWorkItemPg } from "../work-items/intake-service.ts";
 import { materializeRunFromWorkItemPg } from "../work-items/run-materialization.ts";
 import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
 import { handleEvolutionRoute } from "./evolution-routes.ts";
+import { handleRunLifecycleRoute } from "./run-lifecycle-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
@@ -26,6 +27,7 @@ import { readRunEventsSince, toSseFrame } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 
 const TERMINAL_HAND_EXECUTION_STATUSES = ["completed", "failed", "cancelled", "lost", "superseded"] as const;
+const PROTECTED_HAND_EXECUTION_HEARTBEAT_STATUSES = [...TERMINAL_HAND_EXECUTION_STATUSES, "cancel_requested"] as const;
 
 export async function handleRuntimeRoute(context: RuntimeServerContext, request: Request): Promise<Response> {
   const url = new URL(request.url);
@@ -36,6 +38,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (evolutionResponse) return evolutionResponse;
     const uiResponse = await handleUiRoute(context, request, url);
     if (uiResponse) return uiResponse;
+    const runLifecycleResponse = await handleRunLifecycleRoute(context, request, url);
+    if (runLifecycleResponse) return runLifecycleResponse;
 
     if (request.method === "POST" && url.pathname === "/api/v2/work-items/intake") {
       const body = await readJsonBody<{
@@ -345,7 +349,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/tork/callback") {
-      return json("callback", await ingestTaskRunResultPg(context.db, validatedCallbackResultPg(await readJsonBody(request))));
+      const callback = validatedCallbackResultPg(await readJsonBody(request));
+      return json("callback", await ingestTaskRunResultPg(context.db, callback));
     }
 
     return errorResponse("not found", 404);
@@ -361,7 +366,7 @@ async function patchManagedHandExecutionHeartbeatPg(
   const handExecutionId = `hand-execution:${input.runId}:${input.taskId}:${input.attemptId}`;
   const existing = await getResourceByKeyPg(db, "hand_execution", handExecutionId);
   if (!existing) return null;
-  if (isTerminalHandExecutionStatus(existing.status)) {
+  if (isProtectedHandExecutionStatus(existing.status)) {
     return {
       id: existing.id,
       runId: input.runId,
@@ -417,13 +422,13 @@ async function patchManagedHandExecutionHeartbeatPg(
       JSON.stringify(nextPayload),
       JSON.stringify(summary),
       JSON.stringify(existing.metrics ?? {}),
-      TERMINAL_HAND_EXECUTION_STATUSES,
+      PROTECTED_HAND_EXECUTION_HEARTBEAT_STATUSES,
     ],
   );
   const id = update.rows[0]?.id;
   if (!id) {
     const latest = await getResourceByKeyPg(db, "hand_execution", handExecutionId);
-    if (latest && isTerminalHandExecutionStatus(latest.status)) {
+    if (latest && isProtectedHandExecutionStatus(latest.status)) {
       return {
         id: latest.id,
         runId: input.runId,
@@ -558,7 +563,7 @@ function numberFromBody(value: unknown, field: string): number {
   return value;
 }
 
-function parseExecutorBindingStatus(value: unknown): "submitted" | "queued" | "starting" | "running" | "heartbeat-lost" | "queue-timeout" | "hard-timeout" | "callback-missing" | "completed" | "failed" | "cancelled" | "lost" | "orphaned" {
+function parseExecutorBindingStatus(value: unknown): "submitted" | "queued" | "starting" | "running" | "heartbeat-lost" | "queue-timeout" | "hard-timeout" | "callback-missing" | "cancel_requested" | "completed" | "failed" | "cancelled" | "lost" | "orphaned" {
   const allowed = [
     "submitted",
     "queued",
@@ -568,6 +573,7 @@ function parseExecutorBindingStatus(value: unknown): "submitted" | "queued" | "s
     "queue-timeout",
     "hard-timeout",
     "callback-missing",
+    "cancel_requested",
     "completed",
     "failed",
     "cancelled",
@@ -580,8 +586,8 @@ function parseExecutorBindingStatus(value: unknown): "submitted" | "queued" | "s
   return value as typeof allowed[number];
 }
 
-function isTerminalHandExecutionStatus(status: string): boolean {
-  return (TERMINAL_HAND_EXECUTION_STATUSES as readonly string[]).includes(status);
+function isProtectedHandExecutionStatus(status: string): boolean {
+  return (PROTECTED_HAND_EXECUTION_HEARTBEAT_STATUSES as readonly string[]).includes(status);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
