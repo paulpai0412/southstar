@@ -27,6 +27,7 @@ import { startRunSchedulingPg } from "./run-execution-controller.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import { createRuntimeEventStreamResponse } from "./runtime-event-stream.ts";
+import { parseRuntimeLoopId } from "./runtime-loop-registry.ts";
 import { parseRuntimeEventSequence, readRunEventsSince } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 
@@ -50,6 +51,38 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (memoryResponse) return memoryResponse;
     const executionResponse = await handleExecutionRoute(context, request, url);
     if (executionResponse) return executionResponse;
+
+    if (request.method === "GET" && url.pathname === "/api/v2/runtime/health") {
+      const database = await databaseHealth(context);
+      return json("runtime-health", {
+        database,
+        managedRuntime: { configured: Boolean(context.managedRuntime) },
+        torkObservation: { configured: Boolean(context.torkObservationClient) },
+        loops: { configured: context.runtimeLoopRegistry?.list().length ?? 0 },
+      }, database.ok ? 200 : 503);
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/v2/runtime/loops") {
+      return json("runtime-loops", { loops: context.runtimeLoopRegistry?.list() ?? [] });
+    }
+
+    const loopTickMatch = url.pathname.match(/^\/api\/v2\/runtime\/loops\/([^/]+)\/tick$/);
+    if (request.method === "POST" && loopTickMatch) {
+      if (!context.runtimeLoopRegistry) throw new Error("runtimeLoopRegistry is not configured");
+      if (!context.manualRuntimeLoopControls) throw new Error("manual runtime loop controls are disabled");
+      const loopId = parseRuntimeLoopId(decodeURIComponent(loopTickMatch[1]!));
+      return json("runtime-loop-tick", await context.runtimeLoopRegistry.tick(loopId));
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/v2/runtime/wake") {
+      if (!context.runtimeLoopRegistry) throw new Error("runtimeLoopRegistry is not configured");
+      if (!context.manualRuntimeLoopControls) throw new Error("manual runtime loop controls are disabled");
+      const results = [];
+      for (const loop of context.runtimeLoopRegistry.list()) {
+        results.push(await context.runtimeLoopRegistry.tick(loop.id));
+      }
+      return json("runtime-wake", { results });
+    }
 
     if (request.method === "POST" && url.pathname === "/api/v2/work-items/intake") {
       const body = await readJsonBody<{
@@ -610,9 +643,18 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function json<T>(kind: string, result: T): Response {
+function json<T>(kind: string, result: T, status = 200): Response {
   const envelope: ApiEnvelope<T> = { ok: true, kind, result };
-  return new Response(JSON.stringify(envelope), { headers: { "content-type": "application/json", ...corsHeaders() } });
+  return new Response(JSON.stringify(envelope), { status, headers: { "content-type": "application/json", ...corsHeaders() } });
+}
+
+async function databaseHealth(context: RuntimeServerContext): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    await context.db.query("select 1");
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: (error as Error).message };
+  }
 }
 
 function errorResponse(error: string, status: number): Response {

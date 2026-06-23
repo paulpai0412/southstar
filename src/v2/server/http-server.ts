@@ -2,7 +2,13 @@ import { createServer, type IncomingHttpHeaders, type IncomingMessage } from "no
 import type { AddressInfo } from "node:net";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { handleRuntimeRoute } from "./routes.ts";
-import { createCompositeRuntimeLoopController, createManagedRuntimeLoopController, createRuntimeLoopController, type RuntimeLoopController } from "./runtime-loops.ts";
+import {
+  createCompositeRuntimeLoopController,
+  createManagedRuntimeLoopRunners,
+  createRuntimeLoopController,
+  type ManagedRuntimeLoopRunner,
+  type RuntimeLoopController,
+} from "./runtime-loops.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 
 export type CreateSouthstarRuntimeServerInput = RuntimeServerContext & {
@@ -66,19 +72,33 @@ function createDefaultRuntimeLoops(context: RuntimeServerContext): RuntimeLoopCo
 
 function createDefaultReconcileLoop(context: RuntimeServerContext): RuntimeLoopController | undefined {
   if (!context.torkObservationClient) return undefined;
+  const runner = createDefaultReconcileLoopRunner(context);
+  context.runtimeLoopRegistry?.register(runner);
   return createRuntimeLoopController({
+    intervalMs: runner.intervalMs,
+    runOnce: context.runtimeLoopRegistry
+      ? async () => {
+        await context.runtimeLoopRegistry?.tick(runner.id);
+      }
+      : runner.runOnce,
+  });
+}
+
+function createDefaultReconcileLoopRunner(context: RuntimeServerContext): ManagedRuntimeLoopRunner {
+  const tork = context.torkObservationClient as NonNullable<RuntimeServerContext["torkObservationClient"]>;
+  return {
+    id: "executor-reconciler",
     intervalMs: context.reconcileIntervalMs ?? 15_000,
     runOnce: async () => {
-      await reconcileExecutorBindingsPg(context.db, {
-        tork: context.torkObservationClient as NonNullable<RuntimeServerContext["torkObservationClient"]>,
-      });
+      const result = await reconcileExecutorBindingsPg(context.db, { tork });
+      return { findings: result.findings.length };
     },
-  });
+  };
 }
 
 export function createDefaultManagedRuntimeLoop(context: RuntimeServerContext): RuntimeLoopController | undefined {
   if (!context.managedRuntime) return undefined;
-  return createManagedRuntimeLoopController({
+  const runners = createManagedRuntimeLoopRunners({
     db: context.db,
     sessionStore: context.managedRuntime.sessionStore,
     brainProvider: context.managedRuntime.brainProvider,
@@ -87,6 +107,15 @@ export function createDefaultManagedRuntimeLoop(context: RuntimeServerContext): 
     schedulerIntervalMs: context.managedRuntime.schedulerIntervalMs ?? 5_000,
     recoveryIntervalMs: context.managedRuntime.recoveryIntervalMs ?? 15_000,
   });
+  for (const runner of runners) context.runtimeLoopRegistry?.register(runner);
+  return createCompositeRuntimeLoopController(runners.map((runner) => createRuntimeLoopController({
+    intervalMs: runner.intervalMs,
+    runOnce: context.runtimeLoopRegistry
+      ? async () => {
+        await context.runtimeLoopRegistry?.tick(runner.id);
+      }
+      : runner.runOnce,
+  })));
 }
 
 async function toRequest(incoming: IncomingMessage): Promise<Request> {

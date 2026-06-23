@@ -6,6 +6,7 @@ import type { HandProvider } from "../hands/types.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
 import type { SessionStore } from "../session/types.ts";
 import type { RuntimeLoopController } from "./runtime-loops.ts";
+import type { RuntimeLoopRegistry } from "./runtime-loop-registry.ts";
 
 export type RuntimeServerContext = {
   db: SouthstarDb;
@@ -17,6 +18,8 @@ export type RuntimeServerContext = {
   runRoot?: string;
   reconcileIntervalMs?: number;
   createReconcileLoop?: () => RuntimeLoopController;
+  runtimeLoopRegistry?: RuntimeLoopRegistry;
+  manualRuntimeLoopControls?: boolean;
   providerActions?: RecoveryProviderActions;
   managedRuntime?: {
     sessionStore: SessionStore;

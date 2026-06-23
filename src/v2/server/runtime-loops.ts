@@ -18,6 +18,12 @@ export type ManagedRuntimeLoopPlanItem = {
   intervalMs: number;
 };
 
+export type ManagedRuntimeLoopRunner = {
+  id: ManagedRuntimeLoopPlanItem["id"];
+  intervalMs: number;
+  runOnce: () => Promise<Record<string, unknown>>;
+};
+
 export type ManagedRuntimeLoopDeps = {
   db: SouthstarDb;
   sessionStore: SessionStore;
@@ -62,6 +68,13 @@ export function createCompositeRuntimeLoopController(controllers: RuntimeLoopCon
 }
 
 export function createManagedRuntimeLoopController(input: ManagedRuntimeLoopDeps): RuntimeLoopController {
+  return createCompositeRuntimeLoopController(createManagedRuntimeLoopRunners(input).map((runner) => createRuntimeLoopController({
+    intervalMs: runner.intervalMs,
+    runOnce: runner.runOnce,
+  })));
+}
+
+export function createManagedRuntimeLoopRunners(input: ManagedRuntimeLoopDeps): ManagedRuntimeLoopRunner[] {
   const scheduler = createRunnableTaskScheduler(input.db, {
     sessionStore: input.sessionStore,
     brainProvider: input.brainProvider,
@@ -80,18 +93,24 @@ export function createManagedRuntimeLoopController(input: ManagedRuntimeLoopDeps
     handProvider: input.handProvider,
     ...(input.providerActions ? { providerActions: input.providerActions } : {}),
   });
-  return createCompositeRuntimeLoopController([
-    createRuntimeLoopController({
+  return [
+    {
+      id: "runnable-task-scheduler",
       intervalMs: input.schedulerIntervalMs,
       runOnce: async () => {
+        let processedRuns = 0;
         for (const runId of await listActiveRunIds(input.db)) {
           await scheduler.runOnce({ runId });
+          processedRuns += 1;
         }
+        return { processedRuns };
       },
-    }),
-    createRuntimeLoopController({
+    },
+    {
+      id: "recovery-controller",
       intervalMs: input.recoveryIntervalMs,
       runOnce: async () => {
+        let recoveredBindings = 0;
         for (const binding of await listRecoverableBindings(input.db)) {
           if (!binding.run_id || !binding.task_id || !binding.session_id) continue;
           await recoveryController.recover({
@@ -101,24 +120,32 @@ export function createManagedRuntimeLoopController(input: ManagedRuntimeLoopDeps
             strategy: binding.resource_type === "brain_binding" ? "wake-new-brain" : "reprovision-hand",
             reason: `managed runtime loop recovery for ${binding.resource_key}`,
           });
+          recoveredBindings += 1;
         }
+        return { recoveredBindings };
       },
-    }),
-    createRuntimeLoopController({
+    },
+    {
+      id: "tork-exception-observer",
       intervalMs: input.recoveryIntervalMs,
       runOnce: async () => {
         await observeTorkHandExecutionExceptionsPg(input.db);
+        return { observed: true };
       },
-    }),
-    createRuntimeLoopController({
+    },
+    {
+      id: "recovery-decision-applier",
       intervalMs: input.recoveryIntervalMs,
       runOnce: async () => {
+        let appliedDecisions = 0;
         while (await recoveryDecisionApplier.applyNext()) {
           // Drain all currently applicable decisions before waiting for the next tick.
+          appliedDecisions += 1;
         }
+        return { appliedDecisions };
       },
-    }),
-  ]);
+    },
+  ];
 }
 
 export function createRuntimeLoopController(input: {
