@@ -21,13 +21,16 @@ export async function reconcileExecutorBindingsPg(db: SouthstarDb, input: {
   tork: TorkObservationClient;
   actionMode?: "observe" | "auto";
   now?: string;
+  runId?: string;
+  bindingId?: string;
 }): Promise<ExecutorReconcileResultPg> {
   const now = input.now ?? new Date().toISOString();
-  const runIds = await executorBindingRunIds(db);
+  const runIds = input.runId ? [input.runId] : await executorBindingRunIds(db);
   const findings: ExecutorReconcileFindingPg[] = [];
 
   for (const runId of runIds) {
-    const bindings = await listExecutorBindingsForRunPg(db, runId);
+    const bindings = (await listExecutorBindingsForRunPg(db, runId))
+      .filter((binding) => !input.bindingId || binding.id === input.bindingId);
     for (const binding of bindings) {
       let observedStatus: string | undefined;
       let logs = "";

@@ -114,6 +114,12 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
       setOptionalQueryNumber(query, "maxCandidates", body.maxCandidates);
       return get(`${baseUrl}/api/v2/memory/search?${query.toString()}`);
     },
+    listExecutions(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/hand-executions`);
+    },
+    getExecution(body: { runId: string; executionId: string }) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/hand-executions/${encodeURIComponent(body.executionId)}`);
+    },
     listLogs(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/logs`);
     },
