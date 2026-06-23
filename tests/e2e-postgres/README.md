@@ -54,6 +54,7 @@ npm run test:e2e:postgres:23   # operator-approved recovery apply
 npm run test:e2e:postgres:24   # provider unreachable apply failure
 npm run test:e2e:postgres:25   # normal managed context/session/memory propagation
 npm run test:e2e:postgres:26   # abnormal managed context/session/memory recovery
+npm run test:e2e:postgres:27   # runtime API completeness across operator surfaces
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
@@ -89,6 +90,7 @@ npm run test:e2e:postgres:26   # abnormal managed context/session/memory recover
 | 24 provider unreachable apply failure | implemented | Provider cancel failure is retained as redacted action evidence while the task is released | redacted provider action, pending task, lost hand, succeeded recovery execution |
 | 25 normal context/session/memory flow | implemented | Downstream task receives prior artifact and run-local memory through managed context | context packet refs, task envelope, completed hands/tasks, accepted artifacts |
 | 26 abnormal context/session/memory recovery | implemented | Consumer Tork/Pi runner validation failure points to the producer artifact, records lineage repair context, resets the session, and rebuilds retry context from checkpoint, producer artifact, and run-local memory | producer hand, failed consumer hand, rejected artifact, `failedArtifactRefs`, `artifact_repair_marker`, `runtime.fault_injected`, session reset, checkpoint refs, memory refs, retry envelope, resolved exception |
+| 27 runtime API completeness | implemented | Operator API covers lifecycle, stream, execution, session, and memory surfaces | run actions, pause command, run summary, execution projection, hand executions, session/run events, SSE stream, memory approval, runtime health/tick |
 
 ## Adding a new case
 

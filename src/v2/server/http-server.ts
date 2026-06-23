@@ -1,4 +1,4 @@
-import { createServer, type IncomingHttpHeaders, type IncomingMessage } from "node:http";
+import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
 import { handleRuntimeRoute } from "./routes.ts";
@@ -27,13 +27,14 @@ export async function createSouthstarRuntimeServer(input: CreateSouthstarRuntime
   const host = input.host ?? "127.0.0.1";
   const context: RuntimeServerContext = { ...input };
   const runtimeLoops = createDefaultRuntimeLoops(context);
+  const activeResponses = new Set<ServerResponse>();
   const server = createServer(async (incoming, outgoing) => {
+    activeResponses.add(outgoing);
+    outgoing.once("close", () => activeResponses.delete(outgoing));
     try {
       const request = await toRequest(incoming);
       const response = await handleRuntimeRoute(context, request);
-      outgoing.statusCode = response.status;
-      response.headers.forEach((value, key) => outgoing.setHeader(key, value));
-      outgoing.end(Buffer.from(await response.arrayBuffer()));
+      await writeResponse(outgoing, response);
     } catch (error) {
       outgoing.statusCode = 500;
       outgoing.setHeader("content-type", "application/json");
@@ -53,11 +54,67 @@ export async function createSouthstarRuntimeServer(input: CreateSouthstarRuntime
     url,
     close: async () => {
       await runtimeLoops?.stop();
+      for (const response of activeResponses) response.destroy();
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });
     },
   };
+}
+
+async function writeResponse(outgoing: ServerResponse, response: Response): Promise<void> {
+  outgoing.statusCode = response.status;
+  response.headers.forEach((value, key) => outgoing.setHeader(key, value));
+  if (!response.body) {
+    outgoing.end();
+    return;
+  }
+
+  const reader = response.body.getReader();
+  let outgoingClosed = false;
+  const onClose = () => {
+    outgoingClosed = true;
+    void reader.cancel().catch(() => undefined);
+  };
+  outgoing.once("close", onClose);
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done || outgoingClosed) break;
+      await writeChunk(outgoing, chunk.value);
+    }
+  } finally {
+    outgoing.off("close", onClose);
+    reader.releaseLock();
+  }
+  if (!outgoingClosed && !outgoing.writableEnded) outgoing.end();
+}
+
+async function writeChunk(outgoing: ServerResponse, chunk: Uint8Array): Promise<void> {
+  if (outgoing.destroyed || outgoing.writableEnded) return;
+  if (outgoing.write(chunk)) return;
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      outgoing.off("drain", onDrain);
+      outgoing.off("error", onError);
+      outgoing.off("close", onClose);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = (error: Error) => {
+      cleanup();
+      reject(error);
+    };
+    const onClose = () => {
+      cleanup();
+      resolve();
+    };
+    outgoing.once("drain", onDrain);
+    outgoing.once("error", onError);
+    outgoing.once("close", onClose);
+  });
 }
 
 function createDefaultRuntimeLoops(context: RuntimeServerContext): RuntimeLoopController | undefined {

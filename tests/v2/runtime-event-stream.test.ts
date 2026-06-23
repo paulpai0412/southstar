@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
+import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createRuntimeEventStreamResponse } from "../../src/v2/server/runtime-event-stream.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { appendHistoryEventPg, createWorkflowRunPg } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -248,6 +249,32 @@ test("runtime event stream closes immediately when request is already aborted", 
   assert.notEqual(read, undefined);
   assert.equal(read!.done, true);
   assert.equal(queryCalls, 0);
+});
+
+test("runtime HTTP server close terminates active event streams", async () => {
+  const db = await createTestPostgresDb();
+  const server = await createSouthstarRuntimeServer(context(db));
+  let serverClosed = false;
+  try {
+    await seedRun(db, "run-runtime-event-http-close");
+    const response = await fetch(`${server.url}/api/v2/runs/run-runtime-event-http-close/events/stream?closeOnTerminal=false&pollMs=10&heartbeatMs=1000`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "text/event-stream");
+    assert.ok(response.body);
+
+    const closed = await Promise.race([
+      server.close().then(() => {
+        serverClosed = true;
+        return true;
+      }),
+      sleep(1000).then(() => false),
+    ]);
+    assert.equal(closed, true);
+    await response.body.cancel().catch(() => undefined);
+  } finally {
+    if (!serverClosed) await server.close();
+    await db.close();
+  }
 });
 
 function context(db: SouthstarDb) {
