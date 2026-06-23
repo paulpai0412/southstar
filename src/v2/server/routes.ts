@@ -9,6 +9,7 @@ import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-a
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-control-center.ts";
+import { envelopeReadModel } from "../read-models/envelope.ts";
 import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read-models/postgres-core.ts";
 import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from "../read-models/postgres-run-inspection.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
@@ -241,6 +242,13 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       const taskId = readModelMatch[3] ? decodeURIComponent(readModelMatch[3]) : undefined;
       if (kind === "evolution-control-center") return json("read-model", await buildEvolutionControlCenterReadModel(context.db));
       if (kind === "run-inspection") return json("read-model", await buildRunInspectionReadModelPg(context.db, runId));
+      if (kind === "exceptions") {
+        return json("read-model", envelopeReadModel({
+          schemaVersion: "southstar.read_model.exceptions.v1",
+          kind,
+          data: await buildRuntimeExceptionReadModelPg(context.db, { runId }),
+        }));
+      }
       if (isPostgresCoreReadModelKind(kind)) return json("read-model", await buildPostgresCoreReadModel(context.db, { kind, runId, taskId }));
       throw new Error(`unsupported read model kind: ${kind}`);
     }
@@ -666,7 +674,7 @@ function errorResponse(error: string, status: number): Response {
 }
 
 function isReadModelKind(kind: string): kind is ReadModelKind {
-  return ["run-inspection", "runtime-monitor", "workflow-canvas", "executor-ops", "task-detail", "sessions-memory", "vault-mcp", "evolution-control-center"].includes(kind);
+  return ["run-inspection", "run-summary", "executions", "exceptions", "runtime-monitor", "workflow-canvas", "executor-ops", "task-detail", "sessions-memory", "vault-mcp", "evolution-control-center"].includes(kind);
 }
 
 function corsHeaders(): Record<string, string> {

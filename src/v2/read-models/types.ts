@@ -1,5 +1,8 @@
 export type ReadModelKind =
   | "run-inspection"
+  | "run-summary"
+  | "executions"
+  | "exceptions"
   | "runtime-monitor"
   | "workflow-canvas"
   | "executor-ops"

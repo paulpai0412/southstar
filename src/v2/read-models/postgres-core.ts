@@ -1,9 +1,14 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { envelopeReadModel } from "./envelope.ts";
+import { listExecutionProjectionsPg } from "./executions.ts";
 import type { ReadModelInput, ReadModelKind } from "./types.ts";
 
 export async function buildPostgresCoreReadModel(db: SouthstarDb, input: ReadModelInput) {
   switch (input.kind) {
+    case "run-summary":
+      return envelopeReadModel({ schemaVersion: "southstar.read_model.run_summary.v1", kind: input.kind, data: await runSummary(db, input.runId) });
+    case "executions":
+      return envelopeReadModel({ schemaVersion: "southstar.read_model.executions.v1", kind: input.kind, data: { runId: input.runId, executions: await listExecutionProjectionsPg(db, input.runId) } });
     case "workflow-canvas":
       return envelopeReadModel({ schemaVersion: "southstar.read_model.workflow_canvas.v1", kind: input.kind, data: await workflowCanvas(db, input.runId) });
     case "runtime-monitor":
@@ -23,7 +28,31 @@ export async function buildPostgresCoreReadModel(db: SouthstarDb, input: ReadMod
 }
 
 export function isPostgresCoreReadModelKind(kind: ReadModelKind): boolean {
-  return ["workflow-canvas", "runtime-monitor", "executor-ops", "task-detail", "sessions-memory", "vault-mcp"].includes(kind);
+  return ["run-summary", "executions", "workflow-canvas", "runtime-monitor", "executor-ops", "task-detail", "sessions-memory", "vault-mcp"].includes(kind);
+}
+
+async function runSummary(db: SouthstarDb, runId: string) {
+  const run = await db.maybeOne<{ id: string; status: string; domain: string | null; goal_prompt: string }>(
+    "select id, status, domain, goal_prompt from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  if (!run) throw new Error(`run not found: ${runId}`);
+  const counts = await db.query<{ status: string; count: string | number }>(
+    `select status, count(*) as count
+       from southstar.workflow_tasks
+      where run_id = $1
+      group by status
+      order by status`,
+    [runId],
+  );
+  return {
+    runId: run.id,
+    status: run.status,
+    rawStatus: run.status,
+    ...(run.domain ? { domain: run.domain } : {}),
+    goalPrompt: run.goal_prompt,
+    taskCounts: Object.fromEntries(counts.rows.map((row) => [row.status, Number(row.count)])),
+  };
 }
 
 async function workflowCanvas(db: SouthstarDb, runId: string) {
