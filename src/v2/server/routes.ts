@@ -20,6 +20,7 @@ import { materializeRunFromWorkItemPg } from "../work-items/run-materialization.
 import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
 import { handleEvolutionRoute } from "./evolution-routes.ts";
 import { handleRunLifecycleRoute } from "./run-lifecycle-routes.ts";
+import { handleMemoryRoute } from "./memory-routes.ts";
 import { handleSessionRoute } from "./session-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
 import { handleUiRoute } from "./ui-routes.ts";
@@ -44,6 +45,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (runLifecycleResponse) return runLifecycleResponse;
     const sessionResponse = await handleSessionRoute(context, request, url);
     if (sessionResponse) return sessionResponse;
+    const memoryResponse = await handleMemoryRoute(context, request, url);
+    if (memoryResponse) return memoryResponse;
 
     if (request.method === "POST" && url.pathname === "/api/v2/work-items/intake") {
       const body = await readJsonBody<{

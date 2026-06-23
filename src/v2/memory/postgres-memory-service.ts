@@ -26,10 +26,41 @@ export type ApproveMemoryDeltaInput = {
   reason: string;
 };
 
+export type RejectMemoryDeltaInput = {
+  deltaId: string;
+  rejectedBy: string;
+  reason: string;
+};
+
 export type InvalidateRunLocalMemoryInput = {
   runId: string;
   sourceRefs: string[];
   reason: string;
+};
+
+export type MemoryDeltaSummary = {
+  id: string;
+  resourceKey: string;
+  taskId?: string;
+  sessionId?: string;
+  status: string;
+  scope: string;
+  kind: string;
+  text: string;
+  tags: string[];
+  sourceRefs: string[];
+  confidence: number;
+  successScore: number;
+  sourceRunId?: string;
+  sourceTaskId?: string;
+  sourceSessionId?: string;
+  approvedBy?: string;
+  approvedAt?: string;
+  approvalReason?: string;
+  rejectedBy?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
+  createdAt: string;
 };
 
 type MemoryPayload = {
@@ -46,6 +77,9 @@ type MemoryPayload = {
   approvedBy?: string;
   approvedAt?: string;
   approvalReason?: string;
+  rejectedBy?: string;
+  rejectedAt?: string;
+  rejectionReason?: string;
   invalidatedAt?: string;
   invalidationReason?: string;
 };
@@ -154,7 +188,7 @@ export async function approveMemoryDeltaPg(db: SouthstarDb, input: ApproveMemory
            payload_json = $1::jsonb,
            updated_at = now()
        where id = $2 and resource_type = 'memory_delta'`,
-      [JSON.stringify({ ...deltaPayload, approvedMemoryItemId: memoryItemId, approvedBy: input.approvedBy, approvedAt: now, approvalReason: input.reason }), input.deltaId],
+      [JSON.stringify({ ...approvedPayload, approvedMemoryItemId: memoryItemId }), input.deltaId],
     );
     await appendMemoryHistory(tx, delta.run_id ?? "global", delta.task_id ?? undefined, delta.session_id ?? undefined, "memory.delta_approved", input.deltaId, {
       memoryItemId,
@@ -163,6 +197,46 @@ export async function approveMemoryDeltaPg(db: SouthstarDb, input: ApproveMemory
     });
     return { deltaId: input.deltaId, memoryItemId };
   });
+}
+
+export async function rejectMemoryDeltaPg(db: SouthstarDb, input: RejectMemoryDeltaInput): Promise<{ deltaId: string; status: "rejected" }> {
+  return await db.tx(async (tx) => {
+    const delta = await tx.maybeOne<MemoryResourceRow>(
+      "select * from southstar.runtime_resources where resource_type = 'memory_delta' and id = $1 for update",
+      [input.deltaId],
+    );
+    if (!delta) throw new Error(`memory delta not found: ${input.deltaId}`);
+    if (delta.status === "rejected") return { deltaId: input.deltaId, status: "rejected" };
+    if (delta.status !== "pending_approval") throw new Error(`memory delta is not rejectable: ${delta.status}`);
+
+    const deltaPayload = parseMemoryPayload(delta.payload_json);
+    const now = new Date().toISOString();
+    await tx.query(
+      `update southstar.runtime_resources
+       set status = 'rejected',
+           payload_json = $1::jsonb,
+           updated_at = now()
+       where id = $2 and resource_type = 'memory_delta'`,
+      [JSON.stringify({ ...deltaPayload, rejectedBy: input.rejectedBy, rejectedAt: now, rejectionReason: input.reason }), input.deltaId],
+    );
+    await appendMemoryHistory(tx, delta.run_id ?? "global", delta.task_id ?? undefined, delta.session_id ?? undefined, "memory.delta_rejected", input.deltaId, {
+      rejectedBy: input.rejectedBy,
+      reason: input.reason,
+    });
+    return { deltaId: input.deltaId, status: "rejected" };
+  });
+}
+
+export async function listRunMemoryDeltasPg(db: SouthstarDb, runId: string): Promise<MemoryDeltaSummary[]> {
+  const rows = await db.query<MemoryResourceRow>(
+    `select id, resource_key, run_id, task_id, session_id, scope, status, payload_json, created_at
+       from southstar.runtime_resources
+      where resource_type = 'memory_delta'
+        and run_id = $1
+      order by created_at, resource_key`,
+    [runId],
+  );
+  return rows.rows.map(memoryDeltaSummary);
 }
 
 export async function invalidateRunLocalMemoryPg(db: SouthstarDb, input: InvalidateRunLocalMemoryInput): Promise<{ invalidatedIds: string[] }> {
@@ -286,6 +360,34 @@ function toCandidate(row: MemoryResourceRow, query: string): ContextMemoryCandid
   };
 }
 
+function memoryDeltaSummary(row: MemoryResourceRow): MemoryDeltaSummary {
+  const payload = parseMemoryPayload(row.payload_json);
+  return {
+    id: row.id,
+    resourceKey: row.resource_key,
+    taskId: row.task_id ?? payload.sourceTaskId,
+    sessionId: row.session_id ?? payload.sourceSessionId,
+    status: row.status,
+    scope: row.scope,
+    kind: payload.kind,
+    text: payload.text,
+    tags: payload.tags,
+    sourceRefs: payload.sourceRefs,
+    confidence: payload.confidence,
+    successScore: payload.successScore,
+    sourceRunId: row.run_id ?? payload.sourceRunId,
+    sourceTaskId: payload.sourceTaskId,
+    sourceSessionId: payload.sourceSessionId,
+    approvedBy: payload.approvedBy,
+    approvedAt: payload.approvedAt,
+    approvalReason: payload.approvalReason,
+    rejectedBy: payload.rejectedBy,
+    rejectedAt: payload.rejectedAt,
+    rejectionReason: payload.rejectionReason,
+    createdAt: dateString(row.created_at),
+  };
+}
+
 function scoreMemory(query: string, payload: MemoryPayload): number {
   const queryTerms = terms(query);
   if (queryTerms.length === 0) return 0;
@@ -315,6 +417,9 @@ function parseMemoryPayload(value: unknown): MemoryPayload {
     approvedBy: stringValue(payload.approvedBy),
     approvedAt: stringValue(payload.approvedAt),
     approvalReason: stringValue(payload.approvalReason),
+    rejectedBy: stringValue(payload.rejectedBy),
+    rejectedAt: stringValue(payload.rejectedAt),
+    rejectionReason: stringValue(payload.rejectionReason),
     invalidatedAt: stringValue(payload.invalidatedAt),
     invalidationReason: stringValue(payload.invalidationReason),
   };
@@ -346,4 +451,8 @@ function stringValue(value: unknown): string | undefined {
 
 function numberValue(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function dateString(value: Date | string): string {
+  return value instanceof Date ? value.toISOString() : value;
 }

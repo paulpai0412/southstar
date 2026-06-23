@@ -24,6 +24,13 @@ type GetSessionEventsRequest = {
   windowBefore?: number;
   windowAfter?: number;
 };
+type SearchMemoryRequest = {
+  runId: string;
+  query: string;
+  scopes: string[];
+  allowedKinds: string[];
+  maxCandidates?: number;
+};
 
 export function createRuntimeServerClient(input: { baseUrl: string }) {
   const baseUrl = input.baseUrl.replace(/\/$/, "");
@@ -85,6 +92,27 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     listMemory(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/memory`);
+    },
+    listMemoryDeltas(runId: string) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/memory-deltas`);
+    },
+    approveMemoryDelta(body: { deltaId: string; approvedBy: string; reason: string }) {
+      return post(`${baseUrl}/api/v2/memory-deltas/${encodeURIComponent(body.deltaId)}/approve`, { approvedBy: body.approvedBy, reason: body.reason });
+    },
+    rejectMemoryDelta(body: { deltaId: string; rejectedBy: string; reason: string }) {
+      return post(`${baseUrl}/api/v2/memory-deltas/${encodeURIComponent(body.deltaId)}/reject`, { rejectedBy: body.rejectedBy, reason: body.reason });
+    },
+    invalidateRunMemory(body: { runId: string; sourceRefs: string[]; reason: string }) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/memory/invalidate`, { sourceRefs: body.sourceRefs, reason: body.reason });
+    },
+    searchMemory(body: SearchMemoryRequest) {
+      const query = new URLSearchParams();
+      query.set("runId", body.runId);
+      query.set("query", body.query);
+      query.set("scopes", body.scopes.join(","));
+      query.set("allowedKinds", body.allowedKinds.join(","));
+      setOptionalQueryNumber(query, "maxCandidates", body.maxCandidates);
+      return get(`${baseUrl}/api/v2/memory/search?${query.toString()}`);
     },
     listLogs(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/logs`);
