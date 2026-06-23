@@ -11,6 +11,7 @@ type RunGoalResult = {
 };
 
 type RunRuntimeCommandRequest = RuntimeCommandRequest & { runId: string };
+type TaskRuntimeCommandRequest = RuntimeCommandRequest & { runId: string; taskId: string };
 type GetSessionEventsRequest = {
   sessionId: string;
   afterSequence?: number;
@@ -59,6 +60,24 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     getTask(body: { runId: string; taskId: string }) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}`);
+    },
+    getTaskActions(body: { runId: string; taskId: string }) {
+      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/actions`);
+    },
+    retryTask(body: TaskRuntimeCommandRequest) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/retry`, runtimeCommandBody(body));
+    },
+    forkTaskSession(body: TaskRuntimeCommandRequest) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/fork-session`, runtimeCommandBody(body));
+    },
+    resetTaskSession(body: TaskRuntimeCommandRequest) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/reset-session`, runtimeCommandBody(body));
+    },
+    rollbackTaskSession(body: TaskRuntimeCommandRequest) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/rollback-session`, runtimeCommandBody(body));
+    },
+    requestTaskRevision(body: TaskRuntimeCommandRequest) {
+      return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/request-revision`, runtimeCommandBody(body));
     },
     listArtifacts(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/artifacts`);
@@ -175,7 +194,7 @@ function requiredTaskId(taskId: string | undefined): string {
   return taskId;
 }
 
-function runtimeCommandBody(body: RunRuntimeCommandRequest): RuntimeCommandRequest {
+function runtimeCommandBody(body: RuntimeCommandRequest): RuntimeCommandRequest {
   return {
     commandId: body.commandId,
     actor: body.actor,

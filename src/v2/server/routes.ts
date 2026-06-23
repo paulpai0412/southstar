@@ -23,6 +23,7 @@ import { handleExecutionRoute } from "./execution-routes.ts";
 import { handleRunLifecycleRoute } from "./run-lifecycle-routes.ts";
 import { handleMemoryRoute } from "./memory-routes.ts";
 import { handleSessionRoute } from "./session-routes.ts";
+import { handleTaskCommandRoute } from "./task-command-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
@@ -51,6 +52,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (memoryResponse) return memoryResponse;
     const executionResponse = await handleExecutionRoute(context, request, url);
     if (executionResponse) return executionResponse;
+    const taskCommandResponse = await handleTaskCommandRoute(context, request, url);
+    if (taskCommandResponse) return taskCommandResponse;
 
     if (request.method === "GET" && url.pathname === "/api/v2/runtime/health") {
       const database = await databaseHealth(context);
