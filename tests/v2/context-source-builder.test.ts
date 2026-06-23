@@ -107,7 +107,7 @@ test("context source builder collects accepted artifacts, session events, checkp
       taskId: "consumer",
       sessionId: "session-consumer",
       scope: "session",
-      status: "created",
+      status: "recorded",
       title: "rollback invalidated producer artifact",
       payload: {
         invalidatedSourceRefs: [artifact.artifactRefId, `memory_item:${runMemory.id}`],

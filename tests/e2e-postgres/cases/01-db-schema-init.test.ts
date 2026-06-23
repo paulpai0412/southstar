@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { Client } from "pg";
 import { createRealPostgresE2E, runSouthstar } from "../postgres-real-harness.ts";
 import { openSouthstarDb } from "../../../src/v2/db/postgres.ts";
+import { SOUTHSTAR_SCHEMA_VERSION } from "../../../src/v2/db/schema.ts";
 
 test("db:init creates southstar schema and runtime refuses uninitialized databases", async () => {
   const env = await createRealPostgresE2E();
@@ -17,7 +18,7 @@ test("db:init creates southstar schema and runtime refuses uninitialized databas
       ["southstar"],
     );
     assert.equal(metadata.schema_name, "southstar");
-    assert.match(metadata.version, /^2026_06_17/);
+    assert.equal(metadata.version, SOUTHSTAR_SCHEMA_VERSION);
     await db.close();
 
     const client = new Client({ connectionString: env.databaseUrl });

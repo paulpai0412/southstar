@@ -83,6 +83,13 @@ test("managed context E2E cases use retrievable memory kinds and typed manifest 
   assert.doesNotMatch(abnormalContextCase, /executionPolicy/);
   assert.match(abnormalContextCase, /effortPolicy/);
   assert.doesNotMatch(abnormalContextCase, /update\s+southstar\.workflow_tasks/i);
+  assert.doesNotMatch(abnormalContextCase, /seedRunningHandAttempt/);
+  assert.match(abnormalContextCase, /SOUTHSTAR_AGENT_RUNNER_FAULT/);
+  assert.match(abnormalContextCase, /producerTaskId/);
+  assert.match(abnormalContextCase, /consumerTaskId/);
+  assert.match(abnormalContextCase, /failedArtifactRefs/);
+  assert.match(abnormalContextCase, /artifact_repair_marker/);
+  assert.match(abnormalContextCase, /runtime\.fault_injected/);
   assert.match(source("tests/e2e-postgres/README.md"), /\| 26 abnormal context\/session\/memory recovery \| implemented \|/);
 });
 

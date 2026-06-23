@@ -69,6 +69,160 @@ test("container runner records runtime fallback metrics when harness omits self-
   assert.equal(result.metrics.durationMs > 0, true);
 });
 
+test("container runner can inject a validation fault after harness execution", async () => {
+  let harnessCalls = 0;
+  const harness: AgentHarness = {
+    id: "pi",
+    async run() {
+      harnessCalls += 1;
+      return {
+        artifact: { summary: "implemented", commandsRun: ["npm test"], risks: [] },
+        progress: ["implemented before runtime fault"],
+        metrics: { tokens: 10 },
+      };
+    },
+  };
+
+  const result = await runTaskEnvelope(envelopeV2(), harness, {
+    requiredFields: ["summary", "commandsRun", "risks"],
+    attemptId: "task-1-attempt-1",
+    runtimeFault: {
+      kind: "validation_missing_fields",
+      fields: ["summary"],
+      attemptIds: ["task-1-attempt-1"],
+      reason: "controlled abnormal E2E first attempt",
+    },
+  });
+
+  assert.equal(harnessCalls, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.artifact.summary, undefined);
+  assert.deepEqual(result.artifact.faultInjected, {
+    kind: "validation_missing_fields",
+    fields: ["summary"],
+    reason: "controlled abnormal E2E first attempt",
+  });
+  assert.equal(result.events.some((event) => event.eventType === "runtime.fault_injected"), true);
+  assert.equal(
+    result.events.some((event) =>
+      event.eventType === "evaluator.completed" &&
+      Array.isArray((event.payload as { missingFields?: unknown }).missingFields) &&
+      ((event.payload as { missingFields: string[] }).missingFields.includes("summary"))
+    ),
+    true,
+  );
+});
+
+test("container runner runtime fault applies to the first repair loop attempt by default", async () => {
+  const retryEnvelope = envelopeV2();
+  retryEnvelope.session.maxRepairAttempts = 2;
+  let harnessCalls = 0;
+  const harness: AgentHarness = {
+    id: "pi",
+    async run(input) {
+      harnessCalls += 1;
+      return input.attempt === 1
+        ? {
+          artifact: { summary: "implemented", commandsRun: ["npm test"], risks: [] },
+          progress: ["first attempt before runtime fault"],
+          metrics: { tokens: 10 },
+        }
+        : {
+          artifact: { summary: "repaired", commandsRun: ["npm test"], risks: [] },
+          progress: ["repair attempt after runtime fault"],
+          metrics: { tokens: 20, retryCount: 1 },
+        };
+    },
+  };
+
+  const result = await runTaskEnvelope(retryEnvelope, harness, {
+    requiredFields: ["summary", "commandsRun", "risks"],
+    attemptId: "task-1-attempt-1",
+    runtimeFault: {
+      kind: "validation_missing_fields",
+      fields: ["summary"],
+      attemptIds: ["task-1-attempt-1"],
+      reason: "controlled first runner attempt failure",
+    },
+  });
+
+  assert.equal(harnessCalls, 2);
+  assert.equal(result.ok, true);
+  assert.equal(result.artifact.summary, "repaired");
+  assert.equal(result.events.filter((event) => event.eventType === "runtime.fault_injected").length, 1);
+});
+
+test("container runner runtime fault removes required fields from nested artifact shapes", async () => {
+  const harness: AgentHarness = {
+    id: "pi",
+    async run() {
+      return {
+        artifact: {
+          implementation_report: {
+            summary: "nested summary",
+            commandsRun: ["npm test"],
+            risks: [],
+          },
+        },
+        progress: ["nested artifact returned"],
+        metrics: { tokens: 10 },
+      };
+    },
+  };
+
+  const result = await runTaskEnvelope(envelopeV2(), harness, {
+    requiredFields: ["summary", "commandsRun", "risks"],
+    attemptId: "task-1-attempt-1",
+    runtimeFault: {
+      kind: "validation_missing_fields",
+      fields: ["summary"],
+      attemptIds: ["task-1-attempt-1"],
+      reason: "nested summary must be removed before validation",
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(((result.artifact.implementation_report as Record<string, unknown>).summary), undefined);
+  assert.equal(result.events.some((event) =>
+    event.eventType === "evaluator.completed" &&
+    ((event.payload as { missingFields?: string[] }).missingFields ?? []).includes("summary")
+  ), true);
+});
+
+test("container runner runtime fault can attach failed upstream artifact refs", async () => {
+  const harness: AgentHarness = {
+    id: "pi",
+    async run() {
+      return {
+        artifact: { summary: "consumer inspected upstream output", commandsRun: ["npm test"], risks: [] },
+        progress: ["consumer finished before upstream lineage fault"],
+        metrics: { tokens: 10 },
+      };
+    },
+  };
+
+  const result = await runTaskEnvelope(envelopeV2(), harness, {
+    requiredFields: ["summary", "commandsRun", "risks"],
+    attemptId: "task-1-attempt-1",
+    runtimeFault: {
+      kind: "validation_missing_fields",
+      fields: ["summary"],
+      attemptIds: ["task-1-attempt-1"],
+      reason: "consumer rejected upstream artifact",
+      failedArtifactRefs: ["artifact-ref-producer-1"],
+    },
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.artifact.failedArtifactRefs, ["artifact-ref-producer-1"]);
+  assert.deepEqual(result.artifact.faultInjected, {
+    kind: "validation_missing_fields",
+    fields: ["summary"],
+    reason: "consumer rejected upstream artifact",
+    failedArtifactRefs: ["artifact-ref-producer-1"],
+  });
+});
+
 function envelope(): TaskEnvelope {
   return {
     schemaVersion: "southstar.task-envelope.v1",

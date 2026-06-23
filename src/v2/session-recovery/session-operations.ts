@@ -27,6 +27,11 @@ export type ApplySessionRecoveryOperationInput = {
   now?: string;
 };
 
+type WorkspaceSnapshotEvidence = {
+  resourceKey: string;
+  status: string;
+};
+
 export type SessionRecoveryOperationResult = {
   status: "succeeded" | "waiting_operator_approval";
   operationId: string;
@@ -35,11 +40,13 @@ export type SessionRecoveryOperationResult = {
   newRootSessionId?: string;
   previousRootSessionId?: string;
   rollbackMarkerRef?: string;
+  workspaceRollbackRef?: string;
   stateChanges: RecoveryExecutionStateChange[];
   providerActions: RecoveryExecutionProviderAction[];
 };
 
 const ROLLBACK_MARKER_SCHEMA_VERSION = "southstar.session_recovery.rollback_marker.v1";
+const WORKSPACE_ROLLBACK_SCHEMA_VERSION = "southstar.session_recovery.workspace_rollback.v1";
 
 export async function applySessionRecoveryOperationPg(
   db: SouthstarDb,
@@ -60,6 +67,7 @@ export async function applySessionRecoveryOperationPg(
   const operationHash = stableHash(input.operationId);
   const newRootSessionId = `root-${input.runId}-${input.taskId}-${input.path}-${operationHash.slice(0, 10)}`;
   const rollbackMarkerRef = input.path === "rollback-session" ? `rollback_marker:${input.operationId}` : undefined;
+  const workspaceRollbackRef = input.path === "rollback-session" ? `workspace_rollback:${input.operationId}` : undefined;
 
   return await db.tx(async (tx) => {
     await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
@@ -85,16 +93,22 @@ export async function applySessionRecoveryOperationPg(
         previousRootSessionId: stringValue(payload.previousRootSessionId) ?? task.root_session_id ?? undefined,
         newRootSessionId: stringValue(payload.newRootSessionId) ?? newRootSessionId,
         rollbackMarkerRef: stringValue(payload.rollbackMarkerRef) ?? rollbackMarkerRef,
+        workspaceRollbackRef: stringValue(payload.workspaceRollbackRef) ?? workspaceRollbackRef,
         stateChanges: sessionOperationStateChanges({
           input,
           taskStatus: stringValue(payload.previousTaskStatus) ?? previousTaskStatus,
           operationResourceKey,
           operationResourceType,
           rollbackMarkerRef: stringValue(payload.rollbackMarkerRef) ?? rollbackMarkerRef,
+          workspaceRollbackRef: stringValue(payload.workspaceRollbackRef) ?? workspaceRollbackRef,
         }),
         providerActions: [],
       };
     }
+
+    const workspaceSnapshotEvidence = input.path === "rollback-session"
+      ? await requireWorkspaceSnapshotEvidencePg(tx, input)
+      : undefined;
 
     if (input.path === "rollback-session" && !input.approved) {
       await upsertRuntimeResourcePg(tx, {
@@ -114,6 +128,7 @@ export async function applySessionRecoveryOperationPg(
           previousRootSessionId: task.root_session_id ?? undefined,
           newRootSessionId,
           rollbackMarkerRef,
+          workspaceSnapshotEvidence,
         }),
         summary: operationSummary(input, now),
       });
@@ -133,6 +148,14 @@ export async function applySessionRecoveryOperationPg(
         input,
         markerRef: requireString(rollbackMarkerRef),
         markerId: `rollback-marker-${operationHash.slice(0, 16)}`,
+        workspaceSnapshotEvidence,
+        now,
+      });
+      await upsertWorkspaceRollbackPg(tx, {
+        input,
+        rollbackRef: requireString(workspaceRollbackRef),
+        markerRef: requireString(rollbackMarkerRef),
+        workspaceSnapshotEvidence: requireValue(workspaceSnapshotEvidence),
         now,
       });
     }
@@ -154,6 +177,8 @@ export async function applySessionRecoveryOperationPg(
         previousRootSessionId: task.root_session_id ?? undefined,
         newRootSessionId,
         rollbackMarkerRef,
+        workspaceRollbackRef,
+        workspaceSnapshotEvidence,
       }),
       summary: operationSummary(input, now),
     });
@@ -183,6 +208,8 @@ export async function applySessionRecoveryOperationPg(
         previousRootSessionId: task.root_session_id ?? undefined,
         newRootSessionId,
         rollbackMarkerRef,
+        workspaceRollbackRef,
+        workspaceSnapshotEvidence,
       }),
     });
 
@@ -194,14 +221,23 @@ export async function applySessionRecoveryOperationPg(
       previousRootSessionId: task.root_session_id ?? undefined,
       newRootSessionId,
       rollbackMarkerRef,
+      workspaceRollbackRef,
       stateChanges: sessionOperationStateChanges({
         input,
         taskStatus: previousTaskStatus,
         operationResourceKey,
         operationResourceType,
         rollbackMarkerRef,
+        workspaceRollbackRef,
       }),
-      providerActions: [],
+      providerActions: workspaceRollbackRef ? [{
+        providerId: "workspace",
+        action: "rollback",
+        status: "succeeded",
+        evidenceRef: workspaceRollbackRef,
+        attemptedAt: now,
+        succeededAt: now,
+      }] : [],
     };
   });
 }
@@ -214,6 +250,8 @@ function operationPayload(
     previousRootSessionId?: string;
     newRootSessionId: string;
     rollbackMarkerRef?: string;
+    workspaceRollbackRef?: string;
+    workspaceSnapshotEvidence?: WorkspaceSnapshotEvidence;
   },
 ): Record<string, unknown> {
   return {
@@ -225,11 +263,13 @@ function operationPayload(
     path: input.path,
     checkpointId: input.checkpointId,
     workspaceSnapshotRef: input.workspaceSnapshotRef,
+    workspaceSnapshotEvidence: input.workspaceSnapshotEvidence,
     invalidatedSourceRefs: input.invalidatedSourceRefs ?? [],
     previousTaskStatus: input.previousTaskStatus,
     previousRootSessionId: input.previousRootSessionId,
     newRootSessionId: input.newRootSessionId,
     rollbackMarkerRef: input.rollbackMarkerRef,
+    workspaceRollbackRef: input.workspaceRollbackRef,
     reason: input.reason,
     appliedAt: input.now,
   };
@@ -241,6 +281,8 @@ function operationHistoryPayload(
     previousRootSessionId?: string;
     newRootSessionId: string;
     rollbackMarkerRef?: string;
+    workspaceRollbackRef?: string;
+    workspaceSnapshotEvidence?: WorkspaceSnapshotEvidence;
   },
 ): Record<string, unknown> {
   return {
@@ -252,7 +294,9 @@ function operationHistoryPayload(
     previousRootSessionId: input.previousRootSessionId,
     newRootSessionId: input.newRootSessionId,
     workspaceSnapshotRef: input.workspaceSnapshotRef,
+    workspaceSnapshotEvidence: input.workspaceSnapshotEvidence,
     rollbackMarkerRef: input.rollbackMarkerRef,
+    workspaceRollbackRef: input.workspaceRollbackRef,
     invalidatedSourceRefs: input.invalidatedSourceRefs ?? [],
     reason: input.reason,
     appliedAt: input.now,
@@ -275,6 +319,7 @@ async function upsertRollbackMarkerPg(
     input: ApplySessionRecoveryOperationInput;
     markerRef: string;
     markerId: string;
+    workspaceSnapshotEvidence?: WorkspaceSnapshotEvidence;
     now: string;
   },
 ): Promise<RuntimeResourceRecord> {
@@ -295,6 +340,7 @@ async function upsertRollbackMarkerPg(
       taskId: input.input.taskId,
       checkpointId: input.input.checkpointId,
       workspaceSnapshotRef: input.input.workspaceSnapshotRef,
+      workspaceSnapshotEvidence: input.workspaceSnapshotEvidence,
       invalidatedSourceRefs: input.input.invalidatedSourceRefs ?? [],
       reason: input.input.reason,
       createdAt: input.now,
@@ -309,14 +355,79 @@ async function upsertRollbackMarkerPg(
   return requireResource(await getResourceByKeyPg(db, "rollback_marker", input.markerRef));
 }
 
+async function upsertWorkspaceRollbackPg(
+  db: SouthstarDb,
+  input: {
+    input: ApplySessionRecoveryOperationInput;
+    rollbackRef: string;
+    markerRef: string;
+    workspaceSnapshotEvidence: WorkspaceSnapshotEvidence;
+    now: string;
+  },
+): Promise<RuntimeResourceRecord> {
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "workspace_rollback",
+    resourceKey: input.rollbackRef,
+    runId: input.input.runId,
+    taskId: input.input.taskId,
+    scope: "workspace",
+    status: "succeeded",
+    title: "Workspace rollback evidence",
+    payload: {
+      schemaVersion: WORKSPACE_ROLLBACK_SCHEMA_VERSION,
+      operationId: input.input.operationId,
+      runId: input.input.runId,
+      taskId: input.input.taskId,
+      workspaceSnapshotRef: input.input.workspaceSnapshotRef,
+      workspaceSnapshotEvidence: input.workspaceSnapshotEvidence,
+      rollbackMarkerRef: input.markerRef,
+      reason: input.input.reason,
+      rolledBackAt: input.now,
+    },
+    summary: {
+      operationId: input.input.operationId,
+      workspaceSnapshotRef: input.input.workspaceSnapshotRef,
+      rollbackMarkerRef: input.markerRef,
+    },
+  });
+  return requireResource(await getResourceByKeyPg(db, "workspace_rollback", input.rollbackRef));
+}
+
+async function requireWorkspaceSnapshotEvidencePg(
+  db: SouthstarDb,
+  input: ApplySessionRecoveryOperationInput,
+): Promise<WorkspaceSnapshotEvidence> {
+  const ref = requireString(input.workspaceSnapshotRef);
+  const resource = await getResourceByKeyPg(db, "workspace_snapshot", ref);
+  if (!resource || resource.runId !== input.runId || resource.taskId !== input.taskId) {
+    throw new Error(`rollback-session workspace snapshot evidence not found: ${ref}`);
+  }
+  if (!["available", "captured", "created", "succeeded"].includes(resource.status)) {
+    throw new Error(`rollback-session workspace snapshot evidence is not usable: ${ref} status=${resource.status}`);
+  }
+  return {
+    resourceKey: resource.resourceKey,
+    status: resource.status,
+  };
+}
+
 function sessionOperationStateChanges(input: {
   input: ApplySessionRecoveryOperationInput;
   taskStatus: string;
   operationResourceKey: string;
   operationResourceType: SessionRecoveryOperationResult["operationResourceType"];
   rollbackMarkerRef?: string;
+  workspaceRollbackRef?: string;
 }): RecoveryExecutionStateChange[] {
   return [
+    ...(input.workspaceRollbackRef
+      ? [{
+        resourceType: "workspace_rollback",
+        resourceKey: input.workspaceRollbackRef,
+        toStatus: "succeeded",
+        reason: input.input.path,
+      }]
+      : []),
     ...(input.rollbackMarkerRef
       ? [{
         resourceType: "rollback_marker",
@@ -370,6 +481,11 @@ function requireString(value: string | undefined): string {
 
 function requireResource(value: RuntimeResourceRecord | null): RuntimeResourceRecord {
   if (!value) throw new Error("runtime resource not found");
+  return value;
+}
+
+function requireValue<T>(value: T | undefined): T {
+  if (value === undefined) throw new Error("required value is missing");
   return value;
 }
 

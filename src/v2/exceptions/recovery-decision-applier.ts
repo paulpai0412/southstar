@@ -1910,7 +1910,9 @@ function isSessionRecoveryBlockableError(message: string, decision: RuntimeRecov
     || message === `runtime exception ${decision.payload.exceptionId} not found`
     || message === `${decision.payload.path} decision missing taskId`
     || message === "rollback-session requires workspaceSnapshotRef"
-    || message === "rollback-session requires operator approval";
+    || message === "rollback-session requires operator approval"
+    || message.startsWith("rollback-session workspace snapshot evidence not found:")
+    || message.startsWith("rollback-session workspace snapshot evidence is not usable:");
 }
 
 function oldHandBindingIdForRecovery(

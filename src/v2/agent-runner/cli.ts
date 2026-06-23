@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "../harness/types.ts";
 import { createPiSdkAgentHarness } from "../harness/pi-sdk-harness.ts";
 import { createBuiltinAgentHarness } from "../harness/builtin-agent-harness.ts";
-import { runTaskEnvelope, type TaskRunResult } from "./task-runner.ts";
+import { runTaskEnvelope, type TaskRunResult, type TaskRunnerRuntimeFault } from "./task-runner.ts";
 import { refreshTaskEnvelopeV2Prompt, type AnyTaskEnvelope } from "./task-envelope.ts";
 
 export async function runAgentRunnerCli(
@@ -20,6 +20,8 @@ export async function runAgentRunnerCli(
       try {
         return await runTaskEnvelope(refreshedEnvelope, createAgentHarness(options, refreshedEnvelope), {
           requiredFields: options.requiredFields ?? requiredFieldsFromEnvelope(refreshedEnvelope),
+          runtimeFault: options.runtimeFault,
+          attemptId: options.attemptId,
         });
       } finally {
         stopHeartbeat();
@@ -65,6 +67,7 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
     materializationRoot: flagValue(argv, "--materialization-root") ?? env.SOUTHSTAR_MATERIALIZATION_ROOT,
     harnessTimeoutMs: numberFromEnv(flagValue(argv, "--harness-timeout-ms") ?? env.SOUTHSTAR_HARNESS_TIMEOUT_MS),
     contextRefreshUrl: flagValue(argv, "--context-refresh-url") ?? env.SOUTHSTAR_CONTEXT_REFRESH_URL,
+    runtimeFault: parseRuntimeFault(flagValue(argv, "--runtime-fault") ?? env.SOUTHSTAR_AGENT_RUNNER_FAULT),
   };
 }
 
@@ -228,6 +231,35 @@ function numberFromEnv(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+function parseRuntimeFault(value: string | undefined): TaskRunnerRuntimeFault | undefined {
+  if (!value) return undefined;
+  const parsed = JSON.parse(value) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("runtime fault must be a JSON object");
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.kind !== "validation_missing_fields") {
+    throw new Error("runtime fault kind must be validation_missing_fields");
+  }
+  if (!Array.isArray(record.fields) || record.fields.some((field) => typeof field !== "string" || field.length === 0)) {
+    throw new Error("runtime fault fields must be a non-empty string array");
+  }
+  return {
+    kind: "validation_missing_fields",
+    fields: [...new Set(record.fields)],
+    ...(Array.isArray(record.failedArtifactRefs) ? { failedArtifactRefs: uniqueStringArray(record.failedArtifactRefs, "runtime fault failedArtifactRefs") } : {}),
+    ...(Array.isArray(record.attemptIds) ? { attemptIds: uniqueStringArray(record.attemptIds, "runtime fault attemptIds") } : {}),
+    ...(typeof record.reason === "string" && record.reason.length > 0 ? { reason: record.reason } : {}),
+  };
+}
+
+function uniqueStringArray(value: unknown[], label: string): string[] {
+  if (value.some((item) => typeof item !== "string" || item.length === 0)) {
+    throw new Error(`${label} must be a string array`);
+  }
+  return [...new Set(value as string[])];
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

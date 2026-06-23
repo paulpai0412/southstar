@@ -40,6 +40,7 @@ export type ArtifactRefPayload = {
   contentRef?: ArtifactContentRef;
   contractRefs: string[];
   summary: string;
+  failedArtifactRefs?: string[];
   evidenceRefs: string[];
   evaluatorResultRefs: string[];
   sourceEventRefs: string[];

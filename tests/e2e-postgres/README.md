@@ -88,7 +88,7 @@ npm run test:e2e:postgres:26   # abnormal managed context/session/memory recover
 | 23 operator-approved recovery apply | implemented | Operator approval gates an operator-required recovery decision before apply | skipped pre-approval apply, approval resource/history, blocked task/execution after approval |
 | 24 provider unreachable apply failure | implemented | Provider cancel failure is retained as redacted action evidence while the task is released | redacted provider action, pending task, lost hand, succeeded recovery execution |
 | 25 normal context/session/memory flow | implemented | Downstream task receives prior artifact and run-local memory through managed context | context packet refs, task envelope, completed hands/tasks, accepted artifacts |
-| 26 abnormal context/session/memory recovery | implemented | Failed validation resets the session and rebuilds retry context from checkpoint and run-local memory | rejected artifact, session reset, checkpoint refs, memory refs, retry envelope, resolved exception |
+| 26 abnormal context/session/memory recovery | implemented | Consumer Tork/Pi runner validation failure points to the producer artifact, records lineage repair context, resets the session, and rebuilds retry context from checkpoint, producer artifact, and run-local memory | producer hand, failed consumer hand, rejected artifact, `failedArtifactRefs`, `artifact_repair_marker`, `runtime.fault_injected`, session reset, checkpoint refs, memory refs, retry envelope, resolved exception |
 
 ## Adding a new case
 

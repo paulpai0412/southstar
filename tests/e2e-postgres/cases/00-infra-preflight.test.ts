@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { initializeSouthstarSchema } from "../../../src/v2/db/init.ts";
 import { openSouthstarDb } from "../../../src/v2/db/postgres.ts";
+import { SOUTHSTAR_SCHEMA_VERSION } from "../../../src/v2/db/schema.ts";
 import { createRealPostgresE2E, probeRealPostgresTorkPi, requireRealPostgresInfra } from "../postgres-real-harness.ts";
 
 // This case is intentionally real and fail-closed. It proves the minimum shared
@@ -20,7 +21,7 @@ test("00 infra preflight: real Postgres schema, Tork, and Pi endpoints are reach
         ["southstar"],
       );
       assert.equal(metadata.schema_name, "southstar");
-      assert.match(metadata.version, /^2026_06_17/);
+      assert.equal(metadata.version, SOUTHSTAR_SCHEMA_VERSION);
     } finally {
       await db.close();
     }

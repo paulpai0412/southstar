@@ -20,6 +20,7 @@ export type ArtifactRefWriteInput = {
   content: unknown;
   contractRefs: string[];
   summary: string;
+  failedArtifactRefs?: string[];
   evidenceRefs?: string[];
   evaluatorResultRefs?: string[];
   sourceEventRefs?: string[];
@@ -147,6 +148,7 @@ function buildArtifactRefPayload(
     },
     contractRefs: values.contractRefs,
     summary: input.summary,
+    ...(input.failedArtifactRefs && input.failedArtifactRefs.length > 0 ? { failedArtifactRefs: [...input.failedArtifactRefs] } : {}),
     evidenceRefs: input.evidenceRefs ?? [],
     evaluatorResultRefs: input.evaluatorResultRefs ?? [],
     sourceEventRefs: input.sourceEventRefs ?? [],

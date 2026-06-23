@@ -340,13 +340,19 @@ export async function waitForExecutorBindingStatus(db: SouthstarDb, bindingId: s
   throw new Error(`executor binding ${bindingId} did not reach ${statuses.join("/")} within ${timeoutMs}ms`);
 }
 
-export async function waitForTorkJob(baseUrl: string, jobId: string, timeoutMs = 20 * 60 * 1000): Promise<void> {
+export async function waitForTorkJob(
+  baseUrl: string,
+  jobId: string,
+  timeoutMs = 20 * 60 * 1000,
+  terminalStatuses: string[] = ["completed", "succeeded", "success", "passed"],
+): Promise<string> {
   const deadline = Date.now() + timeoutMs;
   const client = new TorkClient({ baseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
+  const acceptedStatuses = new Set(terminalStatuses.map((status) => status.toLowerCase()));
   while (Date.now() < deadline) {
     const observed = await client.getJobObservation(jobId);
     const status = observed.status.toLowerCase();
-    if (["completed", "succeeded", "success", "passed"].includes(status)) return;
+    if (acceptedStatuses.has(status)) return status;
     if (["failed", "errored", "error", "cancelled", "canceled"].includes(status)) throw new Error(`Tork job ${jobId} ended with ${status}`);
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }

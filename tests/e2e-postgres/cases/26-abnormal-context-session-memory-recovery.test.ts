@@ -11,6 +11,7 @@ import {
   listHistoryForRunPg,
   listResourcesPg,
   type RuntimeResourceRecord,
+  updateWorkflowManifestPg,
 } from "../../../src/v2/stores/postgres-runtime-store.ts";
 import {
   createInitializedRealPostgresE2E,
@@ -24,16 +25,17 @@ import {
   createRealRecoveryScheduler,
   firstAttemptId,
   latestHandExecutionForTask,
-  seedRunningHandAttempt,
   waitForHandExecutionStatus,
 } from "../recovery-scheduler-helpers.ts";
 
 type ContextPacketPayload = {
   id?: string;
   executionAttempt?: number;
+  priorArtifacts?: unknown[];
   checkpointSummary?: { sourceRef?: string };
   selectedMemories?: Array<{ sourceRef?: string }>;
   managedSourceRefs?: {
+    artifactRefs?: string[];
     checkpointRefs?: string[];
     memoryRefs?: string[];
   };
@@ -53,57 +55,74 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
   const server = await createRealRuntimeServer({ db: env.db, infra });
   try {
     const runId = "real-abnormal-context-session-memory-recovery";
+    const producerTaskId = "produce-context-artifact";
     const taskId = "repair-context-artifact";
-    await seedRun(env.db, { runId, taskId });
+    await seedRun(env.db, { runId, producerTaskId, consumerTaskId: taskId });
 
     const scheduler = createRealRecoveryScheduler(env.db, {
       infra,
       callbackBase: dockerReachableUrl(server, infra),
     });
 
-    const initialSessionId = `root-${runId}-${taskId}`;
     const initialAttemptId = firstAttemptId(taskId);
-    const initialHandExecutionId = await seedRunningHandAttempt(env.db, {
-      runId,
-      taskId,
-      sessionId: initialSessionId,
-      attemptId: initialAttemptId,
-    });
-    const firstTask = await taskRow(env.db, { runId, taskId });
-    assert.equal(firstTask.status, "running");
-    assert.equal(firstTask.root_session_id, initialSessionId);
+    const firstDispatch = await scheduler.runOnce({ runId });
+    assert.deepEqual(firstDispatch.dispatchedTaskIds, [producerTaskId]);
 
-    await api(server.port, "/api/v2/tork/callback", {
-      method: "POST",
-      body: JSON.stringify({
-        runId,
-        taskId,
-        rootSessionId: firstTask.root_session_id,
-        ok: false,
-        attempts: 1,
-        attemptId: initialAttemptId,
-        artifact: {
-          kind: "validation_report",
-          summary: "Validator rejected the producer artifact because command evidence was absent.",
-          failedArtifactRefs: [initialHandExecutionId],
-        },
-        metrics: { durationMs: 1, toolCalls: 0, retryCount: 0, tokens: 1, costMicrosUsd: 1 },
-        events: [{
-          eventType: "validator.finding",
-          actorType: "evaluator",
-          sessionId: firstTask.root_session_id,
-          payload: { failedHandExecutionId: initialHandExecutionId },
-        }],
-        receivedAt: "2026-06-22T02:00:00.000Z",
-      }),
+    const producerHand = await latestHandExecutionForTask(env.db, { runId, taskId: producerTaskId });
+    assert.doesNotMatch(producerHand.externalJobId, /^seeded-/);
+    await waitForTorkJob(infra.torkBaseUrl, producerHand.externalJobId);
+    const producerHandStatus = await waitForHandExecutionStatus(env.db, producerHand.resourceKey, ["completed", "failed"]);
+    assert.equal(producerHandStatus, "completed");
+
+    const producerTask = await taskRow(env.db, { runId, taskId: producerTaskId });
+    assert.equal(producerTask.status, "completed");
+    assert.ok(producerTask.root_session_id);
+
+    const producerArtifact = await latestArtifact(env.db, {
+      runId,
+      taskId: producerTaskId,
+      status: "accepted",
     });
+    assert.equal((producerArtifact.payload as { handExecutionId?: string }).handExecutionId, producerHand.resourceKey);
+
+    await updateConsumerRuntimeFault(env.db, {
+      runId,
+      producerTaskId,
+      consumerTaskId: taskId,
+      failedArtifactRef: producerArtifact.resourceKey,
+    });
+
+    const consumerDispatch = await scheduler.runOnce({ runId });
+    assert.deepEqual(consumerDispatch.dispatchedTaskIds, [taskId]);
+
+    const firstHand = await latestHandExecutionForTask(env.db, { runId, taskId });
+    assert.equal(firstHand.attemptId, initialAttemptId);
+    assert.doesNotMatch(firstHand.externalJobId, /^seeded-/);
+    await waitForTorkJob(infra.torkBaseUrl, firstHand.externalJobId, undefined, ["failed"]);
+    const firstHandStatus = await waitForHandExecutionStatus(env.db, firstHand.resourceKey, ["completed", "failed"]);
+    assert.equal(firstHandStatus, "failed");
+
+    const firstTask = await taskRow(env.db, { runId, taskId });
+    assert.equal(firstTask.status, "failed");
+    assert.ok(firstTask.root_session_id);
 
     const rejectedArtifact = await latestArtifact(env.db, {
       runId,
       taskId,
       status: "rejected",
     });
-    assert.notEqual(rejectedArtifact.resourceKey, initialHandExecutionId);
+    assert.notEqual(rejectedArtifact.resourceKey, firstHand.resourceKey);
+    assert.equal((rejectedArtifact.payload as { handExecutionId?: string }).handExecutionId, firstHand.resourceKey);
+    assert.deepEqual((rejectedArtifact.payload as { failedArtifactRefs?: string[] }).failedArtifactRefs, [producerArtifact.resourceKey]);
+
+    const repairMarker = await artifactRepairMarkerForArtifact(env.db, {
+      runId,
+      producerTaskId,
+      artifactRefId: producerArtifact.resourceKey,
+    });
+    assert.equal(repairMarker.status, "open");
+    assert.equal((repairMarker.payload as { consumerTaskId?: string }).consumerTaskId, taskId);
+    assert.equal((repairMarker.payload as { rejectedArtifactRefId?: string }).rejectedArtifactRefId, rejectedArtifact.resourceKey);
 
     const checkpointResourceKey = `checkpoint:${runId}:${taskId}:before-recovery`;
     await createPostgresSessionStore(env.db).createCheckpoint({
@@ -142,7 +161,7 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
       taskId,
       sessionId: firstTask.root_session_id,
       attemptId: initialAttemptId,
-      handExecutionId: initialHandExecutionId,
+      handExecutionId: firstHand.resourceKey,
       source: "callback",
       kind: "validation_failed",
       severity: "recoverable",
@@ -179,8 +198,10 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
 
     const retryContext = await latestContextPacket(env.db, { runId, taskId });
     assert.equal(retryContext.executionAttempt, 2);
+    assert.equal((retryContext.priorArtifacts?.length ?? 0) > 0, true);
     assert.equal(retryContext.checkpointSummary?.sourceRef, checkpointResourceKey);
     assert.equal((retryContext.selectedMemories?.length ?? 0) > 0, true);
+    assert.equal(retryContext.managedSourceRefs?.artifactRefs?.includes(producerArtifact.resourceKey), true);
     assert.equal(retryContext.managedSourceRefs?.checkpointRefs?.includes(checkpointResourceKey), true);
     assert.equal(retryContext.managedSourceRefs?.memoryRefs?.includes(memoryRef), true);
 
@@ -212,16 +233,17 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
     assert.equal(rejectedArtifacts.some((artifact) => artifact.resourceKey === rejectedArtifact.resourceKey), true);
     assert.equal(rejectedArtifacts.some((artifact) => {
       const payload = artifact.payload as { handExecutionId?: string };
-      return payload.handExecutionId === initialHandExecutionId;
+      return payload.handExecutionId === firstHand.resourceKey;
     }), true);
 
     assert.equal((await latestResource(env.db, { runId, taskId, resourceType: "recovery_execution" })).status, "succeeded");
     assert.equal((await latestResource(env.db, { runId, taskId, resourceType: "runtime_exception" })).status, "resolved");
 
     const history = await listHistoryForRunPg(env.db, runId);
-    for (const eventType of ["checkpoint.created", "session.reset", "task.dispatch_submitted", "executor.callback_received"]) {
+    for (const eventType of ["runtime.fault_injected", "checkpoint.created", "session.reset", "task.dispatch_submitted", "executor.callback_received"]) {
       assert.equal(history.some((event) => event.taskId === taskId && event.eventType === eventType), true);
     }
+    assert.equal(history.some((event) => event.taskId === producerTaskId && event.eventType === "artifact.repair_marker_recorded"), true);
   } finally {
     await server.close();
     await env.close();
@@ -230,7 +252,7 @@ test("26 abnormal context/session/memory recovery: validator failure rebuilds pr
 
 async function seedRun(
   db: SouthstarDb,
-  input: { runId: string; taskId: string },
+  input: { runId: string; producerTaskId: string; consumerTaskId: string },
 ): Promise<void> {
   const manifest = workflowManifest(input);
   await createWorkflowRunPg(db, {
@@ -245,16 +267,28 @@ async function seedRun(
     metricsJson: JSON.stringify({}),
   });
   await createWorkflowTaskPg(db, {
-    id: input.taskId,
+    id: input.producerTaskId,
     runId: input.runId,
-    taskKey: input.taskId,
+    taskKey: input.producerTaskId,
     status: "pending",
     sortOrder: 1,
     dependsOn: [],
   });
+  await createWorkflowTaskPg(db, {
+    id: input.consumerTaskId,
+    runId: input.runId,
+    taskKey: input.consumerTaskId,
+    status: "pending",
+    sortOrder: 2,
+    dependsOn: [input.producerTaskId],
+  });
 }
 
-function workflowManifest(input: { taskId: string }): SouthstarWorkflowManifest {
+function workflowManifest(input: {
+  producerTaskId: string;
+  consumerTaskId: string;
+  consumerFault?: { failedArtifactRef: string };
+}): SouthstarWorkflowManifest {
   return {
     schemaVersion: "southstar.v2",
     workflowId: "wf-abnormal-context-session-memory-recovery",
@@ -262,7 +296,10 @@ function workflowManifest(input: { taskId: string }): SouthstarWorkflowManifest 
     goalPrompt: "abnormal managed context session memory recovery",
     domain: "software",
     intent: "implement_feature",
-    tasks: [workflowTask(input.taskId)],
+    tasks: [
+      workflowTask(input.producerTaskId, "Produce abnormal managed context artifact", []),
+      workflowTask(input.consumerTaskId, "Repair abnormal managed context artifact", [input.producerTaskId], input.consumerFault),
+    ],
     harnessDefinitions: [{
       id: "pi",
       kind: "pi-agent",
@@ -296,14 +333,19 @@ function workflowManifest(input: { taskId: string }): SouthstarWorkflowManifest 
   };
 }
 
-function workflowTask(id: string): SouthstarWorkflowManifest["tasks"][number] {
+function workflowTask(
+  id: string,
+  name: string,
+  dependsOn: string[],
+  fault?: { failedArtifactRef: string },
+): SouthstarWorkflowManifest["tasks"][number] {
   return {
     id,
-    name: "Repair abnormal managed context artifact",
+    name,
     domain: "software",
     roleRef: "maker",
     agentProfileRef: "software-maker-pi",
-    dependsOn: [],
+    dependsOn,
     requiredArtifactRefs: ["implementation_report"],
     evaluatorPipelineRef: "software-feature-quality",
     contextPolicyRef: "software-context-default",
@@ -312,7 +354,15 @@ function workflowTask(id: string): SouthstarWorkflowManifest["tasks"][number] {
       engine: "tork",
       image: "southstar/pi-agent:local",
       command: ["southstar-agent-runner"],
-      env: {},
+      env: fault ? {
+        SOUTHSTAR_AGENT_RUNNER_FAULT: JSON.stringify({
+          kind: "validation_missing_fields",
+          fields: ["summary"],
+          attemptIds: [firstAttemptId(id)],
+          failedArtifactRefs: [fault.failedArtifactRef],
+          reason: "real E2E consumer validation failure against producer artifact before managed context recovery",
+        }),
+      } : {},
       mounts: [],
       timeoutSeconds: 600,
       infraRetry: { maxAttempts: 1 },
@@ -330,6 +380,17 @@ function workflowTask(id: string): SouthstarWorkflowManifest["tasks"][number] {
   };
 }
 
+async function updateConsumerRuntimeFault(
+  db: SouthstarDb,
+  input: { runId: string; producerTaskId: string; consumerTaskId: string; failedArtifactRef: string },
+): Promise<void> {
+  await updateWorkflowManifestPg(db, input.runId, JSON.stringify(workflowManifest({
+    producerTaskId: input.producerTaskId,
+    consumerTaskId: input.consumerTaskId,
+    consumerFault: { failedArtifactRef: input.failedArtifactRef },
+  })));
+}
+
 async function api<T>(port: number, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, {
     ...init,
@@ -340,6 +401,17 @@ async function api<T>(port: number, path: string, init?: RequestInit): Promise<T
   const envelope = JSON.parse(text) as { ok: true; result: T } | { ok: false; error: string };
   if (!envelope.ok) throw new Error(envelope.error);
   return envelope.result;
+}
+
+async function artifactRepairMarkerForArtifact(
+  db: SouthstarDb,
+  input: { runId: string; producerTaskId: string; artifactRefId: string },
+): Promise<RuntimeResourceRecord> {
+  const marker = (await listResourcesPg(db, { resourceType: "artifact_repair_marker" }))
+    .filter((resource) => resource.runId === input.runId && resource.taskId === input.producerTaskId)
+    .find((resource) => (resource.payload as { artifactRefId?: string }).artifactRefId === input.artifactRefId);
+  if (!marker) throw new Error(`artifact repair marker not found for ${input.artifactRefId}`);
+  return marker;
 }
 
 async function taskRow(

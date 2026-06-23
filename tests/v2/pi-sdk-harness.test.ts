@@ -68,6 +68,73 @@ test("Pi SDK agent harness canonicalizes bare assistant artifact JSON", async ()
   assert.deepEqual(result.progress, ["pi-agent returned artifact"]);
 });
 
+test("Pi SDK agent harness does not parse incidental JSON from prose as the artifact", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        listeners.forEach((listener) => listener({
+          type: "agent_end",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: "I inspected package.json: {\"name\":\"@southstar/runtime\"}. No edits were needed." }],
+          }],
+        }));
+      },
+    }),
+  });
+
+  const result = await harness.run({ envelope: envelopeV2WithImplementationReport(), attempt: 1 });
+
+  assert.match(String(result.artifact.summary), /I inspected package\.json/);
+  assert.equal((result.artifact as { name?: string }).name, undefined);
+  assert.deepEqual(result.artifact.filesChanged, []);
+  assert.deepEqual(result.progress, ["pi-agent returned unstructured text"]);
+});
+
+test("Pi SDK agent harness completes implementation_report fallback fields for unstructured assistant text", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        listeners.forEach((listener) => listener({
+          type: "agent_end",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: "Implemented the task and checked the context packet manually." }],
+          }],
+        }));
+      },
+    }),
+  });
+
+  const result = await harness.run({ envelope: envelopeV2WithImplementationReport(), attempt: 1 });
+
+  assert.equal(result.artifact.summary, "Implemented the task and checked the context packet manually.");
+  assert.deepEqual(result.artifact.filesChanged, []);
+  assert.deepEqual(result.artifact.commandsRun, []);
+  assert.deepEqual(result.artifact.risks, ["Pi SDK returned unstructured text; artifact evidence was synthesized by Southstar."]);
+  assert.deepEqual(result.artifact.testResults, [{
+    command: "pi-sdk-harness",
+    status: "not-run",
+    gating: "non-gating",
+    summary: "Pi SDK response did not include structured test results.",
+  }]);
+  assert.deepEqual(result.artifact.artifactEvidence, {
+    source: "pi-sdk-harness",
+    status: "synthesized",
+    reason: "assistant text was not a structured JSON artifact",
+  });
+});
+
 test("Pi SDK agent harness sends TaskEnvelopeV2 rendered agent prompt", async () => {
   const prompts: string[] = [];
   const listeners: Array<(event: unknown) => void> = [];
@@ -314,4 +381,15 @@ function envelopeV2(): TaskEnvelopeV2 {
     evaluatorPipeline: { id: "software-feature-quality", evaluators: [], onFailure: { defaultStrategy: "rollback-workspace" } },
     session: { sessionId: "session-root" },
   };
+}
+
+function envelopeV2WithImplementationReport(): TaskEnvelopeV2 {
+  const env = envelopeV2();
+  env.artifactContracts = [{
+    id: "implementation_report",
+    artifactType: "implementation-report",
+    requiredFields: ["summary", "filesChanged", "commandsRun", "testResults", "risks", "artifactEvidence"],
+    evidenceFields: ["filesChanged", "commandsRun", "testResults", "artifactEvidence"],
+  }];
+  return env;
 }

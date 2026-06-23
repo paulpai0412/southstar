@@ -123,6 +123,7 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
       content: result.artifact,
       contractRefs: [`task:${result.taskId}:completion`],
       summary: `Callback artifact ${result.taskId}`,
+      failedArtifactRefs: failedArtifactRefIds(result.artifact),
       evidenceRefs: [],
       evaluatorResultRefs: [],
       sourceEventRefs: [receipt.idempotencyKey],
@@ -277,6 +278,10 @@ function failedArtifactRepairRefs(artifact: unknown): Array<{ artifactRefId: str
     refs.set(artifactRefId, nonEmptyString(finding.reason) ?? nonEmptyString(finding.message) ?? summary);
   }
   return [...refs.entries()].map(([artifactRefId, reason]) => ({ artifactRefId, reason }));
+}
+
+function failedArtifactRefIds(artifact: unknown): string[] {
+  return failedArtifactRepairRefs(artifact).map((ref) => ref.artifactRefId);
 }
 
 async function recordCallbackExceptionDecisionPg(

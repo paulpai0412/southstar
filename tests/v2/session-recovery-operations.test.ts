@@ -7,6 +7,7 @@ import {
   getResourceByKeyPg,
   listHistoryForRunPg,
   listResourcesPg,
+  upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -56,6 +57,24 @@ test("rollback-session waits for approval without rollback marker or task mutati
   const db = await createTestPostgresDb();
   try {
     await createSessionRecoveryFixture(db);
+    await assert.rejects(
+      () => applySessionRecoveryOperationPg(db, {
+        operationId: "session-op-rollback-waiting-missing-snapshot-resource",
+        runId: "run-session-ops",
+        taskId: "implement",
+        path: "rollback-session",
+        approved: false,
+        checkpointId: "checkpoint-base",
+        workspaceSnapshotRef: "workspace_snapshot:missing",
+        reason: "rollback waits but snapshot evidence is absent",
+        now: "2026-06-22T08:00:30.000Z",
+      }),
+      /rollback-session workspace snapshot evidence not found: workspace_snapshot:missing/,
+    );
+    await seedWorkspaceSnapshotEvidence(db, {
+      resourceKey: "workspace_snapshot:base",
+      status: "captured",
+    });
 
     const result = await applySessionRecoveryOperationPg(db, {
       operationId: "session-op-rollback-waiting",
@@ -143,6 +162,26 @@ test("rollback-session requires workspace snapshot evidence and records rollback
       /rollback-session requires workspaceSnapshotRef/,
     );
 
+    await assert.rejects(
+      () => applySessionRecoveryOperationPg(db, {
+        operationId: "session-op-rollback-missing-snapshot-resource",
+        runId: "run-session-ops",
+        taskId: "implement",
+        path: "rollback-session",
+        approved: true,
+        checkpointId: "checkpoint-base",
+        workspaceSnapshotRef: "workspace_snapshot:missing",
+        reason: "rollback without durable snapshot resource",
+        now: "2026-06-22T08:02:30.000Z",
+      }),
+      /rollback-session workspace snapshot evidence not found: workspace_snapshot:missing/,
+    );
+
+    await seedWorkspaceSnapshotEvidence(db, {
+      resourceKey: "workspace_snapshot:base",
+      status: "captured",
+    });
+
     const result = await applySessionRecoveryOperationPg(db, {
       operationId: "session-op-rollback-approved",
       runId: "run-session-ops",
@@ -158,6 +197,14 @@ test("rollback-session requires workspace snapshot evidence and records rollback
 
     assert.equal(result.status, "succeeded");
     assert.equal(result.newRootSessionId, "root-run-session-ops-implement-rollback-session-7ac9303815");
+    assert.deepEqual(result.providerActions, [{
+      providerId: "workspace",
+      action: "rollback",
+      status: "succeeded",
+      evidenceRef: "workspace_rollback:session-op-rollback-approved",
+      attemptedAt: "2026-06-22T08:03:00.000Z",
+      succeededAt: "2026-06-22T08:03:00.000Z",
+    }]);
 
     const marker = await getResourceByKeyPg(db, "rollback_marker", "rollback_marker:session-op-rollback-approved");
     assert.equal(marker?.status, "recorded");
@@ -169,6 +216,10 @@ test("rollback-session requires workspace snapshot evidence and records rollback
       taskId: "implement",
       checkpointId: "checkpoint-base",
       workspaceSnapshotRef: "workspace_snapshot:base",
+      workspaceSnapshotEvidence: {
+        resourceKey: "workspace_snapshot:base",
+        status: "captured",
+      },
       invalidatedSourceRefs: ["artifact_ref:stale-result"],
       reason: "rollback to known good workspace",
       createdAt: "2026-06-22T08:03:00.000Z",
@@ -185,6 +236,24 @@ test("rollback-session requires workspace snapshot evidence and records rollback
     const rollback = await getResourceByKeyPg(db, "session_rollback", "session_rollback:session-op-rollback-approved");
     assert.equal(rollback?.status, "succeeded");
     assert.equal((rollback?.payload as { rollbackMarkerRef?: string }).rollbackMarkerRef, "rollback_marker:session-op-rollback-approved");
+    assert.equal((rollback?.payload as { workspaceRollbackRef?: string }).workspaceRollbackRef, "workspace_rollback:session-op-rollback-approved");
+
+    const workspaceRollback = await getResourceByKeyPg(db, "workspace_rollback", "workspace_rollback:session-op-rollback-approved");
+    assert.equal(workspaceRollback?.status, "succeeded");
+    assert.deepEqual(workspaceRollback?.payload, {
+      schemaVersion: "southstar.session_recovery.workspace_rollback.v1",
+      operationId: "session-op-rollback-approved",
+      runId: "run-session-ops",
+      taskId: "implement",
+      workspaceSnapshotRef: "workspace_snapshot:base",
+      workspaceSnapshotEvidence: {
+        resourceKey: "workspace_snapshot:base",
+        status: "captured",
+      },
+      rollbackMarkerRef: "rollback_marker:session-op-rollback-approved",
+      reason: "rollback to known good workspace",
+      rolledBackAt: "2026-06-22T08:03:00.000Z",
+    });
 
     const history = await listHistoryForRunPg(db, "run-session-ops");
     const rollbackEvents = history.filter((event) => event.eventType === "session.rollback");
@@ -199,7 +268,12 @@ test("rollback-session requires workspace snapshot evidence and records rollback
       previousRootSessionId: "root-run-session-ops-implement-old",
       newRootSessionId: result.newRootSessionId,
       workspaceSnapshotRef: "workspace_snapshot:base",
+      workspaceSnapshotEvidence: {
+        resourceKey: "workspace_snapshot:base",
+        status: "captured",
+      },
       rollbackMarkerRef: "rollback_marker:session-op-rollback-approved",
+      workspaceRollbackRef: "workspace_rollback:session-op-rollback-approved",
       invalidatedSourceRefs: ["artifact_ref:stale-result"],
       reason: "rollback to known good workspace",
       appliedAt: "2026-06-22T08:03:00.000Z",
@@ -213,6 +287,10 @@ test("stale unapproved rollback replay does not downgrade succeeded rollback ope
   const db = await createTestPostgresDb();
   try {
     await createSessionRecoveryFixture(db);
+    await seedWorkspaceSnapshotEvidence(db, {
+      resourceKey: "workspace_snapshot:base",
+      status: "captured",
+    });
 
     const approved = await applySessionRecoveryOperationPg(db, {
       operationId: "session-op-rollback-replay",
@@ -281,4 +359,27 @@ async function createSessionRecoveryFixture(db: Awaited<ReturnType<typeof create
     "update southstar.workflow_tasks set completed_at = $1, updated_at = now() where run_id = $2 and id = $3",
     ["2026-06-22T07:59:00.000Z", "run-session-ops", "implement"],
   );
+}
+
+async function seedWorkspaceSnapshotEvidence(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  input: { resourceKey: string; status: string },
+): Promise<void> {
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "workspace_snapshot",
+    resourceKey: input.resourceKey,
+    runId: "run-session-ops",
+    taskId: "implement",
+    sessionId: "root-run-session-ops-implement-old",
+    scope: "workspace",
+    status: input.status,
+    title: "Workspace snapshot evidence",
+    payload: {
+      schemaVersion: "southstar.workspace_snapshot.v1",
+      provider: "git",
+      repoRoot: "/tmp/southstar-session-ops",
+      commitSha: "abc123",
+    },
+    summary: { provider: "git", commitSha: "abc123" },
+  });
 }

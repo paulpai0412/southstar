@@ -1975,6 +1975,13 @@ test("approved rollback-session recovery decision applies rollback marker and re
   const db = await createTestPostgresDb();
   try {
     const fixture = await createRollbackDecisionFixture(db, { runId: "run-apply-rollback-approved" });
+    await seedWorkspaceSnapshotEvidence(db, {
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      sessionId: "session-rollback",
+      resourceKey: "workspace_snapshot:dirty",
+      status: "captured",
+    });
     await setDecisionStatus(db, fixture.decision.resourceKey, "approved");
     await patchDecisionPayload(db, fixture.decision.resourceKey, {
       path: "rollback-session",
@@ -2017,6 +2024,7 @@ test("approved rollback-session recovery decision applies rollback marker and re
       stateChanges: Array<{ resourceType: string; toStatus?: string }>;
     };
     assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus]), [
+      ["workspace_rollback", "succeeded"],
       ["rollback_marker", "recorded"],
       ["session_rollback", "succeeded"],
       ["workflow_task", "pending"],
@@ -2027,6 +2035,81 @@ test("approved rollback-session recovery decision applies rollback marker and re
     const history = await listHistoryForRunPg(db, fixture.runId);
     assert.equal(history.some((event) => event.eventType === "session.rollback"), true);
     assert.equal(history.some((event) => event.eventType === "recovery_decision.applied"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("approved rollback-session missing workspace snapshot blocks recovery decision durably", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRollbackDecisionFixture(db, { runId: "run-apply-rollback-missing-snapshot-resource" });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "approved");
+    await patchDecisionPayload(db, fixture.decision.resourceKey, {
+      path: "rollback-session",
+      operatorApprovalRequired: true,
+      operatorDecision: "approved",
+      checkpointId: "checkpoint-rollback-base",
+      workspaceSnapshotRef: "workspace_snapshot:missing",
+      invalidatedSourceRefs: ["artifact_ref:stale-result"],
+    });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T13:26:45.000Z",
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason ?? "", /workspace snapshot evidence not found/);
+    const decision = await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey);
+    assert.equal(decision?.status, "blocked");
+    assert.match((decision?.payload as { statusReason?: string }).statusReason ?? "", /workspace snapshot evidence not found/);
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "blocked");
+    assert.equal((execution?.payload as { stateChanges?: Array<{ reason?: string }> }).stateChanges?.some((change) =>
+      /workspace snapshot evidence not found/.test(change.reason ?? "")
+    ), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("approved rollback-session unusable workspace snapshot blocks recovery decision durably", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createRollbackDecisionFixture(db, { runId: "run-apply-rollback-unusable-snapshot-resource" });
+    await seedWorkspaceSnapshotEvidence(db, {
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      sessionId: "session-rollback",
+      resourceKey: "workspace_snapshot:dirty",
+      status: "failed",
+    });
+    await setDecisionStatus(db, fixture.decision.resourceKey, "approved");
+    await patchDecisionPayload(db, fixture.decision.resourceKey, {
+      path: "rollback-session",
+      operatorApprovalRequired: true,
+      operatorDecision: "approved",
+      checkpointId: "checkpoint-rollback-base",
+      workspaceSnapshotRef: "workspace_snapshot:dirty",
+      invalidatedSourceRefs: ["artifact_ref:stale-result"],
+    });
+
+    const result = await createRecoveryDecisionApplier({ db }).applyDecision({
+      decisionResourceKey: fixture.decision.resourceKey,
+      now: "2026-06-21T13:26:50.000Z",
+    });
+
+    assert.equal(result.status, "blocked");
+    assert.match(result.reason ?? "", /workspace snapshot evidence is not usable/);
+    const decision = await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey);
+    assert.equal(decision?.status, "blocked");
+    assert.match((decision?.payload as { statusReason?: string }).statusReason ?? "", /workspace snapshot evidence is not usable/);
+    const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
+    assert.equal(execution?.status, "blocked");
+    assert.equal((execution?.payload as { stateChanges?: Array<{ reason?: string }> }).stateChanges?.some((change) =>
+      /workspace snapshot evidence is not usable/.test(change.reason ?? "")
+    ), true);
   } finally {
     await db.close();
   }
@@ -2819,6 +2902,29 @@ async function assertCompletedTaskAndReprovisionHandUnchanged(
   );
   assert.equal(task.status, "completed");
   assert.equal(new Date(task.completed_at ?? "").toISOString(), completedAt);
+}
+
+async function seedWorkspaceSnapshotEvidence(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  input: { runId: string; taskId: string; sessionId: string; resourceKey: string; status: string },
+): Promise<void> {
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "workspace_snapshot",
+    resourceKey: input.resourceKey,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    scope: "workspace",
+    status: input.status,
+    title: "Workspace snapshot evidence",
+    payload: {
+      schemaVersion: "southstar.workspace_snapshot.v1",
+      provider: "git",
+      repoRoot: "/tmp/southstar-recovery",
+      commitSha: "abc123",
+    },
+    summary: { provider: "git", commitSha: "abc123" },
+  });
 }
 
 function pickKeys(value: unknown, keys: string[]): Record<string, unknown> {

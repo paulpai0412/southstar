@@ -123,6 +123,66 @@ test("agent runner CLI refreshes v2 context packet before harness run", async ()
   }
 });
 
+test("agent runner CLI runtime fault keeps harness execution but fails artifact gate", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-fault-"));
+  const envelopePath = join(root, "envelope-fault.json");
+  const resultPath = join(root, "result-fault.json");
+  const faultyEnvelope = envelope();
+  faultyEnvelope.rootSession.maxRepairAttempts = 1;
+  faultyEnvelope.task.rootSession.maxRepairAttempts = 1;
+  await writeFile(envelopePath, JSON.stringify(faultyEnvelope), "utf8");
+  let harnessCalls = 0;
+  const server = createServer(async (_request, response) => {
+    harnessCalls += 1;
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      artifact: { summary: "done", commandsRun: ["npm test"], risks: [] },
+      progress: ["harness completed before injected validation failure"],
+      metrics: { tokens: 20, costMicrosUsd: 20, toolCalls: 1 },
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    const endpoint = `http://127.0.0.1:${address?.port}`;
+
+    const exitCode = await runAgentRunnerCli([
+      "--envelope",
+      envelopePath,
+      "--result",
+      resultPath,
+      "--harness-endpoint",
+      endpoint,
+      "--runtime-fault",
+      JSON.stringify({
+        kind: "validation_missing_fields",
+        fields: ["summary"],
+        failedArtifactRefs: ["artifact-ref-producer-1"],
+        reason: "real E2E initial validation failure",
+      }),
+    ]);
+
+    assert.equal(exitCode, 2);
+    assert.equal(harnessCalls, 1);
+    const result = JSON.parse(await readFile(resultPath, "utf8"));
+    assert.equal(result.ok, false);
+    assert.equal(result.artifact.summary, undefined);
+    assert.deepEqual(result.artifact.failedArtifactRefs, ["artifact-ref-producer-1"]);
+    assert.equal(result.artifact.faultInjected.kind, "validation_missing_fields");
+    assert.deepEqual(result.artifact.faultInjected.failedArtifactRefs, ["artifact-ref-producer-1"]);
+    assert.equal(result.events.some((event: { eventType: string }) => event.eventType === "runtime.fault_injected"), true);
+    assert.equal(
+      result.events.some((event: { eventType: string; payload?: { missingFields?: string[] } }) =>
+        event.eventType === "evaluator.completed" && event.payload?.missingFields?.includes("summary")
+      ),
+      true,
+    );
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("agent runner CLI args allow Pi SDK harness when HTTP endpoint is absent", () => {
   const parsed = parseAgentRunnerArgs(["--envelope", "/tmp/envelope.json"], {});
 

@@ -110,6 +110,25 @@ test("acceptOrRejectArtifactRefPg repeats identical artifact content with the sa
   }
 });
 
+test("acceptOrRejectArtifactRefPg persists failed artifact refs on rejected artifact payloads", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRun(db, "run-artifact-ref-failed-lineage");
+
+    const result = await acceptOrRejectArtifactRefPg(db, artifactRefInput({
+      runId: "run-artifact-ref-failed-lineage",
+      taskId: "task-a",
+      status: "rejected",
+      failedArtifactRefs: ["artifact_ref:producer:task:attempt-1:abc"],
+    }));
+
+    const payload = await artifactRefPayload(db, result.resourceId);
+    assert.deepEqual(payload.failedArtifactRefs, ["artifact_ref:producer:task:attempt-1:abc"]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("acceptOrRejectArtifactRefPg treats duplicate same-status metadata changes as an immutable no-op", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -351,6 +370,7 @@ function artifactRefInput(overrides: {
   status?: "accepted" | "rejected" | "needs_repair";
   content?: unknown;
   contractRefs?: string[];
+  failedArtifactRefs?: string[];
 }) {
   return {
     runId: overrides.runId,
@@ -364,6 +384,7 @@ function artifactRefInput(overrides: {
     content: overrides.content ?? { patch: "diff --git a/file.ts b/file.ts" },
     contractRefs: overrides.contractRefs ?? ["contract:implementation"],
     summary: "Produced implementation patch",
+    failedArtifactRefs: overrides.failedArtifactRefs,
     evidenceRefs: ["evidence:test"],
     evaluatorResultRefs: ["validator:schema"],
     sourceEventRefs: ["history:event"],

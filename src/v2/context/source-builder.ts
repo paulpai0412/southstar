@@ -199,7 +199,7 @@ async function rollbackInvalidatedSourceRefs(
        from southstar.runtime_resources
       where run_id = $1
         and resource_type = 'rollback_marker'
-        and status = 'created'
+        and status in ('created', 'recorded')
       order by created_at, resource_key`,
     [runId],
   );

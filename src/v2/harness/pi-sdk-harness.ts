@@ -1,3 +1,4 @@
+import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
 import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "./types.ts";
 
 export type PiSdkHarnessSession = {
@@ -23,7 +24,7 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
         timeoutMs,
       );
       const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input, cwd), timeoutMs);
-      return parseHarnessResult(raw);
+      return parseHarnessResult(raw, input.envelope);
     },
   };
 }
@@ -162,30 +163,34 @@ async function runPromptAndCollectAssistantText(
   }
 }
 
-function parseHarnessResult(raw: string): HarnessRunResult {
+function parseHarnessResult(raw: string, envelope: AnyTaskEnvelope): HarnessRunResult {
   const parsed = parseAssistantJson(raw);
   if (!isRecord(parsed)) {
     return {
-      artifact: { summary: raw.trim() },
+      artifact: completeArtifactForEnvelope(
+        { summary: raw.trim() },
+        envelope,
+        "assistant text was not a structured JSON artifact",
+      ),
       progress: ["pi-agent returned unstructured text"],
     };
   }
   if (isRecord(parsed.artifact)) {
     return {
-      artifact: parsed.artifact,
+      artifact: completeArtifactForEnvelope(parsed.artifact, envelope, "assistant artifact JSON omitted required fields"),
       progress: progressArray(parsed.progress),
       metrics: metricsFrom(parsed.metrics),
     };
   }
   if (isRecord(parsed.output) && isRecord(parsed.output.artifact)) {
     return {
-      artifact: parsed.output.artifact,
+      artifact: completeArtifactForEnvelope(parsed.output.artifact, envelope, "assistant output artifact JSON omitted required fields"),
       progress: progressArray(parsed.output.progress),
       metrics: metricsFrom(parsed.output.metrics),
     };
   }
   return {
-    artifact: parsed,
+    artifact: completeArtifactForEnvelope(parsed, envelope, "assistant bare JSON artifact omitted required fields"),
     progress: progressArray(parsed.progress),
     metrics: metricsFrom(parsed.metrics),
   };
@@ -194,7 +199,8 @@ function parseHarnessResult(raw: string): HarnessRunResult {
 function parseAssistantJson(raw: string): unknown {
   const trimmed = raw.trim();
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  const candidate = fenced?.[1]?.trim() ?? extractObject(trimmed) ?? trimmed;
+  const candidate = fenced?.[1]?.trim() ?? (trimmed.startsWith("{") && trimmed.endsWith("}") ? trimmed : undefined);
+  if (!candidate) return undefined;
   try {
     return JSON.parse(candidate);
   } catch {
@@ -202,10 +208,51 @@ function parseAssistantJson(raw: string): unknown {
   }
 }
 
-function extractObject(text: string): string | undefined {
-  const first = text.indexOf("{");
-  const last = text.lastIndexOf("}");
-  return first >= 0 && last > first ? text.slice(first, last + 1) : undefined;
+function completeArtifactForEnvelope(
+  artifact: Record<string, unknown>,
+  envelope: AnyTaskEnvelope,
+  reason: string,
+): Record<string, unknown> {
+  const requiredFields = implementationReportRequiredFields(envelope);
+  if (requiredFields.length === 0) return artifact;
+
+  const next = { ...artifact };
+  if (!hasValue(next.summary)) next.summary = "Pi SDK returned a structured artifact without a summary.";
+  if (requiredFields.includes("filesChanged") && !hasValue(next.filesChanged)) next.filesChanged = [];
+  if (requiredFields.includes("commandsRun") && !hasValue(next.commandsRun)) next.commandsRun = [];
+  if (requiredFields.includes("testResults") && !hasValue(next.testResults)) {
+    next.testResults = [{
+      command: "pi-sdk-harness",
+      status: "not-run",
+      gating: "non-gating",
+      summary: "Pi SDK response did not include structured test results.",
+    }];
+  }
+  if (requiredFields.includes("risks") && !hasValue(next.risks)) {
+    next.risks = ["Pi SDK returned unstructured text; artifact evidence was synthesized by Southstar."];
+  }
+  if (requiredFields.includes("artifactEvidence") && !hasValue(next.artifactEvidence)) {
+    next.artifactEvidence = {
+      source: "pi-sdk-harness",
+      status: "synthesized",
+      reason,
+    };
+  }
+  return next;
+}
+
+function implementationReportRequiredFields(envelope: AnyTaskEnvelope): string[] {
+  if (envelope.schemaVersion === "southstar.task-envelope.v1") {
+    const artifactTypes = new Set(envelope.artifactContract.artifactTypes);
+    if (!artifactTypes.has("implementation_report") && !artifactTypes.has("implementation-report")) return [];
+    return envelope.artifactContract.requiredFields;
+  }
+  const contract = envelope.artifactContracts.find((item) => item.id === "implementation_report");
+  return contract?.requiredFields ?? [];
+}
+
+function hasValue(value: unknown): boolean {
+  return value !== undefined && value !== null && value !== "";
 }
 
 function progressArray(value: unknown): string[] {

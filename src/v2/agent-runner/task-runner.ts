@@ -31,10 +31,18 @@ export type TaskRunResult = {
   materializationRoot?: string;
 };
 
+export type TaskRunnerRuntimeFault = {
+  kind: "validation_missing_fields";
+  fields: string[];
+  failedArtifactRefs?: string[];
+  attemptIds?: string[];
+  reason?: string;
+};
+
 export async function runTaskEnvelope(
   envelope: AnyTaskEnvelope,
   harness: AgentHarness,
-  input: { requiredFields: string[] },
+  input: { requiredFields: string[]; runtimeFault?: TaskRunnerRuntimeFault; attemptId?: string },
 ): Promise<TaskRunResult> {
   const startedAt = Date.now();
   const rootSessionId = envelopeRootSessionId(envelope);
@@ -64,7 +72,8 @@ export async function runTaskEnvelope(
   for (let attempt = 1; attempt <= maxRepairAttempts; attempt++) {
     const harnessResult = await harness.run({ envelope, attempt, repairInstruction });
     addMetrics(metrics, harnessResult.metrics);
-    latestArtifact = harnessResult.artifact;
+    const activeFault = activeRuntimeFault(input.runtimeFault, input.attemptId, attempt);
+    latestArtifact = applyRuntimeFault(harnessResult.artifact, activeFault);
     for (const message of harnessResult.progress) {
       events.push({
         eventType: "progress.commentary",
@@ -77,11 +86,19 @@ export async function runTaskEnvelope(
       eventType: "artifact.created",
       actorType: "subagent",
       sessionId: rootSessionId,
-      payload: { attempt, artifact: harnessResult.artifact },
+      payload: { attempt, artifact: latestArtifact },
     });
+    if (activeFault) {
+      events.push({
+        eventType: "runtime.fault_injected",
+        actorType: "runtime",
+        sessionId: rootSessionId,
+        payload: { attempt, ...activeFault },
+      });
+    }
 
     const gate = evaluateArtifactGate({
-      artifact: harnessResult.artifact,
+      artifact: latestArtifact,
       requiredFields: input.requiredFields,
       attempt,
       maxRepairAttempts,
@@ -199,4 +216,44 @@ function repairContextFromEnvelope(envelope: AnyTaskEnvelope): ArtifactRepairCon
 
 function numberValue(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function applyRuntimeFault(
+  artifact: Record<string, unknown>,
+  fault: TaskRunnerRuntimeFault | undefined,
+): Record<string, unknown> {
+  if (!fault) return artifact;
+  if (fault.kind !== "validation_missing_fields") return artifact;
+  const next = removeFieldsDeep(artifact, new Set(fault.fields)) as Record<string, unknown>;
+  if (fault.failedArtifactRefs && fault.failedArtifactRefs.length > 0) {
+    next.failedArtifactRefs = [...fault.failedArtifactRefs];
+  }
+  next.faultInjected = {
+    kind: fault.kind,
+    fields: [...fault.fields],
+    ...(fault.failedArtifactRefs && fault.failedArtifactRefs.length > 0 ? { failedArtifactRefs: [...fault.failedArtifactRefs] } : {}),
+    ...(fault.reason ? { reason: fault.reason } : {}),
+  };
+  return next;
+}
+
+function activeRuntimeFault(
+  fault: TaskRunnerRuntimeFault | undefined,
+  attemptId: string | undefined,
+  runnerAttempt: number,
+): TaskRunnerRuntimeFault | undefined {
+  if (!fault) return undefined;
+  if (!fault.attemptIds || fault.attemptIds.length === 0) return fault;
+  return attemptId && fault.attemptIds.includes(attemptId) && runnerAttempt === 1 ? fault : undefined;
+}
+
+function removeFieldsDeep(value: unknown, fields: Set<string>): unknown {
+  if (Array.isArray(value)) return value.map((item) => removeFieldsDeep(item, fields));
+  if (!value || typeof value !== "object") return value;
+  const output: Record<string, unknown> = {};
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    if (fields.has(key)) continue;
+    output[key] = removeFieldsDeep(nested, fields);
+  }
+  return output;
 }
