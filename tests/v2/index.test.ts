@@ -53,6 +53,7 @@ await import("./postgres-run-api.test.ts");
 await import("./runtime-command-contract.test.ts");
 await import("./run-lifecycle-routes.test.ts");
 await import("./runtime-event-stream.test.ts");
+await import("./session-routes.test.ts");
 await import("./run-execution-controller.test.ts");
 await import("./postgres-run-dispatcher.test.ts");
 await import("./runnable-task-scheduler.test.ts");

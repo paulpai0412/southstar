@@ -11,6 +11,19 @@ type RunGoalResult = {
 };
 
 type RunRuntimeCommandRequest = RuntimeCommandRequest & { runId: string };
+type GetSessionEventsRequest = {
+  sessionId: string;
+  afterSequence?: number;
+  beforeSequence?: number;
+  limit?: number;
+  eventTypes?: string[];
+  taskId?: string;
+  correlationId?: string;
+  artifactRef?: string;
+  aroundEventId?: string;
+  windowBefore?: number;
+  windowAfter?: number;
+};
 
 export function createRuntimeServerClient(input: { baseUrl: string }) {
   const baseUrl = input.baseUrl.replace(/\/$/, "");
@@ -45,6 +58,30 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     listSessions(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/sessions`);
+    },
+    getSessionEvents(body: GetSessionEventsRequest) {
+      const query = new URLSearchParams();
+      setOptionalQueryNumber(query, "afterSequence", body.afterSequence);
+      setOptionalQueryNumber(query, "beforeSequence", body.beforeSequence);
+      setOptionalQueryNumber(query, "limit", body.limit);
+      if (body.eventTypes?.length) query.set("eventTypes", body.eventTypes.join(","));
+      setOptionalQueryString(query, "taskId", body.taskId);
+      setOptionalQueryString(query, "correlationId", body.correlationId);
+      setOptionalQueryString(query, "artifactRef", body.artifactRef);
+      setOptionalQueryString(query, "aroundEventId", body.aroundEventId);
+      setOptionalQueryNumber(query, "windowBefore", body.windowBefore);
+      setOptionalQueryNumber(query, "windowAfter", body.windowAfter);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return get(`${baseUrl}/api/v2/sessions/${encodeURIComponent(body.sessionId)}/events${suffix}`);
+    },
+    getSessionCheckpoints(sessionId: string) {
+      return get(`${baseUrl}/api/v2/sessions/${encodeURIComponent(sessionId)}/checkpoints`);
+    },
+    getSessionCheckpoint(body: { sessionId: string; checkpointId: string }) {
+      return get(`${baseUrl}/api/v2/sessions/${encodeURIComponent(body.sessionId)}/checkpoints/${encodeURIComponent(body.checkpointId)}`);
+    },
+    getSessionLineage(sessionId: string) {
+      return get(`${baseUrl}/api/v2/sessions/${encodeURIComponent(sessionId)}/lineage`);
     },
     listMemory(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/memory`);
@@ -112,6 +149,14 @@ function runtimeCommandBody(body: RunRuntimeCommandRequest): RuntimeCommandReque
     ...(body.dryRun !== undefined ? { dryRun: body.dryRun } : {}),
     ...(body.payload !== undefined ? { payload: body.payload } : {}),
   };
+}
+
+function setOptionalQueryNumber(query: URLSearchParams, key: string, value: number | undefined): void {
+  if (value !== undefined) query.set(key, String(value));
+}
+
+function setOptionalQueryString(query: URLSearchParams, key: string, value: string | undefined): void {
+  if (value !== undefined) query.set(key, value);
 }
 
 async function post<T = unknown>(url: string, body: unknown): Promise<ApiEnvelope<T>> {
