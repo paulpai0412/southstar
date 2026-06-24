@@ -150,17 +150,26 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
-      const body = await readJsonBody<{ goalPrompt?: string }>(request);
+      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown }>(request);
       if (!body.goalPrompt) throw new Error("goalPrompt is required");
-      const draft = await createPostgresPlannerDraft(context.db, { goalPrompt: body.goalPrompt });
+      const draft = await createPostgresPlannerDraft(context.db, {
+        goalPrompt: body.goalPrompt,
+        orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
+      });
       const run = await createPostgresRunFromDraft(context.db, { draftId: draft.draftId });
       return json("run-goal", { draft, ...run });
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
-      const body = await readJsonBody<{ goalPrompt?: string }>(request);
+      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown }>(request);
       if (!body.goalPrompt) throw new Error("goalPrompt is required");
-      return json("planner-draft", await createPostgresPlannerDraft(context.db, { goalPrompt: body.goalPrompt }));
+      return json(
+        "planner-draft",
+        await createPostgresPlannerDraft(context.db, {
+          goalPrompt: body.goalPrompt,
+          orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
+        }),
+      );
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/runs") {
@@ -586,6 +595,12 @@ function requiredString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function optionalOrchestrationMode(value: unknown): "deterministic" | "llm-constrained" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "deterministic" || value === "llm-constrained") return value;
+  throw new Error("orchestrationMode must be deterministic or llm-constrained");
 }
 
 function parseOptionalStringArray(value: unknown, field: string): string[] | undefined {

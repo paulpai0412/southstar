@@ -59,6 +59,36 @@ test("Postgres run API creates draft, run, tasks, history, and Knowledge Card co
   });
 });
 
+test("Postgres run API supports llm-constrained planner drafts and preserves task creation order", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement calc sum",
+      orchestrationMode: "llm-constrained",
+    });
+    assert.match(draft.draftId, /^draft-wf-composed-/);
+
+    const draftResource = await db.one<{
+      summary_json: { planner?: string };
+      payload_json: { orchestrationSnapshot?: { validation?: { ok?: boolean } } };
+    }>(
+      "select summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    assert.equal(draftResource.summary_json.planner, "library-constrained-llm");
+    assert.equal(draftResource.payload_json.orchestrationSnapshot?.validation?.ok, true);
+
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    assert.deepEqual(run.taskIds, [
+      "understand-repo",
+      "review-spec",
+      "implement-feature",
+      "verify-feature",
+      "review-code-quality",
+      "summarize-completion",
+    ]);
+  });
+});
+
 test("Postgres server routes create planner drafts and runs through new API", async () => {
   await withDb(async (db) => {
     const server = await createSouthstarRuntimeServer({
@@ -79,6 +109,25 @@ test("Postgres server routes create planner drafts and runs through new API", as
       });
       assert.match(run.runId, /^run-wf-gen-/);
       assert.deepEqual(run.taskIds, ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
+
+      const llmDraft = await api<{ draftId: string; workflowId: string }>(server.url, "/api/v2/planner/drafts", {
+        method: "POST",
+        body: JSON.stringify({ goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained" }),
+      });
+      assert.match(llmDraft.draftId, /^draft-wf-composed-/);
+
+      const llmRun = await api<{ runId: string; taskIds: string[] }>(server.url, "/api/v2/runs", {
+        method: "POST",
+        body: JSON.stringify({ draftId: llmDraft.draftId }),
+      });
+      assert.deepEqual(llmRun.taskIds, [
+        "understand-repo",
+        "review-spec",
+        "implement-feature",
+        "verify-feature",
+        "review-code-quality",
+        "summarize-completion",
+      ]);
     } finally {
       await server.close();
     }

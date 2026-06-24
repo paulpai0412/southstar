@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { seedSoftwareLibraryGraph } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
 import { materializeGenerationPlan } from "../workflow-generator/materialize.ts";
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
+import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
+import { DeterministicFixtureComposer } from "../orchestration/composer.ts";
+import { analyzeRequirementDeterministically } from "../orchestration/requirement-analyzer.ts";
 import {
   appendHistoryEventPg,
   createWorkflowRunPg,
@@ -24,7 +29,22 @@ export type PostgresRunResult = {
   taskIds: string[];
 };
 
-export async function createPostgresPlannerDraft(db: SouthstarDb, input: { goalPrompt: string }): Promise<PostgresPlannerDraftResult> {
+export type CreatePostgresPlannerDraftInput = {
+  goalPrompt: string;
+  orchestrationMode?: "deterministic" | "llm-constrained";
+};
+
+export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
+  if (input.orchestrationMode === "llm-constrained") {
+    return createLibraryConstrainedPlannerDraft(db, input);
+  }
+  return createDeterministicPlannerDraft(db, input);
+}
+
+async function createDeterministicPlannerDraft(
+  db: SouthstarDb,
+  input: { goalPrompt: string },
+): Promise<PostgresPlannerDraftResult> {
   const draftRunId = `draft-software-${hash(input.goalPrompt).slice(0, 12)}`;
   const plan = generateConstrainedWorkflowPlan({
     runId: draftRunId,
@@ -50,6 +70,81 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: { goalP
     summary: { goalPrompt: input.goalPrompt, workflowId: workflow.workflowId, planner: "postgres-constrained" },
   });
   return { draftId, goalPrompt: input.goalPrompt, workflowId: workflow.workflowId };
+}
+
+async function createLibraryConstrainedPlannerDraft(
+  db: SouthstarDb,
+  input: { goalPrompt: string },
+): Promise<PostgresPlannerDraftResult> {
+  const draftRunId = `draft-library-${hash(input.goalPrompt).slice(0, 12)}`;
+  await seedSoftwareLibraryGraph(db);
+  const requirementSpec = analyzeRequirementDeterministically(input.goalPrompt);
+  const candidatePacket = await resolveWorkflowCandidates(db, {
+    requirementSpec,
+    scope: "software",
+  });
+  const workflowId = `wf-composed-${hash(draftRunId).slice(0, 12)}`;
+  const draftId = `draft-${workflowId}`;
+
+  if (candidatePacket.unavailableRequirements.length > 0) {
+    await upsertRuntimeResourcePg(db, {
+      id: draftId,
+      resourceType: "planner_draft",
+      resourceKey: draftId,
+      scope: "planner",
+      status: "invalid",
+      title: "Invalid Library-Constrained Planner Draft",
+      payload: {
+        requirementSpec,
+        candidatePacket,
+        unavailableRequirements: candidatePacket.unavailableRequirements,
+      },
+      summary: {
+        goalPrompt: input.goalPrompt,
+        workflowId,
+        planner: "library-constrained-llm",
+        status: "invalid",
+      },
+    });
+    return { draftId, goalPrompt: input.goalPrompt, workflowId };
+  }
+
+  const composer = new DeterministicFixtureComposer();
+  const composition = await composer.compose({
+    goalPrompt: input.goalPrompt,
+    candidatePacket,
+  });
+  const compiled = await compileWorkflowComposition(db, {
+    runId: draftRunId,
+    goalPrompt: input.goalPrompt,
+    candidatePacket,
+    composition,
+  });
+  const bundle: PlanBundle & { orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never } = {
+    workflow: compiled.workflow,
+    plannerTrace: {
+      model: "southstar-library-constrained-fixture-composer",
+      promptHash: hash(input.goalPrompt),
+      generatedAt: new Date().toISOString(),
+    },
+    orchestrationSnapshot: compiled.orchestrationSnapshot,
+  };
+
+  await upsertRuntimeResourcePg(db, {
+    id: draftId,
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: "planner",
+    status: "validated",
+    title: compiled.workflow.title,
+    payload: bundle,
+    summary: {
+      goalPrompt: input.goalPrompt,
+      workflowId: compiled.workflow.workflowId,
+      planner: "library-constrained-llm",
+    },
+  });
+  return { draftId, goalPrompt: input.goalPrompt, workflowId: compiled.workflow.workflowId };
 }
 
 export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draftId: string }): Promise<PostgresRunResult> {
