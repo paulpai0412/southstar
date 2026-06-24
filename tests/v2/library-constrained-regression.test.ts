@@ -43,4 +43,6 @@ test("llm-constrained implementation does not call broad or narrow task generato
   assert.equal(section.includes("broadFeatureTasks"), false);
   assert.equal(section.includes("narrowFeatureTasks"), false);
   assert.equal(section.includes("isBroadFeaturePrompt"), false);
+  assert.equal(section.includes("new DeterministicFixtureComposer"), false);
+  assert.equal(section.includes("createWorkflowComposerRegistry"), true);
 });

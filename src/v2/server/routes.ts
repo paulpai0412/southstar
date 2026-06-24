@@ -15,6 +15,7 @@ import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from 
 import type { ReadModelKind } from "../read-models/types.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
+import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
 import { materializeRunFromWorkItemPg } from "../work-items/run-materialization.ts";
@@ -150,24 +151,26 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
-      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown }>(request);
+      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown }>(request);
       if (!body.goalPrompt) throw new Error("goalPrompt is required");
       const draft = await createPostgresPlannerDraft(context.db, {
         goalPrompt: body.goalPrompt,
         orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
+        composerMode: optionalComposerMode(body.composerMode),
       });
       const run = await createPostgresRunFromDraft(context.db, { draftId: draft.draftId });
       return json("run-goal", { draft, ...run });
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
-      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown }>(request);
+      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown }>(request);
       if (!body.goalPrompt) throw new Error("goalPrompt is required");
       return json(
         "planner-draft",
         await createPostgresPlannerDraft(context.db, {
           goalPrompt: body.goalPrompt,
           orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
+          composerMode: optionalComposerMode(body.composerMode),
         }),
       );
     }
@@ -601,6 +604,12 @@ function optionalOrchestrationMode(value: unknown): "deterministic" | "llm-const
   if (value === undefined) return undefined;
   if (value === "deterministic" || value === "llm-constrained") return value;
   throw new Error("orchestrationMode must be deterministic or llm-constrained");
+}
+
+function optionalComposerMode(value: unknown): WorkflowComposerMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === "fixture" || value === "llm" || value === "llm-with-fixture-fallback") return value;
+  throw new Error("composerMode must be fixture, llm, or llm-with-fixture-fallback");
 }
 
 function parseOptionalStringArray(value: unknown, field: string): string[] | undefined {

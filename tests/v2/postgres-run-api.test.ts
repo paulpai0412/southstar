@@ -5,6 +5,7 @@ import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
+import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 
@@ -86,6 +87,71 @@ test("Postgres run API supports llm-constrained planner drafts and preserves tas
       "review-code-quality",
       "summarize-completion",
     ]);
+  });
+});
+
+test("Postgres planner draft can use injected scripted LLM composer for non-fixture DAG shape", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement calc sum with a single exploration task",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
+      composer: {
+        async compose() {
+          return {
+            schemaVersion: "southstar.workflow_composition_plan.v1",
+            title: "Single Exploration Plan",
+            selectedWorkflowTemplateRef: "template.software-feature",
+            rationale: "scripted LLM plan for API test",
+            tasks: [
+              {
+                id: "inspect-only",
+                name: "Inspect Only",
+                responsibility: "inspect repository and produce a plan",
+                dependsOn: [],
+                templateSlotRef: "understand",
+                agentDefinitionRef: "agent.software-explorer",
+                agentProfileRef: "profile.software-explorer-codex",
+                instructionRefs: ["instruction.software-explorer"],
+                skillRefs: ["skill.software-repo-discovery"],
+                toolGrantRefs: ["tool.workspace-read"],
+                mcpGrantRefs: [],
+                vaultLeasePolicyRefs: [],
+                inputArtifactRefs: [],
+                outputArtifactRefs: ["artifact.implementation_plan"],
+                evaluatorProfileRef: "evaluator.software-plan-quality",
+                recoveryStrategyRefs: ["retry-same-agent"],
+                rationale: "use only explorer candidate",
+              },
+            ],
+            rejectedCandidates: [],
+            generatedComponentProposals: [],
+          };
+        },
+      },
+    });
+
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    assert.deepEqual(run.taskIds, ["inspect-only"]);
+  });
+});
+
+test("Postgres run creation rejects invalid planner drafts", async () => {
+  await withDb(async (db) => {
+    await upsertRuntimeResourcePg(db, {
+      id: "draft-invalid-test",
+      resourceType: "planner_draft",
+      resourceKey: "draft-invalid-test",
+      scope: "planner",
+      status: "invalid",
+      title: "Invalid Draft",
+      payload: { workflow: { workflowId: "wf-invalid" } },
+      summary: { planner: "library-constrained-llm" },
+    });
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: "draft-invalid-test" }),
+      /planner draft is not validated/,
+    );
   });
 });
 

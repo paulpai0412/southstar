@@ -7,7 +7,8 @@ import { materializeGenerationPlan } from "../workflow-generator/materialize.ts"
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
-import { DeterministicFixtureComposer } from "../orchestration/composer.ts";
+import type { WorkflowComposer } from "../orchestration/composer.ts";
+import { createWorkflowComposerRegistry, type WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { analyzeRequirementDeterministically } from "../orchestration/requirement-analyzer.ts";
 import {
   appendHistoryEventPg,
@@ -32,6 +33,8 @@ export type PostgresRunResult = {
 export type CreatePostgresPlannerDraftInput = {
   goalPrompt: string;
   orchestrationMode?: "deterministic" | "llm-constrained";
+  composerMode?: WorkflowComposerMode;
+  composer?: WorkflowComposer;
 };
 
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
@@ -74,7 +77,7 @@ async function createDeterministicPlannerDraft(
 
 async function createLibraryConstrainedPlannerDraft(
   db: SouthstarDb,
-  input: { goalPrompt: string },
+  input: { goalPrompt: string; composerMode?: WorkflowComposerMode; composer?: WorkflowComposer },
 ): Promise<PostgresPlannerDraftResult> {
   const draftRunId = `draft-library-${hash(input.goalPrompt).slice(0, 12)}`;
   await seedSoftwareLibraryGraph(db);
@@ -109,7 +112,8 @@ async function createLibraryConstrainedPlannerDraft(
     return { draftId, goalPrompt: input.goalPrompt, workflowId };
   }
 
-  const composer = new DeterministicFixtureComposer();
+  const registry = createWorkflowComposerRegistry({ llmComposer: input.composer });
+  const composer = registry.resolve({ composerMode: input.composerMode ?? "fixture" });
   const composition = await composer.compose({
     goalPrompt: input.goalPrompt,
     candidatePacket,
@@ -123,7 +127,7 @@ async function createLibraryConstrainedPlannerDraft(
   const bundle: PlanBundle & { orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never } = {
     workflow: compiled.workflow,
     plannerTrace: {
-      model: "southstar-library-constrained-fixture-composer",
+      model: `southstar-library-constrained-${input.composerMode ?? "fixture"}-composer`,
       promptHash: hash(input.goalPrompt),
       generatedAt: new Date().toISOString(),
     },
@@ -150,6 +154,7 @@ async function createLibraryConstrainedPlannerDraft(
 export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draftId: string }): Promise<PostgresRunResult> {
   const draft = await getResourceByKeyPg(db, "planner_draft", input.draftId);
   if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
+  if (draft.status !== "validated") throw new Error(`planner draft is not validated: ${input.draftId}`);
   const bundle = draft.payload as PlanBundle & { generationPlan?: { templateRef?: string } };
   const workflow = bundle.workflow;
   const runId = await allocateRunId(db, workflow.workflowId);
