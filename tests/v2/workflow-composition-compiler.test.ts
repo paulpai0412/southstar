@@ -52,3 +52,39 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
     await db.close();
   }
 });
+
+test("compiler resolves runtime role/profile definitions for deterministic fixture composition", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const requirementSpec = analyzeRequirementDeterministically("implement calc sum");
+    const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
+    const composition = await new DeterministicFixtureComposer().compose({
+      goalPrompt: "implement calc sum",
+      candidatePacket,
+    });
+
+    const compiled = await compileWorkflowComposition(db, {
+      runId: "draft-library-roles-profiles-test-run",
+      goalPrompt: "implement calc sum",
+      candidatePacket,
+      composition,
+    });
+
+    const reviewSpec = compiled.workflow.tasks.find((task) => task.id === "review-spec");
+    assert.ok(reviewSpec, "review-spec task should exist");
+    assert.equal(reviewSpec.agentProfileRef, "software-spec-reviewer-codex");
+
+    const reviewCodeQuality = compiled.workflow.tasks.find((task) => task.id === "review-code-quality");
+    assert.ok(reviewCodeQuality, "review-code-quality task should exist");
+    assert.equal(reviewCodeQuality.agentProfileRef, "software-code-quality-reviewer-codex");
+
+    assert.equal(compiled.workflow.roles?.some((role) => role.id === "spec-reviewer"), true);
+    assert.equal(
+      compiled.workflow.agentProfiles?.some((profile) => profile.id === "software-spec-reviewer-codex"),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});

@@ -46,3 +46,10 @@ test("llm-constrained implementation does not call broad or narrow task generato
   assert.equal(section.includes("new DeterministicFixtureComposer"), false);
   assert.equal(section.includes("createWorkflowComposerRegistry"), true);
 });
+
+test("composition compiler avoids hardcoded role/profile string heuristics", async () => {
+  const source = await readFile(new URL("../../src/v2/orchestration/composition-compiler.ts", import.meta.url), "utf8");
+  assert.equal(source.includes("profile.software-spec-reviewer-codex"), false);
+  assert.equal(source.includes("profile.software-code-quality-reviewer-codex"), false);
+  assert.equal(source.includes('role === "spec-reviewer"'), false);
+});
