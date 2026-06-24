@@ -12,8 +12,8 @@ type TestDatabase = {
   drop(): Promise<void>;
 };
 
-test("schema version marks managed work item registry migration", () => {
-  assert.equal(SOUTHSTAR_SCHEMA_VERSION, "2026_06_20_managed_agents_work_items_v1");
+test("schema version marks library edges migration", () => {
+  assert.equal(SOUTHSTAR_SCHEMA_VERSION, "2026_06_23_library_edges_v2");
 });
 
 test("db:init creates simplified southstar Postgres schema without dedicated wiki/evolution tables", async () => {
@@ -32,6 +32,7 @@ test("db:init creates simplified southstar Postgres schema without dedicated wik
       "artifact_blobs",
       "learning_edges",
       "learning_nodes",
+      "library_edges",
       "library_history",
       "library_objects",
       "library_similarity_index",
@@ -48,6 +49,76 @@ test("db:init creates simplified southstar Postgres schema without dedicated wik
     assert.equal(tableNames.includes("asset_versions"), false);
     assert.equal(tableNames.includes("delta_proposals"), false);
     assert.equal(tableNames.includes("sandbox_experiments"), false);
+    await client.end();
+  } finally {
+    await fixture.drop();
+  }
+});
+
+test("db:init creates library_edges indexes and endpoint FKs with cascade delete", async () => {
+  const fixture = await createTestDatabase();
+  try {
+    await initializeSouthstarSchema(fixture.databaseUrl);
+    const client = new Client({ connectionString: fixture.databaseUrl });
+    await client.connect();
+
+    const indexes = await client.query<{ indexname: string }>(
+      `select indexname
+         from pg_catalog.pg_indexes
+        where schemaname = 'southstar'
+          and tablename = 'library_edges'
+          and indexname in ('idx_library_edges_from', 'idx_library_edges_to', 'idx_library_edges_scope')
+        order by indexname`,
+    );
+    assert.deepEqual(
+      indexes.rows.map((row) => row.indexname),
+      ["idx_library_edges_from", "idx_library_edges_scope", "idx_library_edges_to"],
+    );
+
+    const constraints = await client.query<{ conname: string; definition: string }>(
+      `select con.conname, pg_catalog.pg_get_constraintdef(con.oid) as definition
+         from pg_catalog.pg_constraint con
+         join pg_catalog.pg_class rel on rel.oid = con.conrelid
+         join pg_catalog.pg_namespace nsp on nsp.oid = rel.relnamespace
+        where nsp.nspname = 'southstar'
+          and rel.relname = 'library_edges'
+          and con.contype = 'f'
+        order by con.conname`,
+    );
+    assert.equal(constraints.rows.some((row) => row.conname === "fk_library_edges_from_object_key"), true);
+    assert.equal(constraints.rows.some((row) => row.conname === "fk_library_edges_to_object_key"), true);
+    assert.equal(
+      constraints.rows.some((row) => row.definition === "FOREIGN KEY (from_object_key) REFERENCES southstar.library_objects(object_key) ON DELETE CASCADE"),
+      true,
+    );
+    assert.equal(
+      constraints.rows.some((row) => row.definition === "FOREIGN KEY (to_object_key) REFERENCES southstar.library_objects(object_key) ON DELETE CASCADE"),
+      true,
+    );
+
+    await client.query(
+      `insert into southstar.library_objects(id, object_key, object_kind, status, state_json)
+       values
+         ('obj-1', 'object/A', 'doc', 'active', '{}'::jsonb),
+         ('obj-2', 'object/B', 'doc', 'active', '{}'::jsonb),
+         ('obj-3', 'object/C', 'doc', 'active', '{}'::jsonb)`,
+    );
+    await client.query(
+      `insert into southstar.library_edges(from_object_key, edge_type, to_object_key)
+       values ('object/A', 'RELATED_TO', 'object/B')`,
+    );
+    await assert.rejects(
+      () =>
+        client.query(
+          `insert into southstar.library_edges(from_object_key, edge_type, to_object_key)
+           values ('missing/object', 'RELATED_TO', 'object/C')`,
+        ),
+      /foreign key|violates/,
+    );
+    await client.query("delete from southstar.library_objects where object_key = $1", ["object/A"]);
+    const remainingEdges = await client.query<{ count: string }>("select count(*) as count from southstar.library_edges");
+    assert.equal(remainingEdges.rows[0]?.count, "0");
+
     await client.end();
   } finally {
     await fixture.drop();

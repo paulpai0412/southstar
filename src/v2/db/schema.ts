@@ -1,4 +1,4 @@
-export const SOUTHSTAR_SCHEMA_VERSION = "2026_06_20_managed_agents_work_items_v1";
+export const SOUTHSTAR_SCHEMA_VERSION = "2026_06_23_library_edges_v2";
 
 export const SOUTHSTAR_SCHEMA_SQL = `
 create schema if not exists southstar;
@@ -130,6 +130,28 @@ create table if not exists southstar.library_objects (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists southstar.library_edges (
+  id text primary key default gen_random_uuid()::text,
+  from_object_key text not null,
+  from_version_ref text,
+  edge_type text not null,
+  to_object_key text not null,
+  to_version_ref text,
+  scope text not null default 'global',
+  status text not null default 'active',
+  weight double precision not null default 1,
+  metadata_json jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  constraint fk_library_edges_from_object_key
+    foreign key (from_object_key)
+    references southstar.library_objects(object_key)
+    on delete cascade,
+  constraint fk_library_edges_to_object_key
+    foreign key (to_object_key)
+    references southstar.library_objects(object_key)
+    on delete cascade
+);
+
 create table if not exists southstar.library_history (
   id text primary key,
   object_id text not null references southstar.library_objects(id) on delete cascade,
@@ -175,6 +197,46 @@ create table if not exists southstar.learning_edges (
   created_at timestamptz not null default now()
 );
 
+do $$
+begin
+  if not exists (
+    select 1
+      from pg_catalog.pg_constraint con
+      join pg_catalog.pg_class rel on rel.oid = con.conrelid
+      join pg_catalog.pg_namespace nsp on nsp.oid = rel.relnamespace
+     where nsp.nspname = 'southstar'
+       and rel.relname = 'library_edges'
+       and con.conname = 'fk_library_edges_from_object_key'
+  ) then
+    alter table southstar.library_edges
+      add constraint fk_library_edges_from_object_key
+      foreign key (from_object_key)
+      references southstar.library_objects(object_key)
+      on delete cascade
+      not valid;
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1
+      from pg_catalog.pg_constraint con
+      join pg_catalog.pg_class rel on rel.oid = con.conrelid
+      join pg_catalog.pg_namespace nsp on nsp.oid = rel.relnamespace
+     where nsp.nspname = 'southstar'
+       and rel.relname = 'library_edges'
+       and con.conname = 'fk_library_edges_to_object_key'
+  ) then
+    alter table southstar.library_edges
+      add constraint fk_library_edges_to_object_key
+      foreign key (to_object_key)
+      references southstar.library_objects(object_key)
+      on delete cascade
+      not valid;
+  end if;
+end $$;
+
 create unique index if not exists idx_work_items_source_ref
   on southstar.work_items(source_provider, source_ref)
   where source_ref is not null;
@@ -187,6 +249,9 @@ create index if not exists idx_runtime_resources_task_type on southstar.runtime_
 create index if not exists idx_runtime_resources_session on southstar.runtime_resources(session_id);
 create index if not exists idx_library_objects_kind on southstar.library_objects(object_kind);
 create index if not exists idx_library_objects_status on southstar.library_objects(status);
+create index if not exists idx_library_edges_from on southstar.library_edges(from_object_key, edge_type, status);
+create index if not exists idx_library_edges_to on southstar.library_edges(to_object_key, edge_type, status);
+create index if not exists idx_library_edges_scope on southstar.library_edges(scope, edge_type, status);
 create index if not exists idx_library_history_event_type on southstar.library_history(event_type);
 create index if not exists idx_library_similarity_signature on southstar.library_similarity_index(signature);
 create index if not exists idx_learning_nodes_type_status on southstar.learning_nodes(node_type, status);
