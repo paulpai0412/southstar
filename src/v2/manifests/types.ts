@@ -197,6 +197,14 @@ export type PlanBundle = {
     model: string;
     promptHash: string;
     generatedAt: string;
+    analyzerType?: "deterministic" | string;
+    composerMode?: "fixture" | "llm" | "llm-with-fixture-fallback" | string;
+    composerFallbackUsed?: boolean;
+    validatorAttempts?: number;
+    repairAttempts?: number;
+    finalValidationOk?: boolean;
+    candidatePacketHash?: string;
+    compositionHash?: string;
   };
 };
 

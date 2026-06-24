@@ -42,6 +42,8 @@ export function createWorkflowComposerRegistry(options: WorkflowComposerRegistry
 }
 
 class FallbackWorkflowComposer implements WorkflowComposer {
+  private fallbackUsed = false;
+
   constructor(
     private readonly primary: WorkflowComposer,
     private readonly fallback: WorkflowComposer,
@@ -51,7 +53,12 @@ class FallbackWorkflowComposer implements WorkflowComposer {
     try {
       return await this.primary.compose(input);
     } catch {
+      this.fallbackUsed = true;
       return await this.fallback.compose(input);
     }
+  }
+
+  wasFallbackUsed(): boolean {
+    return this.fallbackUsed;
   }
 }

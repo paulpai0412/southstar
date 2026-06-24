@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { seedSoftwareLibraryGraph } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
+import type { DomainPack } from "../domain-packs/types.ts";
 import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
 import { materializeGenerationPlan } from "../workflow-generator/materialize.ts";
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
@@ -114,7 +115,9 @@ async function createLibraryConstrainedPlannerDraft(
   }
 
   const registry = createWorkflowComposerRegistry({ llmComposer: input.composer });
-  const composer = registry.resolve({ composerMode: input.composerMode ?? "fixture" });
+  const composerMode = input.composerMode ?? "fixture";
+  const composer = registry.resolve({ composerMode });
+  const fallbackImplicitlySelected = composerMode === "llm-with-fixture-fallback" && !input.composer;
   const repairResult = await runCompositionRepairLoop({
     db,
     goalPrompt: input.goalPrompt,
@@ -145,11 +148,12 @@ async function createLibraryConstrainedPlannerDraft(
     });
     return { draftId, goalPrompt: input.goalPrompt, workflowId };
   }
+  const composition = repairResult.composition;
   const compiled = await compileWorkflowComposition(db, {
     runId: draftRunId,
     goalPrompt: input.goalPrompt,
     candidatePacket,
-    composition: repairResult.composition,
+    composition,
   });
   const bundle: PlanBundle & {
     orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
@@ -157,9 +161,17 @@ async function createLibraryConstrainedPlannerDraft(
   } = {
     workflow: compiled.workflow,
     plannerTrace: {
-      model: `southstar-library-constrained-${input.composerMode ?? "fixture"}-composer`,
+      model: `southstar-library-constrained-${composerMode}-composer`,
       promptHash: hash(input.goalPrompt),
       generatedAt: new Date().toISOString(),
+      analyzerType: "deterministic",
+      composerMode,
+      composerFallbackUsed: fallbackImplicitlySelected || didComposerUseFallback(composer),
+      validatorAttempts: repairResult.attempts.length,
+      repairAttempts: Math.max(0, repairResult.attempts.length - 1),
+      finalValidationOk: repairResult.validation.ok,
+      candidatePacketHash: hash(JSON.stringify(candidatePacket)),
+      compositionHash: hash(JSON.stringify(composition)),
     },
     orchestrationSnapshot: compiled.orchestrationSnapshot,
     repairAttempts: repairResult.attempts,
@@ -243,12 +255,13 @@ async function buildContextForTask(
 ): Promise<void> {
   const task = workflow.tasks.find((candidate) => candidate.id === taskId);
   if (!task) throw new Error(`unknown task: ${taskId}`);
+  const domainPack = domainPackForWorkflow(workflow);
   await buildContextPacketWithKnowledgeCards(db, {
     runId,
     taskId: task.id,
     rootSessionId: `root-${runId}-${task.id}`,
     goalPrompt: workflow.goalPrompt,
-    domainPack: softwareDomainPack,
+    domainPack,
     roleRef: task.roleRef,
     agentProfileRef: task.agentProfileRef,
     artifactContractRefs: task.requiredArtifactRefs,
@@ -278,6 +291,27 @@ function inferIntent(goalPrompt: string): "implement_feature" | "fix_bug" {
   return /fix|bug|failing|修正|錯誤/i.test(goalPrompt) ? "fix_bug" : "implement_feature";
 }
 
+function domainPackForWorkflow(workflow: SouthstarWorkflowManifest): DomainPack {
+  return {
+    ...softwareDomainPack,
+    id: workflow.domain ?? softwareDomainPack.id,
+    roles: workflow.roles ?? softwareDomainPack.roles,
+    agentProfiles: workflow.agentProfiles ?? softwareDomainPack.agentProfiles,
+    artifactContracts: workflow.artifactContracts ?? softwareDomainPack.artifactContracts,
+    evaluatorPipelines: workflow.evaluatorPipelines ?? softwareDomainPack.evaluatorPipelines,
+    contextPolicies: workflow.contextPolicies ?? softwareDomainPack.contextPolicies,
+    sessionPolicies: workflow.sessionPolicies ?? softwareDomainPack.sessionPolicies,
+    memoryPolicies: workflow.memoryPolicies ?? softwareDomainPack.memoryPolicies,
+    workspacePolicies: workflow.workspacePolicies ?? softwareDomainPack.workspacePolicies,
+    stopConditions: workflow.stopConditions ?? softwareDomainPack.stopConditions,
+  };
+}
+
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function didComposerUseFallback(composer: WorkflowComposer): boolean {
+  const maybeFallbackAwareComposer = composer as WorkflowComposer & { wasFallbackUsed?: () => boolean };
+  return maybeFallbackAwareComposer.wasFallbackUsed?.() === true;
 }

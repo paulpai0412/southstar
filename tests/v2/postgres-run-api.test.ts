@@ -92,6 +92,77 @@ test("Postgres run API supports llm-constrained planner drafts and preserves tas
   });
 });
 
+test("llm-constrained planner trace records analyzer/composer and validation audit metadata for fixture composer", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement calc sum",
+      orchestrationMode: "llm-constrained",
+      composerMode: "fixture",
+    });
+    const draftResource = await db.one<{
+      payload_json: {
+        plannerTrace: {
+          analyzerType?: string;
+          composerMode?: string;
+          composerFallbackUsed?: boolean;
+          validatorAttempts?: number;
+          repairAttempts?: number;
+          finalValidationOk?: boolean;
+          candidatePacketHash?: string;
+          compositionHash?: string;
+        };
+        orchestrationSnapshot: {
+          candidatePacketHash: string;
+          selectedCompositionPlan: unknown;
+        };
+      };
+    }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    const trace = draftResource.payload_json.plannerTrace;
+    assert.equal(trace.analyzerType, "deterministic");
+    assert.equal(trace.composerMode, "fixture");
+    assert.equal(trace.composerFallbackUsed, false);
+    assert.equal(trace.validatorAttempts, 1);
+    assert.equal(trace.repairAttempts, 0);
+    assert.equal(trace.finalValidationOk, true);
+    assert.match(trace.candidatePacketHash ?? "", /^[a-f0-9]{64}$/);
+    assert.match(trace.compositionHash ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(trace.candidatePacketHash, draftResource.payload_json.orchestrationSnapshot.candidatePacketHash);
+    assert.notEqual(trace.compositionHash, "");
+  });
+});
+
+test("llm-with-fixture-fallback sets plannerTrace composerFallbackUsed when primary composer fails", async () => {
+  await withDb(async (db) => {
+    const failingComposer = {
+      async compose() {
+        throw new Error("forced llm composer failure");
+      },
+    };
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement calc sum",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm-with-fixture-fallback",
+      composer: failingComposer,
+    });
+    const draftResource = await db.one<{
+      payload_json: {
+        plannerTrace: {
+          composerMode?: string;
+          composerFallbackUsed?: boolean;
+        };
+      };
+    }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    assert.equal(draftResource.payload_json.plannerTrace.composerMode, "llm-with-fixture-fallback");
+    assert.equal(draftResource.payload_json.plannerTrace.composerFallbackUsed, true);
+  });
+});
+
 test("Postgres planner draft can use injected scripted LLM composer for non-fixture DAG shape", async () => {
   await withDb(async (db) => {
     const composer = new ScriptedWorkflowComposer([invalidInspectOnlyPlan(), validInspectOnlyPlan()]);
