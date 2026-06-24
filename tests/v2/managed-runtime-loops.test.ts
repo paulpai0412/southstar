@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
+import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 import {
   RECOVERY_DECISION_RESOURCE_TYPE,
   RECOVERY_DECISION_SCHEMA_VERSION,
@@ -24,6 +25,7 @@ test("managed runtime loop dispatches runnable Postgres tasks through scheduler"
   const db = await createTestPostgresDb();
   try {
     await initSouthstarSchema(db);
+    await seedSoftwareLibraryGraph(db);
     await createWorkflowRunPg(db, {
       id: "run-managed-loop-1",
       status: "running",
@@ -78,6 +80,7 @@ test("managed runtime loop dispatches scheduling Postgres runs through scheduler
   const db = await createTestPostgresDb();
   try {
     await initSouthstarSchema(db);
+    await seedSoftwareLibraryGraph(db);
     await createWorkflowRunPg(db, {
       id: "run-managed-loop-scheduling",
       status: "scheduling",

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { QueryResultRow } from "pg";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
+import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import type { ExecuteTaskInput, HandBinding, HandProvider } from "../../src/v2/hands/types.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
@@ -595,6 +596,7 @@ async function seedRun(
     tasks: Array<{ id: string; status: string; sortOrder: number; dependsOn: string[]; rootSessionId?: string }>;
   },
 ): Promise<void> {
+  await seedSoftwareLibraryGraph(db);
   await createWorkflowRunPg(db, {
     id: input.runId,
     status: "running",

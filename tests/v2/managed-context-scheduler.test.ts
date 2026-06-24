@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { BrainProvider } from "../../src/v2/brain/types.ts";
+import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 import type { HandProvider } from "../../src/v2/hands/types.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
@@ -192,6 +193,7 @@ async function seedRun(
   db: TestPostgresDb,
   input: { runId: string; taskId: string; legacyContextPacketId: string },
 ): Promise<void> {
+  await seedSoftwareLibraryGraph(db);
   const manifest = {
     schemaVersion: "southstar.v2",
     workflowId: "wf-scheduler-managed-context",
