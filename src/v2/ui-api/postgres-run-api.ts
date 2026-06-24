@@ -9,6 +9,7 @@ import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.t
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { createWorkflowComposerRegistry, type WorkflowComposerMode } from "../orchestration/composer-registry.ts";
+import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
 import { analyzeRequirementDeterministically } from "../orchestration/requirement-analyzer.ts";
 import {
   appendHistoryEventPg,
@@ -114,17 +115,46 @@ async function createLibraryConstrainedPlannerDraft(
 
   const registry = createWorkflowComposerRegistry({ llmComposer: input.composer });
   const composer = registry.resolve({ composerMode: input.composerMode ?? "fixture" });
-  const composition = await composer.compose({
+  const repairResult = await runCompositionRepairLoop({
+    db,
     goalPrompt: input.goalPrompt,
     candidatePacket,
+    composer,
+    scope: "software",
+    maxRepairAttempts: 2,
   });
+  if (!repairResult.validation.ok) {
+    await upsertRuntimeResourcePg(db, {
+      id: draftId,
+      resourceType: "planner_draft",
+      resourceKey: draftId,
+      scope: "planner",
+      status: "invalid",
+      title: "Invalid Library-Constrained Planner Draft",
+      payload: {
+        requirementSpec,
+        candidatePacket,
+        repairAttempts: repairResult.attempts,
+      },
+      summary: {
+        goalPrompt: input.goalPrompt,
+        workflowId,
+        planner: "library-constrained-llm",
+        status: "invalid",
+      },
+    });
+    return { draftId, goalPrompt: input.goalPrompt, workflowId };
+  }
   const compiled = await compileWorkflowComposition(db, {
     runId: draftRunId,
     goalPrompt: input.goalPrompt,
     candidatePacket,
-    composition,
+    composition: repairResult.composition,
   });
-  const bundle: PlanBundle & { orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never } = {
+  const bundle: PlanBundle & {
+    orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
+    repairAttempts: typeof repairResult.attempts;
+  } = {
     workflow: compiled.workflow,
     plannerTrace: {
       model: `southstar-library-constrained-${input.composerMode ?? "fixture"}-composer`,
@@ -132,6 +162,7 @@ async function createLibraryConstrainedPlannerDraft(
       generatedAt: new Date().toISOString(),
     },
     orchestrationSnapshot: compiled.orchestrationSnapshot,
+    repairAttempts: repairResult.attempts,
   };
 
   await upsertRuntimeResourcePg(db, {

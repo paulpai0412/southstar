@@ -4,7 +4,9 @@ import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
+import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
+import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
@@ -92,47 +94,54 @@ test("Postgres run API supports llm-constrained planner drafts and preserves tas
 
 test("Postgres planner draft can use injected scripted LLM composer for non-fixture DAG shape", async () => {
   await withDb(async (db) => {
+    const composer = new ScriptedWorkflowComposer([invalidInspectOnlyPlan(), validInspectOnlyPlan()]);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with a single exploration task",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
-      composer: {
-        async compose() {
-          return {
-            schemaVersion: "southstar.workflow_composition_plan.v1",
-            title: "Single Exploration Plan",
-            selectedWorkflowTemplateRef: "template.software-feature",
-            rationale: "scripted LLM plan for API test",
-            tasks: [
-              {
-                id: "inspect-only",
-                name: "Inspect Only",
-                responsibility: "inspect repository and produce a plan",
-                dependsOn: [],
-                templateSlotRef: "understand",
-                agentDefinitionRef: "agent.software-explorer",
-                agentProfileRef: "profile.software-explorer-codex",
-                instructionRefs: ["instruction.software-explorer"],
-                skillRefs: ["skill.software-repo-discovery"],
-                toolGrantRefs: ["tool.workspace-read"],
-                mcpGrantRefs: [],
-                vaultLeasePolicyRefs: [],
-                inputArtifactRefs: [],
-                outputArtifactRefs: ["artifact.implementation_plan"],
-                evaluatorProfileRef: "evaluator.software-plan-quality",
-                recoveryStrategyRefs: ["retry-same-agent"],
-                rationale: "use only explorer candidate",
-              },
-            ],
-            rejectedCandidates: [],
-            generatedComponentProposals: [],
-          };
-        },
-      },
+      composer,
     });
+    const draftResource = await db.one<{ payload_json: { repairAttempts: Array<{ validation: { ok: boolean } }> } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    assert.equal(draftResource.payload_json.repairAttempts.length, 2);
+    assert.equal(draftResource.payload_json.repairAttempts[0]?.validation.ok, false);
+    assert.equal(draftResource.payload_json.repairAttempts[1]?.validation.ok, true);
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     assert.deepEqual(run.taskIds, ["inspect-only"]);
+  });
+});
+
+test("Postgres planner draft is invalid when repair loop remains invalid after max attempts", async () => {
+  await withDb(async (db) => {
+    const composer = new ScriptedWorkflowComposer([
+      invalidInspectOnlyPlan(),
+      invalidInspectOnlyPlan(),
+      invalidInspectOnlyPlan(),
+    ]);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement calc sum with invalid explorer profile",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
+      composer,
+    });
+    assert.ok(draft.draftId.length > 0);
+    const draftResource = await db.one<{
+      status: string;
+      payload_json: { repairAttempts: Array<{ validation: { ok: boolean } }> };
+    }>(
+      "select status, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    assert.equal(draftResource.status, "invalid");
+    assert.equal(draftResource.payload_json.repairAttempts.length, 3);
+    assert.equal(draftResource.payload_json.repairAttempts[2]?.validation.ok, false);
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
+      /planner draft is not validated/,
+    );
   });
 });
 
@@ -252,4 +261,68 @@ function replaceDatabase(adminUrl: string, db: string): string {
 
 function quoteIdent(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
+}
+
+function invalidInspectOnlyPlan(): WorkflowCompositionPlan {
+  return {
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Invalid Inspect Plan",
+    selectedWorkflowTemplateRef: "template.software-feature",
+    rationale: "invalid profile for explorer task",
+    tasks: [
+      {
+        id: "inspect-only",
+        name: "Inspect Only",
+        responsibility: "inspect repository and produce a plan",
+        dependsOn: [],
+        templateSlotRef: "understand",
+        agentDefinitionRef: "agent.software-explorer",
+        agentProfileRef: "profile.software-maker-pi",
+        instructionRefs: ["instruction.software-explorer"],
+        skillRefs: ["skill.software-repo-discovery"],
+        toolGrantRefs: ["tool.workspace-read"],
+        mcpGrantRefs: [],
+        vaultLeasePolicyRefs: [],
+        inputArtifactRefs: [],
+        outputArtifactRefs: ["artifact.implementation_plan"],
+        evaluatorProfileRef: "evaluator.software-plan-quality",
+        recoveryStrategyRefs: ["retry-same-agent"],
+        rationale: "invalid profile should trigger repair",
+      },
+    ],
+    rejectedCandidates: [],
+    generatedComponentProposals: [],
+  };
+}
+
+function validInspectOnlyPlan(): WorkflowCompositionPlan {
+  return {
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Valid Inspect Plan",
+    selectedWorkflowTemplateRef: "template.software-feature",
+    rationale: "valid explorer-only plan",
+    tasks: [
+      {
+        id: "inspect-only",
+        name: "Inspect Only",
+        responsibility: "inspect repository and produce a plan",
+        dependsOn: [],
+        templateSlotRef: "understand",
+        agentDefinitionRef: "agent.software-explorer",
+        agentProfileRef: "profile.software-explorer-codex",
+        instructionRefs: ["instruction.software-explorer"],
+        skillRefs: ["skill.software-repo-discovery"],
+        toolGrantRefs: ["tool.workspace-read"],
+        mcpGrantRefs: [],
+        vaultLeasePolicyRefs: [],
+        inputArtifactRefs: [],
+        outputArtifactRefs: ["artifact.implementation_plan"],
+        evaluatorProfileRef: "evaluator.software-plan-quality",
+        recoveryStrategyRefs: ["retry-same-agent"],
+        rationale: "valid repaired plan",
+      },
+    ],
+    rejectedCandidates: [],
+    generatedComponentProposals: [],
+  };
 }

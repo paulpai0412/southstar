@@ -8,10 +8,15 @@ import type {
   WorkflowCompositionValidationResult,
 } from "../design-library/types.ts";
 
+export type ValidateWorkflowCompositionOptions = {
+  scope?: string;
+};
+
 export async function validateWorkflowCompositionPlan(
   db: SouthstarDb,
   packet: CandidatePacket,
   plan: WorkflowCompositionPlan,
+  options: ValidateWorkflowCompositionOptions = {},
 ): Promise<WorkflowCompositionValidationResult> {
   const issues: WorkflowCompositionValidationIssue[] = [];
   if (plan.schemaVersion !== "southstar.workflow_composition_plan.v1") {
@@ -23,7 +28,7 @@ export async function validateWorkflowCompositionPlan(
   }
   validateTaskDependencies(plan, issues);
   validateCandidateMembership(plan, candidateRefSet, issues);
-  await validateEdgeConstraints(db, plan, issues);
+  await validateEdgeConstraints(db, plan, issues, options.scope ?? "software");
   return { ok: issues.length === 0, issues };
 }
 
@@ -83,6 +88,7 @@ async function validateEdgeConstraints(
   db: SouthstarDb,
   plan: WorkflowCompositionPlan,
   issues: WorkflowCompositionValidationIssue[],
+  scope: string,
 ): Promise<void> {
   for (const [taskIndex, task] of plan.tasks.entries()) {
     await requireOutgoingEdge(
@@ -90,6 +96,7 @@ async function validateEdgeConstraints(
       task.agentProfileRef,
       "implements",
       task.agentDefinitionRef,
+      scope,
       issues,
       "profile_does_not_implement_agent",
       `tasks.${taskIndex}.agentProfileRef`,
@@ -100,6 +107,7 @@ async function validateEdgeConstraints(
         task.agentProfileRef,
         "supports_skill",
         skillRef,
+        scope,
         issues,
         "profile_does_not_allow_skill",
         `tasks.${taskIndex}.skillRefs`,
@@ -111,6 +119,7 @@ async function validateEdgeConstraints(
         task.agentProfileRef,
         "allows_tool",
         toolRef,
+        scope,
         issues,
         "profile_does_not_allow_tool",
         `tasks.${taskIndex}.toolGrantRefs`,
@@ -122,6 +131,7 @@ async function validateEdgeConstraints(
         task.agentProfileRef,
         "allows_mcp_grant",
         mcpRef,
+        scope,
         issues,
         "profile_does_not_allow_mcp",
         `tasks.${taskIndex}.mcpGrantRefs`,
@@ -133,6 +143,7 @@ async function validateEdgeConstraints(
         task.agentProfileRef,
         "uses_instruction",
         instructionRef,
+        scope,
         issues,
         "profile_does_not_allow_instruction",
         `tasks.${taskIndex}.instructionRefs`,
@@ -144,6 +155,7 @@ async function validateEdgeConstraints(
         task.evaluatorProfileRef,
         "validates_artifact",
         artifactRef,
+        scope,
         issues,
         "evaluator_does_not_validate_artifact",
         `tasks.${taskIndex}.evaluatorProfileRef`,
@@ -157,11 +169,12 @@ async function requireOutgoingEdge(
   fromRef: string,
   edgeType: LibraryEdgeType,
   toRef: string,
+  scope: string,
   issues: WorkflowCompositionValidationIssue[],
   code: WorkflowCompositionValidationIssue["code"],
   path: string,
 ): Promise<void> {
-  const edges = await findLibraryEdgesFrom(db, fromRef, edgeType, { scope: "software" });
+  const edges = await findLibraryEdgesFrom(db, fromRef, edgeType, { scope });
   if (edges.some((edge) => edge.toObjectKey === toRef)) return;
   issues.push(issue(code, path, `${fromRef} does not have ${edgeType} edge to ${toRef}`));
 }
