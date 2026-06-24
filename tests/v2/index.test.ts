@@ -32,6 +32,7 @@ await import("./library-graph-store.test.ts");
 await import("./library-candidate-resolver.test.ts");
 await import("./workflow-composition-validator.test.ts");
 await import("./workflow-composition-compiler.test.ts");
+await import("./workflow-composer-registry.test.ts");
 await import("./library-constrained-regression.test.ts");
 await import("./evolution-api.test.ts");
 await import("./evolution-assets.test.ts");

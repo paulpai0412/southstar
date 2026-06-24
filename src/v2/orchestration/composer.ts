@@ -90,6 +90,21 @@ export class DeterministicFixtureComposer implements WorkflowComposer {
   }
 }
 
+export class ScriptedWorkflowComposer implements WorkflowComposer {
+  private index = 0;
+
+  constructor(private readonly plans: WorkflowCompositionPlan[]) {}
+
+  async compose(_input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    const plan = this.plans[Math.min(this.index, this.plans.length - 1)];
+    this.index += 1;
+    if (!plan) {
+      throw new Error("ScriptedWorkflowComposer has no plans");
+    }
+    return structuredClone(plan);
+  }
+}
+
 function task(
   id: string,
   dependsOn: string[],
