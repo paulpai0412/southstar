@@ -1,10 +1,9 @@
-import { createHash } from "node:crypto";
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
-import type { ResolvedSkillSnapshot } from "../skills/types.ts";
+import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
 import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { assembleContextBlocks } from "./assembly-policy.ts";
 import { collectContextSourcesPg } from "./source-builder.ts";
@@ -80,6 +79,16 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
       if (!assembly.validation.ok) {
         throw new Error(`context assembly failed: ${assembly.validation.errors.map((error) => error.message).join("; ")}`);
       }
+      const materializedLibrary = await materializeTaskLibraryRefs(db, {
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        instructionRefs: libraryRefs(task.instructionRefs, "instruction.", "instruction"),
+        skillRefs: libraryRefs(task.skillRefs, "skill.", "skill"),
+        toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
+        mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
+        vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+      });
 
       const contextPacketId = `ctx-${input.runId}-${input.taskId}-${input.attemptId}`;
       const taskEnvelopeId = `task-envelope-${input.runId}-${input.taskId}-${input.attemptId}`;
@@ -101,8 +110,11 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         priorArtifacts: assembly.selected.filter((block) => block.sourceType === "artifact"),
         checkpointSummary: assembly.selected.find((block) => block.sourceType === "checkpoint"),
         failureSummary: assembly.selected.find((block) => block.sourceType === "failure"),
-        skillInstructions: [],
-        mcpGrantSummary: [],
+        skillInstructions: [
+          ...instructionBlocks(materializedLibrary.instructions),
+          ...skillBlocks(materializedLibrary.skills),
+        ],
+        mcpGrantSummary: mcpGrantBlocks(materializedLibrary.mcpGrants),
         forbiddenActions: agentProfile.toolPolicy.deniedTools,
         budget: agentProfile.budgetPolicy,
         tokenEstimate: assembly.tokenEstimate,
@@ -119,9 +131,17 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         agentProfile,
         harness,
         contextPacket,
-        skills: skillSnapshots(task.skillRefs ?? []),
-        mcpGrants: (task.mcpGrantRefs ?? []).map((grantRef) => ({ serverId: grantRef, allowedTools: [] })),
-        vaultLeases: [],
+        skills: materializedLibrary.skills,
+        mcpGrants: materializedLibrary.mcpGrants,
+        vaultLeases: materializedLibrary.vaultLeases,
+        toolProxyPolicy: materializedLibrary.toolProxyPolicy,
+        materializedLibraryRefs: {
+          instructionRefs: libraryRefs(task.instructionRefs, "instruction.", "instruction"),
+          skillRefs: libraryRefs(task.skillRefs, "skill.", "skill"),
+          toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
+          mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
+          vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+        },
         artifactContracts,
         evaluatorPipeline,
         session: {
@@ -245,17 +265,42 @@ function failureSummaryCandidates(input: BuildManagedTaskContextInput): ContextB
   }];
 }
 
-function skillSnapshots(skillRefs: string[]): ResolvedSkillSnapshot[] {
-  return skillRefs.map((skillId) => ({
-    skillId,
-    version: "runtime",
-    instructions: `Use skill ${skillId}.`,
-    allowedTools: [],
-    requiredMounts: [],
-    mcpRequirements: [],
-    artifactContracts: [],
-    contentHash: createHash("sha256").update(skillId).digest("hex"),
-    mountPath: `/skills/${skillId}`,
+function instructionBlocks(
+  instructions: Array<{ instructionRef: string; content: string }>,
+): ContextBlock[] {
+  return instructions.map((instruction) => ({
+    id: `instruction-${instruction.instructionRef}`.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase(),
+    sourceType: "skill",
+    title: instruction.instructionRef,
+    text: instruction.content,
+    sourceRef: instruction.instructionRef,
+    tokenEstimate: estimateTokens(instruction.content),
+  }));
+}
+
+function skillBlocks(
+  skills: Array<{ skillId: string; instructions: string }>,
+): ContextBlock[] {
+  return skills.map((skill) => ({
+    id: `skill-${skill.skillId}`.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase(),
+    sourceType: "skill",
+    title: skill.skillId,
+    text: skill.instructions,
+    sourceRef: skill.skillId,
+    tokenEstimate: estimateTokens(skill.instructions),
+  }));
+}
+
+function mcpGrantBlocks(
+  grants: Array<{ serverId: string; allowedTools: string[] }>,
+): ContextBlock[] {
+  return grants.map((grant) => ({
+    id: `mcp-${grant.serverId}`.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase(),
+    sourceType: "mcp",
+    title: grant.serverId,
+    text: grant.allowedTools.join(", "),
+    sourceRef: grant.serverId,
+    tokenEstimate: estimateTokens(grant.allowedTools.join(" ")),
   }));
 }
 
@@ -271,4 +316,49 @@ function attemptNumber(attemptId: string): number {
 
 function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
+}
+
+type LibraryRefKind = "instruction" | "skill" | "tool" | "mcp" | "vault";
+
+const LEGACY_LIBRARY_REF_MAPS: Record<LibraryRefKind, Record<string, string>> = {
+  instruction: {
+    "software.explorer": "instruction.software-explorer",
+    "software.spec-reviewer": "instruction.software-spec-reviewer",
+    "software.maker": "instruction.software-maker",
+    "software.checker": "instruction.software-checker",
+    "software.code-quality-reviewer": "instruction.software-code-quality-reviewer",
+    "software.summarizer": "instruction.software-summarizer",
+  },
+  skill: {
+    "software.calc-cli": "skill.software-implementation",
+    "software.repo-discovery": "skill.software-repo-discovery",
+    "software.spec-review": "skill.software-spec-review",
+    "software.implementation": "skill.software-implementation",
+    "software.verification": "skill.software-verification",
+    "software.code-quality-review": "skill.software-code-quality-review",
+    "software.summary": "skill.software-summary",
+  },
+  tool: {
+    "software.workspace-read": "tool.workspace-read",
+    "software.workspace-write": "tool.workspace-write",
+    "software.shell-command": "tool.shell-command",
+  },
+  mcp: {
+    "filesystem-workspace": "mcp.filesystem-workspace",
+    "software.filesystem-workspace": "mcp.filesystem-workspace",
+  },
+  vault: {
+    "software.github-write-token": "vault.github-write-token",
+  },
+};
+
+function libraryRefs(values: string[] | undefined, prefix: string, kind: LibraryRefKind): string[] {
+  const normalized = (values ?? []).map((value) => normalizeLibraryRef(value, prefix, kind));
+  return [...new Set(normalized)];
+}
+
+function normalizeLibraryRef(value: string, prefix: string, kind: LibraryRefKind): string {
+  if (value.startsWith(prefix)) return value;
+  const mapped = LEGACY_LIBRARY_REF_MAPS[kind][value];
+  return mapped ?? value;
 }

@@ -1,11 +1,11 @@
-import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { seedSoftwareLibraryGraph } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { ContextPacket } from "../context/types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
-import type { ResolvedSkillSnapshot } from "../skills/types.ts";
+import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
 
 export async function getPostgresTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId: string }): Promise<TaskEnvelopeV2> {
   const persisted = await latestPersistedTaskEnvelope(db, input);
@@ -44,6 +44,17 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
   const artifactContracts = artifactContractsForTask(domainPack, task);
   const evaluatorPipeline = required(domainPack.evaluatorPipelines.find((candidate) => candidate.id === task.evaluatorPipelineRef), `missing evaluator pipeline ${task.evaluatorPipelineRef}`);
   const rootSessionId = taskRow.root_session_id ?? `root-${input.runId}-${input.taskId}`;
+  await seedSoftwareLibraryGraph(db);
+  const materializedLibrary = await materializeTaskLibraryRefs(db, {
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: rootSessionId,
+    instructionRefs: libraryRefs(task.instructionRefs, "instruction.", "instruction"),
+    skillRefs: libraryRefs(task.skillRefs, "skill.", "skill"),
+    toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
+    mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
+    vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+  });
   return buildTaskEnvelopeV2({
     runId: input.runId,
     workflowId: workflow.workflowId,
@@ -54,9 +65,17 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
     agentProfile,
     harness,
     contextPacket,
-    skills: skillSnapshots(task.skillRefs ?? []),
-    mcpGrants: (task.mcpGrantRefs ?? []).map((grantRef) => ({ serverId: grantRef, allowedTools: [] })),
-    vaultLeases: [],
+    skills: materializedLibrary.skills,
+    mcpGrants: materializedLibrary.mcpGrants,
+    vaultLeases: materializedLibrary.vaultLeases,
+    toolProxyPolicy: materializedLibrary.toolProxyPolicy,
+    materializedLibraryRefs: {
+      instructionRefs: libraryRefs(task.instructionRefs, "instruction.", "instruction"),
+      skillRefs: libraryRefs(task.skillRefs, "skill.", "skill"),
+      toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
+      mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
+      vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+    },
     artifactContracts,
     evaluatorPipeline,
     session: { sessionId: rootSessionId, maxRepairAttempts: task.rootSession.maxRepairAttempts },
@@ -107,21 +126,52 @@ function artifactContractsForTask(domainPack: DomainPack, task: WorkflowTaskDefi
     .map((artifactRef) => required(domainPack.artifactContracts.find((contract) => contract.id === artifactRef), `missing artifact contract ${artifactRef}`));
 }
 
-function skillSnapshots(skillRefs: string[]): ResolvedSkillSnapshot[] {
-  return skillRefs.map((skillId) => ({
-    skillId,
-    version: "runtime",
-    instructions: `Use skill ${skillId}.`,
-    allowedTools: [],
-    requiredMounts: [],
-    mcpRequirements: [],
-    artifactContracts: [],
-    contentHash: createHash("sha256").update(skillId).digest("hex"),
-    mountPath: `/skills/${skillId}`,
-  }));
-}
-
 function required<T>(value: T | undefined, message: string): T {
   if (!value) throw new Error(message);
   return value;
+}
+
+type LibraryRefKind = "instruction" | "skill" | "tool" | "mcp" | "vault";
+
+const LEGACY_LIBRARY_REF_MAPS: Record<LibraryRefKind, Record<string, string>> = {
+  instruction: {
+    "software.explorer": "instruction.software-explorer",
+    "software.spec-reviewer": "instruction.software-spec-reviewer",
+    "software.maker": "instruction.software-maker",
+    "software.checker": "instruction.software-checker",
+    "software.code-quality-reviewer": "instruction.software-code-quality-reviewer",
+    "software.summarizer": "instruction.software-summarizer",
+  },
+  skill: {
+    "software.calc-cli": "skill.software-implementation",
+    "software.repo-discovery": "skill.software-repo-discovery",
+    "software.spec-review": "skill.software-spec-review",
+    "software.implementation": "skill.software-implementation",
+    "software.verification": "skill.software-verification",
+    "software.code-quality-review": "skill.software-code-quality-review",
+    "software.summary": "skill.software-summary",
+  },
+  tool: {
+    "software.workspace-read": "tool.workspace-read",
+    "software.workspace-write": "tool.workspace-write",
+    "software.shell-command": "tool.shell-command",
+  },
+  mcp: {
+    "filesystem-workspace": "mcp.filesystem-workspace",
+    "software.filesystem-workspace": "mcp.filesystem-workspace",
+  },
+  vault: {
+    "software.github-write-token": "vault.github-write-token",
+  },
+};
+
+function libraryRefs(values: string[] | undefined, prefix: string, kind: LibraryRefKind): string[] {
+  const normalized = (values ?? []).map((value) => normalizeLibraryRef(value, prefix, kind));
+  return [...new Set(normalized)];
+}
+
+function normalizeLibraryRef(value: string, prefix: string, kind: LibraryRefKind): string {
+  if (value.startsWith(prefix)) return value;
+  const mapped = LEGACY_LIBRARY_REF_MAPS[kind][value];
+  return mapped ?? value;
 }

@@ -3,6 +3,7 @@ import type { HarnessDefinition } from "../manifests/types.ts";
 import type { AgentProfile, ArtifactContract, EvaluatorPipelineDefinition, RoleDefinition } from "../domain-packs/types.ts";
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import type { ContextPacket, ContextBlock } from "../context/types.ts";
+import type { ToolProxyPolicyPayload } from "../tool-proxy/types.ts";
 
 export type MemorySnapshot = {
   items: Array<{ id: string; body: unknown }>;
@@ -79,6 +80,14 @@ export type TaskEnvelopeV2 = {
   skills: ResolvedSkillSnapshot[];
   mcpGrants: McpGrantInput[];
   vaultLeases: Array<Omit<VaultLeaseInput, "secretValue">>;
+  toolProxyPolicy?: ToolProxyPolicyPayload;
+  materializedLibraryRefs?: {
+    instructionRefs: string[];
+    skillRefs: string[];
+    toolGrantRefs: string[];
+    mcpGrantRefs: string[];
+    vaultLeasePolicyRefs: string[];
+  };
   artifactContracts: ArtifactContract[];
   evaluatorPipeline: EvaluatorPipelineDefinition;
   session: { sessionId: string; baseCheckpointId?: string; maxRepairAttempts?: number };
