@@ -12,6 +12,9 @@ export type LibraryDefinitionKind =
   | "policy_bundle"
   | "workflow_template"
   | "workflow_recipe"
+  | "tool_definition"
+  | "instruction_template"
+  | "vault_lease_policy"
   | "skill_spec";
 
 export type LibraryActorType = "user" | "system" | "migration" | "llm" | "validator" | "runtime";
@@ -19,6 +22,47 @@ export type LibraryActorType = "user" | "system" | "migration" | "llm" | "valida
 export type LibraryDefinitionStatus = "draft" | "approved" | "deprecated" | "blocked";
 
 export type LibraryDraftStatus = "draft" | "invalid" | "valid" | "approved_for_run" | "rejected";
+
+export type LibraryEdgeType =
+  | "implements"
+  | "provides_capability"
+  | "requires_capability"
+  | "supports_skill"
+  | "requires_skill"
+  | "allows_tool"
+  | "requires_tool"
+  | "uses_instruction"
+  | "requires_secret_group"
+  | "allows_mcp_grant"
+  | "produces_artifact"
+  | "consumes_artifact"
+  | "validates_artifact"
+  | "uses_policy"
+  | "part_of_template"
+  | "supersedes"
+  | "blocked_by";
+
+export type LibraryObjectSummary = {
+  id: string;
+  objectKey: string;
+  objectKind: LibraryDefinitionKind;
+  status: LibraryDefinitionStatus;
+  headVersionId: string | null;
+  state: Record<string, unknown>;
+};
+
+export type LibraryEdgeRecord = {
+  id: string;
+  fromObjectKey: string;
+  fromVersionRef: string | null;
+  edgeType: LibraryEdgeType;
+  toObjectKey: string;
+  toVersionRef: string | null;
+  scope: string;
+  status: "active" | "inactive" | "blocked";
+  weight: number;
+  metadata: Record<string, unknown>;
+};
 
 export type DefinitionProvenance = {
   source: "seed" | "user" | "llm-proposal" | "migration" | "runtime-evidence";
