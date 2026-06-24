@@ -247,3 +247,81 @@ export type CandidatePacket = {
     reason: "no_approved_candidate" | "blocked_by_policy" | "requires_approval";
   }>;
 };
+
+export type GeneratedComponentProposal = {
+  id: string;
+  kind: LibraryDefinitionKind;
+  risk: "low" | "medium" | "high";
+  reason: string;
+  validationStatus: "validated" | "unvalidated";
+};
+
+export type WorkflowCompositionTask = {
+  id: string;
+  name: string;
+  responsibility: string;
+  dependsOn: string[];
+  templateSlotRef: string;
+  agentDefinitionRef: string;
+  agentProfileRef: string;
+  instructionRefs: string[];
+  skillRefs: string[];
+  toolGrantRefs: string[];
+  mcpGrantRefs: string[];
+  vaultLeasePolicyRefs: string[];
+  inputArtifactRefs: string[];
+  outputArtifactRefs: string[];
+  evaluatorProfileRef: string;
+  contextPolicyRef?: string;
+  workspacePolicyRef?: string;
+  recoveryStrategyRefs: string[];
+  rationale: string;
+};
+
+export type WorkflowCompositionPlan = {
+  schemaVersion: "southstar.workflow_composition_plan.v1";
+  title: string;
+  selectedWorkflowTemplateRef: string;
+  rationale: string;
+  tasks: WorkflowCompositionTask[];
+  rejectedCandidates: Array<{ ref: string; reason: string }>;
+  generatedComponentProposals: GeneratedComponentProposal[];
+};
+
+export type WorkflowCompositionPatch = {
+  schemaVersion: "southstar.workflow_composition_patch.v1";
+  basePlanHash: string;
+  operations: Array<
+    | { op: "replace-task"; taskId: string; task: WorkflowCompositionTask }
+    | { op: "remove-task"; taskId: string }
+    | { op: "add-task"; task: WorkflowCompositionTask }
+    | { op: "replace-ref"; taskId: string; field: keyof WorkflowCompositionTask; fromRef: string; toRef: string }
+  >;
+  rationale: string;
+};
+
+export type WorkflowCompositionValidationIssueCode =
+  | "invalid_schema_version"
+  | "unknown_template"
+  | "duplicate_task_id"
+  | "unknown_dependency"
+  | "dependency_cycle"
+  | "ref_not_in_candidate_packet"
+  | "profile_does_not_implement_agent"
+  | "profile_does_not_allow_skill"
+  | "profile_does_not_allow_tool"
+  | "profile_does_not_allow_mcp"
+  | "profile_does_not_allow_instruction"
+  | "evaluator_does_not_validate_artifact"
+  | "generated_component_selected";
+
+export type WorkflowCompositionValidationIssue = {
+  code: WorkflowCompositionValidationIssueCode;
+  path: string;
+  message: string;
+};
+
+export type WorkflowCompositionValidationResult = {
+  ok: boolean;
+  issues: WorkflowCompositionValidationIssue[];
+};
