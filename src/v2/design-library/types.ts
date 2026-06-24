@@ -208,3 +208,42 @@ export type SkillSpecPayload = {
   repairGuidance?: SkillRepairGuidance;
   provenance: DefinitionProvenance;
 };
+
+export type RequirementSpecV2 = {
+  summary: string;
+  workType: "software_feature" | "bugfix" | "research" | "data_analysis" | "migration" | "ops_recovery" | "general";
+  requiredCapabilities: string[];
+  expectedArtifacts: string[];
+  acceptanceCriteria: string[];
+  nonGoals: string[];
+  riskNotes: string[];
+  workspaceAssumptions: string[];
+  missingInputs: string[];
+};
+
+export type CandidateSummary = {
+  ref: string;
+  versionRef: string | null;
+  kind: LibraryDefinitionKind;
+  displayName: string;
+  state: Record<string, unknown>;
+  reason: string;
+};
+
+export type CandidatePacket = {
+  requirementSpec: RequirementSpecV2;
+  workflowTemplateCandidates: CandidateSummary[];
+  agentCandidatesByCapability: Record<string, CandidateSummary[]>;
+  profileCandidatesByAgent: Record<string, CandidateSummary[]>;
+  skillCandidatesByProfile: Record<string, CandidateSummary[]>;
+  toolCandidatesByProfile: Record<string, CandidateSummary[]>;
+  mcpGrantCandidatesByProfile: Record<string, CandidateSummary[]>;
+  instructionCandidatesByProfile: Record<string, CandidateSummary[]>;
+  artifactContractCandidates: CandidateSummary[];
+  evaluatorCandidatesByArtifact: Record<string, CandidateSummary[]>;
+  policyConstraints: CandidateSummary[];
+  unavailableRequirements: Array<{
+    capabilityRef: string;
+    reason: "no_approved_candidate" | "blocked_by_policy" | "requires_approval";
+  }>;
+};
