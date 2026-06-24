@@ -55,6 +55,8 @@ npm run test:e2e:postgres:24   # provider unreachable apply failure
 npm run test:e2e:postgres:25   # normal managed context/session/memory propagation
 npm run test:e2e:postgres:26   # abnormal managed context/session/memory recovery
 npm run test:e2e:postgres:27   # runtime API completeness across operator surfaces
+npm run test:e2e:postgres:28   # llm-constrained workflow from planner draft to completed run
+npm run test:e2e:postgres:29   # llm dynamic workflow materialization + envelope library refs
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
@@ -91,6 +93,8 @@ npm run test:e2e:postgres:27   # runtime API completeness across operator surfac
 | 25 normal context/session/memory flow | implemented | Downstream task receives prior artifact and run-local memory through managed context | context packet refs, task envelope, completed hands/tasks, accepted artifacts |
 | 26 abnormal context/session/memory recovery | implemented | Consumer Tork/Pi runner validation failure points to the producer artifact, records lineage repair context, resets the session, and rebuilds retry context from checkpoint, producer artifact, and run-local memory | producer hand, failed consumer hand, rejected artifact, `failedArtifactRefs`, `artifact_repair_marker`, `runtime.fault_injected`, session reset, checkpoint refs, memory refs, retry envelope, resolved exception |
 | 27 runtime API completeness | implemented | Operator API covers lifecycle, stream, execution, session, and memory surfaces | run actions, pause command, run summary, execution projection, hand executions, session/run events, SSE stream, memory approval, runtime health/tick |
+| 28 llm-constrained workflow end-to-end | implemented | Planner draft uses llm-constrained orchestration, materializes reviewer tasks, and completes task callbacks through real Tork/Pi scheduling | planner draft snapshot, reviewer profiles, task order, per-task callback evidence, run.completed |
+| 29 llm dynamic workflow materialization | implemented | Planner draft/run from llm-constrained fixture path verifies pre-callback task envelope materialized refs, skills, and tool-proxy policy, then reaches passed without persisted plaintext secret markers | planner trace composerMode fixture, per-task `task_envelope` materialized refs before callback, run passed, persisted-surface `plaintextSecret` negative check |
 
 ## Adding a new case
 
@@ -99,3 +103,13 @@ npm run test:e2e:postgres:27   # runtime API completeness across operator surfac
 3. Update this README and `postgres-real-matrix-static.test.ts`.
 4. Keep the case independent: create its own Postgres database and clean it up.
 5. Assert real lifecycle/read-model evidence, not just successful HTTP responses.
+
+## Case 29
+
+Dynamic workflow materialization coverage command:
+
+```bash
+npm run test:e2e:postgres:29
+```
+
+Case 29 validates llm-constrained planner draft + run creation (`composerMode: fixture`), task envelope materialized library refs/skills/tool-proxy policy presence before each callback completion, run terminal `passed`, and no persisted `plaintextSecret`.
