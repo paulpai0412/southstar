@@ -41,6 +41,10 @@ test("LLM composer sends bounded candidate packet and parses exactly one composi
   assert.doesNotMatch(prompts[0] ?? "", /tool-map\.drop-key-50/);
   assert.match(prompts[0] ?? "", /mcp-map\.keep-key-49/);
   assert.doesNotMatch(prompts[0] ?? "", /mcp-map\.drop-key-50/);
+  assert.match(prompts[0] ?? "", /vault-map\.keep-key-49/);
+  assert.doesNotMatch(prompts[0] ?? "", /vault-map\.drop-key-50/);
+  assert.match(prompts[0] ?? "", /vault-map-candidate\.keep-19/);
+  assert.doesNotMatch(prompts[0] ?? "", /vault-map-candidate\.drop-20/);
   assert.match(prompts[0] ?? "", /instruction-map\.keep-key-49/);
   assert.doesNotMatch(prompts[0] ?? "", /instruction-map\.drop-key-50/);
   assert.match(prompts[0] ?? "", /evaluator-map\.keep-key-49/);
@@ -190,6 +194,7 @@ function candidatePacket(): CandidatePacket {
     skillCandidatesByProfile: candidateMap("skill-map", "skill-map-candidate", "skill_definition"),
     toolCandidatesByProfile: candidateMap("tool-map", "tool-map-candidate", "tool_definition"),
     mcpGrantCandidatesByProfile: candidateMap("mcp-map", "mcp-map-candidate", "mcp_tool_grant"),
+    vaultLeaseCandidatesByProfile: candidateMap("vault-map", "vault-map-candidate", "vault_lease_policy"),
     instructionCandidatesByProfile: candidateMap("instruction-map", "instruction-map-candidate", "instruction_template"),
     artifactContractCandidates: [
       ...Array.from({ length: 50 }, (_value, index) => ({

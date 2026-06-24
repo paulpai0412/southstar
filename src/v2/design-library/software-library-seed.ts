@@ -79,6 +79,29 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   { objectKey: "tool.workspace-read", objectKind: "tool_definition", state: { access: "read" } },
   { objectKey: "tool.workspace-write", objectKind: "tool_definition", state: { access: "write" } },
   { objectKey: "tool.shell-command", objectKind: "tool_definition", state: { access: "shell" } },
+  {
+    objectKey: "mcp.filesystem-workspace",
+    objectKind: "mcp_tool_grant",
+    state: {
+      displayName: "Filesystem Workspace MCP Grant",
+      serverId: "filesystem-workspace",
+      allowedTools: ["read_file", "write_file", "list_files"],
+      sideEffect: "write",
+      requiresApproval: false,
+    },
+  },
+  {
+    objectKey: "vault.github-write-token",
+    objectKind: "vault_lease_policy",
+    state: {
+      displayName: "GitHub Write Token Vault Lease",
+      secretGroupRef: "github.write",
+      leaseTtlSeconds: 900,
+      mountMode: "proxy-only",
+      allowedToolRefs: ["tool.shell-command"],
+      auditRequired: true,
+    },
+  },
   { objectKey: "instruction.software-explorer", objectKind: "instruction_template", state: { role: "explorer" } },
   {
     objectKey: "instruction.software-spec-reviewer",
@@ -244,6 +267,12 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
   { fromObjectKey: "profile.software-maker-pi", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
   { fromObjectKey: "profile.software-maker-pi", edgeType: "allows_tool", toObjectKey: "tool.workspace-write" },
   { fromObjectKey: "profile.software-maker-pi", edgeType: "allows_tool", toObjectKey: "tool.shell-command" },
+  { fromObjectKey: "profile.software-maker-pi", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace" },
+  {
+    fromObjectKey: "profile.software-maker-pi",
+    edgeType: "requires_secret_group",
+    toObjectKey: "vault.github-write-token",
+  },
   { fromObjectKey: "profile.software-checker-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
   { fromObjectKey: "profile.software-checker-codex", edgeType: "allows_tool", toObjectKey: "tool.shell-command" },
   { fromObjectKey: "profile.software-code-quality-reviewer-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },

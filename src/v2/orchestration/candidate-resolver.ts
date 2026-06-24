@@ -47,12 +47,19 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   const skillCandidatesByProfile: Record<string, CandidateSummary[]> = {};
   const toolCandidatesByProfile: Record<string, CandidateSummary[]> = {};
   const mcpGrantCandidatesByProfile: Record<string, CandidateSummary[]> = {};
+  const vaultLeaseCandidatesByProfile: Record<string, CandidateSummary[]> = {};
   const instructionCandidatesByProfile: Record<string, CandidateSummary[]> = {};
   for (const profileCandidates of Object.values(profileCandidatesByAgent)) {
     for (const profileCandidate of profileCandidates) {
       skillCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(db, profileCandidate.ref, "supports_skill", input.scope);
       toolCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(db, profileCandidate.ref, "allows_tool", input.scope);
       mcpGrantCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(db, profileCandidate.ref, "allows_mcp_grant", input.scope);
+      vaultLeaseCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(
+        db,
+        profileCandidate.ref,
+        "requires_secret_group",
+        input.scope,
+      );
       instructionCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(
         db,
         profileCandidate.ref,
@@ -89,6 +96,7 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     skillCandidatesByProfile,
     toolCandidatesByProfile,
     mcpGrantCandidatesByProfile,
+    vaultLeaseCandidatesByProfile,
     instructionCandidatesByProfile,
     artifactContractCandidates,
     evaluatorCandidatesByArtifact,

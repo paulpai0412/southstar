@@ -61,6 +61,44 @@ test("validator rejects dependency cycles in memory", async () => {
   }
 });
 
+test("validator rejects vault refs not allowed by selected profile", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      scope: "software",
+    });
+    const plan = validComposition();
+    plan.tasks[0]!.vaultLeasePolicyRefs = ["vault.github-write-token"];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan);
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((item) => item.code === "profile_does_not_allow_vault_lease"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("validator rejects selected artifacts not produced by selected agent", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      scope: "software",
+    });
+    const plan = validComposition();
+    plan.tasks[1]!.outputArtifactRefs = ["artifact.verification_report"];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan);
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((item) => item.code === "agent_does_not_produce_artifact"), true);
+  } finally {
+    await db.close();
+  }
+});
+
 function validComposition(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",

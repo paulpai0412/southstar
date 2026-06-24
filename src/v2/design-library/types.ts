@@ -238,6 +238,7 @@ export type CandidatePacket = {
   skillCandidatesByProfile: Record<string, CandidateSummary[]>;
   toolCandidatesByProfile: Record<string, CandidateSummary[]>;
   mcpGrantCandidatesByProfile: Record<string, CandidateSummary[]>;
+  vaultLeaseCandidatesByProfile: Record<string, CandidateSummary[]>;
   instructionCandidatesByProfile: Record<string, CandidateSummary[]>;
   artifactContractCandidates: CandidateSummary[];
   evaluatorCandidatesByArtifact: Record<string, CandidateSummary[]>;
@@ -311,7 +312,12 @@ export type WorkflowCompositionValidationIssueCode =
   | "profile_does_not_allow_skill"
   | "profile_does_not_allow_tool"
   | "profile_does_not_allow_mcp"
+  | "profile_does_not_allow_vault_lease"
   | "profile_does_not_allow_instruction"
+  | "agent_does_not_produce_artifact"
+  | "input_artifact_not_satisfied"
+  | "template_slot_not_allowed"
+  | "policy_conflict"
   | "evaluator_does_not_validate_artifact"
   | "generated_component_selected";
 

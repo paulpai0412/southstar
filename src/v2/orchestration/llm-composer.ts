@@ -111,6 +111,7 @@ function boundCandidatePacket(packet: CandidatePacket): CandidatePacket {
     skillCandidatesByProfile: boundCandidateMap(packet.skillCandidatesByProfile),
     toolCandidatesByProfile: boundCandidateMap(packet.toolCandidatesByProfile),
     mcpGrantCandidatesByProfile: boundCandidateMap(packet.mcpGrantCandidatesByProfile),
+    vaultLeaseCandidatesByProfile: boundCandidateMap(packet.vaultLeaseCandidatesByProfile),
     instructionCandidatesByProfile: boundCandidateMap(packet.instructionCandidatesByProfile),
     artifactContractCandidates: packet.artifactContractCandidates.slice(0, 50),
     evaluatorCandidatesByArtifact: boundCandidateMap(packet.evaluatorCandidatesByArtifact),

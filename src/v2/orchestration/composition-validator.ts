@@ -137,6 +137,18 @@ async function validateEdgeConstraints(
         `tasks.${taskIndex}.mcpGrantRefs`,
       );
     }
+    for (const vaultRef of task.vaultLeasePolicyRefs) {
+      await requireOutgoingEdge(
+        db,
+        task.agentProfileRef,
+        "requires_secret_group",
+        vaultRef,
+        scope,
+        issues,
+        "profile_does_not_allow_vault_lease",
+        `tasks.${taskIndex}.vaultLeasePolicyRefs`,
+      );
+    }
     for (const instructionRef of task.instructionRefs) {
       await requireOutgoingEdge(
         db,
@@ -150,6 +162,16 @@ async function validateEdgeConstraints(
       );
     }
     for (const artifactRef of task.outputArtifactRefs) {
+      await requireOutgoingEdge(
+        db,
+        task.agentDefinitionRef,
+        "produces_artifact",
+        artifactRef,
+        scope,
+        issues,
+        "agent_does_not_produce_artifact",
+        `tasks.${taskIndex}.outputArtifactRefs`,
+      );
       await requireOutgoingEdge(
         db,
         task.evaluatorProfileRef,
@@ -187,6 +209,7 @@ function candidateRefs(packet: CandidatePacket): Set<string> {
   for (const candidates of Object.values(packet.skillCandidatesByProfile)) for (const candidate of candidates) refs.add(candidate.ref);
   for (const candidates of Object.values(packet.toolCandidatesByProfile)) for (const candidate of candidates) refs.add(candidate.ref);
   for (const candidates of Object.values(packet.mcpGrantCandidatesByProfile)) for (const candidate of candidates) refs.add(candidate.ref);
+  for (const candidates of Object.values(packet.vaultLeaseCandidatesByProfile)) for (const candidate of candidates) refs.add(candidate.ref);
   for (const candidates of Object.values(packet.instructionCandidatesByProfile)) for (const candidate of candidates) refs.add(candidate.ref);
   for (const candidate of packet.artifactContractCandidates) refs.add(candidate.ref);
   for (const candidates of Object.values(packet.evaluatorCandidatesByArtifact)) for (const candidate of candidates) refs.add(candidate.ref);

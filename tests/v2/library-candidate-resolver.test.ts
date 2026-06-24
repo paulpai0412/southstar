@@ -62,6 +62,30 @@ test("candidate resolver returns approved direct-edge candidates without recursi
   }
 });
 
+test("candidate resolver exposes MCP and vault candidates from direct profile edges", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const requirement = analyzeRequirementDeterministically("implement calc sum");
+    const packet = await resolveWorkflowCandidates(db, { requirementSpec: requirement, scope: "software" });
+
+    assert.equal(
+      packet.mcpGrantCandidatesByProfile["profile.software-maker-pi"]?.some((candidate) =>
+        candidate.ref === "mcp.filesystem-workspace"
+      ),
+      true,
+    );
+    assert.equal(
+      packet.vaultLeaseCandidatesByProfile["profile.software-maker-pi"]?.some((candidate) =>
+        candidate.ref === "vault.github-write-token"
+      ),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 async function assertHasDirectEdge(
   db: SouthstarDb,
   fromObjectKey: string,

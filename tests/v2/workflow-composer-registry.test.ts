@@ -143,6 +143,7 @@ function candidatePacket(): CandidatePacket {
     skillCandidatesByProfile: {},
     toolCandidatesByProfile: {},
     mcpGrantCandidatesByProfile: {},
+    vaultLeaseCandidatesByProfile: {},
     instructionCandidatesByProfile: {},
     artifactContractCandidates: [],
     evaluatorCandidatesByArtifact: {},
