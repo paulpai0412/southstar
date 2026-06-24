@@ -60,6 +60,9 @@ export type WorkflowTaskDefinition = {
     maxRepairAttempts: number;
   };
   skillRefs?: string[];
+  instructionRefs?: string[];
+  toolGrantRefs?: string[];
+  vaultLeasePolicyRefs?: string[];
   memoryScopeRefs?: string[];
   mcpGrantRefs?: string[];
   subagents: Array<{

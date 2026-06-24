@@ -16,6 +16,13 @@ test("software library seed smoke: expected maker and evaluator edges exist", as
     await assertHasDirectEdge(db, "profile.software-maker-pi", "implements", "agent.software-maker");
     await assertHasDirectEdge(db, "profile.software-maker-pi", "supports_skill", "skill.software-implementation");
     await assertHasDirectEdge(db, "profile.software-maker-pi", "allows_tool", "tool.workspace-write");
+    await assertHasDirectEdge(db, "profile.software-spec-reviewer-codex", "implements", "agent.software-spec-reviewer");
+    await assertHasDirectEdge(
+      db,
+      "profile.software-code-quality-reviewer-codex",
+      "implements",
+      "agent.software-code-quality-reviewer",
+    );
     await assertHasDirectEdge(
       db,
       "evaluator.software-feature-quality",

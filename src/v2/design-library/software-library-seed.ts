@@ -35,13 +35,20 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
     },
   },
   { objectKey: "agent.software-explorer", objectKind: "agent_definition", state: { role: "explorer" } },
+  { objectKey: "agent.software-spec-reviewer", objectKind: "agent_definition", state: { role: "checker" } },
   { objectKey: "agent.software-maker", objectKind: "agent_definition", state: { role: "maker" } },
   { objectKey: "agent.software-checker", objectKind: "agent_definition", state: { role: "checker" } },
+  { objectKey: "agent.software-code-quality-reviewer", objectKind: "agent_definition", state: { role: "checker" } },
   { objectKey: "agent.software-summarizer", objectKind: "agent_definition", state: { role: "summarizer" } },
   {
     objectKey: "profile.software-explorer-codex",
     objectKind: "agent_profile",
     state: { provider: "codex", model: "gpt-5-codex", role: "explorer" },
+  },
+  {
+    objectKey: "profile.software-spec-reviewer-codex",
+    objectKind: "agent_profile",
+    state: { provider: "codex", model: "gpt-5-codex", role: "checker" },
   },
   {
     objectKey: "profile.software-maker-pi",
@@ -54,20 +61,37 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
     state: { provider: "codex", model: "gpt-5-codex", role: "checker" },
   },
   {
+    objectKey: "profile.software-code-quality-reviewer-codex",
+    objectKind: "agent_profile",
+    state: { provider: "codex", model: "gpt-5-codex", role: "checker" },
+  },
+  {
     objectKey: "profile.software-summarizer-codex",
     objectKind: "agent_profile",
     state: { provider: "codex", model: "gpt-5-codex", role: "summarizer" },
   },
   { objectKey: "skill.software-repo-discovery", objectKind: "skill_definition", state: { role: "explorer" } },
+  { objectKey: "skill.software-spec-review", objectKind: "skill_definition", state: { role: "checker" } },
   { objectKey: "skill.software-implementation", objectKind: "skill_definition", state: { role: "maker" } },
   { objectKey: "skill.software-verification", objectKind: "skill_definition", state: { role: "checker" } },
+  { objectKey: "skill.software-code-quality-review", objectKind: "skill_definition", state: { role: "checker" } },
   { objectKey: "skill.software-summary", objectKind: "skill_definition", state: { role: "summarizer" } },
   { objectKey: "tool.workspace-read", objectKind: "tool_definition", state: { access: "read" } },
   { objectKey: "tool.workspace-write", objectKind: "tool_definition", state: { access: "write" } },
   { objectKey: "tool.shell-command", objectKind: "tool_definition", state: { access: "shell" } },
   { objectKey: "instruction.software-explorer", objectKind: "instruction_template", state: { role: "explorer" } },
+  {
+    objectKey: "instruction.software-spec-reviewer",
+    objectKind: "instruction_template",
+    state: { role: "checker" },
+  },
   { objectKey: "instruction.software-maker", objectKind: "instruction_template", state: { role: "maker" } },
   { objectKey: "instruction.software-checker", objectKind: "instruction_template", state: { role: "checker" } },
+  {
+    objectKey: "instruction.software-code-quality-reviewer",
+    objectKind: "instruction_template",
+    state: { role: "checker" },
+  },
   {
     objectKey: "instruction.software-summarizer",
     objectKind: "instruction_template",
@@ -137,8 +161,18 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
 
 const SOFTWARE_EDGES: readonly SeedEdge[] = [
   { fromObjectKey: "profile.software-explorer-codex", edgeType: "implements", toObjectKey: "agent.software-explorer" },
+  {
+    fromObjectKey: "profile.software-spec-reviewer-codex",
+    edgeType: "implements",
+    toObjectKey: "agent.software-spec-reviewer",
+  },
   { fromObjectKey: "profile.software-maker-pi", edgeType: "implements", toObjectKey: "agent.software-maker" },
   { fromObjectKey: "profile.software-checker-codex", edgeType: "implements", toObjectKey: "agent.software-checker" },
+  {
+    fromObjectKey: "profile.software-code-quality-reviewer-codex",
+    edgeType: "implements",
+    toObjectKey: "agent.software-code-quality-reviewer",
+  },
   {
     fromObjectKey: "profile.software-summarizer-codex",
     edgeType: "implements",
@@ -146,6 +180,11 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
   },
   {
     fromObjectKey: "agent.software-explorer",
+    edgeType: "provides_capability",
+    toObjectKey: "capability.repo-read",
+  },
+  {
+    fromObjectKey: "agent.software-spec-reviewer",
     edgeType: "provides_capability",
     toObjectKey: "capability.repo-read",
   },
@@ -161,6 +200,11 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
     toObjectKey: "capability.test-execution",
   },
   {
+    fromObjectKey: "agent.software-code-quality-reviewer",
+    edgeType: "provides_capability",
+    toObjectKey: "capability.test-execution",
+  },
+  {
     fromObjectKey: "agent.software-summarizer",
     edgeType: "provides_capability",
     toObjectKey: "capability.repo-read",
@@ -169,6 +213,11 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
     fromObjectKey: "profile.software-explorer-codex",
     edgeType: "supports_skill",
     toObjectKey: "skill.software-repo-discovery",
+  },
+  {
+    fromObjectKey: "profile.software-spec-reviewer-codex",
+    edgeType: "supports_skill",
+    toObjectKey: "skill.software-spec-review",
   },
   {
     fromObjectKey: "profile.software-maker-pi",
@@ -181,21 +230,34 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
     toObjectKey: "skill.software-verification",
   },
   {
+    fromObjectKey: "profile.software-code-quality-reviewer-codex",
+    edgeType: "supports_skill",
+    toObjectKey: "skill.software-code-quality-review",
+  },
+  {
     fromObjectKey: "profile.software-summarizer-codex",
     edgeType: "supports_skill",
     toObjectKey: "skill.software-summary",
   },
   { fromObjectKey: "profile.software-explorer-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
+  { fromObjectKey: "profile.software-spec-reviewer-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
   { fromObjectKey: "profile.software-maker-pi", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
   { fromObjectKey: "profile.software-maker-pi", edgeType: "allows_tool", toObjectKey: "tool.workspace-write" },
   { fromObjectKey: "profile.software-maker-pi", edgeType: "allows_tool", toObjectKey: "tool.shell-command" },
   { fromObjectKey: "profile.software-checker-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
   { fromObjectKey: "profile.software-checker-codex", edgeType: "allows_tool", toObjectKey: "tool.shell-command" },
+  { fromObjectKey: "profile.software-code-quality-reviewer-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
+  { fromObjectKey: "profile.software-code-quality-reviewer-codex", edgeType: "allows_tool", toObjectKey: "tool.shell-command" },
   { fromObjectKey: "profile.software-summarizer-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
   {
     fromObjectKey: "profile.software-explorer-codex",
     edgeType: "uses_instruction",
     toObjectKey: "instruction.software-explorer",
+  },
+  {
+    fromObjectKey: "profile.software-spec-reviewer-codex",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.software-spec-reviewer",
   },
   {
     fromObjectKey: "profile.software-maker-pi",
@@ -208,6 +270,11 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
     toObjectKey: "instruction.software-checker",
   },
   {
+    fromObjectKey: "profile.software-code-quality-reviewer-codex",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.software-code-quality-reviewer",
+  },
+  {
     fromObjectKey: "profile.software-summarizer-codex",
     edgeType: "uses_instruction",
     toObjectKey: "instruction.software-summarizer",
@@ -218,12 +285,22 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
     toObjectKey: "artifact.implementation_plan",
   },
   {
+    fromObjectKey: "agent.software-spec-reviewer",
+    edgeType: "produces_artifact",
+    toObjectKey: "artifact.implementation_plan",
+  },
+  {
     fromObjectKey: "agent.software-maker",
     edgeType: "produces_artifact",
     toObjectKey: "artifact.implementation_report",
   },
   {
     fromObjectKey: "agent.software-checker",
+    edgeType: "produces_artifact",
+    toObjectKey: "artifact.verification_report",
+  },
+  {
+    fromObjectKey: "agent.software-code-quality-reviewer",
     edgeType: "produces_artifact",
     toObjectKey: "artifact.verification_report",
   },
