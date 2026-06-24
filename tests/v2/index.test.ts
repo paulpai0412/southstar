@@ -35,6 +35,7 @@ await import("./workflow-composition-compiler.test.ts");
 await import("./composition-repair-loop.test.ts");
 await import("./workflow-composer-registry.test.ts");
 await import("./llm-workflow-composer.test.ts");
+await import("./runtime-library-materializer.test.ts");
 await import("./library-constrained-regression.test.ts");
 await import("./evolution-api.test.ts");
 await import("./evolution-assets.test.ts");
