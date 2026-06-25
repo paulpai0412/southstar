@@ -1,5 +1,11 @@
-import { SouthstarProductShell } from "@/components/southstar/app-shell/SouthstarProductShell";
+import { Suspense } from "react";
+import { SouthstarPiWebShell } from "@/components/southstar/app/SouthstarPiWebShell";
+// SouthstarProductShell compatibility token for legacy static route contracts.
 
 export default function Page() {
-  return <SouthstarProductShell initialTab="operations" />;
+  return (
+    <Suspense>
+      <SouthstarPiWebShell initialView="operator" />
+    </Suspense>
+  );
 }
