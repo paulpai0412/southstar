@@ -726,7 +726,21 @@ function errorResponse(error: string, status: number): Response {
 }
 
 function isReadModelKind(kind: string): kind is ReadModelKind {
-  return ["run-inspection", "run-summary", "executions", "exceptions", "runtime-monitor", "workflow-canvas", "executor-ops", "task-detail", "sessions-memory", "vault-mcp", "evolution-control-center"].includes(kind);
+  return [
+    "run-inspection",
+    "run-summary",
+    "executions",
+    "exceptions",
+    "runtime-monitor",
+    "workflow-canvas",
+    "executor-ops",
+    "task-detail",
+    "sessions-memory",
+    "vault-mcp",
+    "evolution-control-center",
+    "run-control",
+    "workflow-dag",
+  ].includes(kind);
 }
 
 function corsHeaders(): Record<string, string> {

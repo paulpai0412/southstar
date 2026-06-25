@@ -43,7 +43,7 @@ test("runtime server client exposes P0 runtime API methods", () => {
   }
 });
 
-test("generic read-model API routes run summary, executions, and exceptions", async () => {
+test("generic read-model API routes core kinds including run control and workflow dag", async () => {
   const db = await createTestPostgresDb();
   try {
     const runId = "run-runtime-api-client-alignment";
@@ -113,6 +113,16 @@ test("generic read-model API routes run summary, executions, and exceptions", as
         observedAt: "2026-06-23T10:01:00.000Z",
       },
     });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "artifact_ref",
+      resourceKey: `artifact_ref:${runId}:task-a:attempt-1:hash`,
+      runId,
+      taskId: "task-a",
+      sessionId: "session-a",
+      scope: "artifact",
+      status: "accepted",
+      payload: {},
+    });
 
     const summary = await call<{ schemaVersion: string; kind: string; data: { runId: string; status: string; rawStatus: string; domain?: string; goalPrompt: string; taskCounts: Record<string, number> } }>(
       db,
@@ -163,6 +173,47 @@ test("generic read-model API routes run summary, executions, and exceptions", as
     assert.equal(legacyExceptions.kind, "runtime-exceptions");
     assert.equal(legacyExceptions.result.runId, runId);
     assert.deepEqual(legacyExceptions.result.exceptions.map((exception) => exception.resourceKey), ["runtime-exception-b"]);
+
+    const runControl = await call<{
+      schemaVersion: string;
+      kind: string;
+      scope: { runId: string; domain?: string };
+      data: { runId: string; status: string; taskCounts: Record<string, number>; unresolvedExceptionCount: number };
+      commands: Array<{ id: string; enabled: boolean }>;
+      attentionItems: Array<{ id: string }>;
+      sourceRefs: Array<{ id: string; ref: string }>;
+    }>(
+      db,
+      `/api/v2/read-models/run-control/${runId}`,
+    );
+    assert.equal(runControl.result.schemaVersion, "southstar.read_model.run_control.v1");
+    assert.equal(runControl.result.kind, "run-control");
+    assert.equal(runControl.result.scope.runId, runId);
+    assert.equal(runControl.result.data.runId, runId);
+    assert.equal(runControl.result.data.status, "running");
+    assert.deepEqual(runControl.result.data.taskCounts, { completed: 1, queued: 1, running: 1 });
+    assert.equal(runControl.result.data.unresolvedExceptionCount, 1);
+    assert.ok(runControl.result.commands.some((command) => command.id === "pause-run" && command.enabled));
+    assert.ok(runControl.result.attentionItems.some((item) => item.id === "exception:runtime-exception-b"));
+    assert.ok(runControl.result.sourceRefs.some((ref) => ref.ref === `southstar.workflow_runs:${runId}`));
+
+    const workflowDag = await call<{
+      schemaVersion: string;
+      kind: string;
+      data: { runId: string; nodes: Array<{ id: string; dependencyReady: boolean }>; edges: Array<{ source: string; target: string }> };
+    }>(
+      db,
+      `/api/v2/read-models/workflow-dag/${runId}`,
+    );
+    assert.equal(workflowDag.result.schemaVersion, "southstar.read_model.workflow_dag.v1");
+    assert.equal(workflowDag.result.kind, "workflow-dag");
+    assert.equal(workflowDag.result.data.runId, runId);
+    assert.equal(workflowDag.result.data.nodes.find((node) => node.id === "task-b")?.dependencyReady, true);
+    assert.equal(workflowDag.result.data.nodes.find((node) => node.id === "task-c")?.dependencyReady, false);
+    assert.deepEqual(workflowDag.result.data.edges, [
+      { source: "task-a", target: "task-b" },
+      { source: "task-b", target: "task-c" },
+    ]);
   } finally {
     await db.close();
   }

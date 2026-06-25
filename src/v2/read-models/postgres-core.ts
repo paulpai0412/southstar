@@ -2,8 +2,10 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import { envelopeReadModel } from "./envelope.ts";
 import { listExecutionProjectionsPg } from "./executions.ts";
 import type { ReadModelInput, ReadModelKind } from "./types.ts";
+import { buildUiSurfaceReadModel, isUiSurfaceReadModelKind } from "./ui-surfaces.ts";
 
 export async function buildPostgresCoreReadModel(db: SouthstarDb, input: ReadModelInput) {
+  if (isUiSurfaceReadModelKind(input.kind)) return await buildUiSurfaceReadModel(db, input);
   switch (input.kind) {
     case "run-summary":
       return envelopeReadModel({ schemaVersion: "southstar.read_model.run_summary.v1", kind: input.kind, data: await runSummary(db, input.runId) });
@@ -28,7 +30,18 @@ export async function buildPostgresCoreReadModel(db: SouthstarDb, input: ReadMod
 }
 
 export function isPostgresCoreReadModelKind(kind: ReadModelKind): boolean {
-  return ["run-summary", "executions", "workflow-canvas", "runtime-monitor", "executor-ops", "task-detail", "sessions-memory", "vault-mcp"].includes(kind);
+  return [
+    "run-summary",
+    "executions",
+    "workflow-canvas",
+    "runtime-monitor",
+    "executor-ops",
+    "task-detail",
+    "sessions-memory",
+    "vault-mcp",
+    "run-control",
+    "workflow-dag",
+  ].includes(kind);
 }
 
 async function runSummary(db: SouthstarDb, runId: string) {
