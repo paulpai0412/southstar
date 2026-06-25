@@ -35,6 +35,43 @@ test("composition repair loop retries once and returns valid composition", async
   }
 });
 
+test("composition repair loop retry prompt includes previous composition JSON and validation issues", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const candidatePacket = await resolveWorkflowCandidates(db, {
+      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      scope: "software",
+    });
+    const prompts: string[] = [];
+    const composer = {
+      async compose(input: { goalPrompt: string }) {
+        prompts.push(input.goalPrompt);
+        return prompts.length === 1 ? invalidPlan() : validPlan();
+      },
+    };
+    const result = await runCompositionRepairLoop({
+      db,
+      goalPrompt: "implement calc sum",
+      candidatePacket,
+      composer,
+      scope: "software",
+      maxRepairAttempts: 1,
+    });
+    const retryPrompt = prompts[1] ?? "";
+    const firstIssueCode = result.attempts[0]?.validation.issues[0]?.code ?? "";
+
+    assert.equal(result.validation.ok, true);
+    assert.equal(prompts.length, 2);
+    assert.match(retryPrompt, /Previous composition JSON:/);
+    assert.match(retryPrompt, /Latest validation issues:/);
+    assert.match(retryPrompt, new RegExp(firstIssueCode));
+    assert.match(retryPrompt, /\"title\":\"Invalid Plan\"/);
+  } finally {
+    await db.close();
+  }
+});
+
 test("composition repair loop retries when composer output violates schema contract", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -44,8 +81,10 @@ test("composition repair loop retries when composer output violates schema contr
       scope: "software",
     });
     let attempt = 0;
+    const prompts: string[] = [];
     const composer = {
-      async compose() {
+      async compose(input: { goalPrompt: string }) {
+        prompts.push(input.goalPrompt);
         if (attempt === 0) {
           attempt += 1;
           throw new LlmComposerOutputError([
@@ -73,6 +112,10 @@ test("composition repair loop retries when composer output violates schema contr
     assert.equal(result.attempts[0]?.validation.issues[0]?.code, "composer_output_schema_violation");
     assert.equal(result.attempts[0]?.composition, undefined);
     assert.equal(result.composition?.tasks[0]?.agentProfileRef, "profile.software-explorer-codex");
+    assert.equal(prompts.length, 2);
+    assert.match(prompts[1] ?? "", /Latest validation issues:/);
+    assert.match(prompts[1] ?? "", /composer_output_schema_violation/);
+    assert.equal((prompts[1] ?? "").includes("Previous composition JSON:"), false);
   } finally {
     await db.close();
   }

@@ -37,6 +37,16 @@ export async function handleUiRoute(context: RuntimeServerContext, request: Requ
       taskId: url.searchParams.get("taskId") ?? undefined,
     }));
   }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/workflow") {
+    return json("ui-workflow", await buildWorkflowUiReadModelPg(context.db, {
+      draftId: url.searchParams.get("draftId") ?? undefined,
+      runId: url.searchParams.get("runId") ?? undefined,
+      taskId: url.searchParams.get("taskId") ?? undefined,
+    }));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/operator-overview") {
+    return json("ui-operator-overview", await buildOperatorOverviewReadModelPg(context.db));
+  }
   if (request.method === "GET" && url.pathname === "/api/v2/ui/runtime-monitor") {
     return json("ui-runtime-monitor", await buildPostgresCoreReadModel(context.db, { kind: "runtime-monitor", runId: requiredQuery(url, "runId") }));
   }

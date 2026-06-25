@@ -5,10 +5,11 @@ import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
-import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envelope.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
+import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 
 test("Postgres task envelope API builds TaskEnvelopeV2 from Postgres run, task, and context packet", async () => {
   await withDb(async (db) => {
@@ -110,6 +111,86 @@ test("Postgres server task envelope route uses new TaskEnvelope API", async () =
   });
 });
 
+test("Postgres task envelope fallback normalizes legacy library aliases through shared compatibility rules", async () => {
+  await withDb(async (db) => {
+    await seedKnowledgeCard(db);
+    await createWorkflowRunPg(db, {
+      id: "run-envelope-legacy-refs",
+      status: "running",
+      domain: "software",
+      goalPrompt: "legacy refs envelope test",
+      workflowManifestJson: JSON.stringify(legacyRefManifest()),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-envelope-legacy-refs",
+      taskKey: "implement-feature",
+      status: "claimed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: "session-envelope-legacy-refs",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "context_packet",
+      resourceKey: "ctx-envelope-legacy-refs",
+      runId: "run-envelope-legacy-refs",
+      taskId: "implement-feature",
+      sessionId: "session-envelope-legacy-refs",
+      scope: "context",
+      status: "created",
+      payload: {
+        id: "ctx-envelope-legacy-refs",
+        runId: "run-envelope-legacy-refs",
+        taskId: "implement-feature",
+        rootSessionId: "session-envelope-legacy-refs",
+        executionAttempt: 1,
+        roleRef: "maker",
+        agentProfileRef: "software-maker-pi",
+        taskGoal: "legacy refs envelope test",
+        roleInstruction: "implement feature",
+        systemInstruction: "prompt.software-maker",
+        agentsMdBlocks: [],
+        artifactContracts: [],
+        selectedMemories: [],
+        selectedKnowledgeCards: [],
+        priorArtifacts: [],
+        skillInstructions: [],
+        mcpGrantSummary: [],
+        forbiddenActions: [],
+        budget: { maxInputTokens: 4000, maxOutputTokens: 2000, maxToolCalls: 8, maxExecutionMinutes: 30 },
+        tokenEstimate: { total: 100, bySource: {}, truncated: false },
+        excludedCandidates: [],
+        managedSourceRefs: {
+          artifactRefs: [],
+          memoryItemRefs: [],
+          memoryDeltaRefs: [],
+          knowledgeCardRefs: [],
+          checkpointRefs: [],
+          handExecutionRefs: [],
+          rollbackMarkerRefs: [],
+          resetMarkerRefs: [],
+        },
+      },
+      summary: { contextPacketId: "ctx-envelope-legacy-refs" },
+    });
+
+    const envelope = await getPostgresTaskEnvelope(db, { runId: "run-envelope-legacy-refs", taskId: "implement-feature" });
+
+    assert.equal(envelope.materializedLibraryRefs?.instructionRefs.includes("instruction.software-maker"), true);
+    assert.equal(envelope.materializedLibraryRefs?.instructionRefs.includes("software.maker"), false);
+    assert.equal(envelope.materializedLibraryRefs?.skillRefs.includes("skill.software-implementation"), true);
+    assert.equal(envelope.materializedLibraryRefs?.skillRefs.includes("software.implementation"), false);
+    assert.equal(envelope.materializedLibraryRefs?.toolGrantRefs.includes("tool.workspace-write"), true);
+    assert.equal(envelope.materializedLibraryRefs?.toolGrantRefs.includes("software.workspace-write"), false);
+    assert.equal(envelope.materializedLibraryRefs?.mcpGrantRefs.includes("mcp.filesystem-workspace"), true);
+    assert.equal(envelope.materializedLibraryRefs?.mcpGrantRefs.includes("filesystem-workspace"), false);
+  });
+});
+
 async function seedKnowledgeCard(db: SouthstarDb): Promise<void> {
   await createLearningNode(db, {
     id: "card-envelope-self-check",
@@ -185,4 +266,66 @@ function replaceDatabase(adminUrl: string, db: string): string {
 
 function quoteIdent(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
+}
+
+function legacyRefManifest() {
+  const makerRole = softwareDomainPack.roles.find((role) => role.id === "maker");
+  const makerProfile = softwareDomainPack.agentProfiles.find((profile) => profile.id === "software-maker-pi");
+  if (!makerRole || !makerProfile) throw new Error("softwareDomainPack missing maker role/profile");
+  return {
+    schemaVersion: "southstar.v2",
+    workflowId: "wf-envelope-legacy-refs",
+    title: "Legacy Ref Envelope",
+    goalPrompt: "legacy refs envelope test",
+    domain: "software",
+    intent: "implement_feature",
+    roles: [makerRole],
+    agentProfiles: [makerProfile],
+    tasks: [{
+      id: "implement-feature",
+      name: "Implement Feature",
+      domain: "software",
+      dependsOn: [],
+      roleRef: "maker",
+      agentProfileRef: "software-maker-pi",
+      evaluatorPipelineRef: "software-feature-quality",
+      requiredArtifactRefs: ["implementation_report"],
+      instructionRefs: ["software.maker"],
+      skillRefs: ["software.implementation"],
+      toolGrantRefs: ["software.workspace-read", "software.workspace-write", "software.shell-command"],
+      mcpGrantRefs: ["filesystem-workspace"],
+      vaultLeasePolicyRefs: ["software.github-write-token"],
+      rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
+      execution: {
+        engine: "tork",
+        image: "southstar/pi-agent:local",
+        command: ["southstar-agent-runner"],
+        env: {},
+        mounts: [],
+        timeoutSeconds: 600,
+        infraRetry: { maxAttempts: 1 },
+      },
+      subagents: [],
+    }],
+    harnessDefinitions: [{
+      id: "pi",
+      kind: "pi-agent",
+      entrypoint: "southstar-agent-runner",
+      image: "southstar/pi-agent:local",
+      capabilities: ["software"],
+      inputProtocol: "task-envelope-v2",
+      eventProtocol: "southstar-events-v1",
+      supportsCheckpoint: true,
+      supportsSteering: true,
+      supportsProgress: true,
+    }],
+    evaluators: [],
+    memoryPolicy: { retrievalLimit: 5, writeRequiresApproval: true },
+    vaultPolicy: { leaseTtlSeconds: 60, mountMode: "env" },
+    mcpServers: [],
+    mcpGrants: [],
+    progressPolicy: { firstEventWithinSeconds: 30, minEventsPerLongTask: 1 },
+    steeringPolicy: { enabled: true, acceptedSignals: [] },
+    learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+  };
 }
