@@ -740,6 +740,8 @@ function isReadModelKind(kind: string): kind is ReadModelKind {
     "evolution-control-center",
     "run-control",
     "workflow-dag",
+    "recovery-center",
+    "execution-center",
   ].includes(kind);
 }
 

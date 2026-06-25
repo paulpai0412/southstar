@@ -114,6 +114,27 @@ test("generic read-model API routes core kinds including run control and workflo
       },
     });
     await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_decision",
+      resourceKey: "runtime_exception_recovery_decision:ex-runtime:retry",
+      runId,
+      taskId: "task-b",
+      sessionId: "session-b",
+      scope: "recovery",
+      status: "recorded",
+      payload: {
+        schemaVersion: "southstar.runtime.recovery_decision.v1",
+        decisionId: "dec-runtime-1",
+        exceptionId: "ex-runtime",
+        runId,
+        taskId: "task-b",
+        path: "retry-same-task-new-attempt",
+        reason: "retry",
+        operatorApprovalRequired: false,
+        evidenceRefs: [],
+        createdAt: "2026-06-23T10:02:00.000Z",
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
       resourceType: "artifact_ref",
       resourceKey: `artifact_ref:${runId}:task-a:attempt-1:hash`,
       runId,
@@ -214,8 +235,64 @@ test("generic read-model API routes core kinds including run control and workflo
       { source: "task-a", target: "task-b" },
       { source: "task-b", target: "task-c" },
     ]);
+
+    const recoveryCenter = await call<{
+      schemaVersion: string;
+      kind: string;
+      data: { runId: string; exceptions: Array<{ id: string }>; decisions: Array<{ id: string }> };
+      commands: Array<{ id: string; enabled: boolean }>;
+    }>(
+      db,
+      `/api/v2/read-models/recovery-center/${runId}`,
+    );
+    assert.equal(recoveryCenter.result.schemaVersion, "southstar.read_model.recovery_center.v1");
+    assert.equal(recoveryCenter.result.kind, "recovery-center");
+    assert.equal(recoveryCenter.result.data.runId, runId);
+    assert.equal(recoveryCenter.result.data.exceptions.length, 1);
+    assert.equal(recoveryCenter.result.data.decisions.length, 1);
+    assert.ok(recoveryCenter.result.commands.some((command) => command.id === "apply-recovery-decision:dec-runtime-1" && command.enabled));
+
+    const executionCenter = await call<{
+      schemaVersion: string;
+      kind: string;
+      data: { runId: string; handExecutions: Array<{ id: string }> };
+      commands: Array<{ id: string; enabled: boolean }>;
+    }>(
+      db,
+      `/api/v2/read-models/execution-center/${runId}`,
+    );
+    assert.equal(executionCenter.result.schemaVersion, "southstar.read_model.execution_center.v1");
+    assert.equal(executionCenter.result.kind, "execution-center");
+    assert.equal(executionCenter.result.data.runId, runId);
+    assert.equal(executionCenter.result.data.handExecutions.length, 1);
+    assert.ok(executionCenter.result.commands.some((command) => command.id === "reconcile-executor-job:job-b" && command.enabled));
   } finally {
     await db.close();
+  }
+});
+
+test("runtime server client exposes UI contract read-model routes", async () => {
+  const calls: Array<{ url: string; method?: string; body?: unknown }> = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(input), method: init?.method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    return new Response(JSON.stringify({ ok: true, kind: "read-model", result: {} }), { headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const client = createRuntimeServerClient({ baseUrl: "http://127.0.0.1/" });
+    await client.getReadModel({ kind: "run-control", runId: "run/a" });
+    await client.getReadModel({ kind: "workflow-dag", runId: "run/a" });
+    await client.getReadModel({ kind: "recovery-center", runId: "run/a" });
+    await client.getReadModel({ kind: "execution-center", runId: "run/a" });
+
+    assert.deepEqual(calls.map((call) => call.url), [
+      "http://127.0.0.1/api/v2/read-models/run-control/run%2Fa",
+      "http://127.0.0.1/api/v2/read-models/workflow-dag/run%2Fa",
+      "http://127.0.0.1/api/v2/read-models/recovery-center/run%2Fa",
+      "http://127.0.0.1/api/v2/read-models/execution-center/run%2Fa",
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

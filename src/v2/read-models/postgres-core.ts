@@ -41,6 +41,8 @@ export function isPostgresCoreReadModelKind(kind: ReadModelKind): boolean {
     "vault-mcp",
     "run-control",
     "workflow-dag",
+    "recovery-center",
+    "execution-center",
   ].includes(kind);
 }
 

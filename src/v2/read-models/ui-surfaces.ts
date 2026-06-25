@@ -11,19 +11,33 @@ type WorkflowDagTaskRow = {
   depends_on_json: unknown;
 };
 
+type ResourceRow = {
+  resource_key: string;
+  task_id: string | null;
+  session_id: string | null;
+  status: string;
+  title: string | null;
+  payload_json: unknown;
+  summary_json: unknown;
+};
+
 export async function buildUiSurfaceReadModel(db: SouthstarDb, input: ReadModelInput) {
   switch (input.kind) {
     case "run-control":
       return await buildRunControlReadModel(db, input.runId);
     case "workflow-dag":
       return await buildWorkflowDagReadModel(db, input.runId);
+    case "recovery-center":
+      return await buildRecoveryCenterReadModel(db, input.runId);
+    case "execution-center":
+      return await buildExecutionCenterReadModel(db, input.runId);
     default:
       throw new Error(`unsupported UI surface read model: ${input.kind}`);
   }
 }
 
 export function isUiSurfaceReadModelKind(kind: string): boolean {
-  return kind === "run-control" || kind === "workflow-dag";
+  return kind === "run-control" || kind === "workflow-dag" || kind === "recovery-center" || kind === "execution-center";
 }
 
 async function buildRunControlReadModel(db: SouthstarDb, runId: string) {
@@ -163,6 +177,123 @@ async function buildWorkflowDagReadModel(db: SouthstarDb, runId: string) {
     ],
     warnings: [],
   });
+}
+
+async function buildRecoveryCenterReadModel(db: SouthstarDb, runId: string) {
+  const run = await db.maybeOne<{ id: string }>("select id from southstar.workflow_runs where id = $1", [runId]);
+  if (!run) throw new Error(`run not found: ${runId}`);
+
+  const exceptions = await resourceRows(db, runId, "runtime_exception");
+  const decisions = await resourceRows(db, runId, "recovery_decision");
+  const actionableDecisions = decisions.filter((decision) => decision.status === "recorded" || decision.status === "approved");
+
+  return createUiReadModelEnvelope({
+    schemaVersion: "southstar.read_model.recovery_center.v1",
+    kind: "recovery-center",
+    scope: { runId },
+    data: {
+      runId,
+      exceptions: exceptions.map(mapResource),
+      decisions: decisions.map(mapResource),
+    },
+    commands: actionableDecisions.map((decision) => {
+      const payload = asRecord(decision.payload_json);
+      const decisionId = stringValue(payload.decisionId) ?? decision.resource_key;
+      return uiCommand({
+        id: `apply-recovery-decision:${decisionId}`,
+        label: "Apply recovery",
+        endpoint: `/api/v2/runs/${encodeURIComponent(runId)}/recovery-decisions/${encodeURIComponent(decisionId)}/apply`,
+        method: "POST",
+        enabled: true,
+        dangerLevel: "medium",
+        requiresConfirmation: true,
+      });
+    }),
+    attentionItems: exceptions
+      .filter((exception) => exception.status !== "resolved")
+      .map((exception) => ({
+        id: `exception:${exception.resource_key}`,
+        severity: "blocked",
+        title: exception.title ?? "Runtime exception",
+        reason: stringValue(asRecord(exception.payload_json).kind) ?? exception.status,
+        sourceRefs: [`runtime-resource:${exception.resource_key}`],
+        suggestedCommandIds: actionableDecisions.map((decision) => {
+          const decisionId = stringValue(asRecord(decision.payload_json).decisionId) ?? decision.resource_key;
+          return `apply-recovery-decision:${decisionId}`;
+        }),
+      })),
+    sourceRefs: [
+      { id: "exceptions", kind: "runtime-resource", ref: `southstar.runtime_resources:runtime_exception:run_id=${runId}` },
+      { id: "decisions", kind: "runtime-resource", ref: `southstar.runtime_resources:recovery_decision:run_id=${runId}` },
+    ],
+    warnings: [],
+  });
+}
+
+async function buildExecutionCenterReadModel(db: SouthstarDb, runId: string) {
+  const run = await db.maybeOne<{ id: string }>("select id from southstar.workflow_runs where id = $1", [runId]);
+  if (!run) throw new Error(`run not found: ${runId}`);
+
+  const handExecutions = await resourceRows(db, runId, "hand_execution");
+  return createUiReadModelEnvelope({
+    schemaVersion: "southstar.read_model.execution_center.v1",
+    kind: "execution-center",
+    scope: { runId },
+    data: {
+      runId,
+      handExecutions: handExecutions.map(mapResource),
+    },
+    commands: handExecutions.flatMap((execution) => {
+      const payload = asRecord(execution.payload_json);
+      const externalJobId = stringValue(payload.externalJobId);
+      if (!externalJobId) return [];
+      const canCancel = execution.status === "queued" || execution.status === "running" || execution.status === "submitted";
+      return [
+        uiCommand({
+          id: `reconcile-executor-job:${externalJobId}`,
+          label: "Reconcile",
+          endpoint: `/api/v2/runs/${encodeURIComponent(runId)}/executor-jobs/${encodeURIComponent(externalJobId)}/reconcile`,
+          method: "POST",
+          enabled: true,
+        }),
+        uiCommand({
+          id: `cancel-executor-job:${externalJobId}`,
+          label: "Cancel",
+          endpoint: `/api/v2/runs/${encodeURIComponent(runId)}/executor-jobs/${encodeURIComponent(externalJobId)}/cancel`,
+          method: "POST",
+          enabled: canCancel,
+          ...(canCancel ? {} : { disabledReason: `hand execution status is ${execution.status}` }),
+          dangerLevel: "medium",
+          requiresConfirmation: true,
+        }),
+      ];
+    }),
+    attentionItems: [],
+    sourceRefs: [{ id: "hand-executions", kind: "runtime-resource", ref: `southstar.runtime_resources:hand_execution:run_id=${runId}` }],
+    warnings: [],
+  });
+}
+
+async function resourceRows(db: SouthstarDb, runId: string, resourceType: string): Promise<ResourceRow[]> {
+  return (await db.query<ResourceRow>(
+    `select resource_key, task_id, session_id, status, title, payload_json, summary_json
+       from southstar.runtime_resources
+      where run_id = $1 and resource_type = $2
+      order by created_at, resource_key`,
+    [runId, resourceType],
+  )).rows;
+}
+
+function mapResource(row: ResourceRow) {
+  return {
+    id: row.resource_key,
+    taskId: row.task_id ?? undefined,
+    sessionId: row.session_id ?? undefined,
+    status: row.status,
+    title: row.title ?? undefined,
+    payload: row.payload_json,
+    summary: row.summary_json,
+  };
 }
 
 function stringArray(value: unknown): string[] {

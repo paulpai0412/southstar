@@ -177,3 +177,112 @@ test("workflow-dag read model computes dependency readiness", async () => {
     await db.close();
   }
 });
+
+test("recovery-center read model exposes unresolved exceptions and apply command", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-ui-recovery";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "recovery ui",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "runtime_exception",
+      resourceKey: "runtime_exception:run-ui-recovery:task-a:prep",
+      runId,
+      taskId: "task-a",
+      sessionId: "session-a",
+      scope: "recovery",
+      status: "observed",
+      title: "prep failed",
+      payload: {
+        schemaVersion: "southstar.runtime.exception.v1",
+        exceptionId: "ex-1",
+        kind: "dispatch_preparation_failed",
+        runId,
+        taskId: "task-a",
+        evidenceRefs: [],
+      },
+      summary: {},
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_decision",
+      resourceKey: "runtime_exception_recovery_decision:ex-1:reset-session",
+      runId,
+      taskId: "task-a",
+      sessionId: "session-a",
+      scope: "recovery",
+      status: "recorded",
+      title: "decision",
+      payload: {
+        schemaVersion: "southstar.runtime.recovery_decision.v1",
+        decisionId: "dec-1",
+        exceptionId: "ex-1",
+        runId,
+        taskId: "task-a",
+        path: "reset-session",
+        reason: "default decision",
+        operatorApprovalRequired: false,
+        evidenceRefs: [],
+        createdAt: "2026-06-25T01:00:00.000Z",
+      },
+      summary: {},
+    });
+
+    const model = await buildPostgresCoreReadModel(db, { kind: "recovery-center", runId }) as any;
+    assert.equal(model.kind, "recovery-center");
+    assert.equal(model.data.exceptions.length, 1);
+    assert.equal(model.data.decisions.length, 1);
+    assert.ok(model.commands.some((command: { id: string; enabled: boolean }) => command.id === "apply-recovery-decision:dec-1" && command.enabled));
+  } finally {
+    await db.close();
+  }
+});
+
+test("execution-center read model exposes hand executions and reconcile command", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-ui-execution";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "execution ui",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "hand_execution",
+      resourceKey: "hand-execution:run-ui-execution:task-a:attempt-1",
+      runId,
+      taskId: "task-a",
+      sessionId: "session-a",
+      scope: "hand",
+      status: "queued",
+      title: "hand",
+      payload: {
+        providerId: "tork",
+        externalJobId: "job-1",
+        attemptId: "attempt-1",
+      },
+      summary: {},
+    });
+
+    const model = await buildPostgresCoreReadModel(db, { kind: "execution-center", runId }) as any;
+    assert.equal(model.kind, "execution-center");
+    assert.equal(model.data.handExecutions.length, 1);
+    assert.ok(model.commands.some((command: { id: string }) => command.id === "reconcile-executor-job:job-1"));
+  } finally {
+    await db.close();
+  }
+});
