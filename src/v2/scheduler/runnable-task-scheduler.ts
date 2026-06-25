@@ -10,6 +10,7 @@ import type { SessionStore } from "../session/types.ts";
 import { appendHistoryEventPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { enforcePreExecutionToolProxyPolicyPg, isPreExecutionToolProxyPolicyError } from "../tool-proxy/runtime-enforcement.ts";
+import { observeDispatchPreparationException, redactProviderErrorExcerpt } from "./dispatch-preparation-exception.ts";
 import type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
 
 export type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
@@ -38,9 +39,6 @@ type HandExecutionAttemptRow = {
   resource_key: string;
   attempt_id: string | null;
 };
-
-const PROVIDER_ERROR_EXCERPT_LIMIT = 500;
-const COMMON_TOKEN_REDACTION_PATTERN = /\b(?:gh[pousr]_[A-Za-z0-9_]{16,}|github_pat_[A-Za-z0-9_]{16,}|sk-[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9-]{16,})\b/g;
 
 export function createRunnableTaskScheduler(db: SouthstarDb, deps: RunnableTaskSchedulerDeps): {
   runOnce(input: RunnableTaskSchedulerRunInput): Promise<RunnableTaskSchedulerRunResult>;
@@ -319,23 +317,32 @@ async function dispatchTask(
       payload: { brainBindingId, handBindingId, contextPacketId, taskEnvelopeId, taskStartCheckpointId, attemptId, handExecutionId },
     });
   } catch (error) {
+    const dispatchErrorMessage = errorMessage(error);
     if (isPreExecutionToolProxyPolicyError(error)) {
       await blockTaskDispatchPreparation(db, {
         runId: input.runId,
         taskId: input.taskId,
         sessionId: input.sessionId,
         recoveryKey,
-        errorMessage: errorMessage(error),
+        errorMessage: dispatchErrorMessage,
       });
       throw error;
     }
     if (handAccepted || handRejected) throw error;
+    await observeDispatchPreparationException(db, {
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId,
+      recoveryKey,
+      errorMessage: dispatchErrorMessage,
+    });
     await releaseTaskDispatchPreparation(db, {
       runId: input.runId,
       taskId: input.taskId,
       sessionId: input.sessionId,
       recoveryKey,
-      errorMessage: errorMessage(error),
+      errorMessage: dispatchErrorMessage,
     });
     throw error;
   }
@@ -595,7 +602,7 @@ async function markTaskDispatchFailed(
     severity: "recoverable",
     observedAt: new Date().toISOString(),
     evidenceRefs: [input.handExecutionId],
-    providerEvidence: { errorExcerpt: redactedProviderErrorExcerpt(input.errorMessage) },
+    providerEvidence: { errorExcerpt: redactProviderErrorExcerpt(input.errorMessage) },
   });
   await controller.decide(await controller.classify(exception));
   await db.query("update southstar.workflow_tasks set status = 'failed', updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $1 and id = $2 and status = 'claimed'", [input.runId, input.taskId]);
@@ -608,16 +615,6 @@ async function markTaskDispatchFailed(
     idempotencyKey: `${input.recoveryKey}:hand-execute-failed`,
     payload: { attemptId: input.attemptId, handExecutionId: input.handExecutionId, error: input.errorMessage },
   });
-}
-
-function redactedProviderErrorExcerpt(errorMessage: string): string {
-  return errorMessage
-    .replace(COMMON_TOKEN_REDACTION_PATTERN, "[REDACTED]")
-    .replace(
-      /((?:TOKEN|SECRET|PASSWORD|CREDENTIAL|AUTHORIZATION|API[_-]?KEY)\s*[=:]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      "$1[REDACTED]",
-    )
-    .slice(0, PROVIDER_ERROR_EXCERPT_LIMIT);
 }
 
 async function blockTaskDispatchPreparation(
