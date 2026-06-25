@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import {
   RECOVERY_DECISION_RESOURCE_TYPE,
   RECOVERY_DECISION_SCHEMA_VERSION,
@@ -229,6 +230,9 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function managedLoopManifest(workflowId: string, taskId: string): unknown {
+  const role = softwareDomainPack.roles.find((candidate) => candidate.id === "maker");
+  const agentProfile = softwareDomainPack.agentProfiles.find((candidate) => candidate.id === "software-maker-pi");
+  if (!role || !agentProfile) throw new Error("missing software maker fixtures");
   return {
     schemaVersion: "southstar.v2",
     workflowId,
@@ -236,6 +240,15 @@ function managedLoopManifest(workflowId: string, taskId: string): unknown {
     goalPrompt: "managed loop",
     domain: "software",
     intent: "implement_feature",
+    roles: [role],
+    agentProfiles: [agentProfile],
+    artifactContracts: softwareDomainPack.artifactContracts,
+    evaluatorPipelines: softwareDomainPack.evaluatorPipelines,
+    contextPolicies: softwareDomainPack.contextPolicies,
+    sessionPolicies: softwareDomainPack.sessionPolicies,
+    memoryPolicies: softwareDomainPack.memoryPolicies,
+    workspacePolicies: softwareDomainPack.workspacePolicies,
+    stopConditions: softwareDomainPack.stopConditions,
     tasks: [{
       id: taskId,
       name: "Implement",

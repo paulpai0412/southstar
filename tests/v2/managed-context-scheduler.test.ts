@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { BrainProvider } from "../../src/v2/brain/types.ts";
 import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import type { HandProvider } from "../../src/v2/hands/types.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
@@ -194,6 +195,9 @@ async function seedRun(
   input: { runId: string; taskId: string; legacyContextPacketId: string },
 ): Promise<void> {
   await seedSoftwareLibraryGraph(db);
+  const role = softwareDomainPack.roles.find((candidate) => candidate.id === "maker");
+  const agentProfile = softwareDomainPack.agentProfiles.find((candidate) => candidate.id === "software-maker-pi");
+  if (!role || !agentProfile) throw new Error("missing software maker fixtures");
   const manifest = {
     schemaVersion: "southstar.v2",
     workflowId: "wf-scheduler-managed-context",
@@ -201,6 +205,15 @@ async function seedRun(
     goalPrompt: "submit with managed context",
     domain: "software",
     intent: "implement_feature",
+    roles: [role],
+    agentProfiles: [agentProfile],
+    artifactContracts: softwareDomainPack.artifactContracts,
+    evaluatorPipelines: softwareDomainPack.evaluatorPipelines,
+    contextPolicies: softwareDomainPack.contextPolicies,
+    sessionPolicies: softwareDomainPack.sessionPolicies,
+    memoryPolicies: softwareDomainPack.memoryPolicies,
+    workspacePolicies: softwareDomainPack.workspacePolicies,
+    stopConditions: softwareDomainPack.stopConditions,
     tasks: [{
       id: input.taskId,
       name: "Implement",
