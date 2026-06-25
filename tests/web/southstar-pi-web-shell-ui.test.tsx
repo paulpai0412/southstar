@@ -9,6 +9,11 @@ function source(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
+function hasCssVariable(css: string, variable: string): boolean {
+  const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\s*${escaped}\\s*:`, "m").test(css);
+}
+
 test("app root references SouthstarPiWebShell", () => {
   assert.match(source("app/page.tsx"), /SouthstarPiWebShell/);
 });
@@ -28,12 +33,17 @@ test("WorkspaceTabs uses Chat Workflow Operator and removes legacy labels", () =
   assert.doesNotMatch(tabs, /Operations|Northstar/);
 });
 
+test("css variable matcher requires exact --bg declaration instead of substring match", () => {
+  const css = ":root { --bg-panel: #111; }";
+  assert.equal(hasCssVariable(css, "--bg"), false);
+});
+
 test("globals.css contains pi-web tokens and dark mode selector", () => {
   const css = source("app/globals.css");
-  assert.ok(css.includes("--bg"), "missing --bg");
-  assert.ok(css.includes("--bg-panel"), "missing --bg-panel");
-  assert.ok(css.includes("--bg-hover"), "missing --bg-hover");
-  assert.ok(css.includes("--bg-selected"), "missing --bg-selected");
-  assert.ok(css.includes("--accent"), "missing --accent");
+  assert.ok(hasCssVariable(css, "--bg"), "missing --bg");
+  assert.ok(hasCssVariable(css, "--bg-panel"), "missing --bg-panel");
+  assert.ok(hasCssVariable(css, "--bg-hover"), "missing --bg-hover");
+  assert.ok(hasCssVariable(css, "--bg-selected"), "missing --bg-selected");
+  assert.ok(hasCssVariable(css, "--accent"), "missing --accent");
   assert.ok(css.includes("html.dark"), "missing html.dark");
 });
