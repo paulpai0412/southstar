@@ -14,7 +14,7 @@ import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read
 import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from "../read-models/postgres-run-inspection.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration } from "../ui-api/postgres-run-api.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
@@ -177,6 +177,18 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
           composer: resolvePlannerWorkflowComposer(context),
         }),
       );
+    }
+
+    const draftOrchestrationMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/orchestration$/);
+    if (request.method === "GET" && draftOrchestrationMatch) {
+      const draftId = decodeURIComponent(draftOrchestrationMatch[1]!);
+      return json("planner-draft-orchestration", await getPostgresPlannerDraftOrchestration(context.db, { draftId }));
+    }
+
+    const draftRunMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/runs$/);
+    if (request.method === "POST" && draftRunMatch) {
+      const draftId = decodeURIComponent(draftRunMatch[1]!);
+      return json("run", await createPostgresRunFromDraft(context.db, { draftId }));
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/runs") {

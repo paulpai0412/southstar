@@ -60,6 +60,21 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
         requiredGroupDependencies: [
           { fromGroup: "summarize", toGroup: "code_quality_review" },
         ],
+        templateSlots: [
+          { slotRef: "understand", matchAny: [{ agentDefinitionRef: "agent.software-explorer" }] },
+          { slotRef: "understand-repo", matchAny: [{ agentDefinitionRef: "agent.software-explorer" }] },
+          { slotRef: "review-spec", matchAny: [{ agentDefinitionRef: "agent.software-spec-reviewer" }] },
+          { slotRef: "implement", matchAny: [{ agentDefinitionRef: "agent.software-maker" }] },
+          { slotRef: "implement-feature", matchAny: [{ agentDefinitionRef: "agent.software-maker" }] },
+          { slotRef: "verify", matchAny: [{ agentDefinitionRef: "agent.software-checker" }] },
+          { slotRef: "verify-feature", matchAny: [{ agentDefinitionRef: "agent.software-checker" }] },
+          {
+            slotRef: "review-code-quality",
+            matchAny: [{ agentDefinitionRef: "agent.software-code-quality-reviewer" }],
+          },
+          { slotRef: "summarize", matchAny: [{ agentDefinitionRef: "agent.software-summarizer" }] },
+          { slotRef: "summarize-completion", matchAny: [{ agentDefinitionRef: "agent.software-summarizer" }] },
+        ],
       },
     },
   },

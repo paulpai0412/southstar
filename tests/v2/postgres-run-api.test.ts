@@ -8,7 +8,7 @@ import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
 import { DeterministicFixtureComposer, ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 
 test("Postgres run API creates draft, run, tasks, history, and Knowledge Card context packets", async () => {
@@ -36,6 +36,9 @@ test("Postgres run API creates draft, run, tasks, history, and Knowledge Card co
 
     const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
     assert.match(draft.draftId, /^draft-wf-gen-/);
+    assert.equal(draft.status, "validated");
+    assert.deepEqual(draft.validationIssues, []);
+    assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     assert.match(run.runId, /^run-wf-gen-/);
@@ -70,6 +73,16 @@ test("Postgres run API supports llm-constrained planner drafts and preserves tas
       composer: new DeterministicFixtureComposer(),
     });
     assert.match(draft.draftId, /^draft-wf-composed-/);
+    assert.equal(draft.status, "validated");
+    assert.deepEqual(draft.validationIssues, []);
+    assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), [
+      "understand-repo",
+      "review-spec",
+      "implement-feature",
+      "verify-feature",
+      "review-code-quality",
+      "summarize-completion",
+    ]);
 
     const draftResource = await db.one<{
       summary_json: { planner?: string };
@@ -219,6 +232,9 @@ test("Postgres planner draft is invalid when repair loop remains invalid after m
       composer,
     });
     assert.ok(draft.draftId.length > 0);
+    assert.equal(draft.status, "invalid");
+    assert.ok(draft.validationIssues.length > 0);
+    assert.equal(draft.taskSummaries.length, 0);
     const draftResource = await db.one<{
       status: string;
       payload_json: { repairAttempts: Array<{ validation: { ok: boolean } }> };
@@ -233,6 +249,23 @@ test("Postgres planner draft is invalid when repair loop remains invalid after m
       () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
       /planner draft is not validated/,
     );
+  });
+});
+
+test("Postgres planner draft orchestration inspection helper returns public summary and orchestration snapshot", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement calc sum",
+      orchestrationMode: "llm-constrained",
+      composer: new DeterministicFixtureComposer(),
+    });
+    const inspection = await getPostgresPlannerDraftOrchestration(db, { draftId: draft.draftId });
+    assert.equal(inspection.draftId, draft.draftId);
+    assert.equal(inspection.status, "validated");
+    assert.deepEqual(inspection.validationIssues, []);
+    assert.equal(inspection.taskSummaries.length, 6);
+    assert.equal(inspection.taskSummaries[0]?.taskId, "understand-repo");
+    assert.equal(inspection.orchestrationSnapshot?.validation.ok, true);
   });
 });
 
@@ -265,11 +298,21 @@ test("Postgres server routes create planner drafts and runs through new API", as
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
     });
     try {
-      const draft = await api<{ draftId: string; workflowId: string }>(server.url, "/api/v2/planner/drafts", {
+      const draft = await api<{
+        draftId: string;
+        workflowId: string;
+        status: string;
+        validationIssues: Array<{ path: string; message: string }>;
+        taskSummaries: Array<{ taskId: string }>;
+      }>(server.url, "/api/v2/planner/drafts", {
         method: "POST",
         body: JSON.stringify({ goalPrompt: "implement calc sum" }),
       });
       assert.match(draft.draftId, /^draft-wf-gen-/);
+      assert.equal(draft.status, "validated");
+      assert.deepEqual(draft.validationIssues, []);
+      assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
+
       const run = await api<{ runId: string; taskIds: string[] }>(server.url, "/api/v2/runs", {
         method: "POST",
         body: JSON.stringify({ draftId: draft.draftId }),
@@ -277,15 +320,37 @@ test("Postgres server routes create planner drafts and runs through new API", as
       assert.match(run.runId, /^run-wf-gen-/);
       assert.deepEqual(run.taskIds, ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
 
-      const llmDraft = await api<{ draftId: string; workflowId: string }>(server.url, "/api/v2/planner/drafts", {
+      const llmDraft = await api<{
+        draftId: string;
+        workflowId: string;
+        status: string;
+        validationIssues: Array<{ path: string; message: string }>;
+        taskSummaries: Array<{ taskId: string }>;
+      }>(server.url, "/api/v2/planner/drafts", {
         method: "POST",
         body: JSON.stringify({ goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained" }),
       });
       assert.match(llmDraft.draftId, /^draft-wf-composed-/);
+      assert.equal(llmDraft.status, "validated");
+      assert.deepEqual(llmDraft.validationIssues, []);
+      assert.equal(llmDraft.taskSummaries.length, 6);
 
-      const llmRun = await api<{ runId: string; taskIds: string[] }>(server.url, "/api/v2/runs", {
+      const orchestration = await api<{
+        draftId: string;
+        status: string;
+        taskSummaries: Array<{ taskId: string }>;
+        orchestrationSnapshot?: { validation: { ok: boolean } };
+      }>(server.url, `/api/v2/planner/drafts/${encodeURIComponent(llmDraft.draftId)}/orchestration`, {
+        method: "GET",
+      });
+      assert.equal(orchestration.draftId, llmDraft.draftId);
+      assert.equal(orchestration.status, "validated");
+      assert.equal(orchestration.orchestrationSnapshot?.validation.ok, true);
+      assert.deepEqual(orchestration.taskSummaries.map((task) => task.taskId), llmDraft.taskSummaries.map((task) => task.taskId));
+
+      const llmRun = await api<{ runId: string; taskIds: string[] }>(server.url, `/api/v2/planner/drafts/${encodeURIComponent(llmDraft.draftId)}/runs`, {
         method: "POST",
-        body: JSON.stringify({ draftId: llmDraft.draftId }),
+        body: JSON.stringify({}),
       });
       assert.deepEqual(llmRun.taskIds, [
         "understand-repo",
@@ -295,6 +360,12 @@ test("Postgres server routes create planner drafts and runs through new API", as
         "review-code-quality",
         "summarize-completion",
       ]);
+
+      const llmRunViaLegacyRoute = await api<{ runId: string; taskIds: string[] }>(server.url, "/api/v2/runs", {
+        method: "POST",
+        body: JSON.stringify({ draftId: llmDraft.draftId }),
+      });
+      assert.deepEqual(llmRunViaLegacyRoute.taskIds, llmRun.taskIds);
     } finally {
       await server.close();
     }

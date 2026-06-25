@@ -26,8 +26,11 @@ export async function validateWorkflowCompositionPlan(
   if (!candidateRefSet.has(plan.selectedWorkflowTemplateRef)) {
     issues.push(issue("unknown_template", "selectedWorkflowTemplateRef", `template is not an approved candidate: ${plan.selectedWorkflowTemplateRef}`));
   }
+  const constraints = compositionConstraintsForTemplate(packet, plan.selectedWorkflowTemplateRef);
   validateTaskDependencies(plan, issues);
-  validateCoverageConstraints(packet, plan, issues);
+  validateCoverageConstraints(constraints, plan, issues);
+  validateInputArtifactsAreSatisfied(plan, constraints, issues);
+  validateTemplateSlotConstraints(plan.selectedWorkflowTemplateRef, constraints, plan, issues);
   validateCandidateMembership(plan, candidateRefSet, issues);
   await validateEdgeConstraints(db, plan, issues, options.scope ?? "software");
   return { ok: issues.length === 0, issues };
@@ -54,17 +57,23 @@ type CompositionRequiredGroupDependency = {
   toGroup: string;
 };
 
+type CompositionTemplateSlotConstraint = {
+  slotRef: string;
+  matchAny: CompositionTaskGroupMatcher[];
+};
+
 type CompositionConstraints = {
   requiredTaskGroups: CompositionRequiredTaskGroup[];
   requiredGroupDependencies: CompositionRequiredGroupDependency[];
+  templateSlots: CompositionTemplateSlotConstraint[];
+  initialArtifactRefs: string[];
 };
 
 function validateCoverageConstraints(
-  packet: CandidatePacket,
+  constraints: CompositionConstraints | null,
   plan: WorkflowCompositionPlan,
   issues: WorkflowCompositionValidationIssue[],
 ): void {
-  const constraints = compositionConstraintsForTemplate(packet, plan.selectedWorkflowTemplateRef);
   if (!constraints) return;
   const taskIdsByGroup = new Map<string, Set<string>>();
   const taskIndexById = new Map<string, number>(plan.tasks.map((task, index) => [task.id, index]));
@@ -119,6 +128,87 @@ function validateCoverageConstraints(
   }
 }
 
+function validateInputArtifactsAreSatisfied(
+  plan: WorkflowCompositionPlan,
+  constraints: CompositionConstraints | null,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const initialArtifacts = new Set(constraints?.initialArtifactRefs ?? []);
+  const taskById = new Map(plan.tasks.map((task) => [task.id, task]));
+
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    const availableArtifacts = new Set(initialArtifacts);
+    const upstreamTaskIds = collectUpstreamTaskIds(task, taskById);
+    for (const upstreamTaskId of upstreamTaskIds) {
+      const upstreamTask = taskById.get(upstreamTaskId);
+      if (!upstreamTask) continue;
+      for (const artifactRef of upstreamTask.outputArtifactRefs) {
+        availableArtifacts.add(artifactRef);
+      }
+    }
+    for (const artifactRef of task.inputArtifactRefs) {
+      if (availableArtifacts.has(artifactRef)) continue;
+      issues.push(
+        issue(
+          "input_artifact_not_satisfied",
+          `tasks.${taskIndex}.inputArtifactRefs`,
+          `task ${task.id} input artifact is not satisfied by initial artifacts or upstream outputs: ${artifactRef}`,
+        ),
+      );
+    }
+  }
+}
+
+function collectUpstreamTaskIds(
+  task: WorkflowCompositionPlan["tasks"][number],
+  taskById: Map<string, WorkflowCompositionPlan["tasks"][number]>,
+): Set<string> {
+  const upstreamTaskIds = new Set<string>();
+  const stack = [...task.dependsOn];
+  while (stack.length > 0) {
+    const dependencyTaskId = stack.pop();
+    if (!dependencyTaskId || upstreamTaskIds.has(dependencyTaskId)) continue;
+    upstreamTaskIds.add(dependencyTaskId);
+    const dependencyTask = taskById.get(dependencyTaskId);
+    if (!dependencyTask) continue;
+    stack.push(...dependencyTask.dependsOn);
+  }
+  return upstreamTaskIds;
+}
+
+function validateTemplateSlotConstraints(
+  templateRef: string,
+  constraints: CompositionConstraints | null,
+  plan: WorkflowCompositionPlan,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  if (!constraints || constraints.templateSlots.length === 0) return;
+  const slotByRef = new Map(constraints.templateSlots.map((slot) => [slot.slotRef, slot]));
+
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    const slot = slotByRef.get(task.templateSlotRef);
+    if (!slot) {
+      issues.push(
+        issue(
+          "template_slot_not_allowed",
+          `tasks.${taskIndex}.templateSlotRef`,
+          `template ${templateRef} does not allow slot: ${task.templateSlotRef}`,
+        ),
+      );
+      continue;
+    }
+    if (slot.matchAny.length === 0) continue;
+    if (slot.matchAny.some((matcher) => matchesTaskGroupMatcher(task, matcher))) continue;
+    issues.push(
+      issue(
+        "template_slot_not_allowed",
+        `tasks.${taskIndex}.templateSlotRef`,
+        `task ${task.id} does not satisfy template slot constraints for slot: ${task.templateSlotRef}`,
+      ),
+    );
+  }
+}
+
 function compositionConstraintsForTemplate(
   packet: CandidatePacket,
   templateRef: string,
@@ -129,8 +219,17 @@ function compositionConstraintsForTemplate(
   if (!isRecord(rawConstraints)) return null;
   const requiredTaskGroups = parseRequiredTaskGroups(rawConstraints.requiredTaskGroups);
   const requiredGroupDependencies = parseRequiredGroupDependencies(rawConstraints.requiredGroupDependencies);
-  if (requiredTaskGroups.length === 0 && requiredGroupDependencies.length === 0) return null;
-  return { requiredTaskGroups, requiredGroupDependencies };
+  const templateSlots = parseTemplateSlotConstraints(rawConstraints.templateSlots);
+  const initialArtifactRefs = parseStringArray(rawConstraints.initialArtifactRefs);
+  if (
+    requiredTaskGroups.length === 0
+    && requiredGroupDependencies.length === 0
+    && templateSlots.length === 0
+    && initialArtifactRefs.length === 0
+  ) {
+    return null;
+  }
+  return { requiredTaskGroups, requiredGroupDependencies, templateSlots, initialArtifactRefs };
 }
 
 function parseRequiredTaskGroups(value: unknown): CompositionRequiredTaskGroup[] {
@@ -182,6 +281,30 @@ function parseTaskGroupMatchers(value: unknown): CompositionTaskGroupMatcher[] {
     matchers.push(matcher);
   }
   return matchers;
+}
+
+function parseTemplateSlotConstraints(value: unknown): CompositionTemplateSlotConstraint[] {
+  if (!Array.isArray(value)) return [];
+  const slots: CompositionTemplateSlotConstraint[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const slotRef = typeof item.slotRef === "string" && item.slotRef.length > 0
+      ? item.slotRef
+      : typeof item.id === "string" && item.id.length > 0
+        ? item.id
+        : null;
+    if (!slotRef) continue;
+    slots.push({
+      slotRef,
+      matchAny: parseTaskGroupMatchers(item.matchAny),
+    });
+  }
+  return slots;
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
 function matchesTaskGroupRule(task: WorkflowCompositionPlan["tasks"][number], rule: CompositionRequiredTaskGroup): boolean {

@@ -10,6 +10,12 @@ type RunGoalResult = {
   taskIds: string[];
 };
 
+type PlannerRequestBody = {
+  goalPrompt: string;
+  orchestrationMode?: "deterministic" | "llm-constrained";
+  composerMode?: "fixture" | "llm" | "llm-with-fixture-fallback";
+};
+
 type RunRuntimeCommandRequest = RuntimeCommandRequest & { runId: string };
 type TaskRuntimeCommandRequest = RuntimeCommandRequest & { runId: string; taskId: string };
 type GetSessionEventsRequest = {
@@ -42,14 +48,20 @@ type RuntimeLoopId =
 export function createRuntimeServerClient(input: { baseUrl: string }) {
   const baseUrl = input.baseUrl.replace(/\/$/, "");
   return {
-    runGoal(body: { goalPrompt: string }) {
+    runGoal(body: PlannerRequestBody) {
       return post<RunGoalResult>(`${baseUrl}/api/v2/run-goal`, body);
     },
-    createPlannerDraft(body: { goalPrompt: string }) {
+    createPlannerDraft(body: PlannerRequestBody) {
       return post(`${baseUrl}/api/v2/planner/drafts`, body);
     },
     createRun(body: { draftId: string }) {
       return post(`${baseUrl}/api/v2/runs`, body);
+    },
+    getPlannerDraftOrchestration(draftId: string) {
+      return get(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(draftId)}/orchestration`);
+    },
+    createRunFromPlannerDraft(draftId: string) {
+      return post(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(draftId)}/runs`, {});
     },
     getRun(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}`);

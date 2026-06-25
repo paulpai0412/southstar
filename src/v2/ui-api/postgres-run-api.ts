@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
+import type { WorkflowCompositionValidationIssue } from "../design-library/types.ts";
 import { seedSoftwareLibraryGraph } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { DomainPack } from "../domain-packs/types.ts";
@@ -25,6 +26,29 @@ export type PostgresPlannerDraftResult = {
   draftId: string;
   goalPrompt: string;
   workflowId: string;
+  status: string;
+  validationIssues: PlannerDraftValidationIssue[];
+  taskSummaries: PlannerDraftTaskSummary[];
+};
+
+export type PlannerDraftValidationIssue = {
+  path: string;
+  message: string;
+  code?: string;
+};
+
+export type PlannerDraftTaskSummary = {
+  taskId: string;
+  taskName: string;
+  dependsOn: string[];
+  roleRef?: string;
+  agentProfileRef?: string;
+};
+
+export type PostgresPlannerDraftOrchestrationView = PostgresPlannerDraftResult & {
+  orchestrationSnapshot?: unknown;
+  plannerTrace?: unknown;
+  repairAttempts?: unknown;
 };
 
 export type PostgresRunResult = {
@@ -63,18 +87,35 @@ async function createDeterministicPlannerDraft(
     plannerTrace: { model: "southstar-postgres-constrained-planner", promptHash: hash(input.goalPrompt), generatedAt: new Date().toISOString() },
     generationPlan: plan,
   };
+  const validationIssues: PlannerDraftValidationIssue[] = [];
+  const taskSummaries = summarizeWorkflowTasks(workflow);
+  const status = "validated";
   const draftId = `draft-${workflow.workflowId}`;
   await upsertRuntimeResourcePg(db, {
     id: draftId,
     resourceType: "planner_draft",
     resourceKey: draftId,
     scope: "planner",
-    status: "validated",
+    status,
     title: workflow.title,
     payload: bundle,
-    summary: { goalPrompt: input.goalPrompt, workflowId: workflow.workflowId, planner: "postgres-constrained" },
+    summary: {
+      goalPrompt: input.goalPrompt,
+      workflowId: workflow.workflowId,
+      planner: "postgres-constrained",
+      status,
+      validationIssues,
+      taskSummaries,
+    },
   });
-  return { draftId, goalPrompt: input.goalPrompt, workflowId: workflow.workflowId };
+  return {
+    draftId,
+    goalPrompt: input.goalPrompt,
+    workflowId: workflow.workflowId,
+    status,
+    validationIssues,
+    taskSummaries,
+  };
 }
 
 async function createLibraryConstrainedPlannerDraft(
@@ -92,12 +133,15 @@ async function createLibraryConstrainedPlannerDraft(
   const draftId = `draft-${workflowId}`;
 
   if (candidatePacket.unavailableRequirements.length > 0) {
+    const validationIssues = unavailableRequirementIssues(candidatePacket.unavailableRequirements);
+    const status = "invalid";
+    const taskSummaries: PlannerDraftTaskSummary[] = [];
     await upsertRuntimeResourcePg(db, {
       id: draftId,
       resourceType: "planner_draft",
       resourceKey: draftId,
       scope: "planner",
-      status: "invalid",
+      status,
       title: "Invalid Library-Constrained Planner Draft",
       payload: {
         requirementSpec,
@@ -108,10 +152,19 @@ async function createLibraryConstrainedPlannerDraft(
         goalPrompt: input.goalPrompt,
         workflowId,
         planner: "library-constrained-llm",
-        status: "invalid",
+        status,
+        validationIssues,
+        taskSummaries,
       },
     });
-    return { draftId, goalPrompt: input.goalPrompt, workflowId };
+    return {
+      draftId,
+      goalPrompt: input.goalPrompt,
+      workflowId,
+      status,
+      validationIssues,
+      taskSummaries,
+    };
   }
 
   const registry = createWorkflowComposerRegistry({ llmComposer: input.composer });
@@ -127,26 +180,39 @@ async function createLibraryConstrainedPlannerDraft(
     maxRepairAttempts: 2,
   });
   if (!repairResult.validation.ok) {
+    const validationIssues = toPlannerDraftValidationIssues(repairResult.validation.issues);
+    const status = "invalid";
+    const taskSummaries: PlannerDraftTaskSummary[] = [];
     await upsertRuntimeResourcePg(db, {
       id: draftId,
       resourceType: "planner_draft",
       resourceKey: draftId,
       scope: "planner",
-      status: "invalid",
+      status,
       title: "Invalid Library-Constrained Planner Draft",
       payload: {
         requirementSpec,
         candidatePacket,
         repairAttempts: repairResult.attempts,
+        validationIssues,
       },
       summary: {
         goalPrompt: input.goalPrompt,
         workflowId,
         planner: "library-constrained-llm",
-        status: "invalid",
+        status,
+        validationIssues,
+        taskSummaries,
       },
     });
-    return { draftId, goalPrompt: input.goalPrompt, workflowId };
+    return {
+      draftId,
+      goalPrompt: input.goalPrompt,
+      workflowId,
+      status,
+      validationIssues,
+      taskSummaries,
+    };
   }
   const composition = repairResult.composition;
   if (!composition) {
@@ -179,22 +245,35 @@ async function createLibraryConstrainedPlannerDraft(
     orchestrationSnapshot: compiled.orchestrationSnapshot,
     repairAttempts: repairResult.attempts,
   };
+  const validationIssues = toPlannerDraftValidationIssues(compiled.orchestrationSnapshot.validation.issues);
+  const taskSummaries = summarizeWorkflowTasks(compiled.workflow);
+  const status = "validated";
 
   await upsertRuntimeResourcePg(db, {
     id: draftId,
     resourceType: "planner_draft",
     resourceKey: draftId,
     scope: "planner",
-    status: "validated",
+    status,
     title: compiled.workflow.title,
     payload: bundle,
     summary: {
       goalPrompt: input.goalPrompt,
       workflowId: compiled.workflow.workflowId,
       planner: "library-constrained-llm",
+      status,
+      validationIssues,
+      taskSummaries,
     },
   });
-  return { draftId, goalPrompt: input.goalPrompt, workflowId: compiled.workflow.workflowId };
+  return {
+    draftId,
+    goalPrompt: input.goalPrompt,
+    workflowId: compiled.workflow.workflowId,
+    status,
+    validationIssues,
+    taskSummaries,
+  };
 }
 
 export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draftId: string }): Promise<PostgresRunResult> {
@@ -247,6 +326,36 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   }
 
   return { runId, taskIds };
+}
+
+export async function getPostgresPlannerDraftOrchestration(
+  db: SouthstarDb,
+  input: { draftId: string },
+): Promise<PostgresPlannerDraftOrchestrationView> {
+  const draft = await getResourceByKeyPg(db, "planner_draft", input.draftId);
+  if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
+
+  const payload = asRecord(draft.payload);
+  const summary = asRecord(draft.summary);
+  const workflow = asRecord(payload.workflow);
+  const workflowId = stringValue(summary.workflowId) ?? stringValue(workflow.workflowId) ?? "";
+  const goalPrompt = stringValue(summary.goalPrompt) ?? stringValue(workflow.goalPrompt) ?? "";
+  const validationIssues = parseValidationIssues(summary.validationIssues);
+  const taskSummaries = parseTaskSummaries(summary.taskSummaries).length > 0
+    ? parseTaskSummaries(summary.taskSummaries)
+    : summarizeWorkflowTasksFromPayload(workflow.tasks);
+
+  return {
+    draftId: input.draftId,
+    goalPrompt,
+    workflowId,
+    status: draft.status,
+    validationIssues,
+    taskSummaries,
+    ...(payload.orchestrationSnapshot !== undefined ? { orchestrationSnapshot: payload.orchestrationSnapshot } : {}),
+    ...(payload.plannerTrace !== undefined ? { plannerTrace: payload.plannerTrace } : {}),
+    ...(payload.repairAttempts !== undefined ? { repairAttempts: payload.repairAttempts } : {}),
+  };
 }
 
 async function buildContextForTask(
@@ -317,4 +426,102 @@ function hash(value: string): string {
 function didComposerUseFallback(composer: WorkflowComposer): boolean {
   const maybeFallbackAwareComposer = composer as WorkflowComposer & { wasFallbackUsed?: () => boolean };
   return maybeFallbackAwareComposer.wasFallbackUsed?.() === true;
+}
+
+function summarizeWorkflowTasks(workflow: SouthstarWorkflowManifest): PlannerDraftTaskSummary[] {
+  return workflow.tasks.map((task) => ({
+    taskId: task.id,
+    taskName: task.name,
+    dependsOn: task.dependsOn,
+    ...(task.roleRef ? { roleRef: task.roleRef } : {}),
+    ...(task.agentProfileRef ? { agentProfileRef: task.agentProfileRef } : {}),
+  }));
+}
+
+function summarizeWorkflowTasksFromPayload(tasksValue: unknown): PlannerDraftTaskSummary[] {
+  if (!Array.isArray(tasksValue)) return [];
+  const summaries: PlannerDraftTaskSummary[] = [];
+  for (const task of tasksValue) {
+    if (!isRecord(task)) continue;
+    const taskId = stringValue(task.id);
+    if (!taskId) continue;
+    summaries.push({
+      taskId,
+      taskName: stringValue(task.name) ?? taskId,
+      dependsOn: parseDependsOn(task.dependsOn),
+      ...(stringValue(task.roleRef) ? { roleRef: stringValue(task.roleRef) } : {}),
+      ...(stringValue(task.agentProfileRef) ? { agentProfileRef: stringValue(task.agentProfileRef) } : {}),
+    });
+  }
+  return summaries;
+}
+
+function parseDependsOn(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string");
+}
+
+function unavailableRequirementIssues(
+  unavailableRequirements: Array<{ capabilityRef: string; reason: "no_approved_candidate" | "blocked_by_policy" | "requires_approval" }>,
+): PlannerDraftValidationIssue[] {
+  return unavailableRequirements.map((requirement, index) => ({
+    path: `unavailableRequirements.${index}.capabilityRef`,
+    code: requirement.reason,
+    message: `missing supported candidate for ${requirement.capabilityRef} (${requirement.reason})`,
+  }));
+}
+
+function toPlannerDraftValidationIssues(issues: WorkflowCompositionValidationIssue[]): PlannerDraftValidationIssue[] {
+  return issues.map((issue) => ({
+    path: issue.path,
+    message: issue.message,
+    ...(issue.code ? { code: issue.code } : {}),
+  }));
+}
+
+function parseValidationIssues(value: unknown): PlannerDraftValidationIssue[] {
+  if (!Array.isArray(value)) return [];
+  const issues: PlannerDraftValidationIssue[] = [];
+  for (const issue of value) {
+    if (!isRecord(issue)) continue;
+    const path = stringValue(issue.path);
+    const message = stringValue(issue.message);
+    if (!path || !message) continue;
+    issues.push({
+      path,
+      message,
+      ...(stringValue(issue.code) ? { code: stringValue(issue.code) } : {}),
+    });
+  }
+  return issues;
+}
+
+function parseTaskSummaries(value: unknown): PlannerDraftTaskSummary[] {
+  if (!Array.isArray(value)) return [];
+  const summaries: PlannerDraftTaskSummary[] = [];
+  for (const task of value) {
+    if (!isRecord(task)) continue;
+    const taskId = stringValue(task.taskId);
+    if (!taskId) continue;
+    summaries.push({
+      taskId,
+      taskName: stringValue(task.taskName) ?? taskId,
+      dependsOn: parseDependsOn(task.dependsOn),
+      ...(stringValue(task.roleRef) ? { roleRef: stringValue(task.roleRef) } : {}),
+      ...(stringValue(task.agentProfileRef) ? { agentProfileRef: stringValue(task.agentProfileRef) } : {}),
+    });
+  }
+  return summaries;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

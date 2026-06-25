@@ -34,6 +34,8 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "getTaskActions",
     "retryTask",
     "resetTaskSession",
+    "getPlannerDraftOrchestration",
+    "createRunFromPlannerDraft",
   ] as const;
 
   for (const method of methods) {
@@ -179,6 +181,18 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
   }) as typeof fetch;
   try {
     const client = createRuntimeServerClient({ baseUrl: "http://127.0.0.1/" });
+    await client.createPlannerDraft({
+      goalPrompt: "implement calc sum",
+      orchestrationMode: "llm-constrained",
+      composerMode: "fixture",
+    });
+    await client.runGoal({
+      goalPrompt: "implement calc sum",
+      orchestrationMode: "deterministic",
+      composerMode: "llm",
+    });
+    await client.getPlannerDraftOrchestration("draft/a");
+    await client.createRunFromPlannerDraft("draft/a");
     await client.getExecutorJobActions({ runId: "run/a", jobId: "job/a" });
     await client.reconcileExecutorJob({ runId: "run/a", jobId: "job/a" });
     await client.cancelExecutorJob({
@@ -202,6 +216,18 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
     await client.wakeRuntime({ runId: "run/a", taskId: "task/a" });
 
     assert.deepEqual(calls, [
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts",
+        method: "POST",
+        body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "fixture" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/run-goal",
+        method: "POST",
+        body: { goalPrompt: "implement calc sum", orchestrationMode: "deterministic", composerMode: "llm" },
+      },
+      { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/orchestration", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/runs", method: "POST", body: {} },
       { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/actions", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/reconcile", method: "POST", body: {} },
       {

@@ -138,6 +138,88 @@ test("validator rejects summarize tasks that skip required code quality dependen
   }
 });
 
+test("validator rejects input artifacts that are not satisfied by upstream dependencies", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      scope: "software",
+    });
+    const plan = validComposition();
+    plan.tasks.find((task) => task.id === "verify-feature")!.inputArtifactRefs = ["artifact.completion_report"];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan);
+    assert.equal(validation.ok, false);
+    assert.deepEqual(
+      validation.issues.find((item) => item.code === "input_artifact_not_satisfied"),
+      {
+        code: "input_artifact_not_satisfied",
+        path: "tasks.3.inputArtifactRefs",
+        message: "task verify-feature input artifact is not satisfied by initial artifacts or upstream outputs: artifact.completion_report",
+      },
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("validator rejects tasks that use template slots not defined by the selected template", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      scope: "software",
+    });
+    const plan = validComposition();
+    plan.tasks[0]!.templateSlotRef = "slot.unknown";
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan);
+    assert.equal(validation.ok, false);
+    assert.deepEqual(
+      validation.issues.find((item) => item.code === "template_slot_not_allowed"),
+      {
+        code: "template_slot_not_allowed",
+        path: "tasks.0.templateSlotRef",
+        message: "template template.software-feature does not allow slot: slot.unknown",
+      },
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("validator rejects tasks that do not satisfy selected template slot constraints", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      scope: "software",
+    });
+    const plan = validComposition();
+    plan.tasks[2]!.templateSlotRef = "understand-repo";
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan);
+    assert.equal(validation.ok, false);
+    assert.deepEqual(
+      validation.issues.find(
+        (item) =>
+          item.code === "template_slot_not_allowed"
+          && item.message.includes("does not satisfy template slot constraints"),
+      ),
+      {
+        code: "template_slot_not_allowed",
+        path: "tasks.2.templateSlotRef",
+        message: "task implement-feature does not satisfy template slot constraints for slot: understand-repo",
+      },
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 function validComposition(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
