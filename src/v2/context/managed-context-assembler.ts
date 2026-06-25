@@ -47,8 +47,10 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
       const roleRef = required(task.roleRef, `missing roleRef for task ${task.id}`);
       const agentProfileRef = required(task.agentProfileRef, `missing agentProfileRef for task ${task.id}`);
       const evaluatorPipelineRef = required(task.evaluatorPipelineRef, `missing evaluatorPipelineRef for task ${task.id}`);
-      const role = required(domainPack.roles.find((candidate) => candidate.id === roleRef), `missing role ${roleRef}`);
-      const agentProfile = required(domainPack.agentProfiles.find((candidate) => candidate.id === agentProfileRef), `missing agent profile ${agentProfileRef}`);
+      const workflowRoles = required(workflow.roles, `missing workflow roles in manifest ${workflow.workflowId}`);
+      const workflowProfiles = required(workflow.agentProfiles, `missing workflow agentProfiles in manifest ${workflow.workflowId}`);
+      const role = required(workflowRoles.find((candidate) => candidate.id === roleRef), `missing role ${roleRef}`);
+      const agentProfile = required(workflowProfiles.find((candidate) => candidate.id === agentProfileRef), `missing agent profile ${agentProfileRef}`);
       const harness = required(workflow.harnessDefinitions.find((candidate) => candidate.id === agentProfile.harnessRef), `missing harness ${agentProfile.harnessRef}`);
       const evaluatorPipeline = required(domainPack.evaluatorPipelines.find((candidate) => candidate.id === evaluatorPipelineRef), `missing evaluator pipeline ${evaluatorPipelineRef}`);
       const artifactContracts = artifactContractsForTask(domainPack, task);

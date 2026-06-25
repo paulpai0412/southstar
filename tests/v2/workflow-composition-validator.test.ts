@@ -99,6 +99,45 @@ test("validator rejects selected artifacts not produced by selected agent", asyn
   }
 });
 
+test("validator rejects compositions missing required code quality review coverage", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      scope: "software",
+    });
+    const plan = validComposition();
+    plan.tasks = plan.tasks.filter((task) => task.id !== "review-code-quality");
+    plan.tasks.find((task) => task.id === "summarize-completion")!.dependsOn = ["verify-feature"];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan);
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((item) => item.code === "missing_required_task_group"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("validator rejects summarize tasks that skip required code quality dependency", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      scope: "software",
+    });
+    const plan = validComposition();
+    plan.tasks.find((task) => task.id === "summarize-completion")!.dependsOn = ["verify-feature"];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan);
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((item) => item.code === "missing_required_group_dependency"), true);
+  } finally {
+    await db.close();
+  }
+});
+
 function validComposition(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
@@ -118,8 +157,19 @@ function validComposition(): WorkflowCompositionPlan {
         "evaluator.software-plan-quality",
       ),
       task(
-        "implement-feature",
+        "review-spec",
         ["understand-repo"],
+        "agent.software-spec-reviewer",
+        "profile.software-spec-reviewer-codex",
+        ["skill.software-spec-review"],
+        ["tool.workspace-read"],
+        ["instruction.software-spec-reviewer"],
+        ["artifact.implementation_plan"],
+        "evaluator.software-plan-quality",
+      ),
+      task(
+        "implement-feature",
+        ["review-spec"],
         "agent.software-maker",
         "profile.software-maker-pi",
         ["skill.software-implementation"],
@@ -140,8 +190,19 @@ function validComposition(): WorkflowCompositionPlan {
         "evaluator.software-verification-quality",
       ),
       task(
+        "review-code-quality",
+        ["implement-feature"],
+        "agent.software-code-quality-reviewer",
+        "profile.software-code-quality-reviewer-codex",
+        ["skill.software-code-quality-review"],
+        ["tool.workspace-read"],
+        ["instruction.software-code-quality-reviewer"],
+        ["artifact.verification_report"],
+        "evaluator.software-verification-quality",
+      ),
+      task(
         "summarize-completion",
-        ["verify-feature"],
+        ["verify-feature", "review-code-quality"],
         "agent.software-summarizer",
         "profile.software-summarizer-codex",
         ["skill.software-summary"],

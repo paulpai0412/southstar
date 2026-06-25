@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CandidatePacket, CandidateSummary, WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
-import { LlmWorkflowComposer, parseWorkflowCompositionPlanFromText } from "../../src/v2/orchestration/llm-composer.ts";
+import {
+  LlmComposerOutputError,
+  LlmWorkflowComposer,
+  parseWorkflowCompositionPlanFromText,
+  WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA,
+} from "../../src/v2/orchestration/llm-composer.ts";
 
-test("LLM composer sends bounded candidate packet and parses exactly one composition plan", async () => {
+test("LLM composer sends bounded candidate packet and explicit output schema contract", async () => {
   const prompts: string[] = [];
   const composer = new LlmWorkflowComposer({
     model: "test-model",
@@ -18,10 +23,9 @@ test("LLM composer sends bounded candidate packet and parses exactly one composi
 
   const plan = await composer.compose({ goalPrompt: "implement calc sum", candidatePacket: candidatePacket() });
   assert.equal(plan.schemaVersion, "southstar.workflow_composition_plan.v1");
-  assert.equal(plan.tasks[0]?.id, "understand-repo");
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0] ?? "", /select refs only from the candidate packet/i);
-  assert.match(prompts[0] ?? "", /do not return markdown, comments, prose, or multiple JSON objects/i);
+  assert.match(prompts[0] ?? "", /OutputJsonSchema:/);
+  assert.match(prompts[0] ?? "", /Do not use alias fields/i);
   assert.match(prompts[0] ?? "", /CandidatePacket:/);
   assert.match(prompts[0] ?? "", /template.keep-19/);
   assert.doesNotMatch(prompts[0] ?? "", /template.drop-20/);
@@ -29,100 +33,110 @@ test("LLM composer sends bounded candidate packet and parses exactly one composi
   assert.doesNotMatch(prompts[0] ?? "", /artifact.drop-50/);
   assert.match(prompts[0] ?? "", /policy.keep-49/);
   assert.doesNotMatch(prompts[0] ?? "", /policy.drop-50/);
-  assert.match(prompts[0] ?? "", /agent-map\.keep-key-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /agent-map\.drop-key-50/);
-  assert.match(prompts[0] ?? "", /agent-map-candidate\.keep-19/);
-  assert.doesNotMatch(prompts[0] ?? "", /agent-map-candidate\.drop-20/);
-  assert.match(prompts[0] ?? "", /profile-map\.keep-key-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /profile-map\.drop-key-50/);
-  assert.match(prompts[0] ?? "", /skill-map\.keep-key-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /skill-map\.drop-key-50/);
-  assert.match(prompts[0] ?? "", /tool-map\.keep-key-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /tool-map\.drop-key-50/);
-  assert.match(prompts[0] ?? "", /mcp-map\.keep-key-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /mcp-map\.drop-key-50/);
-  assert.match(prompts[0] ?? "", /vault-map\.keep-key-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /vault-map\.drop-key-50/);
-  assert.match(prompts[0] ?? "", /vault-map-candidate\.keep-19/);
-  assert.doesNotMatch(prompts[0] ?? "", /vault-map-candidate\.drop-20/);
-  assert.match(prompts[0] ?? "", /instruction-map\.keep-key-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /instruction-map\.drop-key-50/);
-  assert.match(prompts[0] ?? "", /evaluator-map\.keep-key-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /evaluator-map\.drop-key-50/);
+  assert.match(prompts[0] ?? "", /\"additionalProperties\":false/);
+  assert.match(prompts[0] ?? "", /\"schemaVersion\":\{\"const\":\"southstar.workflow_composition_plan.v1\"\}/);
+  assert.equal(typeof WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.id.type, "string");
 });
 
-test("LLM composer parser rejects non-JSON output", () => {
-  assert.throws(
-    () => parseWorkflowCompositionPlanFromText("Here is the plan: {}", 20_000),
-    /LLM workflow composer returned non-JSON output/,
-  );
-});
-
-test("LLM composer parser rejects arrays and wrong schema versions", () => {
-  assert.throws(
-    () => parseWorkflowCompositionPlanFromText("[]", 20_000),
-    /must return a JSON object/,
-  );
-  assert.throws(
-    () => parseWorkflowCompositionPlanFromText(JSON.stringify({ schemaVersion: "wrong", tasks: [] }), 20_000),
-    /invalid schemaVersion/,
-  );
+test("LLM composer parser accepts strict contract payload", () => {
+  const parsed = parseWorkflowCompositionPlanFromText(JSON.stringify(validPlan()), 20_000);
+  assert.equal(parsed.title, "Dynamic Mock Plan");
+  assert.deepEqual(parsed.tasks.map((task) => task.id), [
+    "understand-repo",
+    "review-spec",
+    "implement-feature",
+    "verify-feature",
+    "review-code-quality",
+    "summarize-completion",
+  ]);
 });
 
 test("LLM composer parser rejects oversized output", () => {
   assert.throws(
     () => parseWorkflowCompositionPlanFromText(JSON.stringify(validPlan()), 10),
-    /exceeded max output size/,
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues[0]?.code === "composer_output_too_large",
   );
 });
 
-test("LLM composer parser rejects missing or invalid required top-level fields", () => {
-  const { title: _title, ...withoutTitle } = validPlan();
+test("LLM composer parser rejects non-json output", () => {
   assert.throws(
-    () => parseWorkflowCompositionPlanFromText(JSON.stringify(withoutTitle), 20_000),
-    /title/,
-  );
-  assert.throws(
-    () =>
-      parseWorkflowCompositionPlanFromText(
-        JSON.stringify({ ...validPlan(), selectedWorkflowTemplateRef: 123 }),
-        20_000,
-      ),
-    /selectedWorkflowTemplateRef/,
-  );
-  assert.throws(
-    () =>
-      parseWorkflowCompositionPlanFromText(
-        JSON.stringify({ ...validPlan(), rejectedCandidates: "invalid" }),
-        20_000,
-      ),
-    /rejectedCandidates/,
+    () => parseWorkflowCompositionPlanFromText("Here is the plan: {}", 20_000),
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues[0]?.code === "composer_output_non_json",
   );
 });
 
-test("LLM composer parser rejects malformed task shape", () => {
+test("LLM composer parser rejects invalid json", () => {
+  assert.throws(
+    () => parseWorkflowCompositionPlanFromText("{bad-json", 20_000),
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues[0]?.code === "composer_output_invalid_json",
+  );
+});
+
+test("LLM composer parser rejects alias-based payload instead of patching it", () => {
   assert.throws(
     () =>
       parseWorkflowCompositionPlanFromText(
         JSON.stringify({
-          ...validPlan(),
-          tasks: [{ ...validPlan().tasks[0], dependsOn: "bad" }],
+          schemaVersion: "southstar.workflow_composition_plan.v1",
+          title: "alias payload",
+          selectedWorkflowTemplateRef: "template.software-feature",
+          rationale: "alias",
+          taskGraph: [
+            {
+              id: "task_a",
+              agentRef: "agent.software-explorer",
+              profileRef: "profile.software-explorer-codex",
+            },
+          ],
+          rejectedCandidates: [],
+          generatedComponentProposals: [],
         }),
         20_000,
       ),
-    /tasks\[0\]\.dependsOn/,
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues.some((issue) => issue.code === "composer_output_schema_violation" && issue.path === "$.taskGraph"),
   );
-  const { id: _id, ...withoutId } = validPlan().tasks[0];
+});
+
+test("LLM composer parser rejects unexpected properties in task", () => {
+  const plan = validPlan();
+  const task = { ...plan.tasks[0], aliasField: "nope" };
   assert.throws(
     () =>
       parseWorkflowCompositionPlanFromText(
         JSON.stringify({
-          ...validPlan(),
-          tasks: [withoutId],
+          ...plan,
+          tasks: [task, ...plan.tasks.slice(1)],
         }),
         20_000,
       ),
-    /tasks\[0\]\.id/,
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues.some((issue) => issue.path === "tasks.0.aliasField"),
+  );
+});
+
+test("LLM composer parser rejects invalid task field types", () => {
+  const plan = validPlan();
+  assert.throws(
+    () =>
+      parseWorkflowCompositionPlanFromText(
+        JSON.stringify({
+          ...plan,
+          tasks: [{ ...plan.tasks[0], dependsOn: "implement-feature" }],
+        }),
+        20_000,
+      ),
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues.some((issue) => issue.path === "tasks.0.dependsOn"),
   );
 });
 
@@ -133,28 +147,107 @@ function validPlan(): WorkflowCompositionPlan {
     selectedWorkflowTemplateRef: "template.software-feature",
     rationale: "mock llm plan",
     tasks: [
-      {
-        id: "understand-repo",
-        name: "Understand Repo",
-        responsibility: "inspect repository",
-        dependsOn: [],
-        templateSlotRef: "understand",
-        agentDefinitionRef: "agent.software-explorer",
-        agentProfileRef: "profile.software-explorer-codex",
-        instructionRefs: ["instruction.software-explorer"],
-        skillRefs: ["skill.software-repo-discovery"],
-        toolGrantRefs: ["tool.workspace-read"],
-        mcpGrantRefs: [],
-        vaultLeasePolicyRefs: [],
-        inputArtifactRefs: [],
-        outputArtifactRefs: ["artifact.implementation_plan"],
-        evaluatorProfileRef: "evaluator.software-plan-quality",
-        recoveryStrategyRefs: ["retry-same-agent"],
-        rationale: "start with repository discovery",
-      },
+      task(
+        "understand-repo",
+        [],
+        "agent.software-explorer",
+        "profile.software-explorer-codex",
+        ["skill.software-repo-discovery"],
+        ["tool.workspace-read"],
+        ["instruction.software-explorer"],
+        ["artifact.implementation_plan"],
+        "evaluator.software-plan-quality",
+      ),
+      task(
+        "review-spec",
+        ["understand-repo"],
+        "agent.software-spec-reviewer",
+        "profile.software-spec-reviewer-codex",
+        ["skill.software-spec-review"],
+        ["tool.workspace-read"],
+        ["instruction.software-spec-reviewer"],
+        ["artifact.implementation_plan"],
+        "evaluator.software-plan-quality",
+      ),
+      task(
+        "implement-feature",
+        ["review-spec"],
+        "agent.software-maker",
+        "profile.software-maker-pi",
+        ["skill.software-implementation"],
+        ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
+        ["instruction.software-maker"],
+        ["artifact.implementation_report"],
+        "evaluator.software-feature-quality",
+      ),
+      task(
+        "verify-feature",
+        ["implement-feature"],
+        "agent.software-checker",
+        "profile.software-checker-codex",
+        ["skill.software-verification"],
+        ["tool.workspace-read", "tool.shell-command"],
+        ["instruction.software-checker"],
+        ["artifact.verification_report"],
+        "evaluator.software-verification-quality",
+      ),
+      task(
+        "review-code-quality",
+        ["implement-feature"],
+        "agent.software-code-quality-reviewer",
+        "profile.software-code-quality-reviewer-codex",
+        ["skill.software-code-quality-review"],
+        ["tool.workspace-read", "tool.shell-command"],
+        ["instruction.software-code-quality-reviewer"],
+        ["artifact.verification_report"],
+        "evaluator.software-verification-quality",
+      ),
+      task(
+        "summarize-completion",
+        ["verify-feature", "review-code-quality"],
+        "agent.software-summarizer",
+        "profile.software-summarizer-codex",
+        ["skill.software-summary"],
+        ["tool.workspace-read"],
+        ["instruction.software-summarizer"],
+        ["artifact.completion_report"],
+        "evaluator.software-completion-quality",
+      ),
     ],
     rejectedCandidates: [],
     generatedComponentProposals: [],
+  };
+}
+
+function task(
+  id: string,
+  dependsOn: string[],
+  agentDefinitionRef: string,
+  agentProfileRef: string,
+  skillRefs: string[],
+  toolGrantRefs: string[],
+  instructionRefs: string[],
+  outputArtifactRefs: string[],
+  evaluatorProfileRef: string,
+) {
+  return {
+    id,
+    name: id,
+    responsibility: id,
+    dependsOn,
+    templateSlotRef: id,
+    agentDefinitionRef,
+    agentProfileRef,
+    instructionRefs,
+    skillRefs,
+    toolGrantRefs,
+    mcpGrantRefs: [],
+    vaultLeasePolicyRefs: [],
+    inputArtifactRefs: [],
+    outputArtifactRefs,
+    evaluatorProfileRef,
+    recoveryStrategyRefs: ["retry-same-agent"],
+    rationale: id,
   };
 }
 
@@ -172,22 +265,8 @@ function candidatePacket(): CandidatePacket {
       missingInputs: [],
     },
     workflowTemplateCandidates: [
-      ...Array.from({ length: 20 }, (_value, index) => ({
-        ref: `template.keep-${index}`,
-        versionRef: `template.keep-${index}@v1`,
-        kind: "workflow_template" as const,
-        displayName: `Template Keep ${index}`,
-        state: {},
-        reason: "test",
-      })),
-      ...Array.from({ length: 3 }, (_value, index) => ({
-        ref: `template.drop-${20 + index}`,
-        versionRef: `template.drop-${20 + index}@v1`,
-        kind: "workflow_template" as const,
-        displayName: `Template Drop ${20 + index}`,
-        state: {},
-        reason: "test",
-      })),
+      ...Array.from({ length: 20 }, (_value, index) => candidate(`template.keep-${index}`, "workflow_template")),
+      ...Array.from({ length: 3 }, (_value, index) => candidate(`template.drop-${20 + index}`, "workflow_template")),
     ],
     agentCandidatesByCapability: candidateMap("agent-map", "agent-map-candidate", "agent_definition"),
     profileCandidatesByAgent: candidateMap("profile-map", "profile-map-candidate", "agent_profile"),
@@ -197,41 +276,13 @@ function candidatePacket(): CandidatePacket {
     vaultLeaseCandidatesByProfile: candidateMap("vault-map", "vault-map-candidate", "vault_lease_policy"),
     instructionCandidatesByProfile: candidateMap("instruction-map", "instruction-map-candidate", "instruction_template"),
     artifactContractCandidates: [
-      ...Array.from({ length: 50 }, (_value, index) => ({
-        ref: `artifact.keep-${index}`,
-        versionRef: `artifact.keep-${index}@v1`,
-        kind: "artifact_contract" as const,
-        displayName: `Artifact Keep ${index}`,
-        state: {},
-        reason: "test",
-      })),
-      ...Array.from({ length: 2 }, (_value, index) => ({
-        ref: `artifact.drop-${50 + index}`,
-        versionRef: `artifact.drop-${50 + index}@v1`,
-        kind: "artifact_contract" as const,
-        displayName: `Artifact Drop ${50 + index}`,
-        state: {},
-        reason: "test",
-      })),
+      ...Array.from({ length: 50 }, (_value, index) => candidate(`artifact.keep-${index}`, "artifact_contract")),
+      ...Array.from({ length: 2 }, (_value, index) => candidate(`artifact.drop-${50 + index}`, "artifact_contract")),
     ],
     evaluatorCandidatesByArtifact: candidateMap("evaluator-map", "evaluator-map-candidate", "evaluator_profile"),
     policyConstraints: [
-      ...Array.from({ length: 50 }, (_value, index) => ({
-        ref: `policy.keep-${index}`,
-        versionRef: `policy.keep-${index}@v1`,
-        kind: "policy_bundle" as const,
-        displayName: `Policy Keep ${index}`,
-        state: {},
-        reason: "test",
-      })),
-      ...Array.from({ length: 2 }, (_value, index) => ({
-        ref: `policy.drop-${50 + index}`,
-        versionRef: `policy.drop-${50 + index}@v1`,
-        kind: "policy_bundle" as const,
-        displayName: `Policy Drop ${50 + index}`,
-        state: {},
-        reason: "test",
-      })),
+      ...Array.from({ length: 50 }, (_value, index) => candidate(`policy.keep-${index}`, "policy_bundle")),
+      ...Array.from({ length: 2 }, (_value, index) => candidate(`policy.drop-${50 + index}`, "policy_bundle")),
     ],
     unavailableRequirements: [],
   };

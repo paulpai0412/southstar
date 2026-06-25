@@ -6,7 +6,7 @@ import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
-import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import { DeterministicFixtureComposer, ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
@@ -67,6 +67,7 @@ test("Postgres run API supports llm-constrained planner drafts and preserves tas
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
+      composer: new DeterministicFixtureComposer(),
     });
     assert.match(draft.draftId, /^draft-wf-composed-/);
 
@@ -89,6 +90,18 @@ test("Postgres run API supports llm-constrained planner drafts and preserves tas
       "review-code-quality",
       "summarize-completion",
     ]);
+  });
+});
+
+test("llm-constrained planner drafts fail closed when llm composer is not configured", async () => {
+  await withDb(async (db) => {
+    await assert.rejects(
+      () => createPostgresPlannerDraft(db, {
+        goalPrompt: "implement calc sum",
+        orchestrationMode: "llm-constrained",
+      }),
+      /LLM workflow composer is not configured/,
+    );
   });
 });
 
@@ -181,7 +194,14 @@ test("Postgres planner draft can use injected scripted LLM composer for non-fixt
     assert.equal(draftResource.payload_json.repairAttempts[1]?.validation.ok, true);
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
-    assert.deepEqual(run.taskIds, ["inspect-only"]);
+    assert.deepEqual(run.taskIds, [
+      "inspect-only",
+      "review-spec",
+      "implement-feature",
+      "verify-feature",
+      "review-code-quality",
+      "summarize-completion",
+    ]);
   });
 });
 
@@ -240,6 +260,7 @@ test("Postgres server routes create planner drafts and runs through new API", as
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by Postgres constrained planner"); } },
+      workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by created-state route"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
     });
@@ -340,27 +361,7 @@ function invalidInspectOnlyPlan(): WorkflowCompositionPlan {
     title: "Invalid Inspect Plan",
     selectedWorkflowTemplateRef: "template.software-feature",
     rationale: "invalid profile for explorer task",
-    tasks: [
-      {
-        id: "inspect-only",
-        name: "Inspect Only",
-        responsibility: "inspect repository and produce a plan",
-        dependsOn: [],
-        templateSlotRef: "understand",
-        agentDefinitionRef: "agent.software-explorer",
-        agentProfileRef: "profile.software-maker-pi",
-        instructionRefs: ["instruction.software-explorer"],
-        skillRefs: ["skill.software-repo-discovery"],
-        toolGrantRefs: ["tool.workspace-read"],
-        mcpGrantRefs: [],
-        vaultLeasePolicyRefs: [],
-        inputArtifactRefs: [],
-        outputArtifactRefs: ["artifact.implementation_plan"],
-        evaluatorProfileRef: "evaluator.software-plan-quality",
-        recoveryStrategyRefs: ["retry-same-agent"],
-        rationale: "invalid profile should trigger repair",
-      },
-    ],
+    tasks: inspectPlanTasks("profile.software-maker-pi"),
     rejectedCandidates: [],
     generatedComponentProposals: [],
   };
@@ -371,29 +372,128 @@ function validInspectOnlyPlan(): WorkflowCompositionPlan {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Valid Inspect Plan",
     selectedWorkflowTemplateRef: "template.software-feature",
-    rationale: "valid explorer-only plan",
-    tasks: [
-      {
-        id: "inspect-only",
-        name: "Inspect Only",
-        responsibility: "inspect repository and produce a plan",
-        dependsOn: [],
-        templateSlotRef: "understand",
-        agentDefinitionRef: "agent.software-explorer",
-        agentProfileRef: "profile.software-explorer-codex",
-        instructionRefs: ["instruction.software-explorer"],
-        skillRefs: ["skill.software-repo-discovery"],
-        toolGrantRefs: ["tool.workspace-read"],
-        mcpGrantRefs: [],
-        vaultLeasePolicyRefs: [],
-        inputArtifactRefs: [],
-        outputArtifactRefs: ["artifact.implementation_plan"],
-        evaluatorProfileRef: "evaluator.software-plan-quality",
-        recoveryStrategyRefs: ["retry-same-agent"],
-        rationale: "valid repaired plan",
-      },
-    ],
+    rationale: "valid repaired plan",
+    tasks: inspectPlanTasks("profile.software-explorer-codex"),
     rejectedCandidates: [],
     generatedComponentProposals: [],
   };
+}
+
+function inspectPlanTasks(explorerProfileRef: string): WorkflowCompositionPlan["tasks"] {
+  return [
+    {
+      id: "inspect-only",
+      name: "Inspect Only",
+      responsibility: "inspect repository and produce a plan",
+      dependsOn: [],
+      templateSlotRef: "understand",
+      agentDefinitionRef: "agent.software-explorer",
+      agentProfileRef: explorerProfileRef,
+      instructionRefs: ["instruction.software-explorer"],
+      skillRefs: ["skill.software-repo-discovery"],
+      toolGrantRefs: ["tool.workspace-read"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: [],
+      outputArtifactRefs: ["artifact.implementation_plan"],
+      evaluatorProfileRef: "evaluator.software-plan-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "explore repository",
+    },
+    {
+      id: "review-spec",
+      name: "Review Spec",
+      responsibility: "review plan quality",
+      dependsOn: ["inspect-only"],
+      templateSlotRef: "review-spec",
+      agentDefinitionRef: "agent.software-spec-reviewer",
+      agentProfileRef: "profile.software-spec-reviewer-codex",
+      instructionRefs: ["instruction.software-spec-reviewer"],
+      skillRefs: ["skill.software-spec-review"],
+      toolGrantRefs: ["tool.workspace-read"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.implementation_plan"],
+      outputArtifactRefs: ["artifact.implementation_plan"],
+      evaluatorProfileRef: "evaluator.software-plan-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "review implementation plan before coding",
+    },
+    {
+      id: "implement-feature",
+      name: "Implement Feature",
+      responsibility: "implement the feature",
+      dependsOn: ["review-spec"],
+      templateSlotRef: "implement",
+      agentDefinitionRef: "agent.software-maker",
+      agentProfileRef: "profile.software-maker-pi",
+      instructionRefs: ["instruction.software-maker"],
+      skillRefs: ["skill.software-implementation"],
+      toolGrantRefs: ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.implementation_plan"],
+      outputArtifactRefs: ["artifact.implementation_report"],
+      evaluatorProfileRef: "evaluator.software-feature-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "implement after plan review",
+    },
+    {
+      id: "verify-feature",
+      name: "Verify Feature",
+      responsibility: "run functional verification",
+      dependsOn: ["implement-feature"],
+      templateSlotRef: "verify",
+      agentDefinitionRef: "agent.software-checker",
+      agentProfileRef: "profile.software-checker-codex",
+      instructionRefs: ["instruction.software-checker"],
+      skillRefs: ["skill.software-verification"],
+      toolGrantRefs: ["tool.workspace-read", "tool.shell-command"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.implementation_report"],
+      outputArtifactRefs: ["artifact.verification_report"],
+      evaluatorProfileRef: "evaluator.software-verification-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "validate behavior",
+    },
+    {
+      id: "review-code-quality",
+      name: "Review Code Quality",
+      responsibility: "review maintainability and quality",
+      dependsOn: ["implement-feature"],
+      templateSlotRef: "review-code-quality",
+      agentDefinitionRef: "agent.software-code-quality-reviewer",
+      agentProfileRef: "profile.software-code-quality-reviewer-codex",
+      instructionRefs: ["instruction.software-code-quality-reviewer"],
+      skillRefs: ["skill.software-code-quality-review"],
+      toolGrantRefs: ["tool.workspace-read", "tool.shell-command"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.implementation_report"],
+      outputArtifactRefs: ["artifact.verification_report"],
+      evaluatorProfileRef: "evaluator.software-verification-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "enforce code quality gate",
+    },
+    {
+      id: "summarize-completion",
+      name: "Summarize Completion",
+      responsibility: "summarize final outcome",
+      dependsOn: ["verify-feature", "review-code-quality"],
+      templateSlotRef: "summarize",
+      agentDefinitionRef: "agent.software-summarizer",
+      agentProfileRef: "profile.software-summarizer-codex",
+      instructionRefs: ["instruction.software-summarizer"],
+      skillRefs: ["skill.software-summary"],
+      toolGrantRefs: ["tool.workspace-read"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.verification_report"],
+      outputArtifactRefs: ["artifact.completion_report"],
+      evaluatorProfileRef: "evaluator.software-completion-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "close run with evidence summary",
+    },
+  ];
 }

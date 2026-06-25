@@ -47,7 +47,6 @@ test("29 llm dynamic workflow materialization: task envelopes include materializ
       body: JSON.stringify({
         goalPrompt: "llm dynamic workflow materialization real E2E with task envelope library refs",
         orchestrationMode: "llm-constrained",
-        composerMode: "fixture",
       }),
     });
     assert.match(draft.draftId, /^draft-wf-composed-/);
@@ -55,14 +54,7 @@ test("29 llm dynamic workflow materialization: task envelopes include materializ
       method: "POST",
       body: JSON.stringify({ draftId: draft.draftId }),
     });
-    assert.deepEqual(run.taskIds, [
-      "understand-repo",
-      "review-spec",
-      "implement-feature",
-      "verify-feature",
-      "review-code-quality",
-      "summarize-completion",
-    ]);
+    assert.equal(run.taskIds.length >= 4, true);
     checkpoint("CP1", `draft + run created: ${draft.draftId} -> ${run.runId}`);
 
     const draftResource = await env.db.one<{
@@ -75,8 +67,17 @@ test("29 llm dynamic workflow materialization: task envelopes include materializ
       "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
       [draft.draftId],
     );
-    assert.equal(draftResource.payload_json.plannerTrace?.composerMode, "fixture");
-    checkpoint("CP2", "planner trace confirms fixture composer mode");
+    assert.equal(draftResource.payload_json.plannerTrace?.composerMode, "llm");
+    checkpoint("CP2", "planner trace confirms llm composer mode");
+
+    const taskProfiles = await env.db.query<{ id: string; snapshot_json: { agentProfileRef?: string } }>(
+      "select id, snapshot_json from southstar.workflow_tasks where run_id = $1 order by sort_order",
+      [run.runId],
+    );
+    const profileRefs = taskProfiles.rows.map((row) => row.snapshot_json.agentProfileRef).filter((value): value is string => typeof value === "string");
+    assert.equal(profileRefs.includes("software-spec-reviewer-codex"), true);
+    assert.equal(profileRefs.includes("software-code-quality-reviewer-codex"), true);
+    const expectedTaskIds = taskProfiles.rows.map((row) => row.id);
 
     const execute = await api<{ runId: string; status: string; schedulerWakeRequested: true }>(
       server.port,
@@ -91,7 +92,7 @@ test("29 llm dynamic workflow materialization: task envelopes include materializ
       callbackBase: dockerReachableUrl(server, infra),
     });
 
-    for (const taskId of run.taskIds) {
+    for (const taskId of expectedTaskIds) {
       const dispatch = await scheduler.runOnce({ runId: run.runId });
       assert.deepEqual(dispatch.dispatchedTaskIds, [taskId]);
       checkpoint("CP4", `task dispatched: ${taskId}`);

@@ -3,6 +3,7 @@ import type { BrainProvider } from "../brain/types.ts";
 import type { RecoveryProviderActions } from "../executor/provider-actions.ts";
 import type { ExecutorProvider, TorkObservationClient } from "../executor/provider.ts";
 import type { HandProvider } from "../hands/types.ts";
+import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
 import type { SessionStore } from "../session/types.ts";
 import type { RuntimeLoopController } from "./runtime-loops.ts";
@@ -11,6 +12,7 @@ import type { RuntimeLoopRegistry } from "./runtime-loop-registry.ts";
 export type RuntimeServerContext = {
   db: SouthstarDb;
   plannerClient: PiPlannerClient;
+  workflowComposer?: WorkflowComposer;
   executorProvider: ExecutorProvider;
   torkObservationClient?: TorkObservationClient;
   callbackUrl?: string;

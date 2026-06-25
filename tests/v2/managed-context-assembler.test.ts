@@ -152,7 +152,52 @@ test("ManagedContextAssembler materializes implement-feature library refs for ll
   }
 });
 
+test("ManagedContextAssembler resolves runtime-only reviewer role/profile from workflow manifest", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    await createWorkflowRunPg(db, {
+      id: "run-managed-context-runtime-reviewer",
+      status: "running",
+      domain: "software",
+      goalPrompt: "review implementation plan quality",
+      workflowManifestJson: JSON.stringify(runtimeReviewerManifest()),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: "review-spec",
+      runId: "run-managed-context-runtime-reviewer",
+      taskKey: "review-spec",
+      status: "claimed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: "session-runtime-reviewer",
+    });
+
+    const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+    const assembled = await assembler.buildForTask({
+      runId: "run-managed-context-runtime-reviewer",
+      taskId: "review-spec",
+      sessionId: "session-runtime-reviewer",
+      attemptId: "review-spec-attempt-1",
+      handExecutionId: "hand-execution:run-managed-context-runtime-reviewer:review-spec:review-spec-attempt-1",
+      dependsOn: [],
+    });
+
+    assert.equal(assembled.taskEnvelope.role.id, "spec-reviewer");
+    assert.equal(assembled.taskEnvelope.agentProfile.id, "software-spec-reviewer-codex");
+  } finally {
+    await db.close();
+  }
+});
+
 function manifest() {
+  const makerRole = softwareDomainPack.roles.find((role) => role.id === "maker");
+  const makerProfile = softwareDomainPack.agentProfiles.find((profile) => profile.id === "software-maker-pi");
+  if (!makerRole || !makerProfile) throw new Error("softwareDomainPack missing maker role/profile for test manifest");
   return {
     schemaVersion: "southstar.v2",
     workflowId: "wf-managed-context",
@@ -160,6 +205,8 @@ function manifest() {
     goalPrompt: "build managed context",
     domain: "software",
     intent: "implement_feature",
+    roles: [makerRole],
+    agentProfiles: [makerProfile],
     tasks: [{
       id: "implement-feature",
       name: "Implement",
@@ -209,16 +256,124 @@ function manifest() {
   };
 }
 
+function runtimeReviewerManifest() {
+  return {
+    schemaVersion: "southstar.v2",
+    workflowId: "wf-runtime-reviewer-context",
+    title: "Runtime reviewer context",
+    goalPrompt: "review implementation plan quality",
+    domain: "software",
+    intent: "implement_feature",
+    roles: [{
+      id: "spec-reviewer",
+      responsibility: "Review implementation plan quality and risk.",
+      defaultAgentProfileRef: "software-spec-reviewer-codex",
+      allowedAgentProfileRefs: ["software-spec-reviewer-codex"],
+      artifactInputs: ["implementation_plan"],
+      artifactOutputs: ["implementation_plan"],
+      stopAuthority: "can-reject",
+    }],
+    agentProfiles: [{
+      id: "software-spec-reviewer-codex",
+      name: "Software Spec Reviewer",
+      provider: "codex",
+      model: "gpt-5-codex",
+      harnessRef: "codex",
+      agentsMdRefs: ["repo:AGENTS.md"],
+      promptTemplateRef: "software-spec-reviewer",
+      skillRefs: ["software-spec-review"],
+      mcpGrantRefs: [],
+      memoryScopes: ["software", "project"],
+      contextPolicyRef: "software-context-default",
+      sessionPolicyRef: "software-session-default",
+      toolPolicy: { allowedTools: ["read", "search"], deniedTools: ["write"], requiresApprovalFor: [] },
+      budgetPolicy: { maxInputTokens: 12_000, maxOutputTokens: 2_000, maxWallTimeSeconds: 300 },
+    }],
+    tasks: [{
+      id: "review-spec",
+      name: "Review spec",
+      domain: "software",
+      dependsOn: [],
+      roleRef: "spec-reviewer",
+      agentProfileRef: "software-spec-reviewer-codex",
+      evaluatorPipelineRef: "software-plan-quality",
+      requiredArtifactRefs: ["implementation_plan"],
+      instructionRefs: ["instruction.software-spec-reviewer"],
+      skillRefs: ["skill.software-spec-review"],
+      toolGrantRefs: ["tool.workspace-read"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
+      execution: {
+        engine: "tork",
+        image: "southstar/pi-agent:local",
+        command: ["southstar-agent-runner"],
+        env: {},
+        mounts: [],
+        timeoutSeconds: 600,
+        infraRetry: { maxAttempts: 1 },
+      },
+      subagents: [],
+    }],
+    harnessDefinitions: [{
+      id: "codex",
+      kind: "codex",
+      entrypoint: "southstar-agent-runner",
+      image: "southstar/pi-agent:local",
+      capabilities: ["software"],
+      inputProtocol: "task-envelope-v2",
+      eventProtocol: "southstar-events-v1",
+      supportsCheckpoint: true,
+      supportsSteering: true,
+      supportsProgress: true,
+    }],
+    evaluators: [],
+    memoryPolicy: { retrievalLimit: 5, writeRequiresApproval: true },
+    vaultPolicy: { leaseTtlSeconds: 60, mountMode: "env" },
+    mcpServers: [],
+    mcpGrants: [],
+    progressPolicy: { firstEventWithinSeconds: 30, minEventsPerLongTask: 1 },
+    steeringPolicy: { enabled: true, acceptedSignals: [] },
+    learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+  };
+}
+
 function singleTaskImplementPlan(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
-    title: "Single Task Implement Workflow",
+    title: "Scripted Implement Workflow",
     selectedWorkflowTemplateRef: "template.software-feature",
-    rationale: "Scripted llm test plan for implement-feature materialization.",
+    rationale: "Scripted llm test plan with mandatory code quality review.",
     tasks: [
       task(
-        "implement-feature",
+        "understand-repo",
         [],
+        "agent.software-explorer",
+        "profile.software-explorer-codex",
+        ["skill.software-repo-discovery"],
+        ["tool.workspace-read"],
+        ["instruction.software-explorer"],
+        [],
+        [],
+        ["artifact.implementation_plan"],
+        "evaluator.software-plan-quality",
+      ),
+      task(
+        "review-spec",
+        ["understand-repo"],
+        "agent.software-spec-reviewer",
+        "profile.software-spec-reviewer-codex",
+        ["skill.software-spec-review"],
+        ["tool.workspace-read"],
+        ["instruction.software-spec-reviewer"],
+        [],
+        [],
+        ["artifact.implementation_plan"],
+        "evaluator.software-plan-quality",
+      ),
+      task(
+        "implement-feature",
+        ["review-spec"],
         "agent.software-maker",
         "profile.software-maker-pi",
         ["skill.software-implementation"],
@@ -228,6 +383,45 @@ function singleTaskImplementPlan(): WorkflowCompositionPlan {
         ["vault.github-write-token"],
         ["artifact.implementation_report"],
         "evaluator.software-feature-quality",
+      ),
+      task(
+        "verify-feature",
+        ["implement-feature"],
+        "agent.software-checker",
+        "profile.software-checker-codex",
+        ["skill.software-verification"],
+        ["tool.workspace-read", "tool.shell-command"],
+        ["instruction.software-checker"],
+        [],
+        [],
+        ["artifact.verification_report"],
+        "evaluator.software-verification-quality",
+      ),
+      task(
+        "review-code-quality",
+        ["implement-feature"],
+        "agent.software-code-quality-reviewer",
+        "profile.software-code-quality-reviewer-codex",
+        ["skill.software-code-quality-review"],
+        ["tool.workspace-read", "tool.shell-command"],
+        ["instruction.software-code-quality-reviewer"],
+        [],
+        [],
+        ["artifact.verification_report"],
+        "evaluator.software-verification-quality",
+      ),
+      task(
+        "summarize-completion",
+        ["verify-feature", "review-code-quality"],
+        "agent.software-summarizer",
+        "profile.software-summarizer-codex",
+        ["skill.software-summary"],
+        ["tool.workspace-read"],
+        ["instruction.software-summarizer"],
+        [],
+        [],
+        ["artifact.completion_report"],
+        "evaluator.software-completion-quality",
       ),
     ],
     rejectedCandidates: [],

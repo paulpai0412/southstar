@@ -20,7 +20,7 @@ export function createWorkflowComposerRegistry(options: WorkflowComposerRegistry
   const fixtureComposer = options.fixtureComposer ?? new DeterministicFixtureComposer();
   return {
     resolve(input) {
-      const mode = input.composerMode ?? "fixture";
+      const mode = input.composerMode ?? "llm";
       if (mode === "fixture") {
         return fixtureComposer;
       }

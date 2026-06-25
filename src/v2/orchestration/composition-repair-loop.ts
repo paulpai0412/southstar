@@ -6,11 +6,12 @@ import type {
 } from "../design-library/types.ts";
 import type { WorkflowComposer } from "./composer.ts";
 import { validateWorkflowCompositionPlan } from "./composition-validator.ts";
+import { LlmComposerOutputError } from "./llm-composer.ts";
 
 export type CompositionRepairAttempt = {
   attempt: number;
   validation: WorkflowCompositionValidationResult;
-  composition: WorkflowCompositionPlan;
+  composition?: WorkflowCompositionPlan;
 };
 
 export type RunCompositionRepairLoopInput = {
@@ -23,7 +24,7 @@ export type RunCompositionRepairLoopInput = {
 };
 
 export type CompositionRepairLoopResult = {
-  composition: WorkflowCompositionPlan;
+  composition: WorkflowCompositionPlan | null;
   validation: WorkflowCompositionValidationResult;
   attempts: CompositionRepairAttempt[];
 };
@@ -32,19 +33,29 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
   const attempts: CompositionRepairAttempt[] = [];
   let latestValidation: WorkflowCompositionValidationResult | null = null;
   for (let attempt = 0; attempt <= input.maxRepairAttempts; attempt += 1) {
-    const composition = await input.composer.compose({
-      goalPrompt: renderRepairGoal(input.goalPrompt, latestValidation),
-      candidatePacket: input.candidatePacket,
-    });
-    const validation = await validateWorkflowCompositionPlan(
-      input.db,
-      input.candidatePacket,
-      composition,
-      { scope: input.scope },
-    );
-    attempts.push({ attempt, validation, composition });
+    let composition: WorkflowCompositionPlan | undefined;
+    let validation: WorkflowCompositionValidationResult;
+    try {
+      composition = await input.composer.compose({
+        goalPrompt: renderRepairGoal(input.goalPrompt, latestValidation),
+        candidatePacket: input.candidatePacket,
+      });
+      validation = await validateWorkflowCompositionPlan(
+        input.db,
+        input.candidatePacket,
+        composition,
+        { scope: input.scope },
+      );
+      attempts.push({ attempt, validation, composition });
+    } catch (error) {
+      if (!(error instanceof LlmComposerOutputError)) {
+        throw error;
+      }
+      validation = { ok: false, issues: error.issues };
+      attempts.push({ attempt, validation });
+    }
     if (validation.ok) {
-      return { composition, validation, attempts };
+      return { composition: composition ?? null, validation, attempts };
     }
     latestValidation = validation;
   }
@@ -53,7 +64,7 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
     throw new Error("composition repair loop did not execute");
   }
   return {
-    composition: last.composition,
+    composition: last.composition ?? null,
     validation: last.validation,
     attempts,
   };

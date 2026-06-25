@@ -27,9 +27,176 @@ export async function validateWorkflowCompositionPlan(
     issues.push(issue("unknown_template", "selectedWorkflowTemplateRef", `template is not an approved candidate: ${plan.selectedWorkflowTemplateRef}`));
   }
   validateTaskDependencies(plan, issues);
+  validateCoverageConstraints(packet, plan, issues);
   validateCandidateMembership(plan, candidateRefSet, issues);
   await validateEdgeConstraints(db, plan, issues, options.scope ?? "software");
   return { ok: issues.length === 0, issues };
+}
+
+type CompositionTaskGroupMatcher = {
+  taskId?: string;
+  agentDefinitionRef?: string;
+  agentProfileRef?: string;
+  skillRef?: string;
+  instructionRef?: string;
+  toolGrantRef?: string;
+  outputArtifactRef?: string;
+};
+
+type CompositionRequiredTaskGroup = {
+  id: string;
+  minCount: number;
+  matchAny: CompositionTaskGroupMatcher[];
+};
+
+type CompositionRequiredGroupDependency = {
+  fromGroup: string;
+  toGroup: string;
+};
+
+type CompositionConstraints = {
+  requiredTaskGroups: CompositionRequiredTaskGroup[];
+  requiredGroupDependencies: CompositionRequiredGroupDependency[];
+};
+
+function validateCoverageConstraints(
+  packet: CandidatePacket,
+  plan: WorkflowCompositionPlan,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const constraints = compositionConstraintsForTemplate(packet, plan.selectedWorkflowTemplateRef);
+  if (!constraints) return;
+  const taskIdsByGroup = new Map<string, Set<string>>();
+  const taskIndexById = new Map<string, number>(plan.tasks.map((task, index) => [task.id, index]));
+  const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
+
+  for (const rule of constraints.requiredTaskGroups) {
+    const matchedTaskIds = new Set(
+      plan.tasks.filter((task) => matchesTaskGroupRule(task, rule)).map((task) => task.id),
+    );
+    taskIdsByGroup.set(rule.id, matchedTaskIds);
+    if (matchedTaskIds.size === 0) {
+      issues.push(
+        issue(
+          "missing_required_task_group",
+          `compositionConstraints.requiredTaskGroups.${rule.id}`,
+          `composition is missing required task group: ${rule.id}`,
+        ),
+      );
+      continue;
+    }
+    if (matchedTaskIds.size < rule.minCount) {
+      issues.push(
+        issue(
+          "insufficient_task_group_count",
+          `compositionConstraints.requiredTaskGroups.${rule.id}`,
+          `task group ${rule.id} requires at least ${rule.minCount} task(s), found ${matchedTaskIds.size}`,
+        ),
+      );
+    }
+  }
+
+  for (const dependency of constraints.requiredGroupDependencies) {
+    const fromTaskIds = taskIdsByGroup.get(dependency.fromGroup);
+    const toTaskIds = taskIdsByGroup.get(dependency.toGroup);
+    if (!fromTaskIds || !toTaskIds || fromTaskIds.size === 0 || toTaskIds.size === 0) {
+      continue;
+    }
+    for (const fromTaskId of fromTaskIds) {
+      const fromTask = tasksById.get(fromTaskId);
+      if (!fromTask) continue;
+      const dependsOnRequiredGroup = fromTask.dependsOn.some((dependencyTaskId) => toTaskIds.has(dependencyTaskId));
+      if (dependsOnRequiredGroup) continue;
+      const taskIndex = taskIndexById.get(fromTaskId);
+      issues.push(
+        issue(
+          "missing_required_group_dependency",
+          taskIndex === undefined ? "tasks" : `tasks.${taskIndex}.dependsOn`,
+          `task group ${dependency.fromGroup} must depend on task group ${dependency.toGroup}`,
+        ),
+      );
+    }
+  }
+}
+
+function compositionConstraintsForTemplate(
+  packet: CandidatePacket,
+  templateRef: string,
+): CompositionConstraints | null {
+  const templateCandidate = packet.workflowTemplateCandidates.find((candidate) => candidate.ref === templateRef);
+  if (!templateCandidate || !isRecord(templateCandidate.state)) return null;
+  const rawConstraints = templateCandidate.state.compositionConstraints;
+  if (!isRecord(rawConstraints)) return null;
+  const requiredTaskGroups = parseRequiredTaskGroups(rawConstraints.requiredTaskGroups);
+  const requiredGroupDependencies = parseRequiredGroupDependencies(rawConstraints.requiredGroupDependencies);
+  if (requiredTaskGroups.length === 0 && requiredGroupDependencies.length === 0) return null;
+  return { requiredTaskGroups, requiredGroupDependencies };
+}
+
+function parseRequiredTaskGroups(value: unknown): CompositionRequiredTaskGroup[] {
+  if (!Array.isArray(value)) return [];
+  const rules: CompositionRequiredTaskGroup[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    if (typeof item.id !== "string" || item.id.length === 0) continue;
+    const matchAny = parseTaskGroupMatchers(item.matchAny);
+    if (matchAny.length === 0) continue;
+    const minCount = typeof item.minCount === "number" && Number.isFinite(item.minCount) && item.minCount > 0
+      ? Math.floor(item.minCount)
+      : 1;
+    rules.push({
+      id: item.id,
+      minCount,
+      matchAny,
+    });
+  }
+  return rules;
+}
+
+function parseRequiredGroupDependencies(value: unknown): CompositionRequiredGroupDependency[] {
+  if (!Array.isArray(value)) return [];
+  const dependencies: CompositionRequiredGroupDependency[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    if (typeof item.fromGroup !== "string" || item.fromGroup.length === 0) continue;
+    if (typeof item.toGroup !== "string" || item.toGroup.length === 0) continue;
+    dependencies.push({ fromGroup: item.fromGroup, toGroup: item.toGroup });
+  }
+  return dependencies;
+}
+
+function parseTaskGroupMatchers(value: unknown): CompositionTaskGroupMatcher[] {
+  if (!Array.isArray(value)) return [];
+  const matchers: CompositionTaskGroupMatcher[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const matcher: CompositionTaskGroupMatcher = {};
+    if (typeof item.taskId === "string" && item.taskId.length > 0) matcher.taskId = item.taskId;
+    if (typeof item.agentDefinitionRef === "string" && item.agentDefinitionRef.length > 0) matcher.agentDefinitionRef = item.agentDefinitionRef;
+    if (typeof item.agentProfileRef === "string" && item.agentProfileRef.length > 0) matcher.agentProfileRef = item.agentProfileRef;
+    if (typeof item.skillRef === "string" && item.skillRef.length > 0) matcher.skillRef = item.skillRef;
+    if (typeof item.instructionRef === "string" && item.instructionRef.length > 0) matcher.instructionRef = item.instructionRef;
+    if (typeof item.toolGrantRef === "string" && item.toolGrantRef.length > 0) matcher.toolGrantRef = item.toolGrantRef;
+    if (typeof item.outputArtifactRef === "string" && item.outputArtifactRef.length > 0) matcher.outputArtifactRef = item.outputArtifactRef;
+    if (Object.keys(matcher).length === 0) continue;
+    matchers.push(matcher);
+  }
+  return matchers;
+}
+
+function matchesTaskGroupRule(task: WorkflowCompositionPlan["tasks"][number], rule: CompositionRequiredTaskGroup): boolean {
+  return rule.matchAny.some((matcher) => matchesTaskGroupMatcher(task, matcher));
+}
+
+function matchesTaskGroupMatcher(task: WorkflowCompositionPlan["tasks"][number], matcher: CompositionTaskGroupMatcher): boolean {
+  if (matcher.taskId && task.id !== matcher.taskId) return false;
+  if (matcher.agentDefinitionRef && task.agentDefinitionRef !== matcher.agentDefinitionRef) return false;
+  if (matcher.agentProfileRef && task.agentProfileRef !== matcher.agentProfileRef) return false;
+  if (matcher.skillRef && !task.skillRefs.includes(matcher.skillRef)) return false;
+  if (matcher.instructionRef && !task.instructionRefs.includes(matcher.instructionRef)) return false;
+  if (matcher.toolGrantRef && !task.toolGrantRefs.includes(matcher.toolGrantRef)) return false;
+  if (matcher.outputArtifactRef && !task.outputArtifactRefs.includes(matcher.outputArtifactRef)) return false;
+  return true;
 }
 
 function validateTaskDependencies(plan: WorkflowCompositionPlan, issues: WorkflowCompositionValidationIssue[]): void {
@@ -244,4 +411,8 @@ function issue(
   message: string,
 ): WorkflowCompositionValidationIssue {
   return { code, path, message };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

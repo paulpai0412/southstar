@@ -32,6 +32,35 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
       title: "Software Feature Workflow",
       intentRefs: ["implement_feature", "fix_bug"],
       roleRefs: ["explorer", "maker", "checker", "summarizer"],
+      compositionConstraints: {
+        schemaVersion: "southstar.composition_constraints.v1",
+        requiredTaskGroups: [
+          {
+            id: "spec_review",
+            minCount: 1,
+            matchAny: [
+              { agentDefinitionRef: "agent.software-spec-reviewer" },
+              { skillRef: "skill.software-spec-review" },
+            ],
+          },
+          {
+            id: "code_quality_review",
+            minCount: 1,
+            matchAny: [
+              { agentDefinitionRef: "agent.software-code-quality-reviewer" },
+              { skillRef: "skill.software-code-quality-review" },
+            ],
+          },
+          {
+            id: "summarize",
+            minCount: 1,
+            matchAny: [{ agentDefinitionRef: "agent.software-summarizer" }],
+          },
+        ],
+        requiredGroupDependencies: [
+          { fromGroup: "summarize", toGroup: "code_quality_review" },
+        ],
+      },
     },
   },
   {

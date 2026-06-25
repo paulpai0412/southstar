@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { DeterministicFixtureComposer } from "../../src/v2/orchestration/composer.ts";
 import { createPostgresPlannerDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -10,6 +11,7 @@ test("llm-constrained path stores selected refs and validator proof in planner d
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with tests and docs",
       orchestrationMode: "llm-constrained",
+      composer: new DeterministicFixtureComposer(),
     });
     const resource = await db.one<{
       payload_json: {

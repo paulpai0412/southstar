@@ -10,10 +10,12 @@ test("composer registry resolves fixture mode to deterministic fixture composer"
   assert.equal(composer instanceof DeterministicFixtureComposer, true);
 });
 
-test("composer registry defaults to fixture mode when composerMode is omitted", () => {
+test("composer registry defaults to llm mode when composerMode is omitted", () => {
   const registry = createWorkflowComposerRegistry();
-  const composer = registry.resolve({});
-  assert.equal(composer instanceof DeterministicFixtureComposer, true);
+  assert.throws(
+    () => registry.resolve({}),
+    /LLM workflow composer is not configured/,
+  );
 });
 
 test("composer registry resolves llm mode with scripted composer output", async () => {

@@ -115,7 +115,7 @@ async function createLibraryConstrainedPlannerDraft(
   }
 
   const registry = createWorkflowComposerRegistry({ llmComposer: input.composer });
-  const composerMode = input.composerMode ?? "fixture";
+  const composerMode = input.composerMode ?? "llm";
   const composer = registry.resolve({ composerMode });
   const fallbackImplicitlySelected = composerMode === "llm-with-fixture-fallback" && !input.composer;
   const repairResult = await runCompositionRepairLoop({
@@ -149,6 +149,9 @@ async function createLibraryConstrainedPlannerDraft(
     return { draftId, goalPrompt: input.goalPrompt, workflowId };
   }
   const composition = repairResult.composition;
+  if (!composition) {
+    throw new Error("composition repair loop returned ok validation without composition");
+  }
   const compiled = await compileWorkflowComposition(db, {
     runId: draftRunId,
     goalPrompt: input.goalPrompt,

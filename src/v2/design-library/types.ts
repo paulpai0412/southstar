@@ -302,11 +302,18 @@ export type WorkflowCompositionPatch = {
 };
 
 export type WorkflowCompositionValidationIssueCode =
+  | "composer_output_too_large"
+  | "composer_output_non_json"
+  | "composer_output_invalid_json"
+  | "composer_output_schema_violation"
   | "invalid_schema_version"
   | "unknown_template"
   | "duplicate_task_id"
   | "unknown_dependency"
   | "dependency_cycle"
+  | "missing_required_task_group"
+  | "insufficient_task_group_count"
+  | "missing_required_group_dependency"
   | "ref_not_in_candidate_packet"
   | "profile_does_not_implement_agent"
   | "profile_does_not_allow_skill"

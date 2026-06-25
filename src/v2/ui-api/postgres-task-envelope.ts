@@ -38,8 +38,10 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
   if (!taskRow) throw new Error(`unknown task: ${input.taskId}`);
   const contextPacket = await latestContextPacket(db, input);
   const domainPack = domainPackForWorkflow(workflow);
-  const role = required(domainPack.roles.find((candidate) => candidate.id === task.roleRef), `missing role ${task.roleRef}`);
-  const agentProfile = required(domainPack.agentProfiles.find((candidate) => candidate.id === task.agentProfileRef), `missing agent profile ${task.agentProfileRef}`);
+  const workflowRoles = required(workflow.roles, `missing workflow roles in manifest ${workflow.workflowId}`);
+  const workflowProfiles = required(workflow.agentProfiles, `missing workflow agentProfiles in manifest ${workflow.workflowId}`);
+  const role = required(workflowRoles.find((candidate) => candidate.id === task.roleRef), `missing role ${task.roleRef}`);
+  const agentProfile = required(workflowProfiles.find((candidate) => candidate.id === task.agentProfileRef), `missing agent profile ${task.agentProfileRef}`);
   const harness = required(workflow.harnessDefinitions.find((candidate) => candidate.id === agentProfile.harnessRef), `missing harness ${agentProfile.harnessRef}`);
   const artifactContracts = artifactContractsForTask(domainPack, task);
   const evaluatorPipeline = required(domainPack.evaluatorPipelines.find((candidate) => candidate.id === task.evaluatorPipelineRef), `missing evaluator pipeline ${task.evaluatorPipelineRef}`);
@@ -105,7 +107,6 @@ async function latestContextPacket(db: SouthstarDb, input: { runId: string; task
 }
 
 function domainPackForWorkflow(workflow: SouthstarWorkflowManifest): DomainPack {
-  if (workflow.domain === softwareDomainPack.id || workflow.domainPackRef?.id === softwareDomainPack.id) return softwareDomainPack;
   return {
     ...softwareDomainPack,
     id: workflow.domain ?? softwareDomainPack.id,
