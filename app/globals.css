@@ -2199,3 +2199,29 @@ select {
     grid-template-columns: 1fr;
   }
 }
+
+.ss-flow-edge path {
+  stroke: var(--border);
+  stroke-width: 1.5;
+}
+
+.ss-flow-edge-satisfied path {
+  stroke: #16a34a;
+}
+
+.ss-flow-edge-ready path,
+.ss-flow-edge-pending path {
+  stroke: var(--border);
+}
+
+.ss-flow-edge-active path {
+  stroke: var(--accent);
+}
+
+.ss-flow-edge-blocked path {
+  stroke: #dc2626;
+}
+
+.ss-flow-edge-pending path {
+  stroke-dasharray: 5 5;
+}

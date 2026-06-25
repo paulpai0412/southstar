@@ -10,6 +10,7 @@ import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-control-center.ts";
 import { envelopeReadModel } from "../read-models/envelope.ts";
+import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } from "../read-models/agent-library.ts";
 import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read-models/postgres-core.ts";
 import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from "../read-models/postgres-run-inspection.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
@@ -172,6 +173,19 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       });
       const run = await createPostgresRunFromDraft(context.db, { draftId: draft.draftId });
       return json("run-goal", { draft, ...run });
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/v2/agent-library") {
+      return json("agent-library", await buildAgentLibraryReadModelPg(context.db, {
+        domain: url.searchParams.get("domain") ?? "software",
+      }));
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/v2/agent-library/candidates") {
+      return json("agent-library-candidates", await buildAgentLibraryCandidatesReadModelPg(context.db, {
+        draftId: requiredString(url.searchParams.get("draftId"), "draftId"),
+        taskId: url.searchParams.get("taskId") ?? undefined,
+      }));
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
