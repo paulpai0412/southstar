@@ -1,5 +1,7 @@
 import { buildPostgresCoreReadModel } from "../read-models/postgres-core.ts";
 import { getManagedAgentRunReadModelPg } from "../read-models/managed-agents.ts";
+import { buildWorkflowUiReadModelPg } from "../read-models/workflow-ui.ts";
+import { buildOperatorOverviewReadModelPg } from "../read-models/operator-overview.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -7,6 +9,26 @@ export async function handleUiRoute(context: RuntimeServerContext, request: Requ
   const managedAgentsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/managed-agents$/);
   if (request.method === "GET" && managedAgentsMatch) {
     return json("managed-agents", await getManagedAgentRunReadModelPg(context.db, decodeURIComponent(managedAgentsMatch[1]!)));
+  }
+  if (request.method === "GET" && (url.pathname === "/api/v2/ui/workflow" || url.pathname === "/api/v2/ui/workflow-tab")) {
+    const runId = url.searchParams.get("runId") ?? undefined;
+    const draftId = url.searchParams.get("draftId") ?? undefined;
+    if (!runId && !draftId) throw new Error("runId or draftId is required");
+    return json("ui-workflow", await buildWorkflowUiReadModelPg(context.db, {
+      runId,
+      draftId,
+      taskId: url.searchParams.get("taskId") ?? undefined,
+    }));
+  }
+  if (
+    request.method === "GET" &&
+    (
+      url.pathname === "/api/v2/ui/operator-overview" ||
+      url.pathname === "/api/v2/ui/operations-tab" ||
+      url.pathname === "/api/v2/ui/operator-attention"
+    )
+  ) {
+    return json("ui-operator-overview", await buildOperatorOverviewReadModelPg(context.db));
   }
   if (request.method === "GET" && url.pathname === "/api/v2/ui/workflow-canvas") {
     return json("ui-workflow-canvas", await buildPostgresCoreReadModel(context.db, {

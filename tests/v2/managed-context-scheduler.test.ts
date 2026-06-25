@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { BrainProvider } from "../../src/v2/brain/types.ts";
+import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 import type { HandProvider } from "../../src/v2/hands/types.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
@@ -194,6 +195,11 @@ async function seedRun(
   input: { runId: string; taskId: string; legacyContextPacketId: string },
 ): Promise<void> {
   await seedSoftwareLibraryGraph(db);
+  const makerRole = softwareDomainPack.roles.find((role) => role.id === "maker");
+  const makerProfile = softwareDomainPack.agentProfiles.find((profile) => profile.id === "software-maker-pi");
+  if (!makerRole || !makerProfile) {
+    throw new Error("softwareDomainPack missing maker role/profile for scheduler managed-context test");
+  }
   const manifest = {
     schemaVersion: "southstar.v2",
     workflowId: "wf-scheduler-managed-context",
@@ -201,6 +207,8 @@ async function seedRun(
     goalPrompt: "submit with managed context",
     domain: "software",
     intent: "implement_feature",
+    roles: [makerRole],
+    agentProfiles: [makerProfile],
     tasks: [{
       id: input.taskId,
       name: "Implement",

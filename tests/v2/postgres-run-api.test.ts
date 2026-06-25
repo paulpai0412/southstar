@@ -372,6 +372,54 @@ test("Postgres server routes create planner drafts and runs through new API", as
   });
 });
 
+test("Postgres server routes revise planner drafts via planner pipeline", async () => {
+  await withDb(async (db) => {
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner client not used by deterministic planner"); } },
+      workflowComposer: new DeterministicFixtureComposer(),
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by planner routes"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const draft = await api<{
+        draftId: string;
+        goalPrompt: string;
+        workflowId: string;
+        status: string;
+        taskSummaries: Array<{ taskId: string }>;
+      }>(server.url, "/api/v2/planner/drafts", {
+        method: "POST",
+        body: JSON.stringify({ goalPrompt: "implement calc sum" }),
+      });
+      const revised = await api<{
+        draftId: string;
+        goalPrompt: string;
+        workflowId: string;
+        status: string;
+        taskSummaries: Array<{ taskId: string }>;
+      }>(server.url, `/api/v2/planner/drafts/${encodeURIComponent(draft.draftId)}/revise`, {
+        method: "POST",
+        body: JSON.stringify({ prompt: "add explicit edge-case validation for empty inputs", orchestrationMode: "deterministic" }),
+      });
+
+      assert.notEqual(revised.draftId, draft.draftId);
+      assert.equal(revised.status, "validated");
+      assert.match(revised.goalPrompt, /implement calc sum/);
+      assert.match(revised.goalPrompt, /add explicit edge-case validation for empty inputs/);
+      assert.deepEqual(revised.taskSummaries.map((task) => task.taskId), ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
+
+      const revisedDraftRow = await db.one<{ summary_json: { goalPrompt?: string } }>(
+        "select summary_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+        [revised.draftId],
+      );
+      assert.equal(revisedDraftRow.summary_json.goalPrompt, revised.goalPrompt);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 async function api<T>(baseUrl: string, path: string, init: RequestInit): Promise<T> {
   const response = await fetch(`${baseUrl}${path}`, { ...init, headers: { "content-type": "application/json", ...(init.headers ?? {}) } });
   const text = await response.text();

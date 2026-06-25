@@ -9,20 +9,47 @@ function source(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
-function hasCssVariable(css: string, variable: string): boolean {
-  const escaped = variable.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^\\s*${escaped}\\s*:`, "m").test(css);
+function hasCssSelector(css: string, selector: string): boolean {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`^\\s*${escaped}\\s*\\{`, "m").test(css);
 }
 
 test("app root references SouthstarPiWebShell", () => {
   assert.match(source("app/page.tsx"), /SouthstarPiWebShell/);
+  assert.match(source("app/page.tsx"), /SouthstarProductShell/);
+  assert.doesNotMatch(source("app/page.tsx"), /compatibility token/i);
 });
 
-test("SouthstarPiWebShell composes SessionSidebar ChatWindow and FileViewer", () => {
+test("SouthstarPiWebShell composes chat workspace components instead of inline placeholders", () => {
   const shell = source("components/southstar/app/SouthstarPiWebShell.tsx");
-  assert.match(shell, /SessionSidebar/);
-  assert.match(shell, /ChatWindow/);
-  assert.match(shell, /FileViewer/);
+  assert.match(shell, /SouthstarChatSessionSidebar/);
+  assert.match(shell, /SouthstarChatTab/);
+  assert.match(shell, /SouthstarChatFileViewerPanel/);
+  assert.doesNotMatch(shell, /function SessionSidebar/);
+  assert.doesNotMatch(shell, /function ChatWindow/);
+  assert.doesNotMatch(shell, /function FileViewer/);
+  assert.doesNotMatch(shell, /placeholder/i);
+  assert.doesNotMatch(shell, /contractSymbols/);
+  assert.match(shell, /if\s*\(\s*nextView\s*===\s*view\s*\)\s*return/);
+});
+
+test("chat sidebar loads run and session data from Southstar APIs", () => {
+  const sidebar = source("components/southstar/chat/SouthstarChatSessionSidebar.tsx");
+  assert.match(sidebar, /getUiOperatorOverview/);
+  assert.match(sidebar, /getUiSessionsMemory/);
+  assert.match(sidebar, /onSelectRunId/);
+  assert.match(sidebar, /onSelectSessionId/);
+  assert.doesNotMatch(sidebar, /const runs = \[/);
+  assert.doesNotMatch(sidebar, /const sessions = \[/);
+});
+
+test("chat transcript panel streams runtime events and sends steering messages", () => {
+  const transcript = source("components/southstar/chat/ChatTranscriptPanel.tsx");
+  assert.match(transcript, /events\/stream/);
+  assert.match(transcript, /EventSource/);
+  assert.match(transcript, /api\.steer/);
+  assert.match(transcript, /textarea/);
+  assert.doesNotMatch(transcript, /Chat transcript and prompt input placeholder/);
 });
 
 test("WorkspaceTabs uses Chat Workflow Operator and removes legacy labels", () => {
@@ -33,17 +60,24 @@ test("WorkspaceTabs uses Chat Workflow Operator and removes legacy labels", () =
   assert.doesNotMatch(tabs, /Operations|Northstar/);
 });
 
-test("css variable matcher requires exact --bg declaration instead of substring match", () => {
-  const css = ":root { --bg-panel: #111; }";
-  assert.equal(hasCssVariable(css, "--bg"), false);
-});
-
 test("globals.css contains pi-web tokens and dark mode selector", () => {
   const css = source("app/globals.css");
-  assert.ok(hasCssVariable(css, "--bg"), "missing --bg");
-  assert.ok(hasCssVariable(css, "--bg-panel"), "missing --bg-panel");
-  assert.ok(hasCssVariable(css, "--bg-hover"), "missing --bg-hover");
-  assert.ok(hasCssVariable(css, "--bg-selected"), "missing --bg-selected");
-  assert.ok(hasCssVariable(css, "--accent"), "missing --accent");
-  assert.ok(css.includes("html.dark"), "missing html.dark");
+  assert.match(css, /--bg\b/);
+  assert.match(css, /--bg-panel\b/);
+  assert.match(css, /--bg-hover\b/);
+  assert.match(css, /--bg-selected\b/);
+  assert.match(css, /--accent\b/);
+  assert.match(css, /html\.dark/);
+  for (const selector of [
+    ".ss-pi-shell",
+    ".ss-pi-sidebar",
+    ".ss-pi-main",
+    ".ss-pi-topbar",
+    ".ss-pi-content",
+    ".ss-pi-file-viewer",
+    ".ss-workflow-workbench",
+    ".ss-operator-board",
+  ]) {
+    assert.equal(hasCssSelector(css, selector), true, `missing selector: ${selector}`);
+  }
 });

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
+import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 import {
   RECOVERY_DECISION_RESOURCE_TYPE,
@@ -229,6 +230,11 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function managedLoopManifest(workflowId: string, taskId: string): unknown {
+  const makerRole = softwareDomainPack.roles.find((role) => role.id === "maker");
+  const makerProfile = softwareDomainPack.agentProfiles.find((profile) => profile.id === "software-maker-pi");
+  if (!makerRole || !makerProfile) {
+    throw new Error("softwareDomainPack missing maker role/profile for managed runtime loop test manifest");
+  }
   return {
     schemaVersion: "southstar.v2",
     workflowId,
@@ -236,6 +242,8 @@ function managedLoopManifest(workflowId: string, taskId: string): unknown {
     goalPrompt: "managed loop",
     domain: "software",
     intent: "implement_feature",
+    roles: [makerRole],
+    agentProfiles: [makerProfile],
     tasks: [{
       id: taskId,
       name: "Implement",

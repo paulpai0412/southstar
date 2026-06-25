@@ -1,9 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { createRuntimeServerClient } from "../../src/v2/server/client.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+const root = join(import.meta.dirname, "../..");
 
 test("runtime server client exposes P0 runtime API methods", () => {
   const client = createRuntimeServerClient({ baseUrl: "http://127.0.0.1/" });
@@ -40,6 +44,27 @@ test("runtime server client exposes P0 runtime API methods", () => {
 
   for (const method of methods) {
     assert.equal(typeof client[method], "function", `${method} should be exposed by RuntimeServerClient`);
+  }
+});
+
+test("southstar web api client exposes workflow/operator methods for the operator board", () => {
+  const source = readFileSync(join(root, "lib/southstar/api-client.ts"), "utf8");
+  const requiredMethods = [
+    "getUiWorkflow",
+    "getAgentLibrary",
+    "getAgentLibraryCandidates",
+    "getUiOperatorOverview",
+  ] as const;
+  const compatibilityMethods = [
+    "getUiWorkflowTab",
+    "getUiLibraryAlternatives",
+    "getUiOperatorAttention",
+  ] as const;
+  for (const method of requiredMethods) {
+    assert.match(source, new RegExp(`${method}\\s*\\(`), `${method} should be exposed by createSouthstarApiClient`);
+  }
+  for (const method of compatibilityMethods) {
+    assert.match(source, new RegExp(`${method}\\s*\\(`), `${method} should be exposed by createSouthstarApiClient`);
   }
 });
 

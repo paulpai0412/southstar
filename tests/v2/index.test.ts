@@ -109,3 +109,6 @@ await import("./context-source-builder.test.ts");
 await import("./managed-context-assembler.test.ts");
 await import("./managed-context-scheduler.test.ts");
 await import("./managed-agents-read-model.test.ts");
+await import("./workflow-ui-read-model.test.ts");
+await import("./agent-library-read-model.test.ts");
+await import("./operator-overview-read-model.test.ts");

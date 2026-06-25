@@ -1,15 +1,27 @@
-export function SouthstarChatTab() {
+import type { SouthstarApiClient } from "@/lib/southstar/api-client";
+import { ChatTranscriptPanel } from "./ChatTranscriptPanel";
+
+export function SouthstarChatTab(props: {
+  api?: SouthstarApiClient;
+  serverBaseUrl?: string;
+  selectedRunId?: string | null;
+  selectedSessionId?: string | null;
+}) {
+  if (!props.api || !props.serverBaseUrl) {
+    return (
+      <section className="ss-chat-tab">
+        <p className="ss-empty">Chat workspace requires Southstar API binding.</p>
+      </section>
+    );
+  }
   return (
     <section className="ss-chat-tab">
-      <div className="ss-chat-empty">
-        <h1>General conversation</h1>
-        <p>Use chat for freeform work, brainstorming, and skill-guided Southstar planning. Start with <code>/workflow</code> when you want Southstar to design a workflow.</p>
-        <div className="ss-chat-input-shell">
-          <label htmlFor="southstar-chat-message">Message</label>
-          <textarea id="southstar-chat-message" aria-describedby="chat-helper" />
-          <p id="chat-helper">Ask a question or use a Southstar skill command.</p>
-        </div>
-      </div>
+      <ChatTranscriptPanel
+        api={props.api}
+        serverBaseUrl={props.serverBaseUrl}
+        selectedRunId={props.selectedRunId ?? null}
+        selectedSessionId={props.selectedSessionId ?? null}
+      />
     </section>
   );
 }

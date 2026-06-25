@@ -10,11 +10,12 @@ import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-control-center.ts";
 import { envelopeReadModel } from "../read-models/envelope.ts";
+import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } from "../read-models/agent-library.ts";
 import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read-models/postgres-core.ts";
 import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from "../read-models/postgres-run-inspection.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration } from "../ui-api/postgres-run-api.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration, revisePostgresPlannerDraft } from "../ui-api/postgres-run-api.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
@@ -58,6 +59,19 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (executionResponse) return executionResponse;
     const taskCommandResponse = await handleTaskCommandRoute(context, request, url);
     if (taskCommandResponse) return taskCommandResponse;
+
+    if (request.method === "GET" && url.pathname === "/api/v2/agent-library") {
+      return json("agent-library", await buildAgentLibraryReadModelPg(context.db, {
+        domain: url.searchParams.get("domain") ?? undefined,
+      }));
+    }
+
+    if (request.method === "GET" && url.pathname === "/api/v2/agent-library/candidates") {
+      return json("agent-library-candidates", await buildAgentLibraryCandidatesReadModelPg(context.db, {
+        draftId: requiredQueryParam(url, "draftId"),
+        taskId: url.searchParams.get("taskId") ?? undefined,
+      }));
+    }
 
     if (request.method === "GET" && url.pathname === "/api/v2/runtime/health") {
       const database = await databaseHealth(context);
@@ -172,6 +186,21 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         "planner-draft",
         await createPostgresPlannerDraft(context.db, {
           goalPrompt: body.goalPrompt,
+          orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
+          composerMode: optionalComposerMode(body.composerMode),
+          composer: resolvePlannerWorkflowComposer(context),
+        }),
+      );
+    }
+
+    const draftReviseMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/revise$/);
+    if (request.method === "POST" && draftReviseMatch) {
+      const body = await readJsonBody<{ prompt?: unknown; orchestrationMode?: unknown; composerMode?: unknown }>(request);
+      return json(
+        "planner-draft",
+        await revisePostgresPlannerDraft(context.db, {
+          draftId: decodeURIComponent(draftReviseMatch[1]!),
+          prompt: requiredString(body.prompt, "prompt"),
           orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
           composerMode: optionalComposerMode(body.composerMode),
           composer: resolvePlannerWorkflowComposer(context),
@@ -614,6 +643,12 @@ function requiredString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function requiredQueryParam(url: URL, name: string): string {
+  const value = url.searchParams.get(name);
+  if (!value) throw new Error(`${name} is required`);
+  return value;
 }
 
 function optionalOrchestrationMode(value: unknown): "deterministic" | "llm-constrained" | undefined {

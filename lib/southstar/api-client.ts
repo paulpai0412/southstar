@@ -33,11 +33,18 @@ export function createSouthstarApiClient(input: { baseUrl: string }) {
       const query = draftId ? `?draftId=${encodeURIComponent(draftId)}` : "";
       return get(`${baseUrl}/api/v2/ui/planner${query}`);
     },
+    getUiWorkflow(params?: { draftId?: string; runId?: string; taskId?: string }): Promise<any> {
+      const query = new URLSearchParams();
+      if (params?.draftId) query.set("draftId", params.draftId);
+      if (params?.runId) query.set("runId", params.runId);
+      if (params?.taskId) query.set("taskId", params.taskId);
+      return get(`${baseUrl}/api/v2/ui/workflow${query.size ? `?${query.toString()}` : ""}`);
+    },
     getUiWorkflowTab(params?: { draftId?: string; runId?: string }): Promise<any> {
       const query = new URLSearchParams();
       if (params?.draftId) query.set("draftId", params.draftId);
       if (params?.runId) query.set("runId", params.runId);
-      return get(`${baseUrl}/api/v2/ui/workflow-tab${query.size ? `?${query.toString()}` : ""}`);
+      return get(`${baseUrl}/api/v2/ui/workflow${query.size ? `?${query.toString()}` : ""}`);
     },
     getUiOperationsTab(params?: { runId?: string }): Promise<any> {
       const query = new URLSearchParams();
@@ -47,7 +54,29 @@ export function createSouthstarApiClient(input: { baseUrl: string }) {
     getUiLibraryAlternatives(params: { draftId: string; taskId?: string }): Promise<any> {
       const query = new URLSearchParams({ draftId: params.draftId });
       if (params.taskId) query.set("taskId", params.taskId);
-      return get(`${baseUrl}/api/v2/ui/library-alternatives?${query.toString()}`);
+      return get(`${baseUrl}/api/v2/agent-library/candidates?${query.toString()}`);
+    },
+    getAgentLibrary(params?: { domain?: string }): Promise<any> {
+      const query = new URLSearchParams();
+      if (params?.domain) query.set("domain", params.domain);
+      const suffix = query.size ? `?${query.toString()}` : "";
+      return get(`${baseUrl}/api/v2/agent-library${suffix}`);
+    },
+    getAgentLibraryCandidates(params: { draftId: string; taskId?: string }): Promise<any> {
+      const query = new URLSearchParams({ draftId: params.draftId });
+      if (params.taskId) query.set("taskId", params.taskId);
+      return get(`${baseUrl}/api/v2/agent-library/candidates?${query.toString()}`);
+    },
+    async getUiOperatorOverview(): Promise<any> {
+      try {
+        return await get(`${baseUrl}/api/v2/ui/operator-overview`);
+      } catch {
+        try {
+          return await get(`${baseUrl}/api/v2/ui/operations-tab`);
+        } catch {
+          return get(`${baseUrl}/api/v2/ui/operator-attention`);
+        }
+      }
     },
     getUiOperatorAttention(): Promise<any> {
       return get(`${baseUrl}/api/v2/ui/operator-attention`);

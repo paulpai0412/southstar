@@ -63,11 +63,41 @@ export type CreatePostgresPlannerDraftInput = {
   composer?: WorkflowComposer;
 };
 
+export type RevisePostgresPlannerDraftInput = {
+  draftId: string;
+  prompt: string;
+  orchestrationMode?: "deterministic" | "llm-constrained";
+  composerMode?: WorkflowComposerMode;
+  composer?: WorkflowComposer;
+};
+
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
   if (input.orchestrationMode === "llm-constrained") {
     return createLibraryConstrainedPlannerDraft(db, input);
   }
   return createDeterministicPlannerDraft(db, input);
+}
+
+export async function revisePostgresPlannerDraft(
+  db: SouthstarDb,
+  input: RevisePostgresPlannerDraftInput,
+): Promise<PostgresPlannerDraftResult> {
+  const draft = await getResourceByKeyPg(db, "planner_draft", input.draftId);
+  if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
+
+  const summary = asRecord(draft.summary);
+  const payload = asRecord(draft.payload);
+  const workflow = asRecord(payload.workflow);
+  const baseGoalPrompt = stringValue(summary.goalPrompt) ?? stringValue(workflow.goalPrompt);
+  if (!baseGoalPrompt) throw new Error(`planner draft goalPrompt is missing: ${input.draftId}`);
+
+  const revisedGoalPrompt = `${baseGoalPrompt}\n\nRevision request:\n${input.prompt}`;
+  return createPostgresPlannerDraft(db, {
+    goalPrompt: revisedGoalPrompt,
+    orchestrationMode: input.orchestrationMode ?? inferDraftOrchestrationMode(summary),
+    composerMode: input.composerMode ?? inferDraftComposerMode(payload),
+    composer: input.composer,
+  });
 }
 
 async function createDeterministicPlannerDraft(
@@ -524,4 +554,16 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function inferDraftOrchestrationMode(summary: Record<string, unknown>): "deterministic" | "llm-constrained" {
+  const planner = stringValue(summary.planner);
+  return planner === "library-constrained-llm" ? "llm-constrained" : "deterministic";
+}
+
+function inferDraftComposerMode(payload: Record<string, unknown>): WorkflowComposerMode | undefined {
+  const plannerTrace = asRecord(payload.plannerTrace);
+  const composerMode = stringValue(plannerTrace.composerMode);
+  if (composerMode === "fixture" || composerMode === "llm" || composerMode === "llm-with-fixture-fallback") return composerMode;
+  return undefined;
 }
