@@ -9,7 +9,14 @@ export type ReadModelKind =
   | "task-detail"
   | "sessions-memory"
   | "vault-mcp"
-  | "evolution-control-center";
+  | "evolution-control-center"
+  | "run-control"
+  | "workflow-dag"
+  | "recovery-center"
+  | "execution-center"
+  | "planner-workbench"
+  | "domain-pack-governance"
+  | "evolution-center";
 
 export type ReadModelInput = {
   kind: ReadModelKind;
