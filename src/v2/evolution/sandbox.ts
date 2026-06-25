@@ -3,7 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
-import { softwareDomainPack } from "../domain-packs/software.ts";
+import type { DomainPack } from "../domain-packs/types.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
 import { withMaterializationMount } from "../executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
@@ -158,7 +158,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
         taskId: task.id,
         rootSessionId: sessionId,
         goalPrompt: workflow.goalPrompt,
-        domainPack: softwareDomainPack,
+        domainPack: domainPackForWorkflowManifest(workflow),
         roleRef: task.roleRef,
         agentProfileRef: task.agentProfileRef,
         artifactContractRefs: task.requiredArtifactRefs,
@@ -376,6 +376,26 @@ function ensureMount(
 
 function numberMetric(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function domainPackForWorkflowManifest(workflow: SouthstarWorkflowManifest): DomainPack {
+  return {
+    id: workflow.domainPackRef?.id ?? workflow.domain ?? "embedded-domain-pack",
+    version: workflow.domainPackRef?.version ?? "manifest-embedded",
+    displayName: workflow.domainPackRef?.id ?? workflow.domain ?? "manifest-embedded",
+    intents: [],
+    workflowTemplates: [],
+    workflowGeneratorPolicies: [],
+    roles: workflow.roles ?? [],
+    agentProfiles: workflow.agentProfiles ?? [],
+    artifactContracts: workflow.artifactContracts ?? [],
+    evaluatorPipelines: workflow.evaluatorPipelines ?? [],
+    contextPolicies: workflow.contextPolicies ?? [],
+    sessionPolicies: workflow.sessionPolicies ?? [],
+    memoryPolicies: workflow.memoryPolicies ?? [],
+    workspacePolicies: workflow.workspacePolicies ?? [],
+    stopConditions: workflow.stopConditions ?? [],
+  };
 }
 
 function passRate(trials: Array<SandboxTrialInput & { trialId?: string }>): number {

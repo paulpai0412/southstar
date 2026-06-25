@@ -1,6 +1,5 @@
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
@@ -17,7 +16,7 @@ import {
 } from "./types.ts";
 
 export type ManagedContextAssemblerOptions = {
-  domainPack?: DomainPack;
+  domainPack: DomainPack;
 };
 
 export type BuildManagedTaskContextInput = {
@@ -38,8 +37,8 @@ export type BuildManagedTaskContextResult = {
   trace: ContextAssemblyTrace;
 };
 
-export function createManagedContextAssembler(db: SouthstarDb, options: ManagedContextAssemblerOptions = {}) {
-  const domainPack = options.domainPack ?? softwareDomainPack;
+export function createManagedContextAssembler(db: SouthstarDb, options: ManagedContextAssemblerOptions) {
+  const domainPack = options.domainPack;
   return {
     async buildForTask(input: BuildManagedTaskContextInput): Promise<BuildManagedTaskContextResult> {
       const workflow = await readWorkflow(db, input.runId);

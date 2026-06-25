@@ -92,12 +92,12 @@ function broadFeatureTasks(goalPrompt: string): GeneratedTaskPlan[] {
   return [
     explorerTask(goalPrompt),
     {
-      id: "implement-calc-command",
+      id: "implement-primary-change",
       roleRef: "maker",
       agentProfileRef: "software-maker-pi",
       dependsOn: ["understand-repo"],
       promptTemplateRef: "software-maker",
-      promptInputs: { goalPrompt, focus: "implement calc sum command behavior" },
+      promptInputs: { goalPrompt, focus: "implement the primary requested behavior" },
       requiredArtifactRefs: ["implementation_report"],
       evaluatorPipelineRef: "software-feature-quality",
       recoveryStrategyRefs: ["retry-same-agent", "rollback-workspace", "fork-from-checkpoint"],
@@ -106,7 +106,7 @@ function broadFeatureTasks(goalPrompt: string): GeneratedTaskPlan[] {
       id: "verify-cli-behavior",
       roleRef: "checker",
       agentProfileRef: "software-checker-codex",
-      dependsOn: ["implement-calc-command"],
+      dependsOn: ["implement-primary-change"],
       promptTemplateRef: "software-checker",
       promptInputs: { goalPrompt, focus: "CLI behavior, numbers, negatives, decimals, and error messages" },
       requiredArtifactRefs: ["verification_report"],
@@ -117,7 +117,7 @@ function broadFeatureTasks(goalPrompt: string): GeneratedTaskPlan[] {
       id: "verify-docs-and-tests",
       roleRef: "checker",
       agentProfileRef: "software-checker-codex",
-      dependsOn: ["implement-calc-command"],
+      dependsOn: ["implement-primary-change"],
       promptTemplateRef: "software-checker",
       promptInputs: { goalPrompt, focus: "tests, README, and user-facing examples" },
       requiredArtifactRefs: ["verification_report"],
@@ -199,7 +199,7 @@ function summaryTask(goalPrompt: string, dependsOn: string[]): GeneratedTaskPlan
 function broadFeaturePhases() {
   return [
     { id: "understand", taskRefs: ["understand-repo"] },
-    { id: "implement", taskRefs: ["implement-calc-command"] },
+    { id: "implement", taskRefs: ["implement-primary-change"] },
     {
       id: "parallel-verify",
       taskRefs: ["verify-cli-behavior", "verify-docs-and-tests"],

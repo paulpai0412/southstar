@@ -1,6 +1,7 @@
 import type { BrainProvider } from "../brain/types.ts";
 import { createDefaultTaskExecutionIntent } from "../brain/task-intent.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
+import type { DomainPack } from "../domain-packs/types.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import type { HandBinding, HandExecutionPayload, HandProvider } from "../hands/types.ts";
 import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
@@ -124,7 +125,9 @@ async function dispatchTask(
       runId: input.runId,
       taskId: input.taskId,
     });
-    const assembler = createManagedContextAssembler(db);
+    const assembler = createManagedContextAssembler(db, {
+      domainPack: domainPackForManifest(input.manifest, input.runId),
+    });
     const assembly = await assembler.buildForTask({
       runId: input.runId,
       taskId: input.taskId,
@@ -726,6 +729,71 @@ function dependsOn(task: TaskRow): string[] {
 function maxParallelTasksForManifest(manifest: SouthstarWorkflowManifest): number {
   const value = manifest.effortPolicy?.maxParallelTasks;
   return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+}
+
+function domainPackForManifest(manifest: SouthstarWorkflowManifest, runId: string): DomainPack {
+  const roles = manifest.roles ?? [];
+  const agentProfiles = manifest.agentProfiles ?? [];
+  if (roles.length === 0 || agentProfiles.length === 0) {
+    throw new Error(`domain pack data is required to assemble context for run ${runId}`);
+  }
+  const fallbackMemoryPolicyId = "runtime-manifest-memory-default";
+  const fallbackContextPolicyId = "runtime-manifest-context-default";
+  const artifactContracts: DomainPack["artifactContracts"] = manifest.artifactContracts ?? Array.from(
+    new Set(manifest.tasks.flatMap((task) => task.requiredArtifactRefs ?? [])),
+  ).map((contractId) => ({
+    id: contractId,
+    artifactType: contractId,
+    requiredFields: [],
+    evidenceFields: [],
+  }));
+  const evaluatorPipelines: DomainPack["evaluatorPipelines"] = manifest.evaluatorPipelines ?? Array.from(
+    new Set(manifest.tasks.map((task) => task.evaluatorPipelineRef).filter((value): value is string => Boolean(value))),
+  ).map((pipelineId) => ({
+    id: pipelineId,
+    evaluators: [],
+    onFailure: { defaultStrategy: "retry-same-agent" as const },
+  }));
+  const memoryPolicies: DomainPack["memoryPolicies"] = manifest.memoryPolicies ?? [{
+    id: fallbackMemoryPolicyId,
+    providerRef: "postgres",
+    scopes: [],
+    maxInjectedTokens: 1500,
+    maxCandidates: 5,
+    requireWriteApproval: true,
+    allowedKinds: ["preference", "architecture_decision", "domain_pattern", "failure_lesson", "artifact_summary", "workflow_learning"],
+    ranking: {
+      relevanceWeight: 0.5,
+      recencyWeight: 0.2,
+      successWeight: 0.2,
+      confidenceWeight: 0.1,
+    },
+    compression: { strategy: "none" as const, maxTokensPerMemory: 200 },
+  }];
+  const contextPolicies: DomainPack["contextPolicies"] = manifest.contextPolicies ?? [{
+    id: fallbackContextPolicyId,
+    maxInputTokens: 12_000,
+    memoryPolicyRef: memoryPolicies[0]?.id ?? fallbackMemoryPolicyId,
+    includeAgentsMd: true,
+    includeWorkspaceSummary: true,
+  }];
+  return {
+    id: manifest.domainPackRef?.id ?? manifest.domain ?? "embedded-domain-pack",
+    version: manifest.domainPackRef?.version ?? "manifest-embedded",
+    displayName: manifest.domainPackRef?.id ?? manifest.domain ?? "manifest-embedded",
+    intents: [],
+    workflowTemplates: [],
+    workflowGeneratorPolicies: [],
+    roles,
+    agentProfiles,
+    artifactContracts,
+    evaluatorPipelines,
+    contextPolicies,
+    sessionPolicies: manifest.sessionPolicies ?? [],
+    memoryPolicies,
+    workspacePolicies: manifest.workspacePolicies ?? [],
+    stopConditions: manifest.stopConditions ?? [],
+  };
 }
 
 function effortPolicyForBrain(manifest: SouthstarWorkflowManifest): {

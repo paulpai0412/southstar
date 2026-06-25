@@ -2,6 +2,8 @@
 
 日期：2026-06-05
 
+> Current-state note (2026-06-25): Southstar v2 Postgres runtime now uses the layered model documented in `docs/superpowers/southstar-current-postgres-state-model.md`. Sections in this older spec that describe `runtime_status` / `workflow_state` as physical current-schema columns should be read as historical target design or semantic projection language, not current schema truth.
+
 ## 目標
 
 Southstar 是一套 generic multi-agent workflow runtime，不是 Northstar 的 migration branch，也不是只服務 software delivery 的 Northstar v2。Northstar v1 只作為經驗來源，可參考 host adapter、source/projection integration、doctor/watch、artifact validation、operator dashboard 等做法；Southstar 不承接 Northstar v1 的固定 lifecycle state、單 role stage、`runtime_context_json.child_runs`，也不保留 hard-coded `issue_to_pr_release` cycle。

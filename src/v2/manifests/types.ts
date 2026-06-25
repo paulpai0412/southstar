@@ -28,7 +28,7 @@ export type HarnessDefinition = {
 };
 
 export type TaskExecutionSpec = {
-  engine: "tork";
+  engine: string;
   image: string;
   command: string[];
   env: Record<string, string>;
@@ -40,7 +40,7 @@ export type TaskExecutionSpec = {
 export type WorkflowTaskDefinition = {
   id: string;
   name: string;
-  domain: "software" | "research" | "data-analysis" | "general";
+  domain: string;
   roleRef?: string;
   agentProfileRef?: string;
   providerRef?: string;
