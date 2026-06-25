@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { matchFallbackRecoveryPolicy } from "../recovery/policy.ts";
 import {
   appendHistoryEventPg,
   getResourceByKeyPg,
@@ -30,11 +31,17 @@ export function createRuntimeExceptionController(deps: { db: SouthstarDb }): {
     },
     async classify(exception) {
       const recoveryPath = classifyRecoveryPath(exception);
+      const policyMatch = matchFallbackRecoveryPolicy(exception, recoveryPath);
       return {
         ...exception,
-        recoveryPath,
-        operatorApprovalRequired: requiresOperatorApproval(recoveryPath),
-        reason: classificationReason(exception, recoveryPath),
+        recoveryPath: policyMatch.path,
+        operatorApprovalRequired: policyMatch.operatorApprovalRequired,
+        reason: policyMatch.reason,
+        policyMatch: {
+          policyRef: policyMatch.policyRef,
+          matchedRuleId: policyMatch.matchedRuleId,
+          actions: policyMatch.actions as Array<Record<string, unknown>>,
+        },
       };
     },
     async decide(classification) {
@@ -72,6 +79,13 @@ async function recordRecoveryDecisionPg(
       operatorApprovalRequired: classification.operatorApprovalRequired,
       ...(classification.payload.attemptId ? { previousAttemptId: classification.payload.attemptId } : {}),
       ...nextAttemptPayload(classification),
+      ...(classification.policyMatch
+        ? {
+          policyRef: classification.policyMatch.policyRef,
+          matchedRuleId: classification.policyMatch.matchedRuleId,
+          actions: classification.policyMatch.actions,
+        }
+        : {}),
       evidenceRefs: classification.payload.evidenceRefs,
       createdAt: new Date().toISOString(),
     };
@@ -91,6 +105,12 @@ async function recordRecoveryDecisionPg(
         exceptionId: classification.exceptionId,
         path: classification.recoveryPath,
         operatorApprovalRequired: classification.operatorApprovalRequired,
+        ...(classification.policyMatch
+          ? {
+            policyRef: classification.policyMatch.policyRef,
+            matchedRuleId: classification.policyMatch.matchedRuleId,
+          }
+          : {}),
       },
     });
 
@@ -128,20 +148,13 @@ function classifyRecoveryPath(exception: RuntimeExceptionRecord): RecoveryPath {
     case "hand_submit_failed":
       return "reprovision-hand";
     case "scheduler_claim_stale":
+    case "dispatch_preparation_failed":
       return "retry-same-task-new-attempt";
     case "intake_invalid":
       return "block-for-operator";
     case "context_assembly_failed":
       return "fork-session";
   }
-}
-
-function requiresOperatorApproval(path: RecoveryPath): boolean {
-  return path === "rollback-workspace" || path === "block-for-operator";
-}
-
-function classificationReason(exception: RuntimeExceptionRecord, path: RecoveryPath): string {
-  return `${exception.payload.kind} classified for ${path}`;
 }
 
 function providerEvidenceFlag(exception: RuntimeExceptionRecord, key: string): boolean {

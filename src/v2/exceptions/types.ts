@@ -133,6 +133,11 @@ export type RuntimeExceptionClassification = RuntimeExceptionRecord & {
   recoveryPath: RecoveryPath;
   operatorApprovalRequired: boolean;
   reason: string;
+  policyMatch?: {
+    policyRef: string;
+    matchedRuleId: string;
+    actions: Array<Record<string, unknown>>;
+  };
 };
 
 export const RECOVERY_DECISION_RESOURCE_TYPE = "recovery_decision";
@@ -165,6 +170,9 @@ export type RecoveryDecisionPayload = {
   previousAttemptId?: string;
   nextAttemptId?: string;
   supersedes?: string[];
+  policyRef?: string;
+  matchedRuleId?: string;
+  actions?: Array<Record<string, unknown>>;
   evidenceRefs: string[];
   createdAt: string;
 };

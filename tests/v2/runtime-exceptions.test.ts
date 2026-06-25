@@ -447,6 +447,36 @@ test("runtime exception controller decision is idempotent for the same exception
   }
 });
 
+test("recovery decision includes policy evidence for dispatch preparation failure", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, minimalRun("run-policy-evidence"));
+    const controller = createRuntimeExceptionController({ db });
+    const exception = await controller.observe({
+      runId: "run-policy-evidence",
+      taskId: "task-a",
+      sessionId: "root-run-policy-evidence-task-a",
+      attemptId: "task-a-attempt-1",
+      source: "scheduler",
+      kind: "dispatch_preparation_failed",
+      severity: "recoverable",
+      observedAt: "2026-06-25T01:00:00.000Z",
+      evidenceRefs: ["task-dispatch:run-policy-evidence:task-a"],
+      providerEvidence: { errorExcerpt: "context failed" },
+    });
+    const classification = await controller.classify(exception);
+    const decision = await controller.decide(classification);
+
+    assert.equal(classification.recoveryPath, "retry-same-task-new-attempt");
+    assert.equal(decision.payload.path, "retry-same-task-new-attempt");
+    assert.equal(decision.payload.policyRef, "system:fallback");
+    assert.equal(decision.payload.matchedRuleId, "dispatch-preparation-failed-default");
+    assert.deepEqual(decision.payload.actions, [{ type: "release-task", status: "pending" }]);
+  } finally {
+    await db.close();
+  }
+});
+
 function minimalRun(id: string) {
   return {
     id,
