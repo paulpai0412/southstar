@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import type { QueryResultRow } from "pg";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
+import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import type { ExecuteTaskInput, HandBinding, HandProvider } from "../../src/v2/hands/types.ts";
@@ -363,7 +364,10 @@ test("runnable scheduler releases claimed task without hand execution when dispa
     });
     await seedContextPacket(db, "run-scheduler-pre-hand-failure", "task-a");
 
-    const fixture = scheduler(db, { failBrainWake: true });
+    const fixture = scheduler(db, {
+      failBrainWake: true,
+      brainProviderId: "sk-1234567890abcdefghijklmnopqrstuv",
+    });
     await assert.rejects(
       () => fixture.scheduler.runOnce({ runId: "run-scheduler-pre-hand-failure" }),
       /fake brain wake failed/,
@@ -377,6 +381,24 @@ test("runnable scheduler releases claimed task without hand execution when dispa
 
     const history = await listHistoryForRunPg(db, "run-scheduler-pre-hand-failure");
     assert.equal(history.some((event) => event.eventType === "task.dispatch_prepare_failed" && event.taskId === "task-a"), true);
+
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === "run-scheduler-pre-hand-failure");
+    assert.equal(exceptions.length, 1);
+    assert.equal(exceptions[0]?.payload.kind, "dispatch_preparation_failed");
+    assert.equal(exceptions[0]?.payload.source, "scheduler");
+    assert.equal(exceptions[0]?.payload.severity, "recoverable");
+    assert.equal(exceptions[0]?.payload.attemptId, "task-a-attempt-1");
+    assert.deepEqual(exceptions[0]?.payload.evidenceRefs, ["task-dispatch:run-scheduler-pre-hand-failure:task-a"]);
+    assert.deepEqual(exceptions[0]?.payload.providerEvidence, {
+      errorExcerpt: "fake brain wake failed: [REDACTED]",
+    });
+
+    const decisions = (await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === "run-scheduler-pre-hand-failure");
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]?.payload.exceptionId, exceptions[0]?.payload.exceptionId);
+    assert.equal(decisions[0]?.payload.path, "retry-same-task-new-attempt");
   } finally {
     await db.close();
   }
@@ -541,7 +563,16 @@ test("runnable scheduler releases unsupported hand providers without writing han
   }
 });
 
-function scheduler(db: SouthstarDb, input: { failExecuteTask?: boolean; executeTaskFailureOutput?: string; failBrainWake?: boolean; omitExecuteTask?: boolean } = {}) {
+function scheduler(
+  db: SouthstarDb,
+  input: {
+    failExecuteTask?: boolean;
+    executeTaskFailureOutput?: string;
+    failBrainWake?: boolean;
+    omitExecuteTask?: boolean;
+    brainProviderId?: string;
+  } = {},
+) {
   const executeTaskCalls: ExecuteTaskInput[] = [];
   const executeTaskBindings: HandBinding[] = [];
   const handProvider: HandProvider = createFakeHandProvider({ providerId: "fake-hand" });
@@ -567,7 +598,10 @@ function scheduler(db: SouthstarDb, input: { failExecuteTask?: boolean; executeT
     executeTaskBindings,
     scheduler: createRunnableTaskScheduler(db, {
     sessionStore: createPostgresSessionStore(db),
-    brainProvider: createFakeBrainProvider({ providerId: "fake-brain", failWake: input.failBrainWake }),
+    brainProvider: createFakeBrainProvider({
+      providerId: input.brainProviderId ?? "fake-brain",
+      failWake: input.failBrainWake,
+    }),
       handProvider,
     }),
   };
@@ -597,6 +631,10 @@ async function seedRun(
   },
 ): Promise<void> {
   await seedSoftwareLibraryGraph(db);
+  const role = softwareDomainPack.roles.find((candidate) => candidate.id === "maker");
+  const agentProfile = softwareDomainPack.agentProfiles.find((candidate) => candidate.id === "software-maker-pi");
+  if (!role) throw new Error("missing software maker role fixture");
+  if (!agentProfile) throw new Error("missing software maker profile fixture");
   await createWorkflowRunPg(db, {
     id: input.runId,
     status: "running",
@@ -607,6 +645,10 @@ async function seedRun(
       workflowId: input.runId,
       title: "Scheduler fixture",
       goalPrompt: "schedule runnable tasks",
+      domain: "software",
+      intent: "implement_feature",
+      roles: [role],
+      agentProfiles: [agentProfile],
       tasks: input.tasks.map((task) => ({
         id: task.id,
         name: task.id,

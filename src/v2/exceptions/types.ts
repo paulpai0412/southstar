@@ -119,6 +119,15 @@ export type RuntimeExceptionRecord = {
 
 export type RuntimeObservation = RuntimeExceptionRecordInput;
 
+export type DispatchPreparationExceptionObservationInput = {
+  runId: string;
+  taskId: string;
+  sessionId: string;
+  attemptId: string;
+  recoveryKey: string;
+  errorMessage: string;
+};
+
 export type RuntimeExceptionClassification = RuntimeExceptionRecord & {
   recoveryPath: RecoveryPath;
   operatorApprovalRequired: boolean;
@@ -164,6 +173,11 @@ export type RuntimeRecoveryDecisionRecord = {
   resourceKey: string;
   status: RecoveryDecisionStatus;
   payload: RecoveryDecisionPayload;
+};
+
+export type DispatchPreparationExceptionObservationResult = {
+  exception: RuntimeExceptionRecord;
+  decision: RuntimeRecoveryDecisionRecord;
 };
 
 export const RECOVERY_EXECUTION_RESOURCE_TYPE = "recovery_execution";
