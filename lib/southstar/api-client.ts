@@ -33,13 +33,6 @@ export function createSouthstarApiClient(input: { baseUrl: string }) {
       const query = draftId ? `?draftId=${encodeURIComponent(draftId)}` : "";
       return get(`${baseUrl}/api/v2/ui/planner${query}`);
     },
-    getUiWorkflow(params?: { draftId?: string; runId?: string; taskId?: string }): Promise<any> {
-      const query = new URLSearchParams();
-      if (params?.draftId) query.set("draftId", params.draftId);
-      if (params?.runId) query.set("runId", params.runId);
-      if (params?.taskId) query.set("taskId", params.taskId);
-      return get(`${baseUrl}/api/v2/ui/workflow${query.size ? `?${query.toString()}` : ""}`);
-    },
     getUiWorkflowTab(params?: { draftId?: string; runId?: string }): Promise<any> {
       const query = new URLSearchParams();
       if (params?.draftId) query.set("draftId", params.draftId);
@@ -85,21 +78,8 @@ export function createSouthstarApiClient(input: { baseUrl: string }) {
         }
       }
     },
-    getAgentLibrary(params?: { domain?: string }): Promise<any> {
-      const query = new URLSearchParams();
-      if (params?.domain) query.set("domain", params.domain);
-      return get(`${baseUrl}/api/v2/agent-library${query.size ? `?${query.toString()}` : ""}`);
-    },
-    getAgentLibraryCandidates(params: { draftId: string; taskId?: string }): Promise<any> {
-      const query = new URLSearchParams({ draftId: params.draftId });
-      if (params.taskId) query.set("taskId", params.taskId);
-      return get(`${baseUrl}/api/v2/agent-library/candidates?${query.toString()}`);
-    },
     getUiOperatorAttention(): Promise<any> {
       return get(`${baseUrl}/api/v2/ui/operator-attention`);
-    },
-    getUiOperatorOverview(): Promise<any> {
-      return get(`${baseUrl}/api/v2/ui/operator-overview`);
     },
     getUiWorkflowCanvas(runId: string, taskId?: string): Promise<any> {
       const task = taskId ? `&taskId=${encodeURIComponent(taskId)}` : "";
