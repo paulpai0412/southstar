@@ -14,6 +14,7 @@ type PlannerRequestBody = {
   goalPrompt: string;
   orchestrationMode?: "deterministic" | "llm-constrained";
   composerMode?: "fixture" | "llm" | "llm-with-fixture-fallback";
+  scope?: string;
 };
 
 type RunRuntimeCommandRequest = RuntimeCommandRequest & { runId: string };
@@ -62,6 +63,27 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     createRunFromPlannerDraft(draftId: string) {
       return post(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(draftId)}/runs`, {});
+    },
+    listPlannerDraftProposals(draftId: string) {
+      return get(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(draftId)}/proposals`);
+    },
+    approvePlannerDraftProposal(body: { draftId: string; proposalId: string; actorId?: string; reason?: string }) {
+      return post(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/proposals/${encodeURIComponent(body.proposalId)}/approve`,
+        { ...(body.actorId !== undefined ? { actorId: body.actorId } : {}), ...(body.reason !== undefined ? { reason: body.reason } : {}) },
+      );
+    },
+    rejectPlannerDraftProposal(body: { draftId: string; proposalId: string; actorId?: string; reason?: string }) {
+      return post(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/proposals/${encodeURIComponent(body.proposalId)}/reject`,
+        { ...(body.actorId !== undefined ? { actorId: body.actorId } : {}), ...(body.reason !== undefined ? { reason: body.reason } : {}) },
+      );
+    },
+    convertPlannerDraftProposalToLibraryDraft(body: { draftId: string; proposalId: string; actorId?: string; reason?: string }) {
+      return post(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/proposals/${encodeURIComponent(body.proposalId)}/convert-to-library-draft`,
+        { ...(body.actorId !== undefined ? { actorId: body.actorId } : {}), ...(body.reason !== undefined ? { reason: body.reason } : {}) },
+      );
     },
     getRun(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}`);

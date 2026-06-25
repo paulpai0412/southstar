@@ -107,6 +107,21 @@ test("29 llm dynamic workflow materialization: task envelopes include materializ
       assert.equal(Array.isArray(envelope.envelope?.materializedLibraryRefs?.toolGrantRefs), true);
       assert.equal(Array.isArray(envelope.envelope?.materializedLibraryRefs?.mcpGrantRefs), true);
       assert.equal(Array.isArray(envelope.envelope?.materializedLibraryRefs?.vaultLeasePolicyRefs), true);
+      const instructionRefs = (envelope.envelope?.materializedLibraryRefs?.instructionRefs ?? []).filter((value): value is string => typeof value === "string");
+      const skillRefs = (envelope.envelope?.materializedLibraryRefs?.skillRefs ?? []).filter((value): value is string => typeof value === "string");
+      const toolGrantRefs = (envelope.envelope?.materializedLibraryRefs?.toolGrantRefs ?? []).filter((value): value is string => typeof value === "string");
+      const mcpGrantRefs = (envelope.envelope?.materializedLibraryRefs?.mcpGrantRefs ?? []).filter((value): value is string => typeof value === "string");
+      const vaultLeaseRefs = (envelope.envelope?.materializedLibraryRefs?.vaultLeasePolicyRefs ?? []).filter((value): value is string => typeof value === "string");
+      assert.equal(instructionRefs.every((ref) => ref.startsWith("instruction.")), true);
+      assert.equal(skillRefs.every((ref) => ref.startsWith("skill.")), true);
+      assert.equal(toolGrantRefs.every((ref) => ref.startsWith("tool.")), true);
+      assert.equal(mcpGrantRefs.every((ref) => ref.startsWith("mcp.")), true);
+      assert.equal(vaultLeaseRefs.every((ref) => ref.startsWith("vault.")), true);
+      assert.equal(
+        [...instructionRefs, ...skillRefs, ...toolGrantRefs, ...mcpGrantRefs, ...vaultLeaseRefs]
+          .some((ref) => /^software\./.test(ref) || ref === "filesystem-workspace"),
+        false,
+      );
       checkpoint("CP5", `materialized refs + policy present before callback: ${taskId}`);
 
       const hand = await latestHandExecutionForTask(env.db, { runId: run.runId, taskId });

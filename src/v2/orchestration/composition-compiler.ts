@@ -11,6 +11,7 @@ export type CompileWorkflowCompositionInput = {
   goalPrompt: string;
   candidatePacket: CandidatePacket;
   composition: WorkflowCompositionPlan;
+  scope?: string;
 };
 
 export type OrchestrationSnapshotV1 = {
@@ -47,7 +48,8 @@ export async function compileWorkflowComposition(
   db: SouthstarDb,
   input: CompileWorkflowCompositionInput,
 ): Promise<CompiledWorkflowComposition> {
-  const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition);
+  const scope = input.scope ?? "software";
+  const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, { scope });
   if (!validation.ok) {
     throw new Error(`workflow composition failed validation: ${JSON.stringify(validation.issues)}`);
   }
@@ -67,7 +69,7 @@ export async function compileWorkflowComposition(
     return {
       id: task.id,
       name: task.name,
-      domain: "software",
+      domain: scope,
       roleRef: role.id,
       agentProfileRef: profile.id,
       dependsOn: task.dependsOn,
@@ -113,7 +115,7 @@ export async function compileWorkflowComposition(
     workflowId: `wf-composed-${hash(input.runId).slice(0, 12)}`,
     title: input.composition.title,
     goalPrompt: input.goalPrompt,
-    domain: "software",
+    domain: scope,
     intent: input.candidatePacket.requirementSpec.workType === "bugfix" ? "fix_bug" : "implement_feature",
     workflowGeneration: {
       planId: `composition-${planHash.slice(0, 12)}`,
@@ -129,7 +131,7 @@ export async function compileWorkflowComposition(
         kind: "pi-agent",
         entrypoint: "southstar-agent-runner",
         image: "southstar/pi-agent:local",
-        capabilities: ["software"],
+        capabilities: [scope],
         inputProtocol: "task-envelope-v2",
         eventProtocol: "southstar-events-v1",
         supportsCheckpoint: true,
@@ -141,7 +143,7 @@ export async function compileWorkflowComposition(
         kind: "codex",
         entrypoint: "southstar-agent-runner",
         image: "southstar/pi-agent:local",
-        capabilities: ["software"],
+        capabilities: [scope],
         inputProtocol: "task-envelope-v2",
         eventProtocol: "southstar-events-v1",
         supportsCheckpoint: true,
@@ -179,7 +181,7 @@ export async function compileWorkflowComposition(
       compiler: {
         version: "library-constrained-compiler-v1",
         manifestHash: hash(JSON.stringify(workflow)),
-        libraryVersionRefs: collectVersionRefs(input.candidatePacket),
+        libraryVersionRefs: collectSelectedVersionRefs(input.candidatePacket, input.composition),
       },
     },
   };
@@ -199,8 +201,9 @@ function summarizeCandidates(packet: CandidatePacket): OrchestrationSnapshotV1["
   };
 }
 
-function collectVersionRefs(packet: CandidatePacket): string[] {
-  const versionRefs = [
+function collectSelectedVersionRefs(packet: CandidatePacket, composition: WorkflowCompositionPlan): string[] {
+  const versionRefsByRef = new Map<string, string>();
+  for (const candidate of [
     ...packet.workflowTemplateCandidates,
     ...Object.values(packet.agentCandidatesByCapability).flat(),
     ...Object.values(packet.profileCandidatesByAgent).flat(),
@@ -212,8 +215,39 @@ function collectVersionRefs(packet: CandidatePacket): string[] {
     ...packet.artifactContractCandidates,
     ...Object.values(packet.evaluatorCandidatesByArtifact).flat(),
     ...packet.policyConstraints,
-  ].map((candidate) => candidate.versionRef).filter((value): value is string => Boolean(value));
-  return [...new Set(versionRefs)].sort();
+  ]) {
+    if (candidate.versionRef) {
+      versionRefsByRef.set(candidate.ref, candidate.versionRef);
+    }
+  }
+
+  const selectedRefs = new Set<string>();
+  selectedRefs.add(composition.selectedWorkflowTemplateRef);
+  for (const task of composition.tasks) {
+    selectedRefs.add(task.agentDefinitionRef);
+    selectedRefs.add(task.agentProfileRef);
+    selectedRefs.add(task.evaluatorProfileRef);
+    addRefs(selectedRefs, task.skillRefs);
+    addRefs(selectedRefs, task.toolGrantRefs);
+    addRefs(selectedRefs, task.mcpGrantRefs);
+    addRefs(selectedRefs, task.vaultLeasePolicyRefs);
+    addRefs(selectedRefs, task.instructionRefs);
+    addRefs(selectedRefs, task.inputArtifactRefs);
+    addRefs(selectedRefs, task.outputArtifactRefs);
+    if (task.contextPolicyRef) selectedRefs.add(task.contextPolicyRef);
+    if (task.workspacePolicyRef) selectedRefs.add(task.workspacePolicyRef);
+  }
+
+  const selectedVersionRefs = [...selectedRefs]
+    .map((ref) => versionRefsByRef.get(ref))
+    .filter((value): value is string => Boolean(value));
+  return [...new Set(selectedVersionRefs)].sort();
+}
+
+function addRefs(target: Set<string>, refs: string[]): void {
+  for (const ref of refs) {
+    target.add(ref);
+  }
 }
 
 function flattenCandidateRefs(values: Record<string, Array<{ ref: string }>>): string[] {

@@ -31,13 +31,13 @@ export type CompositionRepairLoopResult = {
 
 export async function runCompositionRepairLoop(input: RunCompositionRepairLoopInput): Promise<CompositionRepairLoopResult> {
   const attempts: CompositionRepairAttempt[] = [];
-  let latestValidation: WorkflowCompositionValidationResult | null = null;
+  let previousAttempt: CompositionRepairAttempt | null = null;
   for (let attempt = 0; attempt <= input.maxRepairAttempts; attempt += 1) {
     let composition: WorkflowCompositionPlan | undefined;
     let validation: WorkflowCompositionValidationResult;
     try {
       composition = await input.composer.compose({
-        goalPrompt: renderRepairGoal(input.goalPrompt, latestValidation),
+        goalPrompt: renderRepairGoal(input.goalPrompt, previousAttempt),
         candidatePacket: input.candidatePacket,
       });
       validation = await validateWorkflowCompositionPlan(
@@ -46,18 +46,21 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
         composition,
         { scope: input.scope },
       );
-      attempts.push({ attempt, validation, composition });
+      const currentAttempt = { attempt, validation, composition };
+      attempts.push(currentAttempt);
+      previousAttempt = currentAttempt;
     } catch (error) {
       if (!(error instanceof LlmComposerOutputError)) {
         throw error;
       }
       validation = { ok: false, issues: error.issues };
-      attempts.push({ attempt, validation });
+      const currentAttempt = { attempt, validation };
+      attempts.push(currentAttempt);
+      previousAttempt = currentAttempt;
     }
     if (validation.ok) {
       return { composition: composition ?? null, validation, attempts };
     }
-    latestValidation = validation;
   }
   const last = attempts.at(-1);
   if (!last) {
@@ -70,15 +73,20 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
   };
 }
 
-function renderRepairGoal(goalPrompt: string, latestValidation: WorkflowCompositionValidationResult | null): string {
-  if (!latestValidation) {
+function renderRepairGoal(goalPrompt: string, previousAttempt: CompositionRepairAttempt | null): string {
+  if (!previousAttempt) {
     return goalPrompt;
   }
-  return [
+  const lines = [
     goalPrompt,
     "",
     "Previous composition failed validation. Repair the composition and return a valid plan.",
-    "Latest validation issues:",
-    JSON.stringify(latestValidation.issues),
-  ].join("\n");
+  ];
+  if (previousAttempt.composition) {
+    lines.push("Previous composition JSON:");
+    lines.push(JSON.stringify(previousAttempt.composition));
+  }
+  lines.push("Latest validation issues:");
+  lines.push(JSON.stringify(previousAttempt.validation.issues));
+  return lines.join("\n");
 }

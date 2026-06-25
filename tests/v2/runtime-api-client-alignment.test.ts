@@ -36,6 +36,10 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "resetTaskSession",
     "getPlannerDraftOrchestration",
     "createRunFromPlannerDraft",
+    "listPlannerDraftProposals",
+    "approvePlannerDraftProposal",
+    "rejectPlannerDraftProposal",
+    "convertPlannerDraftProposalToLibraryDraft",
   ] as const;
 
   for (const method of methods) {
@@ -236,14 +240,35 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
       composerMode: "fixture",
+      scope: "research",
     });
     await client.runGoal({
       goalPrompt: "implement calc sum",
       orchestrationMode: "deterministic",
       composerMode: "llm",
+      scope: "software",
     });
     await client.getPlannerDraftOrchestration("draft/a");
     await client.createRunFromPlannerDraft("draft/a");
+    await client.listPlannerDraftProposals("draft/a");
+    await client.approvePlannerDraftProposal({
+      draftId: "draft/a",
+      proposalId: "proposal/a",
+      actorId: "operator-a",
+      reason: "approve proposal",
+    });
+    await client.rejectPlannerDraftProposal({
+      draftId: "draft/a",
+      proposalId: "proposal/b",
+      actorId: "operator-a",
+      reason: "reject proposal",
+    });
+    await client.convertPlannerDraftProposalToLibraryDraft({
+      draftId: "draft/a",
+      proposalId: "proposal/a",
+      actorId: "operator-a",
+      reason: "convert proposal",
+    });
     await client.getExecutorJobActions({ runId: "run/a", jobId: "job/a" });
     await client.reconcileExecutorJob({ runId: "run/a", jobId: "job/a" });
     await client.cancelExecutorJob({
@@ -270,15 +295,31 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       {
         url: "http://127.0.0.1/api/v2/planner/drafts",
         method: "POST",
-        body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "fixture" },
+        body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "fixture", scope: "research" },
       },
       {
         url: "http://127.0.0.1/api/v2/run-goal",
         method: "POST",
-        body: { goalPrompt: "implement calc sum", orchestrationMode: "deterministic", composerMode: "llm" },
+        body: { goalPrompt: "implement calc sum", orchestrationMode: "deterministic", composerMode: "llm", scope: "software" },
       },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/orchestration", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/runs", method: "POST", body: {} },
+      { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/proposals", method: undefined, body: undefined },
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/proposals/proposal%2Fa/approve",
+        method: "POST",
+        body: { actorId: "operator-a", reason: "approve proposal" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/proposals/proposal%2Fb/reject",
+        method: "POST",
+        body: { actorId: "operator-a", reason: "reject proposal" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/proposals/proposal%2Fa/convert-to-library-draft",
+        method: "POST",
+        body: { actorId: "operator-a", reason: "convert proposal" },
+      },
       { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/actions", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/reconcile", method: "POST", body: {} },
       {

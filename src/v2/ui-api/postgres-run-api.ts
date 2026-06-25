@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { WorkflowCompositionValidationIssue } from "../design-library/types.ts";
+import type { GeneratedComponentProposal, LibraryDefinitionKind, WorkflowCompositionValidationIssue } from "../design-library/types.ts";
 import { seedSoftwareLibraryGraph } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { DomainPack } from "../domain-packs/types.ts";
@@ -11,7 +11,7 @@ import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.t
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { createWorkflowComposerRegistry, type WorkflowComposerMode } from "../orchestration/composer-registry.ts";
-import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
+import { runCompositionRepairLoop, type CompositionRepairAttempt } from "../orchestration/composition-repair-loop.ts";
 import { analyzeRequirementDeterministically } from "../orchestration/requirement-analyzer.ts";
 import {
   appendHistoryEventPg,
@@ -56,11 +56,36 @@ export type PostgresRunResult = {
   taskIds: string[];
 };
 
+export type PlannerDraftProposalStatus = "proposed" | "approved-for-draft" | "rejected" | "converted";
+
+export type PlannerDraftProposalSummary = {
+  proposalId: string;
+  draftId: string;
+  kind: LibraryDefinitionKind;
+  status: PlannerDraftProposalStatus;
+  risk: "low" | "medium" | "high";
+  reason: string;
+  validationStatus: "validated" | "unvalidated";
+  source: {
+    plannerDraftId: string;
+    compositionHash?: string;
+  };
+  libraryDraftId?: string;
+};
+
+export type ConvertPlannerDraftProposalResult = {
+  proposalId: string;
+  status: "converted" | "blocked";
+  libraryDraftId?: string;
+  reason?: string;
+};
+
 export type CreatePostgresPlannerDraftInput = {
   goalPrompt: string;
   orchestrationMode?: "deterministic" | "llm-constrained";
   composerMode?: WorkflowComposerMode;
   composer?: WorkflowComposer;
+  scope?: string;
 };
 
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
@@ -72,8 +97,12 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
 
 async function createDeterministicPlannerDraft(
   db: SouthstarDb,
-  input: { goalPrompt: string },
+  input: { goalPrompt: string; scope?: string },
 ): Promise<PostgresPlannerDraftResult> {
+  const scope = normalizedScope(input.scope);
+  if (scope !== "software") {
+    throw new Error(`deterministic planner only supports software scope: ${scope}`);
+  }
   const draftRunId = `draft-software-${hash(input.goalPrompt).slice(0, 12)}`;
   const plan = generateConstrainedWorkflowPlan({
     runId: draftRunId,
@@ -120,17 +149,21 @@ async function createDeterministicPlannerDraft(
 
 async function createLibraryConstrainedPlannerDraft(
   db: SouthstarDb,
-  input: { goalPrompt: string; composerMode?: WorkflowComposerMode; composer?: WorkflowComposer },
+  input: { goalPrompt: string; composerMode?: WorkflowComposerMode; composer?: WorkflowComposer; scope?: string },
 ): Promise<PostgresPlannerDraftResult> {
-  const draftRunId = `draft-library-${hash(input.goalPrompt).slice(0, 12)}`;
-  await seedSoftwareLibraryGraph(db);
+  const scope = normalizedScope(input.scope);
+  const draftRunId = `draft-library-${scopeToken(scope)}-${hash(input.goalPrompt).slice(0, 12)}`;
+  if (scope === "software") {
+    await seedSoftwareLibraryGraph(db);
+  }
   const requirementSpec = analyzeRequirementDeterministically(input.goalPrompt);
   const candidatePacket = await resolveWorkflowCandidates(db, {
     requirementSpec,
-    scope: "software",
+    scope,
   });
   const workflowId = `wf-composed-${hash(draftRunId).slice(0, 12)}`;
   const draftId = `draft-${workflowId}`;
+  const emptyLlmTrace = buildSanitizedLlmTrace(input.goalPrompt, []);
 
   if (candidatePacket.unavailableRequirements.length > 0) {
     const validationIssues = unavailableRequirementIssues(candidatePacket.unavailableRequirements);
@@ -144,9 +177,11 @@ async function createLibraryConstrainedPlannerDraft(
       status,
       title: "Invalid Library-Constrained Planner Draft",
       payload: {
+        scope,
         requirementSpec,
         candidatePacket,
         unavailableRequirements: candidatePacket.unavailableRequirements,
+        llmTrace: emptyLlmTrace,
       },
       summary: {
         goalPrompt: input.goalPrompt,
@@ -176,9 +211,10 @@ async function createLibraryConstrainedPlannerDraft(
     goalPrompt: input.goalPrompt,
     candidatePacket,
     composer,
-    scope: "software",
+    scope,
     maxRepairAttempts: 2,
   });
+  const llmTrace = buildSanitizedLlmTrace(input.goalPrompt, repairResult.attempts);
   if (!repairResult.validation.ok) {
     const validationIssues = toPlannerDraftValidationIssues(repairResult.validation.issues);
     const status = "invalid";
@@ -191,9 +227,11 @@ async function createLibraryConstrainedPlannerDraft(
       status,
       title: "Invalid Library-Constrained Planner Draft",
       payload: {
+        scope,
         requirementSpec,
         candidatePacket,
         repairAttempts: repairResult.attempts,
+        llmTrace,
         validationIssues,
       },
       summary: {
@@ -223,10 +261,12 @@ async function createLibraryConstrainedPlannerDraft(
     goalPrompt: input.goalPrompt,
     candidatePacket,
     composition,
+    scope,
   });
   const bundle: PlanBundle & {
     orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
     repairAttempts: typeof repairResult.attempts;
+    llmTrace: ReturnType<typeof buildSanitizedLlmTrace>;
   } = {
     workflow: compiled.workflow,
     plannerTrace: {
@@ -244,6 +284,7 @@ async function createLibraryConstrainedPlannerDraft(
     },
     orchestrationSnapshot: compiled.orchestrationSnapshot,
     repairAttempts: repairResult.attempts,
+    llmTrace,
   };
   const validationIssues = toPlannerDraftValidationIssues(compiled.orchestrationSnapshot.validation.issues);
   const taskSummaries = summarizeWorkflowTasks(compiled.workflow);
@@ -265,6 +306,11 @@ async function createLibraryConstrainedPlannerDraft(
       validationIssues,
       taskSummaries,
     },
+  });
+  await persistGeneratedComponentProposals(db, {
+    draftId,
+    proposals: composition.generatedComponentProposals,
+    compositionHash: hash(JSON.stringify(composition)),
   });
   return {
     draftId,
@@ -355,6 +401,117 @@ export async function getPostgresPlannerDraftOrchestration(
     ...(payload.orchestrationSnapshot !== undefined ? { orchestrationSnapshot: payload.orchestrationSnapshot } : {}),
     ...(payload.plannerTrace !== undefined ? { plannerTrace: payload.plannerTrace } : {}),
     ...(payload.repairAttempts !== undefined ? { repairAttempts: payload.repairAttempts } : {}),
+  };
+}
+
+export async function listPostgresPlannerDraftProposals(
+  db: SouthstarDb,
+  input: { draftId: string },
+): Promise<PlannerDraftProposalSummary[]> {
+  const rows = await db.query<{
+    payload_json: unknown;
+    status: string;
+  }>(
+    `select payload_json, status
+       from southstar.runtime_resources
+      where resource_type = 'library_component_proposal'
+        and payload_json->>'draftId' = $1
+      order by created_at, resource_key`,
+    [input.draftId],
+  );
+  const proposals: PlannerDraftProposalSummary[] = [];
+  for (const row of rows.rows) {
+    const parsed = parsePlannerDraftProposalPayload(row.payload_json);
+    if (!parsed) continue;
+    proposals.push({
+      ...parsed,
+      status: asPlannerDraftProposalStatus(row.status) ?? parsed.status,
+    });
+  }
+  return proposals;
+}
+
+export async function approvePostgresPlannerDraftProposal(
+  db: SouthstarDb,
+  input: { draftId: string; proposalId: string; actorId?: string; reason?: string },
+): Promise<{ proposalId: string; status: PlannerDraftProposalStatus }> {
+  return await updatePostgresPlannerDraftProposalStatus(db, {
+    draftId: input.draftId,
+    proposalId: input.proposalId,
+    status: "approved-for-draft",
+    actorId: input.actorId,
+    reason: input.reason,
+  });
+}
+
+export async function rejectPostgresPlannerDraftProposal(
+  db: SouthstarDb,
+  input: { draftId: string; proposalId: string; actorId?: string; reason?: string },
+): Promise<{ proposalId: string; status: PlannerDraftProposalStatus }> {
+  return await updatePostgresPlannerDraftProposalStatus(db, {
+    draftId: input.draftId,
+    proposalId: input.proposalId,
+    status: "rejected",
+    actorId: input.actorId,
+    reason: input.reason,
+  });
+}
+
+export async function convertPostgresPlannerDraftProposalToLibraryDraft(
+  db: SouthstarDb,
+  input: { draftId: string; proposalId: string; actorId?: string; reason?: string },
+): Promise<ConvertPlannerDraftProposalResult> {
+  const proposal = await requiredPlannerDraftProposal(db, input.draftId, input.proposalId);
+  if (!isConvertibleProposalKind(proposal.kind)) {
+    return {
+      proposalId: input.proposalId,
+      status: "blocked",
+      reason: `conversion is not supported for proposal kind: ${proposal.kind}`,
+    };
+  }
+
+  const libraryDraftId = `library-draft-${hash(`${input.draftId}:${input.proposalId}`).slice(0, 20)}`;
+  await upsertRuntimeResourcePg(db, {
+    id: libraryDraftId,
+    resourceType: "library_object_draft",
+    resourceKey: libraryDraftId,
+    scope: "planner",
+    status: "draft",
+    title: `Library draft for ${input.proposalId}`,
+    payload: {
+      schemaVersion: "southstar.library_object_draft.v1",
+      draftId: libraryDraftId,
+      sourceProposalId: proposal.proposalId,
+      sourcePlannerDraftId: proposal.draftId,
+      kind: proposal.kind,
+      status: "draft",
+      risk: proposal.risk,
+      reason: proposal.reason,
+      createdBy: input.actorId ?? "planner-proposal-converter",
+      createdReason: input.reason,
+      createdAt: new Date().toISOString(),
+    },
+    summary: {
+      sourceProposalId: proposal.proposalId,
+      sourcePlannerDraftId: proposal.draftId,
+      kind: proposal.kind,
+      status: "draft",
+    },
+  });
+
+  await updatePostgresPlannerDraftProposalStatus(db, {
+    draftId: input.draftId,
+    proposalId: input.proposalId,
+    status: "converted",
+    actorId: input.actorId,
+    reason: input.reason,
+    libraryDraftId,
+  });
+
+  return {
+    proposalId: input.proposalId,
+    status: "converted",
+    libraryDraftId,
   };
 }
 
@@ -471,6 +628,250 @@ function unavailableRequirementIssues(
   }));
 }
 
+async function persistGeneratedComponentProposals(
+  db: SouthstarDb,
+  input: {
+    draftId: string;
+    proposals: GeneratedComponentProposal[];
+    compositionHash: string;
+  },
+): Promise<void> {
+  for (const proposal of input.proposals) {
+    const proposalSummary: PlannerDraftProposalSummary = {
+      proposalId: proposal.id,
+      draftId: input.draftId,
+      kind: proposal.kind,
+      status: "proposed",
+      risk: proposal.risk,
+      reason: proposal.reason,
+      validationStatus: proposal.validationStatus,
+      source: {
+        plannerDraftId: input.draftId,
+        compositionHash: input.compositionHash,
+      },
+    };
+    const resourceKey = proposalResourceKey(input.draftId, proposal.id);
+    await upsertRuntimeResourcePg(db, {
+      id: resourceKey,
+      resourceType: "library_component_proposal",
+      resourceKey,
+      scope: "planner",
+      status: proposalSummary.status,
+      title: `Generated proposal ${proposal.id}`,
+      payload: proposalSummary,
+      summary: {
+        proposalId: proposalSummary.proposalId,
+        draftId: proposalSummary.draftId,
+        kind: proposalSummary.kind,
+        status: proposalSummary.status,
+        risk: proposalSummary.risk,
+      },
+    });
+  }
+}
+
+async function updatePostgresPlannerDraftProposalStatus(
+  db: SouthstarDb,
+  input: {
+    draftId: string;
+    proposalId: string;
+    status: PlannerDraftProposalStatus;
+    actorId?: string;
+    reason?: string;
+    libraryDraftId?: string;
+  },
+): Promise<{ proposalId: string; status: PlannerDraftProposalStatus }> {
+  const resourceKey = proposalResourceKey(input.draftId, input.proposalId);
+  const row = await db.maybeOne<{ payload_json: unknown }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where resource_type = 'library_component_proposal'
+        and resource_key = $1`,
+    [resourceKey],
+  );
+  if (!row) throw new Error(`planner draft proposal not found: ${input.draftId}/${input.proposalId}`);
+  const parsed = parsePlannerDraftProposalPayload(row.payload_json);
+  if (!parsed) throw new Error(`planner draft proposal payload invalid: ${input.draftId}/${input.proposalId}`);
+  if (parsed.draftId !== input.draftId) throw new Error(`planner draft proposal does not belong to draft: ${input.proposalId}`);
+
+  const payload: PlannerDraftProposalSummary & {
+    moderation?: {
+      actorId?: string;
+      reason?: string;
+      at: string;
+    };
+  } = {
+    ...parsed,
+    status: input.status,
+    ...(input.libraryDraftId ? { libraryDraftId: input.libraryDraftId } : {}),
+    moderation: {
+      actorId: input.actorId,
+      reason: input.reason,
+      at: new Date().toISOString(),
+    },
+  };
+  await upsertRuntimeResourcePg(db, {
+    id: resourceKey,
+    resourceType: "library_component_proposal",
+    resourceKey,
+    scope: "planner",
+    status: payload.status,
+    title: `Generated proposal ${input.proposalId}`,
+    payload,
+    summary: {
+      proposalId: payload.proposalId,
+      draftId: payload.draftId,
+      kind: payload.kind,
+      status: payload.status,
+      risk: payload.risk,
+      ...(payload.libraryDraftId ? { libraryDraftId: payload.libraryDraftId } : {}),
+    },
+  });
+  return { proposalId: input.proposalId, status: input.status };
+}
+
+async function requiredPlannerDraftProposal(
+  db: SouthstarDb,
+  draftId: string,
+  proposalId: string,
+): Promise<PlannerDraftProposalSummary> {
+  const resourceKey = proposalResourceKey(draftId, proposalId);
+  const row = await db.maybeOne<{ payload_json: unknown }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where resource_type = 'library_component_proposal'
+        and resource_key = $1`,
+    [resourceKey],
+  );
+  if (!row) throw new Error(`planner draft proposal not found: ${draftId}/${proposalId}`);
+  const proposal = parsePlannerDraftProposalPayload(row.payload_json);
+  if (!proposal) throw new Error(`planner draft proposal payload invalid: ${draftId}/${proposalId}`);
+  return proposal;
+}
+
+function proposalResourceKey(draftId: string, proposalId: string): string {
+  return `library-component-proposal:${draftId}:${proposalId}`;
+}
+
+function parsePlannerDraftProposalPayload(value: unknown): PlannerDraftProposalSummary | null {
+  if (!isRecord(value)) return null;
+  const proposalId = stringValue(value.proposalId);
+  const draftId = stringValue(value.draftId);
+  const kind = libraryDefinitionKindValue(value.kind);
+  const status = asPlannerDraftProposalStatus(value.status);
+  const risk = riskValue(value.risk);
+  const reason = stringValue(value.reason);
+  const validationStatus = validationStatusValue(value.validationStatus);
+  const sourceRecord = isRecord(value.source) ? value.source : {};
+  const sourcePlannerDraftId = stringValue(sourceRecord.plannerDraftId);
+  if (!proposalId || !draftId || !kind || !status || !risk || !reason || !validationStatus || !sourcePlannerDraftId) {
+    return null;
+  }
+  return {
+    proposalId,
+    draftId,
+    kind,
+    status,
+    risk,
+    reason,
+    validationStatus,
+    source: {
+      plannerDraftId: sourcePlannerDraftId,
+      ...(stringValue(sourceRecord.compositionHash) ? { compositionHash: stringValue(sourceRecord.compositionHash) } : {}),
+    },
+    ...(stringValue(value.libraryDraftId) ? { libraryDraftId: stringValue(value.libraryDraftId) } : {}),
+  };
+}
+
+function asPlannerDraftProposalStatus(value: unknown): PlannerDraftProposalStatus | null {
+  if (value === "proposed" || value === "approved-for-draft" || value === "rejected" || value === "converted") {
+    return value;
+  }
+  return null;
+}
+
+function libraryDefinitionKindValue(value: unknown): LibraryDefinitionKind | null {
+  if (
+    value === "agent_spec"
+    || value === "agent_definition"
+    || value === "agent_profile"
+    || value === "skill_definition"
+    || value === "mcp_tool_grant"
+    || value === "artifact_contract"
+    || value === "evaluator_profile"
+    || value === "capability_spec"
+    || value === "contract_spec"
+    || value === "validator_spec"
+    || value === "policy_bundle"
+    || value === "workflow_template"
+    || value === "workflow_recipe"
+    || value === "tool_definition"
+    || value === "instruction_template"
+    || value === "vault_lease_policy"
+    || value === "skill_spec"
+  ) {
+    return value;
+  }
+  return null;
+}
+
+function riskValue(value: unknown): "low" | "medium" | "high" | null {
+  if (value === "low" || value === "medium" || value === "high") return value;
+  return null;
+}
+
+function validationStatusValue(value: unknown): "validated" | "unvalidated" | null {
+  if (value === "validated" || value === "unvalidated") return value;
+  return null;
+}
+
+function isConvertibleProposalKind(kind: LibraryDefinitionKind): boolean {
+  return kind === "agent_definition"
+    || kind === "agent_profile"
+    || kind === "skill_definition"
+    || kind === "mcp_tool_grant"
+    || kind === "artifact_contract"
+    || kind === "evaluator_profile"
+    || kind === "policy_bundle"
+    || kind === "workflow_template"
+    || kind === "tool_definition"
+    || kind === "instruction_template"
+    || kind === "vault_lease_policy"
+    || kind === "skill_spec";
+}
+
+function buildSanitizedLlmTrace(goalPrompt: string, attempts: CompositionRepairAttempt[]): {
+  goalPromptHash: string;
+  attempts: Array<{
+    attempt: number;
+    parseOutcome: "parsed" | "composer_output_error";
+    validationOutcome: "valid" | "invalid";
+    issueCodes: string[];
+    issuesHash: string;
+    compositionHash?: string;
+  }>;
+} {
+  return {
+    goalPromptHash: hash(goalPrompt),
+    attempts: attempts.map((attempt, index) => {
+      const issueCodes = [...new Set(attempt.validation.issues.map((issue) => issue.code ?? "unknown_issue"))].sort();
+      const issuesHash = hash(JSON.stringify(attempt.validation.issues.map((issue) => ({
+        code: issue.code ?? null,
+        path: issue.path,
+        message: issue.message,
+      }))));
+      return {
+        attempt: Number.isFinite(attempt.attempt) ? attempt.attempt : index,
+        parseOutcome: attempt.composition ? "parsed" : "composer_output_error",
+        validationOutcome: attempt.validation.ok ? "valid" : "invalid",
+        issueCodes,
+        issuesHash,
+        ...(attempt.composition ? { compositionHash: hash(JSON.stringify(attempt.composition)) } : {}),
+      };
+    }),
+  };
+}
+
 function toPlannerDraftValidationIssues(issues: WorkflowCompositionValidationIssue[]): PlannerDraftValidationIssue[] {
   return issues.map((issue) => ({
     path: issue.path,
@@ -524,4 +925,13 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function normalizedScope(value: string | undefined): string {
+  if (!value) return "software";
+  return value.trim().length === 0 ? "software" : value.trim();
+}
+
+function scopeToken(scope: string): string {
+  return scope.replace(/[^a-z0-9_-]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "software";
 }

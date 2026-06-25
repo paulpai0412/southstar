@@ -147,6 +147,14 @@ test("ManagedContextAssembler materializes implement-feature library refs for ll
       assembled.taskEnvelope.materializedLibraryRefs?.instructionRefs.includes("instruction.software-maker"),
       true,
     );
+    assert.equal(
+      assembled.taskEnvelope.materializedLibraryRefs?.skillRefs.includes("software.implementation"),
+      false,
+    );
+    assert.equal(
+      assembled.taskEnvelope.materializedLibraryRefs?.skillRefs.includes("skill.software-implementation"),
+      true,
+    );
   } finally {
     await db.close();
   }

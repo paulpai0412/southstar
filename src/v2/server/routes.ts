@@ -14,7 +14,15 @@ import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read
 import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from "../read-models/postgres-run-inspection.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration } from "../ui-api/postgres-run-api.ts";
+import {
+  approvePostgresPlannerDraftProposal,
+  convertPostgresPlannerDraftProposalToLibraryDraft,
+  createPostgresPlannerDraft,
+  createPostgresRunFromDraft,
+  getPostgresPlannerDraftOrchestration,
+  listPostgresPlannerDraftProposals,
+  rejectPostgresPlannerDraftProposal,
+} from "../ui-api/postgres-run-api.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
@@ -153,12 +161,13 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
-      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown }>(request);
+      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown; scope?: unknown }>(request);
       if (!body.goalPrompt) throw new Error("goalPrompt is required");
       const draft = await createPostgresPlannerDraft(context.db, {
         goalPrompt: body.goalPrompt,
         orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
         composerMode: optionalComposerMode(body.composerMode),
+        scope: optionalScope(body.scope),
         composer: resolvePlannerWorkflowComposer(context),
       });
       const run = await createPostgresRunFromDraft(context.db, { draftId: draft.draftId });
@@ -166,7 +175,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
-      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown }>(request);
+      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown; scope?: unknown }>(request);
       if (!body.goalPrompt) throw new Error("goalPrompt is required");
       return json(
         "planner-draft",
@@ -174,6 +183,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
           goalPrompt: body.goalPrompt,
           orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
           composerMode: optionalComposerMode(body.composerMode),
+          scope: optionalScope(body.scope),
           composer: resolvePlannerWorkflowComposer(context),
         }),
       );
@@ -189,6 +199,46 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (request.method === "POST" && draftRunMatch) {
       const draftId = decodeURIComponent(draftRunMatch[1]!);
       return json("run", await createPostgresRunFromDraft(context.db, { draftId }));
+    }
+
+    const draftProposalsMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/proposals$/);
+    if (request.method === "GET" && draftProposalsMatch) {
+      const draftId = decodeURIComponent(draftProposalsMatch[1]!);
+      return json("planner-draft-proposals", await listPostgresPlannerDraftProposals(context.db, { draftId }));
+    }
+
+    const draftProposalActionMatch = url.pathname.match(
+      /^\/api\/v2\/planner\/drafts\/([^/]+)\/proposals\/([^/]+)\/(approve|reject|convert-to-library-draft)$/,
+    );
+    if (request.method === "POST" && draftProposalActionMatch) {
+      const body = await readJsonBody<{ actorId?: unknown; reason?: unknown }>(request);
+      const draftId = decodeURIComponent(draftProposalActionMatch[1]!);
+      const proposalId = decodeURIComponent(draftProposalActionMatch[2]!);
+      const action = draftProposalActionMatch[3]!;
+      const actorId = optionalString(body.actorId);
+      const reason = optionalString(body.reason);
+      if (action === "approve") {
+        return json("planner-draft-proposal-approved", await approvePostgresPlannerDraftProposal(context.db, {
+          draftId,
+          proposalId,
+          actorId,
+          reason,
+        }));
+      }
+      if (action === "reject") {
+        return json("planner-draft-proposal-rejected", await rejectPostgresPlannerDraftProposal(context.db, {
+          draftId,
+          proposalId,
+          actorId,
+          reason,
+        }));
+      }
+      return json("planner-draft-proposal-converted", await convertPostgresPlannerDraftProposalToLibraryDraft(context.db, {
+        draftId,
+        proposalId,
+        actorId,
+        reason,
+      }));
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/runs") {
@@ -626,6 +676,12 @@ function optionalComposerMode(value: unknown): WorkflowComposerMode | undefined 
   if (value === undefined) return undefined;
   if (value === "fixture" || value === "llm" || value === "llm-with-fixture-fallback") return value;
   throw new Error("composerMode must be fixture, llm, or llm-with-fixture-fallback");
+}
+
+function optionalScope(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) throw new Error("scope must be a non-empty string");
+  return value.trim();
 }
 
 function resolvePlannerWorkflowComposer(context: RuntimeServerContext): WorkflowComposer {
