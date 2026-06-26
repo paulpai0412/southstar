@@ -1,4 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { softwareVaultLeasePolicies } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { AgentProfile, RoleDefinition } from "../domain-packs/types.ts";
 
@@ -33,6 +34,11 @@ export type AgentLibraryReadModel = {
   tools: Array<{ id: string; profileRefs: string[] }>;
   artifactContracts: typeof softwareDomainPack.artifactContracts;
   evaluatorPipelines: typeof softwareDomainPack.evaluatorPipelines;
+  contextPolicies: typeof softwareDomainPack.contextPolicies;
+  sessionPolicies: typeof softwareDomainPack.sessionPolicies;
+  memoryPolicies: typeof softwareDomainPack.memoryPolicies;
+  workspacePolicies: typeof softwareDomainPack.workspacePolicies;
+  vaultLeasePolicies: typeof softwareVaultLeasePolicies;
 };
 
 export type AgentLibraryCandidatesReadModel = {
@@ -68,6 +74,11 @@ export async function buildAgentLibraryReadModelPg(_db: SouthstarDb, input: Agen
     tools: library.tools,
     artifactContracts: softwareDomainPack.artifactContracts,
     evaluatorPipelines: softwareDomainPack.evaluatorPipelines,
+    contextPolicies: softwareDomainPack.contextPolicies,
+    sessionPolicies: softwareDomainPack.sessionPolicies,
+    memoryPolicies: softwareDomainPack.memoryPolicies,
+    workspacePolicies: softwareDomainPack.workspacePolicies,
+    vaultLeasePolicies: softwareVaultLeasePolicies,
   };
 }
 

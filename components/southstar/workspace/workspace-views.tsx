@@ -7,6 +7,7 @@ import { OperatorBoard } from "../operator/OperatorBoard";
 export interface WorkspaceViewContext {
   activeCwd: string | null;
   api: SouthstarApiClient;
+  serverBaseUrl: string;
   onOpenOperator: (runId?: string) => void;
 }
 
@@ -15,7 +16,7 @@ export function renderWorkspaceView(id: SouthstarWorkspaceViewId, ctx: Workspace
     return <WorkflowWorkbench api={ctx.api} activeCwd={ctx.activeCwd} onOpenOperator={ctx.onOpenOperator} />;
   }
   if (id === "operator") {
-    return <OperatorBoard api={ctx.api} activeCwd={ctx.activeCwd} />;
+    return <OperatorBoard api={ctx.api} activeCwd={ctx.activeCwd} serverBaseUrl={ctx.serverBaseUrl} />;
   }
   return null;
 }

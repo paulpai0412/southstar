@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { SouthstarApiClient } from "@/lib/southstar/api-client";
+import type { CreatePlannerDraftRequest, SouthstarApiClient } from "@/lib/southstar/api-client";
 import { SouthstarWorkflowCanvas } from "../workflow-canvas/SouthstarWorkflowCanvas";
-import type { WorkflowCanvasModel, WorkflowTaskBadge, WorkflowTaskNodeModel } from "../workflow-canvas/types";
+import type { WorkflowCanvasModel, WorkflowTaskAttention, WorkflowTaskBadge, WorkflowTaskNodeModel } from "../workflow-canvas/types";
 import { AgentLibraryPanel } from "./AgentLibraryPanel";
 import { DefinitionInspector } from "./DefinitionInspector";
 import { LibraryAlternativesSheet } from "./LibraryAlternativesSheet";
@@ -12,11 +12,18 @@ const defaultGoal = "在 todo-web repo 新增 priority labels 與 overdue filter
 
 type PlannerInputState = {
   goalPrompt: string;
-  domainPack: string;
-  cwdHint: string;
+  domainPackId: string;
+  cwd: string;
   orchestrationMode: "deterministic" | "llm-constrained";
   composerMode: "llm" | "fixture" | "llm-with-fixture-fallback";
-  libraryHints: string;
+  roleRefs: string;
+  agentProfileRefs: string;
+  skillRefs: string;
+  mcpGrantRefs: string;
+  toolRefs: string;
+  modelHints: string;
+  vaultLeasePolicyRefs: string;
+  toolPolicyHints: string;
 };
 
 type ValidationIssue = {
@@ -30,20 +37,28 @@ export function WorkflowWorkbench(props: {
   activeCwd: string | null;
   initialDraftId?: string;
   initialRunId?: string;
+  initialWorkflowModel?: any;
   onOpenOperator: (runId?: string) => void;
 }) {
   const [plannerInput, setPlannerInput] = useState<PlannerInputState>(() => ({
     goalPrompt: defaultGoal,
-    domainPack: "software",
-    cwdHint: props.activeCwd ?? "",
+    domainPackId: "software",
+    cwd: props.activeCwd ?? "",
     orchestrationMode: "llm-constrained",
     composerMode: "llm",
-    libraryHints: "",
+    roleRefs: "",
+    agentProfileRefs: "",
+    skillRefs: "",
+    mcpGrantRefs: "",
+    toolRefs: "",
+    modelHints: "",
+    vaultLeasePolicyRefs: "",
+    toolPolicyHints: "",
   }));
-  const [draftId, setDraftId] = useState<string | undefined>();
-  const [runId, setRunId] = useState<string | undefined>();
-  const [workflowModel, setWorkflowModel] = useState<any | null>(null);
-  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [draftId, setDraftId] = useState<string | undefined>(() => props.initialDraftId);
+  const [runId, setRunId] = useState<string | undefined>(() => props.initialRunId);
+  const [workflowModel, setWorkflowModel] = useState<any | null>(() => props.initialWorkflowModel ?? null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(() => selectedTaskIdFromModel(props.initialWorkflowModel));
   const [planning, setPlanning] = useState(false);
   const [running, setRunning] = useState(false);
   const [revising, setRevising] = useState(false);
@@ -54,28 +69,29 @@ export function WorkflowWorkbench(props: {
   useEffect(() => {
     setDraftId(props.initialDraftId);
     setRunId(props.initialRunId);
+    if (props.initialWorkflowModel) {
+      setWorkflowModel(props.initialWorkflowModel);
+      setSelectedTaskId((current) => current ?? selectedTaskIdFromModel(props.initialWorkflowModel));
+      return;
+    }
     if (props.initialDraftId || props.initialRunId) {
       void refreshModel(props.initialDraftId, props.initialRunId);
     }
-  }, [props.initialDraftId, props.initialRunId]);
+  }, [props.initialDraftId, props.initialRunId, props.initialWorkflowModel]);
 
   useEffect(() => {
     if (!props.activeCwd) return;
-    setPlannerInput((current) => (current.cwdHint.length > 0 ? current : { ...current, cwdHint: props.activeCwd ?? "" }));
+    setPlannerInput((current) => (current.cwd.length > 0 ? current : { ...current, cwd: props.activeCwd ?? "" }));
   }, [props.activeCwd]);
 
   async function refreshModel(nextDraftId = draftId, nextRunId = runId) {
     try {
-      const next = await props.api.getUiWorkflowTab({ draftId: nextDraftId, runId: nextRunId });
+      const next = await loadWorkflowWorkbenchModel(props.api, { draftId: nextDraftId, runId: nextRunId });
       setWorkflowModel(next);
-      setSelectedTaskId((current) => current
-        ?? next?.canvasModel?.selectedNodeId
-        ?? next?.selectedDefinition?.taskId
-        ?? next?.draft?.taskInspector?.taskId
-        ?? null);
-      const domain = stringValue(next?.agentLibrarySummary?.domain);
+      setSelectedTaskId((current) => current ?? selectedTaskIdFromModel(next));
+      const domain = stringValue(next?.agentLibrary?.domain) ?? stringValue(next?.agentLibrarySummary?.domain);
       if (domain) {
-        setPlannerInput((current) => ({ ...current, domainPack: domain }));
+        setPlannerInput((current) => ({ ...current, domainPackId: domain }));
       }
     } catch (caught) {
       setError((caught as Error).message);
@@ -159,14 +175,7 @@ export function WorkflowWorkbench(props: {
   return (
     <>
       <section className="ss-workflow-workbench">
-        <AgentLibraryPanel
-          model={workflowModel}
-          activeCwd={props.activeCwd}
-          selectedTaskId={selectedTaskId}
-          onOpenAlternatives={openAlternatives}
-          alternativesDisabled={!draftId}
-        />
-        <section className="ss-workflow-center">
+        <section className="ss-workflow-planner-panel">
           <section className="ss-guided-chat">
             <header>
               <h1>Guided workflow chat</h1>
@@ -178,17 +187,17 @@ export function WorkflowWorkbench(props: {
               value={plannerInput.goalPrompt}
               onChange={(event) => setPlannerInput((current) => ({ ...current, goalPrompt: event.currentTarget.value }))}
             />
-            <label htmlFor="workflow-domain-pack">Domain pack</label>
+            <label htmlFor="workflow-domain-pack-id">Domain pack ID</label>
             <input
-              id="workflow-domain-pack"
-              value={plannerInput.domainPack}
-              onChange={(event) => setPlannerInput((current) => ({ ...current, domainPack: event.currentTarget.value }))}
+              id="workflow-domain-pack-id"
+              value={plannerInput.domainPackId}
+              onChange={(event) => setPlannerInput((current) => ({ ...current, domainPackId: event.currentTarget.value }))}
             />
-            <label htmlFor="workflow-cwd-hint">Workspace cwd hint</label>
+            <label htmlFor="workflow-cwd">Workspace cwd</label>
             <input
-              id="workflow-cwd-hint"
-              value={plannerInput.cwdHint}
-              onChange={(event) => setPlannerInput((current) => ({ ...current, cwdHint: event.currentTarget.value }))}
+              id="workflow-cwd"
+              value={plannerInput.cwd}
+              onChange={(event) => setPlannerInput((current) => ({ ...current, cwd: event.currentTarget.value }))}
             />
             <label htmlFor="workflow-orchestration-mode">Orchestration mode</label>
             <select
@@ -215,16 +224,70 @@ export function WorkflowWorkbench(props: {
               <option value="llm-with-fixture-fallback">llm-with-fixture-fallback</option>
               <option value="fixture">fixture</option>
             </select>
-            <label htmlFor="workflow-library-hints">Library hints</label>
-            <textarea
-              id="workflow-library-hints"
-              value={plannerInput.libraryHints}
-              onChange={(event) => setPlannerInput((current) => ({ ...current, libraryHints: event.currentTarget.value }))}
-            />
+            <details className="ss-planner-advanced-hints">
+              <summary>Advanced structured hints</summary>
+              <label htmlFor="workflow-role-refs">Role refs</label>
+              <textarea
+                id="workflow-role-refs"
+                value={plannerInput.roleRefs}
+                onChange={(event) => setPlannerInput((current) => ({ ...current, roleRefs: event.currentTarget.value }))}
+              />
+              <label htmlFor="workflow-agent-profile-refs">Agent profile refs</label>
+              <textarea
+                id="workflow-agent-profile-refs"
+                value={plannerInput.agentProfileRefs}
+                onChange={(event) => setPlannerInput((current) => ({ ...current, agentProfileRefs: event.currentTarget.value }))}
+              />
+              <label htmlFor="workflow-skill-refs">Skill refs</label>
+              <textarea
+                id="workflow-skill-refs"
+                value={plannerInput.skillRefs}
+                onChange={(event) => setPlannerInput((current) => ({ ...current, skillRefs: event.currentTarget.value }))}
+              />
+              <label htmlFor="workflow-mcp-grant-refs">MCP grant refs</label>
+              <textarea
+                id="workflow-mcp-grant-refs"
+                value={plannerInput.mcpGrantRefs}
+                onChange={(event) => setPlannerInput((current) => ({ ...current, mcpGrantRefs: event.currentTarget.value }))}
+              />
+              <label htmlFor="workflow-tool-refs">Tool refs</label>
+              <textarea
+                id="workflow-tool-refs"
+                value={plannerInput.toolRefs}
+                onChange={(event) => setPlannerInput((current) => ({ ...current, toolRefs: event.currentTarget.value }))}
+              />
+              <label htmlFor="workflow-model-hints">Model hints</label>
+              <textarea
+                id="workflow-model-hints"
+                value={plannerInput.modelHints}
+                onChange={(event) => setPlannerInput((current) => ({ ...current, modelHints: event.currentTarget.value }))}
+              />
+              <label htmlFor="workflow-vault-lease-policy-refs">Vault lease policy refs</label>
+              <textarea
+                id="workflow-vault-lease-policy-refs"
+                value={plannerInput.vaultLeasePolicyRefs}
+                onChange={(event) => setPlannerInput((current) => ({ ...current, vaultLeasePolicyRefs: event.currentTarget.value }))}
+              />
+              <label htmlFor="workflow-tool-policy-hints">Tool policy hints</label>
+              <textarea
+                id="workflow-tool-policy-hints"
+                value={plannerInput.toolPolicyHints}
+                onChange={(event) => setPlannerInput((current) => ({ ...current, toolPolicyHints: event.currentTarget.value }))}
+              />
+            </details>
             <button type="button" onClick={planWorkflow} disabled={planning || plannerInput.goalPrompt.trim().length === 0}>
               {planning ? "Planning…" : "Plan workflow"}
             </button>
           </section>
+          <AgentLibraryPanel
+            model={workflowModel}
+            activeCwd={props.activeCwd}
+            selectedTaskId={selectedTaskId}
+            onOpenAlternatives={openAlternatives}
+            alternativesDisabled={!draftId}
+          />
+        </section>
+        <section className="ss-workflow-center">
           <section className="ss-workflow-dag">
             <header>
               <h2>Workflow DAG</h2>
@@ -243,6 +306,7 @@ export function WorkflowWorkbench(props: {
           plannerRationale={stringValue(workflowModel?.plannerRationale) ?? stringValue(workflowModel?.draft?.plannerRationale) ?? null}
           validationIssues={validationIssues}
           repairAttempts={repairAttempts}
+          repairAttemptDetails={Array.isArray(workflowModel?.repairAttemptDetails) ? workflowModel.repairAttemptDetails : []}
           plannerTraceRefs={plannerTrace}
           onRunDraft={runWorkflow}
           onReviseDraft={reviseWorkflow}
@@ -258,7 +322,30 @@ export function WorkflowWorkbench(props: {
   );
 }
 
-function toCanvasModel(model: any | null): WorkflowCanvasModel {
+export async function loadWorkflowWorkbenchModel(
+  api: SouthstarApiClient,
+  params: { draftId?: string; runId?: string },
+): Promise<any> {
+  const workflowModel = await api.getUiWorkflowTab({ draftId: params.draftId, runId: params.runId });
+  if (asRecord(workflowModel?.agentLibrary)) return workflowModel;
+  const domain = stringValue(workflowModel?.agentLibrarySummary?.domain);
+  if (!domain) return workflowModel;
+  try {
+    const agentLibrary = await api.getAgentLibrary({ domain });
+    return { ...workflowModel, agentLibrary };
+  } catch (caught) {
+    return { ...workflowModel, agentLibraryError: (caught as Error).message };
+  }
+}
+
+function selectedTaskIdFromModel(model: any | null | undefined): string | null {
+  return stringValue(model?.canvasModel?.selectedNodeId)
+    ?? stringValue(model?.selectedDefinition?.taskId)
+    ?? stringValue(model?.draft?.taskInspector?.taskId)
+    ?? null;
+}
+
+export function toCanvasModel(model: any | null): WorkflowCanvasModel {
   const canvasModel = asRecord(model?.canvasModel);
   const dag = model?.draft?.dag ?? {};
   const rawNodes = Array.isArray(canvasModel?.nodes)
@@ -285,24 +372,31 @@ function toCanvasModel(model: any | null): WorkflowCanvasModel {
     return {
       id: String(node.id ?? ""),
       label: String(node.label ?? node.taskName ?? node.id ?? "task"),
+      kind: "task",
       status: String(node.status ?? "pending"),
       dependsOn: Array.isArray(node.dependsOn) ? node.dependsOn.map(String) : [],
       roleRef: node.roleRef ?? node.role ?? node.agentDefinitionRef ?? null,
       agentProfileRef: node.agentProfileRef ?? node.profileRef ?? null,
       artifactKind: node.artifactKind ?? node.artifact?.kind ?? null,
       badges,
-      attention: node.attention ?? (node.needsAttention ? "operator review" : null),
+      attention: normalizeAttention(node.attention, node.needsAttention),
     };
   });
 
   const edges = rawEdges.map((edge: any, index: number) => ({
     id: String(edge.id ?? `${edge.from ?? edge.source}-${edge.to ?? edge.target}-${index}`),
-    from: String(edge.from ?? edge.source ?? ""),
-    to: String(edge.to ?? edge.target ?? ""),
-    status: String(edge.status ?? "pending"),
+    source: String(edge.source ?? edge.from ?? ""),
+    target: String(edge.target ?? edge.to ?? ""),
+    status: normalizeEdgeStatus(edge.status),
   }));
 
-  return { nodes, edges };
+  return {
+    graphId: stringValue(canvasModel?.graphId) ?? stringValue(model?.activeDraft?.draftId) ?? stringValue(model?.draft?.draftId) ?? "workflow",
+    mode: canvasModel?.mode === "runtime" ? "runtime" : "draft",
+    selectedNodeId: stringValue(canvasModel?.selectedNodeId) ?? null,
+    nodes,
+    edges,
+  };
 }
 
 function normalizeBadgeTone(tone: unknown): WorkflowTaskBadge["tone"] {
@@ -310,39 +404,51 @@ function normalizeBadgeTone(tone: unknown): WorkflowTaskBadge["tone"] {
   return "neutral";
 }
 
-async function createDraftWithPlannerInput(api: SouthstarApiClient, input: PlannerInputState): Promise<{ draftId: string }> {
-  const payload = {
-    goalPrompt: input.goalPrompt,
-    orchestrationMode: input.orchestrationMode,
-    composerMode: input.composerMode,
-    plannerHints: {
-      domainPack: input.domainPack,
-      cwdHint: input.cwdHint,
-      libraryHints: listFromMultiline(input.libraryHints),
-    },
-  };
-  try {
-    return await api.command("/api/v2/planner/drafts", payload);
-  } catch {
-    return await api.createDraft(buildPlannerPrompt(input));
-  }
+function normalizeAttention(value: unknown, needsAttention: unknown): WorkflowTaskAttention | null {
+  const record = asRecord(value) ?? {};
+  const severity = normalizeAttentionSeverity(record.severity);
+  const reason = stringValue(record.reason);
+  if (severity && reason) return { severity, reason };
+  if (typeof value === "string" && value.length > 0) return { severity: "warning", reason: value };
+  return needsAttention ? { severity: "warning", reason: "operator review" } : null;
 }
 
-function buildPlannerPrompt(input: PlannerInputState): string {
-  const lines = [
-    input.goalPrompt.trim(),
-    `domainPack=${input.domainPack || "software"}`,
-    `cwdHint=${input.cwdHint || "not-provided"}`,
-    `orchestrationMode=${input.orchestrationMode}`,
-    `composerMode=${input.composerMode}`,
-  ];
-  const hints = listFromMultiline(input.libraryHints);
-  if (hints.length > 0) lines.push(`libraryHints=${hints.join(", ")}`);
-  return lines.join("\n");
+function normalizeAttentionSeverity(value: unknown): WorkflowTaskAttention["severity"] | null {
+  if (value === "info" || value === "warning" || value === "error" || value === "blocked") return value;
+  return null;
+}
+
+function normalizeEdgeStatus(value: unknown): WorkflowCanvasModel["edges"][number]["status"] {
+  if (value === "ready" || value === "active" || value === "blocked" || value === "satisfied") return value;
+  return "pending";
+}
+
+async function createDraftWithPlannerInput(api: SouthstarApiClient, input: PlannerInputState): Promise<{ draftId: string }> {
+  return await api.createDraft(buildPlannerDraftRequest(input));
+}
+
+function buildPlannerDraftRequest(input: PlannerInputState): CreatePlannerDraftRequest {
+  return {
+    goalPrompt: input.goalPrompt.trim(),
+    orchestrationMode: input.orchestrationMode,
+    composerMode: input.composerMode,
+    domainPackId: input.domainPackId.trim() || "software",
+    ...(input.cwd.trim().length > 0 ? { cwd: input.cwd.trim() } : {}),
+    libraryHints: {
+      roleRefs: listFromMultiline(input.roleRefs),
+      agentProfileRefs: listFromMultiline(input.agentProfileRefs),
+      skillRefs: listFromMultiline(input.skillRefs),
+      mcpGrantRefs: listFromMultiline(input.mcpGrantRefs),
+      toolRefs: listFromMultiline(input.toolRefs),
+      modelHints: recordFromKeyValueLines(input.modelHints),
+      vaultLeasePolicyRefs: listFromMultiline(input.vaultLeasePolicyRefs),
+      toolPolicyHints: toolPolicyHintsFromLines(input.toolPolicyHints),
+    },
+  };
 }
 
 function buildRevisionPrompt(prompt: string, input: PlannerInputState): string {
-  return `${prompt.trim()}\n\nplanner_context:\n${buildPlannerPrompt(input)}`;
+  return `${prompt.trim()}\n\nplanner_context:\n${JSON.stringify(buildPlannerDraftRequest(input), null, 2)}`;
 }
 
 function listFromMultiline(value: string): string[] {
@@ -350,6 +456,30 @@ function listFromMultiline(value: string): string[] {
     .split("\n")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
+}
+
+function recordFromKeyValueLines(value: string): Record<string, string> {
+  const record: Record<string, string> = {};
+  for (const entry of listFromMultiline(value)) {
+    const match = entry.match(/^([^:=]+)[:=](.+)$/);
+    if (!match) continue;
+    record[match[1]!.trim()] = match[2]!.trim();
+  }
+  return record;
+}
+
+function toolPolicyHintsFromLines(value: string): NonNullable<CreatePlannerDraftRequest["libraryHints"]>["toolPolicyHints"] {
+  const record = recordFromKeyValueLines(value);
+  return {
+    allowedTools: commaList(record.allowedTools),
+    deniedTools: commaList(record.deniedTools),
+    requiresApprovalFor: commaList(record.requiresApprovalFor),
+  };
+}
+
+function commaList(value: string | undefined): string[] {
+  if (!value) return [];
+  return value.split(",").map((entry) => entry.trim()).filter((entry) => entry.length > 0);
 }
 
 function normalizeValidationIssues(value: unknown): ValidationIssue[] {

@@ -10,13 +10,28 @@ export type OperatorCommand = {
   enabled: boolean;
   requiresConfirmation: boolean;
   disabledReason?: string;
+  body?: Record<string, unknown>;
+};
+
+export type OperatorCommandResult = {
+  commandId: string;
+  status: string;
+  accepted?: boolean;
+  message?: string;
+  affectedRunId?: string;
+  affectedTaskId?: string;
+  updatedAt?: string;
 };
 
 export function InterventionPanel(props: {
   runId: string | null;
   targetTaskId?: string | null;
   targetAttentionId?: string | null;
+  interventionMode?: string | null;
+  source?: { resourceType?: string; resourceKey?: string; ref?: string } | null;
+  detail?: Record<string, unknown> | null;
   commands: OperatorCommand[];
+  commandResults?: OperatorCommandResult[];
   onInvokeCommand: (command: OperatorCommand, reason?: string) => Promise<void>;
 }) {
   const [pendingCommandId, setPendingCommandId] = useState<string | null>(null);
@@ -48,7 +63,23 @@ export function InterventionPanel(props: {
         Target run: {props.runId ?? "none"}
         {props.targetTaskId ? ` · task ${props.targetTaskId}` : ""}
         {props.targetAttentionId ? ` · attention ${props.targetAttentionId}` : ""}
+        {props.interventionMode ? ` · mode ${props.interventionMode}` : ""}
       </p>
+      {props.source ? (
+        <p className="ss-empty">
+          Source: {props.source.resourceType ?? "unknown"} {props.source.resourceKey ?? props.source.ref ?? ""}
+        </p>
+      ) : null}
+      {props.detail && Object.keys(props.detail).length > 0 ? (
+        <dl className="ss-timeline">
+          {Object.entries(props.detail).slice(0, 8).map(([key, value]) => (
+            <div key={key}>
+              <dt>{key}</dt>
+              <dd>{formatDetailValue(value)}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
       {commands.length > 0 ? (
         <ul className="ss-timeline">
           {commands.map((command) => (
@@ -73,7 +104,7 @@ export function InterventionPanel(props: {
                 }
                 onClick={() => void invoke(command)}
               >
-                {command.label}
+                {pendingCommandId === command.id ? `Pending ${command.label}` : command.label}
               </button>
               {command.requiresConfirmation ? <span>requiresConfirmation</span> : null}
               {!command.enabled && command.disabledReason ? <p className="ss-empty">{command.disabledReason}</p> : null}
@@ -83,6 +114,24 @@ export function InterventionPanel(props: {
       ) : (
         <p className="ss-empty">No operator commands available.</p>
       )}
+      {props.commandResults && props.commandResults.length > 0 ? (
+        <ul className="ss-timeline">
+          {props.commandResults.slice(0, 5).map((result) => (
+            <li key={result.commandId}>
+              <strong>{result.status}</strong>
+              <span> {result.commandId}</span>
+              {result.message ? <p className="ss-empty">{result.message}</p> : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
     </section>
   );
+}
+
+function formatDetailValue(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
 }

@@ -47,8 +47,8 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
         </div>
       ) : null}
       {attention ? (
-        <p className="ss-flow-node-attention" data-node-field="attention">
-          attention: {attention}
+        <p className={`ss-flow-node-attention ss-flow-node-attention-${attention.severity}`} data-node-field="attention">
+          attention: {attention.severity} · {attention.reason}
         </p>
       ) : null}
       <Handle type="source" position={Position.Bottom} className="ss-flow-handle" />

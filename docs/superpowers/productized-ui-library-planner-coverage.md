@@ -1,19 +1,26 @@
 # Southstar Productized UI + Library-aware Planner Coverage
 
-Source spec: `docs/superpowers/specs/2026-06-16-southstar-productized-ui-library-aware-planner-design.zh.md`
+Source specs:
+- `docs/superpowers/specs/2026-06-16-southstar-productized-ui-library-aware-planner-design.zh.md`
+- `docs/superpowers/specs/2026-06-25-southstar-pi-web-ui-migration-design.md`
+- `docs/superpowers/specs/2026-06-25-southstar-dynamic-workflow-gap-closure-design.md`
 
-| Requirement | Evidence | Implementation |
-| --- | --- | --- |
-| Southstar App Shell with Chat / Workflow / Operations | `tests/web/southstar-productized-app-shell-ui.test.tsx`, `npm run web:build` | `app/page.tsx`, `app/chat/page.tsx`, `app/workflow/page.tsx`, `app/operations/page.tsx`, `components/southstar/app-shell/*`, `components/southstar/chat/*`, `components/southstar/workflow/*`, `components/southstar/operations/*` |
-| Library-aware Planner core | `tests/v2/library-aware-planner.test.ts`, `tests/v2/productized-planner-draft.test.ts` | `src/v2/planner/library-aware-planner.ts`, `src/v2/ui-api/local-api.ts` |
-| Planner result validation | `tests/v2/library-aware-planner-validator.test.ts` | `src/v2/planner/library-aware-validator.ts`, `src/v2/planner/library-aware-types.ts` |
-| Software Engineering Starter Library v1 | `tests/v2/software-engineering-starter-library.test.ts` | `src/v2/design-library/software-engineering-starter.ts` |
-| Coding reviewer / spec alignment / browser QA | planner and starter library tests | starter library seed, planner task generation |
-| Release operator consolidation | starter library tests | `software.release-operator` profiles and skills |
-| Task-level parallelism | planner tests and quantitative gates | planner DAG tasks and `dependsOn` edges |
-| Context Economy | `tests/v2/context-economy.test.ts`, quantitative gates | `src/v2/context/economy.ts`, `src/v2/context/builder.ts`, `src/v2/ui-api/local-api.ts` |
-| Fixed runner image + task-delivered skills/MCP | planner validator and quantitative gates | `src/v2/planner/library-aware-validator.ts`, `src/v2/ui-api/local-api.ts`, `src/v2/quality/productized-ui-library-planner-gates.ts` |
-| Floating Operator | read model and web tests | `src/v2/ui-api/page-models/operator-attention.ts`, `components/southstar/operator/OperatorDock.tsx`, `components/southstar/operator/OperatorSheet.tsx` |
-| Library alternatives side sheet | read model and web tests | `src/v2/ui-api/page-models/library-alternatives.ts`, `components/southstar/workflow/LibraryAlternativesSheet.tsx` |
-| Non-calc E2E scenarios | `tests/e2e-real/index.test.ts` contract coverage; `npm run test:e2e:real` in live env | `tests/e2e-real/scenarios/todo-web-feature.ts`, `tests/e2e-real/scenarios/markdown-table-bugfix.ts`, `tests/e2e-real/scenarios/docs-cli-usage.ts`, `tests/e2e-real/scenarios/refactor-safety-net.ts` |
-| Quantitative gates | `tests/v2/productized-ui-library-planner-gates.test.ts` | `src/v2/quality/productized-ui-library-planner-gates.ts` |
+Status date: 2026-06-26
+Overall status: in progress (Task 7 real browser E2E is still open)
+
+| Requirement | Status | Evidence | Implementation |
+| --- | --- | --- | --- |
+| Southstar app shell migrated to `Chat \| Workflow \| Operator` using pi-web style | done | `npm test -- tests/web/southstar-pi-web-shell-ui.test.tsx`; `npm test -- tests/web/southstar-productized-app-shell-ui.test.tsx` | `app/page.tsx`, `app/chat/page.tsx`, `app/workflow/page.tsx`, `app/operations/page.tsx`, `components/southstar/app/SouthstarPiWebShell.tsx`, `components/southstar/workspace/WorkspaceTabs.tsx` |
+| Workflow planner input contract (`goalPrompt`, `cwd`, `domainPackId`, orchestration/composer, structured `libraryHints`) | done | `npm test -- tests/web/southstar-workflow-canvas-ui.test.tsx`; `tests/v2/postgres-run-api.test.ts` | `components/southstar/workflow/WorkflowWorkbench.tsx`, `lib/southstar/api-client.ts`, `src/v2/server/routes.ts`, `src/v2/ui-api/postgres-run-api.ts` |
+| Agent Library panel depth (roles/profiles/skills/MCP/tools/contracts/evaluators/policy/context) | done | `npm test -- tests/web/southstar-workflow-canvas-ui.test.tsx`; `tests/v2/agent-library-read-model.test.ts`; `tests/v2/agent-library-static-read-model.test.ts` | `components/southstar/workflow/AgentLibraryPanel.tsx`, `components/southstar/workflow/LibraryAlternativesSheet.tsx`, `src/v2/read-models/agent-library.ts`, `src/v2/server/routes.ts` |
+| Definition Inspector depth + revise prompt flow | done | `npm test -- tests/web/southstar-workflow-canvas-ui.test.tsx`; `tests/v2/workflow-ui-read-model.test.ts` | `components/southstar/workflow/DefinitionInspector.tsx`, `components/southstar/workflow/WorkflowWorkbench.tsx`, `src/v2/read-models/workflow-ui.ts`, `src/v2/server/routes.ts` |
+| Shared DAG canvas contract and runtime overlays (`@xyflow/react` + `elkjs`) | done | `npm test -- tests/web/southstar-workflow-canvas-ui.test.tsx`; `npm test -- tests/web/southstar-operator-ui.test.tsx`; `npx tsc --noEmit --pretty false` | `components/southstar/workflow-canvas/SouthstarWorkflowCanvas.tsx`, `components/southstar/workflow-canvas/WorkflowTaskNode.tsx`, `components/southstar/workflow-canvas/WorkflowDependencyEdge.tsx`, `components/southstar/workflow-canvas/layout.ts`, `components/southstar/workflow-canvas/colors.ts`, `components/southstar/workflow-canvas/types.ts` |
+| Operator run selection, attention queue, intervention modes, command result handling, SSE reconnect cursor semantics | done | `npm test -- tests/web/southstar-operator-ui.test.tsx`; `tests/v2/operator-overview-read-model.test.ts` | `components/southstar/operator/OperatorBoard.tsx`, `components/southstar/operator/AttentionQueue.tsx`, `components/southstar/operator/InterventionPanel.tsx`, `components/southstar/operator/RunEventStreamPanel.tsx`, `src/v2/read-models/operator-overview.ts`, `src/v2/server/ui-routes.ts` |
+| Chat tab native pi-web parity (freeform chat + branch/minimap/input controls, runtime transcript separated) | done | `npm test -- tests/web/southstar-pi-web-shell-ui.test.tsx`; `tests/v2/chat-capabilities-read-model.test.ts`; `tests/v2/chat-session-routes.test.ts` | `components/southstar/chat/SouthstarNativeChatWorkspace.tsx`, `components/southstar/chat/SouthstarChatInput.tsx`, `components/southstar/chat/SouthstarBranchNavigator.tsx`, `components/southstar/chat/SouthstarChatMinimap.tsx`, `src/v2/read-models/chat-capabilities.ts`, `src/v2/read-models/chat-session.ts`, `src/v2/server/chat-routes.ts` |
+| UI route/read-model completeness for workflow/operator compatibility aliases | done | `tests/v2/workflow-ui-read-model.test.ts`; `tests/v2/operator-overview-read-model.test.ts` | `src/v2/server/ui-routes.ts`, `src/v2/read-models/workflow-ui.ts`, `src/v2/read-models/operator-overview.ts` |
+| Real browser UI E2E for Chat/Workflow/Operator and interactive DAG usability | pending | `tests/e2e-browser/07-real-ui-postgres-browser.test.ts` currently fails at planner draft response wait (`waitForResponse` timeout in `verifyWorkflowDraftAndRun`) | `tests/e2e-browser/browser-e2e-static.test.ts`, `tests/e2e-browser/07-real-ui-postgres-browser.test.ts`, `package.json` (`test:e2e:browser:07`) |
+
+## Notes
+
+- This document is synchronized to `Chat | Workflow | Operator` terminology and current file ownership.
+- Full completion must not be claimed until Task 7 real browser E2E passes with fresh evidence.

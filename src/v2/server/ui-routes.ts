@@ -2,6 +2,8 @@ import { buildPostgresCoreReadModel } from "../read-models/postgres-core.ts";
 import { getManagedAgentRunReadModelPg } from "../read-models/managed-agents.ts";
 import { buildWorkflowUiReadModelPg } from "../read-models/workflow-ui.ts";
 import { buildOperatorOverviewReadModelPg } from "../read-models/operator-overview.ts";
+import { buildChatCapabilitiesReadModelPg } from "../read-models/chat-capabilities.ts";
+import { buildChatSessionReadModelPg } from "../read-models/chat-session.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -18,6 +20,17 @@ export async function handleUiRoute(context: RuntimeServerContext, request: Requ
       runId,
       draftId,
       taskId: url.searchParams.get("taskId") ?? undefined,
+    }));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/chat-capabilities") {
+    return json("ui-chat-capabilities", await buildChatCapabilitiesReadModelPg(context.db, {
+      domain: url.searchParams.get("domain") ?? undefined,
+    }));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/chat-session") {
+    return json("ui-chat-session", await buildChatSessionReadModelPg(context.db, {
+      runId: url.searchParams.get("runId") ?? undefined,
+      sessionId: url.searchParams.get("sessionId") ?? undefined,
     }));
   }
   if (

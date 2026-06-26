@@ -1981,6 +1981,409 @@ select {
   padding: 14px;
 }
 
+.ss-chat-tab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 38%);
+  gap: 12px;
+  overflow: hidden;
+}
+
+.ss-native-chat-workspace,
+.ss-runtime-transcript-panel {
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+
+.ss-native-chat-workspace {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+}
+
+.ss-native-chat-topbar {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.ss-native-chat-topbar > div:last-child {
+  min-width: 0;
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  font-size: 12px;
+}
+
+.ss-native-chat-topbar span,
+.ss-native-chat-topbar small {
+  color: var(--text-muted);
+}
+
+.ss-native-chat-body {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.ss-native-chat-scroll {
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.ss-native-message-stack {
+  max-width: 820px;
+  margin: 0 auto;
+  padding: 14px 16px 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.ss-native-message {
+  max-width: 82%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 10px;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.ss-native-message.ss-user {
+  justify-self: end;
+  background: var(--bg-selected);
+  border-color: color-mix(in srgb, var(--accent) 35%, var(--border));
+}
+
+.ss-native-message.ss-system {
+  justify-self: center;
+  max-width: 92%;
+  color: var(--text-muted);
+  background: var(--bg-hover);
+}
+
+.ss-native-message header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: capitalize;
+}
+
+.ss-native-message p,
+.ss-native-empty {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.ss-native-empty {
+  min-height: 220px;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.ss-native-branch {
+  position: relative;
+  min-width: 0;
+}
+
+.ss-native-branch > button,
+.ss-native-branch-row {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ss-native-branch > button {
+  max-width: 280px;
+  padding: 5px 7px;
+  border-radius: 6px;
+}
+
+.ss-native-branch > button:hover,
+.ss-native-branch-row:hover,
+.ss-native-branch-row.ss-active {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.ss-native-branch > button strong,
+.ss-native-branch-row span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ss-native-branch-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  width: min(360px, 70vw);
+  max-height: 280px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 6px;
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+}
+
+.ss-native-branch-row {
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 6px;
+  text-align: left;
+}
+
+.ss-branch-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
+.ss-branch-dot.ss-on-path {
+  background: var(--accent);
+}
+
+.ss-native-minimap {
+  position: relative;
+  width: 34px;
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--bg);
+  user-select: none;
+}
+
+.ss-native-minimap-line,
+.ss-native-minimap-viewport,
+.ss-native-minimap-node {
+  position: absolute;
+}
+
+.ss-native-minimap-line {
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 1px;
+  background: var(--border);
+}
+
+.ss-native-minimap-viewport {
+  left: 0;
+  right: 0;
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 24%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--text-muted) 24%, transparent);
+  background: color-mix(in srgb, var(--bg-hover) 80%, transparent);
+}
+
+.ss-native-minimap-node {
+  left: 50%;
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border: 1px solid var(--text-muted);
+  border-radius: 999px;
+  background: var(--bg-panel);
+  transform: translate(-50%, -50%);
+  cursor: pointer;
+}
+
+.ss-native-minimap-node.ss-user {
+  border-radius: 2px;
+  border-color: var(--accent);
+}
+
+.ss-native-chat-input {
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  padding: 10px 14px;
+}
+
+.ss-native-input-box {
+  position: relative;
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 8px;
+}
+
+.ss-native-input-box textarea {
+  flex: 1;
+  min-height: 28px;
+  max-height: 180px;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+}
+
+.ss-native-input-actions,
+.ss-native-input-toolbar,
+.ss-native-attachments {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.ss-native-input-toolbar {
+  margin-top: 8px;
+}
+
+.ss-native-input-actions button,
+.ss-native-input-toolbar button,
+.ss-native-input-toolbar select,
+.ss-native-slash-suggestions button {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.ss-native-input-actions button:not(:disabled),
+.ss-native-input-toolbar button:not(:disabled),
+.ss-native-input-toolbar select:not(:disabled),
+.ss-native-slash-suggestions button {
+  cursor: pointer;
+}
+
+.ss-native-input-actions button:not(:disabled):hover,
+.ss-native-input-toolbar button:not(:disabled):hover,
+.ss-native-input-toolbar select:not(:disabled):hover,
+.ss-native-slash-suggestions button:hover,
+.ss-native-slash-suggestions button.ss-active {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.ss-native-slash-suggestions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 40;
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+}
+
+.ss-native-slash-suggestions button {
+  width: 100%;
+  display: grid;
+  justify-items: start;
+  gap: 3px;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+}
+
+.ss-native-attachments {
+  margin-bottom: 8px;
+}
+
+.ss-native-attachments span {
+  position: relative;
+}
+
+.ss-native-attachments img {
+  width: 54px;
+  height: 54px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ss-native-attachments button {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 0;
+}
+
+.ss-native-input-error {
+  margin: 0 0 8px;
+  color: #b91c1c;
+  font-size: 12px;
+}
+
+.ss-runtime-transcript-panel {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.ss-runtime-transcript-panel > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+
+.ss-runtime-transcript-panel > header h2 {
+  margin: 0;
+  font-size: 13px;
+}
+
+.ss-runtime-transcript-panel > header span {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.ss-runtime-transcript-panel .ss-chat-workspace {
+  min-height: 0;
+  overflow: auto;
+  border: 0;
+}
+
+@media (max-width: 980px) {
+  .ss-chat-tab {
+    grid-template-columns: 1fr;
+  }
+}
+
 .ss-chat-empty {
   max-width: 760px;
   display: grid;
@@ -2367,6 +2770,11 @@ select {
   grid-template-columns: 260px minmax(0, 1fr) 300px;
   gap: 10px;
   align-items: start;
+}
+
+.ss-workflow-planner-panel {
+  display: grid;
+  gap: 10px;
 }
 
 .ss-operator-board {

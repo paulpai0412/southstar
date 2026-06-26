@@ -15,7 +15,7 @@ import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read
 import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from "../read-models/postgres-run-inspection.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration, revisePostgresPlannerDraft } from "../ui-api/postgres-run-api.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration, revisePostgresPlannerDraft, type PlannerDraftLibraryHints } from "../ui-api/postgres-run-api.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
@@ -27,6 +27,7 @@ import { handleEvolutionRoute } from "./evolution-routes.ts";
 import { handleExecutionRoute } from "./execution-routes.ts";
 import { handleRunLifecycleRoute } from "./run-lifecycle-routes.ts";
 import { handleMemoryRoute } from "./memory-routes.ts";
+import { handleChatRoute } from "./chat-routes.ts";
 import { handleSessionRoute } from "./session-routes.ts";
 import { handleTaskCommandRoute } from "./task-command-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
@@ -55,6 +56,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (sessionResponse) return sessionResponse;
     const memoryResponse = await handleMemoryRoute(context, request, url);
     if (memoryResponse) return memoryResponse;
+    const chatResponse = await handleChatRoute(context, request, url);
+    if (chatResponse) return chatResponse;
     const executionResponse = await handleExecutionRoute(context, request, url);
     if (executionResponse) return executionResponse;
     const taskCommandResponse = await handleTaskCommandRoute(context, request, url);
@@ -180,14 +183,19 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
-      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown }>(request);
-      if (!body.goalPrompt) throw new Error("goalPrompt is required");
+      const body = await readJsonBody<{
+        goalPrompt?: unknown;
+        orchestrationMode?: unknown;
+        composerMode?: unknown;
+        domainPackId?: unknown;
+        cwd?: unknown;
+        libraryHints?: unknown;
+      }>(request);
+      const plannerRequest = parsePlannerDraftRequest(body);
       return json(
         "planner-draft",
         await createPostgresPlannerDraft(context.db, {
-          goalPrompt: body.goalPrompt,
-          orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-          composerMode: optionalComposerMode(body.composerMode),
+          ...plannerRequest,
           composer: resolvePlannerWorkflowComposer(context),
         }),
       );
@@ -639,6 +647,64 @@ function validateCallbackEvent(event: unknown): PostgresTaskRunCallbackResult["e
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.length === 0) throw new Error(`${field} is required`);
   return value;
+}
+
+function parsePlannerDraftRequest(body: {
+  goalPrompt?: unknown;
+  orchestrationMode?: unknown;
+  composerMode?: unknown;
+  domainPackId?: unknown;
+  cwd?: unknown;
+  libraryHints?: unknown;
+}): {
+  goalPrompt: string;
+  orchestrationMode?: "deterministic" | "llm-constrained";
+  composerMode?: WorkflowComposerMode;
+  domainPackId?: string;
+  cwd?: string;
+  libraryHints?: PlannerDraftLibraryHints;
+} {
+  return {
+    goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
+    orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
+    composerMode: optionalComposerMode(body.composerMode),
+    domainPackId: optionalString(body.domainPackId),
+    cwd: optionalString(body.cwd),
+    libraryHints: optionalPlannerDraftLibraryHints(body.libraryHints),
+  };
+}
+
+function optionalPlannerDraftLibraryHints(value: unknown): PlannerDraftLibraryHints | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("libraryHints must be an object");
+  return {
+    roleRefs: parseOptionalStringArray(value.roleRefs, "libraryHints.roleRefs"),
+    agentProfileRefs: parseOptionalStringArray(value.agentProfileRefs, "libraryHints.agentProfileRefs"),
+    skillRefs: parseOptionalStringArray(value.skillRefs, "libraryHints.skillRefs"),
+    mcpGrantRefs: parseOptionalStringArray(value.mcpGrantRefs, "libraryHints.mcpGrantRefs"),
+    toolRefs: parseOptionalStringArray(value.toolRefs, "libraryHints.toolRefs"),
+    modelHints: parseOptionalStringRecord(value.modelHints, "libraryHints.modelHints"),
+    vaultLeasePolicyRefs: parseOptionalStringArray(value.vaultLeasePolicyRefs, "libraryHints.vaultLeasePolicyRefs"),
+    toolPolicyHints: optionalPlannerDraftToolPolicyHints(value.toolPolicyHints),
+  };
+}
+
+function optionalPlannerDraftToolPolicyHints(value: unknown): PlannerDraftLibraryHints["toolPolicyHints"] | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("libraryHints.toolPolicyHints must be an object");
+  return {
+    allowedTools: parseOptionalStringArray(value.allowedTools, "libraryHints.toolPolicyHints.allowedTools"),
+    deniedTools: parseOptionalStringArray(value.deniedTools, "libraryHints.toolPolicyHints.deniedTools"),
+    requiresApprovalFor: parseOptionalStringArray(value.requiresApprovalFor, "libraryHints.toolPolicyHints.requiresApprovalFor"),
+  };
+}
+
+function parseOptionalStringRecord(value: unknown, field: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value) || Object.values(value).some((item) => typeof item !== "string")) {
+    throw new Error(`${field} must be an object with string values`);
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item as string]));
 }
 
 function optionalString(value: unknown): string | undefined {

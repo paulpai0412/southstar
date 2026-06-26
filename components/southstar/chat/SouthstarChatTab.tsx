@@ -1,5 +1,6 @@
 import type { SouthstarApiClient } from "@/lib/southstar/api-client";
 import { ChatTranscriptPanel } from "./ChatTranscriptPanel";
+import { SouthstarNativeChatWorkspace } from "./SouthstarNativeChatWorkspace";
 
 export function SouthstarChatTab(props: {
   api?: SouthstarApiClient;
@@ -16,12 +17,24 @@ export function SouthstarChatTab(props: {
   }
   return (
     <section className="ss-chat-tab">
-      <ChatTranscriptPanel
+      <SouthstarNativeChatWorkspace
         api={props.api}
-        serverBaseUrl={props.serverBaseUrl}
         selectedRunId={props.selectedRunId ?? null}
         selectedSessionId={props.selectedSessionId ?? null}
+        onRuntimeStatusChange={() => {}}
       />
+      <aside className="ss-runtime-transcript-panel" aria-label="Runtime transcript">
+        <header>
+          <h2>Runtime transcript</h2>
+          <span>Southstar runtime stream</span>
+        </header>
+        <ChatTranscriptPanel
+          api={props.api}
+          serverBaseUrl={props.serverBaseUrl}
+          selectedRunId={props.selectedRunId ?? null}
+          selectedSessionId={props.selectedSessionId ?? null}
+        />
+      </aside>
     </section>
   );
 }

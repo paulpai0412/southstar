@@ -56,10 +56,33 @@ export type PostgresRunResult = {
   taskIds: string[];
 };
 
-export type CreatePostgresPlannerDraftInput = {
+export type PlannerDraftToolPolicyHints = {
+  allowedTools?: string[];
+  deniedTools?: string[];
+  requiresApprovalFor?: string[];
+};
+
+export type PlannerDraftLibraryHints = {
+  roleRefs?: string[];
+  agentProfileRefs?: string[];
+  skillRefs?: string[];
+  mcpGrantRefs?: string[];
+  toolRefs?: string[];
+  modelHints?: Record<string, string>;
+  vaultLeasePolicyRefs?: string[];
+  toolPolicyHints?: PlannerDraftToolPolicyHints;
+};
+
+export type PlannerDraftRequestContract = {
   goalPrompt: string;
   orchestrationMode?: "deterministic" | "llm-constrained";
   composerMode?: WorkflowComposerMode;
+  domainPackId?: string;
+  cwd?: string;
+  libraryHints?: PlannerDraftLibraryHints;
+};
+
+export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
   composer?: WorkflowComposer;
 };
 
@@ -72,10 +95,12 @@ export type RevisePostgresPlannerDraftInput = {
 };
 
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
-  if (input.orchestrationMode === "llm-constrained") {
-    return createLibraryConstrainedPlannerDraft(db, input);
+  const plannerRequest = plannerRequestSnapshot(input);
+  const draftInput: CreatePostgresPlannerDraftInput = { ...plannerRequest, composer: input.composer };
+  if (plannerRequest.orchestrationMode === "llm-constrained") {
+    return createLibraryConstrainedPlannerDraft(db, draftInput);
   }
-  return createDeterministicPlannerDraft(db, input);
+  return createDeterministicPlannerDraft(db, draftInput);
 }
 
 export async function revisePostgresPlannerDraft(
@@ -92,17 +117,123 @@ export async function revisePostgresPlannerDraft(
   if (!baseGoalPrompt) throw new Error(`planner draft goalPrompt is missing: ${input.draftId}`);
 
   const revisedGoalPrompt = `${baseGoalPrompt}\n\nRevision request:\n${input.prompt}`;
+  const priorPlannerRequest = plannerRequestFromStored(summary.plannerRequest) ?? plannerRequestFromStored(payload.plannerRequest);
   return createPostgresPlannerDraft(db, {
+    ...preservedPlannerRequestFields(priorPlannerRequest),
     goalPrompt: revisedGoalPrompt,
-    orchestrationMode: input.orchestrationMode ?? inferDraftOrchestrationMode(summary),
-    composerMode: input.composerMode ?? inferDraftComposerMode(payload),
+    orchestrationMode: input.orchestrationMode ?? priorPlannerRequest?.orchestrationMode ?? inferDraftOrchestrationMode(summary),
+    composerMode: input.composerMode ?? priorPlannerRequest?.composerMode ?? inferDraftComposerMode(payload),
     composer: input.composer,
   });
 }
 
+function preservedPlannerRequestFields(input: PlannerDraftRequestContract | undefined): Partial<PlannerDraftRequestContract> {
+  if (!input) return {};
+  return {
+    ...(input.domainPackId !== undefined ? { domainPackId: input.domainPackId } : {}),
+    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    ...(input.libraryHints !== undefined ? { libraryHints: plannerLibraryHintsSnapshot(input.libraryHints) } : {}),
+  };
+}
+
+function plannerRequestSnapshot(input: PlannerDraftRequestContract): PlannerDraftRequestContract {
+  const snapshot: PlannerDraftRequestContract = {
+    goalPrompt: input.goalPrompt,
+    ...(input.orchestrationMode !== undefined ? { orchestrationMode: input.orchestrationMode } : {}),
+    ...(input.composerMode !== undefined ? { composerMode: input.composerMode } : {}),
+    ...(input.domainPackId !== undefined ? { domainPackId: input.domainPackId } : {}),
+    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+  };
+  if (input.libraryHints) {
+    snapshot.libraryHints = plannerLibraryHintsSnapshot(input.libraryHints);
+  }
+  return snapshot;
+}
+
+function plannerLibraryHintsSnapshot(input: PlannerDraftLibraryHints): PlannerDraftLibraryHints {
+  return {
+    ...(input.roleRefs !== undefined ? { roleRefs: [...input.roleRefs] } : {}),
+    ...(input.agentProfileRefs !== undefined ? { agentProfileRefs: [...input.agentProfileRefs] } : {}),
+    ...(input.skillRefs !== undefined ? { skillRefs: [...input.skillRefs] } : {}),
+    ...(input.mcpGrantRefs !== undefined ? { mcpGrantRefs: [...input.mcpGrantRefs] } : {}),
+    ...(input.toolRefs !== undefined ? { toolRefs: [...input.toolRefs] } : {}),
+    ...(input.modelHints !== undefined ? { modelHints: { ...input.modelHints } } : {}),
+    ...(input.vaultLeasePolicyRefs !== undefined ? { vaultLeasePolicyRefs: [...input.vaultLeasePolicyRefs] } : {}),
+    ...(input.toolPolicyHints !== undefined ? { toolPolicyHints: plannerToolPolicyHintsSnapshot(input.toolPolicyHints) } : {}),
+  };
+}
+
+function plannerToolPolicyHintsSnapshot(input: PlannerDraftToolPolicyHints): PlannerDraftToolPolicyHints {
+  return {
+    ...(input.allowedTools !== undefined ? { allowedTools: [...input.allowedTools] } : {}),
+    ...(input.deniedTools !== undefined ? { deniedTools: [...input.deniedTools] } : {}),
+    ...(input.requiresApprovalFor !== undefined ? { requiresApprovalFor: [...input.requiresApprovalFor] } : {}),
+  };
+}
+
+function plannerRequestFromStored(value: unknown): PlannerDraftRequestContract | undefined {
+  const record = asRecord(value);
+  const goalPrompt = stringValue(record.goalPrompt);
+  if (!goalPrompt) return undefined;
+  return plannerRequestSnapshot({
+    goalPrompt,
+    orchestrationMode: plannerRequestOrchestrationMode(record.orchestrationMode),
+    composerMode: plannerRequestComposerMode(record.composerMode),
+    domainPackId: stringValue(record.domainPackId),
+    cwd: stringValue(record.cwd),
+    libraryHints: plannerLibraryHintsFromStored(record.libraryHints),
+  });
+}
+
+function plannerLibraryHintsFromStored(value: unknown): PlannerDraftLibraryHints | undefined {
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return undefined;
+  return plannerLibraryHintsSnapshot({
+    roleRefs: stringArrayValue(record.roleRefs),
+    agentProfileRefs: stringArrayValue(record.agentProfileRefs),
+    skillRefs: stringArrayValue(record.skillRefs),
+    mcpGrantRefs: stringArrayValue(record.mcpGrantRefs),
+    toolRefs: stringArrayValue(record.toolRefs),
+    modelHints: stringRecordValue(record.modelHints),
+    vaultLeasePolicyRefs: stringArrayValue(record.vaultLeasePolicyRefs),
+    toolPolicyHints: plannerToolPolicyHintsFromStored(record.toolPolicyHints),
+  });
+}
+
+function plannerToolPolicyHintsFromStored(value: unknown): PlannerDraftToolPolicyHints | undefined {
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return undefined;
+  return plannerToolPolicyHintsSnapshot({
+    allowedTools: stringArrayValue(record.allowedTools),
+    deniedTools: stringArrayValue(record.deniedTools),
+    requiresApprovalFor: stringArrayValue(record.requiresApprovalFor),
+  });
+}
+
+function plannerRequestOrchestrationMode(value: unknown): PlannerDraftRequestContract["orchestrationMode"] {
+  return value === "deterministic" || value === "llm-constrained" ? value : undefined;
+}
+
+function plannerRequestComposerMode(value: unknown): WorkflowComposerMode | undefined {
+  return value === "fixture" || value === "llm" || value === "llm-with-fixture-fallback" ? value : undefined;
+}
+
+function stringArrayValue(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const strings = value.filter((entry): entry is string => typeof entry === "string");
+  return strings.length > 0 ? strings : [];
+}
+
+function stringRecordValue(value: unknown): Record<string, string> | undefined {
+  const record = asRecord(value);
+  if (Object.keys(record).length === 0) return undefined;
+  const strings = Object.entries(record).filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  return Object.fromEntries(strings);
+}
+
 async function createDeterministicPlannerDraft(
   db: SouthstarDb,
-  input: { goalPrompt: string },
+  input: CreatePostgresPlannerDraftInput,
 ): Promise<PostgresPlannerDraftResult> {
   const draftRunId = `draft-software-${hash(input.goalPrompt).slice(0, 12)}`;
   const plan = generateConstrainedWorkflowPlan({
@@ -112,10 +243,11 @@ async function createDeterministicPlannerDraft(
     intentId: inferIntent(input.goalPrompt),
   });
   const workflow = materializeGenerationPlan({ plan, domainPack: softwareDomainPack, goalPrompt: input.goalPrompt });
-  const bundle: PlanBundle & { generationPlan: typeof plan } = {
+  const bundle: PlanBundle & { generationPlan: typeof plan; plannerRequest: PlannerDraftRequestContract } = {
     workflow,
     plannerTrace: { model: "southstar-postgres-constrained-planner", promptHash: hash(input.goalPrompt), generatedAt: new Date().toISOString() },
     generationPlan: plan,
+    plannerRequest: plannerRequestSnapshot(input),
   };
   const validationIssues: PlannerDraftValidationIssue[] = [];
   const taskSummaries = summarizeWorkflowTasks(workflow);
@@ -136,6 +268,7 @@ async function createDeterministicPlannerDraft(
       status,
       validationIssues,
       taskSummaries,
+      plannerRequest: plannerRequestSnapshot(input),
     },
   });
   return {
@@ -150,7 +283,7 @@ async function createDeterministicPlannerDraft(
 
 async function createLibraryConstrainedPlannerDraft(
   db: SouthstarDb,
-  input: { goalPrompt: string; composerMode?: WorkflowComposerMode; composer?: WorkflowComposer },
+  input: CreatePostgresPlannerDraftInput,
 ): Promise<PostgresPlannerDraftResult> {
   const draftRunId = `draft-library-${hash(input.goalPrompt).slice(0, 12)}`;
   await seedSoftwareLibraryGraph(db);
@@ -177,6 +310,7 @@ async function createLibraryConstrainedPlannerDraft(
         requirementSpec,
         candidatePacket,
         unavailableRequirements: candidatePacket.unavailableRequirements,
+        plannerRequest: plannerRequestSnapshot(input),
       },
       summary: {
         goalPrompt: input.goalPrompt,
@@ -185,6 +319,7 @@ async function createLibraryConstrainedPlannerDraft(
         status,
         validationIssues,
         taskSummaries,
+        plannerRequest: plannerRequestSnapshot(input),
       },
     });
     return {
@@ -225,6 +360,7 @@ async function createLibraryConstrainedPlannerDraft(
         candidatePacket,
         repairAttempts: repairResult.attempts,
         validationIssues,
+        plannerRequest: plannerRequestSnapshot(input),
       },
       summary: {
         goalPrompt: input.goalPrompt,
@@ -233,6 +369,7 @@ async function createLibraryConstrainedPlannerDraft(
         status,
         validationIssues,
         taskSummaries,
+        plannerRequest: plannerRequestSnapshot(input),
       },
     });
     return {
@@ -257,6 +394,7 @@ async function createLibraryConstrainedPlannerDraft(
   const bundle: PlanBundle & {
     orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
     repairAttempts: typeof repairResult.attempts;
+    plannerRequest: PlannerDraftRequestContract;
   } = {
     workflow: compiled.workflow,
     plannerTrace: {
@@ -274,6 +412,7 @@ async function createLibraryConstrainedPlannerDraft(
     },
     orchestrationSnapshot: compiled.orchestrationSnapshot,
     repairAttempts: repairResult.attempts,
+    plannerRequest: plannerRequestSnapshot(input),
   };
   const validationIssues = toPlannerDraftValidationIssues(compiled.orchestrationSnapshot.validation.issues);
   const taskSummaries = summarizeWorkflowTasks(compiled.workflow);
@@ -294,6 +433,7 @@ async function createLibraryConstrainedPlannerDraft(
       status,
       validationIssues,
       taskSummaries,
+      plannerRequest: plannerRequestSnapshot(input),
     },
   });
   return {

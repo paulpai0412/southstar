@@ -8,7 +8,7 @@ import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
 import { DeterministicFixtureComposer, ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration } from "../../src/v2/ui-api/postgres-run-api.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration, revisePostgresPlannerDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 
 test("Postgres run API creates draft, run, tasks, history, and Knowledge Card context packets", async () => {
@@ -369,6 +369,166 @@ test("Postgres server routes create planner drafts and runs through new API", as
     } finally {
       await server.close();
     }
+  });
+});
+
+test("Postgres server planner draft route accepts and persists structured request hints", async () => {
+  await withDb(async (db) => {
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner client not used by structured request contract test"); } },
+      workflowComposer: new DeterministicFixtureComposer(),
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by planner route"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const request = {
+        goalPrompt: "implement calc sum",
+        orchestrationMode: "deterministic",
+        composerMode: "fixture",
+        domainPackId: "software",
+        cwd: "/workspace/southstar",
+        libraryHints: {
+          roleRefs: ["agent.software-maker"],
+          agentProfileRefs: ["profile.software-maker-pi"],
+          skillRefs: ["skill.software-implementation"],
+          mcpGrantRefs: ["mcp.filesystem-workspace"],
+          toolRefs: ["tool.workspace-read", "tool.shell-command"],
+          modelHints: { maker: "gpt-5" },
+          vaultLeasePolicyRefs: ["vault.github-write-token"],
+          toolPolicyHints: {
+            allowedTools: ["read", "search", "shell"],
+            deniedTools: ["write"],
+            requiresApprovalFor: ["network"],
+          },
+        },
+      };
+      const draft = await api<{
+        draftId: string;
+        goalPrompt: string;
+        workflowId: string;
+        status: string;
+      }>(server.url, "/api/v2/planner/drafts", {
+        method: "POST",
+        body: JSON.stringify(request),
+      });
+      assert.equal(draft.status, "validated");
+      assert.equal(draft.goalPrompt, request.goalPrompt);
+
+      const row = await db.one<{
+        summary_json: { plannerRequest?: unknown };
+        payload_json: { plannerRequest?: unknown };
+      }>(
+        "select summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+        [draft.draftId],
+      );
+      assert.deepEqual(row.summary_json.plannerRequest, request);
+      assert.deepEqual(row.payload_json.plannerRequest, request);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("Postgres planner draft snapshots structured request before async orchestration work", async () => {
+  await withDb(async (db) => {
+    const request = {
+      goalPrompt: "implement calc sum with snapshot boundary",
+      orchestrationMode: "llm-constrained" as const,
+      composerMode: "fixture" as const,
+      domainPackId: "software",
+      cwd: "/workspace/original",
+      libraryHints: {
+        roleRefs: ["agent.software-maker"],
+        agentProfileRefs: ["profile.software-maker-pi"],
+        skillRefs: ["skill.software-implementation"],
+        mcpGrantRefs: ["mcp.filesystem-workspace"],
+        toolRefs: ["tool.workspace-read"],
+        modelHints: { maker: "gpt-5" },
+        vaultLeasePolicyRefs: ["vault.github-write-token"],
+        toolPolicyHints: {
+          allowedTools: ["read", "search"],
+          deniedTools: ["write"],
+          requiresApprovalFor: ["network"],
+        },
+      },
+    };
+    const expectedPlannerRequest = JSON.parse(JSON.stringify(request));
+    const draftPromise = createPostgresPlannerDraft(db, {
+      ...request,
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    request.cwd = "/workspace/mutated";
+    request.libraryHints.roleRefs.push("agent.mutated");
+    request.libraryHints.agentProfileRefs.push("profile.mutated");
+    request.libraryHints.modelHints.maker = "mutated-model";
+    request.libraryHints.toolPolicyHints.allowedTools.push("write");
+
+    const draft = await draftPromise;
+    const row = await db.one<{
+      summary_json: { plannerRequest?: unknown };
+      payload_json: { plannerRequest?: unknown };
+    }>(
+      "select summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    assert.deepEqual(row.summary_json.plannerRequest, expectedPlannerRequest);
+    assert.deepEqual(row.payload_json.plannerRequest, expectedPlannerRequest);
+  });
+});
+
+test("Postgres planner draft revision preserves structured request hints with explicit mode overrides", async () => {
+  await withDb(async (db) => {
+    const baseRequest = {
+      goalPrompt: "implement calc sum with structured revision context",
+      orchestrationMode: "llm-constrained" as const,
+      composerMode: "fixture" as const,
+      domainPackId: "software",
+      cwd: "/workspace/southstar",
+      libraryHints: {
+        roleRefs: ["agent.software-maker"],
+        agentProfileRefs: ["profile.software-maker-pi"],
+        skillRefs: ["skill.software-implementation"],
+        mcpGrantRefs: ["mcp.filesystem-workspace"],
+        toolRefs: ["tool.workspace-read", "tool.shell-command"],
+        modelHints: { maker: "gpt-5" },
+        vaultLeasePolicyRefs: ["vault.github-write-token"],
+        toolPolicyHints: {
+          allowedTools: ["read", "search", "shell"],
+          deniedTools: ["write"],
+          requiresApprovalFor: ["network"],
+        },
+      },
+    };
+    const draft = await createPostgresPlannerDraft(db, {
+      ...baseRequest,
+      composer: new DeterministicFixtureComposer(),
+    });
+    const revised = await revisePostgresPlannerDraft(db, {
+      draftId: draft.draftId,
+      prompt: "add explicit edge-case validation for empty inputs",
+      orchestrationMode: "deterministic",
+      composerMode: "fixture",
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    const expectedPlannerRequest = {
+      ...baseRequest,
+      goalPrompt: revised.goalPrompt,
+      orchestrationMode: "deterministic",
+      composerMode: "fixture",
+    };
+    const revisedRow = await db.one<{
+      summary_json: { plannerRequest?: unknown };
+      payload_json: { plannerRequest?: unknown };
+    }>(
+      "select summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [revised.draftId],
+    );
+    assert.match(revised.goalPrompt, /Revision request:\nadd explicit edge-case validation/);
+    assert.deepEqual(revisedRow.summary_json.plannerRequest, expectedPlannerRequest);
+    assert.deepEqual(revisedRow.payload_json.plannerRequest, expectedPlannerRequest);
   });
 });
 

@@ -1,10 +1,20 @@
 export type OperatorAttentionItem = {
   id: string;
+  kind?: string;
+  status?: string;
   severity: string;
+  interventionMode?: string;
   title: string;
   reason?: string;
   runId?: string;
   taskId?: string;
+  source?: {
+    resourceType?: string;
+    resourceKey?: string;
+    ref?: string;
+  };
+  detail?: Record<string, unknown>;
+  commands?: unknown[];
   suggestedCommandId?: string;
 };
 
@@ -28,6 +38,7 @@ export function AttentionQueue(props: {
               >
                 {item.title}
                 {item.reason ? ` · ${item.reason}` : ""}
+                {item.interventionMode ? ` · ${item.interventionMode}` : ""}
               </button>
             </li>
           ))}

@@ -116,7 +116,7 @@ export function ChatTranscriptPanel(props: {
         </ul>
       ) : null}
       <form className="ss-guided-chat" onSubmit={onSubmit}>
-        <label htmlFor="southstar-chat-message">Message</label>
+        <label htmlFor="southstar-chat-message">Runtime steering</label>
         <textarea
           id="southstar-chat-message"
           value={composerValue}
@@ -125,7 +125,7 @@ export function ChatTranscriptPanel(props: {
         />
         <div className="ss-actions">
           <button type="submit" disabled={!props.selectedRunId || sending || composerValue.trim().length === 0}>
-            {sending ? "Sending..." : "Send"}
+            {sending ? "Sending..." : "Steer selected run"}
           </button>
           <button type="button" onClick={() => void refreshHistory()} disabled={!props.selectedRunId || pending}>
             Refresh history

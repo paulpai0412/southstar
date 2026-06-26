@@ -16,6 +16,7 @@ export function SouthstarPiWebShell(props: { initialView?: SouthstarWorkspaceVie
   const api = useMemo(() => createSouthstarApiClient({ baseUrl }), [baseUrl]);
   const [view, setView] = useState<SouthstarWorkspaceViewId>(props.initialView ?? "workflow");
   const [chatRunId, setChatRunId] = useState<string | null>(null);
+  const [operatorRunId, setOperatorRunId] = useState<string | null>(null);
   const [chatSessionId, setChatSessionId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -25,6 +26,7 @@ export function SouthstarPiWebShell(props: { initialView?: SouthstarWorkspaceVie
   useEffect(() => {
     const query = new URLSearchParams(window.location.search);
     setChatRunId(query.get("runId"));
+    setOperatorRunId(query.get("runId"));
     setChatSessionId(query.get("sessionId"));
   }, []);
 
@@ -53,9 +55,10 @@ export function SouthstarPiWebShell(props: { initialView?: SouthstarWorkspaceVie
           {view === "chat" ? <SouthstarChatTab api={api} serverBaseUrl={baseUrl} selectedRunId={chatRunId} selectedSessionId={chatSessionId} /> : null}
           {view === "workflow" ? <WorkflowWorkbench api={api} activeCwd={null} onOpenOperator={(runId) => {
             if (runId) setChatRunId(runId);
+            if (runId) setOperatorRunId(runId);
             onSelect("operator");
           }} /> : null}
-          {view === "operator" ? <OperatorBoard api={api} activeCwd={null} /> : null}
+          {view === "operator" ? <OperatorBoard api={api} activeCwd={null} serverBaseUrl={baseUrl} selectedRunId={operatorRunId} /> : null}
         </section>
       </section>
       <aside className="ss-pi-file-viewer">

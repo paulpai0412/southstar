@@ -2,6 +2,9 @@ import type { WorkflowStatusToken } from "./types";
 
 export const workflowStatusColors: Record<WorkflowStatusToken, { border: string; fill: string; edge: string; text: string }> = {
   pending: { border: "#b45309", fill: "#fff7ed", edge: "#b45309", text: "#9a3412" },
+  ready: { border: "#475569", fill: "#f8fafc", edge: "#64748b", text: "#334155" },
+  active: { border: "#2563eb", fill: "#eff6ff", edge: "#2563eb", text: "#1d4ed8" },
+  satisfied: { border: "#15803d", fill: "#f0fdf4", edge: "#16a34a", text: "#166534" },
   queued: { border: "#475569", fill: "#f8fafc", edge: "#64748b", text: "#334155" },
   scheduling: { border: "#0369a1", fill: "#f0f9ff", edge: "#0284c7", text: "#075985" },
   running: { border: "#2563eb", fill: "#eff6ff", edge: "#2563eb", text: "#1d4ed8" },

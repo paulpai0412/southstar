@@ -26,9 +26,9 @@ export async function buildWorkflowFlowLayout(input: {
         const dependsOn = dependencyByTarget.get(node.id) ?? [];
         return dependsOn.map((dependency, index) => ({
           id: `${dependency}-${node.id}-${index}`,
-          from: dependency,
-          to: node.id,
-          status: node.status,
+          source: dependency,
+          target: node.id,
+          status: "pending" as const,
         }));
       });
 
@@ -48,8 +48,8 @@ export async function buildWorkflowFlowLayout(input: {
     })),
     edges: dependencies.map((edge) => ({
       id: edge.id,
-      sources: [edge.from],
-      targets: [edge.to],
+      sources: [edge.source],
+      targets: [edge.target],
     })),
   });
 
@@ -81,10 +81,11 @@ export async function buildWorkflowFlowLayout(input: {
     const colors = statusColorFor(normalizedStatus);
     return {
       id: edge.id,
-      source: edge.from,
-      target: edge.to,
+      source: edge.source,
+      target: edge.target,
       type: "workflowDependency",
       data: { status: normalizedStatus },
+      animated: normalizedStatus === "active",
       className: `ss-flow-edge ss-flow-edge-${normalizedStatus}`,
       style: { stroke: colors.edge, strokeWidth: 1.8 },
       markerEnd: { type: MarkerType.ArrowClosed, color: colors.edge },

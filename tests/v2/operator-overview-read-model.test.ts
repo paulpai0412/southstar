@@ -52,6 +52,188 @@ test("operator overview returns active runs and attention items", async () => {
   }
 });
 
+test("operator overview classifies all operator attention sources from runtime state", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-operator-taxonomy";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "operator taxonomy",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowRunPg(db, {
+      id: "run-operator-paused",
+      status: "paused",
+      domain: "software",
+      goalPrompt: "paused run needs operator watch",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, { id: "task-running", runId, taskKey: "Run", status: "running", sortOrder: 0, dependsOn: [] });
+    await createWorkflowTaskPg(db, { id: "task-blocked", runId, taskKey: "Blocked", status: "blocked", sortOrder: 1, dependsOn: ["task-running"] });
+    await createWorkflowTaskPg(db, { id: "task-failed", runId, taskKey: "Failed", status: "failed", sortOrder: 2, dependsOn: ["task-running"] });
+
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "runtime_exception",
+      resourceKey: "exception-taxonomy",
+      runId,
+      taskId: "task-blocked",
+      scope: "runtime",
+      status: "observed",
+      title: "Runtime exception observed",
+      payload: { exceptionId: "exception-taxonomy", kind: "task_runtime_exception", severity: "blocking", message: "task failed" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "approval-taxonomy",
+      runId,
+      taskId: "task-running",
+      scope: "approval",
+      status: "pending",
+      title: "Approval required",
+      payload: { approvalId: "approval-taxonomy", actionType: "run.pause" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_decision",
+      resourceKey: "recovery-taxonomy",
+      runId,
+      taskId: "task-blocked",
+      scope: "recovery",
+      status: "waiting_operator_approval",
+      title: "Recovery decision waiting",
+      payload: { decisionId: "recovery-taxonomy", path: "retry-same-task-new-attempt", reason: "retry after failure" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_decision",
+      resourceKey: "recovery-approved-taxonomy",
+      runId,
+      taskId: "task-blocked",
+      scope: "recovery",
+      status: "approved",
+      title: "Recovery decision approved",
+      payload: { decisionId: "recovery-approved-taxonomy", path: "retry-same-task-new-attempt", reason: "approved retry" },
+    });
+    for (const [resourceKey, status, taskId, jobId] of [
+      ["executor-heartbeat", "heartbeat-lost", "task-running", "job-heartbeat"],
+      ["executor-queue", "queue-timeout", "task-running", "job-queue"],
+      ["executor-callback", "callback-missing", "task-running", "job-callback"],
+    ] as const) {
+      await upsertRuntimeResourcePg(db, {
+        resourceType: "executor_binding",
+        resourceKey,
+        runId,
+        taskId,
+        scope: "executor",
+        status,
+        title: `Executor ${status}`,
+        payload: {
+          bindingId: resourceKey,
+          runId,
+          taskId,
+          attemptId: `${resourceKey}-attempt`,
+          executorType: "tork",
+          torkJobId: jobId,
+          southstarExecutorStatus: status,
+          submittedAt: "2026-06-25T00:00:00.000Z",
+          queueTimeoutAt: "2026-06-25T00:01:00.000Z",
+          heartbeatTimeoutAt: "2026-06-25T00:02:00.000Z",
+          hardTimeoutAt: "2026-06-25T00:10:00.000Z",
+          reconcileGeneration: 1,
+          idempotencyKey: `${resourceKey}-idem`,
+        },
+      });
+    }
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "runtime_command",
+      resourceKey: "ui:cancel-rejected",
+      runId,
+      taskId: "task-running",
+      scope: "operator",
+      status: "blocked",
+      title: "Cancel rejected",
+      payload: {
+        result: {
+          commandId: "ui:cancel-rejected",
+          accepted: false,
+          status: "blocked",
+          affectedRunId: runId,
+          affectedTaskId: "task-running",
+          resourceRefs: [],
+          eventRefs: [],
+          nextSuggestedActions: ["watch-events"],
+          message: "execution cannot cancel from terminal status completed",
+        },
+      },
+    });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+    const signatures = model.attentionItems.map((item) => `${item.kind}:${item.status}:${item.interventionMode}`);
+    for (const expected of [
+      "runtime_exception:observed:exception",
+      "approval:pending:approval",
+      "recovery_decision:waiting_operator_approval:recovery",
+      "recovery_decision:approved:recovery",
+      "executor_binding:heartbeat-lost:executor",
+      "executor_binding:queue-timeout:executor",
+      "executor_binding:callback-missing:executor",
+      "task:blocked:task",
+      "task:failed:task",
+      "run:paused:run",
+      "run:running:run",
+    ]) {
+      assert.equal(signatures.includes(expected), true, `missing attention signature ${expected}; saw ${signatures.join(", ")}`);
+    }
+
+    const executor = model.attentionItems.find((item) => item.id === "executor_binding:executor-heartbeat");
+    assert.equal(executor?.source.resourceType, "executor_binding");
+    assert.equal(executor?.source.resourceKey, "executor-heartbeat");
+    assert.equal(executor?.detail.torkJobId, "job-heartbeat");
+    assert.equal(executor?.commands.some((command) =>
+      command.id === "executor.reconcile"
+      && command.endpoint === `/api/v2/runs/${runId}/executor-jobs/job-heartbeat/reconcile`
+      && command.requiresConfirmation === false
+    ), true);
+    assert.equal(executor?.commands.some((command) =>
+      command.id === "executor.cancel"
+      && command.endpoint === `/api/v2/runs/${runId}/executor-jobs/job-heartbeat/cancel`
+      && command.requiresConfirmation === true
+    ), true);
+
+    const blockedTask = model.attentionItems.find((item) => item.id === "task:task-blocked");
+    assert.equal(blockedTask?.detail.taskKey, "Blocked");
+    assert.equal(blockedTask?.commands.some((command) =>
+      command.id === "task.retry"
+      && command.endpoint === `/api/v2/runs/${runId}/tasks/task-blocked/retry`
+      && command.requiresConfirmation === true
+    ), true);
+
+    const approvedRecovery = model.attentionItems.find((item) => item.id === "recovery_decision:recovery-approved-taxonomy");
+    assert.equal(approvedRecovery?.commands.some((command) =>
+      command.id === "recovery.apply"
+      && command.endpoint === `/api/v2/runs/${runId}/recovery-decisions/recovery-approved-taxonomy/apply`
+      && command.enabled === true
+      && command.requiresConfirmation === true
+    ), true);
+
+    assert.equal(model.commandResults.some((result) =>
+      result.commandId === "ui:cancel-rejected"
+      && result.status === "blocked"
+      && result.message === "execution cannot cancel from terminal status completed"
+    ), true);
+  } finally {
+    await db.close();
+  }
+});
+
 test("ui route exposes /api/v2/ui/operator-overview", async () => {
   const db = await createTestPostgresDb();
   try {

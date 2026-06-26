@@ -66,7 +66,7 @@ export function SouthstarWorkflowCanvas(props: {
   }
 
   return (
-    <section className="ss-workflow-canvas">
+    <section className="ss-workflow-canvas" data-graph-id={props.canvas.graphId} data-canvas-mode={props.canvas.mode}>
       <div className="ss-workflow-canvas-surface">
         <ReactFlow
           nodes={nodes}
@@ -77,6 +77,10 @@ export function SouthstarWorkflowCanvas(props: {
           fitViewOptions={{ padding: 0.18 }}
           minZoom={0.35}
           maxZoom={1.7}
+          panOnDrag
+          zoomOnScroll
+          zoomOnPinch
+          zoomOnDoubleClick
           nodesDraggable={false}
           nodesConnectable={false}
           edgesFocusable={false}

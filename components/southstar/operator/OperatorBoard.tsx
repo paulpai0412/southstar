@@ -4,13 +4,13 @@ import { useEffect, useMemo, useState } from "react";
 import type { SouthstarApiClient } from "@/lib/southstar/api-client";
 import { useSouthstarPageModel } from "../hooks/useSouthstarPageModel";
 import { SouthstarWorkflowCanvas } from "../workflow-canvas/SouthstarWorkflowCanvas";
-import type { WorkflowCanvasModel } from "../workflow-canvas/types";
+import type { WorkflowCanvasModel, WorkflowTaskAttention, WorkflowTaskBadge } from "../workflow-canvas/types";
 import { ActiveRunStrip } from "./ActiveRunStrip";
 import { AttentionQueue, type OperatorAttentionItem } from "./AttentionQueue";
-import { InterventionPanel, type OperatorCommand } from "./InterventionPanel";
+import { InterventionPanel, type OperatorCommand, type OperatorCommandResult } from "./InterventionPanel";
 import { RunEventStreamPanel } from "./RunEventStreamPanel";
 
-export function OperatorBoard(props: { api: SouthstarApiClient; activeCwd: string | null }) {
+export function OperatorBoard(props: { api: SouthstarApiClient; activeCwd: string | null; serverBaseUrl: string; selectedRunId?: string | null }) {
   const sectionLabels = {
     attentionQueue: "Attention Queue",
     activeRuns: "Active Runs",
@@ -18,28 +18,46 @@ export function OperatorBoard(props: { api: SouthstarApiClient; activeCwd: strin
   const overview = useSouthstarPageModel(() => props.api.getUiOperatorOverview(), [props.api]);
   const runs = useMemo(() => readRuns(overview.model), [overview.model]);
   const attentionItems = useMemo(() => readAttentionItems(overview.model), [overview.model]);
-  const commands = useMemo(() => readCommands(overview.model), [overview.model]);
-  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(() => props.selectedRunId ?? null);
   const [targetTaskId, setTargetTaskId] = useState<string | null>(null);
   const [targetAttentionId, setTargetAttentionId] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (runs.length === 0) {
-      setSelectedRunId(null);
-      return;
-    }
-    setSelectedRunId((current) => {
-      if (current && runs.some((run) => run.runId === current)) return current;
-      return runs[0]!.runId;
-    });
-  }, [runs]);
+  const selectedAttention = useMemo(
+    () => attentionItems.find((item) => item.id === targetAttentionId)
+      ?? attentionItems.find((item) => item.kind === "run" && item.runId === selectedRunId)
+      ?? null,
+    [attentionItems, selectedRunId, targetAttentionId],
+  );
+  const commands = useMemo(() => readCommands(selectedAttention ?? overview.model), [overview.model, selectedAttention]);
+  const commandResults = useMemo(() => readCommandResults(overview.model), [overview.model]);
 
   const workflow = useSouthstarPageModel(
     () => selectedRunId ? props.api.getUiWorkflow({ runId: selectedRunId }) : Promise.resolve(null),
     [props.api, selectedRunId],
   );
-  const canvasModel = useMemo(() => readWorkflowCanvas(workflow.model), [workflow.model]);
+  const canvasModel = useMemo(
+    () => operatorWorkflowCanvasForSelectedRun(workflow.model, selectedRunId),
+    [workflow.model, selectedRunId],
+  );
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!props.selectedRunId) return;
+    const nextTargets = operatorTargetsAfterRunSelection({
+      currentRunId: selectedRunId,
+      nextRunId: props.selectedRunId,
+      selectedTaskId,
+      targetTaskId,
+      targetAttentionId,
+    });
+    setSelectedRunId(props.selectedRunId);
+    setSelectedTaskId(nextTargets.selectedTaskId);
+    setTargetTaskId(nextTargets.targetTaskId);
+    setTargetAttentionId(nextTargets.targetAttentionId);
+  }, [props.selectedRunId]);
+
+  useEffect(() => {
+    setSelectedRunId((current) => selectInitialOperatorRunId(runs, current, props.selectedRunId ?? null));
+  }, [runs, props.selectedRunId]);
 
   useEffect(() => {
     const firstTaskId = canvasModel.nodes[0]?.id ?? null;
@@ -53,7 +71,11 @@ export function OperatorBoard(props: { api: SouthstarApiClient; activeCwd: strin
 
   async function invokeCommand(command: OperatorCommand, reason?: string): Promise<void> {
     if (!command.endpoint || command.method?.toUpperCase() !== "POST") return;
-    const payload: Record<string, string> = { commandId: `ui:${command.id}` };
+    const payload: Record<string, unknown> = {
+      ...(command.body ?? {}),
+      commandId: createOperatorCommandRequestId(command.id),
+      actor: { type: "user", id: "operator-ui" },
+    };
     if (selectedRunId) payload.runId = selectedRunId;
     const selectedInterventionTaskId = targetTaskId ?? selectedTaskId;
     if (selectedInterventionTaskId) payload.taskId = selectedInterventionTaskId;
@@ -74,9 +96,17 @@ export function OperatorBoard(props: { api: SouthstarApiClient; activeCwd: strin
   }
 
   function handleSelectRun(runId: string | null): void {
+    const nextTargets = operatorTargetsAfterRunSelection({
+      currentRunId: selectedRunId,
+      nextRunId: runId,
+      selectedTaskId,
+      targetTaskId,
+      targetAttentionId,
+    });
     setSelectedRunId(runId);
-    setTargetAttentionId(null);
-    if (!runId) setTargetTaskId(null);
+    setSelectedTaskId(nextTargets.selectedTaskId);
+    setTargetTaskId(nextTargets.targetTaskId);
+    setTargetAttentionId(nextTargets.targetAttentionId);
   }
 
   function handleSelectTask(taskId: string | null): void {
@@ -108,11 +138,15 @@ export function OperatorBoard(props: { api: SouthstarApiClient; activeCwd: strin
           runId={selectedRunId}
           targetTaskId={targetTaskId}
           targetAttentionId={targetAttentionId}
+          interventionMode={selectedAttention?.interventionMode}
+          source={selectedAttention?.source}
+          detail={selectedAttention?.detail}
           commands={commands}
+          commandResults={commandResults}
           onInvokeCommand={invokeCommand}
         />
       </section>
-      <RunEventStreamPanel runId={selectedRunId} />
+      <RunEventStreamPanel runId={selectedRunId} serverBaseUrl={props.serverBaseUrl} />
       {overview.error ? <p className="ss-empty">{overview.error}</p> : null}
       {workflow.error ? <p className="ss-empty">{workflow.error}</p> : null}
     </section>
@@ -157,7 +191,10 @@ function readAttentionItems(model: any): OperatorAttentionItem[] {
       if (!id) return null;
       const next: OperatorAttentionItem = {
         id,
+        kind: stringValue(item?.kind),
+        status: stringValue(item?.status),
         severity: stringValue(item?.severity) ?? "info",
+        interventionMode: stringValue(item?.interventionMode),
         title: stringValue(item?.title) ?? "Pending operator review",
       };
       const reason = stringValue(item?.reason);
@@ -169,6 +206,18 @@ function readAttentionItems(model: any): OperatorAttentionItem[] {
       const suggestedCommandId =
         stringValue(item?.suggestedCommandId ?? item?.commandId) ?? firstString(item?.suggestedActions);
       if (suggestedCommandId) next.suggestedCommandId = suggestedCommandId;
+      const source = recordValue(item?.source);
+      if (source) {
+        next.source = {
+          resourceType: stringValue(source.resourceType),
+          resourceKey: stringValue(source.resourceKey),
+          ref: stringValue(source.ref),
+        };
+      }
+      const detail = recordValue(item?.detail);
+      if (detail) next.detail = detail;
+      const commands = coerceArray<unknown>(item?.commands);
+      if (commands.length > 0) next.commands = commands;
       return next;
     })
     .filter((item): item is OperatorAttentionItem => item !== null);
@@ -191,13 +240,40 @@ function readCommands(model: any): OperatorCommand[] {
       if (endpoint) next.endpoint = endpoint;
       const disabledReason = stringValue(command?.disabledReason);
       if (disabledReason) next.disabledReason = disabledReason;
+      const body = recordValue(command?.body);
+      if (body) next.body = body;
       return next;
     })
     .filter((command): command is OperatorCommand => command !== null);
 }
 
-function readWorkflowCanvas(model: any): WorkflowCanvasModel {
-  const candidate = model?.data ?? model?.canvas ?? model;
+function readCommandResults(model: any): OperatorCommandResult[] {
+  const rows = coerceArray<any>(model?.commandResults ?? model?.data?.commandResults);
+  return rows
+    .map((result) => {
+      const commandId = stringValue(result?.commandId);
+      const status = stringValue(result?.status);
+      if (!commandId || !status) return null;
+      const next: OperatorCommandResult = {
+        commandId,
+        status,
+      };
+      if (typeof result?.accepted === "boolean") next.accepted = result.accepted;
+      const message = stringValue(result?.message);
+      if (message) next.message = message;
+      const affectedRunId = stringValue(result?.affectedRunId);
+      if (affectedRunId) next.affectedRunId = affectedRunId;
+      const affectedTaskId = stringValue(result?.affectedTaskId);
+      if (affectedTaskId) next.affectedTaskId = affectedTaskId;
+      const updatedAt = stringValue(result?.updatedAt);
+      if (updatedAt) next.updatedAt = updatedAt;
+      return next;
+    })
+    .filter((result): result is OperatorCommandResult => result !== null);
+}
+
+export function operatorWorkflowCanvasFromReadModel(model: any): WorkflowCanvasModel {
+  const candidate = model?.canvasModel ?? model?.data?.canvasModel ?? model?.canvas ?? model?.data ?? model;
   const nodes = coerceArray<any>(candidate?.nodes)
     .map((node) => {
       const id = stringValue(node?.id);
@@ -205,9 +281,10 @@ function readWorkflowCanvas(model: any): WorkflowCanvasModel {
       const next: WorkflowCanvasModel["nodes"][number] = {
         id,
         label: stringValue(node?.label ?? node?.taskKey) ?? id,
+        kind: "task",
         status: stringValue(node?.status) ?? "unknown",
         dependsOn: coerceArray<string>(node?.dependsOn).filter((dep) => typeof dep === "string"),
-        badges: [],
+        badges: normalizeBadges(node?.badges),
       };
       const roleRef = stringValue(node?.roleRef);
       if (roleRef) next.roleRef = roleRef;
@@ -215,31 +292,123 @@ function readWorkflowCanvas(model: any): WorkflowCanvasModel {
       if (agentProfileRef) next.agentProfileRef = agentProfileRef;
       const artifactKind = stringValue(node?.artifactKind);
       if (artifactKind) next.artifactKind = artifactKind;
-      const attention = stringValue(node?.attention);
+      const attention = normalizeAttention(node?.attention);
       if (attention) next.attention = attention;
       return next;
     })
     .filter((node): node is WorkflowCanvasModel["nodes"][number] => node !== null);
   const nodeIdSet = new Set(nodes.map((node) => node.id));
-  const edgeStatus = stringValue(candidate?.status) ?? null;
-  const edges = nodes.flatMap((node) =>
-    node.dependsOn
-      .filter((dependencyId) => nodeIdSet.has(dependencyId))
-      .map((dependencyId) => ({
-        id: `${dependencyId}->${node.id}`,
-        from: dependencyId,
-        to: node.id,
-        status: edgeStatus,
-      })),
-  );
+  const rawEdges = coerceArray<any>(candidate?.edges);
+  const edges = rawEdges.length > 0
+    ? rawEdges.map((edge, index) => ({
+        id: stringValue(edge?.id) ?? `${edge?.source ?? edge?.from ?? "source"}->${edge?.target ?? edge?.to ?? "target"}-${index}`,
+        source: stringValue(edge?.source ?? edge?.from) ?? "",
+        target: stringValue(edge?.target ?? edge?.to) ?? "",
+        status: normalizeEdgeStatus(edge?.status),
+      }))
+    : nodes.flatMap((node) =>
+        node.dependsOn
+          .filter((dependencyId) => nodeIdSet.has(dependencyId))
+          .map((dependencyId) => ({
+            id: `${dependencyId}->${node.id}`,
+            source: dependencyId,
+            target: node.id,
+            status: "pending" as const,
+          })),
+      );
   return {
+    graphId: stringValue(candidate?.graphId) ?? "operator-runtime",
+    mode: candidate?.mode === "draft" ? "draft" : "runtime",
+    selectedNodeId: stringValue(candidate?.selectedNodeId) ?? null,
     nodes,
     edges,
   };
 }
 
+export function operatorWorkflowCanvasForSelectedRun(model: any, selectedRunId: string | null): WorkflowCanvasModel {
+  const canvas = operatorWorkflowCanvasFromReadModel(model);
+  if (selectedRunId && canvas.graphId !== selectedRunId) {
+    return {
+      graphId: selectedRunId,
+      mode: "runtime",
+      selectedNodeId: null,
+      nodes: [],
+      edges: [],
+    };
+  }
+  return canvas;
+}
+
+export function selectInitialOperatorRunId(
+  runs: Array<{ runId: string }>,
+  currentRunId: string | null,
+  preferredRunId?: string | null,
+): string | null {
+  if (preferredRunId) return preferredRunId;
+  if (currentRunId && (runs.length === 0 || runs.some((run) => run.runId === currentRunId))) return currentRunId;
+  return runs[0]?.runId ?? null;
+}
+
+export function operatorTargetsAfterRunSelection(input: {
+  currentRunId: string | null;
+  nextRunId: string | null;
+  selectedTaskId: string | null;
+  targetTaskId: string | null;
+  targetAttentionId: string | null;
+}): { selectedTaskId: string | null; targetTaskId: string | null; targetAttentionId: string | null } {
+  if (input.currentRunId !== input.nextRunId) return { selectedTaskId: null, targetTaskId: null, targetAttentionId: null };
+  return {
+    selectedTaskId: input.selectedTaskId,
+    targetTaskId: input.targetTaskId,
+    targetAttentionId: input.targetAttentionId,
+  };
+}
+
+export function createOperatorCommandRequestId(commandId: string): string {
+  return `ui:${commandId}:${Date.now()}:${crypto.randomUUID()}`;
+}
+
+function normalizeBadges(value: unknown): WorkflowTaskBadge[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((badge) => {
+    if (typeof badge === "string") return { label: badge, tone: "neutral" as const };
+    return {
+      label: stringValue((badge as { label?: unknown })?.label) ?? "badge",
+      tone: normalizeBadgeTone((badge as { tone?: unknown })?.tone),
+    };
+  });
+}
+
+function normalizeBadgeTone(value: unknown): WorkflowTaskBadge["tone"] {
+  if (value === "good" || value === "warn" || value === "danger" || value === "neutral") return value;
+  return "neutral";
+}
+
+function normalizeAttention(value: unknown): WorkflowTaskAttention | null {
+  if (typeof value === "string" && value.length > 0) return { severity: "warning", reason: value };
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const severity = normalizeAttentionSeverity(record.severity);
+  const reason = stringValue(record.reason);
+  return severity && reason ? { severity, reason } : null;
+}
+
+function normalizeAttentionSeverity(value: unknown): WorkflowTaskAttention["severity"] | null {
+  if (value === "info" || value === "warning" || value === "error" || value === "blocked") return value;
+  return null;
+}
+
+function normalizeEdgeStatus(value: unknown): WorkflowCanvasModel["edges"][number]["status"] {
+  if (value === "ready" || value === "active" || value === "blocked" || value === "satisfied") return value;
+  return "pending";
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 function firstString(value: unknown): string | undefined {

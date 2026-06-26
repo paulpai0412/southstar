@@ -24,6 +24,28 @@ type SeedEdge = {
   metadata?: Record<string, unknown>;
 };
 
+export type SoftwareVaultLeasePolicy = {
+  id: string;
+  displayName: string;
+  secretGroupRef: string;
+  leaseTtlSeconds: number;
+  mountMode: "proxy-only";
+  allowedToolRefs: string[];
+  auditRequired: boolean;
+};
+
+export const softwareVaultLeasePolicies: readonly SoftwareVaultLeasePolicy[] = Object.freeze([
+  {
+    id: "vault.github-write-token",
+    displayName: "GitHub Write Token Vault Lease",
+    secretGroupRef: "github.write",
+    leaseTtlSeconds: 900,
+    mountMode: "proxy-only",
+    allowedToolRefs: ["tool.shell-command"],
+    auditRequired: true,
+  },
+]);
+
 const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   {
     objectKey: "template.software-feature",
@@ -471,16 +493,9 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
     },
   },
   {
-    objectKey: "vault.github-write-token",
+    objectKey: softwareVaultLeasePolicies[0]!.id,
     objectKind: "vault_lease_policy",
-    state: {
-      displayName: "GitHub Write Token Vault Lease",
-      secretGroupRef: "github.write",
-      leaseTtlSeconds: 900,
-      mountMode: "proxy-only",
-      allowedToolRefs: ["tool.shell-command"],
-      auditRequired: true,
-    },
+    state: { ...softwareVaultLeasePolicies[0] },
   },
   {
     objectKey: "instruction.software-explorer",
