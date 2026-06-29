@@ -11,3 +11,15 @@ npm-debug.log*
 .superpowers/
 .tools/
 .southstar/
+
+# nested web app workspaces and build artifacts
+pi-web/
+pi-web_bak_*/
+southstar-pi-web/
+southstar-web/node_modules/
+southstar-web/.next/
+southstar-web/out/
+southstar-web/build/
+southstar-web/.env*
+southstar-web/*.tsbuildinfo
+southstar-web/.southstar/*.log
