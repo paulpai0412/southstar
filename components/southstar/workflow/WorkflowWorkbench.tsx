@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import type { CreatePlannerDraftRequest, SouthstarApiClient } from "@/lib/southstar/api-client";
 import { SouthstarWorkflowCanvas } from "../workflow-canvas/SouthstarWorkflowCanvas";
 import type { WorkflowCanvasModel, WorkflowTaskAttention, WorkflowTaskBadge, WorkflowTaskNodeModel } from "../workflow-canvas/types";

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPlannerDraftRequest, workflowLifecycleReducer } from "../../lib/workflow/lifecycle";
-import type { WorkflowDag } from "../../lib/workflow/types";
+import { buildPlannerDraftRequest, workflowLifecycleReducer } from "../../web/lib/workflow/lifecycle";
+import type { WorkflowDag } from "../../web/lib/workflow/types";
 
 const dag: WorkflowDag = {
   id: "dag-1",

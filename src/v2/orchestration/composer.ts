@@ -3,6 +3,7 @@ import type { CandidatePacket, WorkflowCompositionPlan, WorkflowCompositionTask 
 export type ComposeWorkflowInput = {
   goalPrompt: string;
   candidatePacket: CandidatePacket;
+  onLlmDelta?: (text: string) => void;
 };
 
 export interface WorkflowComposer {

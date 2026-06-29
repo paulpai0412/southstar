@@ -38,6 +38,36 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.equal(typeof WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.id.type, "string");
 });
 
+
+test("LLM composer uses streaming text client and relays true deltas", async () => {
+  const deltas: string[] = [];
+  const composer = new LlmWorkflowComposer({
+    model: "stream-model",
+    client: {
+      async generateText() {
+        throw new Error("generateText should not be used when generateTextStream is available");
+      },
+      async generateTextStream(input, handlers) {
+        assert.equal(input.model, "stream-model");
+        handlers.onDelta?.("{");
+        handlers.onDelta?.("\"schemaVersion\"");
+        return JSON.stringify(validPlan());
+      },
+    },
+  });
+
+  const plan = await composer.compose({
+    goalPrompt: "implement calc sum",
+    candidatePacket: candidatePacket(),
+    onLlmDelta(delta) {
+      deltas.push(delta);
+    },
+  });
+
+  assert.equal(plan.schemaVersion, "southstar.workflow_composition_plan.v1");
+  assert.deepEqual(deltas, ["{", "\"schemaVersion\""]);
+});
+
 test("LLM composer parser accepts strict contract payload", () => {
   const parsed = parseWorkflowCompositionPlanFromText(JSON.stringify(validPlan()), 20_000);
   assert.equal(parsed.title, "Dynamic Mock Plan");

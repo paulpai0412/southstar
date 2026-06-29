@@ -153,8 +153,35 @@ export function workflowLibraryFromAgentLibrary(input: V2AgentLibraryReadModel):
   };
 }
 
+
+function dependencyLevels(tasks: V2PlannerDraftTaskSummary[]): Map<string, number> {
+  const byId = new Map(tasks.map((task) => [task.taskId, task]));
+  const levels = new Map<string, number>();
+  const visiting = new Set<string>();
+
+  const levelFor = (taskId: string): number => {
+    const cached = levels.get(taskId);
+    if (cached !== undefined) return cached;
+    if (visiting.has(taskId)) return 0;
+    const task = byId.get(taskId);
+    if (!task) return 0;
+    visiting.add(taskId);
+    const knownDependencies = task.dependsOn.filter((dependency) => byId.has(dependency));
+    const level = knownDependencies.length === 0
+      ? 0
+      : Math.max(...knownDependencies.map((dependency) => levelFor(dependency))) + 1;
+    visiting.delete(taskId);
+    levels.set(taskId, level);
+    return level;
+  };
+
+  for (const task of tasks) levelFor(task.taskId);
+  return levels;
+}
+
 export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrationView): WorkflowDag {
   const readiness = readinessFromDraftStatus(input.status, input.validationIssues.length);
+  const levels = dependencyLevels(input.taskSummaries);
   const nodes = input.taskSummaries.map((task, index) => {
     const profileRef = task.agentProfileRef ?? `profile.${toSlug(task.taskId)}-codex`;
     const provider = providerFromProfileRef(profileRef);
@@ -170,7 +197,7 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
       profileResourcePath: `software/agents/${agentSegmentFromProfile(profileRef)}/profile.json`,
       provider,
       model: modelFromProvider(provider),
-      level: index,
+      level: levels.get(task.taskId) ?? index,
       state: readiness,
     };
   });

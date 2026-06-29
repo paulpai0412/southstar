@@ -9,6 +9,10 @@ import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
 
 export type LlmTextClient = {
   generateText(input: { model: string; prompt: string; temperature?: number }): Promise<string>;
+  generateTextStream?: (
+    input: { model: string; prompt: string; temperature?: number },
+    handlers: { onDelta?: (text: string) => void },
+  ) => Promise<string>;
 };
 
 export type LlmWorkflowComposerOptions = {
@@ -154,11 +158,14 @@ export class LlmWorkflowComposer implements WorkflowComposer {
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
     const prompt = renderComposerPrompt(input.goalPrompt, input.candidatePacket);
-    const text = await this.options.client.generateText({
+    const textInput = {
       model: this.options.model,
       prompt,
       temperature: this.options.temperature ?? 0,
-    });
+    };
+    const text = this.options.client.generateTextStream
+      ? await this.options.client.generateTextStream(textInput, { onDelta: input.onLlmDelta })
+      : await this.options.client.generateText(textInput);
     return parseWorkflowCompositionPlanFromText(text, this.options.maxOutputChars ?? 100_000);
   }
 }

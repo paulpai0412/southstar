@@ -7,9 +7,9 @@ import type {
   SouthstarWorkflowManifest,
   WorkflowTaskDefinition,
 } from "../manifests/types.ts";
-import type { PiPlannerClient, PlannerContext } from "./types.ts";
+import type { PiPlannerClient, PiPlannerStreamHandlers, PlannerContext } from "./types.ts";
 
-export type { PiPlannerClient, PlannerContext };
+export type { PiPlannerClient, PiPlannerStreamHandlers, PlannerContext };
 
 export async function generatePlanBundle(
   client: PiPlannerClient,
@@ -136,6 +136,10 @@ export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}
     async generate(prompt: string): Promise<string> {
       const session = await (options.createSession ?? createDefaultPiSdkSession)();
       return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000);
+    },
+    async generateStream(prompt: string, handlers: PiPlannerStreamHandlers = {}): Promise<string> {
+      const session = await (options.createSession ?? createDefaultPiSdkSession)();
+      return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000, handlers);
     },
   };
 }
@@ -450,14 +454,23 @@ async function runPromptAndCollectAssistantText(
   session: PiSdkPlannerSession,
   prompt: string,
   timeoutMs: number,
+  handlers: PiPlannerStreamHandlers = {},
 ): Promise<string> {
   let finalText = "";
+  let lastStreamedText = "";
   let unsubscribe: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const done = new Promise<string>((resolve, reject) => {
     const listener = (event: unknown) => {
       const text = assistantTextFromEvent(event);
-      if (text) finalText = text;
+      if (text) {
+        finalText = text;
+        const delta = text.startsWith(lastStreamedText)
+          ? text.slice(lastStreamedText.length)
+          : text;
+        if (delta) handlers.onDelta?.(delta);
+        lastStreamedText = text;
+      }
       if (isRecord(event) && event.type === "agent_end") {
         resolve(finalText);
       }
@@ -493,7 +506,9 @@ function assistantTextFromEvent(event: unknown): string | undefined {
     );
     return textFromMessage(assistant);
   }
-  return textFromMessage(event.message);
+  const message = event.message;
+  if (isRecord(message) && "role" in message && message.role !== "assistant") return undefined;
+  return textFromMessage(message);
 }
 
 function textFromMessage(message: unknown): string | undefined {

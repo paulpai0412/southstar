@@ -100,6 +100,53 @@ test("start accepts server pidfile even when detached wrapper pid differs", asyn
   assert.equal(started.record.pid, 200);
 });
 
+test("start exports canonical Postgres and Tork env into detached serve process", async () => {
+  let launchedScript = "";
+  let readCount = 0;
+  const lifecycle = createRuntimeServerLifecycle({
+    cwd: "/tmp/southstar",
+    envLoader: () => localEnv({
+      databaseUrl: "postgres://southstar:secret@127.0.0.1:55432/southstar",
+      torkBaseUrl: "http://127.0.0.1:8000",
+      serverUrl: "http://127.0.0.1:3100",
+    }),
+    sleep: async () => {},
+    runCommand: async (_command, args) => {
+      launchedScript = args[1] ?? "";
+      return { exitCode: 0, stdout: "100\n", stderr: "" };
+    },
+    processKill: (pid) => {
+      if (pid === 100 || pid === 200) return;
+      const error = Object.assign(new Error("no such process"), { code: "ESRCH" });
+      throw error;
+    },
+    readTextFile: async () => {
+      readCount += 1;
+      if (readCount < 2) {
+        const error = Object.assign(new Error("missing"), { code: "ENOENT" });
+        throw error;
+      }
+      return JSON.stringify({
+        pid: 200,
+        host: "127.0.0.1",
+        port: 3100,
+        url: "http://127.0.0.1:3100",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp/southstar",
+      });
+    },
+    writeTextFile: async () => {},
+    ensureDirectory: async () => {},
+    removeFile: async () => {},
+  });
+
+  await lifecycle.start();
+
+  assert.match(launchedScript, /SOUTHSTAR_DATABASE_URL='postgres:\/\/southstar:secret@127\.0\.0\.1:55432\/southstar'/);
+  assert.match(launchedScript, /TORK_BASE_URL='http:\/\/127\.0\.0\.1:8000'/);
+  assert.match(launchedScript, /SOUTHSTAR_SERVER_URL='http:\/\/127\.0\.0\.1:3100'/);
+});
+
 test("retries transient Postgres startup errors before succeeding", async () => {
   let attempts = 0;
   const db = await connectSouthstarDbWithRetry("postgres://postgres:postgres@127.0.0.1:55432/southstar", {

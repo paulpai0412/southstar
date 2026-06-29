@@ -1,3 +1,5 @@
+import React from "react";
+
 export function LibraryAlternativesSheet(props: { model: any | null; onClose: () => void }) {
   if (!props.model) return null;
   const selectedRefs = asRecord(props.model.selectedRefs);

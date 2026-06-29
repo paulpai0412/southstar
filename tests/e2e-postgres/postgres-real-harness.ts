@@ -121,7 +121,8 @@ export function runSouthstar(args: string[], env: Record<string, string> = {}): 
 
 export function requireRealPostgresInfra(): RealPostgresInfra {
   const missing: string[] = [];
-  const postgresAdminUrl = process.env.SOUTHSTAR_TEST_ADMIN_DATABASE_URL;
+  const postgresAdminUrl = process.env.SOUTHSTAR_TEST_ADMIN_DATABASE_URL
+    ?? derivePostgresAdminUrl(process.env.SOUTHSTAR_DATABASE_URL ?? process.env.SOUTHSTAR_DB);
   const torkBaseUrl = process.env.TORK_BASE_URL;
   if (!postgresAdminUrl) missing.push("SOUTHSTAR_TEST_ADMIN_DATABASE_URL");
   if (!torkBaseUrl) missing.push("TORK_BASE_URL");
@@ -154,14 +155,16 @@ export async function loadRealPostgresE2EEnv(
   probes: RealPostgresE2EProbes = defaultRealPostgresE2EProbes,
 ): Promise<RealPostgresE2EEnv> {
   const missing: string[] = [];
-  if (!input.SOUTHSTAR_TEST_ADMIN_DATABASE_URL) missing.push("SOUTHSTAR_TEST_ADMIN_DATABASE_URL");
+  const postgresAdminUrl = input.SOUTHSTAR_TEST_ADMIN_DATABASE_URL
+    ?? derivePostgresAdminUrl(input.SOUTHSTAR_DATABASE_URL ?? input.SOUTHSTAR_DB);
+  if (!postgresAdminUrl) missing.push("SOUTHSTAR_TEST_ADMIN_DATABASE_URL");
   if (!input.TORK_BASE_URL) missing.push("TORK_BASE_URL");
   if (missing.length > 0) {
     throw new Error(`Real Postgres E2E missing required env: ${missing.join(", ")}`);
   }
 
   const env: RealPostgresE2EEnv = {
-    postgresAdminUrl: input.SOUTHSTAR_TEST_ADMIN_DATABASE_URL as string,
+    postgresAdminUrl,
     torkBaseUrl: input.TORK_BASE_URL as string,
     piPlannerEndpoint: input.PI_PLANNER_ENDPOINT,
     piHarnessEndpoint: input.PI_HARNESS_ENDPOINT,
@@ -177,6 +180,18 @@ export async function loadRealPostgresE2EEnv(
   await probes.torkQueueIdle(env.torkBaseUrl);
   await probes.piConfig(env);
   return env;
+}
+
+function derivePostgresAdminUrl(databaseUrl: string | undefined): string | undefined {
+  if (!databaseUrl) return undefined;
+  try {
+    const parsed = new URL(databaseUrl);
+    if (parsed.protocol !== "postgres:" && parsed.protocol !== "postgresql:") return undefined;
+    parsed.pathname = "/postgres";
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
 }
 
 const defaultRealPostgresE2EProbes: RealPostgresE2EProbes = {

@@ -178,19 +178,19 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
     const args = [cliScriptPath, "serve", "--pid-file", options.pidFilePath];
     if (options.host) args.push("--host", options.host);
     if (options.port !== undefined) args.push("--port", String(options.port));
-    const childEnv: Record<string, string> = {
-      ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => typeof entry[1] === "string")),
-      SOUTHSTAR_DATABASE_URL: options.env.databaseUrl,
-      TORK_BASE_URL: options.env.torkBaseUrl,
-      SOUTHSTAR_SERVER_URL: options.env.serverUrl,
-      SOUTHSTAR_REQUIRE_DOCKER: options.env.dockerRequired ? "1" : "0",
-    };
-    if (options.env.piPlannerEndpoint) childEnv.PI_PLANNER_ENDPOINT = options.env.piPlannerEndpoint;
     const logsDir = resolve(cwd, ".southstar/logs");
     const startLogPath = resolve(logsDir, "runtime-server-start.log");
     await ensureDirectory(logsDir);
     const shellCommand = `nohup setsid ${[command, ...args].map(quoteShellArg).join(" ")} >> ${quoteShellArg(startLogPath)} 2>&1 < /dev/null & echo $!`;
-    const launched = await runCommand("sh", ["-lc", shellCommand]);
+    const envScript = [
+      `export SOUTHSTAR_DATABASE_URL=${quoteShellArg(options.env.databaseUrl)}`,
+      `export TORK_BASE_URL=${quoteShellArg(options.env.torkBaseUrl)}`,
+      `export SOUTHSTAR_SERVER_URL=${quoteShellArg(options.env.serverUrl)}`,
+      `export SOUTHSTAR_REQUIRE_DOCKER=${quoteShellArg(options.env.dockerRequired ? "1" : "0")}`,
+      ...(options.env.piPlannerEndpoint ? [`export PI_PLANNER_ENDPOINT=${quoteShellArg(options.env.piPlannerEndpoint)}`] : []),
+      shellCommand,
+    ].join("; ");
+    const launched = await runCommand("sh", ["-lc", envScript]);
     if (launched.exitCode !== 0) {
       const detail = (launched.stderr || launched.stdout).trim();
       throw new Error(`failed to launch southstar serve process${detail ? `: ${detail}` : ""}`);

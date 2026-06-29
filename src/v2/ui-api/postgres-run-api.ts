@@ -89,8 +89,20 @@ export type PlannerDraftRequestContract = {
   libraryHints?: PlannerDraftLibraryHints;
 };
 
+export type PlannerDraftProgressEvent = {
+  stage: string;
+  message: string;
+  attempt?: number;
+  ok?: boolean;
+  issueCount?: number;
+};
+
+export type PlannerDraftProgressListener = (event: PlannerDraftProgressEvent) => void;
+
 export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
   composer?: WorkflowComposer;
+  onProgress?: PlannerDraftProgressListener;
+  onLlmDelta?: (text: string) => void;
 };
 
 export type RevisePostgresPlannerDraftInput = {
@@ -99,11 +111,19 @@ export type RevisePostgresPlannerDraftInput = {
   orchestrationMode?: "deterministic" | "llm-constrained";
   composerMode?: WorkflowComposerMode;
   composer?: WorkflowComposer;
+  onProgress?: PlannerDraftProgressListener;
+  onLlmDelta?: (text: string) => void;
 };
 
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
   const plannerRequest = plannerRequestSnapshot(input);
-  const draftInput: CreatePostgresPlannerDraftInput = { ...plannerRequest, composer: input.composer };
+  input.onProgress?.({ stage: "request.normalized", message: "Planner draft request normalized." });
+  const draftInput: CreatePostgresPlannerDraftInput = {
+    ...plannerRequest,
+    composer: input.composer,
+    onProgress: input.onProgress,
+    onLlmDelta: input.onLlmDelta,
+  };
   if (plannerRequest.orchestrationMode === "llm-constrained") {
     return createLibraryConstrainedPlannerDraft(db, draftInput);
   }
@@ -131,6 +151,8 @@ export async function revisePostgresPlannerDraft(
     orchestrationMode: input.orchestrationMode ?? priorPlannerRequest?.orchestrationMode ?? inferDraftOrchestrationMode(summary),
     composerMode: input.composerMode ?? priorPlannerRequest?.composerMode ?? inferDraftComposerMode(payload),
     composer: input.composer,
+    onProgress: input.onProgress,
+    onLlmDelta: input.onLlmDelta,
   });
 }
 
@@ -278,6 +300,7 @@ async function createDeterministicPlannerDraft(
       plannerRequest: plannerRequestSnapshot(input),
     },
   });
+  input.onProgress?.({ stage: "draft.persisted", ok: true, issueCount: validationIssues.length, message: "Planner draft persisted." });
   return {
     draftId,
     goalPrompt: input.goalPrompt,
@@ -294,11 +317,15 @@ async function createLibraryConstrainedPlannerDraft(
 ): Promise<PostgresPlannerDraftResult> {
   const draftRunId = `draft-library-${hash(input.goalPrompt).slice(0, 12)}`;
   await seedSoftwareLibraryGraph(db);
+  input.onProgress?.({ stage: "library.seeded", message: "Software workflow library graph is ready." });
   const requirementSpec = analyzeRequirementDeterministically(input.goalPrompt);
+  input.onProgress?.({ stage: "requirement.analyzed", message: "Requirement analysis completed." });
+  input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
   const candidatePacket = await resolveWorkflowCandidates(db, {
     requirementSpec,
     scope: "software",
   });
+  input.onProgress?.({ stage: "candidate.resolved", message: "Workflow library candidates resolved." });
   const workflowId = `wf-composed-${hash(draftRunId).slice(0, 12)}`;
   const draftId = `draft-${workflowId}`;
 
@@ -329,6 +356,7 @@ async function createLibraryConstrainedPlannerDraft(
         plannerRequest: plannerRequestSnapshot(input),
       },
     });
+    input.onProgress?.({ stage: "draft.persisted", ok: false, issueCount: validationIssues.length, message: "Invalid planner draft persisted." });
     return {
       draftId,
       goalPrompt: input.goalPrompt,
@@ -350,6 +378,8 @@ async function createLibraryConstrainedPlannerDraft(
     composer,
     scope: "software",
     maxRepairAttempts: 2,
+    onProgress: input.onProgress,
+    onLlmDelta: input.onLlmDelta,
   });
   if (!repairResult.validation.ok) {
     const validationIssues = toPlannerDraftValidationIssues(repairResult.validation.issues);
@@ -379,6 +409,7 @@ async function createLibraryConstrainedPlannerDraft(
         plannerRequest: plannerRequestSnapshot(input),
       },
     });
+    input.onProgress?.({ stage: "draft.persisted", ok: false, issueCount: validationIssues.length, message: "Invalid planner draft persisted." });
     return {
       draftId,
       goalPrompt: input.goalPrompt,
@@ -392,12 +423,14 @@ async function createLibraryConstrainedPlannerDraft(
   if (!composition) {
     throw new Error("composition repair loop returned ok validation without composition");
   }
+  input.onProgress?.({ stage: "composition.compiling", message: "Compiling workflow composition." });
   const compiled = await compileWorkflowComposition(db, {
     runId: draftRunId,
     goalPrompt: input.goalPrompt,
     candidatePacket,
     composition,
   });
+  input.onProgress?.({ stage: "composition.compiled", message: "Workflow composition compiled." });
   const bundle: PlanBundle & {
     orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
     repairAttempts: typeof repairResult.attempts;
@@ -443,6 +476,7 @@ async function createLibraryConstrainedPlannerDraft(
       plannerRequest: plannerRequestSnapshot(input),
     },
   });
+  input.onProgress?.({ stage: "draft.persisted", ok: true, issueCount: validationIssues.length, message: "Planner draft persisted." });
   return {
     draftId,
     goalPrompt: input.goalPrompt,

@@ -138,6 +138,7 @@ export function createWebServerLifecycle(input: WebServerLifecycleInput = {}) {
       `cd ${quoteShellArg(inputLaunch.appCwd)}`,
       `export NEXT_PUBLIC_SOUTHSTAR_SERVER_URL=${quoteShellArg(inputLaunch.apiUrl)}`,
       `export SOUTHSTAR_SERVER_URL=${quoteShellArg(inputLaunch.apiUrl)}`,
+      `export SOUTHSTAR_V2_API_BASE_URL=${quoteShellArg(inputLaunch.apiUrl)}`,
       shellCommand,
     ].join("; ");
     const launched = await runCommand("sh", ["-lc", envScript]);

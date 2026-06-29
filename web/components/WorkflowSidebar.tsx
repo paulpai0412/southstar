@@ -232,9 +232,9 @@ export function WorkflowSidebar({
                       <TreeFolderRow label="agents" depth={1} open={isOpen(agentsKey)} onToggle={() => toggle(agentsKey)} />
                       {isOpen(agentsKey) && domain.agents
                         .filter((agent) => !selectedTemplate || selectedAgentRefs.has(agent.id))
-                        .map((agent) => (
+                        .map((agent, index) => (
                           <AgentTree
-                            key={agent.id}
+                            key={`${agent.id}:${agent.profileResourcePath}:${index}`}
                             agent={agent}
                             isOpen={isOpen}
                             onToggle={toggle}

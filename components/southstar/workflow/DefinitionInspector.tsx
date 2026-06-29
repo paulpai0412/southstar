@@ -1,4 +1,4 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import type { WorkflowTaskNodeModel } from "../workflow-canvas/types";
 
 export function DefinitionInspector(props: {

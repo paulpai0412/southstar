@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { proxyWorkflowV2Json } from "@/lib/workflow/v2-api";
+import { proxyWorkflowV2Json } from "../../../../../lib/workflow/v2-api";
 
 function normalizedSegment(value: string): string {
   try {

@@ -33,6 +33,22 @@ test("real E2E env probes Docker, Tork, and Pi SDK config when endpoints are abs
   assert.equal(env.piHarnessMode, "sdk");
 });
 
+test("real E2E env can derive Postgres admin URL from the canonical runtime database URL", async () => {
+  const env = await loadRealPostgresE2EEnv({
+    SOUTHSTAR_DATABASE_URL: "postgres://postgres:postgres@127.0.0.1:55432/southstar",
+    TORK_BASE_URL: "http://127.0.0.1:8000",
+  }, {
+    dockerVersion: async () => {},
+    southstarTaskContainersIdle: async () => {},
+    torkHealth: async () => {},
+    torkQueueIdle: async () => {},
+    piConfig: async () => {},
+  });
+
+  assert.equal(env.postgresAdminUrl, "postgres://postgres:postgres@127.0.0.1:55432/postgres");
+  assert.equal(env.torkBaseUrl, "http://127.0.0.1:8000");
+});
+
 test("real E2E env probes HTTP Pi config when endpoints are present", async () => {
   const probes: string[] = [];
   const env = await loadRealPostgresE2EEnv({

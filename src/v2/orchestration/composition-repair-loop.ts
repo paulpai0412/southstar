@@ -5,6 +5,7 @@ import type {
   WorkflowCompositionValidationResult,
 } from "../design-library/types.ts";
 import type { WorkflowComposer } from "./composer.ts";
+import type { PlannerDraftProgressListener } from "../ui-api/postgres-run-api.ts";
 import { validateWorkflowCompositionPlan } from "./composition-validator.ts";
 import { LlmComposerOutputError } from "./llm-composer.ts";
 
@@ -21,6 +22,8 @@ export type RunCompositionRepairLoopInput = {
   composer: WorkflowComposer;
   scope?: string;
   maxRepairAttempts: number;
+  onProgress?: PlannerDraftProgressListener;
+  onLlmDelta?: (text: string) => void;
 };
 
 export type CompositionRepairLoopResult = {
@@ -36,16 +39,28 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
     let composition: WorkflowCompositionPlan | undefined;
     let validation: WorkflowCompositionValidationResult;
     try {
+      input.onProgress?.({ stage: "composer.started", attempt, message: `Starting workflow composition attempt ${attempt + 1}.` });
       composition = await input.composer.compose({
         goalPrompt: renderRepairGoal(input.goalPrompt, previousAttempt),
         candidatePacket: input.candidatePacket,
+        onLlmDelta: input.onLlmDelta,
       });
+      input.onProgress?.({ stage: "composer.completed", attempt, message: `Workflow composition attempt ${attempt + 1} returned a plan.` });
       validation = await validateWorkflowCompositionPlan(
         input.db,
         input.candidatePacket,
         composition,
         { scope: input.scope },
       );
+      input.onProgress?.({
+        stage: "validation.completed",
+        attempt,
+        ok: validation.ok,
+        issueCount: validation.issues.length,
+        message: validation.ok
+          ? `Workflow composition attempt ${attempt + 1} passed validation.`
+          : `Workflow composition attempt ${attempt + 1} failed validation.`,
+      });
       const currentAttempt = { attempt, validation, composition };
       attempts.push(currentAttempt);
       previousAttempt = currentAttempt;
@@ -54,6 +69,8 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
         throw error;
       }
       validation = { ok: false, issues: error.issues };
+      input.onProgress?.({ stage: "composer.failed", attempt, ok: false, issueCount: error.issues.length, message: (error as Error).message });
+      input.onProgress?.({ stage: "validation.completed", attempt, ok: false, issueCount: error.issues.length, message: `Workflow composition attempt ${attempt + 1} failed contract validation.` });
       const currentAttempt = { attempt, validation };
       attempts.push(currentAttempt);
       previousAttempt = currentAttempt;

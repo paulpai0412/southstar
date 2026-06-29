@@ -1,0 +1,121 @@
+import type { WorkflowDag } from "./types";
+
+export type WorkflowGenerateMessageEvent = "message" | "message.delta";
+
+export type WorkflowGenerateStageEvent = {
+  stage?: string;
+  message?: string;
+  attempt?: number;
+  ok?: boolean;
+  issueCount?: number;
+};
+
+export type WorkflowGenerateDraftEvent = {
+  draftId?: string;
+  status?: string;
+  validationIssues?: unknown[];
+};
+
+export type WorkflowGenerateStreamHandlers = {
+  onMessage?: (text: string, event: WorkflowGenerateMessageEvent) => void;
+  onStage?: (stage: WorkflowGenerateStageEvent) => void;
+  onDraft?: (draft: WorkflowGenerateDraftEvent) => void;
+  onDag?: (dag: WorkflowDag) => void;
+  onError?: (message: string) => void;
+  onDone?: () => void;
+};
+
+export async function generateWorkflowDagStream(input: {
+  prompt: string;
+  cwd?: string | null;
+  templateId?: string | null;
+} & WorkflowGenerateStreamHandlers): Promise<void> {
+  const response = await fetch("/api/workflow/generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      prompt: input.prompt,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(input.templateId ? { templateId: input.templateId } : {}),
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `workflow generate failed with HTTP ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error("workflow generate response is missing a stream body");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (value) {
+      buffer += decoder.decode(value, { stream: !done });
+      buffer = dispatchCompleteFrames(buffer, input);
+    }
+    if (done) break;
+  }
+
+  buffer += decoder.decode();
+  const rest = buffer.trim();
+  if (rest) {
+    dispatchFrame(rest, input);
+  }
+}
+
+function dispatchCompleteFrames(buffer: string, handlers: WorkflowGenerateStreamHandlers): string {
+  let remaining = buffer;
+  while (true) {
+    const normalized = remaining.replace(/\r\n/g, "\n");
+    const frameEnd = normalized.indexOf("\n\n");
+    if (frameEnd === -1) return remaining;
+    const frame = normalized.slice(0, frameEnd);
+    dispatchFrame(frame, handlers);
+    remaining = normalized.slice(frameEnd + 2);
+  }
+}
+
+function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers): void {
+  const lines = frame.split("\n");
+  const event = lines.find((line) => line.startsWith("event:"))?.slice("event:".length).trim() || "message";
+  const dataLines = lines
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice("data:".length).trimStart());
+  const rawData = dataLines.join("\n");
+  const data = rawData ? JSON.parse(rawData) as Record<string, unknown> : {};
+
+  if (event === "message" || event === "message.delta") {
+    const text = typeof data.text === "string" ? data.text : "";
+    if (text) handlers.onMessage?.(text, event);
+    return;
+  }
+  if (event === "planner.stage") {
+    handlers.onStage?.(data as WorkflowGenerateStageEvent);
+    return;
+  }
+  if (event === "draft") {
+    const draft = data.draft && typeof data.draft === "object" ? data.draft : data;
+    handlers.onDraft?.(draft as WorkflowGenerateDraftEvent);
+    return;
+  }
+  if (event === "dag") {
+    if (!data.dag || typeof data.dag !== "object") {
+      throw new Error("workflow generate dag event is missing dag");
+    }
+    handlers.onDag?.(data.dag as WorkflowDag);
+    return;
+  }
+  if (event === "error") {
+    const message = typeof data.error === "string" ? data.error : "workflow generate failed";
+    handlers.onError?.(message);
+    throw new Error(message);
+  }
+  if (event === "done") {
+    handlers.onDone?.();
+  }
+}

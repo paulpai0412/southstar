@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { SouthstarWorkflowCanvas } from "../../components/southstar/workflow-canvas/SouthstarWorkflowCanvas";
+import type { WorkflowCanvasModel, WorkflowDependencyModel, WorkflowTaskNodeModel } from "../../components/southstar/workflow-canvas/types";
 import { useWorkflowLifecycle } from "@/hooks/useWorkflowLifecycle";
-import { layoutWorkflowDag } from "@/lib/workflow/dag-layout";
 import type { WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
 
 export function WorkflowDagBlock({
@@ -15,10 +16,11 @@ export function WorkflowDagBlock({
   onNodeSelect?: (node: WorkflowDagNode) => void;
 }) {
   const [expanded, setExpanded] = useState<boolean>(dag.expandedByDefault);
+  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const { state, createDraft, validateDraft, runDraft, retryExecute } = useWorkflowLifecycle(dag, cwd);
-  const layout = useMemo(() => layoutWorkflowDag(dag), [dag]);
-  const markerId = useMemo(() => `workflow-dag-arrow-head-${dag.id}`, [dag.id]);
   const busy = state.phase === "drafting" || state.phase === "validating" || state.phase === "running" || state.phase === "executing";
+  const nodeById = useMemo(() => new Map(dag.nodes.map((node) => [node.id, node])), [dag.nodes]);
+  const canvas = useMemo(() => workflowDagToCanvasModel(dag, selectedNodeId), [dag, selectedNodeId]);
 
   const handleDraft = () => {
     if (!window.confirm("Create a Southstar planner draft in Postgres for this DAG?")) {
@@ -36,6 +38,12 @@ export function WorkflowDagBlock({
       return;
     }
     void runDraft();
+  };
+
+  const handleSelectTask = (taskId: string) => {
+    setSelectedNodeId(taskId);
+    const node = nodeById.get(taskId);
+    if (node) onNodeSelect?.(node);
   };
 
   return (
@@ -75,7 +83,7 @@ export function WorkflowDagBlock({
         </span>
       </button>
       {expanded && (
-        <div style={{ padding: 10, background: "var(--bg)", overflowX: "auto" }}>
+        <div style={{ padding: 10, background: "var(--bg)" }}>
           <div
             style={{
               display: "flex",
@@ -142,49 +150,24 @@ export function WorkflowDagBlock({
             )}
           </div>
           <div
+            data-testid="workflow-dag-scroll"
             style={{
-              position: "relative",
-              minWidth: Math.max(520, layout.width),
-              minHeight: layout.height,
+              overflowX: "auto",
+              overflowY: "auto",
+              maxHeight: "min(62vh, 620px)",
+              minHeight: 360,
+              border: "1px solid var(--border)",
+              borderRadius: 7,
+              background: "var(--bg-panel)",
             }}
           >
-            <svg
-              width={layout.width}
-              height={layout.height}
-              style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none", overflow: "visible" }}
-              aria-hidden
-            >
-              <defs>
-                <marker id={markerId} viewBox="0 0 8 8" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
-                  <path d="M 0 0 L 8 4 L 0 8 z" fill="var(--accent)" />
-                </marker>
-              </defs>
-              {layout.arrows.map((arrow) => (
-                <path
-                  key={`${arrow.from}-${arrow.to}`}
-                  data-testid="workflow-dag-arrow"
-                  d={arrow.path}
-                  fill="none"
-                  stroke="var(--accent)"
-                  strokeWidth={1.5}
-                  opacity={0.8}
-                  markerEnd={`url(#${markerId})`}
-                />
-              ))}
-            </svg>
-            {layout.columns.flatMap((column) =>
-              column.nodes.map((layoutNode) => (
-                <WorkflowDagNodeCard
-                  key={layoutNode.node.id}
-                  node={layoutNode.node}
-                  x={layoutNode.x}
-                  y={layoutNode.y}
-                  width={layoutNode.width}
-                  height={layoutNode.height}
-                  onNodeSelect={onNodeSelect}
-                />
-              )),
-            )}
+            <div style={{ minWidth: 760, height: 520 }}>
+              <SouthstarWorkflowCanvas
+                canvas={canvas}
+                selectedTaskId={selectedNodeId}
+                onSelectTask={handleSelectTask}
+              />
+            </div>
           </div>
         </div>
       )}
@@ -192,51 +175,54 @@ export function WorkflowDagBlock({
   );
 }
 
-function WorkflowDagNodeCard({
-  node,
-  x,
-  y,
-  width,
-  height,
-  onNodeSelect,
-}: {
-  node: WorkflowDagNode;
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  onNodeSelect?: (node: WorkflowDagNode) => void;
-}) {
-  return (
-    <button
-      data-testid={`workflow-dag-node-${node.id}`}
-      onClick={() => onNodeSelect?.(node)}
-      style={{
-        position: "absolute",
-        left: x,
-        top: y,
-        width,
-        minHeight: height,
-        border: "1px solid color-mix(in srgb, var(--accent) 24%, var(--border))",
-        borderRadius: 7,
-        background: "color-mix(in srgb, var(--accent) 4%, var(--bg))",
-        color: "var(--text)",
-        padding: 9,
-        cursor: "pointer",
-        textAlign: "left",
-      }}
-    >
-      <div style={{ fontSize: 12, fontWeight: 650, marginBottom: 5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {node.label}
-      </div>
-      <div style={{ color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {node.agentRef}
-      </div>
-      <div style={{ color: "var(--text-dim)", fontSize: 11, marginTop: 8 }}>
-        {node.provider} / {node.model}
-      </div>
-    </button>
-  );
+function workflowDagToCanvasModel(dag: WorkflowDag, selectedNodeId: string | null): WorkflowCanvasModel {
+  const dependsOnByNode = new Map<string, string[]>();
+  for (const edge of dag.edges) {
+    const dependencies = dependsOnByNode.get(edge.to) ?? [];
+    dependencies.push(edge.from);
+    dependsOnByNode.set(edge.to, dependencies);
+  }
+
+  const nodes: WorkflowTaskNodeModel[] = dag.nodes.map((node) => ({
+    id: node.id,
+    label: node.label,
+    kind: "task",
+    status: nodeStatus(node),
+    dependsOn: dependsOnByNode.get(node.id) ?? [],
+    roleRef: node.role,
+    agentProfileRef: node.profileRef,
+    artifactKind: "implementation_report",
+    badges: [
+      { label: node.provider, tone: node.provider === "pi" ? "good" : "neutral" },
+      { label: node.model, tone: "neutral" },
+    ],
+    attention: node.state === "blocked"
+      ? { severity: "blocked", reason: "Planner draft is blocked." }
+      : node.state === "warning"
+        ? { severity: "warning", reason: "Planner draft has validation warnings." }
+        : null,
+  }));
+
+  const edges: WorkflowDependencyModel[] = dag.edges.map((edge, index) => ({
+    id: `${edge.from}->${edge.to}-${index}`,
+    source: edge.from,
+    target: edge.to,
+    status: dag.readiness === "ready" ? "ready" : dag.readiness === "warning" ? "blocked" : "blocked",
+  }));
+
+  return {
+    graphId: dag.id,
+    mode: dag.mode === "runtime" ? "runtime" : "draft",
+    selectedNodeId,
+    nodes,
+    edges,
+  };
+}
+
+function nodeStatus(node: WorkflowDagNode): string {
+  if (node.state === "blocked") return "blocked";
+  if (node.state === "warning") return "paused";
+  return "ready";
 }
 
 function actionButtonStyle(disabled: boolean) {

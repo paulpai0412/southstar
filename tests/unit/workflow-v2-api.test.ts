@@ -80,7 +80,7 @@ test("proxyWorkflowV2Json returns blocked when v2 base is missing", async () => 
 
 test("workflow route status exposes v2 capabilities", async () => {
   process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
-  const { GET } = await import("../../app/api/workflow/status/route");
+  const { GET } = await import("../../web/app/api/workflow/status/route");
   const response = await GET();
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), {
@@ -104,7 +104,7 @@ test("workflow route proxy planner drafts create maps to v2", async () => {
     return Response.json({ draftId: "draft-1" });
   }) as typeof fetch;
 
-  const { POST } = await import("../../app/api/workflow/planner-drafts/route");
+  const { POST } = await import("../../web/app/api/workflow/planner-drafts/route");
   const request = new NextRequest("http://localhost/api/workflow/planner-drafts", {
     method: "POST",
     body: JSON.stringify({ goalPrompt: "make workflow" }),
@@ -123,7 +123,7 @@ test("workflow route proxy planner draft revise maps to v2", async () => {
     return Response.json({ draftId: "draft-1", revised: true });
   }) as typeof fetch;
 
-  const { POST } = await import("../../app/api/workflow/planner-drafts/[draftId]/revise/route");
+  const { POST } = await import("../../web/app/api/workflow/planner-drafts/[draftId]/revise/route");
   const request = new NextRequest("http://localhost/api/workflow/planner-drafts/draft-1/revise", {
     method: "POST",
     body: JSON.stringify({ patch: [] }),
@@ -141,7 +141,7 @@ test("workflow route proxy planner draft orchestration maps to v2", async () => 
     return Response.json({ draftId: "draft-1", status: "validated" });
   }) as typeof fetch;
 
-  const { GET } = await import("../../app/api/workflow/planner-drafts/[draftId]/orchestration/route");
+  const { GET } = await import("../../web/app/api/workflow/planner-drafts/[draftId]/orchestration/route");
   const request = new NextRequest("http://localhost/api/workflow/planner-drafts/draft-1/orchestration", {
     method: "GET",
   });
@@ -158,7 +158,7 @@ test("workflow route proxy planner draft runs maps to v2", async () => {
     return Response.json({ runId: "run-1", taskIds: ["task-1"] });
   }) as typeof fetch;
 
-  const { POST } = await import("../../app/api/workflow/planner-drafts/[draftId]/runs/route");
+  const { POST } = await import("../../web/app/api/workflow/planner-drafts/[draftId]/runs/route");
   const request = new NextRequest("http://localhost/api/workflow/planner-drafts/draft-1/runs", {
     method: "POST",
     body: JSON.stringify({ confirm: true }),
@@ -176,7 +176,7 @@ test("workflow route proxy planner draft task profile override maps to v2", asyn
     return Response.json({ taskId: "task-1", profileOverride: { model: "gpt-5-codex" } });
   }) as typeof fetch;
 
-  const { PATCH } = await import("../../app/api/workflow/planner-drafts/[draftId]/tasks/[taskId]/profile-override/route");
+  const { PATCH } = await import("../../web/app/api/workflow/planner-drafts/[draftId]/tasks/[taskId]/profile-override/route");
   const request = new NextRequest("http://localhost/api/workflow/planner-drafts/draft-1/tasks/task-1/profile-override", {
     method: "PATCH",
     body: JSON.stringify({ model: "gpt-5-codex" }),
@@ -195,7 +195,7 @@ test("workflow route proxy ui workflow maps query string to v2", async () => {
     return Response.json({ canvasModel: { graphId: "draft-1" } });
   }) as typeof fetch;
 
-  const { GET } = await import("../../app/api/workflow/ui/route");
+  const { GET } = await import("../../web/app/api/workflow/ui/route");
   const request = new NextRequest("http://localhost/api/workflow/ui?draftId=draft-1&taskId=task-1", {
     method: "GET",
   });
@@ -212,7 +212,7 @@ test("workflow route proxy agent library candidates maps query string to v2", as
     return Response.json({ alternatives: { agentProfiles: [] } });
   }) as typeof fetch;
 
-  const { GET } = await import("../../app/api/workflow/agent-library/candidates/route");
+  const { GET } = await import("../../web/app/api/workflow/agent-library/candidates/route");
   const request = new NextRequest("http://localhost/api/workflow/agent-library/candidates?draftId=draft-1&taskId=task-1", {
     method: "GET",
   });
@@ -229,7 +229,7 @@ test("workflow route proxy runs create maps to v2", async () => {
     return Response.json({ runId: "run-2" });
   }) as typeof fetch;
 
-  const { POST } = await import("../../app/api/workflow/runs/route");
+  const { POST } = await import("../../web/app/api/workflow/runs/route");
   const request = new NextRequest("http://localhost/api/workflow/runs", {
     method: "POST",
     body: JSON.stringify({ draftId: "draft-1" }),
@@ -247,7 +247,7 @@ test("workflow route proxy run status maps to v2", async () => {
     return Response.json({ runId: "run-1", status: "running" });
   }) as typeof fetch;
 
-  const { GET } = await import("../../app/api/workflow/runs/[runId]/route");
+  const { GET } = await import("../../web/app/api/workflow/runs/[runId]/route");
   const request = new NextRequest("http://localhost/api/workflow/runs/run-1", { method: "GET" });
   const response = await GET(request, { params: Promise.resolve({ runId: "run-1" }) });
   assert.equal(calls[0], "http://127.0.0.1:3000/api/v2/runs/run-1");
@@ -262,7 +262,7 @@ test("workflow route proxy run tasks maps to v2", async () => {
     return Response.json({ tasks: [{ taskId: "task-1" }] });
   }) as typeof fetch;
 
-  const { GET } = await import("../../app/api/workflow/runs/[runId]/tasks/route");
+  const { GET } = await import("../../web/app/api/workflow/runs/[runId]/tasks/route");
   const request = new NextRequest("http://localhost/api/workflow/runs/run-1/tasks", { method: "GET" });
   const response = await GET(request, { params: Promise.resolve({ runId: "run-1" }) });
   assert.equal(calls[0], "http://127.0.0.1:3000/api/v2/runs/run-1/tasks");
@@ -277,7 +277,7 @@ test("workflow route proxy run execute maps to v2", async () => {
     return Response.json({ runId: "run-1", status: "queued" });
   }) as typeof fetch;
 
-  const { POST } = await import("../../app/api/workflow/runs/[runId]/execute/route");
+  const { POST } = await import("../../web/app/api/workflow/runs/[runId]/execute/route");
   const request = new NextRequest("http://localhost/api/workflow/runs/run-1/execute", {
     method: "POST",
     body: JSON.stringify({ confirm: true }),

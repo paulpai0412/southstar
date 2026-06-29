@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import path from "node:path";
-import { readWorkflowResource, writeWorkflowResource } from "@/lib/workflow/library-store";
-import { workflowV2Capabilities } from "@/lib/workflow/v2-api";
+import { readWorkflowResource, writeWorkflowResource } from "../../../../../lib/workflow/library-store";
+import { workflowV2Capabilities } from "../../../../../lib/workflow/v2-api";
 
 function resourcePathFromSegments(segments: string[]): string {
   return segments.join("/");

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { loadWorkflowLibrary } from "@/lib/workflow/library-store";
-import { buildWorkflowV2Url, workflowV2Capabilities } from "@/lib/workflow/v2-api";
-import { unwrapV2Envelope, workflowLibraryFromAgentLibrary, type V2AgentLibraryReadModel } from "@/lib/workflow/v2-library-adapter";
+import { loadWorkflowLibrary } from "../../../../lib/workflow/library-store";
+import { buildWorkflowV2Url, workflowV2Capabilities } from "../../../../lib/workflow/v2-api";
+import { unwrapV2Envelope, workflowLibraryFromAgentLibrary, type V2AgentLibraryReadModel } from "../../../../lib/workflow/v2-library-adapter";
 
 export async function GET(request: NextRequest) {
   try {

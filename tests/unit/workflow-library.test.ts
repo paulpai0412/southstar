@@ -4,11 +4,11 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
-import { POST as postWorkflowGenerate } from "../../app/api/workflow/generate/route";
-import { GET as getWorkflowLibrary } from "../../app/api/workflow/library/route";
-import { GET as getWorkflowResource, PUT as putWorkflowResource } from "../../app/api/workflow/resources/[...path]/route";
-import { loadWorkflowLibrary, readWorkflowResource, writeWorkflowResource } from "../../lib/workflow/library-store";
-import { buildWorkflowDagFromPlannerDraft, workflowLibraryFromAgentLibrary } from "../../lib/workflow/v2-library-adapter";
+import { POST as postWorkflowGenerate } from "../../web/app/api/workflow/generate/route";
+import { GET as getWorkflowLibrary } from "../../web/app/api/workflow/library/route";
+import { GET as getWorkflowResource, PUT as putWorkflowResource } from "../../web/app/api/workflow/resources/[...path]/route";
+import { loadWorkflowLibrary, readWorkflowResource, writeWorkflowResource } from "../../web/lib/workflow/library-store";
+import { buildWorkflowDagFromPlannerDraft, workflowLibraryFromAgentLibrary } from "../../web/lib/workflow/v2-library-adapter";
 
 const originalFetch = global.fetch;
 const originalBase = process.env.SOUTHSTAR_V2_API_BASE_URL;
@@ -131,6 +131,33 @@ test("buildWorkflowDagFromPlannerDraft mapping preserves dependencies and readin
   assert.equal(dag.nodes.length, 2);
   assert.equal(dag.nodes[1]?.provider, "pi");
   assert.deepEqual(dag.edges, [{ from: "understand", to: "implement" }]);
+});
+
+
+test("buildWorkflowDagFromPlannerDraft computes dependency-derived levels for parallel tasks", () => {
+  const dag = buildWorkflowDagFromPlannerDraft({
+    draftId: "draft-parallel",
+    goalPrompt: "Ship full-stack todo app",
+    workflowId: "wf-parallel",
+    status: "validated",
+    validationIssues: [],
+    taskSummaries: [
+      { taskId: "understand", taskName: "Understand", dependsOn: [], roleRef: "explorer", agentProfileRef: "profile.software-explorer-codex" },
+      { taskId: "review", taskName: "Review", dependsOn: ["understand"], roleRef: "checker", agentProfileRef: "profile.software-checker-codex" },
+      { taskId: "frontend", taskName: "Frontend", dependsOn: ["review"], roleRef: "maker", agentProfileRef: "profile.software-maker-pi" },
+      { taskId: "backend", taskName: "Backend", dependsOn: ["review"], roleRef: "maker", agentProfileRef: "profile.software-maker-pi" },
+      { taskId: "integrate", taskName: "Integrate", dependsOn: ["frontend", "backend"], roleRef: "maker", agentProfileRef: "profile.software-maker-pi" },
+    ],
+  });
+
+  const levels = Object.fromEntries(dag.nodes.map((node) => [node.id, node.level]));
+  assert.deepEqual(levels, {
+    understand: 0,
+    review: 1,
+    frontend: 2,
+    backend: 2,
+    integrate: 3,
+  });
 });
 
 test("loadWorkflowLibrary returns the software workflow fixture when no file library exists", async () => {
@@ -283,47 +310,26 @@ test("library route falls back to fixture library when v2 backend is not configu
   assert.equal(body.library.domains[0]?.workflowTemplates[0]?.id, "template.software-feature");
 });
 
-test("generate route prefers v2 planner draft endpoints and keeps SSE message/dag/done contract", async () => {
+test("generate route proxies backend planner draft stream and converts orchestration to a DAG", async () => {
   process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
-  const calls: Array<{ url: string; method: string }> = [];
+  const calls: Array<{ url: string; method: string; body?: unknown }> = [];
   global.fetch = (async (url, init) => {
     const href = String(url);
-    const method = init?.method ?? "GET";
-    calls.push({ url: href, method });
-    if (href.endsWith("/api/v2/planner/drafts")) {
-      return Response.json({
-        ok: true,
-        kind: "planner-draft",
-        result: {
-          draftId: "draft-1",
-          goalPrompt: "Ship feature",
-          workflowId: "wf-1",
-          status: "validated",
-          validationIssues: [],
-          taskSummaries: [],
-        },
-      });
-    }
-    if (href.endsWith("/api/v2/planner/drafts/draft-1/orchestration")) {
-      return Response.json({
-        ok: true,
-        kind: "planner-draft-orchestration",
-        result: {
-          draftId: "draft-1",
-          goalPrompt: "Ship feature",
-          workflowId: "wf-1",
-          status: "validated",
-          validationIssues: [],
-          taskSummaries: [
-            {
-              taskId: "implement",
-              taskName: "Implement change",
-              dependsOn: [],
-              roleRef: "maker",
-              agentProfileRef: "profile.software-maker-pi",
-            },
-          ],
-        },
+    calls.push({
+      url: href,
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) as unknown : undefined,
+    });
+    if (href.endsWith("/api/v2/planner/drafts/stream")) {
+      return new Response([
+        'event: planner.stage\ndata: {"stage":"composer.started","message":"Streaming LLM workflow composition."}\n\n',
+        'event: message.delta\ndata: {"text":"{\\"schemaVersion\\""}\n\n',
+        'event: draft\ndata: {"draft":{"draftId":"draft-1","status":"validated"}}\n\n',
+        'event: orchestration\ndata: {"orchestration":{"draftId":"draft-1","goalPrompt":"Ship feature","workflowId":"wf-1","status":"validated","validationIssues":[],"taskSummaries":[{"taskId":"implement","taskName":"Implement change","dependsOn":[],"roleRef":"maker","agentProfileRef":"profile.software-maker-pi"}]}}\n\n',
+        'event: done\ndata: {}\n\n',
+      ].join(""), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
       });
     }
     throw new Error(`unexpected fetch: ${href}`);
@@ -338,13 +344,54 @@ test("generate route prefers v2 planner draft endpoints and keeps SSE message/da
   assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
   const events = readSse(await response.text());
-  assert.deepEqual(events.map((event) => event.event), ["message", "dag", "done"]);
+  assert.deepEqual(events.map((event) => event.event), ["planner.stage", "message.delta", "draft", "dag", "done"]);
   const dagPayload = events.find((event) => event.event === "dag")?.data as { dag?: { id?: string } };
   assert.equal(dagPayload.dag?.id, "draft-1");
-  assert.deepEqual(calls, [
-    { url: "http://127.0.0.1:3000/api/v2/planner/drafts", method: "POST" },
-    { url: "http://127.0.0.1:3000/api/v2/planner/drafts/draft-1/orchestration", method: "GET" },
-  ]);
+  assert.deepEqual(calls, [{
+    url: "http://127.0.0.1:3000/api/v2/planner/drafts/stream",
+    method: "POST",
+    body: {
+      goalPrompt: "Ship feature",
+      cwd: "/tmp/demo",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
+    },
+  }]);
+});
+
+test("generate route fallback can produce a parallel workflow DAG from prompt intent", async () => {
+  delete process.env.SOUTHSTAR_V2_API_BASE_URL;
+  global.fetch = (async () => {
+    throw new Error("fetch should not be called without v2 base");
+  }) as typeof fetch;
+
+  const response = await postWorkflowGenerate(new NextRequest("http://localhost/api/workflow/generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      prompt: "生成 todo webapp 的並行 workflow DAG，frontend 與 backend 可以 parallel implement",
+      cwd: "/tmp/demo",
+    }),
+  }));
+
+  assert.equal(response.status, 200);
+  const events = readSse(await response.text());
+  const dagPayload = events.find((event) => event.event === "dag")?.data as {
+    dag?: {
+      nodes?: Array<{ id: string; level: number }>;
+      edges?: Array<{ from: string; to: string }>;
+    };
+  };
+  const nodes = dagPayload.dag?.nodes ?? [];
+  const edges = dagPayload.dag?.edges ?? [];
+  const parallelImplementNodes = nodes.filter((node) => node.level === 2);
+
+  assert.deepEqual(parallelImplementNodes.map((node) => node.id).sort(), ["implement-api", "implement-ui"]);
+  assert.ok(edges.some((edge) => edge.from === "plan" && edge.to === "implement-ui"));
+  assert.ok(edges.some((edge) => edge.from === "plan" && edge.to === "implement-api"));
+  assert.ok(edges.some((edge) => edge.from === "implement-ui" && edge.to === "verify"));
+  assert.ok(edges.some((edge) => edge.from === "implement-api" && edge.to === "verify"));
+  assert.equal(edges.some((edge) => edge.from === "implement-ui" && edge.to === "implement-api"), false);
 });
 
 test("GET workflow resource route returns 404 for an unknown resource", async () => {

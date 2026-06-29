@@ -189,6 +189,18 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       return json("run-goal", { draft, ...run });
     }
 
+    if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts/stream") {
+      const body = await readJsonBody<{
+        goalPrompt?: unknown;
+        orchestrationMode?: unknown;
+        composerMode?: unknown;
+        domainPackId?: unknown;
+        cwd?: unknown;
+        libraryHints?: unknown;
+      }>(request);
+      return createPlannerDraftStreamResponse(context, body);
+    }
+
     if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
       const body = await readJsonBody<{
         goalPrompt?: unknown;
@@ -621,6 +633,62 @@ async function decideApprovalPg(context: RuntimeServerContext, input: { runId: s
   return { id: input.approvalId, status: input.decision };
 }
 
+function createPlannerDraftStreamResponse(
+  context: RuntimeServerContext,
+  body: {
+    goalPrompt?: unknown;
+    orchestrationMode?: unknown;
+    composerMode?: unknown;
+    domainPackId?: unknown;
+    cwd?: unknown;
+    libraryHints?: unknown;
+  },
+): Response {
+  const plannerRequest = parsePlannerDraftRequest(body);
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
+      try {
+        send("planner.stage", { stage: "request.accepted", message: "Accepted workflow generation request." });
+        const composer = resolvePlannerWorkflowComposer(context, {
+          onStreamDegraded(message) {
+            send("planner.stage", { stage: "planner.stream.degraded", message });
+          },
+        });
+        const draft = await createPostgresPlannerDraft(context.db, {
+          ...plannerRequest,
+          composer,
+          onProgress(event) {
+            send("planner.stage", event);
+          },
+          onLlmDelta(text) {
+            send("message.delta", { text });
+          },
+        });
+        send("draft", { draft });
+        send("planner.stage", { stage: "orchestration.loading", message: "Loading planner draft orchestration." });
+        const orchestration = await getPostgresPlannerDraftOrchestration(context.db, { draftId: draft.draftId });
+        send("orchestration", { orchestration });
+        send("done", {});
+      } catch (error) {
+        send("error", { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
+}
+
 async function readJsonBody<T>(request: Request): Promise<T> {
   return await request.json() as T;
 }
@@ -745,12 +813,22 @@ function optionalComposerMode(value: unknown): WorkflowComposerMode | undefined 
   throw new Error("composerMode must be fixture, llm, or llm-with-fixture-fallback");
 }
 
-function resolvePlannerWorkflowComposer(context: RuntimeServerContext): WorkflowComposer {
+function resolvePlannerWorkflowComposer(
+  context: RuntimeServerContext,
+  options: { onStreamDegraded?: (message: string) => void } = {},
+): WorkflowComposer {
   if (context.workflowComposer) return context.workflowComposer;
   return new LlmWorkflowComposer({
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
     client: {
       async generateText(input) {
+        return await context.plannerClient.generate(input.prompt);
+      },
+      async generateTextStream(input, handlers) {
+        if (context.plannerClient.generateStream) {
+          return await context.plannerClient.generateStream(input.prompt, { onDelta: handlers.onDelta });
+        }
+        options.onStreamDegraded?.("Planner client does not expose true token streaming; using final text only.");
         return await context.plannerClient.generate(input.prompt);
       },
     },

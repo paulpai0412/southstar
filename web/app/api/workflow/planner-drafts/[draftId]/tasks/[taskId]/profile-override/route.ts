@@ -1,4 +1,4 @@
-import { proxyWorkflowV2Json } from "@/lib/workflow/v2-api";
+import { proxyWorkflowV2Json } from "../../../../../../../../lib/workflow/v2-api";
 import type { NextRequest } from "next/server";
 
 export async function PATCH(

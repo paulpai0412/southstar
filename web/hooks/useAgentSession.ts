@@ -11,8 +11,10 @@ import type {
 } from "@/lib/types";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
+import { generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
 import type { ToolEntry } from "@/components/ToolPanel";
 import type { SessionStatsInfo } from "@/lib/pi-types";
+import type { WorkflowDag } from "@/lib/workflow/types";
 
 export interface SessionData {
   sessionId: string;
@@ -218,6 +220,12 @@ function readCompactResult(result: unknown, reason: string): CompactResultInfo |
   const r = result as CompactCommandResult;
   if (typeof r.tokensBefore !== "number" || typeof r.estimatedTokensAfter !== "number") return null;
   return { reason, tokensBefore: r.tokensBefore, estimatedTokensAfter: r.estimatedTokensAfter };
+}
+
+function workflowTemplateIdFrom(template: unknown): string | null {
+  if (!template || typeof template !== "object") return null;
+  const id = (template as { id?: unknown }).id;
+  return typeof id === "string" && id.length > 0 ? id : null;
 }
 
 export interface ChatInputHandle {
@@ -773,6 +781,86 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     pendingScrollToUserRef.current = true;
     completionScrollAllowedRef.current = true;
 
+    if (opts.workflowMode && !images?.length && !isSlashCommandPrompt) {
+      let streamedText = "";
+      let generatedDag: WorkflowDag | null = null;
+      const updateStreamingMessage = () => {
+        dispatch({
+          type: "update",
+          message: {
+            role: "assistant",
+            content: streamedText ? [{ type: "text", text: streamedText }] : [],
+            model: "workflow-generate",
+            provider: "southstar",
+            timestamp: Date.now(),
+          },
+        });
+      };
+      const appendWorkflowText = (text: string, mode: "line" | "message.delta" = "line") => {
+        if (!text) return;
+        if (mode === "message.delta") {
+          streamedText = `${streamedText}${text}`;
+        } else {
+          streamedText = streamedText ? `${streamedText}\n${text}` : text;
+        }
+        updateStreamingMessage();
+      };
+
+      try {
+        await generateWorkflowDagStream({
+          prompt: trimmedMessage,
+          cwd: opts.workflowCwd ?? session?.cwd ?? newSessionCwd,
+          templateId: workflowTemplateIdFrom(opts.workflowTemplate),
+          onMessage(text, event) {
+            appendWorkflowText(text, event === "message.delta" ? "message.delta" : "line");
+          },
+          onStage(stage) {
+            const label = stage.message || stage.stage;
+            if (label) appendWorkflowText(`[${stage.stage ?? "planner.stage"}] ${label}`);
+          },
+          onDraft(draft) {
+            if (draft.draftId) appendWorkflowText(`[draft] ${draft.draftId}${draft.status ? ` ${draft.status}` : ""}`);
+          },
+          onDag(dag) {
+            generatedDag = dag;
+          },
+        });
+
+        if (!generatedDag) {
+          throw new Error("workflow generate completed without a DAG");
+        }
+
+        const assistantMsg: AgentMessage = {
+          role: "assistant",
+          content: [
+            ...(streamedText ? [{ type: "text" as const, text: streamedText }] : []),
+            { type: "workflowDag" as const, dag: generatedDag },
+          ],
+          model: "workflow-generate",
+          provider: "southstar",
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        addNotice({ type: "error", message });
+        setMessages((prev) => [...prev, {
+          role: "assistant",
+          content: [{ type: "text", text: `Workflow generation failed: ${message}` }],
+          model: "workflow-generate",
+          provider: "southstar",
+          errorMessage: message,
+          timestamp: Date.now(),
+        } as AgentMessage]);
+      } finally {
+        agentRunningRef.current = false;
+        setAgentRunning(false);
+        setAgentPhase(null);
+        dispatch({ type: "end" });
+      }
+      return;
+    }
+
     const piImages = images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
 
     try {
@@ -841,7 +929,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, agentRunning, connectEvents, promoteNewSession, waitForPromptSettlement]);
+  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, agentRunning, connectEvents, promoteNewSession, waitForPromptSettlement, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
 
   const handleAbort = useCallback(async () => {
     const sid = sessionIdRef.current;

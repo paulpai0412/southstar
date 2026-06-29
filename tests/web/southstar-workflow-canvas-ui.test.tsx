@@ -14,6 +14,99 @@ function source(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
+test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads", async () => {
+  const originalFetch = global.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const chunks = [
+    'event: message\ndata: {"text":"Creating planner draft"}\n\n',
+    'event: message.delta\ndata: {"text":"Loading orchestration"}\n\n',
+    'event: planner.stage\ndata: {"stage":"composer.started","message":"Streaming LLM workflow composition."}\n\n',
+    'event: draft\ndata: {"draft":{"draftId":"draft-1","status":"validated"}}\n\n',
+    'event: dag\ndata: {"dag":{"id":"draft-1","templateId":"template.software-feature","templateTitle":"Todo app","prompt":"todo","expandedByDefault":true,"readiness":"ready","nodes":[],"edges":[],"createdAt":"2026-06-29T00:00:00.000Z"}}\n\n',
+    "event: done\ndata: {}\n\n",
+  ];
+  global.fetch = (async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(new ReadableStream({
+      start(controller) {
+        const encoder = new TextEncoder();
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const { generateWorkflowDagStream } = await import("../../web/lib/workflow/generate-stream.ts");
+    const events: string[] = [];
+    let dagId: string | null = null;
+    await generateWorkflowDagStream({
+      prompt: "todo",
+      cwd: "/workspace/todo",
+      templateId: "template.software-feature",
+      onMessage(text: string, event: string) {
+        events.push(`${event}:${text}`);
+      },
+      onStage(stage: { stage?: string; message?: string }) {
+        events.push(`stage:${stage.stage}:${stage.message}`);
+      },
+      onDraft(draft: { draftId?: string }) {
+        events.push(`draft:${draft.draftId}`);
+      },
+      onDag(dag: { id?: string }) {
+        dagId = dag.id ?? null;
+      },
+      onDone() {
+        events.push("done");
+      },
+    });
+
+    assert.equal(calls[0]?.url, "/api/workflow/generate");
+    assert.equal(calls[0]?.init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+      prompt: "todo",
+      cwd: "/workspace/todo",
+      templateId: "template.software-feature",
+    });
+    assert.deepEqual(events, [
+      "message:Creating planner draft",
+      "message.delta:Loading orchestration",
+      "stage:composer.started:Streaming LLM workflow composition.",
+      "draft:draft-1",
+      "done",
+    ]);
+    assert.equal(dagId, "draft-1");
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("Workflow mode generate submit uses web generate stream and preserves normal agent send", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+  assert.match(hook, /generateWorkflowDagStream/);
+  assert.match(hook, /opts\.workflowMode/);
+  assert.match(hook, /type:\s*"workflowDag"/);
+  assert.match(hook, /onStage/);
+  assert.match(hook, /onDraft/);
+  assert.match(hook, /message\.delta/);
+  assert.match(hook, /sendAgentCommand/);
+  assert.match(hook, /workflowTemplate/);
+  assert.match(hook, /workflowCwd/);
+});
+
+test("web workflow DAG block renders the shared React Flow canvas inside a scroll container", () => {
+  const block = source("web/components/WorkflowDagBlock.tsx");
+  assert.match(block, /SouthstarWorkflowCanvas/);
+  assert.match(block, /workflowDagToCanvasModel/);
+  assert.match(block, /data-testid="workflow-dag-scroll"/);
+  assert.match(block, /overflowX:\s*"auto"/);
+  assert.match(block, /overflowY:\s*"auto"/);
+  assert.match(block, /onSelectTask=\{handleSelectTask\}/);
+});
+
 test("shared workflow canvas uses React Flow and ELK", () => {
   assert.match(source("components/southstar/workflow-canvas/SouthstarWorkflowCanvas.tsx"), /@xyflow\/react/);
   assert.match(source("components/southstar/workflow-canvas/layout.ts"), /elkjs\/lib\/elk\.bundled\.js/);

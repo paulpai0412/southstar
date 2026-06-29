@@ -1,3 +1,5 @@
+import React from "react";
+
 type WorkflowNodeLike = {
   id: string;
   label?: string;
