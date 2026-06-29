@@ -112,6 +112,12 @@ export function createSouthstarApiClient(input: { baseUrl: string }) {
       if (params.taskId) query.set("taskId", params.taskId);
       return get(`${baseUrl}/api/v2/agent-library/candidates?${query.toString()}`);
     },
+    patchPlannerDraftTaskProfileOverride(draftId: string, taskId: string, profileOverride: unknown): Promise<any> {
+      return patch(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(draftId)}/tasks/${encodeURIComponent(taskId)}/profile-override`,
+        profileOverride,
+      );
+    },
     async getUiOperatorOverview(): Promise<any> {
       try {
         return await get(`${baseUrl}/api/v2/ui/operator-overview`);
@@ -183,6 +189,15 @@ export function createSouthstarApiClient(input: { baseUrl: string }) {
 async function post<T>(url: string, body: unknown): Promise<T> {
   const response = await fetch(url, {
     method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return unwrap<T>(response);
+}
+
+async function patch<T>(url: string, body: unknown): Promise<T> {
+  const response = await fetch(url, {
+    method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });

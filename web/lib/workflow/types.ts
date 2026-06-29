@@ -67,6 +67,9 @@ export interface WorkflowResourceWriteOptions extends WorkflowResourceReadOption
 
 export interface WorkflowDag {
   id: string;
+  draftId?: string;
+  runId?: string;
+  mode?: "draft" | "runtime";
   templateId: string;
   templateTitle: string;
   prompt: string;
@@ -79,6 +82,10 @@ export interface WorkflowDag {
 
 export interface WorkflowDagNode {
   id: string;
+  taskId?: string;
+  draftId?: string;
+  runId?: string;
+  mode?: "draft" | "runtime";
   label: string;
   role: string;
   agentRef: string;

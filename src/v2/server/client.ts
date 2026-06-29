@@ -64,6 +64,12 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     createRunFromPlannerDraft(draftId: string) {
       return post(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(draftId)}/runs`, {});
     },
+    patchPlannerDraftTaskProfileOverride(draftId: string, taskId: string, profileOverride: unknown) {
+      return patch(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(draftId)}/tasks/${encodeURIComponent(taskId)}/profile-override`,
+        profileOverride,
+      );
+    },
     listPlannerDraftProposals(draftId: string) {
       return get(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(draftId)}/proposals`);
     },
@@ -284,6 +290,11 @@ function setOptionalQueryString(query: URLSearchParams, key: string, value: stri
 
 async function post<T = unknown>(url: string, body: unknown): Promise<ApiEnvelope<T>> {
   const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  return readJson(response);
+}
+
+async function patch<T = unknown>(url: string, body: unknown): Promise<ApiEnvelope<T>> {
+  const response = await fetch(url, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
   return readJson(response);
 }
 

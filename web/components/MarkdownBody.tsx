@@ -100,17 +100,21 @@ const markdownComponents: Components = {
   hr: (props: ComponentPropsWithoutRef<"hr">) => <hr {...props} style={{ border: "none", borderTop: "1px solid var(--border)", margin: "1em 0" }} />,
   code: ({ inline, className: codeClassName, children: codeChildren, ...props }: CodeProps) => {
     const code = String(codeChildren ?? "").replace(/\n$/, "");
-    if (inline) {
+    const isInline = inline ?? (!codeClassName && !code.includes("\n"));
+    if (isInline) {
       return (
         <code
           {...props}
+          className={undefined}
           style={{
-            padding: "1px 4px",
-            borderRadius: 4,
-            background: "var(--bg-panel)",
-            border: "1px solid var(--border)",
+            padding: "0 1px",
+            borderRadius: 0,
+            background: "transparent",
+            border: "none",
+            boxShadow: "none",
             fontFamily: "var(--font-mono)",
-            fontSize: "0.92em",
+            fontSize: "0.95em",
+            color: "inherit",
           }}
         >
           {codeChildren}

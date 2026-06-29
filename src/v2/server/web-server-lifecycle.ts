@@ -120,7 +120,7 @@ export function createWebServerLifecycle(input: WebServerLifecycleInput = {}) {
     }
     const homeDir = process.env.HOME ?? process.env.USERPROFILE;
     if (homeDir) {
-      const preferred = resolve(homeDir, "apps/southstar/southstar-web");
+      const preferred = resolve(homeDir, "apps/southstar/web");
       if (existsSync(preferred)) return preferred;
     }
     return cwd;

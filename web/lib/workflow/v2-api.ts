@@ -49,7 +49,9 @@ export async function proxyWorkflowV2Json(request: NextRequest, pathname: string
   }
 
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
-  const response = await fetch(buildWorkflowV2Url(pathname), {
+  const upstreamUrl = buildWorkflowV2Url(pathname);
+  upstreamUrl.search = request.nextUrl.search;
+  const response = await fetch(upstreamUrl, {
     method: request.method,
     headers: new Headers({
       accept: request.headers.get("accept") ?? "application/json",

@@ -45,3 +45,5 @@ await import("./web/southstar-evolution-control-center.test.tsx");
 await import("./web/southstar-pi-web-shell-ui.test.tsx");
 await import("./web/southstar-workflow-canvas-ui.test.tsx");
 await import("./web/southstar-operator-ui.test.tsx");
+await import("./web/workflow-node-profile-editor-ui.test.tsx");
+await import("./unit/workflow-node-profile.test.ts");

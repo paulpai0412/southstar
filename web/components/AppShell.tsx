@@ -8,6 +8,7 @@ import { WorkflowSidebar } from "./WorkflowSidebar";
 import { ChatWindow } from "./ChatWindow";
 import { FileViewer } from "./FileViewer";
 import { WorkflowResourceViewer } from "./WorkflowResourceViewer";
+import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
 import { TabBar, type Tab } from "./TabBar";
 import { ModelsConfig } from "./ModelsConfig";
 import { SkillsConfig } from "./SkillsConfig";
@@ -54,8 +55,11 @@ export function AppShell() {
   const [selectedSession, setSelectedSession] = useState<SessionInfo | null>(null);
   // When user clicks +, we only store the cwd — no fake session id
   const [newSessionCwd, setNewSessionCwd] = useState<string | null>(null);
+  const [workflowSelectedSession, setWorkflowSelectedSession] = useState<SessionInfo | null>(null);
+  const [workflowNewSessionCwd, setWorkflowNewSessionCwd] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [sessionKey, setSessionKey] = useState(0);
+  const [workflowSessionKey, setWorkflowSessionKey] = useState(0);
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
   const [modelsConfigOpen, setModelsConfigOpen] = useState(false);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
@@ -92,7 +96,7 @@ export function AppShell() {
   // Session stats (tokens + cost) — populated by ChatWindow, displayed in top bar
   const [sessionStats, setSessionStats] = useState<SessionStatsInfo | null>(null);
   const handleSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
-    setSessionStats(stats);
+    setSessionStats((prev) => prev === stats ? prev : stats);
   }, []);
   const [copiedSessionField, setCopiedSessionField] = useState<SessionCopyField | null>(null);
   const sessionCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -113,7 +117,7 @@ export function AppShell() {
   // Context usage — populated by ChatWindow, displayed in top bar
   const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
   const handleContextUsageChange = useCallback((usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => {
-    setContextUsage(usage);
+    setContextUsage((prev) => prev === usage ? prev : usage);
   }, []);
 
   // Single active panel — only one dropdown open at a time
@@ -206,11 +210,20 @@ export function AppShell() {
       if (prev && prev.cwd !== cwd) return null;
       return prev;
     });
+    setWorkflowSelectedSession((prev) => {
+      if (prev && prev.cwd !== cwd) return null;
+      return prev;
+    });
     setNewSessionCwd((prev) => {
       if (prev && prev !== cwd) return null;
       return prev;
     });
+    setWorkflowNewSessionCwd((prev) => {
+      if (prev && prev !== cwd) return null;
+      return prev;
+    });
     setSessionKey((k) => k + 1);
+    setWorkflowSessionKey((k) => k + 1);
     setBranchTree([]);
     setBranchActiveLeafId(null);
     setSystemPrompt(null);
@@ -280,10 +293,31 @@ export function AppShell() {
     router.replace("/", { scroll: false });
   }, [router]);
 
-  // Called by ChatWindow when a new session gets its real id from pi
-  const handleSessionCreated = useCallback((session: SessionInfo) => {
+  const handleNewWorkflowSession = useCallback((_sessionId: string, cwd: string) => {
+    setWorkflowSelectedSession(null);
+    setWorkflowNewSessionCwd(cwd);
+    setActiveCwd(cwd);
+    window.localStorage.setItem(LAST_CWD_STORAGE_KEY, cwd);
+    setWorkflowSessionKey((k) => k + 1);
+    setBranchTree([]);
+    setBranchActiveLeafId(null);
+    setSystemPrompt(null);
+    setActiveTopPanel(null);
+    router.replace("/", { scroll: false });
+  }, [router]);
+
+  const handleChatSessionCreated = useCallback((session: SessionInfo) => {
     setNewSessionCwd(null);
     setSelectedSession(session);
+    setActiveCwd(session.cwd || null);
+    if (session.cwd) window.localStorage.setItem(LAST_CWD_STORAGE_KEY, session.cwd);
+    setRefreshKey((k) => k + 1);
+    router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
+  }, [router]);
+
+  const handleWorkflowSessionCreated = useCallback((session: SessionInfo) => {
+    setWorkflowNewSessionCwd(null);
+    setWorkflowSelectedSession(session);
     setActiveCwd(session.cwd || null);
     if (session.cwd) window.localStorage.setItem(LAST_CWD_STORAGE_KEY, session.cwd);
     setRefreshKey((k) => k + 1);
@@ -295,11 +329,22 @@ export function AppShell() {
     setExplorerRefreshKey((k) => k + 1);
   }, []);
 
-  const handleSessionForked = useCallback((newSessionId: string) => {
+  const handleChatSessionForked = useCallback((newSessionId: string) => {
     setRefreshKey((k) => k + 1);
     setSessionKey((k) => k + 1);
     setNewSessionCwd(null);
     setSelectedSession((prev) => ({
+      ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
+      id: newSessionId,
+    }));
+    router.replace(`?session=${encodeURIComponent(newSessionId)}`, { scroll: false });
+  }, [router]);
+
+  const handleWorkflowSessionForked = useCallback((newSessionId: string) => {
+    setRefreshKey((k) => k + 1);
+    setWorkflowSessionKey((k) => k + 1);
+    setWorkflowNewSessionCwd(null);
+    setWorkflowSelectedSession((prev) => ({
       ...(prev ?? { path: "", cwd: "", created: "", modified: "", messageCount: 0, firstMessage: "" }),
       id: newSessionId,
     }));
@@ -336,7 +381,9 @@ export function AppShell() {
   }, []);
 
   const openSkillsConfig = useCallback(async () => {
-    const cwd = activeCwd ?? selectedSession?.cwd ?? newSessionCwd;
+    const cwd = activeCwd
+      ?? (appMode === "workflow" ? workflowSelectedSession?.cwd : selectedSession?.cwd)
+      ?? (appMode === "workflow" ? workflowNewSessionCwd : newSessionCwd);
     if (cwd) {
       setSkillsConfigCwd(cwd);
       setSkillsConfigOpen(true);
@@ -354,7 +401,7 @@ export function AppShell() {
     } catch {
       setSkillsConfigOpen(true);
     }
-  }, [activeCwd, newSessionCwd, selectedSession?.cwd]);
+  }, [activeCwd, appMode, newSessionCwd, selectedSession?.cwd, workflowNewSessionCwd, workflowSelectedSession?.cwd]);
 
   const handleOpenWorkflowResource = useCallback((resourcePath: string, label: string) => {
     const tabId = `workflow:${resourcePath}`;
@@ -367,6 +414,28 @@ export function AppShell() {
   }, []);
 
   const handleWorkflowDagNodeSelect = useCallback((node: WorkflowDagNode) => {
+    const taskId = node.taskId ?? node.id;
+    const mode = node.mode ?? (node.draftId ? "draft" : node.runId ? "runtime" : undefined);
+    if (taskId && mode && (node.draftId || node.runId)) {
+      const scopeId = node.draftId ?? node.runId;
+      const tabId = `workflow-node-profile:${scopeId}:${taskId}`;
+      setFileTabs((prev) => {
+        if (prev.find((tab) => tab.id === tabId)) return prev;
+        return [...prev, {
+          id: tabId,
+          label: "Node Profile",
+          filePath: taskId,
+          kind: "workflowNodeProfile",
+          draftId: node.draftId,
+          runId: node.runId,
+          taskId,
+          mode,
+        }];
+      });
+      setActiveFileTabId(tabId);
+      setRightPanelOpen(true);
+      return;
+    }
     handleOpenWorkflowResource(node.profileResourcePath, "profile.json");
   }, [handleOpenWorkflowResource]);
 
@@ -418,27 +487,30 @@ export function AppShell() {
   }, [fileTabs]);
 
   const handleExportSession = useCallback(() => {
-    if (!selectedSession) return;
-    window.location.href = `/api/sessions/${encodeURIComponent(selectedSession.id)}/export`;
-  }, [selectedSession]);
+    const session = appMode === "workflow" ? workflowSelectedSession : selectedSession;
+    if (!session) return;
+    window.location.href = `/api/sessions/${encodeURIComponent(session.id)}/export`;
+  }, [appMode, selectedSession, workflowSelectedSession]);
 
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
-  const effectiveNewSessionCwd = newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
-  const showChat = selectedSession !== null || effectiveNewSessionCwd !== null;
+  const activeSelectedSession = appMode === "workflow" ? workflowSelectedSession : selectedSession;
+  const activeNewSessionCwd = appMode === "workflow" ? workflowNewSessionCwd : newSessionCwd;
+  const activeSessionKey = appMode === "workflow" ? workflowSessionKey : sessionKey;
+  const effectiveNewSessionCwd = activeNewSessionCwd ?? (activeSelectedSession === null && activeCwd ? activeCwd : null);
+  const showChat = activeSelectedSession !== null || effectiveNewSessionCwd !== null;
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
 
   const activeFileTab = fileTabs.find((t) => t.id === activeFileTabId) ?? null;
-  const currentCwd = selectedSession?.cwd ?? newSessionCwd ?? activeCwd ?? null;
+  const currentCwd = activeSelectedSession?.cwd ?? activeNewSessionCwd ?? activeCwd ?? null;
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!currentCwd) return;
     const tempId = typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-    handleNewSession(tempId, currentCwd);
-    setAppMode("chat");
-  }, [currentCwd, handleNewSession]);
+    handleNewWorkflowSession(tempId, currentCwd);
+  }, [currentCwd, handleNewWorkflowSession]);
 
   const handleWorkflowSidebarRefresh = useCallback(() => {
     setRefreshKey((value) => value + 1);
@@ -787,8 +859,8 @@ export function AppShell() {
             <div style={{ display: "flex", alignItems: "stretch", height: "100%" }}>
               <button
                 onClick={handleExportSession}
-                disabled={!selectedSession}
-                title={selectedSession ? "Export HTML" : "Export is available after the session is saved"}
+                disabled={!activeSelectedSession}
+                title={activeSelectedSession ? "Export HTML" : "Export is available after the session is saved"}
                 aria-label="Export HTML"
                 style={{
                   display: "flex",
@@ -801,21 +873,21 @@ export function AppShell() {
                   border: "none",
                   borderTop: "2px solid transparent",
                   borderRight: "1px solid var(--border)",
-                  color: selectedSession ? "var(--text-muted)" : "var(--text-dim)",
-                  cursor: selectedSession ? "pointer" : "not-allowed",
-                  opacity: selectedSession ? 1 : 0.45,
+                  color: activeSelectedSession ? "var(--text-muted)" : "var(--text-dim)",
+                  cursor: activeSelectedSession ? "pointer" : "not-allowed",
+                  opacity: activeSelectedSession ? 1 : 0.45,
                   flexShrink: 0,
                   fontSize: 11,
                   whiteSpace: "nowrap",
                   transition: "color 0.1s, background 0.1s, opacity 0.1s",
                 }}
                 onMouseEnter={(e) => {
-                  if (!selectedSession) return;
+                  if (!activeSelectedSession) return;
                   e.currentTarget.style.color = "var(--text)";
                   e.currentTarget.style.background = "var(--bg-hover)";
                 }}
                 onMouseLeave={(e) => {
-                  e.currentTarget.style.color = selectedSession ? "var(--text-muted)" : "var(--text-dim)";
+                  e.currentTarget.style.color = activeSelectedSession ? "var(--text-muted)" : "var(--text-dim)";
                   e.currentTarget.style.background = "none";
                 }}
               >
@@ -827,7 +899,7 @@ export function AppShell() {
                   height: 18,
                   borderRadius: 5,
                   background: "transparent",
-                  color: selectedSession ? "var(--text-muted)" : "var(--text-dim)",
+                  color: activeSelectedSession ? "var(--text-muted)" : "var(--text-dim)",
                   flexShrink: 0,
                 }}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
@@ -1112,12 +1184,12 @@ export function AppShell() {
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
             <ChatWindow
-              key={sessionKey}
-              session={selectedSession}
+              key={`${appMode}:${activeSessionKey}`}
+              session={activeSelectedSession}
               newSessionCwd={effectiveNewSessionCwd}
               onAgentEnd={handleAgentEnd}
-              onSessionCreated={handleSessionCreated}
-              onSessionForked={handleSessionForked}
+              onSessionCreated={appMode === "workflow" ? handleWorkflowSessionCreated : handleChatSessionCreated}
+              onSessionForked={appMode === "workflow" ? handleWorkflowSessionForked : handleChatSessionForked}
               modelsRefreshKey={modelsRefreshKey}
               chatInputRef={chatInputRef}
               onBranchDataChange={handleBranchDataChange}
@@ -1127,7 +1199,7 @@ export function AppShell() {
               onContextUsageChange={handleContextUsageChange}
               workflowMode={appMode === "workflow"}
               workflowTemplate={selectedWorkflowTemplate}
-              workflowCwd={selectedSession?.cwd ?? newSessionCwd ?? activeCwd}
+              workflowCwd={currentCwd}
               onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
             />
           ) : showPlaceholder ? (
@@ -1203,13 +1275,20 @@ export function AppShell() {
         {/* File content */}
         <div style={{ flex: 1, overflow: "hidden" }}>
           {activeFileTab?.filePath ? (
-            activeFileTab.kind === "workflowResource" ? (
+            activeFileTab.kind === "workflowNodeProfile" && activeFileTab.taskId && activeFileTab.mode ? (
+              <WorkflowNodeProfileEditor
+                draftId={activeFileTab.draftId}
+                runId={activeFileTab.runId}
+                taskId={activeFileTab.taskId}
+                mode={activeFileTab.mode}
+              />
+            ) : activeFileTab.kind === "workflowResource" ? (
               <WorkflowResourceViewer
                 resourcePath={activeFileTab.filePath}
-                cwd={(selectedSession?.cwd ?? newSessionCwd ?? activeCwd) ?? undefined}
+                cwd={currentCwd ?? undefined}
               />
             ) : (
-              <FileViewer filePath={activeFileTab.filePath} cwd={activeCwd ?? undefined} />
+              <FileViewer filePath={activeFileTab.filePath} cwd={currentCwd ?? undefined} />
             )
           ) : (
             <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
@@ -1239,12 +1318,12 @@ export function AppShell() {
       </svg>
     </button>
     {modelsConfigOpen && <ModelsConfig onClose={() => { setModelsConfigOpen(false); setModelsRefreshKey((k) => k + 1); }} />}
-    {skillsConfigOpen && (skillsConfigCwd ?? activeCwd ?? selectedSession?.cwd ?? newSessionCwd) && (
-      <SkillsConfig cwd={(skillsConfigCwd ?? activeCwd ?? selectedSession?.cwd ?? newSessionCwd)!} onClose={() => setSkillsConfigOpen(false)} />
+    {skillsConfigOpen && (skillsConfigCwd ?? currentCwd ?? activeCwd) && (
+      <SkillsConfig cwd={(skillsConfigCwd ?? currentCwd ?? activeCwd)!} onClose={() => setSkillsConfigOpen(false)} />
     )}
     <McpConfig
       open={mcpConfigOpen}
-      cwd={activeCwd ?? selectedSession?.cwd ?? newSessionCwd}
+      cwd={currentCwd ?? activeCwd}
       onClose={() => setMcpConfigOpen(false)}
     />
     </>

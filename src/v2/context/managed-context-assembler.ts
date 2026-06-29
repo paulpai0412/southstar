@@ -114,6 +114,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         checkpointSummary: assembly.selected.find((block) => block.sourceType === "checkpoint"),
         failureSummary: assembly.selected.find((block) => block.sourceType === "failure"),
         skillInstructions: [
+          ...inlineInstructionBlocks(profile.instruction),
           ...instructionBlocks(materializedLibrary.instructions),
           ...skillBlocks(materializedLibrary.skills),
         ],
@@ -279,6 +280,19 @@ function instructionBlocks(
     sourceRef: instruction.instructionRef,
     tokenEstimate: estimateTokens(instruction.content),
   }));
+}
+
+function inlineInstructionBlocks(instruction: string | undefined): ContextBlock[] {
+  const text = instruction?.trim();
+  if (!text) return [];
+  return [{
+    id: "node-profile-instruction",
+    sourceType: "skill",
+    title: "Node profile instruction",
+    text,
+    sourceRef: "node-profile:instruction",
+    tokenEstimate: estimateTokens(text),
+  }];
 }
 
 function skillBlocks(

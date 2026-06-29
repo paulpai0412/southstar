@@ -13,7 +13,7 @@ async function ensureChatReady(page: Page) {
         sessions: [
           {
             id: "e2e-seed-session",
-            cwd: "/home/timmypai/apps/southstar/pi-web",
+            cwd: "/home/timmypai/apps/southstar/web",
             path: "/tmp/e2e-seed-session.jsonl",
             created: "2026-06-27T00:00:00.000Z",
             modified: "2026-06-27T00:00:01.000Z",

@@ -168,6 +168,59 @@ test("workflow route proxy planner draft runs maps to v2", async () => {
   assert.deepEqual(await response.json(), { runId: "run-1", taskIds: ["task-1"] });
 });
 
+test("workflow route proxy planner draft task profile override maps to v2", async () => {
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  global.fetch = (async (url, init) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return Response.json({ taskId: "task-1", profileOverride: { model: "gpt-5-codex" } });
+  }) as typeof fetch;
+
+  const { PATCH } = await import("../../app/api/workflow/planner-drafts/[draftId]/tasks/[taskId]/profile-override/route");
+  const request = new NextRequest("http://localhost/api/workflow/planner-drafts/draft-1/tasks/task-1/profile-override", {
+    method: "PATCH",
+    body: JSON.stringify({ model: "gpt-5-codex" }),
+  });
+  const response = await PATCH(request, { params: Promise.resolve({ draftId: "draft-1", taskId: "task-1" }) });
+  assert.equal(calls[0]?.url, "http://127.0.0.1:3000/api/v2/planner/drafts/draft-1/tasks/task-1/profile-override");
+  assert.equal(calls[0]?.init.method, "PATCH");
+  assert.deepEqual(await response.json(), { taskId: "task-1", profileOverride: { model: "gpt-5-codex" } });
+});
+
+test("workflow route proxy ui workflow maps query string to v2", async () => {
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
+  const calls: string[] = [];
+  global.fetch = (async (url) => {
+    calls.push(String(url));
+    return Response.json({ canvasModel: { graphId: "draft-1" } });
+  }) as typeof fetch;
+
+  const { GET } = await import("../../app/api/workflow/ui/route");
+  const request = new NextRequest("http://localhost/api/workflow/ui?draftId=draft-1&taskId=task-1", {
+    method: "GET",
+  });
+  const response = await GET(request);
+  assert.equal(calls[0], "http://127.0.0.1:3000/api/v2/ui/workflow?draftId=draft-1&taskId=task-1");
+  assert.deepEqual(await response.json(), { canvasModel: { graphId: "draft-1" } });
+});
+
+test("workflow route proxy agent library candidates maps query string to v2", async () => {
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
+  const calls: string[] = [];
+  global.fetch = (async (url) => {
+    calls.push(String(url));
+    return Response.json({ alternatives: { agentProfiles: [] } });
+  }) as typeof fetch;
+
+  const { GET } = await import("../../app/api/workflow/agent-library/candidates/route");
+  const request = new NextRequest("http://localhost/api/workflow/agent-library/candidates?draftId=draft-1&taskId=task-1", {
+    method: "GET",
+  });
+  const response = await GET(request);
+  assert.equal(calls[0], "http://127.0.0.1:3000/api/v2/agent-library/candidates?draftId=draft-1&taskId=task-1");
+  assert.deepEqual(await response.json(), { alternatives: { agentProfiles: [] } });
+});
+
 test("workflow route proxy runs create maps to v2", async () => {
   process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
   const calls: string[] = [];

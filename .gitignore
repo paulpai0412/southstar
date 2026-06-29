@@ -16,10 +16,10 @@ npm-debug.log*
 pi-web/
 pi-web_bak_*/
 southstar-pi-web/
-southstar-web/node_modules/
-southstar-web/.next/
-southstar-web/out/
-southstar-web/build/
-southstar-web/.env*
-southstar-web/*.tsbuildinfo
-southstar-web/.southstar/*.log
+web/node_modules/
+web/.next/
+web/out/
+web/build/
+web/.env*
+web/*.tsbuildinfo
+web/.southstar/*.log

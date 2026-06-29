@@ -8,7 +8,14 @@ import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
 import { DeterministicFixtureComposer, ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft, getPostgresPlannerDraftOrchestration, revisePostgresPlannerDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
+import {
+  createPostgresPlannerDraft,
+  createPostgresRunFromDraft,
+  getPostgresPlannerDraftOrchestration,
+  patchPostgresPlannerDraftTaskProfileOverride,
+  revisePostgresPlannerDraft,
+} from "../../src/v2/ui-api/postgres-run-api.ts";
+import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envelope.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 
 test("Postgres run API creates draft, run, tasks, history, and Knowledge Card context packets", async () => {
@@ -62,6 +69,103 @@ test("Postgres run API creates draft, run, tasks, history, and Knowledge Card co
       [run.runId],
     );
     assert.deepEqual(trace.payload_json.selectedCardRefs, ["card-run-api-self-check"]);
+  });
+});
+
+test("Postgres planner draft task profile override updates one task without changing other tasks", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+
+    const result = await patchPostgresPlannerDraftTaskProfileOverride(db, {
+      draftId: draft.draftId,
+      taskId: "implement-feature",
+      profileOverride: {
+        provider: "codex",
+        model: "gpt-5-codex",
+        thinkingLevel: "high",
+        instruction: "Use the smallest patch and include test evidence.",
+        skillRefs: ["software.calc-cli", "software.test-evidence"],
+        mcpGrantRefs: ["filesystem-workspace"],
+      },
+    });
+
+    assert.equal(result.draftId, draft.draftId);
+    assert.equal(result.taskId, "implement-feature");
+    assert.equal(result.status, "validated");
+    assert.deepEqual(result.profileOverride.skillRefs, ["software.calc-cli", "software.test-evidence"]);
+
+    const row = await db.one<{ payload_json: { workflow: { tasks: Array<Record<string, any>> } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    const implement = row.payload_json.workflow.tasks.find((task) => task.id === "implement-feature");
+    const verify = row.payload_json.workflow.tasks.find((task) => task.id === "verify-feature");
+    assert.equal(implement?.profileOverride.model, "gpt-5-codex");
+    assert.deepEqual(implement?.skillRefs, ["software.calc-cli", "software.test-evidence"]);
+    assert.deepEqual(implement?.mcpGrantRefs, ["filesystem-workspace"]);
+    assert.equal(verify?.profileOverride, undefined);
+  });
+});
+
+test("Postgres run from draft materializes task profile override into run execution context", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+
+    await patchPostgresPlannerDraftTaskProfileOverride(db, {
+      draftId: draft.draftId,
+      taskId: "implement-feature",
+      profileOverride: {
+        provider: "codex",
+        model: "gpt-5-codex",
+        thinkingLevel: "high",
+        instruction: "Prefer the smallest verified patch and cite command evidence.",
+        skillRefs: ["software.calc-cli", "skill.software-verification"],
+        mcpGrantRefs: ["filesystem-workspace"],
+      },
+    });
+
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const runRow = await db.one<{
+      workflow_manifest_json: {
+        tasks: Array<Record<string, any>>;
+        agentProfiles: Array<Record<string, any>>;
+      };
+    }>("select workflow_manifest_json from southstar.workflow_runs where id = $1", [run.runId]);
+    const implementTask = runRow.workflow_manifest_json.tasks.find((task) => task.id === "implement-feature");
+    assert.equal(implementTask?.agentProfileRef, "software-maker-pi__implement-feature__override");
+    assert.deepEqual(implementTask?.skillRefs, ["software.calc-cli", "skill.software-verification"]);
+    assert.deepEqual(implementTask?.mcpGrantRefs, ["filesystem-workspace"]);
+    assert.equal(implementTask?.profileOverride?.model, "gpt-5-codex");
+
+    const overriddenProfile = runRow.workflow_manifest_json.agentProfiles.find((profile) =>
+      profile.id === "software-maker-pi__implement-feature__override"
+    );
+    assert.equal(overriddenProfile?.provider, "codex");
+    assert.equal(overriddenProfile?.model, "gpt-5-codex");
+    assert.equal(overriddenProfile?.thinkingLevel, "high");
+    assert.deepEqual(overriddenProfile?.skillRefs, ["software.calc-cli", "skill.software-verification"]);
+    assert.deepEqual(overriddenProfile?.mcpGrantRefs, ["filesystem-workspace"]);
+
+    const taskRow = await db.one<{ snapshot_json: Record<string, any> }>(
+      "select snapshot_json from southstar.workflow_tasks where run_id = $1 and id = 'implement-feature'",
+      [run.runId],
+    );
+    assert.equal(taskRow.snapshot_json.agentProfileRef, "software-maker-pi__implement-feature__override");
+    assert.equal(taskRow.snapshot_json.profileOverride.model, "gpt-5-codex");
+
+    const contextRow = await db.one<{ payload_json: { agentProfileRef: string; skillInstructions: Array<{ text: string }> } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'context_packet' and run_id = $1 and task_id = 'implement-feature'",
+      [run.runId],
+    );
+    assert.equal(contextRow.payload_json.agentProfileRef, "software-maker-pi__implement-feature__override");
+    assert.match(contextRow.payload_json.skillInstructions.map((block) => block.text).join("\n"), /smallest verified patch/);
+
+    const envelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
+    assert.equal(envelope.agentProfile.id, "software-maker-pi__implement-feature__override");
+    assert.equal(envelope.agentProfile.model, "gpt-5-codex");
+    assert.match(envelope.agentPrompt, /smallest verified patch/);
+    assert.equal(envelope.materializedLibraryRefs?.skillRefs.includes("skill.software-verification"), true);
+    assert.equal(envelope.materializedLibraryRefs?.mcpGrantRefs.includes("mcp.filesystem-workspace"), true);
   });
 });
 

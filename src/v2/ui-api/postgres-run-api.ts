@@ -7,6 +7,7 @@ import type { DomainPack } from "../domain-packs/types.ts";
 import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
 import { materializeGenerationPlan } from "../workflow-generator/materialize.ts";
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
+import type { AgentProfile, PlannerDraftTaskProfileOverride } from "../domain-packs/types.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
@@ -21,6 +22,12 @@ import {
   upsertRuntimeResourcePg,
 } from "../stores/postgres-runtime-store.ts";
 import { buildContextPacketWithKnowledgeCards } from "../context/postgres-builder.ts";
+
+export {
+  patchPlannerDraftTaskProfileOverridePg as patchPostgresPlannerDraftTaskProfileOverride,
+  type PatchPlannerDraftTaskProfileOverrideInput,
+  type PatchPlannerDraftTaskProfileOverrideResult,
+} from "./planner-draft-task-overrides.ts";
 
 export type PostgresPlannerDraftResult = {
   draftId: string;
@@ -451,7 +458,7 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
   if (draft.status !== "validated") throw new Error(`planner draft is not validated: ${input.draftId}`);
   const bundle = draft.payload as PlanBundle & { generationPlan?: { templateRef?: string } };
-  const workflow = bundle.workflow;
+  const workflow = materializeWorkflowTaskProfileOverrides(bundle.workflow);
   const runId = await allocateRunId(db, workflow.workflowId);
 
   await createWorkflowRunPg(db, {
@@ -481,7 +488,13 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
       status: "pending",
       sortOrder: index,
       dependsOn: task.dependsOn,
-      snapshot: { roleRef: task.roleRef, agentProfileRef: task.agentProfileRef },
+      snapshot: {
+        roleRef: task.roleRef,
+        agentProfileRef: task.agentProfileRef,
+        ...((task as WorkflowTaskWithProfileOverride).profileOverride
+          ? { profileOverride: (task as WorkflowTaskWithProfileOverride).profileOverride }
+          : {}),
+      },
       metrics: {},
     });
     await appendHistoryEventPg(db, {
@@ -552,7 +565,74 @@ async function buildContextForTask(
     flowTemplateRef,
     promptTemplateRef: task.promptTemplateRef,
     skillRefs: task.skillRefs,
+    inlineInstruction: profileOverrideInstruction(task),
   });
+}
+
+type WorkflowTaskWithProfileOverride = SouthstarWorkflowManifest["tasks"][number] & {
+  profileOverride?: PlannerDraftTaskProfileOverride;
+};
+
+function materializeWorkflowTaskProfileOverrides(workflow: SouthstarWorkflowManifest): SouthstarWorkflowManifest {
+  const agentProfiles = (workflow.agentProfiles ?? softwareDomainPack.agentProfiles).map(cloneAgentProfile);
+  const tasks = workflow.tasks.map((task) => ({ ...task } as WorkflowTaskWithProfileOverride));
+  const profileById = new Map(agentProfiles.map((profile) => [profile.id, profile]));
+  const outputProfiles = [...agentProfiles];
+
+  for (const task of tasks) {
+    const override = task.profileOverride;
+    if (!override || Object.keys(override).length === 0) continue;
+    if (!task.agentProfileRef) continue;
+
+    const baseProfile = profileById.get(task.agentProfileRef);
+    if (!baseProfile) continue;
+
+    const overrideProfileId = `${baseProfile.id}__${task.id}__override`;
+    const overrideProfile: AgentProfile = {
+      ...cloneAgentProfile(baseProfile),
+      id: overrideProfileId,
+      name: `${baseProfile.name} (${task.name || task.id})`,
+      ...(override.provider !== undefined ? { provider: override.provider } : {}),
+      ...(override.model !== undefined ? { model: override.model } : {}),
+      ...(override.thinkingLevel !== undefined ? { thinkingLevel: override.thinkingLevel } : {}),
+      ...(override.instruction !== undefined ? { instruction: override.instruction } : {}),
+      ...(override.skillRefs !== undefined ? { skillRefs: [...override.skillRefs] } : {}),
+      ...(override.mcpGrantRefs !== undefined ? { mcpGrantRefs: [...override.mcpGrantRefs] } : {}),
+    };
+
+    outputProfiles.push(overrideProfile);
+    profileById.set(overrideProfile.id, overrideProfile);
+    task.agentProfileRef = overrideProfile.id;
+    if (override.skillRefs !== undefined) task.skillRefs = [...override.skillRefs];
+    if (override.mcpGrantRefs !== undefined) task.mcpGrantRefs = [...override.mcpGrantRefs];
+  }
+
+  return {
+    ...workflow,
+    agentProfiles: outputProfiles,
+    tasks,
+  };
+}
+
+function cloneAgentProfile(profile: AgentProfile): AgentProfile {
+  return {
+    ...profile,
+    agentsMdRefs: [...profile.agentsMdRefs],
+    skillRefs: [...profile.skillRefs],
+    mcpGrantRefs: [...profile.mcpGrantRefs],
+    memoryScopes: [...profile.memoryScopes],
+    toolPolicy: {
+      allowedTools: [...profile.toolPolicy.allowedTools],
+      deniedTools: [...profile.toolPolicy.deniedTools],
+      requiresApprovalFor: [...profile.toolPolicy.requiresApprovalFor],
+    },
+    budgetPolicy: { ...profile.budgetPolicy },
+  };
+}
+
+function profileOverrideInstruction(task: SouthstarWorkflowManifest["tasks"][number]): string | undefined {
+  const profileOverride = (task as WorkflowTaskWithProfileOverride).profileOverride;
+  return profileOverride?.instruction;
 }
 
 async function allocateRunId(db: SouthstarDb, workflowId: string): Promise<string> {

@@ -7,7 +7,11 @@ export interface Tab {
   id: string;
   label: string;
   filePath: string;
-  kind?: "file" | "workflowResource";
+  kind?: "file" | "workflowResource" | "workflowNodeProfile";
+  draftId?: string;
+  runId?: string;
+  taskId?: string;
+  mode?: "draft" | "runtime";
 }
 
 interface Props {

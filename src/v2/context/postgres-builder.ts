@@ -26,6 +26,7 @@ export type BuildContextPacketWithKnowledgeCardsInput = {
   flowTemplateRef: string;
   promptTemplateRef?: string;
   skillRefs?: string[];
+  inlineInstruction?: string;
   maxKnowledgeCards?: number;
 };
 
@@ -67,7 +68,10 @@ export async function buildContextPacketWithKnowledgeCards(
     maxCards: input.maxKnowledgeCards ?? 5,
   });
 
-  const skillInstructions = profile.skillRefs.map((skillRef) => block("skill", skillRef, `Use skill snapshot ${skillRef}.`, skillRef));
+  const skillInstructions = [
+    ...inlineInstructionBlocks(input.inlineInstruction),
+    ...profile.skillRefs.map((skillRef) => block("skill", skillRef, `Use skill snapshot ${skillRef}.`, skillRef)),
+  ];
   const mcpGrantSummary = profile.mcpGrantRefs.map((grantRef) => block("mcp", grantRef, `Allowed MCP grant ${grantRef}.`, grantRef));
   const agentsMdBlocks = contextPolicy?.includeAgentsMd === false
     ? []
@@ -214,6 +218,12 @@ function artifactContractBlock(contract: ArtifactContract): ContextBlock {
     ].join(" "),
     contract.id,
   );
+}
+
+function inlineInstructionBlocks(instruction: string | undefined): ContextBlock[] {
+  const text = instruction?.trim();
+  if (!text) return [];
+  return [block("skill", "Node profile instruction", text, "node-profile:instruction")];
 }
 
 function block(

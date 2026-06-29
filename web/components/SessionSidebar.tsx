@@ -252,6 +252,8 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [customPathOpen, setCustomPathOpen] = useState(false);
   const [customPathValue, setCustomPathValue] = useState("");
+  const [customPathError, setCustomPathError] = useState<string | null>(null);
+  const [customPathValidating, setCustomPathValidating] = useState(false);
   const customPathInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
   const [explorerOpen, setExplorerOpen] = useState(true);
@@ -339,10 +341,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", onPointerCancel);
   }, [explorerRatio]);
-  const loadSessions = useCallback(async (showLoading = false, markRefreshed = true) => {
+  const loadSessions = useCallback(async (showLoading = false, markRefreshed = true, cwdOverride?: string | null) => {
     try {
       if (showLoading) setLoading(true);
-      const res = await fetch("/api/sessions", { cache: "no-store" });
+      const cwdForRequest = cwdOverride ?? selectedCwd;
+      const sessionsUrl = cwdForRequest
+        ? `/api/sessions?cwd=${encodeURIComponent(cwdForRequest)}`
+        : "/api/sessions?scope=all";
+      const res = await fetch(sessionsUrl, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { sessions: SessionInfo[] };
       const nextSessions = data.sessions;
@@ -375,12 +381,11 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [selectedSessionId]);
+  }, [selectedCwd, selectedSessionId]);
 
   useEffect(() => {
-    if (document.hidden) return;
     loadSessions(false);
-  }, [loadSessions, refreshKey]);
+  }, [loadSessions, refreshKey, selectedCwd]);
 
   useEffect(() => {
     const t = setInterval(() => {
@@ -444,15 +449,33 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     }
   }, [allSessions, selectedCwd, initialSessionId, onSelectSession, onInitialRestoreDone]);
 
-  const commitCustomPath = useCallback(() => {
+  const commitCustomPath = useCallback(async () => {
     const path = customPathValue.trim();
-    if (path) {
-      setSelectedCwd(path);
+    if (!path || customPathValidating) return;
+    setCustomPathError(null);
+    setCustomPathValidating(true);
+    try {
+      const res = await fetch("/api/cwd/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cwd: path }),
+      });
+      const data = await res.json() as { cwd?: string; error?: string };
+      if (!res.ok || !data.cwd) {
+        setCustomPathError(data.error ?? "Directory does not exist");
+        return;
+      }
+      setSelectedCwd(data.cwd);
+      await loadSessions(false, false, data.cwd);
+      setCustomPathOpen(false);
+      setCustomPathValue("");
+      setDropdownOpen(false);
+    } catch {
+      setCustomPathError("Could not validate directory");
+    } finally {
+      setCustomPathValidating(false);
     }
-    setCustomPathOpen(false);
-    setCustomPathValue("");
-    setDropdownOpen(false);
-  }, [customPathValue]);
+  }, [customPathValue, customPathValidating, loadSessions]);
 
   const handleDefaultCwd = useCallback(async () => {
     try {
@@ -460,12 +483,13 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const data = await res.json() as { cwd?: string; error?: string };
       if (data.cwd) {
         setSelectedCwd(data.cwd);
+        await loadSessions(false, false, data.cwd);
         setDropdownOpen(false);
       }
     } catch {
       // ignore
     }
-  }, []);
+  }, [loadSessions]);
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -743,15 +767,23 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                   <input
                     ref={customPathInputRef}
                     value={customPathValue}
-                    onChange={(e) => setCustomPathValue(e.target.value)}
+                    onChange={(e) => {
+                      setCustomPathValue(e.target.value);
+                      if (customPathError) setCustomPathError(null);
+                    }}
                     onKeyDown={(e) => {
-                      if (e.key === "Enter") commitCustomPath();
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void commitCustomPath();
+                      }
                       if (e.key === "Escape") {
                         setCustomPathOpen(false);
                         setCustomPathValue("");
+                        setCustomPathError(null);
                       }
                     }}
                     placeholder="/path/to/project"
+                    disabled={customPathValidating}
                     style={{
                       width: "100%",
                       fontSize: 11,
@@ -765,9 +797,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                       boxSizing: "border-box",
                     }}
                   />
+                  {customPathError && (
+                    <div style={{ marginTop: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.35 }}>
+                      {customPathError}
+                    </div>
+                  )}
                   <div style={{ display: "flex", gap: 5, marginTop: 5 }}>
                     <button
-                      onClick={commitCustomPath}
+                      onClick={() => { void commitCustomPath(); }}
+                      disabled={customPathValidating}
                       style={{
                         flex: 1,
                         padding: "4px 0",
@@ -777,13 +815,14 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
                         color: "#fff",
                         fontSize: 11,
                         fontWeight: 600,
-                        cursor: "pointer",
+                        cursor: customPathValidating ? "wait" : "pointer",
+                        opacity: customPathValidating ? 0.7 : 1,
                       }}
                     >
-                      Open
+                      {customPathValidating ? "Checking..." : "Open"}
                     </button>
                     <button
-                      onClick={() => { setCustomPathOpen(false); setCustomPathValue(""); }}
+                      onClick={() => { setCustomPathOpen(false); setCustomPathValue(""); setCustomPathError(null); }}
                       style={{
                         flex: 1,
                         padding: "4px 0",

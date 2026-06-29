@@ -82,11 +82,24 @@ export type RoleDefinition = {
   stopAuthority: "none" | "can-suggest" | "can-accept" | "can-reject";
 };
 
+export type AgentProvider = "pi" | "codex" | "claude-code" | "openai" | "anthropic" | "custom";
+
+export type PlannerDraftTaskProfileOverride = {
+  provider?: AgentProvider;
+  model?: string;
+  thinkingLevel?: string;
+  instruction?: string;
+  skillRefs?: string[];
+  mcpGrantRefs?: string[];
+};
+
 export type AgentProfile = {
   id: string;
   name: string;
-  provider: "pi" | "codex" | "claude-code" | "openai" | "anthropic" | "custom";
+  provider: AgentProvider;
   model?: string;
+  thinkingLevel?: string;
+  instruction?: string;
   harnessRef: string;
   systemPromptRef?: string;
   agentsMdRefs: string[];

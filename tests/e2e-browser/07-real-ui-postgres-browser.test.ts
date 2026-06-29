@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { readdirSync, readFileSync, readlinkSync } from "node:fs";
-import { createServer } from "node:net";
 import { join } from "node:path";
 import test from "node:test";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
@@ -301,10 +300,10 @@ type RunningWebApp = {
 };
 
 async function startNextApp(apiUrl: string): Promise<RunningWebApp> {
-  const port = await findOpenPort(3030);
+  const port = 30141;
   const url = `http://127.0.0.1:${port}`;
   const logs: string[] = [];
-  const child = spawn("npm", ["run", "web:dev", "--", "--hostname", "127.0.0.1", "-p", String(port)], {
+  const child = spawn("npm", ["--prefix", "web", "run", "dev", "--", "--hostname", "127.0.0.1"], {
     cwd: root,
     detached: true,
     env: {
@@ -330,24 +329,6 @@ async function startNextApp(apiUrl: string): Promise<RunningWebApp> {
       await stopDetachedProcess(child);
     },
   };
-}
-
-async function findOpenPort(start: number): Promise<number> {
-  for (let port = start; port < start + 50; port += 1) {
-    if (await canListen(port)) return port;
-  }
-  throw new Error("could not find an open web port");
-}
-
-function canListen(port: number): Promise<boolean> {
-  return new Promise((resolve) => {
-    const server = createServer();
-    server.once("error", () => resolve(false));
-    server.once("listening", () => {
-      server.close(() => resolve(true));
-    });
-    server.listen(port, "127.0.0.1");
-  });
 }
 
 async function waitForHttp(url: string, child: ChildProcessWithoutNullStreams, logs: string[]): Promise<void> {

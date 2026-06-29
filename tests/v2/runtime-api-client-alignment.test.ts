@@ -40,6 +40,7 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "resetTaskSession",
     "getPlannerDraftOrchestration",
     "createRunFromPlannerDraft",
+    "patchPlannerDraftTaskProfileOverride",
     "listPlannerDraftProposals",
     "approvePlannerDraftProposal",
     "rejectPlannerDraftProposal",
@@ -57,6 +58,7 @@ test("southstar web api client exposes workflow/operator methods for the operato
     "getUiWorkflow",
     "getAgentLibrary",
     "getAgentLibraryCandidates",
+    "patchPlannerDraftTaskProfileOverride",
     "getUiOperatorOverview",
   ] as const;
   const compatibilityMethods = [
@@ -69,6 +71,42 @@ test("southstar web api client exposes workflow/operator methods for the operato
   }
   for (const method of compatibilityMethods) {
     assert.match(source, new RegExp(`${method}\\s*\\(`), `${method} should be exposed by createSouthstarApiClient`);
+  }
+});
+
+test("runtime route patches planner draft task profile override", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const draftId = "draft-profile-override-route";
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: draftId,
+      scope: "planner",
+      status: "validated",
+      payload: {
+        workflow: {
+          workflowId: "wf-profile-override-route",
+          tasks: [{ id: "task-build", name: "Build", dependsOn: [], skillRefs: [] }],
+        },
+      },
+      summary: { goalPrompt: "profile override route", workflowId: "wf-profile-override-route" },
+    });
+
+    const envelope = await call<any>(db, `/api/v2/planner/drafts/${draftId}/tasks/task-build/profile-override`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        provider: "codex",
+        model: "gpt-5-codex",
+        skillRefs: ["software.calc-cli"],
+        mcpGrantRefs: [],
+      }),
+    });
+
+    assert.equal(envelope.kind, "planner-draft-task-profile-override");
+    assert.equal(envelope.result.taskId, "task-build");
+    assert.equal(envelope.result.profileOverride.model, "gpt-5-codex");
+  } finally {
+    await db.close();
   }
 });
 
@@ -275,6 +313,10 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
     });
     await client.getPlannerDraftOrchestration("draft/a");
     await client.createRunFromPlannerDraft("draft/a");
+    await client.patchPlannerDraftTaskProfileOverride("draft/a", "task/a", {
+      provider: "codex",
+      model: "gpt-5-codex",
+    });
     await client.listPlannerDraftProposals("draft/a");
     await client.approvePlannerDraftProposal({
       draftId: "draft/a",
@@ -329,6 +371,11 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/orchestration", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/runs", method: "POST", body: {} },
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/tasks/task%2Fa/profile-override",
+        method: "PATCH",
+        body: { provider: "codex", model: "gpt-5-codex" },
+      },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/proposals", method: undefined, body: undefined },
       {
         url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/proposals/proposal%2Fa/approve",
@@ -373,12 +420,12 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
   }
 });
 
-async function call<T>(db: Parameters<typeof handleRuntimeRoute>[0]["db"], path: string): Promise<{ ok: true; kind: string; result: T }> {
+async function call<T>(db: Parameters<typeof handleRuntimeRoute>[0]["db"], path: string, init?: RequestInit): Promise<{ ok: true; kind: string; result: T }> {
   const response = await handleRuntimeRoute({
     db,
     plannerClient: { generate: async () => { throw new Error("planner not used"); } },
     executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
-  }, new Request(`http://127.0.0.1${path}`));
+  }, new Request(`http://127.0.0.1${path}`, init));
   const envelope = await response.json() as { ok: true; kind: string; result: T } | { ok: false; error: string };
   if (!envelope.ok) throw new Error(envelope.error);
   return envelope;

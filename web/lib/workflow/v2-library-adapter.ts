@@ -160,6 +160,9 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
     const provider = providerFromProfileRef(profileRef);
     return {
       id: task.taskId,
+      taskId: task.taskId,
+      draftId: input.draftId,
+      mode: "draft" as const,
       label: task.taskName || task.taskId,
       role: task.roleRef ?? "maker",
       agentRef: `agent.${agentSegmentFromProfile(profileRef)}`,
@@ -178,6 +181,8 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
 
   return {
     id: input.draftId,
+    draftId: input.draftId,
+    mode: "draft",
     templateId: "template.software.v2",
     templateTitle: input.workflowId || "Planner Draft",
     prompt: input.goalPrompt,

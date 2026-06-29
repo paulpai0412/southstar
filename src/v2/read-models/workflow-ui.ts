@@ -47,6 +47,16 @@ type WorkflowTaskDefinitionSummary = {
   skillRefs: string[];
   mcpGrantRefs: string[];
   toolGrantRefs: string[];
+  profileOverride?: unknown;
+  effectiveProfile?: {
+    provider?: string;
+    model?: string;
+    thinkingLevel?: string;
+    instruction?: string;
+    skillRefs: string[];
+    mcpGrantRefs: string[];
+  };
+  editable: boolean;
   roleDefinition?: unknown;
   agentProfile?: unknown;
   vaultPolicy?: unknown;
@@ -357,6 +367,16 @@ async function runtimeSelectedDefinition(
   const skillRefs = envelopeStringArray(envelopeRefs, "skillRefs", stringArray(workflowTask?.skillRefs));
   const mcpGrantRefs = envelopeStringArray(envelopeRefs, "mcpGrantRefs", stringArray(workflowTask?.mcpGrantRefs));
   const toolGrantRefs = envelopeStringArray(envelopeRefs, "toolGrantRefs", stringArray(workflowTask?.toolGrantRefs));
+  const libraryDetails = libraryDefinitionDetails({
+    domain: input.domain,
+    roleRef: node.roleRef,
+    agentProfileRef: node.agentProfileRef,
+    artifactContractRef: workflowTask?.artifactContractRef,
+    artifactKind: workflowTask?.artifactKind,
+    evaluatorPipelineRef: workflowTask?.evaluatorPipelineRef,
+    contextPolicyRef: workflowTask?.contextPolicyRef,
+    vaultLeasePolicyRefs: workflowTask?.vaultLeasePolicyRefs ?? [],
+  });
 
   return {
     taskId: node.id,
@@ -366,16 +386,13 @@ async function runtimeSelectedDefinition(
     skillRefs,
     mcpGrantRefs,
     toolGrantRefs,
-    ...libraryDefinitionDetails({
-      domain: input.domain,
-      roleRef: node.roleRef,
-      agentProfileRef: node.agentProfileRef,
-      artifactContractRef: workflowTask?.artifactContractRef,
-      artifactKind: workflowTask?.artifactKind,
-      evaluatorPipelineRef: workflowTask?.evaluatorPipelineRef,
-      contextPolicyRef: workflowTask?.contextPolicyRef,
-      vaultLeasePolicyRefs: workflowTask?.vaultLeasePolicyRefs ?? [],
+    editable: false,
+    effectiveProfile: effectiveProfileFromSources({
+      agentProfile: envelope.agentProfile ?? libraryDetails.agentProfile,
+      skillRefs,
+      mcpGrantRefs,
     }),
+    ...libraryDetails,
     ...(envelope.roleDefinition !== undefined ? { roleDefinition: envelope.roleDefinition } : {}),
     ...(envelope.agentProfile !== undefined ? { agentProfile: envelope.agentProfile } : {}),
     ...(envelope.vaultPolicy !== undefined ? { vaultPolicy: envelope.vaultPolicy } : {}),
@@ -568,27 +585,32 @@ function agentLibrarySummary(domain: string): WorkflowUiReadModel["agentLibraryS
 }
 
 function taskDefinitionSummary(task: DraftTaskShape, domain: string): WorkflowTaskDefinitionSummary {
+  const libraryDetails = libraryDefinitionDetails({
+    domain,
+    roleRef: task.roleRef,
+    agentProfileRef: task.agentProfileRef,
+    artifactContractRef: task.artifactContractRef,
+    artifactKind: task.artifactKind,
+    evaluatorPipelineRef: task.evaluatorPipelineRef,
+    contextPolicyRef: task.contextPolicyRef,
+    vaultLeasePolicyRefs: task.vaultLeasePolicyRefs,
+  });
+  const effectiveProfile = effectiveProfileForDraftTask(task, libraryDetails.agentProfile);
   return {
     taskId: task.id,
     taskName: task.name ?? task.id,
     ...(task.roleRef ? { roleRef: task.roleRef } : {}),
     ...(task.agentProfileRef ? { agentProfileRef: task.agentProfileRef } : {}),
-    skillRefs: task.skillRefs,
-    mcpGrantRefs: task.mcpGrantRefs,
+    skillRefs: effectiveProfile.skillRefs,
+    mcpGrantRefs: effectiveProfile.mcpGrantRefs,
     toolGrantRefs: task.toolGrantRefs,
-    ...libraryDefinitionDetails({
-      domain,
-      roleRef: task.roleRef,
-      agentProfileRef: task.agentProfileRef,
-      artifactContractRef: task.artifactContractRef,
-      artifactKind: task.artifactKind,
-      evaluatorPipelineRef: task.evaluatorPipelineRef,
-      contextPolicyRef: task.contextPolicyRef,
-      vaultLeasePolicyRefs: task.vaultLeasePolicyRefs,
-    }),
+    ...(task.profileOverride !== undefined ? { profileOverride: task.profileOverride } : {}),
+    effectiveProfile,
+    editable: true,
+    ...libraryDetails,
     materializedLibraryRefs: {
-      skillRefs: task.skillRefs,
-      mcpGrantRefs: task.mcpGrantRefs,
+      skillRefs: effectiveProfile.skillRefs,
+      mcpGrantRefs: effectiveProfile.mcpGrantRefs,
       toolGrantRefs: task.toolGrantRefs,
       ...(task.vaultLeasePolicyRefs.length > 0 ? { vaultLeasePolicyRefs: task.vaultLeasePolicyRefs } : {}),
       ...(task.artifactContractRef ? { artifactContractRef: task.artifactContractRef } : {}),
@@ -696,6 +718,7 @@ type DraftTaskShape = {
   skillRefs: string[];
   mcpGrantRefs: string[];
   toolGrantRefs: string[];
+  profileOverride?: Record<string, unknown>;
 };
 
 function workflowTasksFromWorkflowManifest(value: unknown): DraftTaskShape[] {
@@ -724,9 +747,47 @@ function workflowTasksFromUnknown(value: unknown): DraftTaskShape[] {
       skillRefs: stringArray(task.skillRefs),
       mcpGrantRefs: stringArray(task.mcpGrantRefs),
       toolGrantRefs: stringArray(task.toolGrantRefs),
+      ...(isRecord(task.profileOverride) ? { profileOverride: asRecord(task.profileOverride) } : {}),
     });
   }
   return tasks;
+}
+
+function effectiveProfileForDraftTask(
+  task: DraftTaskShape,
+  agentProfile: unknown,
+): NonNullable<WorkflowTaskDefinitionSummary["effectiveProfile"]> {
+  const profile = asRecord(agentProfile);
+  const override = asRecord(task.profileOverride);
+  return effectiveProfileFromSources({
+    agentProfile,
+    provider: stringValue(override.provider) ?? stringValue(profile.provider),
+    model: stringValue(override.model) ?? stringValue(profile.model),
+    thinkingLevel: stringValue(override.thinkingLevel),
+    instruction: stringValue(override.instruction),
+    skillRefs: optionalStringArray(override.skillRefs) ?? task.skillRefs,
+    mcpGrantRefs: optionalStringArray(override.mcpGrantRefs) ?? task.mcpGrantRefs,
+  });
+}
+
+function effectiveProfileFromSources(input: {
+  agentProfile?: unknown;
+  provider?: string;
+  model?: string;
+  thinkingLevel?: string;
+  instruction?: string;
+  skillRefs: string[];
+  mcpGrantRefs: string[];
+}): NonNullable<WorkflowTaskDefinitionSummary["effectiveProfile"]> {
+  const profile = asRecord(input.agentProfile);
+  return {
+    ...(input.provider ?? stringValue(profile.provider) ? { provider: input.provider ?? stringValue(profile.provider) } : {}),
+    ...(input.model ?? stringValue(profile.model) ? { model: input.model ?? stringValue(profile.model) } : {}),
+    ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
+    ...(input.instruction ? { instruction: input.instruction } : {}),
+    skillRefs: input.skillRefs,
+    mcpGrantRefs: input.mcpGrantRefs,
+  };
 }
 
 function validationIssues(value: unknown): ValidationIssue[] {
@@ -813,4 +874,8 @@ function stringValue(value: unknown): string | undefined {
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  return Array.isArray(value) ? stringArray(value) : undefined;
 }

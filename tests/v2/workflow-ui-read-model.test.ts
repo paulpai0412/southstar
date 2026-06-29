@@ -391,6 +391,57 @@ test("workflow ui draft read model exposes selected definition depth planner tra
   }
 });
 
+test("workflow ui draft selected definition exposes editable profile override and effective profile", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const draftId = "draft-workflow-profile-override";
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: draftId,
+      scope: "planner",
+      status: "validated",
+      payload: {
+        workflow: {
+          workflowId: "wf-profile-override",
+          domain: "software",
+          tasks: [{
+            id: "task-build",
+            name: "Build",
+            dependsOn: [],
+            roleRef: "maker",
+            agentProfileRef: "software-maker-pi",
+            skillRefs: ["software.calc-cli"],
+            mcpGrantRefs: [],
+            profileOverride: {
+              provider: "codex",
+              model: "gpt-5-codex",
+              thinkingLevel: "high",
+              instruction: "Use small patches.",
+              skillRefs: ["software.calc-cli", "software.test-evidence"],
+              mcpGrantRefs: ["filesystem-workspace"],
+            },
+          }],
+        },
+      },
+      summary: { goalPrompt: "profile override read model", workflowId: "wf-profile-override" },
+    });
+
+    const model = await buildWorkflowUiReadModelPg(db, { draftId, taskId: "task-build" });
+
+    assert.equal(model.selectedDefinition?.editable, true);
+    assert.equal((model.selectedDefinition as any).profileOverride.model, "gpt-5-codex");
+    assert.equal((model.selectedDefinition as any).effectiveProfile.model, "gpt-5-codex");
+    assert.equal((model.selectedDefinition as any).effectiveProfile.provider, "codex");
+    assert.equal((model.selectedDefinition as any).effectiveProfile.thinkingLevel, "high");
+    assert.equal((model.selectedDefinition as any).effectiveProfile.instruction, "Use small patches.");
+    assert.deepEqual((model.selectedDefinition as any).effectiveProfile.skillRefs, ["software.calc-cli", "software.test-evidence"]);
+    assert.deepEqual((model.selectedDefinition as any).effectiveProfile.mcpGrantRefs, ["filesystem-workspace"]);
+    assert.deepEqual(model.selectedDefinition?.skillRefs, ["software.calc-cli", "software.test-evidence"]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("ui compatibility routes mirror workflow and operator overview payloads", async () => {
   const db = await createTestPostgresDb();
   try {
