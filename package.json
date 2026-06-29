@@ -51,7 +51,10 @@
     "web:build": "next build --webpack",
     "web:start": "next start -p 3030",
     "southstar:v2": "tsx src/v2/cli.ts",
-    "southstar": "tsx src/v2/cli.ts"
+    "southstar": "tsx src/v2/cli.ts",
+    "southstar:start": "tsx src/v2/cli.ts start",
+    "southstar:stop": "tsx src/v2/cli.ts stop",
+    "southstar:status": "tsx src/v2/cli.ts status"
   },
   "c8": {
     "all": true,

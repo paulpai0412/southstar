@@ -4,6 +4,8 @@ import { executeV2Command, main, parseV2Command } from "../../src/v2/cli.ts";
 import type { CliRuntimeClient } from "../../src/v2/cli-client.ts";
 import { formatRunStatusSummary } from "../../src/v2/cli-format.ts";
 import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
+import type { RuntimeServerLifecycle } from "../../src/v2/server/runtime-server-lifecycle.ts";
+import type { WebServerLifecycle } from "../../src/v2/server/web-server-lifecycle.ts";
 
 test("parses phase 1.5 CLI commands", () => {
   assert.deepEqual(parseV2Command(["db:init", "--database-url", "postgres://db/southstar"]), {
@@ -14,7 +16,27 @@ test("parses phase 1.5 CLI commands", () => {
     command: "db:init",
     configPath: "/tmp/southstar.yaml",
   });
-  assert.deepEqual(parseV2Command(["serve"]), { command: "serve" });
+  assert.deepEqual(parseV2Command(["serve"]), { command: "serve", host: undefined, port: undefined, pidFilePath: undefined });
+  assert.deepEqual(parseV2Command(["start"]), { command: "start", host: undefined, port: undefined, pidFilePath: undefined });
+  assert.deepEqual(parseV2Command(["stop"]), { command: "stop", pidFilePath: undefined });
+  assert.deepEqual(parseV2Command(["status"]), { command: "server-status", pidFilePath: undefined });
+  assert.deepEqual(parseV2Command(["status", "--pid-file", ".southstar/custom.pid"]), {
+    command: "server-status",
+    pidFilePath: ".southstar/custom.pid",
+  });
+  assert.deepEqual(parseV2Command(["serve", "--host", "0.0.0.0", "--port", "3200"]), {
+    command: "serve",
+    host: "0.0.0.0",
+    port: 3200,
+    pidFilePath: undefined,
+  });
+  assert.deepEqual(parseV2Command(["start", "--host", "0.0.0.0", "--port", "3200"]), {
+    command: "start",
+    host: "0.0.0.0",
+    port: 3200,
+    pidFilePath: undefined,
+  });
+  assert.throws(() => parseV2Command(["start", "--port", "0"]), /--port must be an integer between 1 and 65535/);
   assert.deepEqual(parseV2Command(["run-goal", "--goal", "Add calc sum"]), { command: "run-goal", goal: "Add calc sum" });
   assert.deepEqual(parseV2Command(["wait", "--run-id", "run-1"]), { command: "wait", runId: "run-1" });
   assert.deepEqual(parseV2Command(["tasks", "--run-id", "run-1"]), { command: "tasks", runId: "run-1" });
@@ -104,11 +126,92 @@ test("task-detail read-model CLI requires task id", () => {
   );
 });
 
-test("serve command fails closed because it belongs to the runtime server entrypoint", async () => {
-  await assert.rejects(
-    () => executeV2Command(parseV2Command(["serve"]), {}),
-    /serve is implemented by src\/v2\/server entrypoint task/,
-  );
+test("server lifecycle commands execute through runtime + web lifecycle dependencies", async () => {
+  const runtimeCalls: string[] = [];
+  const webCalls: string[] = [];
+  const runtimeLifecycle = {
+    serve: async () => {
+      runtimeCalls.push("serve");
+      return {
+        status: "stopped",
+        signal: "SIGTERM",
+        pidFilePath: ".southstar/runtime-server.pid",
+        record: {
+          pid: 12345,
+          host: "127.0.0.1",
+          port: 3100,
+          url: "http://127.0.0.1:3100",
+          startedAt: "2026-06-27T00:00:00.000Z",
+          cwd: "/tmp",
+        },
+      };
+    },
+    start: async () => {
+      runtimeCalls.push("start");
+      return {
+        status: "started",
+        pidFilePath: ".southstar/runtime-server.pid",
+        record: {
+          pid: 12346,
+          host: "127.0.0.1",
+          port: 3100,
+          url: "http://127.0.0.1:3100",
+          startedAt: "2026-06-27T00:00:00.000Z",
+          cwd: "/tmp",
+        },
+      };
+    },
+    stop: async () => {
+      runtimeCalls.push("stop");
+      return { status: "not-running", pidFilePath: ".southstar/runtime-server.pid" };
+    },
+    status: async () => {
+      runtimeCalls.push("status");
+      return { status: "stopped", pidFilePath: ".southstar/runtime-server.pid" };
+    },
+  };
+  const webLifecycle = {
+    start: async () => {
+      webCalls.push("start");
+      return {
+        status: "started" as const,
+        pidFilePath: ".southstar/web-server.pid",
+        record: {
+          pid: 22346,
+          host: "127.0.0.1",
+          port: 30141,
+          url: "http://127.0.0.1:30141",
+          startedAt: "2026-06-27T00:00:00.000Z",
+          cwd: "/tmp/pi-web",
+          apiUrl: "http://127.0.0.1:3100",
+        },
+      };
+    },
+    stop: async () => {
+      webCalls.push("stop");
+      return { status: "not-running" as const, pidFilePath: ".southstar/web-server.pid" };
+    },
+    status: async () => {
+      webCalls.push("status");
+      return { status: "stopped" as const, pidFilePath: ".southstar/web-server.pid" };
+    },
+  };
+
+  assert.equal((await executeV2Command(parseV2Command(["serve"]), { serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle })).kind, "server:serve");
+  assert.equal((await executeV2Command(parseV2Command(["start"]), {
+    serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,
+    webServerLifecycle: webLifecycle as WebServerLifecycle,
+  })).kind, "server:start");
+  assert.equal((await executeV2Command(parseV2Command(["stop"]), {
+    serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,
+    webServerLifecycle: webLifecycle as WebServerLifecycle,
+  })).kind, "server:stop");
+  assert.equal((await executeV2Command(parseV2Command(["status"]), {
+    serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,
+    webServerLifecycle: webLifecycle as WebServerLifecycle,
+  })).kind, "server:status");
+  assert.deepEqual(runtimeCalls, ["serve", "start", "stop", "status"]);
+  assert.deepEqual(webCalls, ["start", "stop", "status"]);
 });
 
 test("main supports injected runtime client and does not need a local database", async () => {
@@ -123,6 +226,63 @@ test("main supports injected runtime client and does not need a local database",
 
   assert.equal(exitCode, 0);
   assert.equal(JSON.parse(writes[0]!).result.canvas.status, "unknown");
+});
+
+test("main supports injected runtime lifecycle for server status", async () => {
+  const writes: string[] = [];
+  const runtimeLifecycle = {
+    serve: async () => ({
+      status: "stopped",
+      signal: "SIGTERM" as const,
+      pidFilePath: ".southstar/runtime-server.pid",
+      record: {
+        pid: 1000,
+        host: "127.0.0.1",
+        port: 3100,
+        url: "http://127.0.0.1:3100",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp",
+      },
+    }),
+    start: async () => ({
+      status: "started" as const,
+      pidFilePath: ".southstar/runtime-server.pid",
+      record: {
+        pid: 1000,
+        host: "127.0.0.1",
+        port: 3100,
+        url: "http://127.0.0.1:3100",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp",
+      },
+    }),
+    stop: async () => ({ status: "not-running" as const, pidFilePath: ".southstar/runtime-server.pid" }),
+    status: async () => ({ status: "stopped" as const, pidFilePath: ".southstar/runtime-server.pid" }),
+  };
+  const exitCode = await main(["status"], {
+    serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,
+    webServerLifecycle: {
+      start: async () => ({
+        status: "started" as const,
+        pidFilePath: ".southstar/web-server.pid",
+        record: {
+          pid: 1100,
+          host: "127.0.0.1",
+          port: 30141,
+          url: "http://127.0.0.1:30141",
+          startedAt: "2026-06-27T00:00:00.000Z",
+          cwd: "/tmp/pi-web",
+          apiUrl: "http://127.0.0.1:3100",
+        },
+      }),
+      stop: async () => ({ status: "not-running" as const, pidFilePath: ".southstar/web-server.pid" }),
+      status: async () => ({ status: "stopped" as const, pidFilePath: ".southstar/web-server.pid" }),
+    } as WebServerLifecycle,
+    write: (text) => writes.push(text),
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(JSON.parse(writes[0]!).kind, "server:status");
 });
 
 test("formats run status summary for CLI diagnostics", () => {

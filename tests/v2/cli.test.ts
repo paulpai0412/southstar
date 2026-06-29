@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { executeV2Command, parseV2Command } from "../../src/v2/cli.ts";
+import type { RuntimeServerLifecycle } from "../../src/v2/server/runtime-server-lifecycle.ts";
 
 test("parses v2 plan command", () => {
   assert.deepEqual(parseV2Command(["plan", "--goal", "implement calc sum"]), {
@@ -17,6 +18,20 @@ test("parses v2 run and status commands", () => {
   assert.deepEqual(parseV2Command(["status", "--run-id", "run-1"]), {
     command: "status",
     runId: "run-1",
+  });
+  assert.deepEqual(parseV2Command(["status"]), {
+    command: "server-status",
+    pidFilePath: undefined,
+  });
+  assert.deepEqual(parseV2Command(["start"]), {
+    command: "start",
+    host: undefined,
+    port: undefined,
+    pidFilePath: undefined,
+  });
+  assert.deepEqual(parseV2Command(["stop"]), {
+    command: "stop",
+    pidFilePath: undefined,
   });
 });
 
@@ -35,7 +50,6 @@ test("parses v2 steering and task-envelope commands", () => {
 
 test("rejects missing v2 command args", () => {
   assert.throws(() => parseV2Command(["plan"]), /--goal is required/);
-  assert.throws(() => parseV2Command(["status"]), /--run-id is required/);
   assert.throws(() => parseV2Command(["unknown"]), /Unknown southstar:v2 command/);
 });
 
@@ -59,6 +73,56 @@ test("v2 CLI commands fail closed without runtime client instead of using local 
   await assert.rejects(
     () => executeV2Command(parseV2Command(["status", "--run-id", "run-1"]), {}),
     /runtime server client is required/,
+  );
+});
+
+test("server lifecycle commands fail closed without lifecycle dependency", async () => {
+  await assert.rejects(
+    () => executeV2Command(parseV2Command(["status"]), {}),
+    /runtime server lifecycle is required/,
+  );
+});
+
+test("start command fails closed when web lifecycle dependency is missing", async () => {
+  const runtimeLifecycle = {
+    serve: async () => ({
+      status: "stopped" as const,
+      signal: "SIGTERM" as const,
+      pidFilePath: ".southstar/runtime-server.pid",
+      record: {
+        pid: 1000,
+        host: "127.0.0.1",
+        port: 3100,
+        url: "http://127.0.0.1:3100",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp",
+      },
+    }),
+    start: async () => ({
+      status: "started" as const,
+      pidFilePath: ".southstar/runtime-server.pid",
+      record: {
+        pid: 1000,
+        host: "127.0.0.1",
+        port: 3100,
+        url: "http://127.0.0.1:3100",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp",
+      },
+    }),
+    stop: async () => ({ status: "not-running" as const, pidFilePath: ".southstar/runtime-server.pid" }),
+    status: async () => ({ status: "running" as const, pidFilePath: ".southstar/runtime-server.pid", record: {
+      pid: 1000,
+      host: "127.0.0.1",
+      port: 3100,
+      url: "http://127.0.0.1:3100",
+      startedAt: "2026-06-27T00:00:00.000Z",
+      cwd: "/tmp",
+    } }),
+  } as RuntimeServerLifecycle;
+  await assert.rejects(
+    () => executeV2Command(parseV2Command(["start"]), { serverLifecycle: runtimeLifecycle }),
+    /web server lifecycle is required/,
   );
 });
 

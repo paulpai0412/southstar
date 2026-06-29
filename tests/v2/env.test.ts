@@ -4,7 +4,7 @@ import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
 
 test("loads v2 env defaults as Postgres-only runtime configuration", () => {
   assert.deepEqual(loadSouthstarEnv({}), {
-    databaseUrl: "postgres://postgres:postgres@127.0.0.1:5432/southstar",
+    databaseUrl: "postgres://postgres:postgres@127.0.0.1:55432/southstar",
     torkBaseUrl: "http://127.0.0.1:8000",
     serverUrl: "http://127.0.0.1:3100",
     dockerRequired: true,

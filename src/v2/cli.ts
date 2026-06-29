@@ -3,15 +3,20 @@ import { loadSouthstarEnv } from "./config/env.ts";
 import { createCliRuntimeClient, type CliRuntimeClient } from "./cli-client.ts";
 import { initializeSouthstarSchema } from "./db/init.ts";
 import type { ReadModelKind } from "./read-models/types.ts";
+import { createRuntimeServerLifecycle, type RuntimeServerLifecycle } from "./server/runtime-server-lifecycle.ts";
+import { createWebServerLifecycle, type WebServerLifecycle } from "./server/web-server-lifecycle.ts";
 
 export type V2Command =
   | { command: "db:init"; databaseUrl?: string; configPath?: string }
   | { command: "plan"; goal: string }
   | { command: "run"; draftId: string }
   | { command: "status"; runId: string }
+  | { command: "server-status"; pidFilePath?: string }
   | { command: "steer"; runId: string; message: string }
   | { command: "task-envelope"; runId: string; taskId: string }
-  | { command: "serve" }
+  | { command: "serve"; host?: string; port?: number; pidFilePath?: string }
+  | { command: "start"; host?: string; port?: number; pidFilePath?: string }
+  | { command: "stop"; pidFilePath?: string }
   | { command: "run-goal"; goal: string }
   | { command: "wait"; runId: string }
   | { command: "tasks"; runId: string }
@@ -25,6 +30,8 @@ export type V2Command =
 
 export type V2CliDependencies = {
   runtimeClient?: CliRuntimeClient;
+  serverLifecycle?: RuntimeServerLifecycle;
+  webServerLifecycle?: WebServerLifecycle;
   initializeSchema?: (databaseUrl: string) => Promise<{ version: string }>;
   readFile?: (path: string) => Promise<string>;
 };
@@ -45,14 +52,31 @@ export function parseV2Command(argv: string[]): V2Command {
       return { command, goal: requireFlag(args, "--goal") };
     case "run":
       return { command, draftId: requireFlag(args, "--draft-id") };
-    case "status":
-      return { command, runId: requireFlag(args, "--run-id") };
+    case "status": {
+      const runId = optionalFlag(args, "--run-id");
+      if (runId) return { command, runId };
+      return { command: "server-status", pidFilePath: optionalFlag(args, "--pid-file") };
+    }
     case "steer":
       return { command, runId: requireFlag(args, "--run-id"), message: requireFlag(args, "--message") };
     case "task-envelope":
       return { command, runId: requireFlag(args, "--run-id"), taskId: requireFlag(args, "--task-id") };
     case "serve":
-      return { command };
+      return {
+        command,
+        host: optionalFlag(args, "--host"),
+        port: optionalNumberFlag(args, "--port"),
+        pidFilePath: optionalFlag(args, "--pid-file"),
+      };
+    case "start":
+      return {
+        command,
+        host: optionalFlag(args, "--host"),
+        port: optionalNumberFlag(args, "--port"),
+        pidFilePath: optionalFlag(args, "--pid-file"),
+      };
+    case "stop":
+      return { command, pidFilePath: optionalFlag(args, "--pid-file") };
     case "run-goal":
       return { command, goal: requireFlag(args, "--goal") };
     case "wait":
@@ -90,7 +114,69 @@ export async function executeV2Command(command: V2Command, dependencies: V2CliDe
     const initialized = await initializer(databaseUrl);
     return { kind: "db:init", result: { type: "db:init", schemaVersion: initialized.version } };
   }
-  if (command.command === "serve") throw new Error("serve is implemented by src/v2/server entrypoint task");
+  if (command.command === "serve") {
+    const lifecycle = requireRuntimeServerLifecycle(dependencies);
+    return {
+      kind: "server:serve",
+      result: await lifecycle.serve({
+        host: command.host,
+        ...(command.port !== undefined ? { port: command.port } : {}),
+        pidFilePath: command.pidFilePath,
+      }),
+    };
+  }
+  if (command.command === "start") {
+    const lifecycle = requireRuntimeServerLifecycle(dependencies);
+    const webLifecycle = requireWebServerLifecycle(dependencies);
+    let runtimeStarted = false;
+    let runtime:
+      | Awaited<ReturnType<RuntimeServerLifecycle["start"]>>
+      | undefined;
+    const webPort = 30141;
+    try {
+      runtime = await lifecycle.start({
+        host: command.host,
+        ...(command.port !== undefined ? { port: command.port } : {}),
+        pidFilePath: command.pidFilePath,
+      });
+      runtimeStarted = runtime.status === "started";
+      const web = await webLifecycle.start({
+        apiUrl: normalizeRuntimeServerUrl(runtime.record.url),
+        port: webPort,
+      });
+      return {
+        kind: "server:start",
+        result: { runtime, web },
+      };
+    } catch (error) {
+      if (runtimeStarted) {
+        await lifecycle.stop({ pidFilePath: command.pidFilePath }).catch(() => undefined);
+      }
+      throw error;
+    }
+  }
+  if (command.command === "stop") {
+    const lifecycle = requireRuntimeServerLifecycle(dependencies);
+    const webLifecycle = requireWebServerLifecycle(dependencies);
+    return {
+      kind: "server:stop",
+      result: {
+        web: await webLifecycle.stop(),
+        runtime: await lifecycle.stop({ pidFilePath: command.pidFilePath }),
+      },
+    };
+  }
+  if (command.command === "server-status") {
+    const lifecycle = requireRuntimeServerLifecycle(dependencies);
+    const webLifecycle = requireWebServerLifecycle(dependencies);
+    return {
+      kind: "server:status",
+      result: {
+        runtime: await lifecycle.status({ pidFilePath: command.pidFilePath }),
+        web: await webLifecycle.status(),
+      },
+    };
+  }
   const client = requireRuntimeClient(dependencies);
   switch (command.command) {
     case "plan":
@@ -128,7 +214,25 @@ export async function executeV2Command(command: V2Command, dependencies: V2CliDe
 export async function main(argv = process.argv.slice(2), dependencies?: Partial<V2CliDependencies> & { write?: (text: string) => void }): Promise<number> {
   try {
     const parsed = parseV2Command(argv);
-    const deps = { ...dependencies, runtimeClient: dependencies?.runtimeClient ?? createCliRuntimeClient({ baseUrl: loadSouthstarEnv().serverUrl }) };
+    const env = loadSouthstarEnv();
+    const needsRuntimeClient = parsed.command !== "db:init"
+      && parsed.command !== "serve"
+      && parsed.command !== "start"
+      && parsed.command !== "stop"
+      && parsed.command !== "server-status";
+    const needsLifecycle = parsed.command === "serve"
+      || parsed.command === "start"
+      || parsed.command === "stop"
+      || parsed.command === "server-status";
+    const needsWebLifecycle = parsed.command === "start"
+      || parsed.command === "stop"
+      || parsed.command === "server-status";
+    const deps = {
+      ...dependencies,
+      ...(needsRuntimeClient && !dependencies?.runtimeClient ? { runtimeClient: createCliRuntimeClient({ baseUrl: env.serverUrl }) } : {}),
+      ...(needsLifecycle && !dependencies?.serverLifecycle ? { serverLifecycle: createRuntimeServerLifecycle() } : {}),
+      ...(needsWebLifecycle && !dependencies?.webServerLifecycle ? { webServerLifecycle: createWebServerLifecycle() } : {}),
+    };
     const result = await executeV2Command(parsed, deps);
     (dependencies?.write ?? console.log)(JSON.stringify(result));
     return 0;
@@ -151,13 +255,37 @@ function optionalFlag(args: string[], flag: string): string | undefined {
   return value && !value.startsWith("--") ? value : undefined;
 }
 
+function optionalNumberFlag(args: string[], flag: string): number | undefined {
+  const value = optionalFlag(args, flag);
+  if (!value) return undefined;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65_535) {
+    throw new Error(`${flag} must be an integer between 1 and 65535`);
+  }
+  return parsed;
+}
+
 function requireRuntimeClient(dependencies: V2CliDependencies): CliRuntimeClient {
   if (!dependencies.runtimeClient) throw new Error("runtime server client is required for this command");
   return dependencies.runtimeClient;
 }
 
+function requireRuntimeServerLifecycle(dependencies: V2CliDependencies): RuntimeServerLifecycle {
+  if (!dependencies.serverLifecycle) throw new Error("runtime server lifecycle is required for this command");
+  return dependencies.serverLifecycle;
+}
+
+function requireWebServerLifecycle(dependencies: V2CliDependencies): WebServerLifecycle {
+  if (!dependencies.webServerLifecycle) throw new Error("web server lifecycle is required for this command");
+  return dependencies.webServerLifecycle;
+}
+
 function unwrapServerEnvelope<T>(envelope: { kind: string; result: T }): V2CommandResult {
   return { kind: envelope.kind, result: envelope.result };
+}
+
+function normalizeRuntimeServerUrl(url: string): string {
+  return url.replace(/\/+$/, "");
 }
 
 async function readDatabaseUrlFromConfig(configPath: string, dependencies: V2CliDependencies): Promise<string> {

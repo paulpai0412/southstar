@@ -47,7 +47,7 @@ export type RealPostgresE2E = {
 export async function createRealPostgresE2E(): Promise<RealPostgresE2E> {
   const adminUrl = process.env.SOUTHSTAR_TEST_ADMIN_DATABASE_URL;
   if (!adminUrl) {
-    throw new Error("SOUTHSTAR_TEST_ADMIN_DATABASE_URL is required, for example postgres://postgres:postgres@127.0.0.1:5432/postgres");
+    throw new Error("SOUTHSTAR_TEST_ADMIN_DATABASE_URL is required, for example postgres://postgres:postgres@127.0.0.1:55432/postgres");
   }
   const databaseName = `southstar_test_${randomUUID().replace(/-/g, "_")}`;
   const admin = new Client({ connectionString: adminUrl });
