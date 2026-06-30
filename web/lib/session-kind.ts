@@ -1,7 +1,8 @@
-import type { SessionEntry } from "./types";
+import type { SessionEntry, UserMessage } from "./types";
 
 export const SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE = "southstar.session.kind";
 export type SessionKind = "chat" | "workflow";
+type UserContentBlock = Exclude<UserMessage["content"], string>[number];
 
 const SOUTHSTAR_WORKFLOW_COMPOSER_PROMPT_PREFIX = "You are Southstar's library-constrained workflow";
 
@@ -36,10 +37,14 @@ function isWorkflowComposerPromptEntry(entry: SessionEntry): boolean {
   return textFromUserContent(message.content).startsWith(SOUTHSTAR_WORKFLOW_COMPOSER_PROMPT_PREFIX);
 }
 
-function textFromUserContent(content: SessionEntry["message"]["content"]): string {
+function textFromUserContent(content: UserMessage["content"]): string {
   if (typeof content === "string") return content;
   return content
-    .filter((block) => block.type === "text")
+    .filter(isTextContentBlock)
     .map((block) => block.text)
     .join("\n");
+}
+
+function isTextContentBlock(block: UserContentBlock): block is UserContentBlock & { type: "text"; text: string } {
+  return block.type === "text" && "text" in block && typeof block.text === "string";
 }

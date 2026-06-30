@@ -2,46 +2,57 @@ import type { OperatorAttentionItem, OperatorCommand, OperatorCommandResult, Ope
 
 export function normalizeOperatorOverview(input: unknown): OperatorOverview {
   const model = unwrapEnvelope(input);
-  const runs = coerceArray<any>(model?.activeRuns || model?.runs || model?.data?.runs)
+  const data = recordValue(model?.data);
+  const runs = coerceArray(model?.activeRuns || model?.runs || data?.runs)
     .map(readRun)
     .filter((run): run is OperatorRun => run !== null);
-  const attentionItems = coerceArray<any>(model?.attentionItems || model?.items || model?.data?.attentionItems)
+  const attentionItems = coerceArray(model?.attentionItems || model?.items || data?.attentionItems)
     .map(readAttention)
     .filter((item): item is OperatorAttentionItem => item !== null);
-  const commandResults = coerceArray<any>(model?.commandResults || model?.data?.commandResults)
+  const commandResults = coerceArray(model?.commandResults || data?.commandResults)
     .map(readCommandResult)
     .filter((item): item is OperatorCommandResult => item !== null);
+  const runtimeHealth = recordValue(model?.runtimeHealth);
   return {
     runs,
     attentionItems,
     commandResults,
     runtimeHealth: {
-      activeRunCount: numberValue(model?.runtimeHealth?.activeRunCount) || runs.length,
-      attentionCount: numberValue(model?.runtimeHealth?.attentionCount) || attentionItems.length,
-      blockedCount: numberValue(model?.runtimeHealth?.blockedCount) || attentionItems.filter((item) => item.severity === "blocked").length,
+      activeRunCount: numberValue(runtimeHealth?.activeRunCount) || runs.length,
+      attentionCount: numberValue(runtimeHealth?.attentionCount) || attentionItems.length,
+      blockedCount: numberValue(runtimeHealth?.blockedCount) || attentionItems.filter((item) => item.severity === "blocked").length,
     },
     defaultSelection: recordValue(model?.defaultSelection) as OperatorOverview["defaultSelection"] || null,
   };
 }
 
-function readRun(run: any): OperatorRun | null {
+function readRun(input: unknown): OperatorRun | null {
+  const run = recordValue(input);
+  if (!run) return null;
   const runId = stringValue(run?.runId || run?.id);
   if (!runId) return null;
+  const domain = stringValue(run.domain);
+  const cwd = stringValue(run.cwd);
+  const projectRoot = stringValue(run.projectRoot);
+  const updatedAt = stringValue(run.updatedAt);
   return {
     runId,
     status: stringValue(run?.status) || "unknown",
     title: stringValue(run?.title || run?.goalPrompt) || runId,
-    ...(stringValue(run?.domain) ? { domain: stringValue(run.domain) } : {}),
-    ...(stringValue(run?.cwd) ? { cwd: stringValue(run.cwd) } : {}),
-    ...(stringValue(run?.projectRoot) ? { projectRoot: stringValue(run.projectRoot) } : {}),
-    ...(stringValue(run?.updatedAt) ? { updatedAt: stringValue(run.updatedAt) } : {}),
+    ...(domain ? { domain } : {}),
+    ...(cwd ? { cwd } : {}),
+    ...(projectRoot ? { projectRoot } : {}),
+    ...(updatedAt ? { updatedAt } : {}),
   };
 }
 
-function readAttention(item: any): OperatorAttentionItem | null {
+function readAttention(input: unknown): OperatorAttentionItem | null {
+  const item = recordValue(input);
+  if (!item) return null;
+  const scope = recordValue(item?.scope);
   const id = stringValue(item?.id || item?.resourceKey || item?.title);
   if (!id) return null;
-  const commands = coerceArray<any>(item?.commands).map(readCommand).filter((command): command is OperatorCommand => command !== null);
+  const commands = coerceArray(item?.commands).map(readCommand).filter((command): command is OperatorCommand => command !== null);
   return {
     id,
     kind: stringValue(item?.kind),
@@ -49,8 +60,8 @@ function readAttention(item: any): OperatorAttentionItem | null {
     interventionMode: stringValue(item?.interventionMode),
     title: stringValue(item?.title) || "Operator attention",
     reason: stringValue(item?.reason),
-    runId: stringValue(item?.runId || item?.scope?.runId),
-    taskId: stringValue(item?.taskId || item?.scope?.taskId),
+    runId: stringValue(item?.runId || scope?.runId),
+    taskId: stringValue(item?.taskId || scope?.taskId),
     status: stringValue(item?.status),
     source: recordValue(item?.source) as OperatorAttentionItem["source"],
     detail: recordValue(item?.detail),
@@ -59,7 +70,9 @@ function readAttention(item: any): OperatorAttentionItem | null {
   };
 }
 
-function readCommand(command: any): OperatorCommand | null {
+function readCommand(input: unknown): OperatorCommand | null {
+  const command = recordValue(input);
+  if (!command) return null;
   const id = stringValue(command?.id);
   if (!id) return null;
   return {
@@ -74,7 +87,9 @@ function readCommand(command: any): OperatorCommand | null {
   };
 }
 
-function readCommandResult(result: any): OperatorCommandResult | null {
+function readCommandResult(input: unknown): OperatorCommandResult | null {
+  const result = recordValue(input);
+  if (!result) return null;
   const commandId = stringValue(result?.commandId);
   const status = stringValue(result?.status);
   if (!commandId || !status) return null;
@@ -89,11 +104,12 @@ function readCommandResult(result: any): OperatorCommandResult | null {
   };
 }
 
-function unwrapEnvelope(input: any): any {
-  return input?.result || input;
+function unwrapEnvelope(input: unknown): Record<string, unknown> {
+  const record = recordValue(input);
+  return recordValue(record?.result) ?? record ?? {};
 }
 
-function coerceArray<T>(value: unknown): T[] {
+function coerceArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
 }
 

@@ -40,7 +40,7 @@ export function buildWorkflowCompositionPlanDisplay(text: string): WorkflowCompo
   if (tasks.length === 0) return null;
 
   const levels = dependencyLevels(tasks);
-  const dag = {
+  const dag: WorkflowDag = {
     id: `composition-${stableSlug(parsed.title)}`,
     mode: "draft",
     templateId: parsed.selectedWorkflowTemplateRef,

@@ -19,7 +19,7 @@ export function useRuntimeEventStream(input: { runId: string | null; taskId?: st
     const streamKey = `${input.runId}:${input.scope}:${input.taskId || "all"}`;
     let closed = false;
     let controller: AbortController | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let reconnectTimer: number | null = null;
 
     const connect = async () => {
       controller = new AbortController();

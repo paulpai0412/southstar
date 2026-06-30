@@ -5,11 +5,11 @@ import { join } from "node:path";
 
 const root = join(import.meta.dirname, "../..");
 
-test("planner route uses the 1:1 shell and planner page component", () => {
-  const route = readFileSync(join(root, "app/planner/page.tsx"), "utf8");
+test("web root route uses the AppShell entry and keeps legacy planner page source available", () => {
+  const route = readFileSync(join(root, "web/app/page.tsx"), "utf8");
   const shell = readFileSync(join(root, "components/southstar/shell/SideRail.tsx"), "utf8");
   const page = readFileSync(join(root, "components/southstar/pages/PlannerPage.tsx"), "utf8");
-  assert.match(route, /PlannerPage/);
+  assert.match(route, /AppShell/);
   assert.match(shell, /Planner Chat/);
   assert.match(shell, /Workflow Canvas/);
   assert.match(shell, /Runtime Monitor/);
@@ -21,24 +21,22 @@ test("planner route uses the 1:1 shell and planner page component", () => {
   assert.doesNotMatch(page, /const .* = \[/);
 });
 
-test("legacy 1:1 routes and shared UI primitives still exist", () => {
-  for (const route of ["planner", "runtime", "task", "sessions", "worktree", "executor", "domain-packs", "governance"]) {
-    const source = readFileSync(join(root, `app/${route}/page.tsx`), "utf8");
-    assert.match(source, /Page|PlannerPage|RuntimeMonitorPage|TaskDetailPage|SessionsMemoryPage|WorktreeConsolePage|ExecutorOpsPage|DomainPacksAgentStudioPage|GovernancePage/);
-  }
+test("legacy 1:1 shared UI primitives still exist while web owns the route entry", () => {
   for (const component of ["Button", "Panel", "StatusBadge", "DataTable", "MetricCard", "Timeline", "CodeBlock", "GraphCanvas"]) {
     const source = readFileSync(join(root, `components/southstar/ui/${component}.tsx`), "utf8");
     assert.match(source, new RegExp(`export function ${component}`));
   }
-  const css = readFileSync(join(root, "app/globals.css"), "utf8");
-  assert.match(css, /#071827/);
-  assert.match(css, /#f7f9fc/);
-  assert.match(css, /border-radius: 8px/);
+  const css = readFileSync(join(root, "web/app/globals.css"), "utf8");
+  assert.match(css, /--bg\b/);
+  assert.match(css, /--bg-panel\b/);
+  assert.match(css, /border-radius: [5-8]px/);
 });
 
-test("product shell routes map to SouthstarProductShell tabs", () => {
-  for (const route of ["page", "chat/page", "workflow/page", "operations/page"]) {
-    const source = readFileSync(join(root, `app/${route}.tsx`), "utf8");
-    assert.match(source, /SouthstarProductShell/);
-  }
+test("web AppShell exposes Chat Workflow Operator tabs", () => {
+  const route = readFileSync(join(root, "web/app/page.tsx"), "utf8");
+  const rail = readFileSync(join(root, "web/components/AppModeRail.tsx"), "utf8");
+  assert.match(route, /AppShell/);
+  assert.match(rail, /\bchat\b/);
+  assert.match(rail, /\bworkflow\b/);
+  assert.match(rail, /\boperator\b/);
 });

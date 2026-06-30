@@ -40,8 +40,8 @@ function normalizeOperatorTaskDebug(input: unknown): OperatorTaskDebug {
   const record = asRecord(input);
   const data = recordValue(record.data) ?? record;
   const task = asRecord(data.task);
-  const runId = stringValue(data.runId);
-  const taskId = stringValue(task.taskId || task.id);
+  const runId = stringValue(data.runId) || "";
+  const taskId = stringValue(task.taskId || task.id) || "";
   return {
     schemaVersion: "southstar.read_model.operator_task_debug.v1",
     kind: "operator-task-debug",

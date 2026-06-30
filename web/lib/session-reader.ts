@@ -216,19 +216,21 @@ function renderWorkflowComposerMessage(message: AgentMessage): AgentMessage {
   if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
   if (message.content.some((block) => block.type === "workflowDag")) return message;
 
-  let display: ReturnType<typeof buildWorkflowCompositionPlanDisplay> = null;
+  let dag: NonNullable<ReturnType<typeof buildWorkflowCompositionPlanDisplay>>["dag"] | null = null;
   const content = message.content.map((block) => {
-    if (display || block.type !== "text") return block;
-    display = buildWorkflowCompositionPlanDisplay(block.text);
-    return display ? { ...block, text: display.formattedText } : block;
+    if (dag || block.type !== "text") return block;
+    const display = buildWorkflowCompositionPlanDisplay(block.text);
+    if (!display) return block;
+    dag = display.dag;
+    return { ...block, text: display.formattedText };
   });
 
-  if (!display) return message;
+  if (!dag) return message;
   return {
     ...message,
     content: [
       ...content,
-      { type: "workflowDag", dag: display.dag },
+      { type: "workflowDag", dag },
     ],
   };
 }

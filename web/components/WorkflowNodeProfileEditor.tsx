@@ -8,6 +8,11 @@ import {
   type WorkflowNodeProfileForm,
 } from "@/lib/workflow/node-profile";
 
+type ProfileOption = {
+  id: string;
+  model?: string;
+};
+
 const emptyForm: WorkflowNodeProfileForm = {
   provider: "",
   model: "",
@@ -30,8 +35,8 @@ export function WorkflowNodeProfileEditor({
 }) {
   const [form, setForm] = useState<WorkflowNodeProfileForm>(emptyForm);
   const [serverForm, setServerForm] = useState<WorkflowNodeProfileForm>(emptyForm);
-  const [selectedDefinition, setSelectedDefinition] = useState<any | null>(null);
-  const [candidates, setCandidates] = useState<any | null>(null);
+  const [selectedDefinition, setSelectedDefinition] = useState<unknown>(null);
+  const [candidates, setCandidates] = useState<unknown>(null);
   const [skillInput, setSkillInput] = useState("");
   const [mcpInput, setMcpInput] = useState("");
   const [loading, setLoading] = useState(true);
@@ -39,7 +44,9 @@ export function WorkflowNodeProfileEditor({
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const editable = mode === "draft" && Boolean(draftId) && selectedDefinition?.editable !== false;
+  const selectedDefinitionRecord = recordValue(selectedDefinition);
+  const candidateAlternatives = recordValue(recordValue(candidates)?.alternatives);
+  const editable = mode === "draft" && Boolean(draftId) && selectedDefinitionRecord?.editable !== false;
   const dirty = !formEquals(form, serverForm);
 
   const load = useCallback(async () => {
@@ -51,10 +58,11 @@ export function WorkflowNodeProfileEditor({
       if (draftId) query.set("draftId", draftId);
       if (runId) query.set("runId", runId);
       const response = await fetch(`/api/workflow/ui?${query.toString()}`);
-      const payload = await response.json();
-      if (!response.ok || payload.ok === false) throw new Error(payload.error ?? `HTTP ${response.status}`);
-      const model = payload.result ?? payload;
-      const selected = model.selectedDefinition ?? null;
+      const payload = await response.json() as unknown;
+      const payloadRecord = recordValue(payload);
+      if (!response.ok || payloadRecord?.ok === false) throw new Error(stringValue(payloadRecord?.error) || `HTTP ${response.status}`);
+      const model = payloadRecord?.result ?? payload;
+      const selected = recordValue(model)?.selectedDefinition ?? null;
       const nextForm = normalizeNodeProfileForm({ selectedDefinition: selected });
       setSelectedDefinition(selected);
       setForm(nextForm);
@@ -63,8 +71,9 @@ export function WorkflowNodeProfileEditor({
       if (draftId) {
         const candidateQuery = new URLSearchParams({ draftId, taskId });
         const candidateResponse = await fetch(`/api/workflow/agent-library/candidates?${candidateQuery.toString()}`);
-        const candidatePayload = await candidateResponse.json();
-        if (candidateResponse.ok && candidatePayload.ok !== false) setCandidates(candidatePayload.result ?? candidatePayload);
+        const candidatePayload = await candidateResponse.json() as unknown;
+        const candidateRecord = recordValue(candidatePayload);
+        if (candidateResponse.ok && candidateRecord?.ok !== false) setCandidates(candidateRecord?.result ?? candidatePayload);
       } else {
         setCandidates(null);
       }
@@ -80,9 +89,9 @@ export function WorkflowNodeProfileEditor({
   }, [load]);
 
   const profileOptions = useMemo(() => {
-    const list = candidates?.alternatives?.agentProfiles;
-    return Array.isArray(list) ? list : [];
-  }, [candidates]);
+    const list = candidateAlternatives?.agentProfiles;
+    return Array.isArray(list) ? list.map(readProfileOption).filter((profile): profile is ProfileOption => profile !== null) : [];
+  }, [candidateAlternatives]);
 
   const save = async () => {
     if (!draftId || !editable) return;
@@ -95,12 +104,14 @@ export function WorkflowNodeProfileEditor({
         headers: { "content-type": "application/json" },
         body: JSON.stringify(buildNodeProfilePatchPayload(form)),
       });
-      const payload = await response.json();
-      if (!response.ok || payload.ok === false) throw new Error(payload.error ?? `HTTP ${response.status}`);
+      const payload = await response.json() as unknown;
+      const payloadRecord = recordValue(payload);
+      const result = recordValue(payloadRecord?.result);
+      if (!response.ok || payloadRecord?.ok === false) throw new Error(stringValue(payloadRecord?.error) || `HTTP ${response.status}`);
       window.dispatchEvent(new CustomEvent("southstar:planner-draft-updated", {
         detail: {
           draftId,
-          status: payload.result?.status ?? payload.status ?? "needs_validation",
+          status: stringValue(result?.status) || stringValue(payloadRecord?.status) || "needs_validation",
         },
       }));
       setNotice("Saved");
@@ -137,7 +148,7 @@ export function WorkflowNodeProfileEditor({
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderBottom: "1px solid var(--border)", background: "var(--bg-panel)" }}>
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 12, fontWeight: 650, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {selectedDefinition?.taskName ?? taskId}
+            {stringValue(selectedDefinitionRecord?.taskName) || taskId}
           </div>
           <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
             {mode} / {taskId}
@@ -180,7 +191,7 @@ export function WorkflowNodeProfileEditor({
           refs={form.skillRefs}
           disabled={!editable}
           input={skillInput}
-          suggestions={candidates?.alternatives?.skills}
+          suggestions={candidateAlternatives?.skills}
           onInputChange={setSkillInput}
           onAdd={() => addRef("skillRefs", skillInput)}
           onRemove={(ref) => removeRef("skillRefs", ref)}
@@ -190,7 +201,7 @@ export function WorkflowNodeProfileEditor({
           refs={form.mcpGrantRefs}
           disabled={!editable}
           input={mcpInput}
-          suggestions={candidates?.alternatives?.mcpServers}
+          suggestions={candidateAlternatives?.mcpServers}
           onInputChange={setMcpInput}
           onAdd={() => addRef("mcpGrantRefs", mcpInput)}
           onRemove={(ref) => removeRef("mcpGrantRefs", ref)}
@@ -199,7 +210,7 @@ export function WorkflowNodeProfileEditor({
           <section style={sectionStyle}>
             <div style={labelStyle}>Available profiles</div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {profileOptions.map((profile: any) => (
+              {profileOptions.map((profile) => (
                 <div key={profile.id} style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
                   {profile.id} {profile.model ? `/ ${profile.model}` : ""}
                 </div>
@@ -222,7 +233,7 @@ function RefEditor(props: {
   onAdd: () => void;
   onRemove: (ref: string) => void;
 }) {
-  const suggestions = Array.isArray(props.suggestions) ? props.suggestions : [];
+  const suggestions = Array.isArray(props.suggestions) ? props.suggestions.map(readProfileOption).filter((item): item is ProfileOption => item !== null) : [];
   return (
     <section style={sectionStyle}>
       <div style={labelStyle}>{props.title}</div>
@@ -239,10 +250,29 @@ function RefEditor(props: {
         <button type="button" disabled={props.disabled || !props.input.trim()} onClick={props.onAdd} style={buttonStyle(props.disabled || !props.input.trim())}>Add</button>
       </div>
       <datalist id={`${props.title}-suggestions`}>
-        {suggestions.map((item: any) => <option key={item.id} value={item.id} />)}
+        {suggestions.map((item) => <option key={item.id} value={item.id} />)}
       </datalist>
     </section>
   );
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function readProfileOption(value: unknown): ProfileOption | null {
+  const record = recordValue(value);
+  const id = stringValue(record?.id);
+  if (!id) return null;
+  const model = stringValue(record?.model);
+  return {
+    id,
+    ...(model ? { model } : {}),
+  };
 }
 
 const sectionStyle = { display: "flex", flexDirection: "column", gap: 8 } as const;

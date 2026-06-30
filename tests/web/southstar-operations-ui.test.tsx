@@ -7,11 +7,12 @@ import { visiblePanelsForMode } from "../../components/southstar/view-mode.ts";
 const root = join(import.meta.dirname, "../..");
 
 test("Southstar built-in web app shell exists and uses operations vocabulary", () => {
-  const page = readFileSync(join(root, "app/page.tsx"), "utf8");
-  const globals = readFileSync(join(root, "app/globals.css"), "utf8");
-  assert.match(page, /SouthstarProductShell/);
+  const page = readFileSync(join(root, "web/app/page.tsx"), "utf8");
+  const globals = readFileSync(join(root, "web/app/globals.css"), "utf8");
+  assert.match(page, /AppShell/);
   assert.doesNotMatch(page, /redirect\(/);
-  assert.match(globals, /--ss-product-bg/);
+  assert.match(globals, /--bg\b/);
+  assert.match(globals, /--bg-panel\b/);
   assert.doesNotMatch(page, /iframe|Tork Web|Northstar/);
 });
 
@@ -101,7 +102,7 @@ test("control plane layout mirrors the accepted 1:1 dashboard anatomy", () => {
   const appShell = readFileSync(join(root, "components/southstar/AppShell.tsx"), "utf8");
   const canvas = readFileSync(join(root, "components/southstar/WorkflowCanvas.tsx"), "utf8");
   const taskDetail = readFileSync(join(root, "components/southstar/TaskDetail.tsx"), "utf8");
-  const globals = readFileSync(join(root, "app/globals.css"), "utf8");
+  const globals = readFileSync(join(root, "web/app/globals.css"), "utf8");
 
   assert.match(appShell, /ss-control-plane/);
   assert.match(appShell, /ss-left-stack/);
@@ -119,6 +120,6 @@ test("control plane layout mirrors the accepted 1:1 dashboard anatomy", () => {
   assert.match(taskDetail, /Worktree Console/);
   assert.match(taskDetail, /Retry Task/);
   assert.match(taskDetail, /Fork Session/);
-  assert.match(globals, /grid-template-columns: 300px minmax\(480px, 1fr\) 520px/);
-  assert.match(globals, /--ss-rail: #06172a/);
+  assert.match(globals, /operator-state-grid/);
+  assert.match(globals, /sidecar-shell/);
 });

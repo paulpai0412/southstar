@@ -14,10 +14,10 @@ function hasCssSelector(css: string, selector: string): boolean {
   return new RegExp(`^\\s*${escaped}\\s*\\{`, "m").test(css);
 }
 
-test("app root references SouthstarPiWebShell", () => {
-  assert.match(source("app/page.tsx"), /SouthstarPiWebShell/);
-  assert.match(source("app/page.tsx"), /SouthstarProductShell/);
-  assert.doesNotMatch(source("app/page.tsx"), /compatibility token/i);
+test("web app root references AppShell", () => {
+  assert.match(source("web/app/page.tsx"), /AppShell/);
+  assert.match(source("web/app/page.tsx"), /Suspense/);
+  assert.doesNotMatch(source("web/app/page.tsx"), /compatibility token/i);
 });
 
 test("SouthstarPiWebShell composes chat workspace components instead of inline placeholders", () => {
@@ -170,7 +170,7 @@ test("WorkspaceTabs uses Chat Workflow Operator and removes legacy labels", () =
 });
 
 test("globals.css contains pi-web tokens and dark mode selector", () => {
-  const css = source("app/globals.css");
+  const css = source("web/app/globals.css");
   assert.match(css, /--bg\b/);
   assert.match(css, /--bg-panel\b/);
   assert.match(css, /--bg-hover\b/);
@@ -178,14 +178,14 @@ test("globals.css contains pi-web tokens and dark mode selector", () => {
   assert.match(css, /--accent\b/);
   assert.match(css, /html\.dark/);
   for (const selector of [
-    ".ss-pi-shell",
-    ".ss-pi-sidebar",
-    ".ss-pi-main",
-    ".ss-pi-topbar",
-    ".ss-pi-content",
-    ".ss-pi-file-viewer",
-    ".ss-workflow-workbench",
-    ".ss-operator-board",
+    ".sidecar-shell",
+    ".sidecar-tabs",
+    ".ss-workflow-canvas",
+    ".operator-workspace",
+    ".operator-panel",
+    ".operator-state-grid",
+    ".project-scope-button",
+    ".operator-debug-panel",
   ]) {
     assert.equal(hasCssSelector(css, selector), true, `missing selector: ${selector}`);
   }
