@@ -64,3 +64,29 @@ test("web-local workflow canvas keeps React Flow and ELK behavior", () => {
   assert.match(canvas, /Background/);
   assert.match(layout, /elkjs\/lib\/elk\.bundled\.js/);
 });
+
+test("web operator API proxies route to v2 runtime endpoints", () => {
+  assert.match(source("web/app/api/operator/overview/route.ts"), /\/api\/v2\/ui\/operator-overview/);
+  assert.match(source("web/app/api/operator/task-debug/route.ts"), /\/api\/v2\/ui\/operator-task-debug/);
+  assert.match(source("web/app/api/operator/runs/[runId]/events/stream/route.ts"), /events\/stream/);
+  assert.match(source("web/app/api/operator/runs/[runId]/events/stream/route.ts"), /taskId/);
+});
+
+test("web operator helpers normalize overview and build stream urls", async () => {
+  const normalizers = await import("../../web/lib/operator/normalizers.ts");
+  const sse = await import("../../web/lib/operator/sse.ts");
+  assert.equal(typeof normalizers.normalizeOperatorOverview, "function");
+  assert.equal(typeof sse.parseSseBuffer, "function");
+  assert.equal(typeof sse.operatorRuntimeEventStreamUrl, "function");
+
+  const overview = normalizers.normalizeOperatorOverview({
+    activeRuns: [{ runId: "run-a", status: "running", title: "Build", cwd: "/repo/a" }],
+    attentionItems: [{ id: "attn-a", severity: "blocked", title: "Task blocked", runId: "run-a", taskId: "task-a" }],
+  });
+  assert.equal(overview.runs[0].runId, "run-a");
+  assert.equal(overview.attentionItems[0].taskId, "task-a");
+  assert.equal(
+    sse.operatorRuntimeEventStreamUrl({ runId: "run-a", taskId: "task-a", after: "12" }),
+    "/api/operator/runs/run-a/events/stream?closeOnTerminal=false&taskId=task-a&after=12",
+  );
+});
