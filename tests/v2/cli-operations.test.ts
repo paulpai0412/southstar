@@ -4,6 +4,7 @@ import { executeV2Command, main, parseV2Command } from "../../src/v2/cli.ts";
 import type { CliRuntimeClient } from "../../src/v2/cli-client.ts";
 import { formatRunStatusSummary } from "../../src/v2/cli-format.ts";
 import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
+import type { SouthstarInfraLifecycle } from "../../src/v2/server/infra-lifecycle.ts";
 import type { RuntimeServerLifecycle } from "../../src/v2/server/runtime-server-lifecycle.ts";
 import type { WebServerLifecycle } from "../../src/v2/server/web-server-lifecycle.ts";
 
@@ -127,8 +128,32 @@ test("task-detail read-model CLI requires task id", () => {
 });
 
 test("server lifecycle commands execute through runtime + web lifecycle dependencies", async () => {
+  const infraCalls: string[] = [];
   const runtimeCalls: string[] = [];
   const webCalls: string[] = [];
+  const infraLifecycle = {
+    start: async () => {
+      infraCalls.push("start");
+      return {
+        postgres: { status: "started" as const, containerName: "southstar-postgres" },
+        tork: { status: "started" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      };
+    },
+    stop: async () => {
+      infraCalls.push("stop");
+      return {
+        tork: { status: "stopped" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        postgres: { status: "stopped" as const, containerName: "southstar-postgres" },
+      };
+    },
+    status: async () => {
+      infraCalls.push("status");
+      return {
+        postgres: { status: "running" as const, containerName: "southstar-postgres" },
+        tork: { status: "running" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      };
+    },
+  } satisfies SouthstarInfraLifecycle;
   const runtimeLifecycle = {
     serve: async () => {
       runtimeCalls.push("serve");
@@ -199,19 +224,162 @@ test("server lifecycle commands execute through runtime + web lifecycle dependen
 
   assert.equal((await executeV2Command(parseV2Command(["serve"]), { serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle })).kind, "server:serve");
   assert.equal((await executeV2Command(parseV2Command(["start"]), {
+    infraLifecycle,
     serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,
     webServerLifecycle: webLifecycle as WebServerLifecycle,
   })).kind, "server:start");
   assert.equal((await executeV2Command(parseV2Command(["stop"]), {
+    infraLifecycle,
     serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,
     webServerLifecycle: webLifecycle as WebServerLifecycle,
   })).kind, "server:stop");
   assert.equal((await executeV2Command(parseV2Command(["status"]), {
+    infraLifecycle,
     serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,
     webServerLifecycle: webLifecycle as WebServerLifecycle,
   })).kind, "server:status");
+  assert.deepEqual(infraCalls, ["start", "stop", "status"]);
   assert.deepEqual(runtimeCalls, ["serve", "start", "stop", "status"]);
   assert.deepEqual(webCalls, ["start", "stop", "status"]);
+});
+
+test("server start and stop manage infra in dependency order", async () => {
+  const calls: string[] = [];
+  const infraLifecycle = {
+    start: async () => {
+      calls.push("infra:start");
+      return {
+        postgres: { status: "started" as const, containerName: "southstar-postgres" },
+        tork: { status: "started" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      };
+    },
+    stop: async () => {
+      calls.push("infra:stop");
+      return {
+        tork: { status: "stopped" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        postgres: { status: "stopped" as const, containerName: "southstar-postgres" },
+      };
+    },
+    status: async () => {
+      calls.push("infra:status");
+      return {
+        postgres: { status: "running" as const, containerName: "southstar-postgres" },
+        tork: { status: "running" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      };
+    },
+  } satisfies SouthstarInfraLifecycle;
+  const runtimeLifecycle = {
+    serve: async () => {
+      calls.push("runtime:serve");
+      throw new Error("not used");
+    },
+    start: async () => {
+      calls.push("runtime:start");
+      return {
+        status: "started" as const,
+        pidFilePath: ".southstar/runtime-server.pid",
+        record: {
+          pid: 12345,
+          host: "127.0.0.1",
+          port: 3100,
+          url: "http://127.0.0.1:3100",
+          startedAt: "2026-06-27T00:00:00.000Z",
+          cwd: "/tmp",
+        },
+      };
+    },
+    stop: async () => {
+      calls.push("runtime:stop");
+      return { status: "stopped" as const, pidFilePath: ".southstar/runtime-server.pid", record: {
+        pid: 12345,
+        host: "127.0.0.1",
+        port: 3100,
+        url: "http://127.0.0.1:3100",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp",
+      } };
+    },
+    status: async () => {
+      calls.push("runtime:status");
+      return { status: "running" as const, pidFilePath: ".southstar/runtime-server.pid", record: {
+        pid: 12345,
+        host: "127.0.0.1",
+        port: 3100,
+        url: "http://127.0.0.1:3100",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp",
+      } };
+    },
+  } satisfies RuntimeServerLifecycle;
+  const webLifecycle = {
+    start: async () => {
+      calls.push("web:start");
+      return { status: "started" as const, pidFilePath: ".southstar/web-server.pid", record: {
+        pid: 22346,
+        host: "127.0.0.1",
+        port: 30141,
+        url: "http://127.0.0.1:30141",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp/pi-web",
+        apiUrl: "http://127.0.0.1:3100",
+      } };
+    },
+    stop: async () => {
+      calls.push("web:stop");
+      return { status: "stopped" as const, pidFilePath: ".southstar/web-server.pid", record: {
+        pid: 22346,
+        host: "127.0.0.1",
+        port: 30141,
+        url: "http://127.0.0.1:30141",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp/pi-web",
+        apiUrl: "http://127.0.0.1:3100",
+      } };
+    },
+    status: async () => {
+      calls.push("web:status");
+      return { status: "running" as const, pidFilePath: ".southstar/web-server.pid", record: {
+        pid: 22346,
+        host: "127.0.0.1",
+        port: 30141,
+        url: "http://127.0.0.1:30141",
+        startedAt: "2026-06-27T00:00:00.000Z",
+        cwd: "/tmp/pi-web",
+        apiUrl: "http://127.0.0.1:3100",
+      } };
+    },
+  } satisfies WebServerLifecycle;
+
+  const started = await executeV2Command(parseV2Command(["start"]), {
+    infraLifecycle,
+    serverLifecycle: runtimeLifecycle,
+    webServerLifecycle: webLifecycle,
+  });
+  const stopped = await executeV2Command(parseV2Command(["stop"]), {
+    infraLifecycle,
+    serverLifecycle: runtimeLifecycle,
+    webServerLifecycle: webLifecycle,
+  });
+  const status = await executeV2Command(parseV2Command(["status"]), {
+    infraLifecycle,
+    serverLifecycle: runtimeLifecycle,
+    webServerLifecycle: webLifecycle,
+  });
+
+  assert.equal(started.kind, "server:start");
+  assert.equal(stopped.kind, "server:stop");
+  assert.equal(status.kind, "server:status");
+  assert.deepEqual(calls, [
+    "infra:start",
+    "runtime:start",
+    "web:start",
+    "web:stop",
+    "runtime:stop",
+    "infra:stop",
+    "runtime:status",
+    "web:status",
+    "infra:status",
+  ]);
 });
 
 test("main supports injected runtime client and does not need a local database", async () => {
@@ -260,6 +428,20 @@ test("main supports injected runtime lifecycle for server status", async () => {
     status: async () => ({ status: "stopped" as const, pidFilePath: ".southstar/runtime-server.pid" }),
   };
   const exitCode = await main(["status"], {
+    infraLifecycle: {
+      start: async () => ({
+        postgres: { status: "started" as const, containerName: "southstar-postgres" },
+        tork: { status: "started" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      }),
+      stop: async () => ({
+        tork: { status: "stopped" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        postgres: { status: "stopped" as const, containerName: "southstar-postgres" },
+      }),
+      status: async () => ({
+        postgres: { status: "running" as const, containerName: "southstar-postgres" },
+        tork: { status: "running" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      }),
+    } satisfies SouthstarInfraLifecycle,
     serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,
     webServerLifecycle: {
       start: async () => ({

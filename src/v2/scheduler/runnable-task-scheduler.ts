@@ -254,6 +254,7 @@ async function dispatchTask(
       handBindingId,
       intent,
       contextPacketRef: contextPacketId,
+      taskEnvelope: assembly.taskEnvelope,
       acceptedInputArtifactRefs,
       toolProxyPolicyRef,
       workflow: input.manifest,

@@ -26,6 +26,9 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.equal(prompts.length, 1);
   assert.match(prompts[0] ?? "", /OutputJsonSchema:/);
   assert.match(prompts[0] ?? "", /Do not use alias fields/i);
+  assert.match(prompts[0] ?? "", /SkillGuidance:/);
+  assert.match(prompts[0] ?? "", /smallest sufficient DAG/i);
+  assert.match(prompts[0] ?? "", /skill-map-candidate\.keep-0 profile=skill-map\.keep-key-0 role=explorer artifacts=artifact\.implementation_plan/);
   assert.match(prompts[0] ?? "", /CandidatePacket:/);
   assert.match(prompts[0] ?? "", /template.keep-19/);
   assert.doesNotMatch(prompts[0] ?? "", /template.drop-20/);
@@ -344,7 +347,18 @@ function candidate(ref: string, kind: CandidateSummary["kind"]): CandidateSummar
     versionRef: `${ref}@v1`,
     kind,
     displayName: ref,
-    state: {},
+    state: candidateState(ref, kind),
     reason: "test",
   };
+}
+
+function candidateState(ref: string, kind: CandidateSummary["kind"]): Record<string, unknown> {
+  if (kind === "skill_definition" && ref.endsWith(".keep-0")) {
+    return {
+      role: "explorer",
+      instructions: "Workflow composition guidance: start from the smallest sufficient DAG and add review or summary tasks only when risk justifies them.",
+      artifactContracts: ["artifact.implementation_plan"],
+    };
+  }
+  return {};
 }

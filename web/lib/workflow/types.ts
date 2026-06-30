@@ -68,6 +68,7 @@ export interface WorkflowResourceWriteOptions extends WorkflowResourceReadOption
 export interface WorkflowDag {
   id: string;
   draftId?: string;
+  draftStatus?: string;
   runId?: string;
   mode?: "draft" | "runtime";
   templateId: string;
@@ -146,8 +147,10 @@ export type WorkflowLifecycleState = {
     | "file_draft"
     | "drafting"
     | "planner_draft"
+    | "needs_validation"
     | "validating"
     | "validated"
+    | "invalid"
     | "running"
     | "run_created"
     | "executing"

@@ -1,5 +1,6 @@
 import type {
   CandidatePacket,
+  CandidateSummary,
   LibraryDefinitionKind,
   WorkflowCompositionPlan,
   WorkflowCompositionTask,
@@ -208,6 +209,7 @@ export function parseWorkflowCompositionPlanFromText(text: string, maxOutputChar
 }
 
 export function renderComposerPrompt(goalPrompt: string, candidatePacket: CandidatePacket): string {
+  const boundedPacket = boundCandidatePacket(candidatePacket);
   return [
     "You are Southstar's library-constrained workflow architect.",
     "Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1.",
@@ -216,15 +218,57 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Select refs only from the candidate packet.",
     "Do not output runtime manifests, secrets, credentials, tool grant definitions, MCP grant definitions, or vault lease values.",
     "Generated component proposals are proposal-only and cannot be selected in tasks.",
+    "Use SkillGuidance as workflow-shaping guidance. Prefer the smallest sufficient DAG; add review or summary nodes only when the skill guidance and task risk justify them.",
     "",
     `Goal: ${goalPrompt}`,
+    "",
+    "SkillGuidance:",
+    renderSkillGuidance(boundedPacket),
     "",
     "OutputJsonSchema:",
     JSON.stringify(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA),
     "",
     "CandidatePacket:",
-    JSON.stringify(boundCandidatePacket(candidatePacket)),
+    JSON.stringify(boundedPacket),
   ].join("\n");
+}
+
+function renderSkillGuidance(packet: CandidatePacket): string {
+  const lines: string[] = [];
+  const seenRefs = new Set<string>();
+
+  for (const [profileRef, candidates] of Object.entries(packet.skillCandidatesByProfile)) {
+    for (const candidate of candidates) {
+      if (seenRefs.has(candidate.ref)) continue;
+      seenRefs.add(candidate.ref);
+      const guidance = skillGuidanceLine(profileRef, candidate);
+      if (guidance) lines.push(guidance);
+      if (lines.length >= 40) return lines.join("\n");
+    }
+  }
+
+  return lines.length > 0
+    ? lines.join("\n")
+    : "- No skill instructions were available; select the smallest valid workflow from approved candidate refs.";
+}
+
+function skillGuidanceLine(profileRef: string, candidate: CandidateSummary): string | null {
+  const instructions = typeof candidate.state.instructions === "string"
+    ? truncateForPrompt(candidate.state.instructions, 900)
+    : "";
+  const role = typeof candidate.state.role === "string" && candidate.state.role.length > 0
+    ? ` role=${candidate.state.role}`
+    : "";
+  const artifactContracts = Array.isArray(candidate.state.artifactContracts)
+    ? candidate.state.artifactContracts.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 8)
+    : [];
+  const contracts = artifactContracts.length > 0 ? ` artifacts=${artifactContracts.join(",")}` : "";
+  if (!instructions && !role && !contracts) return null;
+  return `- ${candidate.ref} profile=${profileRef}${role}${contracts}: ${instructions}`;
+}
+
+function truncateForPrompt(value: string, maxLength: number): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
 }
 
 function validateStrictWorkflowCompositionPlan(value: unknown): WorkflowCompositionValidationIssue[] {

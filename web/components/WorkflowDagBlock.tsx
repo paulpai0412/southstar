@@ -19,6 +19,7 @@ export function WorkflowDagBlock({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const { state, createDraft, validateDraft, runDraft, retryExecute } = useWorkflowLifecycle(dag, cwd);
   const busy = state.phase === "drafting" || state.phase === "validating" || state.phase === "running" || state.phase === "executing";
+  const draftReady = Boolean(state.draft?.draftId);
   const nodeById = useMemo(() => new Map(dag.nodes.map((node) => [node.id, node])), [dag.nodes]);
   const canvas = useMemo(() => workflowDagToCanvasModel(dag, selectedNodeId), [dag, selectedNodeId]);
 
@@ -93,21 +94,40 @@ export function WorkflowDagBlock({
               flexWrap: "wrap",
             }}
           >
-            <button
-              type="button"
-              data-testid="workflow-action-draft"
-              onClick={handleDraft}
-              disabled={busy}
-              style={actionButtonStyle(busy)}
-            >
-              Draft
-            </button>
+            {!dag.draftId && (
+              <button
+                type="button"
+                data-testid="workflow-action-draft"
+                onClick={handleDraft}
+                disabled={busy}
+                style={actionButtonStyle(busy)}
+              >
+                Draft
+              </button>
+            )}
+            {dag.draftId && (
+              <span
+                data-testid="workflow-draft-saved"
+                style={{
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  background: "var(--bg-panel)",
+                  color: "var(--text-muted)",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  padding: "5px 9px",
+                  lineHeight: 1.2,
+                }}
+              >
+                Draft saved
+              </span>
+            )}
             <button
               type="button"
               data-testid="workflow-action-validate"
               onClick={handleValidate}
-              disabled={busy || !state.draft?.draftId}
-              style={actionButtonStyle(busy || !state.draft?.draftId)}
+              disabled={busy || !draftReady}
+              style={actionButtonStyle(busy || !draftReady)}
             >
               Validate
             </button>
@@ -115,8 +135,8 @@ export function WorkflowDagBlock({
               type="button"
               data-testid="workflow-action-run"
               onClick={handleRun}
-              disabled={busy || !state.draft?.draftId || !state.canRun}
-              style={actionButtonStyle(busy || !state.draft?.draftId || !state.canRun)}
+              disabled={busy || !draftReady || !state.canRun}
+              style={actionButtonStyle(busy || !draftReady || !state.canRun)}
             >
               Run
             </button>
@@ -246,11 +266,17 @@ function renderLifecycleNotice(state: ReturnType<typeof useWorkflowLifecycle>["s
   if (state.phase === "planner_draft" && state.draft?.draftId) {
     return `Draft ${state.draft.draftId} created`;
   }
+  if (state.phase === "needs_validation" && state.draft?.draftId) {
+    return `Draft ${state.draft.draftId} needs validation`;
+  }
   if (state.phase === "validating") {
     return "Validating planner draft...";
   }
   if (state.phase === "validated" && state.draft?.draftId) {
     return `Draft ${state.draft.draftId} validated`;
+  }
+  if (state.phase === "invalid" && state.draft?.draftId) {
+    return `Draft ${state.draft.draftId} invalid`;
   }
   if (state.phase === "running") {
     return "Creating run from draft...";

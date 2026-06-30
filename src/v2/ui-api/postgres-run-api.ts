@@ -1,12 +1,17 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { WorkflowCompositionValidationIssue } from "../design-library/types.ts";
+import type {
+  CandidatePacket,
+  WorkflowCompositionPlan,
+  WorkflowCompositionValidationIssue,
+} from "../design-library/types.ts";
 import { seedSoftwareLibraryGraph } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { DomainPack } from "../domain-packs/types.ts";
 import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
 import { materializeGenerationPlan } from "../workflow-generator/materialize.ts";
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { validateWorkflowManifest } from "../manifests/validate.ts";
 import type { AgentProfile, PlannerDraftTaskProfileOverride } from "../domain-packs/types.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
@@ -22,12 +27,20 @@ import {
   upsertRuntimeResourcePg,
 } from "../stores/postgres-runtime-store.ts";
 import { buildContextPacketWithKnowledgeCards } from "../context/postgres-builder.ts";
-
-export {
-  patchPlannerDraftTaskProfileOverridePg as patchPostgresPlannerDraftTaskProfileOverride,
+import {
+  patchPlannerDraftTaskProfileOverridePg,
   type PatchPlannerDraftTaskProfileOverrideInput,
   type PatchPlannerDraftTaskProfileOverrideResult,
 } from "./planner-draft-task-overrides.ts";
+
+export type {
+  PatchPlannerDraftTaskProfileOverrideInput,
+  PatchPlannerDraftTaskProfileOverrideResult,
+} from "./planner-draft-task-overrides.ts";
+
+const PLANNER_DRAFT_STATUS_VALIDATED = "validated";
+const PLANNER_DRAFT_STATUS_INVALID = "invalid";
+const PLANNER_DRAFT_STATUS_NEEDS_VALIDATION = "needs_validation";
 
 export type PostgresPlannerDraftResult = {
   draftId: string;
@@ -149,7 +162,7 @@ export async function revisePostgresPlannerDraft(
     priorContext: priorPlannerDraftRevisionContext(input.draftId, draft.status, summary, payload),
   });
   const priorPlannerRequest = plannerRequestFromStored(summary.plannerRequest) ?? plannerRequestFromStored(payload.plannerRequest);
-  return createPostgresPlannerDraft(db, {
+  const revisedDraft = await createPostgresPlannerDraft(db, {
     ...preservedPlannerRequestFields(priorPlannerRequest),
     goalPrompt: revisedGoalPrompt,
     orchestrationMode: input.orchestrationMode ?? priorPlannerRequest?.orchestrationMode ?? inferDraftOrchestrationMode(summary),
@@ -158,6 +171,84 @@ export async function revisePostgresPlannerDraft(
     onProgress: input.onProgress,
     onLlmDelta: input.onLlmDelta,
   });
+  const preservedOverrides = profileOverridesByTaskId(workflow.tasks);
+  if (preservedOverrides.size === 0) return revisedDraft;
+  return await applyProfileOverridesToPlannerDraft(db, {
+    draftId: revisedDraft.draftId,
+    profileOverridesByTaskId: preservedOverrides,
+  }) ?? revisedDraft;
+}
+
+export async function patchPostgresPlannerDraftTaskProfileOverride(
+  db: SouthstarDb,
+  input: PatchPlannerDraftTaskProfileOverrideInput,
+): Promise<PatchPlannerDraftTaskProfileOverrideResult> {
+  const result = await patchPlannerDraftTaskProfileOverridePg(db, input);
+  await markPlannerDraftNeedsValidation(db, input.draftId);
+  return { ...result, status: PLANNER_DRAFT_STATUS_NEEDS_VALIDATION };
+}
+
+export async function validatePostgresPlannerDraft(
+  db: SouthstarDb,
+  input: { draftId: string },
+): Promise<PostgresPlannerDraftResult> {
+  const draft = await getResourceByKeyPg(db, "planner_draft", input.draftId);
+  if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
+  const payload = asRecord(draft.payload);
+  const summary = asRecord(draft.summary);
+  const workflow = asWorkflowManifest(payload.workflow);
+  const workflowId = stringValue(summary.workflowId) ?? workflow.workflowId ?? "";
+  const goalPrompt = stringValue(summary.goalPrompt) ?? workflow.goalPrompt ?? "";
+  const refreshed = await refreshPlannerDraftCompilation(db, {
+    draftId: input.draftId,
+    goalPrompt,
+    payload,
+    workflow,
+  });
+  const issues = [
+    ...refreshed.issues,
+    ...validatePlannerDraftWorkflow(refreshed.workflow),
+  ];
+  const status = issues.length === 0 ? PLANNER_DRAFT_STATUS_VALIDATED : PLANNER_DRAFT_STATUS_INVALID;
+  const taskSummaries = summarizeWorkflowTasksFromPayload(refreshed.workflow.tasks);
+  const orchestrationSnapshot = refreshDraftValidationSnapshot(refreshed.orchestrationSnapshot, issues);
+
+  await upsertRuntimeResourcePg(db, {
+    id: draft.id,
+    resourceType: "planner_draft",
+    resourceKey: input.draftId,
+    ...(draft.runId ? { runId: draft.runId } : {}),
+    ...(draft.taskId ? { taskId: draft.taskId } : {}),
+    ...(draft.sessionId ? { sessionId: draft.sessionId } : {}),
+    scope: draft.scope,
+    status,
+    ...(draft.title ? { title: draft.title } : {}),
+    payload: {
+      ...payload,
+      workflow: refreshed.workflow,
+      validationIssues: issues,
+      orchestrationSnapshot,
+    },
+    summary: {
+      ...summary,
+      status,
+      validationIssues: issues,
+      taskSummaries,
+      workflowId,
+      goalPrompt,
+    },
+    metrics: draft.metrics,
+    ...(draft.expiresAt ? { expiresAt: draft.expiresAt } : {}),
+  });
+
+  return {
+    draftId: input.draftId,
+    goalPrompt,
+    workflowId,
+    status,
+    validationIssues: issues,
+    taskSummaries,
+  };
 }
 
 function buildPlannerDraftRevisionGoalPrompt(input: {
@@ -627,6 +718,264 @@ export async function getPostgresPlannerDraftOrchestration(
     ...(payload.plannerTrace !== undefined ? { plannerTrace: payload.plannerTrace } : {}),
     ...(payload.repairAttempts !== undefined ? { repairAttempts: payload.repairAttempts } : {}),
   };
+}
+
+async function markPlannerDraftNeedsValidation(db: SouthstarDb, draftId: string): Promise<PostgresPlannerDraftResult> {
+  const draft = await getResourceByKeyPg(db, "planner_draft", draftId);
+  if (!draft) throw new Error(`planner draft not found: ${draftId}`);
+  const payload = asRecord(draft.payload);
+  const summary = asRecord(draft.summary);
+  const workflow = asWorkflowManifest(payload.workflow);
+  const taskSummaries = summarizeWorkflowTasksFromPayload(workflow.tasks);
+  const workflowId = stringValue(summary.workflowId) ?? workflow.workflowId ?? "";
+  const goalPrompt = stringValue(summary.goalPrompt) ?? workflow.goalPrompt ?? "";
+  const validationIssues = draftNeedsValidationIssues();
+
+  await upsertRuntimeResourcePg(db, {
+    id: draft.id,
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    ...(draft.runId ? { runId: draft.runId } : {}),
+    ...(draft.taskId ? { taskId: draft.taskId } : {}),
+    ...(draft.sessionId ? { sessionId: draft.sessionId } : {}),
+    scope: draft.scope,
+    status: PLANNER_DRAFT_STATUS_NEEDS_VALIDATION,
+    ...(draft.title ? { title: draft.title } : {}),
+    payload: {
+      ...payload,
+      workflow,
+      validationIssues,
+      orchestrationSnapshot: refreshDraftValidationSnapshot(payload.orchestrationSnapshot, validationIssues),
+    },
+    summary: {
+      ...summary,
+      status: PLANNER_DRAFT_STATUS_NEEDS_VALIDATION,
+      validationIssues,
+      taskSummaries,
+      workflowId,
+      goalPrompt,
+    },
+    metrics: draft.metrics,
+    ...(draft.expiresAt ? { expiresAt: draft.expiresAt } : {}),
+  });
+
+  return {
+    draftId,
+    goalPrompt,
+    workflowId,
+    status: PLANNER_DRAFT_STATUS_NEEDS_VALIDATION,
+    validationIssues,
+    taskSummaries,
+  };
+}
+
+async function applyProfileOverridesToPlannerDraft(
+  db: SouthstarDb,
+  input: { draftId: string; profileOverridesByTaskId: Map<string, PlannerDraftTaskProfileOverride> },
+): Promise<PostgresPlannerDraftResult | null> {
+  const draft = await getResourceByKeyPg(db, "planner_draft", input.draftId);
+  if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
+  const payload = asRecord(draft.payload);
+  const workflow = asWorkflowManifest(payload.workflow);
+  const tasks = Array.isArray(workflow.tasks) ? workflow.tasks.map((task) => ({ ...task } as WorkflowTaskWithProfileOverride)) : [];
+  let applied = false;
+
+  for (const task of tasks) {
+    const override = input.profileOverridesByTaskId.get(task.id);
+    if (!override) continue;
+    task.profileOverride = cloneProfileOverride(override);
+    if (override.skillRefs !== undefined) task.skillRefs = [...override.skillRefs];
+    if (override.mcpGrantRefs !== undefined) task.mcpGrantRefs = [...override.mcpGrantRefs];
+    applied = true;
+  }
+
+  if (!applied) return null;
+  await upsertRuntimeResourcePg(db, {
+    id: draft.id,
+    resourceType: "planner_draft",
+    resourceKey: input.draftId,
+    ...(draft.runId ? { runId: draft.runId } : {}),
+    ...(draft.taskId ? { taskId: draft.taskId } : {}),
+    ...(draft.sessionId ? { sessionId: draft.sessionId } : {}),
+    scope: draft.scope,
+    status: draft.status,
+    ...(draft.title ? { title: draft.title } : {}),
+    payload: {
+      ...payload,
+      workflow: { ...workflow, tasks },
+    },
+    summary: draft.summary,
+    metrics: draft.metrics,
+    ...(draft.expiresAt ? { expiresAt: draft.expiresAt } : {}),
+  });
+  return await markPlannerDraftNeedsValidation(db, input.draftId);
+}
+
+async function refreshPlannerDraftCompilation(
+  db: SouthstarDb,
+  input: {
+    draftId: string;
+    goalPrompt: string;
+    payload: Record<string, unknown>;
+    workflow: SouthstarWorkflowManifest;
+  },
+): Promise<{
+  workflow: SouthstarWorkflowManifest;
+  orchestrationSnapshot: unknown;
+  issues: PlannerDraftValidationIssue[];
+}> {
+  const candidatePacket = maybeCandidatePacket(input.payload.candidatePacket);
+  const currentSnapshot = input.payload.orchestrationSnapshot;
+  const composition = maybeWorkflowCompositionPlan(asRecord(currentSnapshot).selectedCompositionPlan);
+  if (!candidatePacket || !composition) {
+    return { workflow: input.workflow, orchestrationSnapshot: currentSnapshot, issues: [] };
+  }
+
+  try {
+    const compiled = await compileWorkflowComposition(db, {
+      runId: input.draftId,
+      goalPrompt: input.goalPrompt,
+      candidatePacket,
+      composition: applyWorkflowTaskSelectionsToComposition(composition, input.workflow),
+    });
+    return {
+      workflow: copyProfileOverridesToWorkflow(compiled.workflow, input.workflow),
+      orchestrationSnapshot: compiled.orchestrationSnapshot,
+      issues: [],
+    };
+  } catch (error) {
+    return {
+      workflow: input.workflow,
+      orchestrationSnapshot: currentSnapshot,
+      issues: [{
+        path: "orchestrationSnapshot.selectedCompositionPlan",
+        code: "composition_compile_failed",
+        message: error instanceof Error ? error.message : String(error),
+      }],
+    };
+  }
+}
+
+function applyWorkflowTaskSelectionsToComposition(
+  composition: WorkflowCompositionPlan,
+  workflow: SouthstarWorkflowManifest,
+): WorkflowCompositionPlan {
+  const workflowTasksById = new Map(workflow.tasks.map((task) => [task.id, task]));
+  return {
+    ...composition,
+    tasks: composition.tasks.map((task) => {
+      const workflowTask = workflowTasksById.get(task.id);
+      if (!workflowTask) return task;
+      return {
+        ...task,
+        agentProfileRef: workflowTask.agentProfileRef || task.agentProfileRef,
+        instructionRefs: workflowTask.instructionRefs?.length ? [...workflowTask.instructionRefs] : task.instructionRefs,
+        skillRefs: [...(workflowTask.skillRefs ?? task.skillRefs)],
+        toolGrantRefs: [...(workflowTask.toolGrantRefs ?? task.toolGrantRefs)],
+        mcpGrantRefs: [...(workflowTask.mcpGrantRefs ?? task.mcpGrantRefs)],
+        vaultLeasePolicyRefs: [...(workflowTask.vaultLeasePolicyRefs ?? task.vaultLeasePolicyRefs)],
+      };
+    }),
+  };
+}
+
+function copyProfileOverridesToWorkflow(
+  target: SouthstarWorkflowManifest,
+  source: SouthstarWorkflowManifest,
+): SouthstarWorkflowManifest {
+  const overrides = profileOverridesByTaskId(source.tasks);
+  if (overrides.size === 0) return target;
+  return {
+    ...target,
+    tasks: target.tasks.map((task) => {
+      const override = overrides.get(task.id);
+      if (!override) return task;
+      return {
+        ...task,
+        profileOverride: cloneProfileOverride(override),
+        ...(override.skillRefs !== undefined ? { skillRefs: [...override.skillRefs] } : {}),
+        ...(override.mcpGrantRefs !== undefined ? { mcpGrantRefs: [...override.mcpGrantRefs] } : {}),
+      } as WorkflowTaskWithProfileOverride;
+    }),
+  };
+}
+
+function validatePlannerDraftWorkflow(workflow: SouthstarWorkflowManifest): PlannerDraftValidationIssue[] {
+  const validation = validateWorkflowManifest(workflow);
+  const materializedValidation = validateWorkflowManifest(materializeWorkflowTaskProfileOverrides(workflow));
+  return [
+    ...validation.issues.map((issue) => ({ path: issue.path, message: issue.message })),
+    ...materializedValidation.issues.map((issue) => ({
+      path: `materialized.${issue.path}`,
+      message: issue.message,
+    })),
+  ];
+}
+
+function refreshDraftValidationSnapshot(snapshot: unknown, issues: PlannerDraftValidationIssue[]): unknown {
+  const record = asRecord(snapshot);
+  if (Object.keys(record).length === 0) {
+    return {
+      schemaVersion: "southstar.draft_validation_snapshot.v1",
+      validation: { ok: issues.length === 0, issues },
+    };
+  }
+  return {
+    ...record,
+    validation: { ok: issues.length === 0, issues },
+  };
+}
+
+function draftNeedsValidationIssues(): PlannerDraftValidationIssue[] {
+  return [
+    {
+      path: "plannerDraft.status",
+      code: "draft_needs_validation",
+      message: "planner draft changed after validation and must be validated before run creation",
+    },
+  ];
+}
+
+function profileOverridesByTaskId(tasksValue: unknown): Map<string, PlannerDraftTaskProfileOverride> {
+  const overrides = new Map<string, PlannerDraftTaskProfileOverride>();
+  if (!Array.isArray(tasksValue)) return overrides;
+  for (const task of tasksValue) {
+    if (!isRecord(task)) continue;
+    const taskId = stringValue(task.id);
+    const override = asRecord(task.profileOverride);
+    if (!taskId || Object.keys(override).length === 0) continue;
+    overrides.set(taskId, cloneProfileOverride(override as PlannerDraftTaskProfileOverride));
+  }
+  return overrides;
+}
+
+function cloneProfileOverride(input: PlannerDraftTaskProfileOverride): PlannerDraftTaskProfileOverride {
+  return {
+    ...(input.provider !== undefined ? { provider: input.provider } : {}),
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
+    ...(input.instruction !== undefined ? { instruction: input.instruction } : {}),
+    ...(input.skillRefs !== undefined ? { skillRefs: [...input.skillRefs] } : {}),
+    ...(input.mcpGrantRefs !== undefined ? { mcpGrantRefs: [...input.mcpGrantRefs] } : {}),
+  };
+}
+
+function asWorkflowManifest(value: unknown): SouthstarWorkflowManifest {
+  return asRecord(value) as SouthstarWorkflowManifest;
+}
+
+function maybeCandidatePacket(value: unknown): CandidatePacket | null {
+  const record = asRecord(value);
+  if (!record.requirementSpec) return null;
+  if (!Array.isArray(record.workflowTemplateCandidates)) return null;
+  return record as CandidatePacket;
+}
+
+function maybeWorkflowCompositionPlan(value: unknown): WorkflowCompositionPlan | null {
+  const record = asRecord(value);
+  if (record.schemaVersion !== "southstar.workflow_composition_plan.v1") return null;
+  if (!Array.isArray(record.tasks)) return null;
+  return record as WorkflowCompositionPlan;
 }
 
 async function buildContextForTask(

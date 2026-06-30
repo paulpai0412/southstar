@@ -114,7 +114,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         checkpointSummary: assembly.selected.find((block) => block.sourceType === "checkpoint"),
         failureSummary: assembly.selected.find((block) => block.sourceType === "failure"),
         skillInstructions: [
-          ...inlineInstructionBlocks(profile.instruction),
+          ...inlineInstructionBlocks(agentProfile.instruction),
           ...instructionBlocks(materializedLibrary.instructions),
           ...skillBlocks(materializedLibrary.skills),
         ],

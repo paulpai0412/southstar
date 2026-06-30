@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { executeV2Command, parseV2Command } from "../../src/v2/cli.ts";
+import type { SouthstarInfraLifecycle } from "../../src/v2/server/infra-lifecycle.ts";
 import type { RuntimeServerLifecycle } from "../../src/v2/server/runtime-server-lifecycle.ts";
 
 test("parses v2 plan command", () => {
@@ -78,7 +79,7 @@ test("v2 CLI commands fail closed without runtime client instead of using local 
 
 test("server lifecycle commands fail closed without lifecycle dependency", async () => {
   await assert.rejects(
-    () => executeV2Command(parseV2Command(["status"]), {}),
+    () => executeV2Command(parseV2Command(["status"]), { infraLifecycle: fakeInfraLifecycle() }),
     /runtime server lifecycle is required/,
   );
 });
@@ -121,10 +122,30 @@ test("start command fails closed when web lifecycle dependency is missing", asyn
     } }),
   } as RuntimeServerLifecycle;
   await assert.rejects(
-    () => executeV2Command(parseV2Command(["start"]), { serverLifecycle: runtimeLifecycle }),
+    () => executeV2Command(parseV2Command(["start"]), {
+      infraLifecycle: fakeInfraLifecycle(),
+      serverLifecycle: runtimeLifecycle,
+    }),
     /web server lifecycle is required/,
   );
 });
+
+function fakeInfraLifecycle(): SouthstarInfraLifecycle {
+  return {
+    start: async () => ({
+      postgres: { status: "started" as const, containerName: "southstar-postgres" },
+      tork: { status: "started" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+    }),
+    stop: async () => ({
+      tork: { status: "stopped" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      postgres: { status: "stopped" as const, containerName: "southstar-postgres" },
+    }),
+    status: async () => ({
+      postgres: { status: "running" as const, containerName: "southstar-postgres" },
+      tork: { status: "running" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+    }),
+  };
+}
 
 function envelope<T>(kind: string, result: T, calls: string[]) {
   calls.push(kind);

@@ -1,11 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createTorkHandProvider } from "../../src/v2/hands/tork-hand-provider.ts";
 import type { ExecutorProvider, ExecutorSubmitRequest } from "../../src/v2/executor/provider.ts";
 import type { ExecuteTaskInput, HandBinding } from "../../src/v2/hands/types.ts";
 import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts";
 
 test("TorkHandProvider.executeTask submits a single-task workflow with hand execution metadata", async () => {
+  const runRoot = await mkdtemp(join(tmpdir(), "southstar-tork-hand-provider-"));
   const submitted: ExecutorSubmitRequest[] = [];
   const executorProvider: ExecutorProvider = {
     executorType: "tork",
@@ -24,6 +28,7 @@ test("TorkHandProvider.executeTask submits a single-task workflow with hand exec
     executorProvider,
     callbackUrl: "http://127.0.0.1/default-callback",
     heartbeatUrl: "http://127.0.0.1/default-heartbeat",
+    runRoot,
   });
   const binding = handBinding({ taskId: "task-b" });
   const input = executeTaskInput({
@@ -33,53 +38,116 @@ test("TorkHandProvider.executeTask submits a single-task workflow with hand exec
     envelopeBasePath: "/task-envelopes",
   });
 
-  assert.equal(typeof provider.executeTask, "function");
-  const result = await provider.executeTask!(binding, input);
+  try {
+    assert.equal(typeof provider.executeTask, "function");
+    const result = await provider.executeTask!(binding, input);
 
-  assert.equal(result.ok, true);
-  assert.equal(result.output, "job-1");
-  assert.deepEqual(result.metadata, {
-    handExecutionId: "hand-exec-1",
+    assert.equal(result.ok, true);
+    assert.equal(result.output, "job-1");
+    assert.deepEqual(result.metadata, {
+      handExecutionId: "hand-exec-1",
+      executorType: "tork",
+      externalJobId: "job-1",
+      projectionFingerprint: "fingerprint-1",
+    });
+    assert.equal(binding.status, "running");
+    assert.equal(binding.payload.handExecutionId, "hand-exec-1");
+    assert.equal(binding.payload.executorType, "tork");
+    assert.equal(binding.payload.executorStatus, "queued");
+    assert.equal(binding.payload.externalJobId, "job-1");
+    assert.equal(binding.payload.projectionFingerprint, "fingerprint-1");
+    assert.deepEqual(binding.payload.providerPayload, { jobName: "southstar-run-hand-task-a" });
+    assert.equal(binding.payload.queueTimeoutSeconds, 45);
+    assert.equal(binding.payload.heartbeatTimeoutSeconds, 180);
+
+    assert.equal(submitted.length, 1);
+    assert.equal(submitted[0]!.runId, "run-hand");
+    assert.equal(submitted[0]!.callbackUrl, "http://127.0.0.1/task-callback");
+    assert.equal(submitted[0]!.heartbeatUrl, "http://127.0.0.1/task-heartbeat");
+    assert.equal(submitted[0]!.envelopeBasePath, "/task-envelopes");
+    assert.equal(submitted[0]!.attemptId, "attempt-1");
+    assert.equal(submitted[0]!.workflow.tasks.length, 1);
+    assert.equal(submitted[0]!.workflow.tasks[0]!.id, "task-b");
+    assert.deepEqual(submitted[0]!.workflow.tasks[0]!.dependsOn, []);
+    assert.equal(
+      submitted[0]!.workflow.tasks[0]!.execution.mounts.some((mount) => mount.source === runRoot && mount.target === "/task-envelopes"),
+      true,
+    );
+    assert.equal(submitted[0]!.workflow.harnessDefinitions.length, 1);
+    assert.equal(submitted[0]!.workflow.evaluators.length, 1);
+    assert.deepEqual((submitted[0]!.workflow as SouthstarWorkflowManifest & { runtime: Record<string, unknown> }).runtime, {
+      runId: "run-hand",
+      taskId: "task-b",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-exec-1",
+      brainBindingId: "brain-binding-1",
+      handBindingId: "hand-binding-1",
+      contextPacketRef: "context-a",
+      acceptedInputArtifactRefs: ["artifact-a"],
+      toolProxyPolicyRef: "policy-a",
+      queueTimeoutSeconds: 45,
+      heartbeatTimeoutSeconds: 180,
+      intent: input.intent,
+    });
+    const materializedEnvelope = JSON.parse(await readFile(join(runRoot, "run-hand", "task-b", "envelope.json"), "utf8"));
+    assert.equal(materializedEnvelope.schemaVersion, "southstar.task-envelope.v2");
+    assert.equal(materializedEnvelope.runId, "run-hand");
+    assert.equal(materializedEnvelope.taskId, "task-b");
+  } finally {
+    await rm(runRoot, { recursive: true, force: true });
+  }
+});
+
+test("TorkHandProvider.executeTask mounts Pi OAuth config for pi-agent tasks", async () => {
+  const runRoot = await mkdtemp(join(tmpdir(), "southstar-tork-hand-provider-"));
+  const piAgentDir = await mkdtemp(join(tmpdir(), "southstar-pi-agent-dir-"));
+  const previousPiAgentDir = process.env.SOUTHSTAR_PI_AGENT_DIR;
+  const submitted: ExecutorSubmitRequest[] = [];
+  const executorProvider: ExecutorProvider = {
     executorType: "tork",
-    externalJobId: "job-1",
-    projectionFingerprint: "fingerprint-1",
+    async submit(request) {
+      submitted.push(request);
+      return {
+        executorType: "tork",
+        externalJobId: "job-pi",
+        status: "queued",
+        projectionFingerprint: "fingerprint-pi",
+        providerPayload: { jobName: "southstar-run-hand-pi" },
+      };
+    },
+  };
+  const provider = createTorkHandProvider({
+    executorProvider,
+    callbackUrl: "http://127.0.0.1/default-callback",
+    runRoot,
   });
-  assert.equal(binding.status, "running");
-  assert.equal(binding.payload.handExecutionId, "hand-exec-1");
-  assert.equal(binding.payload.executorType, "tork");
-  assert.equal(binding.payload.executorStatus, "queued");
-  assert.equal(binding.payload.externalJobId, "job-1");
-  assert.equal(binding.payload.projectionFingerprint, "fingerprint-1");
-  assert.deepEqual(binding.payload.providerPayload, { jobName: "southstar-run-hand-task-a" });
-  assert.equal(binding.payload.queueTimeoutSeconds, 45);
-  assert.equal(binding.payload.heartbeatTimeoutSeconds, 180);
 
-  assert.equal(submitted.length, 1);
-  assert.equal(submitted[0]!.runId, "run-hand");
-  assert.equal(submitted[0]!.callbackUrl, "http://127.0.0.1/task-callback");
-  assert.equal(submitted[0]!.heartbeatUrl, "http://127.0.0.1/task-heartbeat");
-  assert.equal(submitted[0]!.envelopeBasePath, "/task-envelopes");
-  assert.equal(submitted[0]!.attemptId, "attempt-1");
-  assert.equal(submitted[0]!.workflow.tasks.length, 1);
-  assert.equal(submitted[0]!.workflow.tasks[0]!.id, "task-b");
-  assert.deepEqual(submitted[0]!.workflow.tasks[0]!.dependsOn, []);
-  assert.equal(submitted[0]!.workflow.harnessDefinitions.length, 1);
-  assert.equal(submitted[0]!.workflow.evaluators.length, 1);
-  assert.deepEqual((submitted[0]!.workflow as SouthstarWorkflowManifest & { runtime: Record<string, unknown> }).runtime, {
-    runId: "run-hand",
-    taskId: "task-b",
-    sessionId: "session-a",
-    attemptId: "attempt-1",
-    handExecutionId: "hand-exec-1",
-    brainBindingId: "brain-binding-1",
-    handBindingId: "hand-binding-1",
-    contextPacketRef: "context-a",
-    acceptedInputArtifactRefs: ["artifact-a"],
-    toolProxyPolicyRef: "policy-a",
-    queueTimeoutSeconds: 45,
-    heartbeatTimeoutSeconds: 180,
-    intent: input.intent,
-  });
+  try {
+    process.env.SOUTHSTAR_PI_AGENT_DIR = piAgentDir;
+    const result = await provider.executeTask!(
+      handBinding({ taskId: "task-a" }),
+      executeTaskInput({ workflow: workflowManifest({ harnessKind: "pi-agent" }) }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.equal(submitted.length, 1);
+    const execution = submitted[0]!.workflow.tasks[0]!.execution;
+    assert.equal(execution.env.PI_CODING_AGENT_DIR, "/southstar/pi-agent");
+    assert.equal(execution.env.PI_CODING_AGENT_SESSION_DIR, "/tmp/pi-agent-sessions");
+    assert.deepEqual(
+      execution.mounts.find((mount) => mount.target === "/southstar/pi-agent"),
+      { source: piAgentDir, target: "/southstar/pi-agent", readonly: true },
+    );
+  } finally {
+    if (previousPiAgentDir === undefined) {
+      delete process.env.SOUTHSTAR_PI_AGENT_DIR;
+    } else {
+      process.env.SOUTHSTAR_PI_AGENT_DIR = previousPiAgentDir;
+    }
+    await rm(runRoot, { recursive: true, force: true });
+    await rm(piAgentDir, { recursive: true, force: true });
+  }
 });
 
 test("TorkHandProvider.executeTask fails missing workflow input and marks binding failed", async () => {
@@ -184,6 +252,7 @@ function executeTaskInput(overrides: Partial<ExecuteTaskInput> = {}): ExecuteTas
     acceptedInputArtifactRefs: ["artifact-a"],
     toolProxyPolicyRef: "policy-a",
     workflow: workflowManifest(),
+    taskEnvelope: taskEnvelope(taskId),
     queueTimeoutSeconds: 45,
     heartbeatTimeoutSeconds: 180,
     intent: {
@@ -205,7 +274,21 @@ function executeTaskInput(overrides: Partial<ExecuteTaskInput> = {}): ExecuteTas
   return { ...input, ...overrides };
 }
 
-function workflowManifest(): SouthstarWorkflowManifest {
+function taskEnvelope(taskId: string): unknown {
+  return {
+    schemaVersion: "southstar.task-envelope.v2",
+    runId: "run-hand",
+    workflowId: "wf-tork-hand-provider",
+    taskId,
+    contextPacket: { id: "context-a", runId: "run-hand", taskId },
+    skills: [],
+  };
+}
+
+function workflowManifest(options: { harnessKind?: "codex" | "pi-agent" } = {}): SouthstarWorkflowManifest {
+  const harnessKind = options.harnessKind ?? "codex";
+  const harnessId = harnessKind === "pi-agent" ? "pi" : "codex";
+  const image = harnessKind === "pi-agent" ? "southstar/pi-agent:local" : "southstar/codex-agent:local";
   return {
     schemaVersion: "southstar.v2",
     workflowId: "wf-tork-hand-provider",
@@ -217,28 +300,28 @@ function workflowManifest(): SouthstarWorkflowManifest {
         name: "Task A",
         domain: "software",
         dependsOn: [],
-        execution: taskExecution(),
+        execution: taskExecution(image),
         rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-        subagents: [{ id: "impl", harnessId: "codex", prompt: "implement task A", requiredArtifacts: ["implementation-report"] }],
+        subagents: [{ id: "impl", harnessId, prompt: "implement task A", requiredArtifacts: ["implementation-report"] }],
       },
       {
         id: "task-b",
         name: "Task B",
         domain: "software",
         dependsOn: ["task-a"],
-        execution: taskExecution(),
+        execution: taskExecution(image),
         rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-        subagents: [{ id: "impl", harnessId: "codex", prompt: "implement task B", requiredArtifacts: ["implementation-report"] }],
+        subagents: [{ id: "impl", harnessId, prompt: "implement task B", requiredArtifacts: ["implementation-report"] }],
       },
     ],
     harnessDefinitions: [
       {
-        id: "codex",
-        kind: "codex",
+        id: harnessId,
+        kind: harnessKind,
         entrypoint: "southstar-agent-runner",
-        image: "southstar/codex-agent:local",
+        image,
         capabilities: ["software"],
-        inputProtocol: "task-envelope-v1",
+        inputProtocol: harnessKind === "pi-agent" ? "task-envelope-v2" : "task-envelope-v1",
         eventProtocol: "southstar-events-v1",
         supportsCheckpoint: true,
         supportsSteering: true,
@@ -256,10 +339,10 @@ function workflowManifest(): SouthstarWorkflowManifest {
   };
 }
 
-function taskExecution() {
+function taskExecution(image = "southstar/codex-agent:local") {
   return {
     engine: "tork" as const,
-    image: "southstar/codex-agent:local",
+    image,
     command: ["southstar-agent-runner"],
     env: {},
     mounts: [],

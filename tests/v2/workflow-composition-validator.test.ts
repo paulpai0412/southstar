@@ -99,27 +99,25 @@ test("validator rejects selected artifacts not produced by selected agent", asyn
   }
 });
 
-test("validator rejects compositions missing required code quality review coverage", async () => {
+test("validator allows simple bugfix compositions without optional review and summary groups", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: analyzeRequirementDeterministically("fix a typo bug in the todo form"),
       scope: "software",
     });
-    const plan = validComposition();
-    plan.tasks = plan.tasks.filter((task) => task.id !== "review-code-quality");
-    plan.tasks.find((task) => task.id === "summarize-completion")!.dependsOn = ["verify-feature"];
+    const plan = simpleBugfixComposition();
 
     const validation = await validateWorkflowCompositionPlan(db, packet, plan);
-    assert.equal(validation.ok, false);
-    assert.equal(validation.issues.some((item) => item.code === "missing_required_task_group"), true);
+    assert.equal(validation.ok, true);
+    assert.deepEqual(validation.issues, []);
   } finally {
     await db.close();
   }
 });
 
-test("validator rejects summarize tasks that skip required code quality dependency", async () => {
+test("validator treats code quality review ordering as skill guidance rather than a hard constraint", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -131,8 +129,8 @@ test("validator rejects summarize tasks that skip required code quality dependen
     plan.tasks.find((task) => task.id === "summarize-completion")!.dependsOn = ["verify-feature"];
 
     const validation = await validateWorkflowCompositionPlan(db, packet, plan);
-    assert.equal(validation.ok, false);
-    assert.equal(validation.issues.some((item) => item.code === "missing_required_group_dependency"), true);
+    assert.equal(validation.ok, true);
+    assert.deepEqual(validation.issues, []);
   } finally {
     await db.close();
   }
@@ -292,6 +290,41 @@ function validComposition(): WorkflowCompositionPlan {
         ["instruction.software-summarizer"],
         ["artifact.completion_report"],
         "evaluator.software-completion-quality",
+      ),
+    ],
+    rejectedCandidates: [],
+    generatedComponentProposals: [],
+  };
+}
+
+function simpleBugfixComposition(): WorkflowCompositionPlan {
+  return {
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Simple Bugfix Workflow",
+    selectedWorkflowTemplateRef: "template.software-feature",
+    rationale: "Use the smallest sufficient implement and verify loop for a low-risk bugfix.",
+    tasks: [
+      task(
+        "implement-fix",
+        [],
+        "agent.software-maker",
+        "profile.software-maker-pi",
+        ["skill.software-implementation"],
+        ["tool.workspace-read", "tool.workspace-write"],
+        ["instruction.software-maker"],
+        ["artifact.implementation_report"],
+        "evaluator.software-feature-quality",
+      ),
+      task(
+        "verify-fix",
+        ["implement-fix"],
+        "agent.software-checker",
+        "profile.software-checker-codex",
+        ["skill.software-verification"],
+        ["tool.workspace-read"],
+        ["instruction.software-checker"],
+        ["artifact.verification_report"],
+        "evaluator.software-verification-quality",
       ),
     ],
     rejectedCandidates: [],

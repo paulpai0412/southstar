@@ -198,6 +198,25 @@ test("workflow route proxy planner draft runs maps to v2", async () => {
   assert.deepEqual(await response.json(), { runId: "run-1", taskIds: ["task-1"] });
 });
 
+test("workflow route proxy planner draft validation maps to v2 POST action", async () => {
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
+  const calls: Array<{ url: string; init: RequestInit }> = [];
+  global.fetch = (async (url, init) => {
+    calls.push({ url: String(url), init: init ?? {} });
+    return Response.json({ draftId: "draft-1", status: "validated", validationIssues: [] });
+  }) as typeof fetch;
+
+  const { POST } = await import("../../web/app/api/workflow/planner-drafts/[draftId]/validate/route");
+  const request = new NextRequest("http://localhost/api/workflow/planner-drafts/draft-1/validate", {
+    method: "POST",
+    body: JSON.stringify({ confirm: true }),
+  });
+  const response = await POST(request, { params: Promise.resolve({ draftId: "draft-1" }) });
+  assert.equal(calls[0]?.url, "http://127.0.0.1:3000/api/v2/planner/drafts/draft-1/validate");
+  assert.equal(calls[0]?.init.method, "POST");
+  assert.deepEqual(await response.json(), { draftId: "draft-1", status: "validated", validationIssues: [] });
+});
+
 test("workflow route proxy planner draft task profile override maps to v2", async () => {
   process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
   const calls: Array<{ url: string; init: RequestInit }> = [];

@@ -21,6 +21,7 @@ import {
   getPostgresPlannerDraftOrchestration,
   patchPostgresPlannerDraftTaskProfileOverride,
   revisePostgresPlannerDraft,
+  validatePostgresPlannerDraft,
   type PlannerDraftLibraryHints,
 } from "../ui-api/postgres-run-api.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
@@ -245,6 +246,12 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (request.method === "GET" && draftOrchestrationMatch) {
       const draftId = decodeURIComponent(draftOrchestrationMatch[1]!);
       return json("planner-draft-orchestration", await getPostgresPlannerDraftOrchestration(context.db, { draftId }));
+    }
+
+    const draftValidateMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/validate$/);
+    if (request.method === "POST" && draftValidateMatch) {
+      const draftId = decodeURIComponent(draftValidateMatch[1]!);
+      return json("planner-draft", await validatePostgresPlannerDraft(context.db, { draftId }));
     }
 
     const draftRunMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/runs$/);

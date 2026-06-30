@@ -84,7 +84,7 @@ test("workflow prompt renders DAG arrows and lifecycle action buttons", async ({
   await composer.press("Enter");
 
   await expect(page.getByTestId("workflow-dag-block")).toBeVisible();
-  await expect(page.getByTestId("workflow-action-draft")).toBeVisible();
+  await expect(page.getByTestId("workflow-draft-saved")).toBeVisible();
   await expect(page.getByTestId("workflow-action-validate")).toBeVisible();
   await expect(page.getByTestId("workflow-action-run")).toBeVisible();
   await expect(page.getByTestId("workflow-lifecycle-notice")).toBeVisible();

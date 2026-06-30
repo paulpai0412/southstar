@@ -10,6 +10,7 @@ import type {
 type WorkflowLifecycleAction =
   | { type: "drafting" }
   | { type: "drafted"; draft: PlannerDraftResult }
+  | { type: "draft_status_changed"; draftId: string; status: string }
   | { type: "validating" }
   | { type: "validated"; orchestration: PlannerDraftOrchestrationView }
   | { type: "running" }
@@ -34,6 +35,18 @@ export function buildPlannerDraftRequest(dag: WorkflowDag, cwd?: string | null) 
   };
 }
 
+export function initialWorkflowLifecycleState(dag: WorkflowDag): WorkflowLifecycleState {
+  if (!dag.draftId) {
+    return { phase: "file_draft" };
+  }
+  const draft = buildPlannerDraftResultFromDag(dag);
+  return {
+    phase: phaseFromDraftStatus(draft.status),
+    draft,
+    canRun: draft.status === "validated",
+  };
+}
+
 export function workflowLifecycleReducer(
   state: WorkflowLifecycleState,
   action: WorkflowLifecycleAction,
@@ -42,15 +55,33 @@ export function workflowLifecycleReducer(
     return { ...state, phase: "drafting", error: undefined };
   }
   if (action.type === "drafted") {
-    const canRun = action.draft.status === "validated";
-    return { phase: canRun ? "validated" : "planner_draft", draft: action.draft, canRun };
+    return stateFromDraft(action.draft);
+  }
+  if (action.type === "draft_status_changed") {
+    if (state.draft?.draftId !== action.draftId) {
+      return state;
+    }
+    const draft = { ...state.draft, status: action.status };
+    return {
+      ...state,
+      phase: phaseFromDraftStatus(action.status),
+      draft,
+      orchestration: action.status === "validated" ? state.orchestration : undefined,
+      canRun: action.status === "validated",
+    };
   }
   if (action.type === "validating") {
     return { ...state, phase: "validating", error: undefined };
   }
   if (action.type === "validated") {
     const canRun = action.orchestration.status === "validated";
-    return { ...state, phase: canRun ? "validated" : "planner_draft", orchestration: action.orchestration, canRun };
+    return {
+      ...state,
+      phase: phaseFromDraftStatus(action.orchestration.status),
+      draft: action.orchestration,
+      orchestration: action.orchestration,
+      canRun,
+    };
   }
   if (action.type === "running") {
     return { ...state, phase: "running", error: undefined };
@@ -68,4 +99,43 @@ export function workflowLifecycleReducer(
     return { ...state, phase: "run_created", error: action.error, canRun: false };
   }
   return { ...state, phase: "blocked", error: action.error, canRun: false };
+}
+
+function stateFromDraft(draft: PlannerDraftResult): WorkflowLifecycleState {
+  return {
+    phase: phaseFromDraftStatus(draft.status),
+    draft,
+    canRun: draft.status === "validated",
+  };
+}
+
+function phaseFromDraftStatus(status: string): WorkflowLifecycleState["phase"] {
+  if (status === "validated") return "validated";
+  if (status === "needs_validation") return "needs_validation";
+  if (status === "invalid") return "invalid";
+  return "planner_draft";
+}
+
+function buildPlannerDraftResultFromDag(dag: WorkflowDag): PlannerDraftResult {
+  const dependsOnByNode = new Map<string, string[]>();
+  for (const edge of dag.edges) {
+    const dependencies = dependsOnByNode.get(edge.to) ?? [];
+    dependencies.push(edge.from);
+    dependsOnByNode.set(edge.to, dependencies);
+  }
+
+  return {
+    draftId: dag.draftId ?? dag.id,
+    goalPrompt: dag.prompt,
+    workflowId: dag.templateTitle || dag.id,
+    status: dag.draftStatus ?? (dag.readiness === "ready" ? "validated" : "needs_validation"),
+    validationIssues: [],
+    taskSummaries: dag.nodes.map((node) => ({
+      taskId: node.taskId ?? node.id,
+      taskName: node.label,
+      dependsOn: dependsOnByNode.get(node.id) ?? [],
+      roleRef: node.role,
+      agentProfileRef: node.profileRef,
+    })),
+  };
 }

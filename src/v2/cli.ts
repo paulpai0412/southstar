@@ -3,6 +3,7 @@ import { loadSouthstarEnv } from "./config/env.ts";
 import { createCliRuntimeClient, type CliRuntimeClient } from "./cli-client.ts";
 import { initializeSouthstarSchema } from "./db/init.ts";
 import type { ReadModelKind } from "./read-models/types.ts";
+import { createSouthstarInfraLifecycle, type SouthstarInfraLifecycle } from "./server/infra-lifecycle.ts";
 import { createRuntimeServerLifecycle, type RuntimeServerLifecycle } from "./server/runtime-server-lifecycle.ts";
 import { createWebServerLifecycle, type WebServerLifecycle } from "./server/web-server-lifecycle.ts";
 
@@ -30,6 +31,7 @@ export type V2Command =
 
 export type V2CliDependencies = {
   runtimeClient?: CliRuntimeClient;
+  infraLifecycle?: SouthstarInfraLifecycle;
   serverLifecycle?: RuntimeServerLifecycle;
   webServerLifecycle?: WebServerLifecycle;
   initializeSchema?: (databaseUrl: string) => Promise<{ version: string }>;
@@ -126,8 +128,10 @@ export async function executeV2Command(command: V2Command, dependencies: V2CliDe
     };
   }
   if (command.command === "start") {
+    const infraLifecycle = requireSouthstarInfraLifecycle(dependencies);
     const lifecycle = requireRuntimeServerLifecycle(dependencies);
     const webLifecycle = requireWebServerLifecycle(dependencies);
+    const infra = await infraLifecycle.start();
     let runtimeStarted = false;
     let runtime:
       | Awaited<ReturnType<RuntimeServerLifecycle["start"]>>
@@ -146,27 +150,30 @@ export async function executeV2Command(command: V2Command, dependencies: V2CliDe
       });
       return {
         kind: "server:start",
-        result: { runtime, web },
+        result: { infra, runtime, web },
       };
     } catch (error) {
       if (runtimeStarted) {
         await lifecycle.stop({ pidFilePath: command.pidFilePath }).catch(() => undefined);
       }
+      await infraLifecycle.stop().catch(() => undefined);
       throw error;
     }
   }
   if (command.command === "stop") {
+    const infraLifecycle = requireSouthstarInfraLifecycle(dependencies);
     const lifecycle = requireRuntimeServerLifecycle(dependencies);
     const webLifecycle = requireWebServerLifecycle(dependencies);
+    const web = await webLifecycle.stop();
+    const runtime = await lifecycle.stop({ pidFilePath: command.pidFilePath });
+    const infra = await infraLifecycle.stop();
     return {
       kind: "server:stop",
-      result: {
-        web: await webLifecycle.stop(),
-        runtime: await lifecycle.stop({ pidFilePath: command.pidFilePath }),
-      },
+      result: { web, runtime, infra },
     };
   }
   if (command.command === "server-status") {
+    const infraLifecycle = requireSouthstarInfraLifecycle(dependencies);
     const lifecycle = requireRuntimeServerLifecycle(dependencies);
     const webLifecycle = requireWebServerLifecycle(dependencies);
     return {
@@ -174,6 +181,7 @@ export async function executeV2Command(command: V2Command, dependencies: V2CliDe
       result: {
         runtime: await lifecycle.status({ pidFilePath: command.pidFilePath }),
         web: await webLifecycle.status(),
+        infra: await infraLifecycle.status(),
       },
     };
   }
@@ -224,12 +232,16 @@ export async function main(argv = process.argv.slice(2), dependencies?: Partial<
       || parsed.command === "start"
       || parsed.command === "stop"
       || parsed.command === "server-status";
+    const needsInfraLifecycle = parsed.command === "start"
+      || parsed.command === "stop"
+      || parsed.command === "server-status";
     const needsWebLifecycle = parsed.command === "start"
       || parsed.command === "stop"
       || parsed.command === "server-status";
     const deps = {
       ...dependencies,
       ...(needsRuntimeClient && !dependencies?.runtimeClient ? { runtimeClient: createCliRuntimeClient({ baseUrl: env.serverUrl }) } : {}),
+      ...(needsInfraLifecycle && !dependencies?.infraLifecycle ? { infraLifecycle: createSouthstarInfraLifecycle() } : {}),
       ...(needsLifecycle && !dependencies?.serverLifecycle ? { serverLifecycle: createRuntimeServerLifecycle() } : {}),
       ...(needsWebLifecycle && !dependencies?.webServerLifecycle ? { webServerLifecycle: createWebServerLifecycle() } : {}),
     };
@@ -268,6 +280,11 @@ function optionalNumberFlag(args: string[], flag: string): number | undefined {
 function requireRuntimeClient(dependencies: V2CliDependencies): CliRuntimeClient {
   if (!dependencies.runtimeClient) throw new Error("runtime server client is required for this command");
   return dependencies.runtimeClient;
+}
+
+function requireSouthstarInfraLifecycle(dependencies: V2CliDependencies): SouthstarInfraLifecycle {
+  if (!dependencies.infraLifecycle) throw new Error("southstar infra lifecycle is required for this command");
+  return dependencies.infraLifecycle;
 }
 
 function requireRuntimeServerLifecycle(dependencies: V2CliDependencies): RuntimeServerLifecycle {

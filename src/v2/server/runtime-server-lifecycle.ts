@@ -127,7 +127,7 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
       const pidFilePath = resolvePidFilePath(options.pidFilePath);
       const env = envLoader();
       const listen = parseListenAddress(env.serverUrl);
-      const host = options.host ?? listen.host;
+      const host = options.host ?? defaultRuntimeListenHost(env, listen.host);
       const port = options.port ?? listen.port;
       await maybeStartSouthstarPostgresContainer(env, { runCommand });
       const db = await connectSouthstarDbWithRetry(env.databaseUrl, { sleep });
@@ -136,13 +136,15 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
       let signal: "SIGINT" | "SIGTERM" = "SIGTERM";
       const startedAt = now().toISOString();
       try {
-        const runtime = await createRuntime(host, port, env, db);
+        const publicBaseUrl = toBaseUrl(listen.host, port);
+        const callbackBaseUrl = containerCallbackBaseUrl(env, publicBaseUrl, port);
+        const runtime = await createRuntime(host, port, env, db, { callbackBaseUrl });
         server = runtime.server;
         const record: RuntimeServerPidRecord = {
           pid: process.pid,
           host: runtime.server.host,
           port: runtime.server.port,
-          url: runtime.server.url,
+          url: publicBaseUrl,
           startedAt,
           cwd,
         };
@@ -186,6 +188,7 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
       `export SOUTHSTAR_DATABASE_URL=${quoteShellArg(options.env.databaseUrl)}`,
       `export TORK_BASE_URL=${quoteShellArg(options.env.torkBaseUrl)}`,
       `export SOUTHSTAR_SERVER_URL=${quoteShellArg(options.env.serverUrl)}`,
+      ...(options.env.containerCallbackBaseUrl ? [`export SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL=${quoteShellArg(options.env.containerCallbackBaseUrl)}`] : []),
       `export SOUTHSTAR_REQUIRE_DOCKER=${quoteShellArg(options.env.dockerRequired ? "1" : "0")}`,
       ...(options.env.piPlannerEndpoint ? [`export PI_PLANNER_ENDPOINT=${quoteShellArg(options.env.piPlannerEndpoint)}`] : []),
       shellCommand,
@@ -270,8 +273,14 @@ type CreatedRuntime = {
   server: SouthstarRuntimeServer;
 };
 
-async function createRuntime(host: string, port: number, env: SouthstarEnv, db: SouthstarDb): Promise<CreatedRuntime> {
-  const baseUrl = toBaseUrl(host, port);
+async function createRuntime(
+  host: string,
+  port: number,
+  env: SouthstarEnv,
+  db: SouthstarDb,
+  options: { callbackBaseUrl?: string } = {},
+): Promise<CreatedRuntime> {
+  const baseUrl = options.callbackBaseUrl ?? toBaseUrl(host, port);
   const torkClient = new TorkClient({ baseUrl: env.torkBaseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
   const executorProvider = new TorkExecutorProvider({
     torkClient,
@@ -306,6 +315,24 @@ async function createRuntime(host: string, port: number, env: SouthstarEnv, db: 
     },
   });
   return { server };
+}
+
+function defaultRuntimeListenHost(env: SouthstarEnv, configuredHost: string): string {
+  if (env.dockerRequired && isLoopbackHost(configuredHost)) return "0.0.0.0";
+  return configuredHost;
+}
+
+function containerCallbackBaseUrl(env: SouthstarEnv, publicBaseUrl: string, port: number): string {
+  if (env.containerCallbackBaseUrl) return trimTrailingSlash(env.containerCallbackBaseUrl);
+  const parsed = new URL(publicBaseUrl);
+  if (env.dockerRequired && isLoopbackHost(parsed.hostname)) {
+    return `http://172.17.0.1:${port}`;
+  }
+  return trimTrailingSlash(publicBaseUrl);
+}
+
+function trimTrailingSlash(value: string): string {
+  return value.replace(/\/+$/, "");
 }
 
 function providerActionsFromTork(torkClient: TorkClient): RecoveryProviderActions {

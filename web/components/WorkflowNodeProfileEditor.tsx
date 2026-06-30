@@ -97,6 +97,12 @@ export function WorkflowNodeProfileEditor({
       });
       const payload = await response.json();
       if (!response.ok || payload.ok === false) throw new Error(payload.error ?? `HTTP ${response.status}`);
+      window.dispatchEvent(new CustomEvent("southstar:planner-draft-updated", {
+        detail: {
+          draftId,
+          status: payload.result?.status ?? payload.status ?? "needs_validation",
+        },
+      }));
       setNotice("Saved");
       await load();
     } catch (err) {

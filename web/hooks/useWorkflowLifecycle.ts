@@ -1,7 +1,7 @@
 "use client";
 
-import { useReducer } from "react";
-import { buildPlannerDraftRequest, workflowLifecycleReducer } from "@/lib/workflow/lifecycle";
+import { useEffect, useReducer } from "react";
+import { buildPlannerDraftRequest, initialWorkflowLifecycleState, workflowLifecycleReducer } from "@/lib/workflow/lifecycle";
 import type {
   PlannerDraftOrchestrationView,
   PlannerDraftResult,
@@ -10,16 +10,47 @@ import type {
   WorkflowRunResult,
 } from "@/lib/workflow/types";
 
+type PlannerDraftUpdatedDetail = {
+  draftId?: string;
+  status?: string;
+};
+
 async function readJson<T>(response: Response): Promise<T> {
   const data = (await response.json()) as T & { error?: string };
   if (!response.ok || data.error) {
     throw new Error(data.error ?? `HTTP ${response.status}`);
   }
+  if (
+    typeof data === "object" &&
+    data !== null &&
+    "result" in data &&
+    (data as { result?: unknown }).result !== undefined
+  ) {
+    return (data as { result: T }).result;
+  }
   return data;
 }
 
 export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
-  const [state, dispatch] = useReducer(workflowLifecycleReducer, { phase: "file_draft" as const });
+  const [state, dispatch] = useReducer(workflowLifecycleReducer, dag, initialWorkflowLifecycleState);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handlePlannerDraftUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<PlannerDraftUpdatedDetail>).detail;
+      const draftId = detail?.draftId;
+      if (!draftId) return;
+      dispatch({
+        type: "draft_status_changed",
+        draftId,
+        status: detail.status ?? "needs_validation",
+      });
+    };
+    window.addEventListener("southstar:planner-draft-updated", handlePlannerDraftUpdated);
+    return () => {
+      window.removeEventListener("southstar:planner-draft-updated", handlePlannerDraftUpdated);
+    };
+  }, []);
 
   const createDraft = async () => {
     dispatch({ type: "drafting" });
@@ -41,9 +72,11 @@ export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
     }
     dispatch({ type: "validating" });
     try {
-      const response = await fetch(
-        `/api/workflow/planner-drafts/${encodeURIComponent(state.draft.draftId)}/orchestration`,
-      );
+      const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(state.draft.draftId)}/validate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
       dispatch({ type: "validated", orchestration: await readJson<PlannerDraftOrchestrationView>(response) });
     } catch (error) {
       dispatch({ type: "blocked", error: error instanceof Error ? error.message : String(error) });

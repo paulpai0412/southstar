@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
+import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
+import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
-import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { withMaterializationMount } from "../executor/materialization-mount.ts";
+import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
+import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { validateWorkflowManifest } from "../manifests/validate.ts";
 import type { ExecuteTaskInput, HandBinding, HandCall, HandProvider, HandResult, HandSnapshotRef, ProvisionHandInput } from "./types.ts";
 
@@ -8,6 +12,7 @@ export function createTorkHandProvider(input: {
   executorProvider: ExecutorProvider;
   callbackUrl: string;
   heartbeatUrl?: string;
+  runRoot?: string;
 }): HandProvider {
   return {
     providerId: "tork",
@@ -141,12 +146,29 @@ export function createTorkHandProvider(input: {
       }
 
       try {
+        const taskEnvelope = asTaskEnvelope(taskInput.taskEnvelope);
+        if (!taskEnvelope) {
+          binding.status = "failed";
+          binding.payload = { ...binding.payload, lastError: "missing task envelope for Tork task execution" };
+          return {
+            ok: false,
+            output: "missing task envelope for Tork task execution",
+            metadata: { handExecutionId: taskInput.handExecutionId },
+          };
+        }
+        const envelopeBasePath = taskInput.envelopeBasePath ?? "/southstar-runs";
+        const mounted = withMaterializationMount(singleTaskWorkflow, {
+          runRoot: taskInput.runRoot ?? input.runRoot,
+          envelopeBasePath,
+        });
+        const workflow = withPiAgentRuntimeConfig(mounted.workflow);
+        await materializeTaskEnvelope(taskEnvelope, { runRoot: mounted.runRoot });
         const submitted = await input.executorProvider.submit({
           runId: binding.runId,
-          workflow: singleTaskWorkflow,
+          workflow,
           callbackUrl: taskInput.callbackUrl ?? input.callbackUrl,
           heartbeatUrl: taskInput.heartbeatUrl ?? input.heartbeatUrl,
-          envelopeBasePath: taskInput.envelopeBasePath ?? "/southstar-runs",
+          envelopeBasePath: mounted.envelopeBasePath,
           attemptId: taskInput.attemptId,
         });
         binding.status = "running";
@@ -206,4 +228,52 @@ export function createTorkHandProvider(input: {
       };
     },
   };
+}
+
+function withPiAgentRuntimeConfig(workflow: SouthstarWorkflowManifest): SouthstarWorkflowManifest {
+  const piMount = piAgentConfigMount();
+  if (!piMount) return workflow;
+  const piEnv = piAgentRuntimeEnv();
+  return {
+    ...workflow,
+    tasks: workflow.tasks.map((task) => {
+      if (!taskUsesPiAgentHarness(workflow, task)) return task;
+      return {
+        ...task,
+        execution: {
+          ...task.execution,
+          env: {
+            ...task.execution.env,
+            ...piEnv,
+          },
+          mounts: ensureMount(task.execution.mounts, piMount),
+        },
+      };
+    }),
+  };
+}
+
+function taskUsesPiAgentHarness(workflow: SouthstarWorkflowManifest, task: WorkflowTaskDefinition): boolean {
+  const taskHarnessIds = new Set(task.subagents.map((subagent) => subagent.harnessId));
+  return workflow.harnessDefinitions.some((harness) => taskHarnessIds.has(harness.id) && harness.kind === "pi-agent");
+}
+
+function ensureMount(
+  mounts: Array<{ source: string; target: string; readonly: boolean }>,
+  mount: { source: string; target: string; readonly: boolean },
+): Array<{ source: string; target: string; readonly: boolean }> {
+  if (mounts.some((entry) => entry.source === mount.source && entry.target === mount.target)) return mounts;
+  return [...mounts, mount];
+}
+
+function asTaskEnvelope(value: unknown): AnyTaskEnvelope | null {
+  if (!value || typeof value !== "object") return null;
+  const envelope = value as Partial<AnyTaskEnvelope> & { task?: { id?: unknown } };
+  if (envelope.schemaVersion === "southstar.task-envelope.v2" && typeof envelope.runId === "string" && typeof envelope.taskId === "string") {
+    return value as AnyTaskEnvelope;
+  }
+  if (envelope.schemaVersion === "southstar.task-envelope.v1" && typeof envelope.runId === "string" && typeof envelope.task?.id === "string") {
+    return value as AnyTaskEnvelope;
+  }
+  return null;
 }

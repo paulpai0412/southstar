@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { Client } from "pg";
+import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 
@@ -45,8 +46,7 @@ export async function initSouthstarSchema(_db: SouthstarDb): Promise<void> {
 }
 
 async function createTestDatabase(): Promise<{ databaseUrl: string; drop(): Promise<void> }> {
-  const adminUrl = process.env.SOUTHSTAR_TEST_ADMIN_DATABASE_URL;
-  if (!adminUrl) throw new Error("SOUTHSTAR_TEST_ADMIN_DATABASE_URL is required for Postgres-backed tests");
+  const adminUrl = resolveTestPostgresAdminUrl();
   const databaseName = `southstar_test_${randomUUID().replace(/-/g, "_")}`;
   const admin = new Client({ connectionString: adminUrl });
   let adminConnected = false;
@@ -72,6 +72,13 @@ async function createTestDatabase(): Promise<{ databaseUrl: string; drop(): Prom
       }
     },
   };
+}
+
+export function resolveTestPostgresAdminUrl(input: Record<string, string | undefined> = process.env): string {
+  const explicit = input.SOUTHSTAR_TEST_ADMIN_DATABASE_URL;
+  if (explicit) return explicit;
+  const runtimeUrl = input.SOUTHSTAR_DATABASE_URL ?? input.SOUTHSTAR_DB ?? loadSouthstarEnv(input).databaseUrl;
+  return replaceDatabase(runtimeUrl, "postgres");
 }
 
 function replaceDatabase(adminUrl: string, db: string): string {

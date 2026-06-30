@@ -132,6 +132,12 @@ test("Workflow mode generate submit uses web generate stream and preserves norma
   assert.match(hook, /workflowCwd/);
 });
 
+test("Workflow mode does not revise non-draft composition DAG ids", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+  assert.doesNotMatch(hook, /block\.dag\.draftId\s*\?\?\s*block\.dag\.id/);
+  assert.match(hook, /isPlannerDraftId/);
+});
+
 test("Workflow mode renders DAG blocks while the workflow stream is still active", () => {
   const hook = source("web/hooks/useAgentSession.ts");
   assert.match(hook, /onDag\(dag\) \{\s*generatedDag = dag;\s*updateStreamingMessage\(\);\s*\}/s);
@@ -146,6 +152,40 @@ test("web workflow DAG block renders the shared React Flow canvas inside a scrol
   assert.match(block, /overflowX:\s*"auto"/);
   assert.match(block, /overflowY:\s*"auto"/);
   assert.match(block, /onSelectTask=\{handleSelectTask\}/);
+});
+
+test("workflow lifecycle starts generated planner DAGs as backend drafts", () => {
+  const lifecycle = source("web/lib/workflow/lifecycle.ts");
+  const hook = source("web/hooks/useWorkflowLifecycle.ts");
+  const adapter = source("web/lib/workflow/v2-library-adapter.ts");
+
+  assert.match(adapter, /draftStatus:\s*input\.status/);
+  assert.match(lifecycle, /initialWorkflowLifecycleState/);
+  assert.match(lifecycle, /dag\.draftId/);
+  assert.match(lifecycle, /status:\s*dag\.draftStatus/);
+  assert.match(hook, /useReducer\(workflowLifecycleReducer,\s*dag,\s*initialWorkflowLifecycleState\)/);
+  assert.match(hook, /southstar:planner-draft-updated/);
+});
+
+test("workflow lifecycle validates drafts with a POST action", () => {
+  const hook = source("web/hooks/useWorkflowLifecycle.ts");
+  assert.match(hook, /\/api\/workflow\/planner-drafts\/\$\{encodeURIComponent\(state\.draft\.draftId\)\}\/validate/);
+  assert.match(hook, /method:\s*"POST"/);
+  assert.match(hook, /"result"\s+in\s+data/);
+  assert.doesNotMatch(hook, /type:\s*"validated"[\s\S]{0,180}\/orchestration/);
+});
+
+test("workflow DAG actions hide primary Draft once a backend draft exists", () => {
+  const block = source("web/components/WorkflowDagBlock.tsx");
+  assert.match(block, /\{!dag\.draftId && \(/);
+  assert.match(block, /Draft saved/);
+  assert.match(block, /needs validation/);
+});
+
+test("workflow node profile save marks its planner draft as needing validation", () => {
+  const editor = source("web/components/WorkflowNodeProfileEditor.tsx");
+  assert.match(editor, /southstar:planner-draft-updated/);
+  assert.match(editor, /needs_validation/);
 });
 
 test("shared workflow canvas uses React Flow and ELK", () => {

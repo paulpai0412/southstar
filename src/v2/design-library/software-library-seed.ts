@@ -56,40 +56,16 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
       roleRefs: ["explorer", "maker", "checker", "summarizer"],
       compositionConstraints: {
         schemaVersion: "southstar.composition_constraints.v1",
-        requiredTaskGroups: [
-          {
-            id: "spec_review",
-            minCount: 1,
-            matchAny: [
-              { agentDefinitionRef: "agent.software-spec-reviewer" },
-              { skillRef: "skill.software-spec-review" },
-            ],
-          },
-          {
-            id: "code_quality_review",
-            minCount: 1,
-            matchAny: [
-              { agentDefinitionRef: "agent.software-code-quality-reviewer" },
-              { skillRef: "skill.software-code-quality-review" },
-            ],
-          },
-          {
-            id: "summarize",
-            minCount: 1,
-            matchAny: [{ agentDefinitionRef: "agent.software-summarizer" }],
-          },
-        ],
-        requiredGroupDependencies: [
-          { fromGroup: "summarize", toGroup: "code_quality_review" },
-        ],
         templateSlots: [
           { slotRef: "understand", matchAny: [{ agentDefinitionRef: "agent.software-explorer" }] },
           { slotRef: "understand-repo", matchAny: [{ agentDefinitionRef: "agent.software-explorer" }] },
           { slotRef: "review-spec", matchAny: [{ agentDefinitionRef: "agent.software-spec-reviewer" }] },
           { slotRef: "implement", matchAny: [{ agentDefinitionRef: "agent.software-maker" }] },
           { slotRef: "implement-feature", matchAny: [{ agentDefinitionRef: "agent.software-maker" }] },
+          { slotRef: "implement-fix", matchAny: [{ agentDefinitionRef: "agent.software-maker" }] },
           { slotRef: "verify", matchAny: [{ agentDefinitionRef: "agent.software-checker" }] },
           { slotRef: "verify-feature", matchAny: [{ agentDefinitionRef: "agent.software-checker" }] },
+          { slotRef: "verify-fix", matchAny: [{ agentDefinitionRef: "agent.software-checker" }] },
           {
             slotRef: "review-code-quality",
             matchAny: [{ agentDefinitionRef: "agent.software-code-quality-reviewer" }],
@@ -399,7 +375,10 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
     objectKind: "skill_definition",
     state: {
       role: "explorer",
-      instructions: "Inspect repository structure, identify entry points, and draft a scoped implementation plan.",
+      instructions: [
+        "Inspect repository structure, identify entry points, and draft a scoped implementation plan.",
+        "Workflow composition guidance: start from the smallest sufficient DAG. For a simple bug fix, an implement task followed by a verify task is valid. Add repo/spec review only when requirements or architecture are unclear. Add code-quality review for broad, risky, shared, or maintainability-sensitive changes. Add a separate summary task only when the run needs standalone synthesis. Never add review or summary nodes just to satisfy a fixed task count.",
+      ].join(" "),
       allowedTools: ["workspace-read"],
       requiredMounts: ["workspace"],
       mcpRequirements: [],

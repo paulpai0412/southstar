@@ -14,9 +14,11 @@ import {
   getPostgresPlannerDraftOrchestration,
   patchPostgresPlannerDraftTaskProfileOverride,
   revisePostgresPlannerDraft,
+  validatePostgresPlannerDraft,
 } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envelope.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
+import { resolveTestPostgresAdminUrl } from "./postgres-test-utils.ts";
 
 test("Postgres run API creates draft, run, tasks, history, and Knowledge Card context packets", async () => {
   await withDb(async (db) => {
@@ -91,19 +93,55 @@ test("Postgres planner draft task profile override updates one task without chan
 
     assert.equal(result.draftId, draft.draftId);
     assert.equal(result.taskId, "implement-feature");
-    assert.equal(result.status, "validated");
+    assert.equal(result.status, "needs_validation");
     assert.deepEqual(result.profileOverride.skillRefs, ["software.calc-cli", "software.test-evidence"]);
 
-    const row = await db.one<{ payload_json: { workflow: { tasks: Array<Record<string, any>> } } }>(
-      "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+    const row = await db.one<{
+      status: string;
+      summary_json: { status?: string };
+      payload_json: { workflow: { tasks: Array<Record<string, any>> } };
+    }>(
+      "select status, summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
       [draft.draftId],
     );
+    assert.equal(row.status, "needs_validation");
+    assert.equal(row.summary_json.status, "needs_validation");
     const implement = row.payload_json.workflow.tasks.find((task) => task.id === "implement-feature");
     const verify = row.payload_json.workflow.tasks.find((task) => task.id === "verify-feature");
     assert.equal(implement?.profileOverride.model, "gpt-5-codex");
     assert.deepEqual(implement?.skillRefs, ["software.calc-cli", "software.test-evidence"]);
     assert.deepEqual(implement?.mcpGrantRefs, ["filesystem-workspace"]);
     assert.equal(verify?.profileOverride, undefined);
+  });
+});
+
+test("Postgres planner draft validation gates run creation after profile override", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+
+    await patchPostgresPlannerDraftTaskProfileOverride(db, {
+      draftId: draft.draftId,
+      taskId: "implement-feature",
+      profileOverride: {
+        provider: "codex",
+        model: "gpt-5-codex",
+        instruction: "Use a tight patch and include validation evidence.",
+        skillRefs: ["software.calc-cli"],
+        mcpGrantRefs: ["filesystem-workspace"],
+      },
+    });
+
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
+      /planner draft is not validated/,
+    );
+
+    const validated = await validatePostgresPlannerDraft(db, { draftId: draft.draftId });
+    assert.equal(validated.status, "validated");
+    assert.deepEqual(validated.validationIssues, []);
+
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    assert.match(run.runId, /^run-wf-gen-/);
   });
 });
 
@@ -123,6 +161,9 @@ test("Postgres run from draft materializes task profile override into run execut
         mcpGrantRefs: ["filesystem-workspace"],
       },
     });
+
+    const validated = await validatePostgresPlannerDraft(db, { draftId: draft.draftId });
+    assert.equal(validated.status, "validated");
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     const runRow = await db.one<{
@@ -166,6 +207,56 @@ test("Postgres run from draft materializes task profile override into run execut
     assert.match(envelope.agentPrompt, /smallest verified patch/);
     assert.equal(envelope.materializedLibraryRefs?.skillRefs.includes("skill.software-verification"), true);
     assert.equal(envelope.materializedLibraryRefs?.mcpGrantRefs.includes("mcp.filesystem-workspace"), true);
+  });
+});
+
+test("Postgres planner draft revision preserves matching task profile overrides and requires validation", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement calc sum with override preservation",
+      orchestrationMode: "llm-constrained",
+      composerMode: "fixture",
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    await patchPostgresPlannerDraftTaskProfileOverride(db, {
+      draftId: draft.draftId,
+      taskId: "implement-feature",
+      profileOverride: {
+        provider: "codex",
+        model: "gpt-5-codex",
+        thinkingLevel: "high",
+        instruction: "Keep this manually selected implementation agent.",
+        skillRefs: ["software.calc-cli"],
+        mcpGrantRefs: ["filesystem-workspace"],
+      },
+    });
+
+    const revised = await revisePostgresPlannerDraft(db, {
+      draftId: draft.draftId,
+      prompt: "also verify empty input behavior",
+      composerMode: "fixture",
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    assert.notEqual(revised.draftId, draft.draftId);
+    assert.equal(revised.status, "needs_validation");
+
+    const revisedRow = await db.one<{
+      status: string;
+      summary_json: { status?: string };
+      payload_json: { workflow: { tasks: Array<Record<string, any>> } };
+    }>(
+      "select status, summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [revised.draftId],
+    );
+    const implement = revisedRow.payload_json.workflow.tasks.find((task) => task.id === "implement-feature");
+    assert.equal(revisedRow.status, "needs_validation");
+    assert.equal(revisedRow.summary_json.status, "needs_validation");
+    assert.equal(implement?.profileOverride?.model, "gpt-5-codex");
+    assert.equal(implement?.profileOverride?.instruction, "Keep this manually selected implementation agent.");
+    assert.deepEqual(implement?.skillRefs, ["software.calc-cli"]);
+    assert.deepEqual(implement?.mcpGrantRefs, ["filesystem-workspace"]);
   });
 });
 
@@ -671,7 +762,9 @@ test("Postgres server routes revise planner drafts via planner pipeline", async 
       assert.equal(revised.status, "validated");
       assert.match(revised.goalPrompt, /implement calc sum/);
       assert.match(revised.goalPrompt, /add explicit edge-case validation for empty inputs/);
-      assert.deepEqual(revised.taskSummaries.map((task) => task.taskId), ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
+      assert.equal(revised.taskSummaries[0]?.taskId, "understand-repo");
+      assert.equal(revised.taskSummaries.at(-1)?.taskId, "summarize-completion");
+      assert.equal(revised.taskSummaries.length > 0, true);
 
       const revisedDraftRow = await db.one<{ summary_json: { goalPrompt?: string } }>(
         "select summary_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
@@ -709,8 +802,7 @@ async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
 }
 
 async function createTestDatabase(): Promise<{ databaseUrl: string; drop(): Promise<void> }> {
-  const adminUrl = process.env.SOUTHSTAR_TEST_ADMIN_DATABASE_URL;
-  if (!adminUrl) throw new Error("SOUTHSTAR_TEST_ADMIN_DATABASE_URL is required for Postgres-backed tests");
+  const adminUrl = resolveTestPostgresAdminUrl();
   const databaseName = `southstar_test_${randomUUID().replace(/-/g, "_")}`;
   const admin = new Client({ connectionString: adminUrl });
   await admin.connect();

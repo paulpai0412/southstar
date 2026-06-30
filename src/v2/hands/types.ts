@@ -66,10 +66,12 @@ export type ExecuteTaskInput = {
   acceptedInputArtifactRefs: string[];
   toolProxyPolicyRef: string;
   workflow: unknown;
+  taskEnvelope: unknown;
   queueTimeoutSeconds: number;
   heartbeatTimeoutSeconds: number;
   callbackUrl?: string;
   heartbeatUrl?: string;
+  runRoot?: string;
   envelopeBasePath?: string;
 };
 

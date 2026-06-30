@@ -209,6 +209,7 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
   return {
     id: input.draftId,
     draftId: input.draftId,
+    draftStatus: input.status,
     mode: "draft",
     templateId: "template.software.v2",
     templateTitle: input.workflowId || "Planner Draft",

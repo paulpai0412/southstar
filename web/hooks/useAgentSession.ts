@@ -236,11 +236,19 @@ function latestWorkflowDraftId(messages: AgentMessage[]): string | null {
     for (let j = message.content.length - 1; j >= 0; j -= 1) {
       const block = message.content[j];
       if (block.type !== "workflowDag") continue;
-      const draftId = block.dag.draftId ?? block.dag.id;
+      const draftId = isPlannerDraftId(block.dag.draftId)
+        ? block.dag.draftId
+        : isPlannerDraftId(block.dag.id)
+          ? block.dag.id
+          : null;
       if (draftId) return draftId;
     }
   }
   return null;
+}
+
+function isPlannerDraftId(value: unknown): value is string {
+  return typeof value === "string" && /^draft-/.test(value);
 }
 
 export interface ChatInputHandle {
