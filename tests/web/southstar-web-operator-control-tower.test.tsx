@@ -90,3 +90,20 @@ test("web operator helpers normalize overview and build stream urls", async () =
     "/api/operator/runs/run-a/events/stream?closeOnTerminal=false&taskId=task-a&after=12",
   );
 });
+
+test("AppShell uses shared floating sidecar instead of mode-specific fixed file panel", () => {
+  const shell = source("web/components/AppShell.tsx");
+  assert.match(shell, /SidecarShell/);
+  assert.match(shell, /sidecarTabs/);
+  assert.match(shell, /sidecarMode/);
+  assert.match(shell, /openSidecarTab/);
+  assert.doesNotMatch(shell, /right-panel-container\$\{rightPanelOpen/);
+});
+
+test("SidecarShell supports shared Files DAG History Live SSE Actions tabs", () => {
+  const sidecar = source("web/components/SidecarShell.tsx");
+  for (const token of ["floating", "pinned", "expanded", "hidden", "Files", "DAG", "History", "Live SSE", "Actions"]) {
+    assert.match(sidecar, new RegExp(token));
+  }
+  assert.match(sidecar, /data-testid="sidecar-shell"/);
+});

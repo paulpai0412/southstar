@@ -7,10 +7,19 @@ export interface Tab {
   id: string;
   label: string;
   filePath: string;
-  kind?: "file" | "workflowResource" | "workflowNodeProfile";
+  kind?:
+    | "file"
+    | "workflowResource"
+    | "workflowNodeProfile"
+    | "operatorDag"
+    | "operatorHistory"
+    | "operatorStream"
+    | "operatorActions"
+    | "operatorArtifacts";
   draftId?: string;
   runId?: string;
   taskId?: string;
+  attentionId?: string;
   mode?: "draft" | "runtime";
 }
 
