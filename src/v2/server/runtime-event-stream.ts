@@ -7,7 +7,7 @@ const MIN_POLL_INTERVAL_MS = 10;
 const MAX_POLL_INTERVAL_MS = 30_000;
 const MIN_HEARTBEAT_INTERVAL_MS = 10;
 const MAX_HEARTBEAT_INTERVAL_MS = 60_000;
-const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_RUN_STATUSES = new Set(["completed", "passed", "failed", "cancelled"]);
 
 export function createRuntimeEventStreamResponse(context: RuntimeServerContext, request: Request, url: URL, runId: string): Response {
   const initialAfter = parseAfterSequence(url, request);

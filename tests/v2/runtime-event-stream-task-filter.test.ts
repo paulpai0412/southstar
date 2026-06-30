@@ -62,52 +62,54 @@ test("readRunEventsSince filters task events and preserves explicit includeRunEv
 test("task-filtered stream closes on terminal run status even when run events are excluded", async () => {
   const db = await createTestPostgresDb();
   try {
-    const runId = "run-event-task-filter-terminal";
-    await createWorkflowRunPg(db, {
-      id: runId,
-      status: "running",
-      domain: "software",
-      goalPrompt: "runtime event task terminal filter",
-      workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", tasks: [] }),
-      executionProjectionJson: JSON.stringify({}),
-      snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
-      metricsJson: JSON.stringify({}),
-    });
-    await appendHistoryEventPg(db, {
-      runId,
-      taskId: "task-a",
-      eventType: "task.a",
-      actorType: "hand",
-      payload: { task: "a" },
-    });
-    await appendHistoryEventPg(db, {
-      runId,
-      eventType: "run.completed",
-      actorType: "orchestrator",
-      payload: { terminal: true },
-    });
-    await updateWorkflowRunStatusPg(db, runId, "completed");
+    for (const terminalStatus of ["completed", "passed"] as const) {
+      const runId = `run-event-task-filter-terminal-${terminalStatus}`;
+      await createWorkflowRunPg(db, {
+        id: runId,
+        status: "running",
+        domain: "software",
+        goalPrompt: "runtime event task terminal filter",
+        workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", tasks: [] }),
+        executionProjectionJson: JSON.stringify({}),
+        snapshotJson: JSON.stringify({}),
+        runtimeContextJson: JSON.stringify({}),
+        metricsJson: JSON.stringify({}),
+      });
+      await appendHistoryEventPg(db, {
+        runId,
+        taskId: "task-a",
+        eventType: "task.a",
+        actorType: "hand",
+        payload: { task: "a" },
+      });
+      await appendHistoryEventPg(db, {
+        runId,
+        eventType: "run.completed",
+        actorType: "orchestrator",
+        payload: { terminal: true },
+      });
+      await updateWorkflowRunStatusPg(db, runId, terminalStatus);
 
-    const response = createRuntimeEventStreamResponse(
-      context(db),
-      new Request(`http://127.0.0.1/api/v2/runs/${runId}/events/stream?taskId=task-a&includeRunEvents=false&pollMs=10&heartbeatMs=1000`),
-      new URL(`http://127.0.0.1/api/v2/runs/${runId}/events/stream?taskId=task-a&includeRunEvents=false&pollMs=10&heartbeatMs=1000`),
-      runId,
-    );
-    assert.ok(response.body, "stream response must have a body");
-    const reader = response.body.getReader();
-    try {
-      const frame = await readNextSseEvent(reader);
-      assert.equal(frame.event, "task.a");
-      const closeRead = await Promise.race([
-        reader.read(),
-        sleep(1000).then(() => undefined),
-      ]);
-      assert.notEqual(closeRead, undefined, "task-filtered stream should close after terminal run status");
-      assert.equal(closeRead!.done, true);
-    } finally {
-      await reader.cancel().catch(() => undefined);
+      const response = createRuntimeEventStreamResponse(
+        context(db),
+        new Request(`http://127.0.0.1/api/v2/runs/${runId}/events/stream?taskId=task-a&includeRunEvents=false&pollMs=10&heartbeatMs=1000`),
+        new URL(`http://127.0.0.1/api/v2/runs/${runId}/events/stream?taskId=task-a&includeRunEvents=false&pollMs=10&heartbeatMs=1000`),
+        runId,
+      );
+      assert.ok(response.body, "stream response must have a body");
+      const reader = response.body.getReader();
+      try {
+        const frame = await readNextSseEvent(reader);
+        assert.equal(frame.event, "task.a", terminalStatus);
+        const closeRead = await Promise.race([
+          reader.read(),
+          sleep(1000).then(() => undefined),
+        ]);
+        assert.notEqual(closeRead, undefined, `task-filtered stream should close after ${terminalStatus} run status`);
+        assert.equal(closeRead!.done, true, terminalStatus);
+      } finally {
+        await reader.cancel().catch(() => undefined);
+      }
     }
   } finally {
     await db.close();
