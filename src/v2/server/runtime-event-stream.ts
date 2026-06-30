@@ -12,8 +12,12 @@ const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
 export function createRuntimeEventStreamResponse(context: RuntimeServerContext, request: Request, url: URL, runId: string): Response {
   const initialAfter = parseAfterSequence(url, request);
   const closeOnTerminal = url.searchParams.get("closeOnTerminal") !== "false";
+  const taskId = url.searchParams.get("taskId") ?? undefined;
+  const includeRunEvents = url.searchParams.get("includeRunEvents") !== "false";
   const stream = createRuntimeEventStream(context, request, {
     runId,
+    taskId,
+    includeRunEvents,
     afterSequence: initialAfter,
     closeOnTerminal,
     pollIntervalMs: parsePositiveBoundedInteger(url.searchParams.get("pollMs"), {
@@ -42,6 +46,8 @@ function createRuntimeEventStream(
   request: Request,
   input: {
     runId: string;
+    taskId?: string;
+    includeRunEvents: boolean;
     afterSequence: number;
     closeOnTerminal: boolean;
     pollIntervalMs: number;
@@ -111,6 +117,8 @@ function createRuntimeEventStream(
         try {
           const events = await readRunEventsSince(context.db, {
             runId: input.runId,
+            taskId: input.taskId,
+            includeRunEvents: input.includeRunEvents,
             afterSequence: nextAfter,
           });
           if (closed) return;
@@ -133,6 +141,8 @@ function createRuntimeEventStream(
             if (closed) return;
             const finalEvents = await readRunEventsSince(context.db, {
               runId: input.runId,
+              taskId: input.taskId,
+              includeRunEvents: input.includeRunEvents,
               afterSequence: nextAfter,
             });
             if (closed) return;

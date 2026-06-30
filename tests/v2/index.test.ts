@@ -118,3 +118,5 @@ await import("./workflow-ui-read-model.test.ts");
 await import("./agent-library-static-read-model.test.ts");
 await import("./agent-library-read-model.test.ts");
 await import("./operator-overview-read-model.test.ts");
+await import("./operator-task-debug-read-model.test.ts");
+await import("./runtime-event-stream-task-filter.test.ts");

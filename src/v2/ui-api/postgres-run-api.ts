@@ -639,6 +639,10 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const bundle = draft.payload as PlanBundle & { generationPlan?: { templateRef?: string } };
   const workflow = materializeWorkflowTaskProfileOverrides(bundle.workflow);
   const runId = await allocateRunId(db, workflow.workflowId);
+  const draftPayload = asRecord(draft.payload);
+  const draftSummary = asRecord(draft.summary);
+  const plannerRequest = plannerRequestFromStored(draftSummary.plannerRequest) ?? plannerRequestFromStored(draftPayload.plannerRequest);
+  const cwd = plannerRequest?.cwd;
 
   await createWorkflowRunPg(db, {
     id: runId,
@@ -648,7 +652,11 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
     workflowManifestJson: JSON.stringify(workflow),
     executionProjectionJson: JSON.stringify({ executor: "pending" }),
     snapshotJson: JSON.stringify({ activeTaskIds: [] }),
-    runtimeContextJson: JSON.stringify({ draftId: input.draftId, scope: workflow.domain }),
+    runtimeContextJson: JSON.stringify({
+      draftId: input.draftId,
+      scope: workflow.domain,
+      ...(cwd ? { cwd, projectRoot: cwd } : {}),
+    }),
     metricsJson: JSON.stringify({}),
   });
   await appendHistoryEventPg(db, {
