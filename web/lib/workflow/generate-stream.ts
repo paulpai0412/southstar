@@ -27,16 +27,20 @@ export type WorkflowGenerateStreamHandlers = {
 
 export async function generateWorkflowDagStream(input: {
   prompt: string;
+  draftId?: string | null;
   cwd?: string | null;
   templateId?: string | null;
 } & WorkflowGenerateStreamHandlers): Promise<void> {
-  const response = await fetch("/api/workflow/generate", {
+  const endpoint = input.draftId
+    ? `/api/workflow/planner-drafts/${encodeURIComponent(input.draftId)}/revise/stream`
+    : "/api/workflow/generate";
+  const response = await fetch(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       prompt: input.prompt,
       ...(input.cwd ? { cwd: input.cwd } : {}),
-      ...(input.templateId ? { templateId: input.templateId } : {}),
+      ...(!input.draftId && input.templateId ? { templateId: input.templateId } : {}),
     }),
   });
 

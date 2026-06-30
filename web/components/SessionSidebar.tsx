@@ -8,9 +8,36 @@ const EXPLORER_SPLIT_STORAGE_KEY = "pi-web.sidebarExplorerRatio";
 const EXPLORER_SPLIT_DEFAULT = 0.5;
 const EXPLORER_SPLIT_MIN = 0.22;
 const EXPLORER_SPLIT_MAX = 0.78;
+const SESSION_CACHE_TTL_MS = 2 * 60 * 1000;
+const CHAT_SESSION_SCOPE = "chat";
+
+type SessionCacheEntry = {
+  sessions: SessionInfo[];
+  cachedAt: number;
+};
+
+const sessionCache = new Map<string, SessionCacheEntry>();
 
 function clampExplorerRatio(value: number) {
   return Math.min(EXPLORER_SPLIT_MAX, Math.max(EXPLORER_SPLIT_MIN, value));
+}
+
+function sessionCacheKey(cwd: string | null): string {
+  return `${CHAT_SESSION_SCOPE}:${cwd ?? "all"}`;
+}
+
+function getCachedSessions(cwd: string | null): SessionInfo[] | null {
+  const cached = sessionCache.get(sessionCacheKey(cwd));
+  if (!cached) return null;
+  if (Date.now() - cached.cachedAt > SESSION_CACHE_TTL_MS) {
+    sessionCache.delete(sessionCacheKey(cwd));
+    return null;
+  }
+  return cached.sessions;
+}
+
+function setCachedSessions(cwd: string | null, sessions: SessionInfo[]): void {
+  sessionCache.set(sessionCacheKey(cwd), { sessions, cachedAt: Date.now() });
 }
 
 interface Props {
@@ -266,6 +293,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const explorerRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const prevMessageCountRef = useRef<Map<string, number>>(new Map());
   const splitContainerRef = useRef<HTMLDivElement>(null);
+  const lastNotifiedCwdRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     const stored = Number(window.localStorage.getItem(EXPLORER_SPLIT_STORAGE_KEY));
@@ -341,13 +369,22 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
     window.addEventListener("pointerup", onPointerUp);
     window.addEventListener("pointercancel", onPointerCancel);
   }, [explorerRatio]);
-  const loadSessions = useCallback(async (showLoading = false, markRefreshed = true, cwdOverride?: string | null) => {
+  const loadSessions = useCallback(async (showLoading = false, markRefreshed = true, cwdOverride?: string | null, forceRefresh = false) => {
     try {
-      if (showLoading) setLoading(true);
       const cwdForRequest = cwdOverride ?? selectedCwd;
+      if (!forceRefresh) {
+        const cached = getCachedSessions(cwdForRequest);
+        if (cached) {
+          setAllSessions(cached);
+          setError(null);
+          return;
+        }
+      }
+
+      if (showLoading) setLoading(true);
       const sessionsUrl = cwdForRequest
-        ? `/api/sessions?cwd=${encodeURIComponent(cwdForRequest)}`
-        : "/api/sessions?scope=all";
+        ? `/api/sessions?kind=chat&cwd=${encodeURIComponent(cwdForRequest)}`
+        : "/api/sessions?kind=chat&scope=all";
       const res = await fetch(sessionsUrl, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { sessions: SessionInfo[] };
@@ -370,6 +407,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       });
       prevMessageCountRef.current = nextCounts;
       setAllSessions(nextSessions);
+      setCachedSessions(cwdForRequest, nextSessions);
       setError(null);
       if (!showLoading && markRefreshed) {
         setSessionRefreshDone(true);
@@ -418,12 +456,15 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
   const restoredRef = useRef(false);
 
   useEffect(() => {
-    if (selectedCwdProp && selectedCwdProp !== selectedCwd) {
-      setSelectedCwd(selectedCwdProp);
-    }
-  }, [selectedCwd, selectedCwdProp]);
+    setSelectedCwd((prev) => {
+      if (!selectedCwdProp || prev === selectedCwdProp) return prev;
+      return selectedCwdProp;
+    });
+  }, [selectedCwdProp]);
 
   useEffect(() => {
+    if (lastNotifiedCwdRef.current === selectedCwd) return;
+    lastNotifiedCwdRef.current = selectedCwd;
     onCwdChange?.(selectedCwd);
   }, [selectedCwd, onCwdChange]);
 
@@ -466,7 +507,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
         return;
       }
       setSelectedCwd(data.cwd);
-      await loadSessions(false, false, data.cwd);
+      await loadSessions(false, false, data.cwd, true);
       setCustomPathOpen(false);
       setCustomPathValue("");
       setDropdownOpen(false);
@@ -483,7 +524,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       const data = await res.json() as { cwd?: string; error?: string };
       if (data.cwd) {
         setSelectedCwd(data.cwd);
-        await loadSessions(false, false, data.cwd);
+        await loadSessions(false, false, data.cwd, true);
         setDropdownOpen(false);
       }
     } catch {
@@ -578,7 +619,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               New
             </button>
             <button
-              onClick={() => loadSessions(false)}
+              onClick={() => loadSessions(false, true, undefined, true)}
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
                 background: sessionRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
@@ -872,10 +913,10 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
               selectedSessionId={selectedSessionId}
               unreadById={unreadById}
               onSelectSession={onSelectSession}
-              onRenamed={loadSessions}
+              onRenamed={() => loadSessions(false, true, undefined, true)}
               onSessionDeleted={(id) => {
                 onSessionDeleted?.(id);
-                loadSessions();
+                loadSessions(false, true, undefined, true);
               }}
               depth={0}
             />

@@ -167,7 +167,6 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   useEffect(() => {
     onSessionStatsChange?.(sessionStatsRef.current);
   }, [statsKey, onSessionStatsChange]);
-  useEffect(() => () => { onSessionStatsChange?.(null); }, [onSessionStatsChange]);
 
   // Push context usage up to AppShell as well.
   const ctxKey = contextUsage
@@ -178,7 +177,6 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   useEffect(() => {
     onContextUsageChange?.(contextUsageRef.current);
   }, [ctxKey, onContextUsageChange]);
-  useEffect(() => () => { onContextUsageChange?.(null); }, [onContextUsageChange]);
 
   const onDrop = useCallback((files: File[]) => {
     chatInputRef?.current?.addImages(files);

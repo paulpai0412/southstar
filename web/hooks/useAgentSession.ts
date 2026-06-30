@@ -12,6 +12,7 @@ import type {
 import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
+import { appendWorkflowStreamText, normalizeWorkflowStreamText } from "@/lib/workflow/stream-text";
 import type { ToolEntry } from "@/components/ToolPanel";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { WorkflowDag } from "@/lib/workflow/types";
@@ -228,6 +229,20 @@ function workflowTemplateIdFrom(template: unknown): string | null {
   return typeof id === "string" && id.length > 0 ? id : null;
 }
 
+function latestWorkflowDraftId(messages: AgentMessage[]): string | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (let j = message.content.length - 1; j >= 0; j -= 1) {
+      const block = message.content[j];
+      if (block.type !== "workflowDag") continue;
+      const draftId = block.dag.draftId ?? block.dag.id;
+      if (draftId) return draftId;
+    }
+  }
+  return null;
+}
+
 export interface ChatInputHandle {
   insertText: (text: string) => void;
   insertIfEmpty: (content: string) => void;
@@ -435,8 +450,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       modified: new Date().toISOString(),
       messageCount,
       firstMessage,
+      kind: opts.workflowMode ? "workflow" : "chat",
     });
-  }, [isNew, newSessionCwd, onSessionCreated]);
+  }, [isNew, newSessionCwd, onSessionCreated, opts.workflowMode]);
 
   const ensureNewSession = useCallback(async () => {
     if (sessionIdRef.current) return sessionIdRef.current;
@@ -455,6 +471,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           cwd: newSessionCwd,
           type: "ensure_session",
           toolNames,
+          sessionKind: opts.workflowMode ? "workflow" : "chat",
           ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
           ...(thinkingLevel !== "auto" ? { thinkingLevel } : {}),
         }),
@@ -472,7 +489,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       ensuringNewSessionRef.current = null;
     }
-  }, [isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel]);
+  }, [isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, opts.workflowMode]);
 
   const loadSlashCommands = useCallback(async () => {
     const sid = sessionIdRef.current ?? await ensureNewSession();
@@ -782,14 +799,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     completionScrollAllowedRef.current = true;
 
     if (opts.workflowMode && !images?.length && !isSlashCommandPrompt) {
-      let streamedText = "";
+      let rawStreamedText = "";
       let generatedDag: WorkflowDag | null = null;
+      const revisionDraftId = latestWorkflowDraftId(messages);
       const updateStreamingMessage = () => {
+        const streamedText = normalizeWorkflowStreamText(rawStreamedText);
+        const content = [
+          ...(streamedText ? [{ type: "text" as const, text: streamedText }] : []),
+          ...(generatedDag ? [{ type: "workflowDag" as const, dag: generatedDag }] : []),
+        ];
         dispatch({
           type: "update",
           message: {
             role: "assistant",
-            content: streamedText ? [{ type: "text", text: streamedText }] : [],
+            content,
             model: "workflow-generate",
             provider: "southstar",
             timestamp: Date.now(),
@@ -798,17 +821,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       };
       const appendWorkflowText = (text: string, mode: "line" | "message.delta" = "line") => {
         if (!text) return;
-        if (mode === "message.delta") {
-          streamedText = `${streamedText}${text}`;
-        } else {
-          streamedText = streamedText ? `${streamedText}\n${text}` : text;
-        }
+        rawStreamedText = appendWorkflowStreamText(rawStreamedText, text, mode);
         updateStreamingMessage();
       };
 
       try {
         await generateWorkflowDagStream({
           prompt: trimmedMessage,
+          draftId: revisionDraftId,
           cwd: opts.workflowCwd ?? session?.cwd ?? newSessionCwd,
           templateId: workflowTemplateIdFrom(opts.workflowTemplate),
           onMessage(text, event) {
@@ -823,6 +843,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           },
           onDag(dag) {
             generatedDag = dag;
+            updateStreamingMessage();
           },
         });
 
@@ -830,6 +851,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           throw new Error("workflow generate completed without a DAG");
         }
 
+        const streamedText = normalizeWorkflowStreamText(rawStreamedText);
         const assistantMsg: AgentMessage = {
           role: "assistant",
           content: [
@@ -929,7 +951,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, agentRunning, connectEvents, promoteNewSession, waitForPromptSettlement, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
+  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, promoteNewSession, waitForPromptSettlement, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
 
   const handleAbort = useCallback(async () => {
     const sid = sessionIdRef.current;

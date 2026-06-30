@@ -84,6 +84,41 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
   }
 });
 
+test("generateWorkflowDagStream posts revision prompts to the draft revise stream", async () => {
+  const originalFetch = global.fetch;
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  global.fetch = (async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("event: done\ndata: {}\n\n"));
+        controller.close();
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  try {
+    const { generateWorkflowDagStream } = await import("../../web/lib/workflow/generate-stream.ts");
+    await generateWorkflowDagStream({
+      prompt: "split frontend and backend into parallel tasks",
+      draftId: "draft-wf-1",
+      cwd: "/workspace/todo",
+    });
+
+    assert.equal(calls[0]?.url, "/api/workflow/planner-drafts/draft-wf-1/revise/stream");
+    assert.equal(calls[0]?.init?.method, "POST");
+    assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+      prompt: "split frontend and backend into parallel tasks",
+      cwd: "/workspace/todo",
+    });
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("Workflow mode generate submit uses web generate stream and preserves normal agent send", () => {
   const hook = source("web/hooks/useAgentSession.ts");
   assert.match(hook, /generateWorkflowDagStream/);
@@ -95,6 +130,12 @@ test("Workflow mode generate submit uses web generate stream and preserves norma
   assert.match(hook, /sendAgentCommand/);
   assert.match(hook, /workflowTemplate/);
   assert.match(hook, /workflowCwd/);
+});
+
+test("Workflow mode renders DAG blocks while the workflow stream is still active", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+  assert.match(hook, /onDag\(dag\) \{\s*generatedDag = dag;\s*updateStreamingMessage\(\);\s*\}/s);
+  assert.match(hook, /content:\s*\[\s*\.\.\.\(streamedText[\s\S]+type:\s*"workflowDag"/);
 });
 
 test("web workflow DAG block renders the shared React Flow canvas inside a scroll container", () => {

@@ -4,6 +4,7 @@ import { homedir } from "os";
 import { isAbsolute, resolve } from "path";
 import { allowFileRoot } from "@/lib/file-access";
 import { startRpcSession } from "@/lib/rpc-manager";
+import { SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, type SessionKind } from "@/lib/session-reader";
 
 function normalizeCwd(cwd: string): string {
   if (cwd === "~") return homedir();
@@ -29,10 +30,13 @@ export async function POST(req: Request) {
     }
 
     // Use a one-time key so startRpcSession's lock doesn't conflict with real session ids
-    const { provider, modelId, toolNames, thinkingLevel, ...promptCommand } = command as { provider?: string; modelId?: string; toolNames?: string[]; thinkingLevel?: string; [key: string]: unknown };
+    const { provider, modelId, toolNames, thinkingLevel, sessionKind, ...promptCommand } = command as { provider?: string; modelId?: string; toolNames?: string[]; thinkingLevel?: string; sessionKind?: SessionKind; [key: string]: unknown };
 
     const tempKey = `__new__${Date.now()}`;
     const { session, realSessionId } = await startRpcSession(tempKey, "", normalizedCwd, toolNames);
+    session.inner.sessionManager.appendCustomEntry(SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, {
+      kind: sessionKind === "workflow" ? "workflow" : "chat",
+    });
 
     // Keep the files-route allowed-roots cache (see app/api/files/[...path]/route.ts)
     // in sync so the new cwd is immediately readable via /api/files. Without this,

@@ -1,13 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { SessionInfo } from "@/lib/types";
 import type { WorkflowAgentSummary, WorkflowLibrary, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import { getFileIcon, FolderIcon } from "./FileIcons";
 import { PiAgentTitle } from "./SessionSidebar";
 
 interface Props {
   cwd: string | null;
+  selectedSessionId: string | null;
   selectedTemplateId: string | null;
+  onSessionSelect: (session: SessionInfo) => void;
   onTemplateSelect: (template: WorkflowTemplateSummary) => void;
   onOpenResource: (resourcePath: string, label: string) => void;
   onNewSession?: () => void;
@@ -16,18 +19,23 @@ interface Props {
 
 export function WorkflowSidebar({
   cwd,
+  selectedSessionId,
   selectedTemplateId,
+  onSessionSelect,
   onTemplateSelect,
   onOpenResource,
   onNewSession,
   onRefreshSessions,
 }: Props) {
   const [library, setLibrary] = useState<WorkflowLibrary | null>(null);
+  const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionsOpen, setSessionsOpen] = useState(true);
   const [templatesOpen, setTemplatesOpen] = useState(true);
-  const [agentsOpen, setAgentsOpen] = useState(true);
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
+  const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
   const [refreshDone, setRefreshDone] = useState(false);
 
   useEffect(() => {
@@ -42,12 +50,27 @@ export function WorkflowSidebar({
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [cwd, libraryRefreshKey]);
 
+  useEffect(() => {
+    if (!cwd) {
+      setSessions([]);
+      setSessionError(null);
+      return;
+    }
+    fetch(`/api/sessions?kind=workflow&cwd=${encodeURIComponent(cwd)}`, { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data: { sessions?: SessionInfo[]; error?: string }) => {
+        if (data.error) throw new Error(data.error);
+        setSessions(data.sessions ?? []);
+        setSessionError(null);
+      })
+      .catch((err) => setSessionError(err instanceof Error ? err.message : String(err)));
+  }, [cwd, sessionRefreshKey]);
+
   const templates = useMemo(
     () => library?.domains.flatMap((domain) => domain.workflowTemplates) ?? [],
     [library]
   );
   const selectedTemplate = templates.find((template) => template.id === selectedTemplateId) ?? templates[0] ?? null;
-  const selectedAgentRefs = new Set(selectedTemplate?.agentRefs ?? []);
   const domains = library?.domains ?? [];
 
   useEffect(() => {
@@ -62,6 +85,7 @@ export function WorkflowSidebar({
 
   const handleRefresh = useCallback(() => {
     setLibraryRefreshKey((value) => value + 1);
+    setSessionRefreshKey((value) => value + 1);
     onRefreshSessions?.();
     setRefreshDone(true);
     window.setTimeout(() => setRefreshDone(false), 1800);
@@ -156,10 +180,36 @@ export function WorkflowSidebar({
       </div>
 
       {error && <div style={{ padding: 10, color: "#f87171", fontSize: 12 }}>{error}</div>}
+      {sessionError && <div style={{ padding: 10, color: "#f87171", fontSize: 12 }}>{sessionError}</div>}
 
-      <section style={{ flex: "0 0 38%", minHeight: 120, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
+      <section style={{ flex: "0 0 28%", minHeight: 112, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
         <SectionHeader
-          title="Workflow Templates"
+          title="Workflow Sessions"
+          open={sessionsOpen}
+          onToggle={() => setSessionsOpen((value) => !value)}
+          testId="workflow-session-section-toggle"
+        />
+        {sessionsOpen && (
+          <div data-testid="workflow-session-list" style={{ padding: "0 6px 8px" }}>
+            {sessions.length === 0 ? (
+              <div style={{ padding: "8px 8px 6px", color: "var(--text-dim)", fontSize: 12 }}>
+                {cwd ? "No workflow sessions" : "Select project..."}
+              </div>
+            ) : sessions.map((session) => (
+              <WorkflowSessionRow
+                key={session.id}
+                session={session}
+                selected={session.id === selectedSessionId}
+                onSelect={onSessionSelect}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
+        <SectionHeader
+          title="Workflow Library"
           open={templatesOpen}
           onToggle={() => setTemplatesOpen((value) => !value)}
           testId="workflow-template-section-toggle"
@@ -176,71 +226,17 @@ export function WorkflowSidebar({
                     <>
                       <TreeFolderRow label="workflows" depth={1} open={isOpen(workflowsKey)} onToggle={() => toggle(workflowsKey)} />
                       {isOpen(workflowsKey) && domain.workflowTemplates.map((template) => (
-                        <button
+                        <WorkflowTemplateTree
                           key={template.id}
-                          onClick={() => onTemplateSelect(template)}
-                          style={{
-                            width: "100%",
-                            minHeight: 38,
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 6,
-                            padding: "6px 7px 6px 36px",
-                            border: "none",
-                            borderRadius: 6,
-                            background: selectedTemplate?.id === template.id ? "var(--bg-selected)" : "transparent",
-                            color: "var(--text)",
-                            textAlign: "left",
-                            cursor: "pointer",
-                            fontSize: 12,
-                          }}
-                        >
-                          <span style={{ width: 14, display: "flex", alignItems: "center", flexShrink: 0 }}>{getFileIcon("workflow.json", 14)}</span>
-                          <span style={{ minWidth: 0, flex: 1 }}>
-                            <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{template.title}</span>
-                            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{template.agentRefs.length} agents</span>
-                          </span>
-                          <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 11 }}>{template.status}</span>
-                        </button>
+                          template={template}
+                          agents={domain.agents}
+                          selected={selectedTemplate?.id === template.id}
+                          isOpen={isOpen}
+                          onToggle={toggle}
+                          onTemplateSelect={onTemplateSelect}
+                          onOpenResource={onOpenResource}
+                        />
                       ))}
-                    </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </section>
-
-      <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
-        <SectionHeader
-          title="Agent Profiles"
-          open={agentsOpen}
-          onToggle={() => setAgentsOpen((value) => !value)}
-          testId="workflow-agent-section-toggle"
-        />
-        {agentsOpen && (
-          <div data-testid="workflow-agent-tree" style={{ padding: "2px 4px 8px" }}>
-            {domains.map((domain) => {
-              const domainKey = `agents:${domain.id}`;
-              const agentsKey = `agents:${domain.id}:agents`;
-              return (
-                <div key={domain.id}>
-                  <TreeFolderRow label={domain.id} depth={0} open={isOpen(domainKey)} onToggle={() => toggle(domainKey)} />
-                  {isOpen(domainKey) && (
-                    <>
-                      <TreeFolderRow label="agents" depth={1} open={isOpen(agentsKey)} onToggle={() => toggle(agentsKey)} />
-                      {isOpen(agentsKey) && domain.agents
-                        .filter((agent) => !selectedTemplate || selectedAgentRefs.has(agent.id))
-                        .map((agent, index) => (
-                          <AgentTree
-                            key={`${agent.id}:${agent.profileResourcePath}:${index}`}
-                            agent={agent}
-                            isOpen={isOpen}
-                            onToggle={toggle}
-                            onOpenResource={onOpenResource}
-                          />
-                        ))}
                     </>
                   )}
                 </div>
@@ -363,13 +359,128 @@ function FileRow({
   );
 }
 
+function WorkflowSessionRow({
+  session,
+  selected,
+  onSelect,
+}: {
+  session: SessionInfo;
+  selected: boolean;
+  onSelect: (session: SessionInfo) => void;
+}) {
+  const title = session.name || session.firstMessage || "Untitled workflow";
+  return (
+    <button
+      type="button"
+      data-testid={`workflow-session-${session.id}`}
+      onClick={() => onSelect(session)}
+      style={{
+        width: "100%",
+        minHeight: 42,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "stretch",
+        gap: 3,
+        padding: "7px 8px",
+        border: "none",
+        borderRadius: 6,
+        background: selected ? "var(--bg-selected)" : "transparent",
+        color: "var(--text)",
+        cursor: "pointer",
+        textAlign: "left",
+      }}
+    >
+      <span style={{ fontSize: 12, fontWeight: 560, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {title}
+      </span>
+      <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, color: "var(--text-dim)", fontSize: 11 }}>
+        <span>{formatRelativeTime(session.modified)}</span>
+        <span>{session.messageCount} messages</span>
+      </span>
+    </button>
+  );
+}
+
+function WorkflowTemplateTree({
+  template,
+  agents,
+  selected,
+  isOpen,
+  onToggle,
+  onTemplateSelect,
+  onOpenResource,
+}: {
+  template: WorkflowTemplateSummary;
+  agents: WorkflowAgentSummary[];
+  selected: boolean;
+  isOpen: (key: string) => boolean;
+  onToggle: (key: string) => void;
+  onTemplateSelect: (template: WorkflowTemplateSummary) => void;
+  onOpenResource: (resourcePath: string, label: string) => void;
+}) {
+  const templateKey = `template:${template.id}`;
+  const agentsKey = `${templateKey}:agents`;
+  const templateAgents = agents.filter((agent) => template.agentRefs.includes(agent.id));
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={() => {
+          onTemplateSelect(template);
+          onToggle(templateKey);
+        }}
+        style={{
+          width: "100%",
+          minHeight: 38,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "6px 7px 6px 36px",
+          border: "none",
+          borderRadius: 6,
+          background: selected ? "var(--bg-selected)" : "transparent",
+          color: "var(--text)",
+          textAlign: "left",
+          cursor: "pointer",
+          fontSize: 12,
+        }}
+      >
+        <Chevron open={isOpen(templateKey)} />
+        <span style={{ width: 14, display: "flex", alignItems: "center", flexShrink: 0 }}>{getFileIcon("workflow.json", 14)}</span>
+        <span style={{ minWidth: 0, flex: 1 }}>
+          <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{template.title}</span>
+          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{template.agentRefs.length} agents</span>
+        </span>
+        <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 11 }}>{template.status}</span>
+      </button>
+      {isOpen(templateKey) && (
+        <>
+          <TreeFolderRow label="agents" depth={3} open={isOpen(agentsKey)} onToggle={() => onToggle(agentsKey)} />
+          {isOpen(agentsKey) && templateAgents.map((agent, index) => (
+            <AgentTree
+              key={`${template.id}:${agent.id}:${agent.profileResourcePath}:${index}`}
+              agent={agent}
+              depth={4}
+              isOpen={isOpen}
+              onToggle={onToggle}
+              onOpenResource={onOpenResource}
+            />
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
 function AgentTree({
   agent,
+  depth = 2,
   isOpen,
   onToggle,
   onOpenResource,
 }: {
   agent: WorkflowAgentSummary;
+  depth?: number;
   isOpen: (key: string) => boolean;
   onToggle: (key: string) => void;
   onOpenResource: (resourcePath: string, label: string) => void;
@@ -381,13 +492,13 @@ function AgentTree({
 
   return (
     <div>
-      <TreeFolderRow label={agent.label} depth={2} open={isOpen(baseKey)} onToggle={() => onToggle(baseKey)} />
+      <TreeFolderRow label={agent.label} depth={depth} open={isOpen(baseKey)} onToggle={() => onToggle(baseKey)} />
       {isOpen(baseKey) && (
         <>
-          <FileRow resourcePath={agent.profileResourcePath} label="profile.json" depth={3} onOpenResource={onOpenResource} />
-          <FileRow resourcePath={agent.instructionResourcePath} label="instruction.md" depth={3} onOpenResource={onOpenResource} />
+          <FileRow resourcePath={agent.profileResourcePath} label="profile.json" depth={depth + 1} onOpenResource={onOpenResource} />
+          <FileRow resourcePath={agent.instructionResourcePath} label="instruction.md" depth={depth + 1} onOpenResource={onOpenResource} />
 
-          <TreeFolderRow label="skills" depth={3} open={isOpen(skillsKey)} onToggle={() => onToggle(skillsKey)} />
+          <TreeFolderRow label="skills" depth={depth + 1} open={isOpen(skillsKey)} onToggle={() => onToggle(skillsKey)} />
           {isOpen(skillsKey) && agent.skillResourcePaths.map((resourcePath) => {
             const parts = resourcePath.split("/");
             const skillName = parts.at(-2) ?? "skill";
@@ -395,25 +506,39 @@ function AgentTree({
             const skillKey = `${skillsKey}:${skillName}`;
             return (
               <div key={resourcePath}>
-                <TreeFolderRow label={skillName} depth={4} open={isOpen(skillKey)} onToggle={() => onToggle(skillKey)} />
-                {isOpen(skillKey) && <FileRow resourcePath={resourcePath} label={label} depth={5} onOpenResource={onOpenResource} />}
+                <TreeFolderRow label={skillName} depth={depth + 2} open={isOpen(skillKey)} onToggle={() => onToggle(skillKey)} />
+                {isOpen(skillKey) && <FileRow resourcePath={resourcePath} label={label} depth={depth + 3} onOpenResource={onOpenResource} />}
               </div>
             );
           })}
 
-          <TreeFolderRow label="mcp" depth={3} open={isOpen(mcpKey)} onToggle={() => onToggle(mcpKey)} />
+          <TreeFolderRow label="mcp" depth={depth + 1} open={isOpen(mcpKey)} onToggle={() => onToggle(mcpKey)} />
           {isOpen(mcpKey) && agent.mcpResourcePaths.map((resourcePath) => (
-            <FileRow key={resourcePath} resourcePath={resourcePath} label={resourcePath.split("/").at(-1) ?? resourcePath} depth={4} onOpenResource={onOpenResource} />
+            <FileRow key={resourcePath} resourcePath={resourcePath} label={resourcePath.split("/").at(-1) ?? resourcePath} depth={depth + 2} onOpenResource={onOpenResource} />
           ))}
 
-          <TreeFolderRow label="policies" depth={3} open={isOpen(policiesKey)} onToggle={() => onToggle(policiesKey)} />
+          <TreeFolderRow label="policies" depth={depth + 1} open={isOpen(policiesKey)} onToggle={() => onToggle(policiesKey)} />
           {isOpen(policiesKey) && agent.policyResourcePaths.map((resourcePath) => (
-            <FileRow key={resourcePath} resourcePath={resourcePath} label={resourcePath.split("/").at(-1) ?? resourcePath} depth={4} onOpenResource={onOpenResource} />
+            <FileRow key={resourcePath} resourcePath={resourcePath} label={resourcePath.split("/").at(-1) ?? resourcePath} depth={depth + 2} onOpenResource={onOpenResource} />
           ))}
         </>
       )}
     </div>
   );
+}
+
+function formatRelativeTime(dateStr: string): string {
+  const date = new Date(dateStr);
+  const now = new Date();
+  const diff = now.getTime() - date.getTime();
+  const mins = Math.floor(diff / 60000);
+  const hours = Math.floor(diff / 3600000);
+  const days = Math.floor(diff / 86400000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  if (hours < 24) return `${hours}h ago`;
+  if (days < 7) return `${days}d ago`;
+  return date.toLocaleDateString();
 }
 
 function Chevron({ open }: { open: boolean }) {

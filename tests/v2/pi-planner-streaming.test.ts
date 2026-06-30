@@ -57,3 +57,62 @@ test("Pi SDK planner streaming ignores non-assistant single-message events", asy
   assert.equal(finalText, "{\"schemaVersion\"}");
   assert.deepEqual(deltas, ["{\"schemaVersion\"}"]);
 });
+
+test("Pi SDK planner client applies configured model before prompting", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const commands: unknown[] = [];
+  const prompts: string[] = [];
+  const session: PiSdkPlannerSession = {
+    async send(command: unknown) {
+      commands.push(command);
+    },
+    async prompt(text: string) {
+      prompts.push(text);
+      for (const listener of listeners) listener({ message: { role: "assistant", content: "ok" } });
+      for (const listener of listeners) listener({ type: "agent_end" });
+    },
+    subscribe(listener: (event: unknown) => void) {
+      listeners.push(listener);
+      return () => undefined;
+    },
+  };
+
+  const client = createPiSdkPlannerClient({
+    createSession: async () => session,
+    model: { provider: "github-copilot", modelId: "gpt-5.3-codex" },
+    timeoutMs: 1_000,
+  });
+
+  assert.equal(await client.generate("plan this"), "ok");
+  assert.deepEqual(commands, [{ type: "set_model", provider: "github-copilot", modelId: "gpt-5.3-codex" }]);
+  assert.deepEqual(prompts, ["plan this"]);
+});
+
+test("Pi SDK planner client marks sessions as workflow", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const customEntries: Array<{ customType: string; data?: unknown }> = [];
+  const session: PiSdkPlannerSession = {
+    sessionManager: {
+      appendCustomEntry(customType: string, data?: unknown) {
+        customEntries.push({ customType, data });
+        return "entry-kind";
+      },
+    },
+    async prompt() {
+      for (const listener of listeners) listener({ message: { role: "assistant", content: "ok" } });
+      for (const listener of listeners) listener({ type: "agent_end" });
+    },
+    subscribe(listener: (event: unknown) => void) {
+      listeners.push(listener);
+      return () => undefined;
+    },
+  };
+
+  const client = createPiSdkPlannerClient({ createSession: async () => session, timeoutMs: 1_000 });
+
+  assert.equal(await client.generate("plan this"), "ok");
+  assert.deepEqual(customEntries, [{
+    customType: "southstar.session.kind",
+    data: { kind: "workflow" },
+  }]);
+});

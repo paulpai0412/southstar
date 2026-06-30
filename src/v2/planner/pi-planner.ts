@@ -9,6 +9,8 @@ import type {
 } from "../manifests/types.ts";
 import type { PiPlannerClient, PiPlannerStreamHandlers, PlannerContext } from "./types.ts";
 
+const SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE = "southstar.session.kind";
+
 export type { PiPlannerClient, PiPlannerStreamHandlers, PlannerContext };
 
 export async function generatePlanBundle(
@@ -122,12 +124,17 @@ export function createHttpPiPlannerClient(options: { endpoint: string; model?: s
 
 export type PiSdkPlannerSession = {
   prompt(text: string): Promise<void>;
+  send?: (command: unknown) => Promise<unknown>;
   subscribe?: (listener: (event: unknown) => void) => () => void;
   on?: (listener: (event: unknown) => void) => () => void;
+  sessionManager?: {
+    appendCustomEntry(customType: string, data?: unknown): unknown;
+  };
 };
 
 export type PiSdkPlannerClientOptions = {
   createSession?: () => Promise<PiSdkPlannerSession>;
+  model?: { provider: string; modelId: string };
   timeoutMs?: number;
 };
 
@@ -135,10 +142,14 @@ export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}
   return {
     async generate(prompt: string): Promise<string> {
       const session = await (options.createSession ?? createDefaultPiSdkSession)();
+      markPiSdkPlannerSessionAsWorkflow(session);
+      await configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv());
       return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000);
     },
     async generateStream(prompt: string, handlers: PiPlannerStreamHandlers = {}): Promise<string> {
       const session = await (options.createSession ?? createDefaultPiSdkSession)();
+      markPiSdkPlannerSessionAsWorkflow(session);
+      await configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv());
       return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000, handlers);
     },
   };
@@ -448,6 +459,25 @@ async function createDefaultPiSdkSession(): Promise<PiSdkPlannerSession> {
     } as never,
   });
   return result.session as unknown as PiSdkPlannerSession;
+}
+
+async function configurePiSdkPlannerSession(
+  session: PiSdkPlannerSession,
+  model: { provider: string; modelId: string } | undefined,
+): Promise<void> {
+  if (!model || !session.send) return;
+  await session.send({ type: "set_model", provider: model.provider, modelId: model.modelId });
+}
+
+function markPiSdkPlannerSessionAsWorkflow(session: PiSdkPlannerSession): void {
+  session.sessionManager?.appendCustomEntry(SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, { kind: "workflow" });
+}
+
+function plannerModelFromEnv(): { provider: string; modelId: string } | undefined {
+  const provider = process.env.SOUTHSTAR_WORKFLOW_COMPOSER_PROVIDER?.trim();
+  const modelId = process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL?.trim();
+  if (!provider || !modelId) return undefined;
+  return { provider, modelId };
 }
 
 async function runPromptAndCollectAssistantText(

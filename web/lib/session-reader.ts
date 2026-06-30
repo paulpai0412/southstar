@@ -2,6 +2,9 @@ import { SessionManager, buildSessionContext as piBuildSessionContext, getAgentD
 import type { AgentMessage, SessionEntry, SessionInfo, SessionContext, SessionTreeNode, AssistantMessage } from "./types";
 import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } from "@earendil-works/pi-coding-agent";
 import { normalizeToolCalls } from "./normalize";
+import { classifySessionKindFromEntries } from "./session-kind";
+import { buildWorkflowCompositionPlanDisplay } from "./workflow/composition-plan-dag";
+export { filterSessionsByKind, SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, type SessionKind } from "./session-kind";
 
 export { getAgentDir };
 
@@ -21,6 +24,7 @@ function toSessionInfo(piSessions: PiSessionInfo[]): SessionInfo[] {
       path: s.path,
       id: s.id,
       cwd: s.cwd,
+      kind: classifySessionKindFromEntries(safeSessionKindEntries(s.path)),
       name: s.name,
       created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
       modified: s.modified instanceof Date ? s.modified.toISOString() : String(s.modified),
@@ -29,6 +33,15 @@ function toSessionInfo(piSessions: PiSessionInfo[]): SessionInfo[] {
       parentSessionId: s.parentSessionPath ? pathToId.get(s.parentSessionPath) : undefined,
     };
   });
+}
+
+function safeSessionKindEntries(path: string): SessionEntry[] {
+  try {
+    const entries = SessionManager.open(path).getEntries() as unknown as SessionEntry[];
+    return entries.filter((entry) => entry.type === "custom" || entry.type === "message");
+  } catch {
+    return [];
+  }
 }
 
 export async function listAllSessions(): Promise<SessionInfo[]> {
@@ -186,7 +199,7 @@ export function buildSessionContext(entries: SessionEntry[], leafId?: string | n
         timestamp: raw.timestamp as number | undefined,
       };
     }
-    return normalizeToolCalls(msg);
+    return renderWorkflowComposerMessage(normalizeToolCalls(msg));
   });
 
   const display = filterDisplayMessages(contextMessages, contextEntryIds);
@@ -196,6 +209,27 @@ export function buildSessionContext(entries: SessionEntry[], leafId?: string | n
     entryIds: display.entryIds,
     thinkingLevel: piCtx.thinkingLevel,
     model: piCtx.model,
+  };
+}
+
+function renderWorkflowComposerMessage(message: AgentMessage): AgentMessage {
+  if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+  if (message.content.some((block) => block.type === "workflowDag")) return message;
+
+  let display: ReturnType<typeof buildWorkflowCompositionPlanDisplay> = null;
+  const content = message.content.map((block) => {
+    if (display || block.type !== "text") return block;
+    display = buildWorkflowCompositionPlanDisplay(block.text);
+    return display ? { ...block, text: display.formattedText } : block;
+  });
+
+  if (!display) return message;
+  return {
+    ...message,
+    content: [
+      ...content,
+      { type: "workflowDag", dag: display.dag },
+    ],
   };
 }
 

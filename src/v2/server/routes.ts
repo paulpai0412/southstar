@@ -201,6 +201,12 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       return createPlannerDraftStreamResponse(context, body);
     }
 
+    const draftReviseStreamMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/revise\/stream$/);
+    if (request.method === "POST" && draftReviseStreamMatch) {
+      const body = await readJsonBody<{ prompt?: unknown; orchestrationMode?: unknown; composerMode?: unknown }>(request);
+      return createPlannerDraftRevisionStreamResponse(context, decodeURIComponent(draftReviseStreamMatch[1]!), body);
+    }
+
     if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
       const body = await readJsonBody<{
         goalPrompt?: unknown;
@@ -670,6 +676,62 @@ function createPlannerDraftStreamResponse(
         });
         send("draft", { draft });
         send("planner.stage", { stage: "orchestration.loading", message: "Loading planner draft orchestration." });
+        const orchestration = await getPostgresPlannerDraftOrchestration(context.db, { draftId: draft.draftId });
+        send("orchestration", { orchestration });
+        send("done", {});
+      } catch (error) {
+        send("error", { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
+}
+
+function createPlannerDraftRevisionStreamResponse(
+  context: RuntimeServerContext,
+  draftId: string,
+  body: {
+    prompt?: unknown;
+    orchestrationMode?: unknown;
+    composerMode?: unknown;
+  },
+): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+      };
+      try {
+        send("planner.stage", { stage: "revision.requested", message: "Accepted workflow revision request." });
+        const composer = resolvePlannerWorkflowComposer(context, {
+          onStreamDegraded(message) {
+            send("planner.stage", { stage: "planner.stream.degraded", message });
+          },
+        });
+        const draft = await revisePostgresPlannerDraft(context.db, {
+          draftId,
+          prompt: requiredString(body.prompt, "prompt"),
+          orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
+          composerMode: optionalComposerMode(body.composerMode),
+          composer,
+          onProgress(event) {
+            send("planner.stage", event);
+          },
+          onLlmDelta(text) {
+            send("message.delta", { text });
+          },
+        });
+        send("draft", { draft });
+        send("planner.stage", { stage: "orchestration.loading", message: "Loading revised planner draft orchestration." });
         const orchestration = await getPostgresPlannerDraftOrchestration(context.db, { draftId: draft.draftId });
         send("orchestration", { orchestration });
         send("done", {});

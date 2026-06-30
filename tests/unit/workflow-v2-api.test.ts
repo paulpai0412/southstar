@@ -133,6 +133,36 @@ test("workflow route proxy planner draft revise maps to v2", async () => {
   assert.deepEqual(await response.json(), { draftId: "draft-1", revised: true });
 });
 
+test("workflow route proxy planner draft revise stream maps to v2 SSE", async () => {
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  global.fetch = (async (url, init) => {
+    calls.push({ url: String(url), init });
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("event: done\ndata: {}\n\n"));
+        controller.close();
+      },
+    }), {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  }) as typeof fetch;
+
+  const { POST } = await import("../../web/app/api/workflow/planner-drafts/[draftId]/revise/stream/route");
+  const request = new NextRequest("http://localhost/api/workflow/planner-drafts/draft-1/revise/stream", {
+    method: "POST",
+    body: JSON.stringify({ prompt: "make frontend and backend parallel" }),
+  });
+  const response = await POST(request, { params: Promise.resolve({ draftId: "draft-1" }) });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("content-type"), "text/event-stream");
+  assert.equal(await response.text(), "event: done\ndata: {}\n\n");
+  assert.equal(calls[0]?.url, "http://127.0.0.1:3000/api/v2/planner/drafts/draft-1/revise/stream");
+  assert.equal(calls[0]?.init?.method, "POST");
+  assert.equal(calls[0]?.init?.body, JSON.stringify({ prompt: "make frontend and backend parallel" }));
+});
+
 test("workflow route proxy planner draft orchestration maps to v2", async () => {
   process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
   const calls: string[] = [];

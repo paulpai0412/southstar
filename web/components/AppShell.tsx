@@ -22,6 +22,7 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { ReactNode } from "react";
 
 type SessionCopyField = "file" | "id";
+type ContextUsageInfo = { percent: number | null; contextWindow: number; tokens: number | null };
 
 const LAST_CWD_STORAGE_KEY = "pi-web:last-cwd";
 const RIGHT_PANEL_WIDTH_STORAGE_KEY = "pi-web:right-panel-width";
@@ -46,6 +47,38 @@ function copyText(text: string): Promise<void> {
   } catch {
     return Promise.reject();
   }
+}
+
+function sameContextUsage(a: ContextUsageInfo | null | undefined, b: ContextUsageInfo | null | undefined): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.percent === b.percent &&
+    a.contextWindow === b.contextWindow &&
+    a.tokens === b.tokens
+  );
+}
+
+function sameSessionStats(a: SessionStatsInfo | null, b: SessionStatsInfo | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return (
+    a.sessionId === b.sessionId &&
+    a.sessionFile === b.sessionFile &&
+    a.sessionName === b.sessionName &&
+    a.userMessages === b.userMessages &&
+    a.assistantMessages === b.assistantMessages &&
+    a.toolCalls === b.toolCalls &&
+    a.toolResults === b.toolResults &&
+    a.totalMessages === b.totalMessages &&
+    a.tokens.input === b.tokens.input &&
+    a.tokens.output === b.tokens.output &&
+    a.tokens.cacheRead === b.tokens.cacheRead &&
+    a.tokens.cacheWrite === b.tokens.cacheWrite &&
+    a.tokens.total === b.tokens.total &&
+    a.cost === b.cost &&
+    sameContextUsage(a.contextUsage, b.contextUsage)
+  );
 }
 
 export function AppShell() {
@@ -96,7 +129,7 @@ export function AppShell() {
   // Session stats (tokens + cost) — populated by ChatWindow, displayed in top bar
   const [sessionStats, setSessionStats] = useState<SessionStatsInfo | null>(null);
   const handleSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
-    setSessionStats((prev) => prev === stats ? prev : stats);
+    setSessionStats((prev) => sameSessionStats(prev, stats) ? prev : stats);
   }, []);
   const [copiedSessionField, setCopiedSessionField] = useState<SessionCopyField | null>(null);
   const sessionCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -115,9 +148,9 @@ export function AppShell() {
   }, []);
 
   // Context usage — populated by ChatWindow, displayed in top bar
-  const [contextUsage, setContextUsage] = useState<{ percent: number | null; contextWindow: number; tokens: number | null } | null>(null);
-  const handleContextUsageChange = useCallback((usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => {
-    setContextUsage((prev) => prev === usage ? prev : usage);
+  const [contextUsage, setContextUsage] = useState<ContextUsageInfo | null>(null);
+  const handleContextUsageChange = useCallback((usage: ContextUsageInfo | null) => {
+    setContextUsage((prev) => sameContextUsage(prev, usage) ? prev : usage);
   }, []);
 
   // Single active panel — only one dropdown open at a time
@@ -304,6 +337,17 @@ export function AppShell() {
     setSystemPrompt(null);
     setActiveTopPanel(null);
     router.replace("/", { scroll: false });
+  }, [router]);
+
+  const handleSelectWorkflowSession = useCallback((session: SessionInfo) => {
+    setWorkflowNewSessionCwd(null);
+    setWorkflowSelectedSession(session);
+    setActiveCwd(session.cwd || null);
+    if (session.cwd) window.localStorage.setItem(LAST_CWD_STORAGE_KEY, session.cwd);
+    setWorkflowSessionKey((k) => k + 1);
+    setSystemPrompt(null);
+    setInitialSessionRestored(true);
+    router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
   }, [router]);
 
   const handleChatSessionCreated = useCallback((session: SessionInfo) => {
@@ -521,7 +565,9 @@ export function AppShell() {
       {appMode === "workflow" ? (
         <WorkflowSidebar
           cwd={currentCwd}
+          selectedSessionId={workflowSelectedSession?.id ?? null}
           selectedTemplateId={selectedWorkflowTemplate?.id ?? null}
+          onSessionSelect={handleSelectWorkflowSession}
           onTemplateSelect={setSelectedWorkflowTemplate}
           onOpenResource={handleOpenWorkflowResource}
           onNewSession={handleWorkflowSidebarNewSession}

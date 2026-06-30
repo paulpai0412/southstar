@@ -143,7 +143,11 @@ export async function revisePostgresPlannerDraft(
   const baseGoalPrompt = stringValue(summary.goalPrompt) ?? stringValue(workflow.goalPrompt);
   if (!baseGoalPrompt) throw new Error(`planner draft goalPrompt is missing: ${input.draftId}`);
 
-  const revisedGoalPrompt = `${baseGoalPrompt}\n\nRevision request:\n${input.prompt}`;
+  const revisedGoalPrompt = buildPlannerDraftRevisionGoalPrompt({
+    baseGoalPrompt,
+    revisionPrompt: input.prompt,
+    priorContext: priorPlannerDraftRevisionContext(input.draftId, draft.status, summary, payload),
+  });
   const priorPlannerRequest = plannerRequestFromStored(summary.plannerRequest) ?? plannerRequestFromStored(payload.plannerRequest);
   return createPostgresPlannerDraft(db, {
     ...preservedPlannerRequestFields(priorPlannerRequest),
@@ -154,6 +158,56 @@ export async function revisePostgresPlannerDraft(
     onProgress: input.onProgress,
     onLlmDelta: input.onLlmDelta,
   });
+}
+
+function buildPlannerDraftRevisionGoalPrompt(input: {
+  baseGoalPrompt: string;
+  revisionPrompt: string;
+  priorContext: Record<string, unknown>;
+}): string {
+  return [
+    input.baseGoalPrompt,
+    "",
+    "Prior planner draft context:",
+    JSON.stringify(input.priorContext),
+    "",
+    "Revision request:",
+    input.revisionPrompt,
+  ].join("\n");
+}
+
+function priorPlannerDraftRevisionContext(
+  draftId: string,
+  status: string,
+  summary: Record<string, unknown>,
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const workflow = asRecord(payload.workflow);
+  const workflowId = stringValue(summary.workflowId) ?? stringValue(workflow.workflowId) ?? "";
+  const validationIssues = parseValidationIssues(summary.validationIssues);
+  const taskSummaries = parseTaskSummaries(summary.taskSummaries).length > 0
+    ? parseTaskSummaries(summary.taskSummaries)
+    : summarizeWorkflowTasksFromPayload(workflow.tasks);
+  return {
+    draftId,
+    workflowId,
+    status,
+    validationIssues,
+    taskSummaries,
+    ...(payload.orchestrationSnapshot !== undefined
+      ? { orchestrationSnapshot: boundedJsonValue(payload.orchestrationSnapshot, 12_000) }
+      : {}),
+  };
+}
+
+function boundedJsonValue(value: unknown, maxChars: number): unknown {
+  const text = JSON.stringify(value);
+  if (text.length <= maxChars) return value;
+  return {
+    truncated: true,
+    originalJsonChars: text.length,
+    jsonPrefix: text.slice(0, maxChars),
+  };
 }
 
 function preservedPlannerRequestFields(input: PlannerDraftRequestContract | undefined): Partial<PlannerDraftRequestContract> {

@@ -235,16 +235,32 @@ export function FileExplorer({ cwd, onOpenFile, refreshKey, onAtMention }: Props
   useEffect(() => {
     const cwdChanged = prevCwdRef.current !== cwd;
     prevCwdRef.current = cwd;
+    let cancelled = false;
 
     // Reset expanded state only when cwd changes, not on refreshKey bumps
-    if (cwdChanged) setExpandedPaths(new Set());
+    if (cwdChanged) {
+      setExpandedPaths(new Set());
+      setLoading(true);
+    }
 
-    setLoading(cwdChanged);
     setError(null);
     fetchEntries(cwd)
-      .then((entries) => setRoots(entries))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-      .finally(() => setLoading(false));
+      .then((entries) => {
+        if (cancelled) return;
+        setRoots(entries);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setError(e instanceof Error ? e.message : String(e));
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, [cwd, refreshKey]);
 
   if (loading) {

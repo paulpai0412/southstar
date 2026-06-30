@@ -274,6 +274,7 @@ export interface SessionInfo {
   path: string;
   id: string;
   cwd: string;
+  kind?: "chat" | "workflow";
   name?: string;
   created: string;
   modified: string;
