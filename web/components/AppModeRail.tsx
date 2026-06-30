@@ -78,8 +78,8 @@ export function AppModeRail({
           data-testid={`mode-${item.id}`}
           aria-pressed={mode === item.id}
           onClick={() => onModeChange(item.id)}
-          disabled={item.id === "operator"}
-          title={item.id === "operator" ? "Operator mode is outside this implementation cycle" : item.title}
+          disabled={false}
+          title={item.title}
           style={{
             height: horizontal ? "100%" : 28,
             display: "flex",
@@ -92,15 +92,14 @@ export function AppModeRail({
             borderRight: horizontal ? "1px solid var(--border)" : "none",
             background: mode === item.id ? "var(--bg-selected)" : "transparent",
             color: mode === item.id ? "var(--text)" : "var(--text-muted)",
-            cursor: item.id === "operator" ? "not-allowed" : "pointer",
-            opacity: item.id === "operator" ? 0.45 : 1,
+            cursor: "pointer",
+            opacity: 1,
             fontSize: 12,
             fontWeight: mode === item.id ? 650 : 500,
             textAlign: horizontal ? "center" : "left",
             transition: "color 0.12s, background 0.12s",
           }}
           onMouseEnter={(event) => {
-            if (item.id === "operator") return;
             event.currentTarget.style.color = "var(--text)";
           }}
           onMouseLeave={(event) => {

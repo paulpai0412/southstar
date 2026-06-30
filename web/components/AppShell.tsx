@@ -9,12 +9,15 @@ import { ChatWindow } from "./ChatWindow";
 import { FileViewer } from "./FileViewer";
 import { WorkflowResourceViewer } from "./WorkflowResourceViewer";
 import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
+import { OperatorSidebar } from "./operator/OperatorSidebar";
+import { OperatorWorkspace } from "./operator/OperatorWorkspace";
 import type { Tab } from "./TabBar";
 import { SidecarShell, type SidecarMode } from "./SidecarShell";
 import { ModelsConfig } from "./ModelsConfig";
 import { SkillsConfig } from "./SkillsConfig";
 import { McpConfig } from "./McpConfig";
 import { BranchNavigator } from "./BranchNavigator";
+import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
 import type { SessionInfo, SessionTreeNode } from "@/lib/types";
 import type { WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
@@ -187,6 +190,9 @@ export function AppShell() {
 
   const [initialSessionId] = useState<string | null>(() => searchParams.get("session"));
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
+  const operator = useOperatorOverview(activeCwd, appMode === "operator");
+  const [operatorSelectedRunId, setOperatorSelectedRunId] = useState<string | null>(null);
+  const [operatorSelectedTaskId, setOperatorSelectedTaskId] = useState<string | null>(null);
   // True once the initial ?session= URL param has been resolved (or confirmed absent)
   const [initialSessionRestored, setInitialSessionRestored] = useState<boolean>(() => !searchParams.get("session"));
   // Suppresses sessionKey bump in handleCwdChange during the initial URL restore
@@ -423,6 +429,24 @@ export function AppShell() {
     openSidecarTab({ id: `file:${filePath}`, label: fileName, filePath, kind: "file" });
   }, [openSidecarTab]);
 
+  const openOperatorTaskSidecar = useCallback((input: { runId: string; taskId: string; attentionId?: string }) => {
+    const filePath = `${input.runId}/${input.taskId}`;
+    const tabs: Tab[] = [
+      { id: `operator-dag:${filePath}`, label: "DAG", filePath, kind: "operatorDag", ...input },
+      { id: `operator-history:${filePath}`, label: "History", filePath, kind: "operatorHistory", ...input },
+      { id: `operator-stream:${filePath}`, label: "Live SSE", filePath, kind: "operatorStream", ...input },
+      { id: `operator-actions:${filePath}`, label: "Actions", filePath, kind: "operatorActions", ...input },
+      { id: `operator-artifacts:${filePath}`, label: "Artifacts", filePath, kind: "operatorArtifacts", ...input },
+    ];
+    setSidecarTabs((current) => {
+      const byId = new Map(current.map((tab) => [tab.id, tab]));
+      for (const tab of tabs) byId.set(tab.id, byId.get(tab.id) || tab);
+      return [...byId.values()];
+    });
+    setActiveSidecarTabId(`operator-history:${filePath}`);
+    setSidecarMode((mode) => mode === "hidden" ? "floating" : mode);
+  }, []);
+
   const openSkillsConfig = useCallback(async () => {
     const cwd = activeCwd
       ?? (appMode === "workflow" ? workflowSelectedSession?.cwd : selectedSession?.cwd)
@@ -495,8 +519,8 @@ export function AppShell() {
   }, [appMode, selectedSession, workflowSelectedSession]);
 
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
-  const activeSelectedSession = appMode === "workflow" ? workflowSelectedSession : selectedSession;
-  const activeNewSessionCwd = appMode === "workflow" ? workflowNewSessionCwd : newSessionCwd;
+  const activeSelectedSession = appMode === "workflow" ? workflowSelectedSession : appMode === "operator" ? null : selectedSession;
+  const activeNewSessionCwd = appMode === "workflow" ? workflowNewSessionCwd : appMode === "operator" ? null : newSessionCwd;
   const activeSessionKey = appMode === "workflow" ? workflowSessionKey : sessionKey;
   const effectiveNewSessionCwd = activeNewSessionCwd ?? (activeSelectedSession === null && activeCwd ? activeCwd : null);
   const showChat = activeSelectedSession !== null || effectiveNewSessionCwd !== null;
@@ -556,7 +580,23 @@ export function AppShell() {
 
   const sidebarContent = (
     <>
-      {appMode === "workflow" ? (
+      {appMode === "operator" ? (
+        <OperatorSidebar
+          cwd={activeCwd}
+          runs={operator.model.runs}
+          attentionItems={operator.model.attentionItems}
+          selectedRunId={operatorSelectedRunId}
+          selectedTaskId={operatorSelectedTaskId}
+          onCwdChange={handleCwdChange}
+          onSelectRun={setOperatorSelectedRunId}
+          onSelectAttention={(item) => {
+            if (item.runId) setOperatorSelectedRunId(item.runId);
+            setOperatorSelectedTaskId(item.taskId || null);
+            if (item.runId && item.taskId) openOperatorTaskSidecar({ runId: item.runId, taskId: item.taskId, attentionId: item.id });
+          }}
+          onRefresh={operator.refresh}
+        />
+      ) : appMode === "workflow" ? (
         <WorkflowSidebar
           cwd={currentCwd}
           selectedSessionId={workflowSelectedSession?.id ?? null}
@@ -1190,9 +1230,21 @@ export function AppShell() {
 
         </div>
 
-        {/* Chat content */}
+        {/* Center content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          {showChat ? (
+          {appMode === "operator" ? (
+            <OperatorWorkspace
+              overview={operator.model}
+              selectedRunId={operatorSelectedRunId}
+              selectedTaskId={operatorSelectedTaskId}
+              onSelectRun={setOperatorSelectedRunId}
+              onSelectTask={({ runId, taskId, attention }) => {
+                setOperatorSelectedRunId(runId);
+                setOperatorSelectedTaskId(taskId);
+                openOperatorTaskSidecar({ runId, taskId, attentionId: attention?.id });
+              }}
+            />
+          ) : showChat ? (
             <ChatWindow
               key={`${appMode}:${activeSessionKey}`}
               session={activeSelectedSession}

@@ -125,3 +125,51 @@ test("AppShell restores sidecar width without persisting on every width state ch
     /useEffect\(\(\) => \{\s*window\.localStorage\.setItem\(SIDECAR_WIDTH_STORAGE_KEY, String\(sidecarWidth\)\);\s*\}, \[sidecarWidth\]\);/s,
   );
 });
+
+test("Operator mode is enabled in the live web AppModeRail", () => {
+  const rail = source("web/components/AppModeRail.tsx");
+  assert.doesNotMatch(rail, /disabled=\{item\.id === "operator"\}/);
+  assert.doesNotMatch(rail, /Operator mode is outside this implementation cycle/);
+});
+
+test("AppShell renders Operator sidebar and workspace from the live web folder", () => {
+  const shell = source("web/components/AppShell.tsx");
+  assert.match(shell, /OperatorSidebar/);
+  assert.match(shell, /OperatorWorkspace/);
+  assert.match(shell, /appMode === "operator"/);
+});
+
+test("Operator sidebar keeps project scope above operator focus", () => {
+  const sidebar = source("web/components/operator/OperatorSidebar.tsx");
+  assert.match(sidebar, /Project Scope/);
+  assert.match(sidebar, /Operator Focus/);
+  assert.match(sidebar, /ProjectScopePicker/);
+  assert.match(sidebar, /Attention/);
+  assert.match(sidebar, /Running Workflows/);
+});
+
+test("Operator workspace includes state board and selected workflow progress with DAG toggle", () => {
+  assert.match(source("web/components/operator/OperatorWorkspace.tsx"), /OperatorStateBoard/);
+  assert.match(source("web/components/operator/OperatorWorkspace.tsx"), /OperatorWorkflowProgress/);
+  assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /DAG/);
+  assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /Progress/);
+});
+
+test("Operator overview polling is gated to Operator mode", () => {
+  const shell = source("web/components/AppShell.tsx");
+  const hook = source("web/hooks/useOperatorOverview.ts");
+  assert.match(shell, /useOperatorOverview\(activeCwd, appMode === "operator"\)/);
+  assert.match(hook, /enabled = true/);
+  assert.match(hook, /if \(!enabled\) return;/);
+});
+
+test("Operator task sidecar opens debug tabs with History selected", () => {
+  const shell = source("web/components/AppShell.tsx");
+  assert.match(shell, /openOperatorTaskSidecar/);
+  assert.match(shell, /operatorDag/);
+  assert.match(shell, /operatorHistory/);
+  assert.match(shell, /operatorStream/);
+  assert.match(shell, /operatorActions/);
+  assert.match(shell, /operatorArtifacts/);
+  assert.match(shell, /setActiveSidecarTabId\(`operator-history:\$\{filePath\}`\)/);
+});
