@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { buildOperatorTaskDebugReadModelPg } from "../../src/v2/read-models/operator-task-debug.ts";
 import { buildOperatorOverviewReadModelPg } from "../../src/v2/read-models/operator-overview.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -157,3 +158,71 @@ test("run creation preserves planner draft cwd and operator overview exposes cwd
     await db.close();
   }
 });
+
+test("operator task debug disables retry and request-revision for completed tasks", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDebugRunTask(db, {
+      runId: "run-operator-task-debug-completed",
+      taskId: "task-completed",
+      status: "completed",
+    });
+
+    const model = await buildOperatorTaskDebugReadModelPg(db, {
+      runId: "run-operator-task-debug-completed",
+      taskId: "task-completed",
+    });
+    assert.equal(model.actions.find((action) => action.id === "task.retry")?.enabled, false);
+    assert.equal(model.actions.find((action) => action.id === "task.request-revision")?.enabled, false);
+  } finally {
+    await db.close();
+  }
+});
+
+test("operator task debug enables retry and request-revision for running and queued tasks", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    for (const status of ["running", "queued"] as const) {
+      await seedDebugRunTask(db, {
+        runId: `run-operator-task-debug-${status}`,
+        taskId: `task-${status}`,
+        status,
+      });
+
+      const model = await buildOperatorTaskDebugReadModelPg(db, {
+        runId: `run-operator-task-debug-${status}`,
+        taskId: `task-${status}`,
+      });
+      assert.equal(model.actions.find((action) => action.id === "task.retry")?.enabled, true, status);
+      assert.equal(model.actions.find((action) => action.id === "task.request-revision")?.enabled, true, status);
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+async function seedDebugRunTask(db: Awaited<ReturnType<typeof createTestPostgresDb>>, input: {
+  runId: string;
+  taskId: string;
+  status: string;
+}): Promise<void> {
+  await createWorkflowRunPg(db, {
+    id: input.runId,
+    status: "running",
+    domain: "software",
+    goalPrompt: "operator task debug action status",
+    workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", tasks: [] }),
+    executionProjectionJson: JSON.stringify({}),
+    snapshotJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify({}),
+    metricsJson: JSON.stringify({}),
+  });
+  await createWorkflowTaskPg(db, {
+    id: input.taskId,
+    runId: input.runId,
+    taskKey: input.taskId,
+    status: input.status,
+    sortOrder: 0,
+    dependsOn: [],
+  });
+}

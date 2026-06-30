@@ -131,6 +131,10 @@ function createRuntimeEventStream(
             safeClose();
             return;
           }
+          if (input.closeOnTerminal && await isRunTerminal(context, input.runId)) {
+            safeClose();
+            return;
+          }
 
           const now = Date.now();
           if (events.length === 0 && now - lastHeartbeatAt >= input.heartbeatIntervalMs) {

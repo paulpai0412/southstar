@@ -1,4 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { isTaskRecoverableStatus } from "../task-recovery.ts";
 
 export const OPERATOR_TASK_DEBUG_SCHEMA_VERSION = "southstar.read_model.operator_task_debug.v1";
 
@@ -143,13 +144,14 @@ export async function buildOperatorTaskDebugReadModelPg(db: SouthstarDb, input: 
 function taskActions(runId: string, taskId: string, status: string): OperatorCommand[] {
   const encodedRunId = encodeURIComponent(runId);
   const encodedTaskId = encodeURIComponent(taskId);
+  const recoverable = isTaskRecoverableStatus(status);
   return [
     command("task.retry", "Retry Task", `/api/v2/runs/${encodedRunId}/tasks/${encodedTaskId}/retry`, {
-      enabled: !["completed", "passed", "cancelled"].includes(status),
+      enabled: recoverable,
       requiresConfirmation: true,
     }),
     command("task.request-revision", "Request Revision", `/api/v2/runs/${encodedRunId}/tasks/${encodedTaskId}/request-revision`, {
-      enabled: ["blocked", "failed", "completed", "passed"].includes(status),
+      enabled: recoverable,
       requiresConfirmation: true,
     }),
   ];

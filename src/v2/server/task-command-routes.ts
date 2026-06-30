@@ -6,6 +6,7 @@ import {
   type RecoveryPath,
 } from "../exceptions/types.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { isTaskRecoverableStatus, type TaskRecoveryAction } from "../task-recovery.ts";
 import {
   recordRuntimeCommandPg,
   requireRuntimeCommandRequest,
@@ -14,7 +15,6 @@ import {
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
-type TaskRecoveryAction = "retry" | "fork-session" | "reset-session" | "rollback-session" | "request-revision";
 type OperatorPayload = {
   checkpointId?: string;
   workspaceSnapshotRef?: string;
@@ -48,7 +48,7 @@ export async function handleTaskCommandRoute(context: RuntimeServerContext, requ
       if (existing) return storedRuntimeCommandResult(existing.payload);
 
       const task = await readTask({ ...context, db: tx }, runId, taskId);
-      if (!isTaskRecoverable(task.status)) throw new Error(`task status ${task.status} does not allow ${action}`);
+      if (!isTaskRecoverableStatus(task.status)) throw new Error(`task status ${task.status} does not allow ${action}`);
       const operatorPayload = operatorPayloadFromCommand(body.payload ?? {});
       if (action === "request-revision") {
         const request = await recordWorkflowRevisionRequest({ ...context, db: tx }, {
@@ -276,16 +276,12 @@ function recoveryPathForTaskAction(action: TaskRecoveryAction): RecoveryPath {
 }
 
 function taskActions(status: string): Array<{ action: TaskRecoveryAction; allowed: boolean; reason?: string }> {
-  const recoverable = isTaskRecoverable(status);
+  const recoverable = isTaskRecoverableStatus(status);
   return (["retry", "fork-session", "reset-session", "rollback-session", "request-revision"] as const).map((action) => ({
     action,
     allowed: recoverable,
     ...(recoverable ? {} : { reason: `task status ${status} does not allow ${action}` }),
   }));
-}
-
-function isTaskRecoverable(status: string): boolean {
-  return status === "failed" || status === "blocked" || status === "running" || status === "queued";
 }
 
 function operatorPayloadFromCommand(payload: Record<string, unknown>): OperatorPayload {

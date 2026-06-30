@@ -1,4 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { isTaskRecoverableStatus } from "../task-recovery.ts";
 
 const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "scheduling", "running", "paused", "blocked"] as const;
 const TERMINAL_RUN_STATUSES = ["completed", "passed", "failed", "cancelled"] as const;
@@ -360,7 +361,7 @@ function executorCommands(runId: string | undefined, jobId: string | undefined, 
 }
 
 function taskCommands(runId: string, taskId: string, status: string): OperatorCommand[] {
-  const recoverable = status === "failed" || status === "blocked" || status === "running" || status === "queued";
+  const recoverable = isTaskRecoverableStatus(status);
   return [
     command("task.retry", "Retry Task", `/api/v2/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/retry`, {
       enabled: recoverable,
