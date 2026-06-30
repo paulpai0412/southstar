@@ -471,9 +471,9 @@ export function AppShell() {
     handleOpenWorkflowResource(node.profileResourcePath, "profile.json");
   }, [handleOpenWorkflowResource, openSidecarTab]);
 
-  useEffect(() => {
-    window.localStorage.setItem(SIDECAR_WIDTH_STORAGE_KEY, String(sidecarWidth));
-  }, [sidecarWidth]);
+  const handleSidecarWidthCommit = useCallback((width: number) => {
+    window.localStorage.setItem(SIDECAR_WIDTH_STORAGE_KEY, String(width));
+  }, []);
 
   const handleCloseSidecarTab = useCallback((tabId: string) => {
     setSidecarTabs((prev) => {
@@ -1242,6 +1242,7 @@ export function AppShell() {
         width={sidecarWidth}
         onModeChange={setSidecarMode}
         onWidthChange={setSidecarWidth}
+        onWidthCommit={handleSidecarWidthCommit}
         onSelectTab={setActiveSidecarTabId}
         onCloseTab={handleCloseSidecarTab}
       >

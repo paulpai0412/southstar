@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { TabBar, type Tab } from "./TabBar";
 
 export type SidecarMode = "floating" | "pinned" | "expanded" | "hidden";
@@ -12,6 +12,7 @@ export function SidecarShell({
   width,
   onModeChange,
   onWidthChange,
+  onWidthCommit,
   onSelectTab,
   onCloseTab,
   children,
@@ -22,10 +23,23 @@ export function SidecarShell({
   width: number;
   onModeChange: (mode: SidecarMode) => void;
   onWidthChange: (width: number) => void;
+  onWidthCommit: (width: number) => void;
   onSelectTab: (tabId: string) => void;
   onCloseTab: (tabId: string) => void;
   children: ReactNode;
 }) {
+  const resizeCleanupRef = useRef<(() => void) | null>(null);
+  const stopResize = useCallback(() => {
+    const cleanup = resizeCleanupRef.current;
+    if (cleanup) cleanup();
+  }, []);
+
+  useEffect(() => {
+    stopResize();
+  }, [mode, stopResize]);
+
+  useEffect(() => stopResize, [stopResize]);
+
   if (mode === "hidden") {
     return (
       <button
@@ -56,18 +70,26 @@ export function SidecarShell({
         className="sidecar-resize-handle"
         onPointerDown={(event) => {
           event.preventDefault();
+          stopResize();
           const startX = event.clientX;
           const startWidth = width;
+          let latestWidth = startWidth;
           const move = (moveEvent: PointerEvent) => {
             const maxWidth = Math.max(320, Math.floor(window.innerWidth * 0.82));
-            onWidthChange(Math.min(maxWidth, Math.max(320, startWidth + (startX - moveEvent.clientX))));
+            latestWidth = Math.min(maxWidth, Math.max(320, startWidth + (startX - moveEvent.clientX)));
+            onWidthChange(latestWidth);
           };
-          const up = () => {
+          const cleanup = () => {
             window.removeEventListener("pointermove", move);
-            window.removeEventListener("pointerup", up);
+            window.removeEventListener("pointerup", cleanup);
+            window.removeEventListener("pointercancel", cleanup);
+            resizeCleanupRef.current = null;
+            onWidthCommit(latestWidth);
           };
+          resizeCleanupRef.current = cleanup;
           window.addEventListener("pointermove", move);
-          window.addEventListener("pointerup", up);
+          window.addEventListener("pointerup", cleanup);
+          window.addEventListener("pointercancel", cleanup);
         }}
       />
       <header className="sidecar-header">

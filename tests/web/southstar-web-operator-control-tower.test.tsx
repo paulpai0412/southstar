@@ -107,3 +107,21 @@ test("SidecarShell supports shared Files DAG History Live SSE Actions tabs", () 
   }
   assert.match(sidecar, /data-testid="sidecar-shell"/);
 });
+
+test("Sidecar resize cleans up pointer listeners on cancel and mode changes", () => {
+  const sidecar = source("web/components/SidecarShell.tsx");
+  assert.match(sidecar, /pointercancel/);
+  assert.match(sidecar, /resizeCleanupRef/);
+  assert.match(sidecar, /removeEventListener\("pointermove"/);
+  assert.match(sidecar, /onWidthCommit/);
+});
+
+test("AppShell restores sidecar width without persisting on every width state change", () => {
+  const shell = source("web/components/AppShell.tsx");
+  assert.match(shell, /localStorage\.getItem\(SIDECAR_WIDTH_STORAGE_KEY\)/);
+  assert.match(shell, /handleSidecarWidthCommit/);
+  assert.doesNotMatch(
+    shell,
+    /useEffect\(\(\) => \{\s*window\.localStorage\.setItem\(SIDECAR_WIDTH_STORAGE_KEY, String\(sidecarWidth\)\);\s*\}, \[sidecarWidth\]\);/s,
+  );
+});
