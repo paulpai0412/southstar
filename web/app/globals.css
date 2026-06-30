@@ -950,3 +950,75 @@ span.linenumber {
   border: 1px solid var(--border);
   box-shadow: 0 6px 20px rgba(0,0,0,0.10);
 }
+
+.operator-debug-panel {
+  height: 100%;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg);
+}
+
+.operator-debug-list {
+  margin: 0;
+  padding: 8px;
+  list-style: none;
+}
+
+.operator-debug-list li {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 2px;
+}
+
+.operator-debug-list strong,
+.operator-debug-list span {
+  display: block;
+  font-size: 12px;
+}
+
+.operator-debug-list span {
+  color: var(--text-dim);
+  margin-top: 2px;
+}
+
+.operator-debug-list pre,
+.operator-debug-panel pre {
+  margin: 6px 0 0;
+  padding: 8px;
+  overflow: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.operator-action-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 8px;
+  padding: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.operator-action-row input {
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.operator-action-row button {
+  border: 1px solid var(--border);
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.operator-action-row button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}

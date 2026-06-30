@@ -77,7 +77,7 @@ export type OperatorTaskDebug = {
     history: OperatorHistoryItem[];
     resources: OperatorResourceItem[];
     artifacts: OperatorResourceItem[];
-    actions: OperatorResourceItem[];
+    actions: OperatorCommand[];
   };
 };
 
@@ -85,6 +85,8 @@ export type OperatorHistoryItem = {
   sequence: number;
   eventType: string;
   actorType: string;
+  runId?: string;
+  taskId?: string;
   sessionId?: string;
   payload: unknown;
   createdAt: string;
@@ -94,7 +96,7 @@ export type OperatorResourceItem = {
   resourceType: string;
   resourceKey: string;
   status: string;
-  title: string;
+  title?: string;
   payload: unknown;
   summary: unknown;
   updatedAt: string;

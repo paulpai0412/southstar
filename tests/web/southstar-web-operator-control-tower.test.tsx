@@ -70,6 +70,9 @@ test("web operator API proxies route to v2 runtime endpoints", () => {
   assert.match(source("web/app/api/operator/task-debug/route.ts"), /\/api\/v2\/ui\/operator-task-debug/);
   assert.match(source("web/app/api/operator/runs/[runId]/events/stream/route.ts"), /events\/stream/);
   assert.match(source("web/app/api/operator/runs/[runId]/events/stream/route.ts"), /taskId/);
+  const commandRoute = source("web/app/api/operator/command/route.ts");
+  assert.match(commandRoute, /endpoint\.startsWith\("\/api\/v2\/"\)/);
+  assert.match(commandRoute, /upstreamUrl\.pathname\.startsWith\("\/api\/v2\/"\)/);
 });
 
 test("web operator helpers normalize overview and build stream urls", async () => {
@@ -172,4 +175,38 @@ test("Operator task sidecar opens debug tabs with History selected", () => {
   assert.match(shell, /operatorActions/);
   assert.match(shell, /operatorArtifacts/);
   assert.match(shell, /setActiveSidecarTabId\(`operator-history:\$\{filePath\}`\)/);
+});
+
+test("Operator task sidecar exposes DAG History Live SSE Actions Artifacts tabs", () => {
+  const tabs = source("web/components/operator/OperatorTaskTabs.tsx");
+  for (const token of ["DAG", "History", "Live SSE", "Actions", "Artifacts"]) {
+    assert.match(tabs, new RegExp(token));
+  }
+  assert.match(source("web/components/operator/OperatorHistoryPanel.tsx"), /history/);
+  assert.match(source("web/components/operator/OperatorLiveStream.tsx"), /Task stream/);
+  assert.match(source("web/components/operator/OperatorLiveStream.tsx"), /Run stream/);
+});
+
+test("AppShell renders operator task tabs into the shared sidecar", () => {
+  const shell = source("web/components/AppShell.tsx");
+  assert.match(shell, /OperatorTaskTabs/);
+  assert.match(shell, /activeSidecarTab\.kind/);
+  assert.match(shell, /commands=\{/);
+  assert.match(shell, /commandResults=\{operator\.model\.commandResults\}/);
+  assert.match(shell, /onCommandComplete=\{operator\.refresh\}/);
+});
+
+test("Operator task debug clears stale model before fetching another task", () => {
+  const hook = source("web/hooks/useOperatorTaskDebug.ts");
+  assert.match(hook, /setModel\(null\);\s*setError\(null\);\s*const controller/s);
+});
+
+test("Operator actions only treat successful POST responses as completed", () => {
+  const panel = source("web/components/operator/OperatorActionsPanel.tsx");
+  assert.match(panel, /const method = command\.method \|\| "POST"/);
+  assert.match(panel, /if \(method !== "POST"\) throw new Error/);
+  assert.match(panel, /fetch\("\/api\/operator\/command"/);
+  assert.match(panel, /endpoint: command\.endpoint/);
+  assert.match(panel, /if \(!response\.ok\) throw new Error/);
+  assert.match(panel, /setActionError/);
 });

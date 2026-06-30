@@ -10,6 +10,7 @@ import { FileViewer } from "./FileViewer";
 import { WorkflowResourceViewer } from "./WorkflowResourceViewer";
 import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
+import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
 import { OperatorWorkspace } from "./operator/OperatorWorkspace";
 import type { Tab } from "./TabBar";
 import { SidecarShell, type SidecarMode } from "./SidecarShell";
@@ -556,15 +557,28 @@ export function AppShell() {
         />
       );
     }
-    if (activeSidecarTab.kind?.startsWith("operator")) {
+    if (
+      activeSidecarTab.kind === "operatorDag" ||
+      activeSidecarTab.kind === "operatorHistory" ||
+      activeSidecarTab.kind === "operatorStream" ||
+      activeSidecarTab.kind === "operatorActions" ||
+      activeSidecarTab.kind === "operatorArtifacts"
+    ) {
+      const attention = operator.model.attentionItems.find((item) => item.id === activeSidecarTab.attentionId)
+        ?? operator.model.attentionItems.find((item) => item.runId === activeSidecarTab.runId && item.taskId === activeSidecarTab.taskId);
       return (
-        <div style={{ height: "100%", padding: 16, color: "var(--text-muted)", fontSize: 12 }}>
-          Operator sidecar content is loaded by the selected Operator tab.
-        </div>
+        <OperatorTaskTabs
+          kind={activeSidecarTab.kind}
+          runId={activeSidecarTab.runId || null}
+          taskId={activeSidecarTab.taskId || null}
+          commands={attention?.commands || []}
+          commandResults={operator.model.commandResults}
+          onCommandComplete={operator.refresh}
+        />
       );
     }
     return <FileViewer filePath={activeSidecarTab.filePath} cwd={currentCwd ?? undefined} />;
-  }, [activeSidecarTab, currentCwd]);
+  }, [activeSidecarTab, currentCwd, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!currentCwd) return;
