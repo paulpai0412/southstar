@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import test from "node:test";
 
 const root = join(import.meta.dirname, "../..");
+const firstPartyWebRoots = ["web/app", "web/components", "web/hooks", "web/lib"];
 
 function source(path: string): string {
   return readFileSync(join(root, path), "utf8");
@@ -28,7 +29,7 @@ test("WorkflowDagBlock uses web-local workflow canvas imports", () => {
 });
 
 test("active web UI files do not import retired root Southstar UI folders", () => {
-  const offenders = webUiSources("web").filter((path) => {
+  const offenders = firstPartyWebRoots.flatMap((dir) => webUiSources(dir)).filter((path) => {
     const text = source(path);
     return /from\s+["'](?:\.\.\/)+components\/southstar(?:\/|["'])/.test(text)
       || /import\(["'](?:\.\.\/)+components\/southstar(?:\/|["'])/.test(text);
