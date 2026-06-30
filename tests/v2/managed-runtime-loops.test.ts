@@ -11,7 +11,7 @@ import {
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { createDefaultManagedRuntimeLoop } from "../../src/v2/server/http-server.ts";
-import { createManagedRuntimeLoopController, createManagedRuntimeLoopPlan } from "../../src/v2/server/runtime-loops.ts";
+import { createManagedRuntimeLoopController, createManagedRuntimeLoopPlan, createManagedRuntimeLoopRunners } from "../../src/v2/server/runtime-loops.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb, initSouthstarSchema } from "./postgres-test-utils.ts";
 
@@ -174,6 +174,93 @@ test("managed runtime loop drains applicable recovery decisions on each tick", a
 
     assert.equal((await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, "runtime_exception_recovery_decision:exception-managed-loop-a:rollback-workspace"))?.status, "blocked");
     assert.equal((await getResourceByKeyPg(db, RECOVERY_DECISION_RESOURCE_TYPE, "runtime_exception_recovery_decision:exception-managed-loop-b:rollback-workspace"))?.status, "blocked");
+  } finally {
+    await db.close();
+  }
+});
+
+test("managed runtime loop forwards provider polling to tork exception observer", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await createWorkflowRunPg(db, {
+      id: "run-managed-loop-observe-terminal",
+      status: "running",
+      domain: "software",
+      goalPrompt: "managed loop observes terminal tork job",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: "task-a",
+      runId: "run-managed-loop-observe-terminal",
+      taskKey: "task-a",
+      status: "queued",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: "session-a",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "hand_execution",
+      resourceKey: "hand-execution:run-managed-loop-observe-terminal:task-a:attempt-1",
+      runId: "run-managed-loop-observe-terminal",
+      taskId: "task-a",
+      sessionId: "session-a",
+      scope: "hand",
+      status: "queued",
+      title: "Hand execution task-a",
+      payload: {
+        schemaVersion: "southstar.runtime.hand_execution.v1",
+        handExecutionId: "hand-execution:run-managed-loop-observe-terminal:task-a:attempt-1",
+        providerId: "tork",
+        runId: "run-managed-loop-observe-terminal",
+        taskId: "task-a",
+        sessionId: "session-a",
+        attemptId: "attempt-1",
+        externalJobId: "job-managed-loop-terminal",
+        status: "queued",
+        queuedAt: "2026-06-21T10:00:00.000Z",
+        queueTimeoutSeconds: 600,
+        heartbeatTimeoutSeconds: 300,
+      },
+      summary: { providerId: "tork", attemptId: "attempt-1" },
+      metrics: {},
+    });
+
+    const pollInputs: Array<{ externalJobId: string; runId: string; reason: string }> = [];
+    const runners = createManagedRuntimeLoopRunners({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain-loop-observe" }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand-loop-observe" }),
+      providerActions: {
+        async poll(input) {
+          pollInputs.push(input);
+          return { status: "FAILED" };
+        },
+      },
+      schedulerIntervalMs: 60_000,
+      recoveryIntervalMs: 60_000,
+    });
+
+    await runners.find((runner) => runner.id === "tork-exception-observer")?.runOnce();
+
+    assert.deepEqual(pollInputs, [{
+      externalJobId: "job-managed-loop-terminal",
+      runId: "run-managed-loop-observe-terminal",
+      reason: "observe-tork-terminal-without-callback",
+    }]);
+    const hand = await getResourceByKeyPg(db, "hand_execution", "hand-execution:run-managed-loop-observe-terminal:task-a:attempt-1");
+    assert.equal(hand?.status, "failed");
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === "run-managed-loop-observe-terminal");
+    assert.equal(exceptions[0]?.payload.kind, "tork_terminal_without_callback");
+    const decisions = (await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === "run-managed-loop-observe-terminal");
+    assert.equal(decisions[0]?.payload.path, "retry-same-task-new-attempt");
   } finally {
     await db.close();
   }
