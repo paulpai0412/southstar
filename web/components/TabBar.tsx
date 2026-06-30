@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import type { WorkflowDagNode } from "@/lib/workflow/types";
 import { getFileIcon } from "./FileIcons";
 
 export interface Tab {
@@ -10,6 +11,7 @@ export interface Tab {
   kind?:
     | "file"
     | "workflowResource"
+    | "workflowStaticNodeProfile"
     | "workflowNodeProfile"
     | "operatorDag"
     | "operatorHistory"
@@ -21,6 +23,7 @@ export interface Tab {
   taskId?: string;
   attentionId?: string;
   mode?: "draft" | "runtime";
+  workflowNode?: WorkflowDagNode;
 }
 
 interface Props {

@@ -71,6 +71,7 @@ export interface WorkflowDag {
   draftStatus?: string;
   runId?: string;
   mode?: "draft" | "runtime";
+  compositionPlan?: unknown;
   templateId: string;
   templateTitle: string;
   prompt: string;
@@ -160,5 +161,6 @@ export type WorkflowLifecycleState = {
   run?: WorkflowRunResult;
   execute?: WorkflowExecuteResult;
   error?: string;
+  progressMessage?: string;
   canRun?: boolean;
 };

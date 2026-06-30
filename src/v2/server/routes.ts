@@ -8,6 +8,7 @@ import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approva
 import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import type { WorkflowCompositionPlan } from "../design-library/types.ts";
 import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-control-center.ts";
 import { envelopeReadModel } from "../read-models/envelope.ts";
 import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } from "../read-models/agent-library.ts";
@@ -197,6 +198,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         composerMode?: unknown;
         domainPackId?: unknown;
         cwd?: unknown;
+        compositionPlan?: unknown;
         libraryHints?: unknown;
       }>(request);
       return createPlannerDraftStreamResponse(context, body);
@@ -215,6 +217,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         composerMode?: unknown;
         domainPackId?: unknown;
         cwd?: unknown;
+        compositionPlan?: unknown;
         libraryHints?: unknown;
       }>(request);
       const plannerRequest = parsePlannerDraftRequest(body);
@@ -808,6 +811,7 @@ function parsePlannerDraftRequest(body: {
   composerMode?: unknown;
   domainPackId?: unknown;
   cwd?: unknown;
+  compositionPlan?: unknown;
   libraryHints?: unknown;
 }): {
   goalPrompt: string;
@@ -815,6 +819,7 @@ function parsePlannerDraftRequest(body: {
   composerMode?: WorkflowComposerMode;
   domainPackId?: string;
   cwd?: string;
+  compositionPlan?: WorkflowCompositionPlan;
   libraryHints?: PlannerDraftLibraryHints;
 } {
   return {
@@ -823,8 +828,27 @@ function parsePlannerDraftRequest(body: {
     composerMode: optionalComposerMode(body.composerMode),
     domainPackId: optionalString(body.domainPackId),
     cwd: optionalString(body.cwd),
+    compositionPlan: optionalWorkflowCompositionPlan(body.compositionPlan),
     libraryHints: optionalPlannerDraftLibraryHints(body.libraryHints),
   };
+}
+
+function optionalWorkflowCompositionPlan(value: unknown): WorkflowCompositionPlan | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("compositionPlan must be an object");
+  if (value.schemaVersion !== "southstar.workflow_composition_plan.v1") {
+    throw new Error("compositionPlan.schemaVersion must be southstar.workflow_composition_plan.v1");
+  }
+  if (typeof value.title !== "string" || value.title.length === 0) {
+    throw new Error("compositionPlan.title is required");
+  }
+  if (typeof value.selectedWorkflowTemplateRef !== "string" || value.selectedWorkflowTemplateRef.length === 0) {
+    throw new Error("compositionPlan.selectedWorkflowTemplateRef is required");
+  }
+  if (!Array.isArray(value.tasks) || value.tasks.length === 0) {
+    throw new Error("compositionPlan.tasks is required");
+  }
+  return value as WorkflowCompositionPlan;
 }
 
 function optionalPlannerDraftLibraryHints(value: unknown): PlannerDraftLibraryHints | undefined {

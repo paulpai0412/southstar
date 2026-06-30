@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useReducer } from "react";
+import { useEffect, useReducer, useRef } from "react";
+import { createPlannerDraftStream } from "@/lib/workflow/generate-stream";
 import { buildPlannerDraftRequest, initialWorkflowLifecycleState, workflowLifecycleReducer } from "@/lib/workflow/lifecycle";
 import type {
   PlannerDraftOrchestrationView,
@@ -33,6 +34,16 @@ async function readJson<T>(response: Response): Promise<T> {
 
 export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
   const [state, dispatch] = useReducer(workflowLifecycleReducer, dag, initialWorkflowLifecycleState);
+  const dagLifecycleSignature = `${dag.id}\u0000${dag.draftId ?? ""}\u0000${dag.draftStatus ?? ""}\u0000${dag.runId ?? ""}`;
+  const lastDagLifecycleSignatureRef = useRef(dagLifecycleSignature);
+
+  useEffect(() => {
+    if (lastDagLifecycleSignatureRef.current === dagLifecycleSignature) {
+      return;
+    }
+    lastDagLifecycleSignatureRef.current = dagLifecycleSignature;
+    dispatch({ type: "dag_changed", dag });
+  }, [dag, dagLifecycleSignature]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -52,27 +63,51 @@ export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
     };
   }, []);
 
+  const createDraftFromDag = async (): Promise<PlannerDraftResult> => {
+    let createdDraft: PlannerDraftResult | undefined;
+    await createPlannerDraftStream({
+      request: buildPlannerDraftRequest(dag, cwd),
+      onStage(stage) {
+        const message = stage.message ?? stage.stage;
+        if (message) {
+          dispatch({ type: "draft_progress", message });
+        }
+      },
+      onDraft(draft) {
+        createdDraft = draft as PlannerDraftResult;
+        dispatch({ type: "drafted", draft: createdDraft });
+      },
+    });
+    if (!createdDraft) {
+      throw new Error("planner draft stream completed without a draft");
+    }
+    return createdDraft;
+  };
+
   const createDraft = async () => {
     dispatch({ type: "drafting" });
     try {
-      const response = await fetch("/api/workflow/planner-drafts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(buildPlannerDraftRequest(dag, cwd)),
-      });
-      dispatch({ type: "drafted", draft: await readJson<PlannerDraftResult>(response) });
+      await createDraftFromDag();
     } catch (error) {
       dispatch({ type: "blocked", error: error instanceof Error ? error.message : String(error) });
     }
   };
 
   const validateDraft = async () => {
-    if (!state.draft?.draftId) {
-      return;
+    let draftId = state.draft?.draftId ?? dag.draftId;
+    if (!draftId) {
+      dispatch({ type: "drafting" });
+      try {
+        const draft = await createDraftFromDag();
+        draftId = draft.draftId;
+      } catch (error) {
+        dispatch({ type: "blocked", error: error instanceof Error ? error.message : String(error) });
+        return;
+      }
     }
     dispatch({ type: "validating" });
     try {
-      const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(state.draft.draftId)}/validate`, {
+      const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(draftId)}/validate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm: true }),
@@ -84,7 +119,9 @@ export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
   };
 
   const runDraft = async () => {
-    if (!state.draft?.draftId || !state.canRun) {
+    const draftId = state.draft?.draftId ?? dag.draftId;
+    const canRunDraft = state.canRun || Boolean(dag.draftId && (dag.draftStatus === "validated" || dag.readiness === "ready"));
+    if (!draftId || !canRunDraft) {
       return;
     }
     dispatch({ type: "running" });
@@ -92,7 +129,7 @@ export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
 
     try {
       const orchestrationResponse = await fetch(
-        `/api/workflow/planner-drafts/${encodeURIComponent(state.draft.draftId)}/orchestration`,
+        `/api/workflow/planner-drafts/${encodeURIComponent(draftId)}/orchestration`,
       );
       const orchestration = await readJson<PlannerDraftOrchestrationView>(orchestrationResponse);
       dispatch({ type: "validated", orchestration });
@@ -101,7 +138,7 @@ export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
         return;
       }
 
-      const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(state.draft.draftId)}/runs`, {
+      const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(draftId)}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm: true }),

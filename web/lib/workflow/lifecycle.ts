@@ -8,7 +8,9 @@ import type {
 } from "./types";
 
 type WorkflowLifecycleAction =
+  | { type: "dag_changed"; dag: WorkflowDag }
   | { type: "drafting" }
+  | { type: "draft_progress"; message: string }
   | { type: "drafted"; draft: PlannerDraftResult }
   | { type: "draft_status_changed"; draftId: string; status: string }
   | { type: "validating" }
@@ -27,6 +29,7 @@ export function buildPlannerDraftRequest(dag: WorkflowDag, cwd?: string | null) 
     orchestrationMode: "llm-constrained" as const,
     composerMode: "llm-with-fixture-fallback" as const,
     domainPackId: dag.templateId.includes("software") ? "software" : undefined,
+    ...(dag.compositionPlan ? { compositionPlan: dag.compositionPlan } : {}),
     libraryHints: {
       agentProfileRefs: Array.from(
         new Set(dag.nodes.map((node) => node.profileRef).filter((profileRef) => profileRef.length > 0)),
@@ -51,8 +54,14 @@ export function workflowLifecycleReducer(
   state: WorkflowLifecycleState,
   action: WorkflowLifecycleAction,
 ): WorkflowLifecycleState {
+  if (action.type === "dag_changed") {
+    return initialWorkflowLifecycleState(action.dag);
+  }
   if (action.type === "drafting") {
     return { ...state, phase: "drafting", error: undefined };
+  }
+  if (action.type === "draft_progress") {
+    return { ...state, phase: "drafting", progressMessage: action.message, error: undefined };
   }
   if (action.type === "drafted") {
     return stateFromDraft(action.draft);

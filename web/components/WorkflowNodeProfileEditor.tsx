@@ -7,6 +7,8 @@ import {
   normalizeNodeProfileForm,
   type WorkflowNodeProfileForm,
 } from "@/lib/workflow/node-profile";
+import { WorkflowNodeProfileRecommendations } from "./WorkflowNodeProfileRecommendations";
+import { WorkflowNodeProfileSummary } from "./WorkflowNodeProfileSummary";
 
 type ProfileOption = {
   id: string;
@@ -164,11 +166,24 @@ export function WorkflowNodeProfileEditor({
       <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 14 }}>
         {!editable && (
           <div style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, color: "var(--text-muted)", fontSize: 12, background: "var(--bg-panel)" }}>
-            Runtime tasks are read-only. Edit the planner draft before creating a run.
+            Runtime profile is locked to the launched run. Edit the Workflow draft before creating a future run.
           </div>
         )}
         {error && <div style={{ color: "#ef4444", fontSize: 12 }}>{error}</div>}
         {notice && <div style={{ color: "var(--accent)", fontSize: 12 }}>{notice}</div>}
+        <WorkflowNodeProfileSummary
+          taskId={taskId}
+          mode={mode}
+          selectedDefinition={selectedDefinition}
+          form={form}
+          editable={editable}
+          dirty={dirty}
+        />
+        <WorkflowNodeProfileRecommendations
+          candidates={candidates}
+          selectedDefinition={selectedDefinition}
+          editable={editable}
+        />
         <section style={sectionStyle}>
           <label style={labelStyle}>Host adapter</label>
           <select value={form.provider} disabled={!editable} onChange={(event) => update({ provider: event.currentTarget.value })} style={inputStyle}>

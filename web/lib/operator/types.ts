@@ -22,11 +22,13 @@ export type OperatorAttentionItem = {
   detail?: Record<string, unknown>;
   commands?: OperatorCommand[];
   suggestedCommandId?: string;
+  updatedAt?: string;
 };
 
 export type OperatorCommand = {
   id: string;
   label: string;
+  consequence?: string;
   endpoint?: string;
   method?: string;
   enabled: boolean;
@@ -111,4 +113,31 @@ export type RuntimeEventItem = {
   text: string;
   payload?: unknown;
   createdAt?: string;
+};
+
+export type OperatorIncidentStatus = "needs_action" | "observing" | "recovering" | "resolved";
+
+export type OperatorIncident = {
+  id: string;
+  runId: string;
+  taskId: string | null;
+  severity: "blocked" | "error" | "warning" | "info";
+  status: OperatorIncidentStatus;
+  title: string;
+  cause: string;
+  impact: string;
+  nextAction: string;
+  ageLabel: string;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
+  evidenceRefs: string[];
+  commandIds: string[];
+  sourceAttentionIds: string[];
+};
+
+export type OperatorPriorityLanes = {
+  needsAction: OperatorIncident[];
+  atRisk: OperatorIncident[];
+  running: OperatorRun[];
+  recentlyResolved: OperatorIncident[];
 };

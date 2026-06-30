@@ -19,14 +19,17 @@ export function WorkflowDagBlock({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const { state, createDraft, validateDraft, runDraft, retryExecute } = useWorkflowLifecycle(dag, cwd);
   const busy = state.phase === "drafting" || state.phase === "validating" || state.phase === "running" || state.phase === "executing";
-  const draftReady = Boolean(state.draft?.draftId);
+  const activeDraftId = state.draft?.draftId ?? dag.draftId;
+  const activeRunId = state.run?.runId ?? dag.runId;
+  const draftReady = Boolean(activeDraftId);
+  const canValidateActiveDag = draftReady || Boolean(dag.compositionPlan);
+  const canRunActiveDraft = state.canRun || Boolean(dag.draftId && (dag.draftStatus === "validated" || dag.readiness === "ready"));
+  const validateDisabled = busy || !canValidateActiveDag;
+  const runDisabled = busy || !draftReady || !canRunActiveDraft;
   const nodeById = useMemo(() => new Map(dag.nodes.map((node) => [node.id, node])), [dag.nodes]);
   const canvas = useMemo(() => workflowDagToCanvasModel(dag, selectedNodeId), [dag, selectedNodeId]);
 
   const handleDraft = () => {
-    if (!window.confirm("Create a Southstar planner draft in Postgres for this DAG?")) {
-      return;
-    }
     void createDraft();
   };
 
@@ -44,7 +47,16 @@ export function WorkflowDagBlock({
   const handleSelectTask = (taskId: string) => {
     setSelectedNodeId(taskId);
     const node = nodeById.get(taskId);
-    if (node) onNodeSelect?.(node);
+    if (node) {
+      const nodeWithLifecycleScope: WorkflowDagNode = {
+        ...node,
+        taskId: node.taskId ?? node.id,
+        draftId: state.draft?.draftId ?? node.draftId ?? dag.draftId,
+        runId: state.run?.runId ?? node.runId ?? dag.runId,
+        mode: activeRunId ? "runtime" : activeDraftId ? "draft" : node.mode ?? dag.mode,
+      };
+      onNodeSelect?.(nodeWithLifecycleScope);
+    }
   };
 
   return (
@@ -94,7 +106,7 @@ export function WorkflowDagBlock({
               flexWrap: "wrap",
             }}
           >
-            {!dag.draftId && (
+            {!draftReady && (
               <button
                 type="button"
                 data-testid="workflow-action-draft"
@@ -102,10 +114,10 @@ export function WorkflowDagBlock({
                 disabled={busy}
                 style={actionButtonStyle(busy)}
               >
-                Draft
+                {state.phase === "drafting" ? "Drafting..." : "Draft"}
               </button>
             )}
-            {dag.draftId && (
+            {draftReady && (
               <span
                 data-testid="workflow-draft-saved"
                 style={{
@@ -119,15 +131,15 @@ export function WorkflowDagBlock({
                   lineHeight: 1.2,
                 }}
               >
-                Draft saved
+                {renderDraftBadgeLabel(state)}
               </span>
             )}
             <button
               type="button"
               data-testid="workflow-action-validate"
               onClick={handleValidate}
-              disabled={busy || !draftReady}
-              style={actionButtonStyle(busy || !draftReady)}
+              disabled={validateDisabled}
+              style={actionButtonStyle(validateDisabled)}
             >
               Validate
             </button>
@@ -135,10 +147,10 @@ export function WorkflowDagBlock({
               type="button"
               data-testid="workflow-action-run"
               onClick={handleRun}
-              disabled={busy || !draftReady || !state.canRun}
-              style={actionButtonStyle(busy || !draftReady || !state.canRun)}
+              disabled={runDisabled}
+              style={actionButtonStyle(runDisabled)}
             >
-              Run
+              {canRunActiveDraft ? "Run Workflow" : "Run"}
             </button>
             <div
               data-testid="workflow-lifecycle-notice"
@@ -259,9 +271,16 @@ function actionButtonStyle(disabled: boolean) {
   } as const;
 }
 
+function renderDraftBadgeLabel(state: ReturnType<typeof useWorkflowLifecycle>["state"]) {
+  if (state.phase === "validated" || state.canRun) return "Draft validated";
+  if (state.phase === "needs_validation") return "Draft needs validation";
+  if (state.phase === "invalid") return "Draft invalid";
+  return "Draft saved";
+}
+
 function renderLifecycleNotice(state: ReturnType<typeof useWorkflowLifecycle>["state"]) {
   if (state.phase === "drafting") {
-    return "Drafting planner resource...";
+    return state.progressMessage ?? "Drafting planner resource...";
   }
   if (state.phase === "planner_draft" && state.draft?.draftId) {
     return `Draft ${state.draft.draftId} created`;
@@ -273,7 +292,7 @@ function renderLifecycleNotice(state: ReturnType<typeof useWorkflowLifecycle>["s
     return "Validating planner draft...";
   }
   if (state.phase === "validated" && state.draft?.draftId) {
-    return `Draft ${state.draft.draftId} validated`;
+    return `Ready to run: ${state.draft.draftId}`;
   }
   if (state.phase === "invalid" && state.draft?.draftId) {
     return `Draft ${state.draft.draftId} invalid`;

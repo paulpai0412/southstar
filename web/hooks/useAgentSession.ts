@@ -320,6 +320,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const [extensionWidgets, setExtensionWidgets] = useState<ExtensionWidgetItem[]>([]);
 
   const eventSourceRef = useRef<EventSource | null>(null);
+  const workflowAbortControllerRef = useRef<AbortController | null>(null);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
   const agentRunningRef = useRef(false);
   const handleAgentEventRef = useRef<((event: AgentEvent) => void) | null>(null);
@@ -809,6 +810,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (opts.workflowMode && !images?.length && !isSlashCommandPrompt) {
       let rawStreamedText = "";
       let generatedDag: WorkflowDag | null = null;
+      const workflowAbortController = new AbortController();
+      workflowAbortControllerRef.current?.abort();
+      workflowAbortControllerRef.current = workflowAbortController;
       const revisionDraftId = latestWorkflowDraftId(messages);
       const updateStreamingMessage = () => {
         const streamedText = normalizeWorkflowStreamText(rawStreamedText);
@@ -839,6 +843,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           draftId: revisionDraftId,
           cwd: opts.workflowCwd ?? session?.cwd ?? newSessionCwd,
           templateId: workflowTemplateIdFrom(opts.workflowTemplate),
+          signal: workflowAbortController.signal,
           onMessage(text, event) {
             appendWorkflowText(text, event === "message.delta" ? "message.delta" : "line");
           },
@@ -872,6 +877,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         };
         setMessages((prev) => [...prev, assistantMsg]);
       } catch (e) {
+        if (workflowAbortController.signal.aborted) {
+          addNotice({ type: "info", message: "Workflow generation stopped" });
+          return;
+        }
         const message = e instanceof Error ? e.message : String(e);
         addNotice({ type: "error", message });
         setMessages((prev) => [...prev, {
@@ -883,6 +892,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           timestamp: Date.now(),
         } as AgentMessage]);
       } finally {
+        if (workflowAbortControllerRef.current === workflowAbortController) {
+          workflowAbortControllerRef.current = null;
+        }
         agentRunningRef.current = false;
         setAgentRunning(false);
         setAgentPhase(null);
@@ -962,6 +974,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, promoteNewSession, waitForPromptSettlement, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
 
   const handleAbort = useCallback(async () => {
+    if (workflowAbortControllerRef.current) {
+      workflowAbortControllerRef.current.abort();
+      workflowAbortControllerRef.current = null;
+      agentRunningRef.current = false;
+      setAgentRunning(false);
+      setAgentPhase(null);
+      dispatch({ type: "end" });
+      return;
+    }
     const sid = sessionIdRef.current;
     if (!sid) return;
     try {

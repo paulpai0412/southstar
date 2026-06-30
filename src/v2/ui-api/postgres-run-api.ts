@@ -99,6 +99,7 @@ export type PlannerDraftRequestContract = {
   composerMode?: WorkflowComposerMode;
   domainPackId?: string;
   cwd?: string;
+  compositionPlan?: WorkflowCompositionPlan;
   libraryHints?: PlannerDraftLibraryHints;
 };
 
@@ -137,6 +138,9 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
     onProgress: input.onProgress,
     onLlmDelta: input.onLlmDelta,
   };
+  if (plannerRequest.compositionPlan) {
+    return createPlannerDraftFromComposition(db, draftInput, plannerRequest.compositionPlan);
+  }
   if (plannerRequest.orchestrationMode === "llm-constrained") {
     return createLibraryConstrainedPlannerDraft(db, draftInput);
   }
@@ -317,6 +321,7 @@ function plannerRequestSnapshot(input: PlannerDraftRequestContract): PlannerDraf
     ...(input.composerMode !== undefined ? { composerMode: input.composerMode } : {}),
     ...(input.domainPackId !== undefined ? { domainPackId: input.domainPackId } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
+    ...(input.compositionPlan !== undefined ? { compositionPlan: input.compositionPlan } : {}),
   };
   if (input.libraryHints) {
     snapshot.libraryHints = plannerLibraryHintsSnapshot(input.libraryHints);
@@ -403,6 +408,87 @@ function stringRecordValue(value: unknown): Record<string, string> | undefined {
   if (Object.keys(record).length === 0) return undefined;
   const strings = Object.entries(record).filter((entry): entry is [string, string] => typeof entry[1] === "string");
   return Object.fromEntries(strings);
+}
+
+async function createPlannerDraftFromComposition(
+  db: SouthstarDb,
+  input: CreatePostgresPlannerDraftInput,
+  composition: WorkflowCompositionPlan,
+): Promise<PostgresPlannerDraftResult> {
+  const draftRunId = `draft-composition-${hash(JSON.stringify(composition)).slice(0, 12)}`;
+  await seedSoftwareLibraryGraph(db);
+  input.onProgress?.({ stage: "library.seeded", message: "Software workflow library graph is ready." });
+  const requirementSpec = analyzeRequirementDeterministically(input.goalPrompt);
+  input.onProgress?.({ stage: "requirement.analyzed", message: "Requirement analysis completed." });
+  input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
+  const candidatePacket = await resolveWorkflowCandidates(db, {
+    requirementSpec,
+    scope: "software",
+  });
+  input.onProgress?.({ stage: "candidate.resolved", message: "Workflow library candidates resolved." });
+  input.onProgress?.({ stage: "composition.compiling", message: "Compiling existing workflow composition." });
+  const compiled = await compileWorkflowComposition(db, {
+    runId: draftRunId,
+    goalPrompt: input.goalPrompt,
+    candidatePacket,
+    composition,
+  });
+  input.onProgress?.({ stage: "composition.compiled", message: "Existing workflow composition compiled." });
+
+  const workflowId = compiled.workflow.workflowId;
+  const draftId = `draft-${workflowId}`;
+  const validationIssues = toPlannerDraftValidationIssues(compiled.orchestrationSnapshot.validation.issues);
+  const taskSummaries = summarizeWorkflowTasks(compiled.workflow);
+  const status = validationIssues.length === 0 ? "validated" : "invalid";
+  const bundle: PlanBundle & {
+    orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
+    plannerRequest: PlannerDraftRequestContract;
+  } = {
+    workflow: compiled.workflow,
+    plannerTrace: {
+      model: "southstar-existing-composition-compiler",
+      promptHash: hash(input.goalPrompt),
+      generatedAt: new Date().toISOString(),
+      analyzerType: "deterministic",
+      composerMode: "existing-composition",
+      composerFallbackUsed: false,
+      validatorAttempts: 1,
+      repairAttempts: 0,
+      finalValidationOk: status === "validated",
+      candidatePacketHash: compiled.orchestrationSnapshot.candidatePacketHash,
+      compositionHash: hash(JSON.stringify(composition)),
+    },
+    orchestrationSnapshot: compiled.orchestrationSnapshot,
+    plannerRequest: plannerRequestSnapshot(input),
+  };
+
+  await upsertRuntimeResourcePg(db, {
+    id: draftId,
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: "planner",
+    status,
+    title: compiled.workflow.title,
+    payload: bundle,
+    summary: {
+      goalPrompt: input.goalPrompt,
+      workflowId,
+      planner: "existing-composition-compiler",
+      status,
+      validationIssues,
+      taskSummaries,
+      plannerRequest: plannerRequestSnapshot(input),
+    },
+  });
+  input.onProgress?.({ stage: "draft.persisted", ok: status === "validated", issueCount: validationIssues.length, message: "Planner draft persisted from existing DAG." });
+  return {
+    draftId,
+    goalPrompt: input.goalPrompt,
+    workflowId,
+    status,
+    validationIssues,
+    taskSummaries,
+  };
 }
 
 async function createDeterministicPlannerDraft(

@@ -94,6 +94,18 @@ test("web operator helpers normalize overview and build stream urls", async () =
   );
 });
 
+test("operator repo filter includes project-root parent and child matches", async () => {
+  const progress = await import("../../web/lib/operator/progress.ts");
+  assert.equal(
+    progress.runMatchesCwd({ runId: "run-a", status: "running", title: "Root run", projectRoot: "/repo" }, "/repo/apps/southstar"),
+    true,
+  );
+  assert.equal(
+    progress.runMatchesCwd({ runId: "run-b", status: "running", title: "Child run", projectRoot: "/repo/apps/southstar" }, "/repo"),
+    true,
+  );
+});
+
 test("AppShell uses shared floating sidecar instead of mode-specific fixed file panel", () => {
   const shell = source("web/components/AppShell.tsx");
   assert.match(shell, /SidecarShell/);
@@ -151,11 +163,31 @@ test("Operator sidebar keeps project scope above operator focus", () => {
   assert.match(sidebar, /Running Workflows/);
 });
 
+test("Workflow sidebar project selector accepts custom cwd input", () => {
+  const sidebar = source("web/components/WorkflowSidebar.tsx");
+  const shell = source("web/components/AppShell.tsx");
+
+  assert.match(sidebar, /onCwdChange/);
+  assert.match(sidebar, /customPathValue/);
+  assert.match(sidebar, /\/api\/cwd\/validate/);
+  assert.match(sidebar, /data-testid="workflow-project-custom-path"/);
+  assert.match(sidebar, /onChange=\{\(event\) => setCustomPathValue\(event\.currentTarget\.value\)\}/);
+  assert.match(shell, /onCwdChange=\{handleCwdChange\}/);
+});
+
 test("Operator workspace includes state board and selected workflow progress with DAG toggle", () => {
   assert.match(source("web/components/operator/OperatorWorkspace.tsx"), /OperatorStateBoard/);
   assert.match(source("web/components/operator/OperatorWorkspace.tsx"), /OperatorWorkflowProgress/);
   assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /DAG/);
   assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /Progress/);
+});
+
+test("Operator state board exposes counts, age, and attention severity", () => {
+  const board = source("web/components/operator/OperatorStateBoard.tsx");
+  assert.match(board, /attentionItems/);
+  assert.match(board, /operator-state-count/);
+  assert.match(board, /formatRunAge/);
+  assert.match(board, /operator-run-severity/);
 });
 
 test("Operator overview polling is gated to Operator mode", () => {
@@ -182,6 +214,11 @@ test("Operator task sidecar exposes DAG History Live SSE Actions Artifacts tabs"
   for (const token of ["DAG", "History", "Live SSE", "Actions", "Artifacts"]) {
     assert.match(tabs, new RegExp(token));
   }
+  assert.match(tabs, /debugModel\.data\.actions/);
+  assert.match(tabs, /mergeOperatorTaskCommands/);
+  assert.match(tabs, /SouthstarWorkflowCanvas/);
+  assert.match(tabs, /taskDagCanvasFromDebug/);
+  assert.doesNotMatch(tabs, /JSON\.stringify\(debug\.model\.data\.task/);
   assert.match(source("web/components/operator/OperatorHistoryPanel.tsx"), /history/);
   assert.match(source("web/components/operator/OperatorLiveStream.tsx"), /Task stream/);
   assert.match(source("web/components/operator/OperatorLiveStream.tsx"), /Run stream/);
@@ -194,6 +231,16 @@ test("AppShell renders operator task tabs into the shared sidecar", () => {
   assert.match(shell, /commands=\{/);
   assert.match(shell, /commandResults=\{operator\.model\.commandResults\}/);
   assert.match(shell, /onCommandComplete=\{operator\.refresh\}/);
+});
+
+test("Operator mode surfaces overview errors and applies default selection", () => {
+  const shell = source("web/components/AppShell.tsx");
+  const sidebar = source("web/components/operator/OperatorSidebar.tsx");
+  assert.match(shell, /operator\.error/);
+  assert.match(shell, /defaultSelection/);
+  assert.match(shell, /setOperatorSelectedRunId/);
+  assert.match(sidebar, /error/);
+  assert.match(sidebar, /Operator overview/);
 });
 
 test("Operator task debug clears stale model before fetching another task", () => {

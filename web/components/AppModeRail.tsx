@@ -13,7 +13,7 @@ const MODES: Array<{
   {
     id: "chat",
     label: "Chat",
-    title: "Chat",
+    title: "Chat ad-hoc and non-workflow jobs",
     icon: (
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z" />
@@ -23,7 +23,7 @@ const MODES: Array<{
   {
     id: "workflow",
     label: "Workflow",
-    title: "Workflow",
+    title: "Workflow DAG generation and launch",
     icon: (
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="6" cy="12" r="2" />
@@ -39,7 +39,7 @@ const MODES: Array<{
   {
     id: "operator",
     label: "Operator",
-    title: "Operator monitor",
+    title: "Operator monitor and recover workflows",
     icon: (
       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <rect x="3" y="3" width="18" height="18" rx="2" />

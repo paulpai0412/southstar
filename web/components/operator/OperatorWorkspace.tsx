@@ -1,8 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { OperatorAttentionItem, OperatorOverview } from "@/lib/operator/types";
-import type { WorkflowCanvasModel, WorkflowEdgeStatus, WorkflowTaskBadge, WorkflowTaskAttention } from "../workflow-canvas/types";
+import { buildOperatorPriorityLanes } from "@/lib/operator/incidents";
+import { workflowCanvasFromUiModel } from "@/lib/operator/taskDag";
+import type { OperatorAttentionItem, OperatorIncident, OperatorOverview } from "@/lib/operator/types";
+import { OperatorHealthStrip } from "./OperatorHealthStrip";
+import { OperatorIncidentPanel } from "./OperatorIncidentPanel";
 import { OperatorStateBoard } from "./OperatorStateBoard";
 import { OperatorWorkflowProgress } from "./OperatorWorkflowProgress";
 
@@ -10,12 +13,18 @@ export function OperatorWorkspace({
   overview,
   selectedRunId,
   selectedTaskId,
+  selectedIncidentId,
+  incidents,
+  error,
   onSelectRun,
   onSelectTask,
 }: {
   overview: OperatorOverview;
   selectedRunId: string | null;
   selectedTaskId: string | null;
+  selectedIncidentId: string | null;
+  incidents: OperatorIncident[];
+  error: string | null;
   onSelectRun: (runId: string) => void;
   onSelectTask: (input: { runId: string; taskId: string; attention?: OperatorAttentionItem }) => void;
 }) {
@@ -38,10 +47,33 @@ export function OperatorWorkspace({
 
   const canvas = useMemo(() => workflowCanvasFromUiModel(workflowModel, effectiveRunId), [workflowModel, effectiveRunId]);
   const attentionForRun = overview.attentionItems.filter((item) => !effectiveRunId || item.runId === effectiveRunId);
+  const selectedIncident = incidents.find((incident) => incident.id === selectedIncidentId) || incidents[0] || null;
+  const priorityLanes = useMemo(() => buildOperatorPriorityLanes(overview.runs, incidents), [overview.runs, incidents]);
 
   return (
     <main data-testid="operator-workspace" className="operator-workspace">
-      <OperatorStateBoard runs={overview.runs} selectedRunId={effectiveRunId} onSelectRun={onSelectRun} />
+      <OperatorHealthStrip overview={overview} incidents={incidents} error={error} />
+      {overview.runs.length === 0 && incidents.length === 0 ? (
+        <section className="operator-panel">
+          <p className="operator-muted">Operator helps you monitor running workflows, inspect exceptions, and recover tasks.</p>
+        </section>
+      ) : null}
+      <section className="operator-panel operator-priority-lanes">
+        <header className="operator-panel-header"><h2>Priority</h2></header>
+        <div className="operator-priority-grid">
+          <div><strong>Needs Action</strong><span>{priorityLanes.needsAction.length}</span></div>
+          <div><strong>At Risk</strong><span>{priorityLanes.atRisk.length}</span></div>
+          <div><strong>Running</strong><span>{priorityLanes.running.length}</span></div>
+          <div><strong>Recently Resolved</strong><span>{priorityLanes.recentlyResolved.length}</span></div>
+        </div>
+      </section>
+      <OperatorIncidentPanel incident={selectedIncident} />
+      <OperatorStateBoard
+        runs={overview.runs}
+        attentionItems={overview.attentionItems}
+        selectedRunId={effectiveRunId}
+        onSelectRun={onSelectRun}
+      />
       <OperatorWorkflowProgress
         run={selectedRun}
         attentionItems={attentionForRun}
@@ -55,75 +87,6 @@ export function OperatorWorkspace({
   );
 }
 
-export function workflowCanvasFromUiModel(model: unknown, runId: string | null): WorkflowCanvasModel {
-  const root = readRecord(model);
-  const data = readRecord(root?.data);
-  const candidate = readRecord(root?.canvasModel) || readRecord(data?.canvasModel) || readRecord(root?.canvas) || data || root || {};
-  const rawNodes = Array.isArray(candidate.nodes) ? candidate.nodes : [];
-  const rawEdges = Array.isArray(candidate.edges) ? candidate.edges : [];
-
-  return {
-    graphId: stringValue(candidate.graphId) || runId || "operator-runtime",
-    mode: candidate.mode === "draft" ? "draft" : "runtime",
-    selectedNodeId: stringValue(candidate.selectedNodeId) || null,
-    nodes: rawNodes.map(readCanvasNode).filter((node): node is WorkflowCanvasModel["nodes"][number] => node !== null),
-    edges: rawEdges.map(readCanvasEdge).filter((edge): edge is WorkflowCanvasModel["edges"][number] => edge !== null),
-  };
-}
-
-function readCanvasNode(input: unknown): WorkflowCanvasModel["nodes"][number] | null {
-  const node = readRecord(input);
-  const id = stringValue(node?.id || node?.taskId || node?.taskKey);
-  if (!id) return null;
-  return {
-    id,
-    label: stringValue(node?.label || node?.title || node?.taskKey) || id,
-    kind: "task",
-    status: stringValue(node?.status) || "unknown",
-    dependsOn: Array.isArray(node?.dependsOn) ? node.dependsOn.filter((item): item is string => typeof item === "string") : [],
-    roleRef: stringValue(node?.roleRef) || null,
-    agentProfileRef: stringValue(node?.agentProfileRef) || null,
-    artifactKind: stringValue(node?.artifactKind) || null,
-    badges: Array.isArray(node?.badges) ? node.badges.filter(isWorkflowTaskBadge) : [],
-    attention: isWorkflowTaskAttention(node?.attention) ? node.attention : null,
-  };
-}
-
-function readCanvasEdge(input: unknown, index: number): WorkflowCanvasModel["edges"][number] | null {
-  const edge = readRecord(input);
-  const source = stringValue(edge?.source || edge?.from);
-  const target = stringValue(edge?.target || edge?.to);
-  if (!source || !target) return null;
-  return {
-    id: stringValue(edge?.id) || `${source}->${target}-${index}`,
-    source,
-    target,
-    status: isWorkflowEdgeStatus(edge?.status) ? edge.status : "pending",
-  };
-}
-
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function isWorkflowEdgeStatus(value: unknown): value is WorkflowEdgeStatus {
-  return value === "pending" || value === "ready" || value === "active" || value === "blocked" || value === "satisfied";
-}
-
-function isWorkflowTaskBadge(value: unknown): value is WorkflowTaskBadge {
-  const badge = readRecord(value);
-  return Boolean(badge && typeof badge.label === "string");
-}
-
-function isWorkflowTaskAttention(value: unknown): value is WorkflowTaskAttention {
-  const attention = readRecord(value);
-  return Boolean(
-    attention &&
-    (attention.severity === "info" || attention.severity === "warning" || attention.severity === "error" || attention.severity === "blocked") &&
-    typeof attention.reason === "string",
-  );
 }

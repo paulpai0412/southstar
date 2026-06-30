@@ -144,6 +144,19 @@ test("Workflow mode renders DAG blocks while the workflow stream is still active
   assert.match(hook, /content:\s*\[\s*\.\.\.\(streamedText[\s\S]+type:\s*"workflowDag"/);
 });
 
+test("Workflow mode generation can be stopped without a Pi session id", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+  const stream = source("web/lib/workflow/generate-stream.ts");
+
+  assert.match(stream, /signal\?:\s*AbortSignal/);
+  assert.match(stream, /signal:\s*input\.signal/);
+  assert.match(hook, /workflowAbortControllerRef/);
+  assert.match(hook, /new AbortController\(\)/);
+  assert.match(hook, /signal:\s*workflowAbortController\.signal/);
+  assert.match(hook, /workflowAbortControllerRef\.current\.abort\(\)/);
+  assert.match(hook, /Workflow generation stopped/);
+});
+
 test("web workflow DAG block renders the shared React Flow canvas inside a scroll container", () => {
   const block = source("web/components/WorkflowDagBlock.tsx");
   assert.match(block, /SouthstarWorkflowCanvas/);
@@ -167,19 +180,98 @@ test("workflow lifecycle starts generated planner DAGs as backend drafts", () =>
   assert.match(hook, /southstar:planner-draft-updated/);
 });
 
+test("workflow Draft uses planner SSE so slow backend work is visible", () => {
+  const hook = source("web/hooks/useWorkflowLifecycle.ts");
+  const stream = source("web/lib/workflow/generate-stream.ts");
+  const route = source("web/app/api/workflow/planner-drafts/stream/route.ts");
+  const lifecycle = source("web/lib/workflow/lifecycle.ts");
+
+  assert.match(hook, /createPlannerDraftStream/);
+  assert.match(hook, /type:\s*"draft_progress"/);
+  assert.match(stream, /createPlannerDraftStream/);
+  assert.match(stream, /\/api\/workflow\/planner-drafts\/stream/);
+  assert.match(route, /\/api\/v2\/planner\/drafts\/stream/);
+  assert.match(route, /text\/event-stream/);
+  assert.match(lifecycle, /compositionPlan:\s*dag\.compositionPlan/);
+  assert.doesNotMatch(hook, /fetch\("\/api\/workflow\/planner-drafts"/);
+});
+
+test("workflow Draft action surfaces streaming progress while the planner runs", () => {
+  const lifecycle = source("web/lib/workflow/lifecycle.ts");
+  const block = source("web/components/WorkflowDagBlock.tsx");
+
+  assert.match(lifecycle, /type:\s*"draft_progress";\s*message:\s*string/);
+  assert.match(lifecycle, /progressMessage:\s*action\.message/);
+  assert.match(block, /Drafting\.\.\./);
+  assert.match(block, /state\.progressMessage\s*\?\?\s*"Drafting planner resource\.\.\."/);
+});
+
+test("workflow lifecycle resets when a restored session renders a different DAG", () => {
+  const lifecycle = source("web/lib/workflow/lifecycle.ts");
+  const hook = source("web/hooks/useWorkflowLifecycle.ts");
+
+  assert.match(lifecycle, /type:\s*"dag_changed"/);
+  assert.match(lifecycle, /initialWorkflowLifecycleState\(action\.dag\)/);
+  assert.match(hook, /dispatch\(\{\s*type:\s*"dag_changed",\s*dag\s*\}\)/);
+});
+
+test("workflow DAG node selection carries draft or run scope for profile sidecar", () => {
+  const block = source("web/components/WorkflowDagBlock.tsx");
+  const shell = source("web/components/AppShell.tsx");
+
+  assert.match(block, /nodeWithLifecycleScope/);
+  assert.match(block, /draftId:\s*state\.draft\?\.draftId/);
+  assert.match(block, /onNodeSelect\?\.\(nodeWithLifecycleScope\)/);
+  assert.match(shell, /kind:\s*"workflowNodeProfile"/);
+});
+
 test("workflow lifecycle validates drafts with a POST action", () => {
   const hook = source("web/hooks/useWorkflowLifecycle.ts");
-  assert.match(hook, /\/api\/workflow\/planner-drafts\/\$\{encodeURIComponent\(state\.draft\.draftId\)\}\/validate/);
+  assert.match(hook, /const draftId = state\.draft\?\.draftId \?\? dag\.draftId/);
+  assert.match(hook, /\/api\/workflow\/planner-drafts\/\$\{encodeURIComponent\(draftId\)\}\/validate/);
   assert.match(hook, /method:\s*"POST"/);
   assert.match(hook, /"result"\s+in\s+data/);
   assert.doesNotMatch(hook, /type:\s*"validated"[\s\S]{0,180}\/orchestration/);
 });
 
+test("workflow lifecycle actions use restored DAG draft ids when reducer state is stale", () => {
+  const hook = source("web/hooks/useWorkflowLifecycle.ts");
+  const block = source("web/components/WorkflowDagBlock.tsx");
+
+  assert.match(hook, /const draftId = state\.draft\?\.draftId \?\? dag\.draftId[\s\S]+validateDraft/);
+  assert.match(hook, /const canRunDraft = state\.canRun \|\| Boolean\(dag\.draftId/);
+  assert.match(hook, /\/api\/workflow\/planner-drafts\/\$\{encodeURIComponent\(draftId\)\}\/orchestration/);
+  assert.match(hook, /\/api\/workflow\/planner-drafts\/\$\{encodeURIComponent\(draftId\)\}\/runs/);
+  assert.match(block, /const canRunActiveDraft = state\.canRun \|\| Boolean\(dag\.draftId/);
+  assert.match(block, /runDisabled = busy \|\| !draftReady \|\| !canRunActiveDraft/);
+});
+
+test("workflow Validate can compile restored composition plans before validation", () => {
+  const hook = source("web/hooks/useWorkflowLifecycle.ts");
+  const block = source("web/components/WorkflowDagBlock.tsx");
+
+  assert.match(hook, /const createDraftFromDag = async \(\): Promise<PlannerDraftResult>/);
+  assert.match(hook, /let draftId = state\.draft\?\.draftId \?\? dag\.draftId/);
+  assert.match(hook, /if \(!draftId\) \{[\s\S]+const draft = await createDraftFromDag\(\);[\s\S]+draftId = draft\.draftId/);
+  assert.match(block, /const canValidateActiveDag = draftReady \|\| Boolean\(dag\.compositionPlan\)/);
+  assert.match(block, /validateDisabled = busy \|\| !canValidateActiveDag/);
+});
+
 test("workflow DAG actions hide primary Draft once a backend draft exists", () => {
   const block = source("web/components/WorkflowDagBlock.tsx");
-  assert.match(block, /\{!dag\.draftId && \(/);
-  assert.match(block, /Draft saved/);
+  assert.match(block, /\{!draftReady && \(/);
+  assert.match(block, /Draft validated/);
+  assert.match(block, /Run Workflow/);
+  assert.match(block, /Ready to run:/);
   assert.match(block, /needs validation/);
+});
+
+test("workflow Draft action gives immediate API feedback without native confirm", () => {
+  const block = source("web/components/WorkflowDagBlock.tsx");
+
+  assert.match(block, /const handleDraft = \(\) => \{\s*void createDraft\(\);\s*\};/);
+  assert.doesNotMatch(block, /Create a Southstar planner draft in Postgres/);
+  assert.doesNotMatch(block, /window\.confirm[\s\S]{0,120}createDraft/);
 });
 
 test("workflow node profile save marks its planner draft as needing validation", () => {

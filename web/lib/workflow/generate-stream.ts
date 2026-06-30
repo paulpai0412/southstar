@@ -25,17 +25,41 @@ export type WorkflowGenerateStreamHandlers = {
   onDone?: () => void;
 };
 
+export async function createPlannerDraftStream(input: {
+  request: Record<string, unknown>;
+  signal?: AbortSignal;
+} & Pick<WorkflowGenerateStreamHandlers, "onStage" | "onDraft" | "onError" | "onDone">): Promise<void> {
+  const response = await fetch("/api/workflow/planner-drafts/stream", {
+    method: "POST",
+    signal: input.signal,
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input.request),
+  });
+
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `planner draft stream failed with HTTP ${response.status}`);
+  }
+  if (!response.body) {
+    throw new Error("planner draft stream response is missing a stream body");
+  }
+
+  await readWorkflowEventStream(response.body, input);
+}
+
 export async function generateWorkflowDagStream(input: {
   prompt: string;
   draftId?: string | null;
   cwd?: string | null;
   templateId?: string | null;
+  signal?: AbortSignal;
 } & WorkflowGenerateStreamHandlers): Promise<void> {
   const endpoint = input.draftId
     ? `/api/workflow/planner-drafts/${encodeURIComponent(input.draftId)}/revise/stream`
     : "/api/workflow/generate";
   const response = await fetch(endpoint, {
     method: "POST",
+    signal: input.signal,
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       prompt: input.prompt,
@@ -52,23 +76,34 @@ export async function generateWorkflowDagStream(input: {
     throw new Error("workflow generate response is missing a stream body");
   }
 
-  const reader = response.body.getReader();
+  await readWorkflowEventStream(response.body, input);
+}
+
+async function readWorkflowEventStream(
+  body: ReadableStream<Uint8Array>,
+  handlers: WorkflowGenerateStreamHandlers,
+): Promise<void> {
+  const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { value, done } = await reader.read();
-    if (value) {
-      buffer += decoder.decode(value, { stream: !done });
-      buffer = dispatchCompleteFrames(buffer, input);
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (value) {
+        buffer += decoder.decode(value, { stream: !done });
+        buffer = dispatchCompleteFrames(buffer, handlers);
+      }
+      if (done) break;
     }
-    if (done) break;
-  }
 
-  buffer += decoder.decode();
-  const rest = buffer.trim();
-  if (rest) {
-    dispatchFrame(rest, input);
+    buffer += decoder.decode();
+    const rest = buffer.trim();
+    if (rest) {
+      dispatchFrame(rest, handlers);
+    }
+  } finally {
+    reader.releaseLock();
   }
 }
 

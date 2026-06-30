@@ -313,6 +313,39 @@ test("llm-constrained planner drafts fail closed when llm composer is not config
   });
 });
 
+test("planner draft creates from an existing composition without calling an LLM composer", async () => {
+  await withDb(async (db) => {
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "reuse visible DAG",
+      orchestrationMode: "llm-constrained",
+      compositionPlan: validInspectOnlyPlan(),
+    });
+
+    assert.equal(draft.status, "validated");
+    assert.equal(draft.taskSummaries[0]?.taskId, "inspect-only");
+
+    const draftResource = await db.one<{
+      summary_json: { planner?: string };
+      payload_json: {
+        plannerTrace?: {
+          composerMode?: string;
+          composerFallbackUsed?: boolean;
+        };
+        orchestrationSnapshot?: {
+          selectedCompositionPlan?: { title?: string };
+        };
+      };
+    }>(
+      "select summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    assert.equal(draftResource.summary_json.planner, "existing-composition-compiler");
+    assert.equal(draftResource.payload_json.plannerTrace?.composerMode, "existing-composition");
+    assert.equal(draftResource.payload_json.plannerTrace?.composerFallbackUsed, false);
+    assert.equal(draftResource.payload_json.orchestrationSnapshot?.selectedCompositionPlan?.title, "Valid Inspect Plan");
+  });
+});
+
 test("llm-constrained planner trace records analyzer/composer and validation audit metadata for fixture composer", async () => {
   await withDb(async (db) => {
     const draft = await createPostgresPlannerDraft(db, {

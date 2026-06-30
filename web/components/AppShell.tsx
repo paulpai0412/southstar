@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AppModeRail, type AppMode } from "./AppModeRail";
 import { SessionSidebar } from "./SessionSidebar";
@@ -9,6 +9,7 @@ import { ChatWindow } from "./ChatWindow";
 import { FileViewer } from "./FileViewer";
 import { WorkflowResourceViewer } from "./WorkflowResourceViewer";
 import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
+import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
 import { OperatorWorkspace } from "./operator/OperatorWorkspace";
@@ -20,6 +21,7 @@ import { McpConfig } from "./McpConfig";
 import { BranchNavigator } from "./BranchNavigator";
 import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
+import { buildOperatorIncidents } from "@/lib/operator/incidents";
 import type { SessionInfo, SessionTreeNode } from "@/lib/types";
 import type { WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { ChatInputHandle } from "./ChatInput";
@@ -192,8 +194,10 @@ export function AppShell() {
   const [initialSessionId] = useState<string | null>(() => searchParams.get("session"));
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
   const operator = useOperatorOverview(activeCwd, appMode === "operator");
+  const operatorIncidents = useMemo(() => buildOperatorIncidents(operator.model), [operator.model]);
   const [operatorSelectedRunId, setOperatorSelectedRunId] = useState<string | null>(null);
   const [operatorSelectedTaskId, setOperatorSelectedTaskId] = useState<string | null>(null);
+  const [operatorSelectedIncidentId, setOperatorSelectedIncidentId] = useState<string | null>(null);
   // True once the initial ?session= URL param has been resolved (or confirmed absent)
   const [initialSessionRestored, setInitialSessionRestored] = useState<boolean>(() => !searchParams.get("session"));
   // Suppresses sessionKey bump in handleCwdChange during the initial URL restore
@@ -226,6 +230,27 @@ export function AppShell() {
       });
     return () => controller.abort();
   }, [initialSessionId]);
+
+  useEffect(() => {
+    if (appMode !== "operator") return;
+    const runs = operator.model.runs;
+    const defaultSelection = operator.model.defaultSelection;
+    const selectedRunStillExists = Boolean(operatorSelectedRunId && runs.some((run) => run.runId === operatorSelectedRunId));
+
+    if (selectedRunStillExists) {
+      if (!operatorSelectedTaskId && defaultSelection?.runId === operatorSelectedRunId && defaultSelection.taskId) {
+        setOperatorSelectedTaskId(defaultSelection.taskId);
+      }
+      return;
+    }
+
+    const defaultRunId = defaultSelection?.runId && runs.some((run) => run.runId === defaultSelection.runId)
+      ? defaultSelection.runId
+      : null;
+    const nextRunId = defaultRunId || runs[0]?.runId || null;
+    setOperatorSelectedRunId(nextRunId);
+    setOperatorSelectedTaskId(nextRunId && defaultSelection?.runId === nextRunId ? defaultSelection.taskId || null : null);
+  }, [appMode, operator.model.defaultSelection, operator.model.runs, operatorSelectedRunId, operatorSelectedTaskId]);
 
   const handleCwdChange = useCallback((cwd: string | null) => {
     setActiveCwd((prev) => prev === cwd ? prev : cwd);
@@ -493,8 +518,15 @@ export function AppShell() {
       });
       return;
     }
-    handleOpenWorkflowResource(node.profileResourcePath, "profile.json");
-  }, [handleOpenWorkflowResource, openSidecarTab]);
+    openSidecarTab({
+      id: `workflow-static-node-profile:${node.id}:${node.profileRef || node.agentRef}`,
+      label: "Node Profile",
+      filePath: node.profileResourcePath || taskId,
+      kind: "workflowStaticNodeProfile",
+      taskId,
+      workflowNode: node,
+    });
+  }, [openSidecarTab]);
 
   const handleSidecarWidthCommit = useCallback((width: number) => {
     window.localStorage.setItem(SIDECAR_WIDTH_STORAGE_KEY, String(width));
@@ -549,6 +581,9 @@ export function AppShell() {
         />
       );
     }
+    if (activeSidecarTab.kind === "workflowStaticNodeProfile" && activeSidecarTab.workflowNode) {
+      return <WorkflowStaticNodeProfile node={activeSidecarTab.workflowNode} />;
+    }
     if (activeSidecarTab.kind === "workflowResource") {
       return (
         <WorkflowResourceViewer
@@ -574,11 +609,17 @@ export function AppShell() {
           commands={attention?.commands || []}
           commandResults={operator.model.commandResults}
           onCommandComplete={operator.refresh}
+          onSelectTask={(taskId) => {
+            if (!activeSidecarTab.runId) return;
+            setOperatorSelectedRunId(activeSidecarTab.runId);
+            setOperatorSelectedTaskId(taskId);
+            openOperatorTaskSidecar({ runId: activeSidecarTab.runId, taskId });
+          }}
         />
       );
     }
     return <FileViewer filePath={activeSidecarTab.filePath} cwd={currentCwd ?? undefined} />;
-  }, [activeSidecarTab, currentCwd, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
+  }, [activeSidecarTab, currentCwd, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!currentCwd) return;
@@ -598,15 +639,20 @@ export function AppShell() {
         <OperatorSidebar
           cwd={activeCwd}
           runs={operator.model.runs}
-          attentionItems={operator.model.attentionItems}
+          incidents={operatorIncidents}
           selectedRunId={operatorSelectedRunId}
           selectedTaskId={operatorSelectedTaskId}
+          selectedIncidentId={operatorSelectedIncidentId}
+          error={operator.error}
           onCwdChange={handleCwdChange}
           onSelectRun={setOperatorSelectedRunId}
-          onSelectAttention={(item) => {
-            if (item.runId) setOperatorSelectedRunId(item.runId);
-            setOperatorSelectedTaskId(item.taskId || null);
-            if (item.runId && item.taskId) openOperatorTaskSidecar({ runId: item.runId, taskId: item.taskId, attentionId: item.id });
+          onSelectIncident={(incident) => {
+            setOperatorSelectedIncidentId(incident.id);
+            if (incident.runId) setOperatorSelectedRunId(incident.runId);
+            setOperatorSelectedTaskId(incident.taskId || null);
+            if (incident.runId && incident.taskId) {
+              openOperatorTaskSidecar({ runId: incident.runId, taskId: incident.taskId, attentionId: incident.sourceAttentionIds[0] });
+            }
           }}
           onRefresh={operator.refresh}
         />
@@ -618,6 +664,7 @@ export function AppShell() {
           onSessionSelect={handleSelectWorkflowSession}
           onTemplateSelect={setSelectedWorkflowTemplate}
           onOpenResource={handleOpenWorkflowResource}
+          onCwdChange={handleCwdChange}
           onNewSession={handleWorkflowSidebarNewSession}
           onRefreshSessions={handleWorkflowSidebarRefresh}
         />
@@ -1251,6 +1298,9 @@ export function AppShell() {
               overview={operator.model}
               selectedRunId={operatorSelectedRunId}
               selectedTaskId={operatorSelectedTaskId}
+              selectedIncidentId={operatorSelectedIncidentId}
+              incidents={operatorIncidents}
+              error={operator.error}
               onSelectRun={setOperatorSelectedRunId}
               onSelectTask={({ runId, taskId, attention }) => {
                 setOperatorSelectedRunId(runId);

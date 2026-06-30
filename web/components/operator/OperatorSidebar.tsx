@@ -1,27 +1,32 @@
 "use client";
 
 import { ProjectScopePicker } from "../ProjectScopePicker";
-import type { OperatorAttentionItem, OperatorRun } from "@/lib/operator/types";
+import type { OperatorIncident, OperatorRun } from "@/lib/operator/types";
+import { OperatorAttentionQueue } from "./OperatorAttentionQueue";
 
 export function OperatorSidebar({
   cwd,
   runs,
-  attentionItems,
+  incidents,
   selectedRunId,
   selectedTaskId,
+  selectedIncidentId,
+  error,
   onCwdChange,
   onSelectRun,
-  onSelectAttention,
+  onSelectIncident,
   onRefresh,
 }: {
   cwd: string | null;
   runs: OperatorRun[];
-  attentionItems: OperatorAttentionItem[];
+  incidents: OperatorIncident[];
   selectedRunId: string | null;
   selectedTaskId: string | null;
+  selectedIncidentId: string | null;
+  error: string | null;
   onCwdChange: (cwd: string | null) => void;
   onSelectRun: (runId: string) => void;
-  onSelectAttention: (item: OperatorAttentionItem) => void;
+  onSelectIncident: (incident: OperatorIncident) => void;
   onRefresh: () => void;
 }) {
   return (
@@ -29,22 +34,14 @@ export function OperatorSidebar({
       <ProjectScopePicker selectedCwd={cwd} onCwdChange={onCwdChange} label="Project Scope" />
       <section style={{ flex: "0 0 42%", minHeight: 150, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
         <OperatorSectionHeader title="Operator Focus" actionLabel="Refresh" onAction={onRefresh} />
+        {error ? <p className="operator-muted operator-danger">Operator overview error: {error}</p> : null}
         <div style={{ padding: "0 6px 8px" }}>
           <div className="operator-section-label">Attention</div>
-          {attentionItems.length === 0 ? (
-            <p className="operator-muted">No attention items.</p>
-          ) : attentionItems.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className="operator-list-row"
-              aria-pressed={selectedTaskId === item.taskId}
-              onClick={() => onSelectAttention(item)}
-            >
-              <strong>{item.severity}</strong>
-              <span>{item.title}</span>
-            </button>
-          ))}
+          <OperatorAttentionQueue
+            incidents={incidents}
+            selectedIncidentId={selectedIncidentId}
+            onSelectIncident={onSelectIncident}
+          />
         </div>
       </section>
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
@@ -62,6 +59,7 @@ export function OperatorSidebar({
             >
               <strong>{run.status}</strong>
               <span>{run.title}</span>
+              {selectedRunId === run.runId && selectedTaskId ? <em>task {selectedTaskId}</em> : null}
             </button>
           ))}
         </div>

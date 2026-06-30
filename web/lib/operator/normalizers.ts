@@ -67,6 +67,7 @@ function readAttention(input: unknown): OperatorAttentionItem | null {
     detail: recordValue(item?.detail),
     commands,
     suggestedCommandId: stringValue(item?.suggestedCommandId || item?.commandId),
+    updatedAt: stringValue(item?.updatedAt),
   };
 }
 
@@ -78,6 +79,7 @@ function readCommand(input: unknown): OperatorCommand | null {
   return {
     id,
     label: stringValue(command?.label) || id,
+    consequence: stringValue(command?.consequence),
     endpoint: stringValue(command?.endpoint),
     method: stringValue(command?.method) || "POST",
     enabled: Boolean(command?.enabled),

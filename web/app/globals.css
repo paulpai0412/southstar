@@ -558,6 +558,8 @@ span.linenumber {
 }
 
 .sidecar-header {
+  position: relative;
+  z-index: 3;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -586,15 +588,19 @@ span.linenumber {
 }
 
 .sidecar-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 2;
   flex: 1;
   min-width: 0;
   overflow: hidden;
+  background: var(--bg-panel);
 }
 
 .sidecar-content {
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .sidecar-resize-handle {
@@ -832,6 +838,18 @@ span.linenumber {
   padding: 7px 10px;
 }
 
+.operator-state-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.operator-state-count {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
 .operator-run-card,
 .operator-list-row,
 .operator-progress-list button {
@@ -918,6 +936,38 @@ span.linenumber {
   font-size: 11px;
 }
 
+.operator-run-card em,
+.operator-list-row em {
+  grid-column: 2;
+  color: var(--text-dim);
+  font-style: normal;
+  font-size: 11px;
+}
+
+.operator-run-severity {
+  grid-column: 2;
+  width: max-content;
+  color: #d97706;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.operator-incident-row {
+  grid-template-columns: max-content minmax(0, 1fr);
+}
+
+.operator-incident-row em,
+.operator-incident-row small {
+  grid-column: 2;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-style: normal;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .project-scope-button,
 .project-scope-menu-item {
   width: 100%;
@@ -958,6 +1008,75 @@ span.linenumber {
   background: var(--bg);
 }
 
+.operator-dag-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.operator-dag-panel .ss-workflow-canvas {
+  flex: 1 1 auto;
+  min-height: 420px;
+  border: 0;
+}
+
+.operator-error-banner {
+  border: 1px solid rgba(239, 68, 68, 0.28);
+  background: rgba(239, 68, 68, 0.08);
+  margin-bottom: 10px;
+}
+
+.operator-health-strip,
+.operator-priority-grid,
+.operator-summary-grid {
+  display: grid;
+  gap: 1px;
+  background: var(--border);
+  border: 1px solid var(--border);
+  margin-bottom: 10px;
+}
+
+.operator-health-strip {
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+
+.operator-priority-grid {
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+
+.workflow-launch-preview-flow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 1px;
+}
+
+.operator-health-strip > div,
+.operator-priority-grid > div,
+.operator-summary-grid > dt,
+.operator-summary-grid > dd {
+  background: var(--bg);
+  padding: 8px 10px;
+}
+
+.operator-health-strip strong,
+.operator-priority-grid strong {
+  display: block;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.operator-health-strip span,
+.operator-priority-grid span,
+.operator-summary-grid dt {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.operator-summary-grid {
+  grid-template-columns: 150px minmax(0, 1fr);
+  margin: 0;
+  border: 0;
+}
+
 .operator-debug-list {
   margin: 0;
   padding: 8px;
@@ -992,24 +1111,37 @@ span.linenumber {
   font-size: 11px;
 }
 
-.operator-action-row {
+.operator-action-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 8px;
-  padding: 8px;
+  padding: 10px;
   border-bottom: 1px solid var(--border);
 }
 
-.operator-action-row input {
-  min-width: 0;
-  border: 1px solid var(--border);
-  background: var(--bg);
+.operator-action-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  align-items: start;
+  gap: 8px;
+}
+
+.operator-action-main strong,
+.operator-command-result strong {
+  display: block;
   color: var(--text);
-  padding: 6px 8px;
   font-size: 12px;
 }
 
-.operator-action-row button {
+.operator-action-main span,
+.operator-command-result span {
+  display: block;
+  color: var(--text-dim);
+  font-size: 11px;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+.operator-action-main button {
   border: 1px solid var(--border);
   background: var(--bg-panel);
   color: var(--text-muted);
@@ -1018,7 +1150,65 @@ span.linenumber {
   font-size: 12px;
 }
 
-.operator-action-row button:disabled {
+.operator-action-main button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+
+.operator-action-meta {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 6px 8px;
+  margin: 0;
+}
+
+.operator-action-meta dt {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.operator-action-meta dd {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.operator-action-reason {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+
+.operator-command-results {
+  border-top: 1px solid var(--border);
+}
+
+.operator-command-result {
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+@media (max-width: 720px) {
+  .operator-health-strip,
+  .operator-priority-grid,
+  .workflow-launch-preview-flow {
+    grid-template-columns: 1fr;
+  }
+
+  .operator-action-main,
+  .operator-action-meta,
+  .operator-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .operator-action-main button {
+    width: 100%;
+  }
 }

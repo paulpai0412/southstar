@@ -14,10 +14,22 @@ export function bucketForRunStatus(status: string): OperatorStateBucket {
 
 export function runMatchesCwd(run: OperatorRun, cwd: string | null): boolean {
   if (!cwd) return true;
-  return run.cwd === cwd || run.projectRoot === cwd || Boolean(run.cwd?.startsWith(`${cwd}/`));
+  const selected = normalizePath(cwd);
+  return [run.cwd, run.projectRoot].some((candidate) => pathsOverlap(selected, normalizePath(candidate)));
 }
 
 export function attentionMatchesRuns(item: OperatorAttentionItem, runs: OperatorRun[]): boolean {
   if (!item.runId) return true;
   return runs.some((run) => run.runId === item.runId);
+}
+
+function normalizePath(path: string | undefined): string | null {
+  if (!path) return null;
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/g, "");
+  return normalized || "/";
+}
+
+function pathsOverlap(a: string | null, b: string | null): boolean {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 }

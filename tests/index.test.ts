@@ -46,6 +46,8 @@ await import("./web/southstar-pi-web-shell-ui.test.tsx");
 await import("./web/southstar-workflow-canvas-ui.test.tsx");
 await import("./web/southstar-operator-ui.test.tsx");
 await import("./web/southstar-web-operator-control-tower.test.tsx");
+await import("./web/southstar-operator-product-control-tower.test.tsx");
+await import("./web/southstar-product-responsive.test.tsx");
 await import("./web/workflow-node-profile-editor-ui.test.tsx");
 await import("./unit/app-shell-stats-regression.test.ts");
 await import("./unit/file-explorer-regression.test.ts");

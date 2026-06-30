@@ -43,6 +43,7 @@ export function buildWorkflowCompositionPlanDisplay(text: string): WorkflowCompo
   const dag: WorkflowDag = {
     id: `composition-${stableSlug(parsed.title)}`,
     mode: "draft",
+    compositionPlan: parsed,
     templateId: parsed.selectedWorkflowTemplateRef,
     templateTitle: parsed.title,
     prompt: parsed.title,
