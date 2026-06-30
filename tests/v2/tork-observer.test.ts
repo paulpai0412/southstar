@@ -148,6 +148,66 @@ test("tork observer relies on exception and decision idempotency across repeated
   }
 });
 
+test("tork observer records terminal-without-callback when provider job failed while hand execution is still active", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRunAndTask(db, "run-tork-observer-terminal", "task-a", {
+      runStatus: "running",
+      taskStatus: "queued",
+    });
+    await seedHandExecution(db, {
+      runId: "run-tork-observer-terminal",
+      taskId: "task-a",
+      sessionId: "session-a",
+      attemptId: "attempt-1",
+      status: "queued",
+      queuedAt: "2026-06-21T10:00:00.000Z",
+      queueTimeoutSeconds: 600,
+      heartbeatTimeoutSeconds: 30,
+      externalJobId: "job-terminal-failed",
+    });
+
+    const result = await observeTorkHandExecutionExceptionsPg(db, {
+      now: "2026-06-21T10:01:00.000Z",
+      providerActions: {
+        poll: async (input) => {
+          assert.equal(input.externalJobId, "job-terminal-failed");
+          assert.equal(input.reason, "observe-tork-terminal-without-callback");
+          return { status: "FAILED" };
+        },
+      },
+    });
+
+    assert.deepEqual(result.observedKinds, ["tork_terminal_without_callback"]);
+    const hands = (await listResourcesPg(db, { resourceType: "hand_execution" }))
+      .filter((resource) => resource.runId === "run-tork-observer-terminal");
+    assert.equal(hands.length, 1);
+    assert.equal(hands[0]?.status, "failed");
+    assert.equal(hands[0]?.payload.status, "failed");
+    assert.equal(hands[0]?.payload.terminalReason, "tork_terminal_without_callback");
+    assert.equal(hands[0]?.payload.torkObservedStatus, "FAILED");
+    assert.equal(hands[0]?.payload.terminalWithoutCallback, true);
+    assert.equal(hands[0]?.payload.terminalAt, "2026-06-21T10:01:00.000Z");
+
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === "run-tork-observer-terminal");
+    assert.equal(exceptions.length, 1);
+    assert.equal(exceptions[0]?.payload.kind, "tork_terminal_without_callback");
+    assert.deepEqual(exceptions[0]?.payload.providerEvidence, {
+      externalJobId: "job-terminal-failed",
+      status: "queued",
+      torkObservedStatus: "FAILED",
+      terminalWithoutCallback: true,
+    });
+    const decisions = (await listResourcesPg(db, { resourceType: "recovery_decision" }))
+      .filter((resource) => resource.runId === "run-tork-observer-terminal");
+    assert.equal(decisions.length, 1);
+    assert.equal(decisions[0]?.payload.path, "retry-same-task-new-attempt");
+  } finally {
+    await db.close();
+  }
+});
+
 async function seedRunAndTask(
   db: SouthstarDb,
   runId: string,

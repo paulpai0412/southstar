@@ -6,8 +6,8 @@ import { join } from "node:path";
 const root = join(import.meta.dirname, "../..");
 function source(path: string): string { return readFileSync(join(root, path), "utf8"); }
 
-test("Evolution Control Center is a top-level Southstar page and app-shell tab", () => {
-  assert.match(source("app/evolution/page.tsx"), /EvolutionControlCenterPage/);
+test("Evolution Control Center remains available in the legacy page and app-shell tab sources", () => {
+  assert.match(source("components/southstar/pages/EvolutionControlCenterPage.tsx"), /EvolutionControlCenterPage/);
   const rail = source("components/southstar/app-shell/SouthstarTabRail.tsx");
   assert.match(rail, /evolution/);
   assert.match(rail, /Evolution/);

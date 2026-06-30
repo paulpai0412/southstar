@@ -2,6 +2,7 @@ import { buildPostgresCoreReadModel } from "../read-models/postgres-core.ts";
 import { getManagedAgentRunReadModelPg } from "../read-models/managed-agents.ts";
 import { buildWorkflowUiReadModelPg } from "../read-models/workflow-ui.ts";
 import { buildOperatorOverviewReadModelPg } from "../read-models/operator-overview.ts";
+import { buildOperatorTaskDebugReadModelPg } from "../read-models/operator-task-debug.ts";
 import { buildChatCapabilitiesReadModelPg } from "../read-models/chat-capabilities.ts";
 import { buildChatSessionReadModelPg } from "../read-models/chat-session.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
@@ -42,6 +43,12 @@ export async function handleUiRoute(context: RuntimeServerContext, request: Requ
     )
   ) {
     return json("ui-operator-overview", await buildOperatorOverviewReadModelPg(context.db));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/ui/operator-task-debug") {
+    return json("ui-operator-task-debug", await buildOperatorTaskDebugReadModelPg(context.db, {
+      runId: requiredQuery(url, "runId"),
+      taskId: requiredQuery(url, "taskId"),
+    }));
   }
   if (request.method === "GET" && url.pathname === "/api/v2/ui/workflow-canvas") {
     return json("ui-workflow-canvas", await buildPostgresCoreReadModel(context.db, {

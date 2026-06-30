@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { SouthstarWorkflowCanvas } from "../../components/southstar/workflow-canvas/SouthstarWorkflowCanvas";
-import type { WorkflowCanvasModel, WorkflowDependencyModel, WorkflowTaskNodeModel } from "../../components/southstar/workflow-canvas/types";
+import { SouthstarWorkflowCanvas } from "./workflow-canvas/SouthstarWorkflowCanvas";
+import type { WorkflowCanvasModel, WorkflowDependencyModel, WorkflowTaskNodeModel } from "./workflow-canvas/types";
 import { useWorkflowLifecycle } from "@/hooks/useWorkflowLifecycle";
 import type { WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
 

@@ -7,7 +7,12 @@ const root = join(import.meta.dirname, "../..");
 function source(path: string): string { return readFileSync(join(root, path), "utf8"); }
 
 test("root renders migrated shell with chat workspace WorkflowWorkbench OperatorBoard tabs", () => {
-  assert.match(source("app/page.tsx"), /SouthstarPiWebShell/);
+  assert.match(source("web/app/page.tsx"), /AppShell/);
+  const appShell = source("web/components/AppShell.tsx");
+  assert.match(appShell, /ChatWindow/);
+  assert.match(appShell, /WorkflowSidebar/);
+  assert.match(appShell, /OperatorWorkspace/);
+  assert.match(appShell, /OperatorSidebar/);
   const shell = source("components/southstar/app/SouthstarPiWebShell.tsx");
   assert.match(shell, /SouthstarChatTab/);
   assert.match(shell, /SouthstarChatSessionSidebar/);

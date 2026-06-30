@@ -1,4 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { isTaskRecoverableStatus } from "../task-recovery.ts";
 
 const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "scheduling", "running", "paused", "blocked"] as const;
 const TERMINAL_RUN_STATUSES = ["completed", "passed", "failed", "cancelled"] as const;
@@ -61,6 +62,8 @@ type ActiveRun = {
   status: string;
   domain?: string;
   title: string;
+  cwd?: string;
+  projectRoot?: string;
   updatedAt: string;
 };
 
@@ -70,21 +73,29 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
     status: string;
     domain: string | null;
     goal_prompt: string;
+    runtime_context_json: unknown;
     updated_at: Date;
   }>(
-    `select id, status, domain, goal_prompt, updated_at
+    `select id, status, domain, goal_prompt, runtime_context_json, updated_at
        from southstar.workflow_runs
       where status = any($1::text[])
       order by updated_at desc, id
       limit 50`,
     [[...ACTIVE_RUN_STATUSES]],
-  )).rows.map((run): ActiveRun => ({
-    runId: run.id,
-    status: run.status,
-    domain: run.domain ?? undefined,
-    title: run.goal_prompt,
-    updatedAt: run.updated_at.toISOString(),
-  }));
+  )).rows.map((run): ActiveRun => {
+    const runtimeContext = asRecord(run.runtime_context_json);
+    const cwd = stringValue(runtimeContext.cwd);
+    const projectRoot = stringValue(runtimeContext.projectRoot) ?? cwd;
+    return {
+      runId: run.id,
+      status: run.status,
+      domain: run.domain ?? undefined,
+      title: run.goal_prompt,
+      ...(cwd ? { cwd } : {}),
+      ...(projectRoot ? { projectRoot } : {}),
+      updatedAt: run.updated_at.toISOString(),
+    };
+  });
 
   const activeRunIds = activeRuns.map((run) => run.runId);
   const [resourceRows, taskRows, commandRows] = await Promise.all([
@@ -350,7 +361,7 @@ function executorCommands(runId: string | undefined, jobId: string | undefined, 
 }
 
 function taskCommands(runId: string, taskId: string, status: string): OperatorCommand[] {
-  const recoverable = status === "failed" || status === "blocked" || status === "running" || status === "queued";
+  const recoverable = isTaskRecoverableStatus(status);
   return [
     command("task.retry", "Retry Task", `/api/v2/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/retry`, {
       enabled: recoverable,

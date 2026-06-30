@@ -7,17 +7,21 @@ export type WorkflowNodeProfileForm = {
   mcpGrantRefs: string[];
 };
 
-export function normalizeNodeProfileForm(input: { selectedDefinition?: any | null }): WorkflowNodeProfileForm {
-  const selected = input.selectedDefinition ?? {};
-  const effective = selected.effectiveProfile ?? {};
+export function normalizeNodeProfileForm(input: { selectedDefinition?: unknown | null }): WorkflowNodeProfileForm {
+  const selected = recordValue(input.selectedDefinition) ?? {};
+  const effective = recordValue(selected.effectiveProfile) ?? {};
   return {
-    provider: stringValue(effective.provider ?? selected.agentProfile?.provider),
-    model: stringValue(effective.model ?? selected.agentProfile?.model),
+    provider: stringValue(effective.provider ?? recordValue(selected.agentProfile)?.provider),
+    model: stringValue(effective.model ?? recordValue(selected.agentProfile)?.model),
     thinkingLevel: stringValue(effective.thinkingLevel),
     instruction: stringValue(effective.instruction),
     skillRefs: stringArray(effective.skillRefs ?? selected.skillRefs),
     mcpGrantRefs: stringArray(effective.mcpGrantRefs ?? selected.mcpGrantRefs),
   };
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
 export function buildNodeProfilePatchPayload(form: WorkflowNodeProfileForm) {

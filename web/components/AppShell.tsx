@@ -9,11 +9,16 @@ import { ChatWindow } from "./ChatWindow";
 import { FileViewer } from "./FileViewer";
 import { WorkflowResourceViewer } from "./WorkflowResourceViewer";
 import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
-import { TabBar, type Tab } from "./TabBar";
+import { OperatorSidebar } from "./operator/OperatorSidebar";
+import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
+import { OperatorWorkspace } from "./operator/OperatorWorkspace";
+import type { Tab } from "./TabBar";
+import { SidecarShell, type SidecarMode } from "./SidecarShell";
 import { ModelsConfig } from "./ModelsConfig";
 import { SkillsConfig } from "./SkillsConfig";
 import { McpConfig } from "./McpConfig";
 import { BranchNavigator } from "./BranchNavigator";
+import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
 import type { SessionInfo, SessionTreeNode } from "@/lib/types";
 import type { WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
@@ -25,10 +30,8 @@ type SessionCopyField = "file" | "id";
 type ContextUsageInfo = { percent: number | null; contextWindow: number; tokens: number | null };
 
 const LAST_CWD_STORAGE_KEY = "pi-web:last-cwd";
-const RIGHT_PANEL_WIDTH_STORAGE_KEY = "pi-web:right-panel-width";
-const DEFAULT_RIGHT_PANEL_WIDTH = 560;
-const MIN_RIGHT_PANEL_WIDTH = 300;
-const MAX_RIGHT_PANEL_WIDTH_RATIO = 0.82;
+const SIDECAR_WIDTH_STORAGE_KEY = "pi-web:sidecar-width";
+const DEFAULT_SIDECAR_WIDTH = 560;
 
 function copyText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
@@ -177,13 +180,10 @@ export function AppShell() {
     return () => ro.disconnect();
   }, [activeTopPanel]);
 
-  // Right panel — file tabs only
-  const [fileTabs, setFileTabs] = useState<Tab[]>([]);
-  const [activeFileTabId, setActiveFileTabId] = useState<string | null>(null);
-  const [rightPanelOpen, setRightPanelOpen] = useState(false);
-  const [rightPanelWidth, setRightPanelWidth] = useState(DEFAULT_RIGHT_PANEL_WIDTH);
-  const [rightPanelResizing, setRightPanelResizing] = useState(false);
-  const rightPanelWidthRef = useRef(rightPanelWidth);
+  const [sidecarTabs, setSidecarTabs] = useState<Tab[]>([]);
+  const [activeSidecarTabId, setActiveSidecarTabId] = useState<string | null>(null);
+  const [sidecarMode, setSidecarMode] = useState<SidecarMode>("hidden");
+  const [sidecarWidth, setSidecarWidth] = useState(DEFAULT_SIDECAR_WIDTH);
 
   const handleAtMention = useCallback((relativePath: string) => {
     chatInputRef.current?.insertText("`" + relativePath + "`");
@@ -191,14 +191,17 @@ export function AppShell() {
 
   const [initialSessionId] = useState<string | null>(() => searchParams.get("session"));
   const [activeCwd, setActiveCwd] = useState<string | null>(null);
+  const operator = useOperatorOverview(activeCwd, appMode === "operator");
+  const [operatorSelectedRunId, setOperatorSelectedRunId] = useState<string | null>(null);
+  const [operatorSelectedTaskId, setOperatorSelectedTaskId] = useState<string | null>(null);
   // True once the initial ?session= URL param has been resolved (or confirmed absent)
   const [initialSessionRestored, setInitialSessionRestored] = useState<boolean>(() => !searchParams.get("session"));
   // Suppresses sessionKey bump in handleCwdChange during the initial URL restore
   const suppressCwdBumpRef = useRef(false);
 
   useEffect(() => {
-    const storedWidth = Number(window.localStorage.getItem(RIGHT_PANEL_WIDTH_STORAGE_KEY));
-    if (Number.isFinite(storedWidth) && storedWidth > 0) setRightPanelWidth(storedWidth);
+    const storedWidth = Number(window.localStorage.getItem(SIDECAR_WIDTH_STORAGE_KEY));
+    if (Number.isFinite(storedWidth) && storedWidth > 0) setSidecarWidth(storedWidth);
     if (initialSessionId) return;
     const storedCwd = window.localStorage.getItem(LAST_CWD_STORAGE_KEY);
     if (!storedCwd) return;
@@ -414,14 +417,35 @@ export function AppShell() {
     }
   }, [selectedSession, router]);
 
-  const handleOpenFile = useCallback((filePath: string, fileName: string) => {
-    const tabId = `file:${filePath}`;
-    setFileTabs((prev) => {
-      if (prev.find((t) => t.id === tabId)) return prev;
-      return [...prev, { id: tabId, label: fileName, filePath, kind: "file" }];
+  const openSidecarTab = useCallback((tab: Tab) => {
+    setSidecarTabs((prev) => {
+      if (prev.find((item) => item.id === tab.id)) return prev;
+      return [...prev, tab];
     });
-    setActiveFileTabId(tabId);
-    setRightPanelOpen(true);
+    setActiveSidecarTabId(tab.id);
+    setSidecarMode((mode) => mode === "hidden" ? "floating" : mode);
+  }, []);
+
+  const handleOpenFile = useCallback((filePath: string, fileName: string) => {
+    openSidecarTab({ id: `file:${filePath}`, label: fileName, filePath, kind: "file" });
+  }, [openSidecarTab]);
+
+  const openOperatorTaskSidecar = useCallback((input: { runId: string; taskId: string; attentionId?: string }) => {
+    const filePath = `${input.runId}/${input.taskId}`;
+    const tabs: Tab[] = [
+      { id: `operator-dag:${filePath}`, label: "DAG", filePath, kind: "operatorDag", ...input },
+      { id: `operator-history:${filePath}`, label: "History", filePath, kind: "operatorHistory", ...input },
+      { id: `operator-stream:${filePath}`, label: "Live SSE", filePath, kind: "operatorStream", ...input },
+      { id: `operator-actions:${filePath}`, label: "Actions", filePath, kind: "operatorActions", ...input },
+      { id: `operator-artifacts:${filePath}`, label: "Artifacts", filePath, kind: "operatorArtifacts", ...input },
+    ];
+    setSidecarTabs((current) => {
+      const byId = new Map(current.map((tab) => [tab.id, tab]));
+      for (const tab of tabs) byId.set(tab.id, byId.get(tab.id) || tab);
+      return [...byId.values()];
+    });
+    setActiveSidecarTabId(`operator-history:${filePath}`);
+    setSidecarMode((mode) => mode === "hidden" ? "floating" : mode);
   }, []);
 
   const openSkillsConfig = useCallback(async () => {
@@ -448,14 +472,8 @@ export function AppShell() {
   }, [activeCwd, appMode, newSessionCwd, selectedSession?.cwd, workflowNewSessionCwd, workflowSelectedSession?.cwd]);
 
   const handleOpenWorkflowResource = useCallback((resourcePath: string, label: string) => {
-    const tabId = `workflow:${resourcePath}`;
-    setFileTabs((prev) => {
-      if (prev.find((t) => t.id === tabId)) return prev;
-      return [...prev, { id: tabId, label, filePath: resourcePath, kind: "workflowResource" }];
-    });
-    setActiveFileTabId(tabId);
-    setRightPanelOpen(true);
-  }, []);
+    openSidecarTab({ id: `workflow:${resourcePath}`, label, filePath: resourcePath, kind: "workflowResource" });
+  }, [openSidecarTab]);
 
   const handleWorkflowDagNodeSelect = useCallback((node: WorkflowDagNode) => {
     const taskId = node.taskId ?? node.id;
@@ -463,72 +481,37 @@ export function AppShell() {
     if (taskId && mode && (node.draftId || node.runId)) {
       const scopeId = node.draftId ?? node.runId;
       const tabId = `workflow-node-profile:${scopeId}:${taskId}`;
-      setFileTabs((prev) => {
-        if (prev.find((tab) => tab.id === tabId)) return prev;
-        return [...prev, {
-          id: tabId,
-          label: "Node Profile",
-          filePath: taskId,
-          kind: "workflowNodeProfile",
-          draftId: node.draftId,
-          runId: node.runId,
-          taskId,
-          mode,
-        }];
+      openSidecarTab({
+        id: tabId,
+        label: "Node Profile",
+        filePath: taskId,
+        kind: "workflowNodeProfile",
+        draftId: node.draftId,
+        runId: node.runId,
+        taskId,
+        mode,
       });
-      setActiveFileTabId(tabId);
-      setRightPanelOpen(true);
       return;
     }
     handleOpenWorkflowResource(node.profileResourcePath, "profile.json");
-  }, [handleOpenWorkflowResource]);
+  }, [handleOpenWorkflowResource, openSidecarTab]);
 
-  useEffect(() => {
-    rightPanelWidthRef.current = rightPanelWidth;
-  }, [rightPanelWidth]);
+  const handleSidecarWidthCommit = useCallback((width: number) => {
+    window.localStorage.setItem(SIDECAR_WIDTH_STORAGE_KEY, String(width));
+  }, []);
 
-  useEffect(() => {
-    if (!rightPanelResizing) return;
-    const handleMove = (event: MouseEvent) => {
-      const maxWidth = Math.max(MIN_RIGHT_PANEL_WIDTH, Math.floor(window.innerWidth * MAX_RIGHT_PANEL_WIDTH_RATIO));
-      const nextWidth = Math.min(maxWidth, Math.max(MIN_RIGHT_PANEL_WIDTH, window.innerWidth - event.clientX));
-      rightPanelWidthRef.current = nextWidth;
-      setRightPanelWidth(nextWidth);
-    };
-    const handleUp = () => {
-      setRightPanelResizing(false);
-      window.localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(rightPanelWidthRef.current));
-    };
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
-    window.addEventListener("mousemove", handleMove);
-    window.addEventListener("mouseup", handleUp);
-    return () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
-      window.removeEventListener("mousemove", handleMove);
-      window.removeEventListener("mouseup", handleUp);
-    };
-  }, [rightPanelResizing]);
-
-  useEffect(() => {
-    if (!rightPanelResizing) {
-      window.localStorage.setItem(RIGHT_PANEL_WIDTH_STORAGE_KEY, String(rightPanelWidth));
-    }
-  }, [rightPanelResizing, rightPanelWidth]);
-
-  const handleCloseFileTab = useCallback((tabId: string) => {
-    setFileTabs((prev) => {
+  const handleCloseSidecarTab = useCallback((tabId: string) => {
+    setSidecarTabs((prev) => {
+      const closingIndex = prev.findIndex((tab) => tab.id === tabId);
       const next = prev.filter((t) => t.id !== tabId);
-      if (next.length === 0) setRightPanelOpen(false);
+      setActiveSidecarTabId((cur) => {
+        if (cur !== tabId) return cur && next.some((tab) => tab.id === cur) ? cur : next[next.length - 1]?.id ?? null;
+        return next[Math.min(Math.max(closingIndex, 0), next.length - 1)]?.id ?? null;
+      });
+      if (next.length === 0) setSidecarMode("hidden");
       return next;
     });
-    setActiveFileTabId((cur) => {
-      if (cur !== tabId) return cur;
-      const remaining = fileTabs.filter((t) => t.id !== tabId);
-      return remaining.length > 0 ? remaining[remaining.length - 1].id : null;
-    });
-  }, [fileTabs]);
+  }, []);
 
   const handleExportSession = useCallback(() => {
     const session = appMode === "workflow" ? workflowSelectedSession : selectedSession;
@@ -537,16 +520,65 @@ export function AppShell() {
   }, [appMode, selectedSession, workflowSelectedSession]);
 
   // Show chat area if a session is selected, or if we have a cwd to start a new session in
-  const activeSelectedSession = appMode === "workflow" ? workflowSelectedSession : selectedSession;
-  const activeNewSessionCwd = appMode === "workflow" ? workflowNewSessionCwd : newSessionCwd;
+  const activeSelectedSession = appMode === "workflow" ? workflowSelectedSession : appMode === "operator" ? null : selectedSession;
+  const activeNewSessionCwd = appMode === "workflow" ? workflowNewSessionCwd : appMode === "operator" ? null : newSessionCwd;
   const activeSessionKey = appMode === "workflow" ? workflowSessionKey : sessionKey;
   const effectiveNewSessionCwd = activeNewSessionCwd ?? (activeSelectedSession === null && activeCwd ? activeCwd : null);
   const showChat = activeSelectedSession !== null || effectiveNewSessionCwd !== null;
   // While restoring initial session from URL, don't show the placeholder
   const showPlaceholder = initialSessionRestored && !showChat;
 
-  const activeFileTab = fileTabs.find((t) => t.id === activeFileTabId) ?? null;
   const currentCwd = activeSelectedSession?.cwd ?? activeNewSessionCwd ?? activeCwd ?? null;
+  const activeSidecarTab = sidecarTabs.find((t) => t.id === activeSidecarTabId) ?? null;
+
+  const renderSidecarContent = useCallback(() => {
+    if (!activeSidecarTab?.filePath) {
+      return (
+        <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
+          No sidecar tab open
+        </div>
+      );
+    }
+    if (activeSidecarTab.kind === "workflowNodeProfile" && activeSidecarTab.taskId && activeSidecarTab.mode) {
+      return (
+        <WorkflowNodeProfileEditor
+          draftId={activeSidecarTab.draftId}
+          runId={activeSidecarTab.runId}
+          taskId={activeSidecarTab.taskId}
+          mode={activeSidecarTab.mode}
+        />
+      );
+    }
+    if (activeSidecarTab.kind === "workflowResource") {
+      return (
+        <WorkflowResourceViewer
+          resourcePath={activeSidecarTab.filePath}
+          cwd={currentCwd ?? undefined}
+        />
+      );
+    }
+    if (
+      activeSidecarTab.kind === "operatorDag" ||
+      activeSidecarTab.kind === "operatorHistory" ||
+      activeSidecarTab.kind === "operatorStream" ||
+      activeSidecarTab.kind === "operatorActions" ||
+      activeSidecarTab.kind === "operatorArtifacts"
+    ) {
+      const attention = operator.model.attentionItems.find((item) => item.id === activeSidecarTab.attentionId)
+        ?? operator.model.attentionItems.find((item) => item.runId === activeSidecarTab.runId && item.taskId === activeSidecarTab.taskId);
+      return (
+        <OperatorTaskTabs
+          kind={activeSidecarTab.kind}
+          runId={activeSidecarTab.runId || null}
+          taskId={activeSidecarTab.taskId || null}
+          commands={attention?.commands || []}
+          commandResults={operator.model.commandResults}
+          onCommandComplete={operator.refresh}
+        />
+      );
+    }
+    return <FileViewer filePath={activeSidecarTab.filePath} cwd={currentCwd ?? undefined} />;
+  }, [activeSidecarTab, currentCwd, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!currentCwd) return;
@@ -562,7 +594,23 @@ export function AppShell() {
 
   const sidebarContent = (
     <>
-      {appMode === "workflow" ? (
+      {appMode === "operator" ? (
+        <OperatorSidebar
+          cwd={activeCwd}
+          runs={operator.model.runs}
+          attentionItems={operator.model.attentionItems}
+          selectedRunId={operatorSelectedRunId}
+          selectedTaskId={operatorSelectedTaskId}
+          onCwdChange={handleCwdChange}
+          onSelectRun={setOperatorSelectedRunId}
+          onSelectAttention={(item) => {
+            if (item.runId) setOperatorSelectedRunId(item.runId);
+            setOperatorSelectedTaskId(item.taskId || null);
+            if (item.runId && item.taskId) openOperatorTaskSidecar({ runId: item.runId, taskId: item.taskId, attentionId: item.id });
+          }}
+          onRefresh={operator.refresh}
+        />
+      ) : appMode === "workflow" ? (
         <WorkflowSidebar
           cwd={currentCwd}
           selectedSessionId={workflowSelectedSession?.id ?? null}
@@ -721,7 +769,6 @@ export function AppShell() {
       }
       .pi-app-shell {
         --pi-sidebar-width: 288px;
-        --pi-file-panel-width: clamp(360px, 34vw, 480px);
       }
       .sidebar-container {
         width: var(--pi-sidebar-width);
@@ -739,27 +786,9 @@ export function AppShell() {
         border-right-color: transparent !important;
         pointer-events: none;
       }
-      .right-panel-container {
-        flex: 0 0 var(--pi-file-panel-width);
-        width: var(--pi-file-panel-width);
-        min-width: 320px;
-        max-width: 48vw;
-        overflow: hidden;
-        transition: width 180ms ease, min-width 180ms ease, max-width 180ms ease, flex-basis 180ms ease, transform 180ms ease, visibility 180ms ease;
-      }
-      .right-panel-container.right-panel-closed {
-        flex-basis: 0;
-        width: 0;
-        min-width: 0;
-        max-width: 0;
-        border-left-color: transparent !important;
-        pointer-events: none;
-        visibility: hidden;
-      }
       @media (max-width: 900px) {
         .pi-app-shell {
           --pi-sidebar-width: min(320px, calc(100vw - 56px));
-          --pi-file-panel-width: min(360px, calc(100vw - 56px));
         }
         .sidebar-overlay-backdrop {
           display: block;
@@ -782,32 +811,13 @@ export function AppShell() {
           max-width: var(--pi-sidebar-width);
           transform: translateX(calc(-1 * var(--pi-sidebar-width) - 1px));
         }
-        .right-panel-container {
-          position: fixed;
-          top: 0;
-          right: 0;
-          bottom: 0;
-          width: var(--pi-file-panel-width);
-          min-width: var(--pi-file-panel-width);
-          max-width: var(--pi-file-panel-width);
-          height: 100dvh;
-          z-index: 220;
-          box-shadow: -10px 0 28px rgba(0,0,0,0.18);
-        }
-        .right-panel-container.right-panel-closed {
-          width: var(--pi-file-panel-width);
-          min-width: var(--pi-file-panel-width);
-          max-width: var(--pi-file-panel-width);
-          transform: translateX(calc(var(--pi-file-panel-width) + 1px));
-        }
       }
       @media (prefers-reduced-motion: reduce) {
         .session-info-popover,
         .session-info-popover::after {
           animation: none;
         }
-        .sidebar-container,
-        .right-panel-container {
+        .sidebar-container {
           transition: none;
         }
       }
@@ -844,7 +854,15 @@ export function AppShell() {
       </div>
 
       {/* Center: chat */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
+      <div style={{
+        flex: 1,
+        display: "flex",
+        flexDirection: "column",
+        overflow: "hidden",
+        minWidth: 0,
+        marginRight: sidecarMode === "pinned" ? `min(${sidecarWidth}px, calc(100vw - 24px))` : 0,
+        transition: "margin-right 180ms ease",
+      }}>
         {/* Top bar with sidebar toggle */}
         <div ref={topBarRef} style={{ display: "flex", alignItems: "center", flexShrink: 0, borderBottom: "1px solid var(--border)", height: 36, background: "var(--bg-panel)" }}>
           <button
@@ -1007,7 +1025,7 @@ export function AppShell() {
                   marginLeft: "auto",
                   display: "flex", alignItems: "center", gap: 10,
                   paddingLeft: 12,
-                  paddingRight: rightPanelOpen ? 12 : 48,
+                  paddingRight: sidecarMode === "hidden" ? 48 : 12,
                   height: "100%",
                   background: activeTopPanel === "session" ? "var(--bg-selected)" : "none",
                   border: "none",
@@ -1226,9 +1244,21 @@ export function AppShell() {
 
         </div>
 
-        {/* Chat content */}
+        {/* Center content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          {showChat ? (
+          {appMode === "operator" ? (
+            <OperatorWorkspace
+              overview={operator.model}
+              selectedRunId={operatorSelectedRunId}
+              selectedTaskId={operatorSelectedTaskId}
+              onSelectRun={setOperatorSelectedRunId}
+              onSelectTask={({ runId, taskId, attention }) => {
+                setOperatorSelectedRunId(runId);
+                setOperatorSelectedTaskId(taskId);
+                openOperatorTaskSidecar({ runId, taskId, attentionId: attention?.id });
+              }}
+            />
+          ) : showChat ? (
             <ChatWindow
               key={`${appMode}:${activeSessionKey}`}
               session={activeSelectedSession}
@@ -1271,98 +1301,20 @@ export function AppShell() {
         </div>
       </div>
 
-      {/* Right panel: file viewer — always mounted, width animated via CSS */}
-      <div
-        className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}`}
-        aria-hidden={!rightPanelOpen}
-        style={{
-          position: "relative",
-          display: "flex",
-          flexDirection: "column",
-          borderLeft: "1px solid var(--border)",
-          background: "var(--bg)",
-          width: rightPanelOpen ? `min(${rightPanelWidth}px, 100vw)` : 0,
-          minWidth: rightPanelOpen ? `min(${MIN_RIGHT_PANEL_WIDTH}px, 100vw)` : 0,
-        }}
+      <SidecarShell
+        tabs={sidecarTabs}
+        activeTabId={activeSidecarTabId}
+        mode={sidecarMode}
+        width={sidecarWidth}
+        onModeChange={setSidecarMode}
+        onWidthChange={setSidecarWidth}
+        onWidthCommit={handleSidecarWidthCommit}
+        onSelectTab={setActiveSidecarTabId}
+        onCloseTab={handleCloseSidecarTab}
       >
-        {rightPanelOpen && (
-          <div
-            role="separator"
-            aria-orientation="vertical"
-            title="Resize file panel"
-            onMouseDown={(e) => {
-              e.preventDefault();
-              setRightPanelResizing(true);
-            }}
-            style={{
-              position: "absolute",
-              left: -4,
-              top: 0,
-              bottom: 0,
-              width: 8,
-              cursor: "col-resize",
-              zIndex: 2,
-            }}
-          />
-        )}
-        {/* Right panel tab bar */}
-        <div style={{ display: "flex", alignItems: "center", flexShrink: 0, background: "var(--bg-panel)", borderBottom: "1px solid var(--border)", height: 36 }}>
-          <div style={{ flex: 1, overflow: "hidden" }}>
-            <TabBar
-              tabs={fileTabs}
-              activeTabId={activeFileTabId ?? ""}
-              onSelectTab={setActiveFileTabId}
-              onCloseTab={handleCloseFileTab}
-            />
-          </div>
-
-        </div>
-
-        {/* File content */}
-        <div style={{ flex: 1, overflow: "hidden" }}>
-          {activeFileTab?.filePath ? (
-            activeFileTab.kind === "workflowNodeProfile" && activeFileTab.taskId && activeFileTab.mode ? (
-              <WorkflowNodeProfileEditor
-                draftId={activeFileTab.draftId}
-                runId={activeFileTab.runId}
-                taskId={activeFileTab.taskId}
-                mode={activeFileTab.mode}
-              />
-            ) : activeFileTab.kind === "workflowResource" ? (
-              <WorkflowResourceViewer
-                resourcePath={activeFileTab.filePath}
-                cwd={currentCwd ?? undefined}
-              />
-            ) : (
-              <FileViewer filePath={activeFileTab.filePath} cwd={currentCwd ?? undefined} />
-            )
-          ) : (
-            <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-dim)", fontSize: 12 }}>
-              No file open
-            </div>
-          )}
-        </div>
-      </div>
+        {renderSidecarContent()}
+      </SidecarShell>
     </div>
-    {/* File panel toggle — always visible at top-right */}
-    <button
-      onClick={() => setRightPanelOpen((v) => !v)}
-      title={rightPanelOpen ? "Hide file panel" : "Show file panel"}
-      style={{
-        position: "fixed", top: 0, right: 0, zIndex: 300,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        width: 36, height: 36, padding: 0,
-        background: "var(--bg-panel)", border: "none", borderLeft: "1px solid var(--border)", borderBottom: "1px solid var(--border)",
-        color: rightPanelOpen ? "var(--text)" : "var(--text-muted)",
-        cursor: "pointer", transition: "color 0.12s",
-      }}
-      onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text)"; }}
-      onMouseLeave={(e) => { e.currentTarget.style.color = rightPanelOpen ? "var(--text)" : "var(--text-muted)"; }}
-    >
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="18" height="18" rx="2" /><line x1="15" y1="3" x2="15" y2="21" />
-      </svg>
-    </button>
     {modelsConfigOpen && <ModelsConfig onClose={() => { setModelsConfigOpen(false); setModelsRefreshKey((k) => k + 1); }} />}
     {skillsConfigOpen && (skillsConfigCwd ?? currentCwd ?? activeCwd) && (
       <SkillsConfig cwd={(skillsConfigCwd ?? currentCwd ?? activeCwd)!} onClose={() => setSkillsConfigOpen(false)} />

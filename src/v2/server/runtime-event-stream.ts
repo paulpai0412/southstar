@@ -7,13 +7,17 @@ const MIN_POLL_INTERVAL_MS = 10;
 const MAX_POLL_INTERVAL_MS = 30_000;
 const MIN_HEARTBEAT_INTERVAL_MS = 10;
 const MAX_HEARTBEAT_INTERVAL_MS = 60_000;
-const TERMINAL_RUN_STATUSES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_RUN_STATUSES = new Set(["completed", "passed", "failed", "cancelled"]);
 
 export function createRuntimeEventStreamResponse(context: RuntimeServerContext, request: Request, url: URL, runId: string): Response {
   const initialAfter = parseAfterSequence(url, request);
   const closeOnTerminal = url.searchParams.get("closeOnTerminal") !== "false";
+  const taskId = url.searchParams.get("taskId") ?? undefined;
+  const includeRunEvents = url.searchParams.get("includeRunEvents") !== "false";
   const stream = createRuntimeEventStream(context, request, {
     runId,
+    taskId,
+    includeRunEvents,
     afterSequence: initialAfter,
     closeOnTerminal,
     pollIntervalMs: parsePositiveBoundedInteger(url.searchParams.get("pollMs"), {
@@ -42,6 +46,8 @@ function createRuntimeEventStream(
   request: Request,
   input: {
     runId: string;
+    taskId?: string;
+    includeRunEvents: boolean;
     afterSequence: number;
     closeOnTerminal: boolean;
     pollIntervalMs: number;
@@ -111,6 +117,8 @@ function createRuntimeEventStream(
         try {
           const events = await readRunEventsSince(context.db, {
             runId: input.runId,
+            taskId: input.taskId,
+            includeRunEvents: input.includeRunEvents,
             afterSequence: nextAfter,
           });
           if (closed) return;
@@ -120,6 +128,10 @@ function createRuntimeEventStream(
           }
 
           if (input.closeOnTerminal && events.some((event) => TERMINAL_RUNTIME_EVENT_TYPES.has(event.eventType))) {
+            safeClose();
+            return;
+          }
+          if (input.closeOnTerminal && await isRunTerminal(context, input.runId)) {
             safeClose();
             return;
           }
@@ -133,6 +145,8 @@ function createRuntimeEventStream(
             if (closed) return;
             const finalEvents = await readRunEventsSince(context.db, {
               runId: input.runId,
+              taskId: input.taskId,
+              includeRunEvents: input.includeRunEvents,
               afterSequence: nextAfter,
             });
             if (closed) return;

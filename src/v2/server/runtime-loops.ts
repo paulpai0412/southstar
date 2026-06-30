@@ -129,7 +129,9 @@ export function createManagedRuntimeLoopRunners(input: ManagedRuntimeLoopDeps): 
       id: "tork-exception-observer",
       intervalMs: input.recoveryIntervalMs,
       runOnce: async () => {
-        await observeTorkHandExecutionExceptionsPg(input.db);
+        await observeTorkHandExecutionExceptionsPg(input.db, {
+          ...(input.providerActions ? { providerActions: input.providerActions } : {}),
+        });
         return { observed: true };
       },
     },

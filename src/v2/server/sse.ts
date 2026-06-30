@@ -17,7 +17,13 @@ export type RuntimeEventFrame = {
   createdAt: string;
 };
 
-export async function readRunEventsSince(db: SouthstarDb, input: { runId: string; afterSequence?: number }): Promise<RuntimeEventFrame[]> {
+export async function readRunEventsSince(db: SouthstarDb, input: {
+  runId: string;
+  afterSequence?: number;
+  taskId?: string;
+  includeRunEvents?: boolean;
+}): Promise<RuntimeEventFrame[]> {
+  const includeRunEvents = input.includeRunEvents !== false;
   const rows = await db.query<{
     sequence: number;
     event_type: string;
@@ -30,9 +36,15 @@ export async function readRunEventsSince(db: SouthstarDb, input: { runId: string
   }>(
     `select sequence, event_type, run_id, task_id, session_id, actor_type, payload_json, created_at
      from southstar.workflow_history
-     where run_id = $1 and sequence > $2
+     where run_id = $1
+       and sequence > $2
+       and (
+         $3::text is null
+         or task_id = $3
+         or ($4::boolean and task_id is null)
+       )
      order by sequence`,
-    [input.runId, input.afterSequence ?? 0],
+    [input.runId, input.afterSequence ?? 0, input.taskId ?? null, includeRunEvents],
   );
   return rows.rows.map((row) => ({
     sequence: row.sequence,
