@@ -23,6 +23,7 @@ await import("./v2/workspace-snapshot.test.ts");
 await import("./v2/planner.test.ts");
 await import("./v2/pi-sdk-harness.test.ts");
 await import("./v2/tork-client.test.ts");
+await import("./v2/tork-observer.test.ts");
 await import("./v2/env.test.ts");
 await import("./v2/cli.test.ts");
 await import("./v2/cli-operations.test.ts");

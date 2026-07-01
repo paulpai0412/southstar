@@ -123,6 +123,65 @@ test("agent runner CLI refreshes v2 context packet before harness run", async ()
   }
 });
 
+test("agent runner CLI sends heartbeat without a Tork job id", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-heartbeat-"));
+  const envelopePath = join(root, "envelope-heartbeat.json");
+  const resultPath = join(root, "result-heartbeat.json");
+  await writeFile(envelopePath, JSON.stringify(envelope()), "utf8");
+  let heartbeatCalls = 0;
+  const server = createServer(async (request, response) => {
+    const body = await readRequestBody(request);
+    if (request.method === "POST" && request.url === "/heartbeat") {
+      heartbeatCalls += 1;
+      const payload = JSON.parse(body) as { runId?: string; taskId?: string; attemptId?: string; torkJobId?: string };
+      assert.equal(payload.runId, "run-1");
+      assert.equal(payload.taskId, "task-1");
+      assert.equal(payload.attemptId, "attempt-no-job-id");
+      assert.equal(payload.torkJobId, undefined);
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/harness") {
+      await waitFor(() => heartbeatCalls > 0);
+      response.setHeader("content-type", "application/json");
+      response.end(JSON.stringify({
+        artifact: { summary: "done", commandsRun: ["npm test"], risks: [] },
+        progress: ["heartbeat observed"],
+        metrics: { tokens: 10 },
+      }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(`not found: ${request.url} ${body}`);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    const rootUrl = `http://127.0.0.1:${address?.port}`;
+    const exitCode = await runAgentRunnerCli([
+      "--envelope",
+      envelopePath,
+      "--result",
+      resultPath,
+      "--harness-endpoint",
+      `${rootUrl}/harness`,
+      "--heartbeat-url",
+      `${rootUrl}/heartbeat`,
+      "--attempt-id",
+      "attempt-no-job-id",
+      "--heartbeat-interval-ms",
+      "1000",
+    ]);
+
+    assert.equal(exitCode, 0);
+    assert.equal(heartbeatCalls >= 1, true);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("agent runner CLI runtime fault keeps harness execution but fails artifact gate", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-fault-"));
   const envelopePath = join(root, "envelope-fault.json");
@@ -333,4 +392,13 @@ async function readRequestBody(request: NodeJS.ReadableStream): Promise<string> 
   const chunks: Buffer[] = [];
   for await (const chunk of request) chunks.push(Buffer.from(chunk));
   return Buffer.concat(chunks).toString("utf8");
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  const deadline = Date.now() + 1_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.equal(predicate(), true);
 }

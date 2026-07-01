@@ -1,112 +1,201 @@
-# pi-web
+# Southstar Web
 
-[中文文档](./README.zh-CN.md)
+Southstar Web is the browser UI for the Southstar runtime. It combines pi-web style chat/session browsing with Southstar workflow planning and operator monitoring.
 
-Local web UI for the [pi coding agent](https://github.com/badlogic/pi-mono). pi-web reads your local pi session files and gives you a browser workspace for session browsing, real-time chat, model configuration, skill management, and project file preview.
-
-![Pi Web shows the same pi session with structured Markdown, tool calls, and project navigation beside the CLI](./docs/screenshot2.png)
-
-The same pi session in CLI and pi-web: structured tool calls, readable Markdown, session browsing, and cleaner results.
+The active app lives in this `web/` directory. The repository root Next app is retired.
 
 ## Quick Start
 
-**Run without installing:**
-
-```bash
-npx @agegr/pi-web@latest
-```
-
-**Or install globally:**
-
-```bash
-npm install -g @agegr/pi-web
-pi-web
-```
-
-Then open [http://localhost:30141](http://localhost:30141). The CLI will try to open the browser automatically after the server is ready.
-
-**Options:**
-
-```bash
-pi-web --port 8080              # custom port
-pi-web --hostname 127.0.0.1     # local access only
-pi-web -p 8080 -H 127.0.0.1     # combine options
-
-PORT=8080 pi-web                # environment variable is also supported
-```
-
-## Features
-
-- **Pick work back up**: browse previous pi conversations by project without digging through terminal history or session paths.
-- **Try different directions safely**: continue from an earlier message or fork a session into a separate route.
-- **Chat beside the project**: browse files on the left and preview source, docs, images, audio, and PDFs on the right while the agent works.
-- **See session state clearly**: context usage, cost, compaction state, and system prompt details are visible from the top bar.
-- **Configure less from the terminal**: manage models, login/API keys, model tests, and skill switches from the web UI.
-
-## Notes
-
-- **Data directory**: pi-web reads `~/.pi/agent/sessions` by default. Set `PI_CODING_AGENT_DIR` to point at another pi agent directory.
-- **Session files**: files are stored as `~/.pi/agent/sessions/<encoded-cwd>/<timestamp>_<uuid>.jsonl`.
-- **Model config**: the Models panel reads and writes `models.json` in the pi agent directory. Model lists and defaults come from pi's config.
-- **File access**: file browsing and preview are scoped to the selected project directory and working directories that appear in sessions.
-- **Forks vs in-session branches**: Fork creates a new `.jsonl` file. "Edit from here" creates another branch inside the same session file.
-
-## Development
+From this directory:
 
 ```bash
 npm install
 npm run dev
 ```
 
-The local dev server runs at [http://localhost:30141](http://localhost:30141).
-
-Common checks:
+From the repository root:
 
 ```bash
-node_modules/.bin/tsc --noEmit
-npm run lint
+npm --prefix web install
+npm --prefix web run dev
 ```
 
-Avoid running `next build` / `npm run build` during local development. It writes to `.next/` and can interfere with the dev server; leave builds for release work.
+Open `http://127.0.0.1:30141`.
 
-## Project Structure
+For the full local stack, run this from the repository root:
+
+```bash
+npm run southstar:start
+```
+
+That starts Postgres, Tork, the Southstar runtime server, and this web app.
+
+## Features
+
+- **Chat**: browse local Pi sessions, continue conversations, fork from previous messages, inspect project files, and manage models/skills.
+- **Workflow**: generate Southstar workflow drafts, inspect DAGs, edit task profiles, validate manifests, and launch runs.
+- **Operator**: monitor workflow runs, inspect task progress, view artifacts/history, and apply recovery actions.
+- **Sidecar workspace**: open files, runtime resources, task details, and workflow artifacts alongside the main view.
+
+## Runtime Connection
+
+The web app calls the Southstar runtime server through local Next.js route handlers.
+
+Default runtime server:
+
+```text
+http://127.0.0.1:3100
+```
+
+Relevant variables:
+
+- `SOUTHSTAR_SERVER_URL`
+- `SOUTHSTAR_V2_API_BASE_URL`
+- `NEXT_PUBLIC_SOUTHSTAR_SERVER_URL`
+
+The full-stack launcher exports these automatically when it starts the web server.
+
+## App Structure
 
 ```text
 app/
+  page.tsx                         # imports components/AppShell
   api/
-    agent/          # creates/drives AgentSession and exposes SSE events
-    auth/           # OAuth and API key management
-    cwd/validate/   # custom working directory validation
-    default-cwd/    # pi default working directory lookup
-    files/          # file listing, reading, preview, and watching
-    home/           # current user home directory
-    models/         # available models, default model, thinking levels
-    models-config/  # read/write models.json and test models
-    sessions/       # session reads, rename, delete, context, HTML export
-    skills/         # skill listing, search, install, enable/disable
+    agent/                         # Pi AgentSession commands and SSE
+    auth/                          # OAuth/API key status and login helpers
+    files/                         # scoped file reads/previews
+    models*/                       # model config and model testing
+    sessions/                      # Pi session reads, context, rename/delete/export
+    skills/                        # skill listing/search/install
+    workflow/                      # Southstar workflow API proxies
+    operator/                      # Southstar operator API proxies
+
 components/
-  AppShell.tsx        # main layout, URL state, top panels, file tabs
-  SessionSidebar.tsx  # project selector, session tree, Explorer
-  ChatWindow.tsx      # messages, SSE, image drag/drop, minimap
-  ChatInput.tsx       # input bar, model/tools/thinking/compact/slash controls
-  MessageView.tsx     # message, thinking, tool call/result rendering
-  ModelsConfig.tsx    # model and auth configuration panel
-  SkillsConfig.tsx    # skill management panel
-  FileExplorer.tsx    # file tree
-  FileViewer.tsx      # source, diff, image, audio, PDF, DOCX preview
+  AppShell.tsx                     # integrated chat/workflow/operator shell
+  AppModeRail.tsx                  # mode switcher
+  SessionSidebar.tsx               # chat/session/project navigation
+  WorkflowSidebar.tsx              # workflow library/planner/run navigation
+  ChatWindow.tsx                   # Pi chat UI and SSE reconnect
+  WorkflowDagBlock.tsx             # workflow DAG block renderer
+  WorkflowLaunchPreview.tsx        # launch preview
+  WorkflowResourceViewer.tsx       # runtime resources and artifacts
+  operator/                        # operator dashboard components
+  workflow-canvas/                 # DAG canvas layout and nodes
+
 lib/
-  rpc-manager.ts      # AgentSessionWrapper lifecycle and global registry
-  session-reader.ts   # parses .jsonl session files and branch contexts
-  normalize.ts        # normalizes toolCall field names
-  file-access.ts      # file read safety boundary
-  file-paths.ts       # path encoding and relative path helpers
-  markdown.ts         # Markdown/Mermaid/KaTeX plugin configuration
-  pi-types.ts         # pi-related types
-hooks/
-  useAgentSession.ts  # session loading, command sending, SSE state machine
-  useAudio.ts         # completion sound
-  useDragDrop.ts      # image drag/drop
-  useTheme.ts         # theme switching
-bin/
-  pi-web.js           # npm CLI entrypoint
+  workflow/                        # runtime proxy helpers and workflow types
+  operator/                        # operator read-model shaping
+  rpc-manager.ts                   # Pi AgentSession lifecycle
+  session-reader.ts                # read-only Pi session parsing
+  file-access.ts                   # file access boundary
+  markdown.ts                      # Markdown/Mermaid/KaTeX config
 ```
+
+## Current UI Design Architecture
+
+`app/page.tsx` renders `components/AppShell.tsx`. `AppShell` is intentionally the top-level integration point because chat, workflow, and operator modes share project cwd, sidecar state, selected resources, and top-level panels.
+
+### Shell State
+
+`AppShell` coordinates:
+
+- Active mode: chat, workflow, operator.
+- Selected chat session and restored `?session=` URL state.
+- Workflow selected template/session state.
+- Operator selected run/task/incident state.
+- Sidecar tabs and mode: hidden, floating, pinned, expanded.
+- Models, skills, and MCP configuration modals.
+- Top bar panels for branches and session stats.
+
+### Component Boundaries
+
+Chat components own Pi session interaction and message rendering. Workflow components own manifest/draft/DAG presentation. Operator components own monitoring and recovery presentation. Shared file/resource viewing goes through the sidecar.
+
+```text
+AppShell
+  +-- AppModeRail
+  +-- SessionSidebar + ChatWindow
+  +-- WorkflowSidebar + workflow canvas/profile/resource views
+  +-- OperatorSidebar + OperatorWorkspace
+  +-- SidecarShell + FileViewer/WorkflowResourceViewer/OperatorTaskTabs
+```
+
+### API Boundary
+
+React components should call local route handlers under `app/api`. Those handlers proxy to the runtime server or read local Pi files as needed.
+
+```text
+React component
+  -> Next route handler
+  -> lib workflow/operator/session helper
+  -> runtime server or local Pi session files
+  -> React component
+```
+
+Do not call Postgres from browser components. Do not duplicate runtime URL construction in components.
+
+## Data Flow
+
+### Workflow UI
+
+```text
+Browser
+  -> app/api/workflow/*
+  -> Southstar runtime /api/v2/*
+  -> Postgres workflow_runs/workflow_tasks/workflow_history/runtime_resources
+  -> runtime UI/read-model response
+  -> workflow components
+```
+
+Workflow routes are thin proxy/adapters. The durable truth lives in the runtime server and Postgres.
+
+### Operator UI
+
+```text
+Browser
+  -> app/api/operator/*
+  -> runtime operator/read-model endpoints
+  -> components/operator/*
+```
+
+The operator UI renders projected state: health, runs, attention items, incidents, artifacts, history, and available commands.
+
+### Chat UI
+
+```text
+Browser
+  -> app/api/sessions/*          # read-only session browsing
+  -> ~/.pi/agent/sessions/*.jsonl
+
+Browser
+  -> app/api/agent/[id]          # active chat commands
+  -> lib/rpc-manager.ts
+  -> Pi AgentSession
+```
+
+Session browsing does not create an agent session. Sending a message creates or reuses an in-process `AgentSessionWrapper`.
+
+## Development
+
+```bash
+npm run dev
+npm run build
+npm run lint
+```
+
+Use `npm run build` after changing imports, Next config, production route behavior, or dependency declarations.
+
+If you see:
+
+```text
+Module not found: Can't resolve '@/components/AppShell'
+```
+
+first check that Next is running from this `web/` directory. `@/*` is mapped to `./*` in `web/tsconfig.json`, and `components/AppShell.tsx` is the intended app shell.
+
+## Notes
+
+- `package.json` still exposes the `pi-web` binary name for compatibility.
+- The app still supports Pi session browsing and chat, but Southstar workflow/operator surfaces are first-class.
+- Keep browser-facing routes free of secrets and raw token values.
+- Prefer shared logic in `lib/` over duplicating request shaping inside route handlers.

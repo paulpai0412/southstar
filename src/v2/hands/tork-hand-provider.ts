@@ -161,7 +161,7 @@ export function createTorkHandProvider(input: {
           runRoot: taskInput.runRoot ?? input.runRoot,
           envelopeBasePath,
         });
-        const workflow = withPiAgentRuntimeConfig(mounted.workflow);
+        const workflow = withPiAgentRuntimeConfig(withWorkspaceMount(mounted.workflow, taskEnvelope));
         await materializeTaskEnvelope(taskEnvelope, { runRoot: mounted.runRoot });
         const submitted = await input.executorProvider.submit({
           runId: binding.runId,
@@ -253,6 +253,43 @@ function withPiAgentRuntimeConfig(workflow: SouthstarWorkflowManifest): Southsta
   };
 }
 
+function withWorkspaceMount(workflow: SouthstarWorkflowManifest, envelope: AnyTaskEnvelope): SouthstarWorkflowManifest {
+  const workspaceMount = workspaceMountFromEnvelope(envelope);
+  if (!workspaceMount) return workflow;
+  return {
+    ...workflow,
+    tasks: workflow.tasks.map((task) => ({
+      ...task,
+      execution: {
+        ...task.execution,
+        mounts: upsertMountTarget(task.execution.mounts, workspaceMount),
+      },
+    })),
+  };
+}
+
+function workspaceMountFromEnvelope(envelope: AnyTaskEnvelope): { source: string; target: string; readonly: boolean } | undefined {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return undefined;
+  const handle = envelope.workspace?.handle;
+  const source = handle?.hostMountPath;
+  if (!source || !isHostMountPath(source)) return undefined;
+  return {
+    source,
+    target: containerWorkspacePath(handle),
+    readonly: false,
+  };
+}
+
+function containerWorkspacePath(handle: { repoRoot: string; worktreePath: string }): string {
+  if (handle.worktreePath.startsWith("/workspace/")) return handle.worktreePath;
+  if (handle.repoRoot.startsWith("/workspace/")) return handle.repoRoot;
+  return "/workspace/repo";
+}
+
+function isHostMountPath(value: string): boolean {
+  return value.startsWith("/") && !value.startsWith("/workspace/");
+}
+
 function taskUsesPiAgentHarness(workflow: SouthstarWorkflowManifest, task: WorkflowTaskDefinition): boolean {
   const taskHarnessIds = new Set(task.subagents.map((subagent) => subagent.harnessId));
   return workflow.harnessDefinitions.some((harness) => taskHarnessIds.has(harness.id) && harness.kind === "pi-agent");
@@ -264,6 +301,13 @@ function ensureMount(
 ): Array<{ source: string; target: string; readonly: boolean }> {
   if (mounts.some((entry) => entry.source === mount.source && entry.target === mount.target)) return mounts;
   return [...mounts, mount];
+}
+
+function upsertMountTarget(
+  mounts: Array<{ source: string; target: string; readonly: boolean }>,
+  mount: { source: string; target: string; readonly: boolean },
+): Array<{ source: string; target: string; readonly: boolean }> {
+  return [...mounts.filter((entry) => entry.target !== mount.target), mount];
 }
 
 function asTaskEnvelope(value: unknown): AnyTaskEnvelope | null {

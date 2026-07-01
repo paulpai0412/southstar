@@ -52,6 +52,54 @@ test("operator overview returns active runs and attention items", async () => {
   }
 });
 
+test("operator overview keeps failed runs visible when unresolved attention exists", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const visibleRunId = "run-operator-failed-visible";
+    await createWorkflowRunPg(db, {
+      id: visibleRunId,
+      status: "failed",
+      domain: "software",
+      goalPrompt: "failed run with unresolved exception",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: JSON.stringify({ cwd: "/home/timmypai/apps/southstar", projectRoot: "/home/timmypai/apps/southstar" }),
+      metricsJson: "{}",
+    });
+    await createWorkflowRunPg(db, {
+      id: "run-operator-failed-quiet",
+      status: "failed",
+      domain: "software",
+      goalPrompt: "failed run without unresolved attention",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "runtime_exception",
+      resourceKey: "runtime-exception-failed-visible",
+      runId: visibleRunId,
+      taskId: "task-implement",
+      scope: "runtime",
+      status: "observed",
+      title: "Queue timeout",
+      payload: { kind: "tork_queue_timeout", severity: "recoverable" },
+    });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+
+    assert.equal(model.activeRuns.some((run) => run.runId === visibleRunId && run.status === "failed"), true);
+    assert.equal(model.activeRuns.some((run) => run.runId === "run-operator-failed-quiet"), false);
+    assert.equal(model.attentionItems.some((item) => item.runId === visibleRunId && item.kind === "runtime_exception"), true);
+    assert.equal(model.defaultSelection?.runId, visibleRunId);
+  } finally {
+    await db.close();
+  }
+});
+
 test("operator overview classifies all operator attention sources from runtime state", async () => {
   const db = await createTestPostgresDb();
   try {

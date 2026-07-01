@@ -67,6 +67,54 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
   }
 });
 
+test("ManagedContextAssembler maps host project root into mounted container workspace", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    await createWorkflowRunPg(db, {
+      id: "run-managed-context-workspace",
+      status: "running",
+      domain: "software",
+      goalPrompt: "build managed context with workspace",
+      workflowManifestJson: JSON.stringify(manifest()),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: JSON.stringify({
+        cwd: "/home/timmypai/apps/southstar",
+        projectRoot: "/home/timmypai/apps/southstar",
+      }),
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-managed-context-workspace",
+      taskKey: "implement-feature",
+      status: "claimed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: "session-managed-context-workspace",
+    });
+
+    const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+    const assembled = await assembler.buildForTask({
+      runId: "run-managed-context-workspace",
+      taskId: "implement-feature",
+      sessionId: "session-managed-context-workspace",
+      attemptId: "implement-feature-attempt-1",
+      handExecutionId: "hand-execution:run-managed-context-workspace:implement-feature:implement-feature-attempt-1",
+      dependsOn: [],
+    });
+
+    assert.deepEqual(assembled.taskEnvelope.workspace?.handle, {
+      repoRoot: "/workspace/repo",
+      worktreePath: "/workspace/repo",
+      hostMountPath: "/home/timmypai/apps/southstar",
+    });
+  } finally {
+    await db.close();
+  }
+});
+
 test("ManagedContextAssembler applies assembly policy to failure summaries", async () => {
   const db = await createTestPostgresDb();
   try {

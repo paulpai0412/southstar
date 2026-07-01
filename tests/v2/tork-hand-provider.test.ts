@@ -150,6 +150,61 @@ test("TorkHandProvider.executeTask mounts Pi OAuth config for pi-agent tasks", a
   }
 });
 
+test("TorkHandProvider.executeTask mounts host workspace at the container repo path", async () => {
+  const runRoot = await mkdtemp(join(tmpdir(), "southstar-tork-hand-provider-"));
+  const submitted: ExecutorSubmitRequest[] = [];
+  const executorProvider: ExecutorProvider = {
+    executorType: "tork",
+    async submit(request) {
+      submitted.push(request);
+      return {
+        executorType: "tork",
+        externalJobId: "job-workspace",
+        status: "queued",
+        projectionFingerprint: "fingerprint-workspace",
+        providerPayload: { jobName: "southstar-run-hand-workspace" },
+      };
+    },
+  };
+  const provider = createTorkHandProvider({
+    executorProvider,
+    callbackUrl: "http://127.0.0.1/default-callback",
+    runRoot,
+  });
+
+  try {
+    const result = await provider.executeTask!(
+      handBinding({ taskId: "task-a" }),
+      executeTaskInput({
+        taskEnvelope: {
+          ...taskEnvelope("task-a"),
+          workspace: {
+            handle: {
+              repoRoot: "/workspace/repo",
+              worktreePath: "/workspace/repo",
+              hostMountPath: "/home/timmypai/apps/southstar",
+            },
+          },
+        },
+      }),
+    );
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(
+      submitted[0]!.workflow.tasks[0]!.execution.mounts.find((mount) => mount.target === "/workspace/repo"),
+      { source: "/home/timmypai/apps/southstar", target: "/workspace/repo", readonly: false },
+    );
+    const materializedEnvelope = JSON.parse(await readFile(join(runRoot, "run-hand", "task-a", "envelope.json"), "utf8"));
+    assert.deepEqual(materializedEnvelope.workspace.handle, {
+      repoRoot: "/workspace/repo",
+      worktreePath: "/workspace/repo",
+      hostMountPath: "/home/timmypai/apps/southstar",
+    });
+  } finally {
+    await rm(runRoot, { recursive: true, force: true });
+  }
+});
+
 test("TorkHandProvider.executeTask fails missing workflow input and marks binding failed", async () => {
   let submitted = false;
   const provider = createTorkHandProvider({

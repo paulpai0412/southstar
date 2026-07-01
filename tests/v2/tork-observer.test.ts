@@ -5,6 +5,7 @@ import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
+  getResourceByKeyPg,
   listResourcesPg,
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -172,7 +173,7 @@ test("tork observer records terminal-without-callback when provider job failed w
       providerActions: {
         poll: async (input) => {
           assert.equal(input.externalJobId, "job-terminal-failed");
-          assert.equal(input.reason, "observe-tork-terminal-without-callback");
+          assert.equal(input.reason, "observe-tork-provider-status");
           return { status: "FAILED" };
         },
       },
@@ -203,6 +204,59 @@ test("tork observer records terminal-without-callback when provider job failed w
       .filter((resource) => resource.runId === "run-tork-observer-terminal");
     assert.equal(decisions.length, 1);
     assert.equal(decisions[0]?.payload.path, "retry-same-task-new-attempt");
+  } finally {
+    await db.close();
+  }
+});
+
+test("tork observer patches queued hand execution to running when provider execution has started", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-tork-observer-provider-running";
+    const taskId = "task-a";
+    const attemptId = "attempt-1";
+    await seedRunAndTask(db, runId, taskId, { taskStatus: "queued" });
+    await seedHandExecution(db, {
+      runId,
+      taskId,
+      sessionId: "session-a",
+      attemptId,
+      status: "queued",
+      queuedAt: "2026-07-01T00:00:00.000Z",
+      queueTimeoutSeconds: 30,
+      heartbeatTimeoutSeconds: 60,
+      externalJobId: "job-started-still-pending",
+    });
+
+    const result = await observeTorkHandExecutionExceptionsPg(db, {
+      now: "2026-07-01T00:01:00.000Z",
+      providerActions: {
+        poll: async (input) => {
+          assert.equal(input.externalJobId, "job-started-still-pending");
+          assert.equal(input.reason, "observe-tork-provider-status");
+          return {
+            status: "PENDING",
+            raw: {
+              state: "PENDING",
+              execution: [{
+                id: "tork-execution-1",
+                startedAt: "2026-07-01T00:00:10.000Z",
+              }],
+            },
+          };
+        },
+      },
+    });
+
+    assert.deepEqual(result.observedKinds, []);
+    const hand = await getResourceByKeyPg(db, "hand_execution", `hand-execution:${runId}:${taskId}:${attemptId}`);
+    assert.equal(hand?.status, "running");
+    assert.equal(hand?.payload.status, "running");
+    assert.equal(hand?.payload.startedAt, "2026-07-01T00:00:10.000Z");
+    assert.equal(hand?.payload.torkObservedStatus, "PENDING");
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === runId);
+    assert.equal(exceptions.length, 0);
   } finally {
     await db.close();
   }

@@ -44,6 +44,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
   return {
     async buildForTask(input: BuildManagedTaskContextInput): Promise<BuildManagedTaskContextResult> {
       const workflow = await readWorkflow(db, input.runId);
+      const workspace = await readWorkspaceHandle(db, input.runId);
       const task = required(workflow.tasks.find((candidate) => candidate.id === input.taskId), `unknown task: ${input.taskId}`);
       const roleRef = required(task.roleRef, `missing roleRef for task ${task.id}`);
       const agentProfileRef = required(task.agentProfileRef, `missing agentProfileRef for task ${task.id}`);
@@ -153,6 +154,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
           baseCheckpointId: input.checkpointRefs?.[0],
           maxRepairAttempts: task.rootSession.maxRepairAttempts,
         },
+        ...(workspace ? { workspace } : {}),
       });
       const trace: ContextAssemblyTrace = {
         schemaVersion: CONTEXT_ASSEMBLY_TRACE_SCHEMA_VERSION,
@@ -237,6 +239,23 @@ async function readWorkflow(db: SouthstarDb, runId: string): Promise<SouthstarWo
   );
   if (!row) throw new Error(`workflow run not found: ${runId}`);
   return row.workflow_manifest_json;
+}
+
+async function readWorkspaceHandle(db: SouthstarDb, runId: string): Promise<TaskEnvelopeV2["workspace"] | undefined> {
+  const row = await db.maybeOne<{ runtime_context_json: unknown }>(
+    "select runtime_context_json from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  const runtimeContext = asRecord(row?.runtime_context_json);
+  const projectRoot = stringValue(runtimeContext.projectRoot) ?? stringValue(runtimeContext.cwd);
+  if (!projectRoot || !isHostMountPath(projectRoot)) return undefined;
+  return {
+    handle: {
+      repoRoot: "/workspace/repo",
+      worktreePath: "/workspace/repo",
+      hostMountPath: projectRoot,
+    },
+  };
 }
 
 function artifactContractsForTask(domainPack: DomainPack, task: WorkflowTaskDefinition): ArtifactContract[] {
@@ -324,6 +343,18 @@ function mcpGrantBlocks(
 function required<T>(value: T | undefined, message: string): T {
   if (!value) throw new Error(message);
   return value;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function isHostMountPath(value: string): boolean {
+  return value.startsWith("/") && !value.startsWith("/workspace/");
 }
 
 function attemptNumber(attemptId: string): number {

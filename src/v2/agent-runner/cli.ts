@@ -119,7 +119,7 @@ async function postCallback(callbackUrl: string, result: TaskRunResult): Promise
 }
 
 function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope): () => void {
-  if (!options.heartbeatUrl || !options.torkJobId) {
+  if (!options.heartbeatUrl) {
     return () => undefined;
   }
 
@@ -127,7 +127,7 @@ function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, en
   let stopped = false;
 
   const sendHeartbeat = async (phase: string, message: string) => {
-    if (!options.heartbeatUrl || !options.torkJobId) return;
+    if (!options.heartbeatUrl) return;
     seq += 1;
     try {
       await fetch(options.heartbeatUrl, {

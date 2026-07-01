@@ -2,6 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { openSync, closeSync } from "node:fs";
 import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import { Socket } from "node:net";
+import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { Client } from "pg";
 import type { SouthstarEnv } from "../config/env.ts";
@@ -52,6 +53,27 @@ const POSTGRES_CONTAINER_NAME = "southstar-postgres";
 const POSTGRES_STARTUP_TIMEOUT_MS = 30_000;
 const TORK_STARTUP_TIMEOUT_MS = 30_000;
 const TORK_SHUTDOWN_TIMEOUT_MS = 10_000;
+const DEFAULT_TORK_CONFIG = `[datastore]
+type = "postgres"
+
+[runtime]
+type = "docker"
+
+[runtime.docker]
+config = ""
+privileged = false
+
+[runtime.docker.image]
+ttl = "24h"
+
+[mounts.bind]
+allowed = true
+sources = [
+]
+
+[mounts.temp]
+dir = "/tmp"
+`;
 
 export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
   const cwd = input.cwd ?? process.cwd();
@@ -142,12 +164,18 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
     await ensureDirectory(logsDir);
     const logPath = resolve(logsDir, "tork-standalone.log");
     const scriptPath = resolve(cwd, "scripts/run-local-tork.sh");
+    const managedConfigPath = await writeManagedTorkConfig();
+    const spawnEnv = {
+      ...process.env,
+      ...torkEnv(env),
+      TORK_CONFIG: process.env.TORK_CONFIG ?? managedConfigPath,
+    };
     let child: Pick<ChildProcess, "pid" | "unref">;
     if (hasInjectedSpawnChild) {
       child = spawnChild(scriptPath, [], {
         cwd,
         detached: true,
-        env: { ...process.env, ...torkEnv(env) },
+        env: spawnEnv,
         stdio: "ignore",
       });
     } else {
@@ -156,7 +184,7 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
         child = spawnChild(scriptPath, [], {
           cwd,
           detached: true,
-          env: { ...process.env, ...torkEnv(env) },
+          env: spawnEnv,
           stdio: ["ignore", logFd, logFd],
         });
       } finally {
@@ -243,6 +271,57 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
+
+  async function writeManagedTorkConfig(): Promise<string> {
+    const managedConfigPath = resolve(cwd, ".southstar/tork.generated.toml");
+    const baseConfigPath = resolve(cwd, ".tools/tork/southstar.config.toml");
+    let baseConfig = DEFAULT_TORK_CONFIG;
+    try {
+      baseConfig = await readTextFile(baseConfigPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const sourcePaths = [
+      "/tmp/southstar-runs",
+      resolve(homedir(), ".pi/agent"),
+      cwd,
+    ];
+    await writeTextFile(managedConfigPath, mergeTorkBindSources(baseConfig, sourcePaths));
+    return managedConfigPath;
+  }
+}
+
+export function mergeTorkBindSources(configText: string, sourcePaths: string[]): string {
+  const uniqueSourcePaths = unique(sourcePaths.filter((sourcePath) => sourcePath.startsWith("/")));
+  const match = configText.match(/(\[mounts\.bind\][\s\S]*?sources\s*=\s*\[)([\s\S]*?)(\n\])/);
+  if (!match || match.index === undefined) {
+    return `${configText.trimEnd()}
+
+[mounts.bind]
+allowed = true
+sources = [
+${uniqueSourcePaths.map((sourcePath) => `  ${quoteTomlString(sourcePath)}`).join(",\n")}
+]
+`;
+  }
+  const existingSources = quotedTomlStrings(match[2] ?? "");
+  const mergedSources = unique([...existingSources, ...uniqueSourcePaths]);
+  return `${configText.slice(0, match.index)}${match[1]}
+${mergedSources.map((sourcePath) => `  ${quoteTomlString(sourcePath)}`).join(",\n")}
+]${configText.slice(match.index + match[0].length)}`;
+}
+
+function quotedTomlStrings(value: string): string[] {
+  const matches = value.matchAll(/"((?:\\.|[^"\\])*)"/g);
+  return Array.from(matches, (match) => JSON.parse(`"${match[1] ?? ""}"`) as string);
+}
+
+function quoteTomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
+function unique(values: string[]): string[] {
+  return Array.from(new Set(values));
 }
 
 function postgresTargetForManagedDocker(env: SouthstarEnv): { host: string; port: number } | undefined {

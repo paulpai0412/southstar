@@ -41,17 +41,17 @@ export async function observeTorkHandExecutionExceptionsPg(
     const externalJobId = stringValue(payload.externalJobId);
 
     if (externalJobId && input.providerActions?.poll) {
-      const terminalObservation = await pollTerminalProviderStatus({
+      const providerObservation = await pollProviderStatus({
         providerActions: input.providerActions,
         runId,
         externalJobId,
       });
-      if (terminalObservation) {
+      if (providerObservation?.terminal) {
         const patched = await patchTerminalWithoutCallbackPg(db, {
           resourceKey: row.resource_key,
-          terminalStatus: terminalHandExecutionStatus(terminalObservation.category),
+          terminalStatus: terminalHandExecutionStatus(providerObservation.category),
           observedAt,
-          torkObservedStatus: terminalObservation.status,
+          torkObservedStatus: providerObservation.status,
         });
         if (!patched) continue;
         await observeAndDecide({
@@ -66,11 +66,24 @@ export async function observeTorkHandExecutionExceptionsPg(
           status: row.status,
           kind: "tork_terminal_without_callback",
           observedAt,
-          torkObservedStatus: terminalObservation.status,
+          torkObservedStatus: providerObservation.status,
           terminalWithoutCallback: true,
         });
         observedKinds.push("tork_terminal_without_callback");
         continue;
+      }
+      if (row.status === "queued" && providerObservation?.running) {
+        const patched = await patchRunningProviderStatusPg(db, {
+          resourceKey: row.resource_key,
+          runId,
+          taskId,
+          sessionId,
+          attemptId,
+          observedAt,
+          startedAt: providerObservation.startedAt ?? observedAt,
+          torkObservedStatus: providerObservation.status,
+        });
+        if (patched) continue;
       }
     }
 
@@ -156,31 +169,115 @@ async function observeAndDecide(input: {
   await input.controller.decide(classification);
 }
 
-async function pollTerminalProviderStatus(input: {
+async function pollProviderStatus(input: {
   providerActions: RecoveryProviderActions;
   runId: string;
   externalJobId: string;
-}): Promise<{ status: string; category: TorkStatusCategory } | null> {
+}): Promise<{
+  status: string;
+  category: TorkStatusCategory;
+  terminal: boolean;
+  running: boolean;
+  startedAt?: string;
+} | null> {
   let observation: unknown;
   try {
     observation = await input.providerActions.poll?.({
       externalJobId: input.externalJobId,
       runId: input.runId,
-      reason: "observe-tork-terminal-without-callback",
+      reason: "observe-tork-provider-status",
     });
   } catch {
     return null;
   }
   const status = extractProviderStatus(observation);
   const normalized = normalizeTorkStatus(status);
-  if (
-    normalized.category !== "failed-like"
-    && normalized.category !== "cancelled-like"
-    && normalized.category !== "completed-like"
-  ) {
-    return null;
+  const terminal = normalized.category === "failed-like"
+    || normalized.category === "cancelled-like"
+    || normalized.category === "completed-like";
+  const startedAt = extractProviderStartedAt(observation);
+  const running = normalized.category === "running-like" || Boolean(startedAt && !terminal);
+  if (terminal || running) {
+    return {
+      status: normalized.raw,
+      category: normalized.category,
+      terminal,
+      running,
+      ...(startedAt ? { startedAt } : {}),
+    };
   }
-  return { status: normalized.raw, category: normalized.category };
+  return null;
+}
+
+async function patchRunningProviderStatusPg(db: SouthstarDb, input: {
+  resourceKey: string;
+  runId: string;
+  taskId?: string;
+  sessionId?: string;
+  attemptId?: string;
+  observedAt: string;
+  startedAt: string;
+  torkObservedStatus: string;
+}): Promise<boolean> {
+  const patch = {
+    status: "running",
+    startedAt: input.startedAt,
+    lastProviderObservedAt: input.observedAt,
+    torkObservedStatus: input.torkObservedStatus,
+  };
+  const result = await db.query(
+    `update southstar.runtime_resources
+        set status = 'running',
+            session_id = coalesce(session_id, $2),
+            payload_json = payload_json || $3::jsonb,
+            summary_json = summary_json || $4::jsonb,
+            updated_at = now()
+      where resource_type = 'hand_execution'
+        and resource_key = $1
+        and status = 'queued'`,
+    [
+      input.resourceKey,
+      input.sessionId ?? null,
+      JSON.stringify(patch),
+      JSON.stringify({ status: "running", ...(input.attemptId ? { attemptId: input.attemptId } : {}) }),
+    ],
+  );
+  if ((result.rowCount ?? 0) === 0) return false;
+  if (input.taskId) {
+    await db.query(
+      "update southstar.workflow_tasks set status = 'running', updated_at = now() where run_id = $1 and id = $2 and status in ('queued', 'claimed')",
+      [input.runId, input.taskId],
+    );
+  }
+  return true;
+}
+
+function isTerminalProviderCategory(category: TorkStatusCategory): boolean {
+  return category === "failed-like" || category === "cancelled-like" || category === "completed-like";
+}
+
+function extractProviderStartedAt(value: unknown): string | undefined {
+  const record = asRecord(value);
+  const raw = asRecord(record.raw);
+  return firstStartedAtFromExecutions(record.execution)
+    ?? firstStartedAtFromExecutions(raw.execution)
+    ?? stringValue(record.startedAt)
+    ?? stringValue(raw.startedAt);
+}
+
+function firstStartedAtFromExecutions(value: unknown): string | undefined {
+  if (!Array.isArray(value)) return undefined;
+  for (const item of value) {
+    const execution = asRecord(item);
+    const startedAt = stringValue(execution.startedAt);
+    if (!startedAt) continue;
+    const status = stringValue(execution.status) ?? stringValue(execution.state);
+    const normalized = normalizeTorkStatus(status);
+    if (isTerminalProviderCategory(normalized.category)) continue;
+    if (stringValue(execution.completedAt) || stringValue(execution.finishedAt) || stringValue(execution.endedAt)) continue;
+    return startedAt;
+  }
+  return undefined;
 }
 
 async function patchTerminalWithoutCallbackPg(db: SouthstarDb, input: {

@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SouthstarEnv } from "../../src/v2/config/env.ts";
-import { createSouthstarInfraLifecycle } from "../../src/v2/server/infra-lifecycle.ts";
+import { createSouthstarInfraLifecycle, mergeTorkBindSources } from "../../src/v2/server/infra-lifecycle.ts";
 
 test("infra start brings up local Postgres before Tork", async () => {
   const calls: string[] = [];
+  let spawnedTorkConfig: string | undefined;
   const lifecycle = createSouthstarInfraLifecycle({
     cwd: "/tmp/southstar",
     envLoader: () => localEnv(),
@@ -12,7 +13,21 @@ test("infra start brings up local Postgres before Tork", async () => {
       calls.push(`${command} ${args.join(" ")}`);
       return { exitCode: 0, stdout: "", stderr: "" };
     },
-    spawnChild: (command, args) => {
+    readTextFile: async (path) => {
+      calls.push(`read:${path}`);
+      if (path === "/tmp/southstar/.tools/tork/southstar.config.toml") {
+        return `[mounts.bind]
+allowed = true
+sources = [
+  "/tmp/southstar-runs"
+]
+`;
+      }
+      const error = Object.assign(new Error("missing"), { code: "ENOENT" });
+      throw error;
+    },
+    spawnChild: (command, args, options) => {
+      spawnedTorkConfig = typeof options.env?.TORK_CONFIG === "string" ? options.env.TORK_CONFIG : undefined;
       calls.push(`${command} ${args.join(" ")}`);
       return { pid: 42, unref: () => calls.push("tork:unref") };
     },
@@ -39,17 +54,49 @@ test("infra start brings up local Postgres before Tork", async () => {
 
   assert.equal(result.postgres.status, "started");
   assert.equal(result.tork.status, "started");
+  assert.equal(spawnedTorkConfig, "/tmp/southstar/.southstar/tork.generated.toml");
   assert.deepEqual(calls, [
     "docker start southstar-postgres",
     "tcp:127.0.0.1:55432",
     "pg:postgres://postgres:postgres@127.0.0.1:55432/postgres",
     "tork:health",
     "mkdir:/tmp/southstar/.southstar/logs",
+    "read:/tmp/southstar/.tools/tork/southstar.config.toml",
+    `write:/tmp/southstar/.southstar/tork.generated.toml:${`[mounts.bind]
+allowed = true
+sources = [
+  "/tmp/southstar-runs",
+  "${process.env.HOME}/.pi/agent",
+  "/tmp/southstar"
+]
+`}`,
     "/tmp/southstar/scripts/run-local-tork.sh ",
     "tork:unref",
     "write:/tmp/southstar/.southstar/logs/tork.pid:42",
     "tork:health",
   ]);
+});
+
+test("mergeTorkBindSources preserves allowlist and adds the active workspace root", () => {
+  const merged = mergeTorkBindSources(`[datastore]
+type = "postgres"
+
+[mounts.bind]
+allowed = true
+sources = [
+  "/tmp/southstar-runs"
+]
+
+[mounts.temp]
+dir = "/tmp"
+`, [
+    "/tmp/southstar-runs",
+    "/home/timmypai/apps/southstar",
+  ]);
+
+  assert.match(merged, /"\/tmp\/southstar-runs"/);
+  assert.match(merged, /"\/home\/timmypai\/apps\/southstar"/);
+  assert.equal((merged.match(/"\/tmp\/southstar-runs"/g) ?? []).length, 1);
 });
 
 test("infra start reuses an already healthy Tork process", async () => {

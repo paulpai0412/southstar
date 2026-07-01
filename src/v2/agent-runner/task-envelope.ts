@@ -56,6 +56,7 @@ export type TaskEnvelope = {
 export type WorkspaceHandle = {
   repoRoot: string;
   worktreePath: string;
+  hostMountPath?: string;
 };
 
 export type WorkspaceSnapshotRef = {

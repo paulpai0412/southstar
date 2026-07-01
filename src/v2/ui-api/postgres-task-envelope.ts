@@ -31,6 +31,7 @@ async function latestPersistedTaskEnvelope(db: SouthstarDb, input: { runId: stri
 
 async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input: { runId: string; taskId: string }): Promise<TaskEnvelopeV2> {
   const workflow = await readWorkflow(db, input.runId);
+  const workspace = await readWorkspaceHandle(db, input.runId);
   const task = required(workflow.tasks.find((candidate) => candidate.id === input.taskId), `unknown task: ${input.taskId}`);
   const taskRow = await db.maybeOne<{ root_session_id: string | null }>(
     "select root_session_id from southstar.workflow_tasks where run_id = $1 and id = $2",
@@ -82,6 +83,7 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
     artifactContracts,
     evaluatorPipeline,
     session: { sessionId: rootSessionId, maxRepairAttempts: task.rootSession.maxRepairAttempts },
+    ...(workspace ? { workspace } : {}),
   });
 }
 
@@ -92,6 +94,23 @@ async function readWorkflow(db: SouthstarDb, runId: string): Promise<SouthstarWo
   );
   if (!row) throw new Error(`workflow run not found: ${runId}`);
   return row.workflow_manifest_json;
+}
+
+async function readWorkspaceHandle(db: SouthstarDb, runId: string): Promise<TaskEnvelopeV2["workspace"] | undefined> {
+  const row = await db.maybeOne<{ runtime_context_json: unknown }>(
+    "select runtime_context_json from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  const runtimeContext = asRecord(row?.runtime_context_json);
+  const projectRoot = stringValue(runtimeContext.projectRoot) ?? stringValue(runtimeContext.cwd);
+  if (!projectRoot || !isHostMountPath(projectRoot)) return undefined;
+  return {
+    handle: {
+      repoRoot: "/workspace/repo",
+      worktreePath: "/workspace/repo",
+      hostMountPath: projectRoot,
+    },
+  };
 }
 
 async function latestContextPacket(db: SouthstarDb, input: { runId: string; taskId: string }): Promise<ContextPacket> {
@@ -135,4 +154,16 @@ function required<T>(value: T | undefined, message: string): T {
 
 function libraryRefs(values: string[] | undefined, prefix: string, kind: LibraryRefKind): string[] {
   return normalizeLibraryRefs({ values, prefix, kind });
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function isHostMountPath(value: string): boolean {
+  return value.startsWith("/") && !value.startsWith("/workspace/");
 }

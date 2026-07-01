@@ -79,9 +79,19 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
     `select id, status, domain, goal_prompt, runtime_context_json, updated_at
        from southstar.workflow_runs
       where status = any($1::text[])
+         or (
+          status = any($2::text[])
+          and exists (
+            select 1
+              from southstar.runtime_resources attention
+             where attention.run_id = southstar.workflow_runs.id
+               and attention.resource_type in ('runtime_exception', 'approval', 'recovery_decision', 'executor_binding', 'hand_execution')
+               and attention.status <> all($3::text[])
+          )
+        )
       order by updated_at desc, id
       limit 50`,
-    [[...ACTIVE_RUN_STATUSES]],
+    [[...ACTIVE_RUN_STATUSES], [...TERMINAL_RUN_STATUSES], [...TERMINAL_RESOURCE_STATUSES]],
   )).rows.map((run): ActiveRun => {
     const runtimeContext = asRecord(run.runtime_context_json);
     const cwd = stringValue(runtimeContext.cwd);
@@ -272,10 +282,14 @@ function taskAttentionItem(row: Awaited<ReturnType<typeof readAttentionTaskRows>
 
 function runAttentionItem(run: ActiveRun): OperatorAttentionItem {
   const commands = runCommands(run.runId, run.status);
+  const failed = run.status === "failed";
+  const cancelled = run.status === "cancelled";
+  const paused = run.status === "paused";
+  const blocked = run.status === "blocked";
   return {
     id: `run:${run.runId}`,
     kind: "run",
-    severity: run.status === "paused" || run.status === "blocked" ? "warning" : "info",
+    severity: failed || cancelled ? "blocked" : paused || blocked ? "warning" : "info",
     interventionMode: "run",
     source: {
       resourceType: "workflow_run",
@@ -283,9 +297,9 @@ function runAttentionItem(run: ActiveRun): OperatorAttentionItem {
       ref: `southstar.workflow_runs:${run.runId}`,
     },
     runId: run.runId,
-    title: run.status === "paused" ? `Paused run: ${run.title}` : `Active run: ${run.title}`,
+    title: failed ? `Failed run: ${run.title}` : cancelled ? `Cancelled run: ${run.title}` : paused ? `Paused run: ${run.title}` : `Active run: ${run.title}`,
     status: run.status,
-    reason: run.status === "paused" ? "paused run" : "normal active run watch",
+    reason: failed || cancelled ? "terminal run has unresolved operator attention" : paused ? "paused run" : "normal active run watch",
     detail: {
       runId: run.runId,
       status: run.status,
@@ -293,7 +307,7 @@ function runAttentionItem(run: ActiveRun): OperatorAttentionItem {
       ...(run.domain ? { domain: run.domain } : {}),
     },
     updatedAt: run.updatedAt,
-    suggestedActions: run.status === "paused" ? ["resume-run", "cancel-run"] : ["watch-events", "pause-run", "cancel-run"],
+    suggestedActions: failed || cancelled ? ["review-attention", "inspect-run"] : paused ? ["resume-run", "cancel-run"] : ["watch-events", "pause-run", "cancel-run"],
     commands,
     ...(firstEnabledCommandId(commands) ? { suggestedCommandId: firstEnabledCommandId(commands) } : {}),
   };

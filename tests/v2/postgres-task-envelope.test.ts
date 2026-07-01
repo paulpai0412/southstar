@@ -32,6 +32,25 @@ test("Postgres task envelope API builds TaskEnvelopeV2 from Postgres run, task, 
   });
 });
 
+test("Postgres task envelope maps host project root into mounted container workspace", async () => {
+  await withDb(async (db) => {
+    await seedKnowledgeCard(db);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement todo app features",
+      cwd: "/home/timmypai/apps/southstar",
+    });
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+
+    const envelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
+
+    assert.deepEqual(envelope.workspace?.handle, {
+      repoRoot: "/workspace/repo",
+      worktreePath: "/workspace/repo",
+      hostMountPath: "/home/timmypai/apps/southstar",
+    });
+  });
+});
+
 test("Postgres task envelope API returns the latest persisted task envelope before fallback building", async () => {
   await withDb(async (db) => {
     await seedKnowledgeCard(db);
