@@ -27,6 +27,17 @@ test("root renders migrated shell with chat workspace WorkflowWorkbench Operator
   assert.match(tabs, /\bOperator\b/);
 });
 
+test("product shell uses Southstar Mission Engine in browser title and chat headers", () => {
+  const layout = source("web/app/layout.tsx");
+  const webChat = source("web/components/ChatWindow.tsx");
+  const rootChat = source("components/ChatWindow.tsx");
+
+  for (const file of [layout, webChat, rootChat]) {
+    assert.match(file, /Southstar Mission Engine/);
+    assert.doesNotMatch(file, /Pi Agent Web/);
+  }
+});
+
 test("workflow workbench uses AgentLibraryPanel SouthstarWorkflowCanvas DefinitionInspector", () => {
   const workflow = source("components/southstar/workflow/WorkflowWorkbench.tsx");
   assert.match(workflow, /AgentLibraryPanel/);

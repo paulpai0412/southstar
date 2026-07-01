@@ -374,6 +374,53 @@ test("runtime exception controller maps queue timeout to requeue-hand-execution 
   }
 });
 
+test("runtime exception controller blocks queue timeout recovery after default requeue budget is exhausted", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, {
+      id: "run-exception-controller-budget",
+      status: "running",
+      domain: "software",
+      goalPrompt: "cap queue timeout recovery",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    const controller = createRuntimeExceptionController({ db });
+    const decisions = [];
+
+    for (const attempt of [1, 2, 3]) {
+      const exception = await controller.observe({
+        runId: "run-exception-controller-budget",
+        taskId: "task-a",
+        sessionId: "session-a",
+        attemptId: `attempt-${attempt}`,
+        handExecutionId: `hand-execution:run-exception-controller-budget:task-a:attempt-${attempt}`,
+        source: "tork-observer",
+        kind: "tork_queue_timeout",
+        severity: "recoverable",
+        observedAt: `2026-06-21T10:0${attempt}:00.000Z`,
+        evidenceRefs: [`hand-execution:run-exception-controller-budget:task-a:attempt-${attempt}`],
+        providerEvidence: { externalJobId: `job-timeout-${attempt}` },
+      });
+      decisions.push(await controller.decide(await controller.classify(exception)));
+    }
+
+    assert.deepEqual(decisions.map((decision) => decision.payload.path), [
+      "requeue-hand-execution",
+      "requeue-hand-execution",
+      "block-for-operator",
+    ]);
+    assert.equal(decisions[2]?.payload.operatorApprovalRequired, true);
+    assert.equal(decisions[2]?.status, "waiting_operator_approval");
+    assert.match(decisions[2]?.payload.reason ?? "", /budget exhausted/i);
+  } finally {
+    await db.close();
+  }
+});
+
 test("runtime exception controller requires operator approval for rollback decisions", async () => {
   const db = await createTestPostgresDb();
   try {

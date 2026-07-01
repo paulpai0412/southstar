@@ -18,6 +18,7 @@ import type {
 
 const RECOVERY_DECISION_RESOURCE_TYPE = "recovery_decision";
 const RECOVERY_DECISION_SCHEMA_VERSION = "southstar.runtime.recovery_decision.v1";
+const DEFAULT_TORK_QUEUE_TIMEOUT_AUTO_REQUEUE_LIMIT = 3;
 
 export function createRuntimeExceptionController(deps: { db: SouthstarDb }): {
   observe(input: RuntimeObservation): Promise<RuntimeExceptionRecord>;
@@ -29,12 +30,13 @@ export function createRuntimeExceptionController(deps: { db: SouthstarDb }): {
       return await recordRuntimeExceptionPg(deps.db, { status: "observed", ...input });
     },
     async classify(exception) {
-      const recoveryPath = classifyRecoveryPath(exception);
+      const classification = await classifyRecoveryPath(deps.db, exception);
+      const recoveryPath = classification.recoveryPath;
       return {
         ...exception,
         recoveryPath,
         operatorApprovalRequired: requiresOperatorApproval(recoveryPath),
-        reason: classificationReason(exception, recoveryPath),
+        reason: classification.reason ?? classificationReason(exception, recoveryPath),
       };
     },
     async decide(classification) {
@@ -102,38 +104,68 @@ async function recordRecoveryDecisionPg(
   });
 }
 
-function classifyRecoveryPath(exception: RuntimeExceptionRecord): RecoveryPath {
+async function classifyRecoveryPath(
+  db: SouthstarDb,
+  exception: RuntimeExceptionRecord,
+): Promise<{ recoveryPath: RecoveryPath; reason?: string }> {
   switch (exception.payload.kind) {
     case "tork_queue_timeout":
-      return "requeue-hand-execution";
+      return await classifyTorkQueueTimeoutRecovery(db, exception);
     case "tork_running_hang":
-      return providerEvidenceFlag(exception, "workspaceUnsafe") ? "rollback-workspace" : "reprovision-hand";
+      return { recoveryPath: providerEvidenceFlag(exception, "workspaceUnsafe") ? "rollback-workspace" : "reprovision-hand" };
     case "tork_terminal_without_callback":
-      return "retry-same-task-new-attempt";
+      return { recoveryPath: "retry-same-task-new-attempt" };
     case "late_callback":
     case "stale_callback":
-      return "none-observe-only";
+      return { recoveryPath: "none-observe-only" };
     case "callback_contract_violation":
     case "artifact_rejected":
-      return "repair-artifact";
+      return { recoveryPath: "repair-artifact" };
     case "validation_failed":
-      return "reset-session";
+      return { recoveryPath: "reset-session" };
     case "tool_proxy_violation":
     case "completion_gate_failed":
     case "provider_unreachable":
-      return "block-for-operator";
+      return { recoveryPath: "block-for-operator" };
     case "brain_wake_failed":
-      return "wake-new-brain";
+      return { recoveryPath: "wake-new-brain" };
     case "hand_provision_failed":
     case "hand_submit_failed":
-      return "reprovision-hand";
+      return { recoveryPath: "reprovision-hand" };
     case "scheduler_claim_stale":
-      return "retry-same-task-new-attempt";
+      return { recoveryPath: "retry-same-task-new-attempt" };
     case "intake_invalid":
-      return "block-for-operator";
+      return { recoveryPath: "block-for-operator" };
     case "context_assembly_failed":
-      return "fork-session";
+      return { recoveryPath: "fork-session" };
   }
+}
+
+async function classifyTorkQueueTimeoutRecovery(
+  db: SouthstarDb,
+  exception: RuntimeExceptionRecord,
+): Promise<{ recoveryPath: RecoveryPath; reason?: string }> {
+  const observedCount = await countTorkQueueTimeoutObservationsPg(db, exception);
+  if (observedCount >= DEFAULT_TORK_QUEUE_TIMEOUT_AUTO_REQUEUE_LIMIT) {
+    return {
+      recoveryPath: "block-for-operator",
+      reason: `tork_queue_timeout auto requeue budget exhausted after ${observedCount} observations (limit ${DEFAULT_TORK_QUEUE_TIMEOUT_AUTO_REQUEUE_LIMIT})`,
+    };
+  }
+  return { recoveryPath: "requeue-hand-execution" };
+}
+
+async function countTorkQueueTimeoutObservationsPg(db: SouthstarDb, exception: RuntimeExceptionRecord): Promise<number> {
+  const row = await db.one<{ count: string | number }>(
+    `select count(*) as count
+       from southstar.runtime_resources
+      where resource_type = $1
+        and run_id = $2
+        and ($3::text is null or task_id = $3)
+        and payload_json->>'kind' = 'tork_queue_timeout'`,
+    ["runtime_exception", exception.runId, exception.taskId ?? null],
+  );
+  return Number(row.count);
 }
 
 function requiresOperatorApproval(path: RecoveryPath): boolean {
