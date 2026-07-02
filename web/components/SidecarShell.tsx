@@ -45,7 +45,7 @@ export function SidecarShell({
       <button
         data-testid="sidecar-reopen"
         type="button"
-        title="Show sidecar"
+        title={mode === "hidden" ? "Show sidecar" : "Hide sidecar"}
         onClick={() => onModeChange("floating")}
         className="sidecar-reopen-button"
       >
@@ -96,15 +96,42 @@ export function SidecarShell({
         <div className="sidecar-tabs">
           <TabBar tabs={tabs} activeTabId={activeTabId || ""} onSelectTab={onSelectTab} onCloseTab={onCloseTab} />
         </div>
-        <button type="button" title="Floating" onClick={() => onModeChange("floating")} aria-pressed={mode === "floating"}>Float</button>
-        <button type="button" title="Pinned" onClick={() => onModeChange("pinned")} aria-pressed={mode === "pinned"}>Pin</button>
-        <button type="button" title="Expanded" onClick={() => onModeChange("expanded")} aria-pressed={mode === "expanded"}>Expand</button>
-        <button type="button" title="Hide" onClick={() => onModeChange("hidden")}>Hide</button>
+        <div className="sidecar-icon-actions" aria-label="Sidecar display controls">
+          <button
+            type="button"
+            className="sidecar-icon-button"
+            title={mode === "pinned" ? "Float sidecar" : "Pin sidecar"}
+            aria-label={mode === "pinned" ? "Float sidecar" : "Pin sidecar"}
+            aria-pressed={mode === "pinned"}
+            onClick={() => onModeChange(mode === "pinned" ? "floating" : "pinned")}
+          >
+            <PinIcon />
+          </button>
+          <button
+            type="button"
+            className="sidecar-icon-button"
+            title={expanded ? "Restore sidecar" : "Expand sidecar"}
+            aria-label={expanded ? "Restore sidecar" : "Expand sidecar"}
+            aria-pressed={expanded}
+            onClick={() => onModeChange(expanded ? "floating" : "expanded")}
+          >
+            <ExpandIcon />
+          </button>
+          <button
+            type="button"
+            className="sidecar-icon-button"
+            title="Hide sidecar"
+            aria-label="Hide sidecar"
+            onClick={() => onModeChange("hidden")}
+          >
+            <PanelIcon />
+          </button>
+        </div>
       </header>
       <div className="sidecar-content">
         {children}
       </div>
-      <span hidden>Files DAG History Live SSE Actions</span>
+      <span hidden>Files History Live SSE Actions</span>
     </aside>
   );
 }
@@ -114,6 +141,28 @@ function PanelIcon() {
     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <rect x="3" y="3" width="18" height="18" rx="2" />
       <line x1="15" y1="3" x2="15" y2="21" />
+    </svg>
+  );
+}
+
+function PinIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M12 17v5" />
+      <path d="M9 10.8 4.8 15l4.2 4.2 4.2-4.2" />
+      <path d="M14 4l6 6" />
+      <path d="m14 4-3 3 6 6 3-3-6-6Z" />
+    </svg>
+  );
+}
+
+function ExpandIcon() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M15 3h6v6" />
+      <path d="m21 3-7 7" />
+      <path d="M9 21H3v-6" />
+      <path d="m3 21 7-7" />
     </svg>
   );
 }

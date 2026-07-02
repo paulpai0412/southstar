@@ -139,5 +139,5 @@ export type OperatorPriorityLanes = {
   needsAction: OperatorIncident[];
   atRisk: OperatorIncident[];
   running: OperatorRun[];
-  recentlyResolved: OperatorIncident[];
+  recentlyResolved: Array<OperatorIncident | OperatorRun>;
 };

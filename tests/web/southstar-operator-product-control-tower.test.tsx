@@ -77,28 +77,48 @@ test("operator priority lanes separate needs action from running", async () => {
   assert.equal(lanes.running[0].runId, "run-2");
 });
 
-test("Operator sidebar uses grouped incident attention queue", () => {
-  const sidebar = source("web/components/operator/OperatorSidebar.tsx");
-  const queue = source("web/components/operator/OperatorAttentionQueue.tsx");
-  assert.match(sidebar, /OperatorAttentionQueue/);
-  assert.match(queue, /sourceAttentionIds/);
-  assert.match(queue, /nextAction/);
-  assert.match(queue, /aria-pressed/);
+test("operator priority lanes put terminal successful runs in recently resolved", async () => {
+  const { buildOperatorPriorityLanes } = await import("../../web/lib/operator/incidents.ts");
+  const lanes = buildOperatorPriorityLanes([
+    { runId: "run-passed", status: "passed", title: "Completed workflow", updatedAt: "2026-07-01T08:28:11.000Z" },
+    { runId: "run-active", status: "running", title: "Active workflow", updatedAt: "2026-07-01T08:29:00.000Z" },
+  ], []);
+
+  assert.equal(lanes.running.length, 1);
+  assert.equal(lanes.running[0].runId, "run-active");
+  assert.equal(lanes.recentlyResolved.length, 1);
+  assert.equal(lanes.recentlyResolved[0].runId, "run-passed");
 });
 
-test("Operator workspace leads with health strip priority lanes and incident summary", () => {
+test("Operator sidebar splits running and completed workflow runs", () => {
+  const sidebar = source("web/components/operator/OperatorSidebar.tsx");
+  assert.match(sidebar, /Running Workflow Runs/);
+  assert.match(sidebar, /Completed Workflow Runs/);
+  assert.match(sidebar, /emptyLabel="All projects"/);
+  assert.match(sidebar, /operator-list-row-compact/);
+  assert.match(sidebar, /isCompletedRun/);
+  assert.match(sidebar, /compareRunUpdatedAt/);
+  assert.match(sidebar, /aria-pressed/);
+});
+
+test("Operator workspace defaults to workflow state dashboard and opens DAG after selection", () => {
   const workspace = source("web/components/operator/OperatorWorkspace.tsx");
-  assert.match(workspace, /OperatorHealthStrip/);
-  assert.match(workspace, /OperatorIncidentPanel/);
-  assert.match(workspace, /priorityLanes/);
-  assert.match(source("web/components/operator/OperatorHealthStrip.tsx"), /blocked incidents/);
-  assert.match(source("web/components/operator/OperatorIncidentPanel.tsx"), /Recommended next action/);
+  assert.match(workspace, /OperatorStateDashboard/);
+  assert.match(workspace, /State Dashboard/);
+  assert.match(workspace, /operator-state-dashboard/);
+  assert.match(workspace, /operator-workflow-state-card/);
+  assert.match(workspace, /selectedRunId \? overview\.runs\.find/);
+  assert.match(workspace, /selectedRun \? \(/);
+  assert.match(workspace, /DEFAULT_DAG_HEIGHT_PERCENT = 40/);
+  assert.match(workspace, /ACTIVE_RUN_STATUSES/);
+  assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /direction="RIGHT"/);
 });
 
 test("operator actions require reason and show consequence preview", () => {
   const panel = source("web/components/operator/OperatorActionsPanel.tsx");
   assert.match(panel, /Consequence/);
   assert.match(panel, /operator-action-reason/);
+  assert.match(panel, /const value = event\.currentTarget\.value/);
   assert.match(panel, /reason\.trim\(\)/);
   assert.match(panel, /Command result/);
 });

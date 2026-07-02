@@ -8,10 +8,12 @@ export function ProjectScopePicker({
   selectedCwd,
   onCwdChange,
   label = "Project Scope",
+  emptyLabel = "Select project...",
 }: {
   selectedCwd: string | null;
   onCwdChange: (cwd: string | null) => void;
   label?: string;
+  emptyLabel?: string;
 }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [homeDir, setHomeDir] = useState("");
@@ -89,7 +91,7 @@ export function ProjectScopePicker({
       </div>
       <div ref={ref} style={{ position: "relative" }}>
         <button type="button" onClick={() => setOpen((value) => !value)} className="project-scope-button" title={selectedCwd || ""}>
-          {selectedCwd ? shortenCwd(selectedCwd, homeDir) : "Select project..."}
+          {selectedCwd ? shortenCwd(selectedCwd, homeDir) : emptyLabel}
         </button>
         {open ? (
           <div className="project-scope-menu">

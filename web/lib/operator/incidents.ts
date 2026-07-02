@@ -51,11 +51,12 @@ export function buildOperatorIncidents(overview: OperatorOverview): OperatorInci
 
 export function buildOperatorPriorityLanes(runs: OperatorRun[], incidents: OperatorIncident[]): OperatorPriorityLanes {
   const incidentRunIds = new Set(incidents.map((incident) => incident.runId));
+  const resolvedRuns = runs.filter((run) => run.status === "completed" || run.status === "passed" || run.status === "cancelled");
   return {
     needsAction: incidents.filter((incident) => incident.status === "needs_action"),
     atRisk: incidents.filter((incident) => incident.status === "observing"),
-    running: runs.filter((run) => !incidentRunIds.has(run.runId)),
-    recentlyResolved: incidents.filter((incident) => incident.status === "resolved"),
+    running: runs.filter((run) => !incidentRunIds.has(run.runId) && !resolvedRuns.some((resolved) => resolved.runId === run.runId)),
+    recentlyResolved: [...incidents.filter((incident) => incident.status === "resolved"), ...resolvedRuns],
   };
 }
 

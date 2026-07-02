@@ -18,9 +18,9 @@ export function normalizeOperatorOverview(input: unknown): OperatorOverview {
     attentionItems,
     commandResults,
     runtimeHealth: {
-      activeRunCount: numberValue(runtimeHealth?.activeRunCount) || runs.length,
-      attentionCount: numberValue(runtimeHealth?.attentionCount) || attentionItems.length,
-      blockedCount: numberValue(runtimeHealth?.blockedCount) || attentionItems.filter((item) => item.severity === "blocked").length,
+      activeRunCount: numberValue(runtimeHealth?.activeRunCount) ?? runs.length,
+      attentionCount: numberValue(runtimeHealth?.attentionCount) ?? attentionItems.length,
+      blockedCount: numberValue(runtimeHealth?.blockedCount) ?? attentionItems.filter((item) => item.severity === "blocked").length,
     },
     defaultSelection: recordValue(model?.defaultSelection) as OperatorOverview["defaultSelection"] || null,
   };

@@ -65,6 +65,13 @@ test("web-local workflow canvas keeps React Flow and ELK behavior", () => {
   assert.match(layout, /elkjs\/lib\/elk\.bundled\.js/);
 });
 
+test("workflow task node badge keys tolerate duplicate labels", () => {
+  const node = source("web/components/workflow-canvas/WorkflowTaskNode.tsx");
+  assert.doesNotMatch(node, /key=\{badge\.label\}/);
+  assert.match(node, /badges\.map\(\(badge,\s*index\)/);
+  assert.match(node, /badge\.label.*index|index.*badge\.label/s);
+});
+
 test("web operator API proxies route to v2 runtime endpoints", () => {
   assert.match(source("web/app/api/operator/overview/route.ts"), /\/api\/v2\/ui\/operator-overview/);
   assert.match(source("web/app/api/operator/task-debug/route.ts"), /\/api\/v2\/ui\/operator-task-debug/);
@@ -84,9 +91,12 @@ test("web operator helpers normalize overview and build stream urls", async () =
 
   const overview = normalizers.normalizeOperatorOverview({
     activeRuns: [{ runId: "run-a", status: "running", title: "Build", cwd: "/repo/a" }],
+    runtimeHealth: { activeRunCount: 0, attentionCount: 0, blockedCount: 0 },
     attentionItems: [{ id: "attn-a", severity: "blocked", title: "Task blocked", runId: "run-a", taskId: "task-a" }],
   });
   assert.equal(overview.runs[0].runId, "run-a");
+  assert.equal(overview.runtimeHealth.activeRunCount, 0);
+  assert.equal(overview.runtimeHealth.attentionCount, 0);
   assert.equal(overview.attentionItems[0].taskId, "task-a");
   assert.equal(
     sse.operatorRuntimeEventStreamUrl({ runId: "run-a", taskId: "task-a", after: "12" }),
@@ -115,11 +125,16 @@ test("AppShell uses shared floating sidecar instead of mode-specific fixed file 
   assert.doesNotMatch(shell, /right-panel-container\$\{rightPanelOpen/);
 });
 
-test("SidecarShell supports shared Files DAG History Live SSE Actions tabs", () => {
+test("SidecarShell supports shared Files History Live SSE Actions tabs with header icon controls", () => {
   const sidecar = source("web/components/SidecarShell.tsx");
-  for (const token of ["floating", "pinned", "expanded", "hidden", "Files", "DAG", "History", "Live SSE", "Actions"]) {
+  for (const token of ["floating", "pinned", "expanded", "hidden", "Files", "History", "Live SSE", "Actions"]) {
     assert.match(sidecar, new RegExp(token));
   }
+  assert.doesNotMatch(sidecar, /Files DAG History/);
+  assert.doesNotMatch(sidecar, /sidecar-mode-select/);
+  assert.match(sidecar, /sidecar-icon-button/);
+  assert.match(sidecar, /title="Hide sidecar"/);
+  assert.match(sidecar, /title=\{mode === "hidden" \? "Show sidecar" : "Hide sidecar"\}/);
   assert.match(sidecar, /data-testid="sidecar-shell"/);
 });
 
@@ -159,8 +174,9 @@ test("Operator sidebar keeps project scope above operator focus", () => {
   assert.match(sidebar, /Project Scope/);
   assert.match(sidebar, /Operator Focus/);
   assert.match(sidebar, /ProjectScopePicker/);
-  assert.match(sidebar, /Attention/);
-  assert.match(sidebar, /Running Workflows/);
+  assert.match(sidebar, /Running Workflow Runs/);
+  assert.match(sidebar, /Completed Workflow Runs/);
+  assert.match(sidebar, /compareRunUpdatedAt/);
 });
 
 test("Workflow sidebar project selector accepts custom cwd input", () => {
@@ -175,11 +191,18 @@ test("Workflow sidebar project selector accepts custom cwd input", () => {
   assert.match(shell, /onCwdChange=\{handleCwdChange\}/);
 });
 
-test("Operator workspace includes state board and selected workflow progress with DAG toggle", () => {
-  assert.match(source("web/components/operator/OperatorWorkspace.tsx"), /OperatorStateBoard/);
-  assert.match(source("web/components/operator/OperatorWorkspace.tsx"), /OperatorWorkflowProgress/);
-  assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /DAG/);
-  assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /Progress/);
+test("Operator workspace defaults to state dashboard before opening selected workflow DAG", () => {
+  const workspace = source("web/components/operator/OperatorWorkspace.tsx");
+  assert.match(workspace, /OperatorStateDashboard/);
+  assert.match(workspace, /WorkflowStateCard/);
+  assert.match(workspace, /OperatorWorkflowProgress/);
+  assert.match(workspace, /operatorStateBuckets/);
+  assert.match(workspace, /selectedRunId \? overview\.runs\.find/);
+  assert.doesNotMatch(workspace, /OperatorRuntimeStateCard/);
+  assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /SouthstarWorkflowCanvas/);
+  assert.match(source("web/components/operator/OperatorWorkflowProgress.tsx"), /direction="RIGHT"/);
+  assert.doesNotMatch(source("web/components/operator/OperatorWorkflowProgress.tsx"), />Progress</);
+  assert.doesNotMatch(source("web/components/operator/OperatorWorkflowProgress.tsx"), /setView\("progress"\)/);
 });
 
 test("Operator state board exposes counts, age, and attention severity", () => {
@@ -201,23 +224,24 @@ test("Operator overview polling is gated to Operator mode", () => {
 test("Operator task sidecar opens debug tabs with History selected", () => {
   const shell = source("web/components/AppShell.tsx");
   assert.match(shell, /openOperatorTaskSidecar/);
-  assert.match(shell, /operatorDag/);
   assert.match(shell, /operatorHistory/);
   assert.match(shell, /operatorStream/);
   assert.match(shell, /operatorActions/);
   assert.match(shell, /operatorArtifacts/);
+  assert.doesNotMatch(shell, /operator-dag/);
   assert.match(shell, /setActiveSidecarTabId\(`operator-history:\$\{filePath\}`\)/);
+  assert.match(shell, /current\.filter\(\(tab\) => !tab\.kind\?\.startsWith\("operator"\)\)/);
 });
 
-test("Operator task sidecar exposes DAG History Live SSE Actions Artifacts tabs", () => {
+test("Operator task sidecar exposes History Live SSE Actions Artifacts tabs", () => {
   const tabs = source("web/components/operator/OperatorTaskTabs.tsx");
-  for (const token of ["DAG", "History", "Live SSE", "Actions", "Artifacts"]) {
+  for (const token of ["History", "Live SSE", "Actions", "Artifacts"]) {
     assert.match(tabs, new RegExp(token));
   }
   assert.match(tabs, /debugModel\.data\.actions/);
   assert.match(tabs, /mergeOperatorTaskCommands/);
-  assert.match(tabs, /SouthstarWorkflowCanvas/);
-  assert.match(tabs, /taskDagCanvasFromDebug/);
+  assert.doesNotMatch(tabs, /SouthstarWorkflowCanvas/);
+  assert.doesNotMatch(tabs, /taskDagCanvasFromDebug/);
   assert.doesNotMatch(tabs, /JSON\.stringify\(debug\.model\.data\.task/);
   assert.match(source("web/components/operator/OperatorHistoryPanel.tsx"), /history/);
   assert.match(source("web/components/operator/OperatorLiveStream.tsx"), /Task stream/);
@@ -233,14 +257,30 @@ test("AppShell renders operator task tabs into the shared sidecar", () => {
   assert.match(shell, /onCommandComplete=\{operator\.refresh\}/);
 });
 
-test("Operator mode surfaces overview errors and applies default selection", () => {
+test("Operator mode surfaces overview errors and keeps dashboard until user selects a workflow", () => {
   const shell = source("web/components/AppShell.tsx");
   const sidebar = source("web/components/operator/OperatorSidebar.tsx");
   assert.match(shell, /operator\.error/);
   assert.match(shell, /defaultSelection/);
   assert.match(shell, /setOperatorSelectedRunId/);
+  assert.match(shell, /setOperatorSelectedRunId\(null\)/);
+  assert.doesNotMatch(shell, /runs\[0\]\?\.runId/);
   assert.match(sidebar, /error/);
   assert.match(sidebar, /Operator overview/);
+});
+
+test("AppShell keeps mode panels mounted when switching Chat Workflow Operator tabs", () => {
+  const shell = source("web/components/AppShell.tsx");
+
+  assert.match(shell, /data-testid="chat-mode-panel"/);
+  assert.match(shell, /data-testid="workflow-mode-panel"/);
+  assert.match(shell, /data-testid="operator-mode-panel"/);
+  assert.match(shell, /data-testid="chat-sidebar-panel"/);
+  assert.match(shell, /data-testid="workflow-sidebar-panel"/);
+  assert.match(shell, /data-testid="operator-sidebar-panel"/);
+  assert.match(shell, /key=\{`chat:\$\{sessionKey\}`\}/);
+  assert.match(shell, /key=\{`workflow:\$\{workflowSessionKey\}`\}/);
+  assert.doesNotMatch(shell, /key=\{`\$\{appMode\}:/);
 });
 
 test("Operator task debug clears stale model before fetching another task", () => {
@@ -256,4 +296,6 @@ test("Operator actions only treat successful POST responses as completed", () =>
   assert.match(panel, /endpoint: command\.endpoint/);
   assert.match(panel, /if \(!response\.ok\) throw new Error/);
   assert.match(panel, /setActionError/);
+  assert.doesNotMatch(panel, /disabled=\{!command\.enabled \|\| pendingCommandId === command\.id \|\| \(requiresReason/);
+  assert.match(panel, /setActionError\(`Reason required before running \$\{command\.label\}`\)/);
 });

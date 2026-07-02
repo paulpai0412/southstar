@@ -36,8 +36,9 @@ test("operator and workflow control surfaces stack on mobile", () => {
   const css = source("web/app/globals.css");
   const preview = source("web/components/WorkflowLaunchPreview.tsx");
   assert.match(css, /@media \(max-width: 720px\)/);
-  assert.match(css, /\.operator-health-strip/);
-  assert.match(css, /\.operator-priority-grid/);
+  assert.match(css, /\.operator-state-dashboard/);
+  assert.match(css, /\.operator-workflow-state-grid/);
+  assert.match(css, /\.operator-dashboard-splitter/);
   assert.match(css, /\.workflow-launch-preview-flow/);
   assert.match(preview, /workflow-launch-preview-flow/);
 });
@@ -46,5 +47,5 @@ test("mode positioning copy separates chat workflow and operator responsibilitie
   assert.match(source("web/components/AppModeRail.tsx"), /ad-hoc/);
   assert.doesNotMatch(source("web/components/ChatWindow.tsx"), /Chat handles ad-hoc/);
   assert.match(source("web/components/WorkflowLaunchPreview.tsx"), /Workflow handles DAG generation/);
-  assert.match(source("web/components/operator/OperatorWorkspace.tsx"), /Operator helps you monitor/);
+  assert.match(source("web/components/operator/OperatorWorkspace.tsx"), /State Dashboard/);
 });

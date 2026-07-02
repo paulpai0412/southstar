@@ -108,6 +108,7 @@ export function AppShell() {
   const [selectedWorkflowTemplate, setSelectedWorkflowTemplate] = useState<WorkflowTemplateSummary | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const chatInputRef = useRef<ChatInputHandle | null>(null);
+  const workflowChatInputRef = useRef<ChatInputHandle | null>(null);
   const topBarRef = useRef<HTMLDivElement>(null);
 
   // Branch navigator state — populated by ChatWindow via onBranchDataChange
@@ -131,10 +132,14 @@ export function AppShell() {
     setSystemPrompt(prompt);
   }, []);
 
-  // Session stats (tokens + cost) — populated by ChatWindow, displayed in top bar
-  const [sessionStats, setSessionStats] = useState<SessionStatsInfo | null>(null);
-  const handleSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
-    setSessionStats((prev) => sameSessionStats(prev, stats) ? prev : stats);
+  // Session stats (tokens + cost) — populated by each ChatWindow, displayed in top bar
+  const [chatSessionStats, setChatSessionStats] = useState<SessionStatsInfo | null>(null);
+  const [workflowSessionStats, setWorkflowSessionStats] = useState<SessionStatsInfo | null>(null);
+  const handleChatSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
+    setChatSessionStats((prev) => sameSessionStats(prev, stats) ? prev : stats);
+  }, []);
+  const handleWorkflowSessionStatsChange = useCallback((stats: SessionStatsInfo | null) => {
+    setWorkflowSessionStats((prev) => sameSessionStats(prev, stats) ? prev : stats);
   }, []);
   const [copiedSessionField, setCopiedSessionField] = useState<SessionCopyField | null>(null);
   const sessionCopyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -152,10 +157,14 @@ export function AppShell() {
     };
   }, []);
 
-  // Context usage — populated by ChatWindow, displayed in top bar
-  const [contextUsage, setContextUsage] = useState<ContextUsageInfo | null>(null);
-  const handleContextUsageChange = useCallback((usage: ContextUsageInfo | null) => {
-    setContextUsage((prev) => sameContextUsage(prev, usage) ? prev : usage);
+  // Context usage — populated by each ChatWindow, displayed in top bar
+  const [chatContextUsage, setChatContextUsage] = useState<ContextUsageInfo | null>(null);
+  const [workflowContextUsage, setWorkflowContextUsage] = useState<ContextUsageInfo | null>(null);
+  const handleChatContextUsageChange = useCallback((usage: ContextUsageInfo | null) => {
+    setChatContextUsage((prev) => sameContextUsage(prev, usage) ? prev : usage);
+  }, []);
+  const handleWorkflowContextUsageChange = useCallback((usage: ContextUsageInfo | null) => {
+    setWorkflowContextUsage((prev) => sameContextUsage(prev, usage) ? prev : usage);
   }, []);
 
   // Single active panel — only one dropdown open at a time
@@ -244,12 +253,9 @@ export function AppShell() {
       return;
     }
 
-    const defaultRunId = defaultSelection?.runId && runs.some((run) => run.runId === defaultSelection.runId)
-      ? defaultSelection.runId
-      : null;
-    const nextRunId = defaultRunId || runs[0]?.runId || null;
-    setOperatorSelectedRunId(nextRunId);
-    setOperatorSelectedTaskId(nextRunId && defaultSelection?.runId === nextRunId ? defaultSelection.taskId || null : null);
+    setOperatorSelectedRunId(null);
+    setOperatorSelectedTaskId(null);
+    setOperatorSelectedIncidentId(null);
   }, [appMode, operator.model.defaultSelection, operator.model.runs, operatorSelectedRunId, operatorSelectedTaskId]);
 
   const handleCwdChange = useCallback((cwd: string | null) => {
@@ -458,14 +464,13 @@ export function AppShell() {
   const openOperatorTaskSidecar = useCallback((input: { runId: string; taskId: string; attentionId?: string }) => {
     const filePath = `${input.runId}/${input.taskId}`;
     const tabs: Tab[] = [
-      { id: `operator-dag:${filePath}`, label: "DAG", filePath, kind: "operatorDag", ...input },
       { id: `operator-history:${filePath}`, label: "History", filePath, kind: "operatorHistory", ...input },
       { id: `operator-stream:${filePath}`, label: "Live SSE", filePath, kind: "operatorStream", ...input },
       { id: `operator-actions:${filePath}`, label: "Actions", filePath, kind: "operatorActions", ...input },
       { id: `operator-artifacts:${filePath}`, label: "Artifacts", filePath, kind: "operatorArtifacts", ...input },
     ];
     setSidecarTabs((current) => {
-      const byId = new Map(current.map((tab) => [tab.id, tab]));
+      const byId = new Map(current.filter((tab) => !tab.kind?.startsWith("operator")).map((tab) => [tab.id, tab]));
       for (const tab of tabs) byId.set(tab.id, byId.get(tab.id) || tab);
       return [...byId.values()];
     });
@@ -551,16 +556,21 @@ export function AppShell() {
     window.location.href = `/api/sessions/${encodeURIComponent(session.id)}/export`;
   }, [appMode, selectedSession, workflowSelectedSession]);
 
-  // Show chat area if a session is selected, or if we have a cwd to start a new session in
+  // Show chat areas if a session is selected, or if we have a cwd to start a new session in.
+  const chatCurrentCwd = selectedSession?.cwd ?? newSessionCwd ?? activeCwd ?? null;
+  const workflowCurrentCwd = workflowSelectedSession?.cwd ?? workflowNewSessionCwd ?? activeCwd ?? null;
+  const chatEffectiveNewSessionCwd = newSessionCwd ?? (selectedSession === null && activeCwd ? activeCwd : null);
+  const workflowEffectiveNewSessionCwd = workflowNewSessionCwd ?? (workflowSelectedSession === null && activeCwd ? activeCwd : null);
+  const chatShowChat = selectedSession !== null || chatEffectiveNewSessionCwd !== null;
+  const workflowShowChat = workflowSelectedSession !== null || workflowEffectiveNewSessionCwd !== null;
+
   const activeSelectedSession = appMode === "workflow" ? workflowSelectedSession : appMode === "operator" ? null : selectedSession;
   const activeNewSessionCwd = appMode === "workflow" ? workflowNewSessionCwd : appMode === "operator" ? null : newSessionCwd;
-  const activeSessionKey = appMode === "workflow" ? workflowSessionKey : sessionKey;
-  const effectiveNewSessionCwd = activeNewSessionCwd ?? (activeSelectedSession === null && activeCwd ? activeCwd : null);
-  const showChat = activeSelectedSession !== null || effectiveNewSessionCwd !== null;
-  // While restoring initial session from URL, don't show the placeholder
-  const showPlaceholder = initialSessionRestored && !showChat;
+  const showChat = appMode === "workflow" ? workflowShowChat : appMode === "operator" ? false : chatShowChat;
 
   const currentCwd = activeSelectedSession?.cwd ?? activeNewSessionCwd ?? activeCwd ?? null;
+  const sessionStats = appMode === "workflow" ? workflowSessionStats : appMode === "chat" ? chatSessionStats : null;
+  const contextUsage = appMode === "workflow" ? workflowContextUsage : appMode === "chat" ? chatContextUsage : null;
   const activeSidecarTab = sidecarTabs.find((t) => t.id === activeSidecarTabId) ?? null;
 
   const renderSidecarContent = useCallback(() => {
@@ -593,7 +603,6 @@ export function AppShell() {
       );
     }
     if (
-      activeSidecarTab.kind === "operatorDag" ||
       activeSidecarTab.kind === "operatorHistory" ||
       activeSidecarTab.kind === "operatorStream" ||
       activeSidecarTab.kind === "operatorActions" ||
@@ -609,12 +618,6 @@ export function AppShell() {
           commands={attention?.commands || []}
           commandResults={operator.model.commandResults}
           onCommandComplete={operator.refresh}
-          onSelectTask={(taskId) => {
-            if (!activeSidecarTab.runId) return;
-            setOperatorSelectedRunId(activeSidecarTab.runId);
-            setOperatorSelectedTaskId(taskId);
-            openOperatorTaskSidecar({ runId: activeSidecarTab.runId, taskId });
-          }}
         />
       );
     }
@@ -622,20 +625,54 @@ export function AppShell() {
   }, [activeSidecarTab, currentCwd, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
-    if (!currentCwd) return;
+    if (!workflowCurrentCwd) return;
     const tempId = typeof crypto.randomUUID === "function"
       ? crypto.randomUUID()
       : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-    handleNewWorkflowSession(tempId, currentCwd);
-  }, [currentCwd, handleNewWorkflowSession]);
+    handleNewWorkflowSession(tempId, workflowCurrentCwd);
+  }, [workflowCurrentCwd, handleNewWorkflowSession]);
 
   const handleWorkflowSidebarRefresh = useCallback(() => {
     setRefreshKey((value) => value + 1);
   }, []);
 
+  const sidebarPanelStyle = (active: boolean) => ({
+    display: active ? "flex" : "none",
+    flexDirection: "column" as const,
+    height: "100%",
+    minHeight: 0,
+    flex: "1 1 auto",
+  });
+
+  const modePanelStyle = (active: boolean) => ({
+    position: "absolute" as const,
+    inset: 0,
+    display: active ? "block" : "none",
+    overflow: "hidden",
+  });
+
+  const renderEmptyPlaceholder = () => activeCwd ? (
+    <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 15 }}>
+      Select a session from the sidebar
+    </div>
+  ) : (
+    <div style={{ position: "absolute", top: 12, left: 12, display: "flex", alignItems: "flex-start", gap: 8, userSelect: "none", pointerEvents: "none" }}>
+      <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.7, flexShrink: 0 }}>
+        <line x1="20" y1="12" x2="4" y2="12" /><polyline points="10 6 4 12 10 18" />
+      </svg>
+      <div>
+        <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Get Started</div>
+        <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.8 }}>
+          <span style={{ color: "var(--text-dim)", marginRight: 6 }}>1.</span>Select a project directory from the sidebar<br />
+          <span style={{ color: "var(--text-dim)", marginRight: 6 }}>2.</span>Add models via the <strong style={{ color: "var(--text)" }}>Models</strong> button at the bottom
+        </div>
+      </div>
+    </div>
+  );
+
   const sidebarContent = (
     <>
-      {appMode === "operator" ? (
+      <div data-testid="operator-sidebar-panel" style={sidebarPanelStyle(appMode === "operator")} aria-hidden={appMode !== "operator"}>
         <OperatorSidebar
           cwd={activeCwd}
           runs={operator.model.runs}
@@ -656,9 +693,10 @@ export function AppShell() {
           }}
           onRefresh={operator.refresh}
         />
-      ) : appMode === "workflow" ? (
+      </div>
+      <div data-testid="workflow-sidebar-panel" style={sidebarPanelStyle(appMode === "workflow")} aria-hidden={appMode !== "workflow"}>
         <WorkflowSidebar
-          cwd={currentCwd}
+          cwd={workflowCurrentCwd}
           selectedSessionId={workflowSelectedSession?.id ?? null}
           selectedTemplateId={selectedWorkflowTemplate?.id ?? null}
           onSessionSelect={handleSelectWorkflowSession}
@@ -668,7 +706,8 @@ export function AppShell() {
           onNewSession={handleWorkflowSidebarNewSession}
           onRefreshSessions={handleWorkflowSidebarRefresh}
         />
-      ) : (
+      </div>
+      <div data-testid="chat-sidebar-panel" style={sidebarPanelStyle(appMode === "chat")} aria-hidden={appMode !== "chat"}>
         <SessionSidebar
           selectedSessionId={selectedSession?.id ?? null}
           onSelectSession={handleSelectSession}
@@ -683,7 +722,7 @@ export function AppShell() {
           explorerRefreshKey={explorerRefreshKey}
           onAtMention={handleAtMention}
         />
-      )}
+      </div>
       <div data-testid="left-controls" style={{ padding: "8px", flexShrink: 0, display: "flex", justifyContent: "space-between", gap: 4 }}>
         {([
           {
@@ -1293,7 +1332,7 @@ export function AppShell() {
 
         {/* Center content */}
         <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
-          {appMode === "operator" ? (
+          <div data-testid="operator-mode-panel" style={modePanelStyle(appMode === "operator")} aria-hidden={appMode !== "operator"}>
             <OperatorWorkspace
               overview={operator.model}
               selectedRunId={operatorSelectedRunId}
@@ -1301,53 +1340,67 @@ export function AppShell() {
               selectedIncidentId={operatorSelectedIncidentId}
               incidents={operatorIncidents}
               error={operator.error}
-              onSelectRun={setOperatorSelectedRunId}
+              onSelectRun={(runId) => {
+                setOperatorSelectedRunId(runId);
+                setOperatorSelectedTaskId(null);
+              }}
               onSelectTask={({ runId, taskId, attention }) => {
                 setOperatorSelectedRunId(runId);
                 setOperatorSelectedTaskId(taskId);
                 openOperatorTaskSidecar({ runId, taskId, attentionId: attention?.id });
               }}
+              onClearRun={() => {
+                setOperatorSelectedRunId(null);
+                setOperatorSelectedTaskId(null);
+                setOperatorSelectedIncidentId(null);
+              }}
             />
-          ) : showChat ? (
+          </div>
+          <div data-testid="chat-mode-panel" style={modePanelStyle(appMode === "chat")} aria-hidden={appMode !== "chat"}>
+            {chatShowChat ? (
+              <ChatWindow
+                key={`chat:${sessionKey}`}
+                session={selectedSession}
+                newSessionCwd={chatEffectiveNewSessionCwd}
+                onAgentEnd={handleAgentEnd}
+                onSessionCreated={handleChatSessionCreated}
+                onSessionForked={handleChatSessionForked}
+                modelsRefreshKey={modelsRefreshKey}
+                chatInputRef={chatInputRef}
+                onBranchDataChange={appMode === "chat" ? handleBranchDataChange : undefined}
+                onSystemPromptChange={appMode === "chat" ? handleSystemPromptChange : undefined}
+                onSessionStatsChange={appMode === "chat" ? handleChatSessionStatsChange : undefined}
+                onSessionStatsPanelOpen={appMode === "chat" ? openSessionStatsPanel : undefined}
+                onContextUsageChange={appMode === "chat" ? handleChatContextUsageChange : undefined}
+                workflowMode={false}
+                workflowCwd={chatCurrentCwd}
+                onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
+              />
+            ) : initialSessionRestored ? renderEmptyPlaceholder() : null}
+          </div>
+          <div data-testid="workflow-mode-panel" style={modePanelStyle(appMode === "workflow")} aria-hidden={appMode !== "workflow"}>
+            {workflowShowChat ? (
             <ChatWindow
-              key={`${appMode}:${activeSessionKey}`}
-              session={activeSelectedSession}
-              newSessionCwd={effectiveNewSessionCwd}
+              key={`workflow:${workflowSessionKey}`}
+              session={workflowSelectedSession}
+              newSessionCwd={workflowEffectiveNewSessionCwd}
               onAgentEnd={handleAgentEnd}
-              onSessionCreated={appMode === "workflow" ? handleWorkflowSessionCreated : handleChatSessionCreated}
-              onSessionForked={appMode === "workflow" ? handleWorkflowSessionForked : handleChatSessionForked}
+              onSessionCreated={handleWorkflowSessionCreated}
+              onSessionForked={handleWorkflowSessionForked}
               modelsRefreshKey={modelsRefreshKey}
-              chatInputRef={chatInputRef}
-              onBranchDataChange={handleBranchDataChange}
-              onSystemPromptChange={handleSystemPromptChange}
-              onSessionStatsChange={handleSessionStatsChange}
-              onSessionStatsPanelOpen={openSessionStatsPanel}
-              onContextUsageChange={handleContextUsageChange}
-              workflowMode={appMode === "workflow"}
+              chatInputRef={workflowChatInputRef}
+              onBranchDataChange={appMode === "workflow" ? handleBranchDataChange : undefined}
+              onSystemPromptChange={appMode === "workflow" ? handleSystemPromptChange : undefined}
+              onSessionStatsChange={appMode === "workflow" ? handleWorkflowSessionStatsChange : undefined}
+              onSessionStatsPanelOpen={appMode === "workflow" ? openSessionStatsPanel : undefined}
+              onContextUsageChange={appMode === "workflow" ? handleWorkflowContextUsageChange : undefined}
+              workflowMode
               workflowTemplate={selectedWorkflowTemplate}
-              workflowCwd={currentCwd}
+              workflowCwd={workflowCurrentCwd}
               onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
             />
-          ) : showPlaceholder ? (
-            activeCwd ? (
-              <div style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 15 }}>
-                Select a session from the sidebar
-              </div>
-            ) : (
-              <div style={{ position: "absolute", top: 12, left: 12, display: "flex", alignItems: "flex-start", gap: 8, userSelect: "none", pointerEvents: "none" }}>
-                <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.7, flexShrink: 0 }}>
-                  <line x1="20" y1="12" x2="4" y2="12" /><polyline points="10 6 4 12 10 18" />
-                </svg>
-                <div>
-                  <div style={{ fontSize: 18, fontWeight: 600, color: "var(--text)", marginBottom: 8 }}>Get Started</div>
-                  <div style={{ fontSize: 12, color: "var(--text-muted)", lineHeight: 1.8 }}>
-                    <span style={{ color: "var(--text-dim)", marginRight: 6 }}>1.</span>Select a project directory from the sidebar<br />
-                    <span style={{ color: "var(--text-dim)", marginRight: 6 }}>2.</span>Add models via the <strong style={{ color: "var(--text)" }}>Models</strong> button at the bottom
-                  </div>
-                </div>
-              </div>
-            )
-          ) : null}
+            ) : initialSessionRestored ? renderEmptyPlaceholder() : null}
+          </div>
         </div>
       </div>
 

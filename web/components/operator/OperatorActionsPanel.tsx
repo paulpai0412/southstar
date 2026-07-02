@@ -24,7 +24,10 @@ export function OperatorActionsPanel({
     if (!command.endpoint || !command.enabled) return;
     const reason = reasonByCommand[command.id] || "";
     const normalizedReason = reason.trim();
-    if (requiresReason(command) && !normalizedReason) return;
+    if (requiresReason(command) && !normalizedReason) {
+      setActionError(`Reason required before running ${command.label}`);
+      return;
+    }
     if (command.requiresConfirmation && !window.confirm(`Run ${command.label} with reason "${normalizedReason}"?`)) return;
     setPendingCommandId(command.id);
     setActionError(null);
@@ -83,7 +86,7 @@ export function OperatorActionsPanel({
             </div>
             <button
               type="button"
-              disabled={!command.enabled || pendingCommandId === command.id || (requiresReason(command) && !(reasonByCommand[command.id] || "").trim())}
+              disabled={!command.enabled || pendingCommandId === command.id}
               onClick={() => void invoke(command)}
             >
               {pendingCommandId === command.id ? `Pending ${command.label}` : command.label}
@@ -97,7 +100,10 @@ export function OperatorActionsPanel({
               <textarea
                 className="operator-action-reason"
                 value={reasonByCommand[command.id] || ""}
-                onChange={(event) => setReasonByCommand((current) => ({ ...current, [command.id]: event.currentTarget.value }))}
+                onChange={(event) => {
+                  const value = event.currentTarget.value;
+                  setReasonByCommand((current) => ({ ...current, [command.id]: value }));
+                }}
                 placeholder={requiresReason(command) ? "Reason required before running" : "Optional reason"}
                 aria-label={`Reason for ${command.label}`}
                 rows={2}

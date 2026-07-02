@@ -14,6 +14,7 @@ const NODE_HEIGHT = 142;
 export async function buildWorkflowFlowLayout(input: {
   canvas: WorkflowCanvasModel;
   selectedTaskId: string | null;
+  direction?: "DOWN" | "RIGHT";
 }): Promise<{ nodes: Array<Node<WorkflowTaskNodeData>>; edges: Array<Edge<WorkflowDependencyEdgeData>> }> {
   const dependencyByTarget = new Map<string, string[]>();
   for (const node of input.canvas.nodes) {
@@ -36,7 +37,7 @@ export async function buildWorkflowFlowLayout(input: {
     id: "southstar-workflow-canvas",
     layoutOptions: {
       "elk.algorithm": "layered",
-      "elk.direction": "DOWN",
+      "elk.direction": input.direction ?? "DOWN",
       "elk.spacing.nodeNode": "44",
       "elk.layered.spacing.nodeNodeBetweenLayers": "86",
       "elk.layered.considerModelOrder.strategy": "PREFER_NODES",

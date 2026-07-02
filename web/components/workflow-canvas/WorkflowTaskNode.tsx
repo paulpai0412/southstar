@@ -39,8 +39,8 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
       </p>
       {badges.length > 0 ? (
         <div className="ss-flow-node-badges" data-node-field="badges">
-          {badges.map((badge) => (
-            <span key={badge.label} className={`ss-flow-badge ss-flow-badge-${badge.tone ?? "neutral"}`}>
+          {badges.map((badge, index) => (
+            <span key={`${badge.label}:${badge.tone ?? "neutral"}:${index}`} className={`ss-flow-badge ss-flow-badge-${badge.tone ?? "neutral"}`}>
               {badge.label}
             </span>
           ))}

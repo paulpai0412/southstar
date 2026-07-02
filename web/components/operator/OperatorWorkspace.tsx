@@ -1,13 +1,15 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { buildOperatorPriorityLanes } from "@/lib/operator/incidents";
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { bucketForRunStatus, operatorStateBuckets } from "@/lib/operator/progress";
 import { workflowCanvasFromUiModel } from "@/lib/operator/taskDag";
-import type { OperatorAttentionItem, OperatorIncident, OperatorOverview } from "@/lib/operator/types";
-import { OperatorHealthStrip } from "./OperatorHealthStrip";
-import { OperatorIncidentPanel } from "./OperatorIncidentPanel";
-import { OperatorStateBoard } from "./OperatorStateBoard";
+import type { OperatorAttentionItem, OperatorIncident, OperatorOverview, OperatorRun } from "@/lib/operator/types";
 import { OperatorWorkflowProgress } from "./OperatorWorkflowProgress";
+
+const DEFAULT_DAG_HEIGHT_PERCENT = 40;
+const MIN_DAG_HEIGHT_PERCENT = 30;
+const MAX_DAG_HEIGHT_PERCENT = 76;
+const ACTIVE_RUN_STATUSES = new Set(["created", "validated", "ready", "scheduling", "queued", "running", "verifying", "release_pending", "blocked", "paused"]);
 
 export function OperatorWorkspace({
   overview,
@@ -18,6 +20,7 @@ export function OperatorWorkspace({
   error,
   onSelectRun,
   onSelectTask,
+  onClearRun,
 }: {
   overview: OperatorOverview;
   selectedRunId: string | null;
@@ -27,10 +30,21 @@ export function OperatorWorkspace({
   error: string | null;
   onSelectRun: (runId: string) => void;
   onSelectTask: (input: { runId: string; taskId: string; attention?: OperatorAttentionItem }) => void;
+  onClearRun: () => void;
 }) {
   const [workflowModel, setWorkflowModel] = useState<unknown>(null);
-  const selectedRun = overview.runs.find((run) => run.runId === selectedRunId) || overview.runs[0] || null;
-  const effectiveRunId = selectedRunId || selectedRun?.runId || null;
+  const [dagHeightPercent, setDagHeightPercent] = useState(DEFAULT_DAG_HEIGHT_PERCENT);
+  const workspaceRef = useRef<HTMLElement | null>(null);
+  const selectedRun = selectedRunId ? overview.runs.find((run) => run.runId === selectedRunId) || null : null;
+  const effectiveRunId = selectedRun?.runId || null;
+  const selectedRunUpdatedAt = selectedRun?.updatedAt || null;
+  const selectedRunStatus = selectedRun?.status || null;
+
+  const loadWorkflowModel = useCallback((runId: string, signal?: AbortSignal) => {
+    return fetch(`/api/workflow/ui?runId=${encodeURIComponent(runId)}`, { cache: "no-store", signal })
+      .then((res) => res.json())
+      .then((data) => setWorkflowModel(readRecord(data)?.result || data));
+  }, []);
 
   useEffect(() => {
     if (!effectiveRunId) {
@@ -38,55 +52,232 @@ export function OperatorWorkspace({
       return;
     }
     const controller = new AbortController();
-    fetch(`/api/workflow/ui?runId=${encodeURIComponent(effectiveRunId)}`, { cache: "no-store", signal: controller.signal })
-      .then((res) => res.json())
-      .then((data) => setWorkflowModel(readRecord(data)?.result || data))
+    loadWorkflowModel(effectiveRunId, controller.signal)
       .catch(() => setWorkflowModel(null));
     return () => controller.abort();
-  }, [effectiveRunId]);
+  }, [effectiveRunId, loadWorkflowModel, selectedRunUpdatedAt]);
+
+  useEffect(() => {
+    if (!effectiveRunId || !selectedRunStatus || !ACTIVE_RUN_STATUSES.has(selectedRunStatus)) return;
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void loadWorkflowModel(effectiveRunId).catch(() => {});
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [effectiveRunId, loadWorkflowModel, selectedRunStatus]);
+
+  const startDagResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    event.preventDefault();
+    const rect = workspace.getBoundingClientRect();
+    const startY = event.clientY;
+    const startDagPixels = rect.height * (dagHeightPercent / 100);
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextDagPixels = startDagPixels - (moveEvent.clientY - startY);
+      const nextPercent = (nextDagPixels / rect.height) * 100;
+      setDagHeightPercent(clamp(nextPercent, MIN_DAG_HEIGHT_PERCENT, MAX_DAG_HEIGHT_PERCENT));
+    };
+
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }, [dagHeightPercent]);
 
   const canvas = useMemo(() => workflowCanvasFromUiModel(workflowModel, effectiveRunId), [workflowModel, effectiveRunId]);
-  const attentionForRun = overview.attentionItems.filter((item) => !effectiveRunId || item.runId === effectiveRunId);
-  const selectedIncident = incidents.find((incident) => incident.id === selectedIncidentId) || incidents[0] || null;
-  const priorityLanes = useMemo(() => buildOperatorPriorityLanes(overview.runs, incidents), [overview.runs, incidents]);
+  const attentionForRun = overview.attentionItems.filter((item) => item.runId === effectiveRunId);
+  const selectedIncident = incidents.find((incident) => incident.id === selectedIncidentId) || null;
 
   return (
-    <main data-testid="operator-workspace" className="operator-workspace">
-      <OperatorHealthStrip overview={overview} incidents={incidents} error={error} />
-      {overview.runs.length === 0 && incidents.length === 0 ? (
-        <section className="operator-panel">
-          <p className="operator-muted">Operator helps you monitor running workflows, inspect exceptions, and recover tasks.</p>
-        </section>
-      ) : null}
-      <section className="operator-panel operator-priority-lanes">
-        <header className="operator-panel-header"><h2>Priority</h2></header>
-        <div className="operator-priority-grid">
-          <div><strong>Needs Action</strong><span>{priorityLanes.needsAction.length}</span></div>
-          <div><strong>At Risk</strong><span>{priorityLanes.atRisk.length}</span></div>
-          <div><strong>Running</strong><span>{priorityLanes.running.length}</span></div>
-          <div><strong>Recently Resolved</strong><span>{priorityLanes.recentlyResolved.length}</span></div>
-        </div>
-      </section>
-      <OperatorIncidentPanel incident={selectedIncident} />
-      <OperatorStateBoard
-        runs={overview.runs}
-        attentionItems={overview.attentionItems}
+    <main ref={workspaceRef} data-testid="operator-workspace" className="operator-workspace">
+      <OperatorStateDashboard
+        overview={overview}
         selectedRunId={effectiveRunId}
+        selectedIncident={selectedIncident}
+        incidents={incidents}
+        error={error}
         onSelectRun={onSelectRun}
+        onClearRun={onClearRun}
       />
-      <OperatorWorkflowProgress
-        run={selectedRun}
-        attentionItems={attentionForRun}
-        canvas={canvas}
-        selectedTaskId={selectedTaskId}
-        onSelectTask={(taskId) => {
-          if (effectiveRunId) onSelectTask({ runId: effectiveRunId, taskId, attention: attentionForRun.find((item) => item.taskId === taskId) });
-        }}
-      />
+      {selectedRun ? (
+        <>
+          <div
+            className="operator-dashboard-splitter"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize task DAG"
+            onPointerDown={startDagResize}
+          />
+          <OperatorWorkflowProgress
+            run={selectedRun}
+            attentionItems={attentionForRun}
+            canvas={canvas}
+            selectedTaskId={selectedTaskId}
+            heightPercent={dagHeightPercent}
+            onSelectTask={(taskId) => {
+              if (effectiveRunId) onSelectTask({ runId: effectiveRunId, taskId, attention: attentionForRun.find((item) => item.taskId === taskId) });
+            }}
+          />
+        </>
+      ) : null}
     </main>
+  );
+}
+
+function OperatorStateDashboard({
+  overview,
+  selectedRunId,
+  selectedIncident,
+  incidents,
+  error,
+  onSelectRun,
+  onClearRun,
+}: {
+  overview: OperatorOverview;
+  selectedRunId: string | null;
+  selectedIncident: OperatorIncident | null;
+  incidents: OperatorIncident[];
+  error: string | null;
+  onSelectRun: (runId: string) => void;
+  onClearRun: () => void;
+}) {
+  const sortedRuns = [...overview.runs].sort(compareRunUpdatedAt);
+  const problemCount = overview.attentionItems.length + incidents.length;
+
+  return (
+    <section className="operator-state-dashboard" data-testid="operator-state-dashboard">
+      <header className="operator-state-dashboard-header">
+        <div>
+          <h2>State Dashboard</h2>
+          <p>Workflow lifecycle by project, newest first.</p>
+          <div className="operator-state-dashboard-meta">
+            <span>active {overview.runtimeHealth.activeRunCount}</span>
+            <span>attention {overview.runtimeHealth.attentionCount}</span>
+            <span>blocked {overview.runtimeHealth.blockedCount}</span>
+            <span>runs {overview.runs.length}</span>
+          </div>
+        </div>
+        <div className="operator-state-dashboard-actions">
+          {selectedRunId ? <button type="button" onClick={onClearRun}>State Dashboard</button> : null}
+          {problemCount > 0 ? <strong>{problemCount} attention</strong> : <strong>healthy</strong>}
+        </div>
+      </header>
+      {error ? <p className="operator-muted operator-danger">Operator overview error: {error}</p> : null}
+      <div className="operator-workflow-state-grid" aria-label="Workflow state dashboard">
+        {operatorStateBuckets.map((bucket) => {
+          const bucketRuns = sortedRuns.filter((run) => bucketForRunStatus(run.status) === bucket);
+          return (
+            <section key={bucket} className="operator-workflow-state-column" data-state={bucket}>
+              <div className="operator-workflow-state-title">
+                <span>{bucket}</span>
+                <strong>{bucketRuns.length}</strong>
+              </div>
+              <div className="operator-workflow-state-stack">
+                {bucketRuns.length === 0 ? (
+                  <p className="operator-state-empty">No workflow runs</p>
+                ) : bucketRuns.map((run) => (
+                  <WorkflowStateCard
+                    key={run.runId}
+                    run={run}
+                    attentionItems={overview.attentionItems.filter((item) => item.runId === run.runId)}
+                    incidents={incidents.filter((incident) => incident.runId === run.runId)}
+                    selected={selectedRunId === run.runId}
+                    onSelectRun={onSelectRun}
+                  />
+                ))}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+      {selectedIncident ? (
+        <p className="operator-state-dashboard-warning">
+          {selectedIncident.severity}: {selectedIncident.title} · {selectedIncident.nextAction}
+        </p>
+      ) : overview.runs.length === 0 ? (
+        <p className="operator-state-dashboard-empty">No workflow runs for this project.</p>
+      ) : null}
+    </section>
+  );
+}
+
+function WorkflowStateCard({
+  run,
+  attentionItems,
+  incidents,
+  selected,
+  onSelectRun,
+}: {
+  run: OperatorRun;
+  attentionItems: OperatorAttentionItem[];
+  incidents: OperatorIncident[];
+  selected: boolean;
+  onSelectRun: (runId: string) => void;
+}) {
+  const attentionCount = attentionItems.length + incidents.length;
+  const highestIncident = incidents[0] || null;
+  const projectLabel = formatProjectLabel(run);
+
+  return (
+    <button
+      type="button"
+      className="operator-workflow-state-card"
+      aria-pressed={selected}
+      onClick={() => onSelectRun(run.runId)}
+    >
+      <span className="operator-workflow-state-card-status">{run.status}</span>
+      <strong>{run.title}</strong>
+      <span className="operator-workflow-state-card-meta">
+        {projectLabel}
+        {run.domain ? ` · ${run.domain}` : ""}
+      </span>
+      <span className="operator-workflow-state-card-meta">{shortRunId(run.runId)} · {formatRunAge(run.updatedAt)}</span>
+      {attentionCount > 0 ? (
+        <span className="operator-workflow-state-card-attention">
+          {attentionCount} attention{highestIncident ? ` · ${highestIncident.nextAction}` : ""}
+        </span>
+      ) : null}
+    </button>
   );
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function compareRunUpdatedAt(a: OperatorRun, b: OperatorRun): number {
+  const bTime = Date.parse(b.updatedAt || "");
+  const aTime = Date.parse(a.updatedAt || "");
+  return (Number.isFinite(bTime) ? bTime : 0) - (Number.isFinite(aTime) ? aTime : 0);
+}
+
+function formatRunAge(updatedAt: string | undefined): string {
+  if (!updatedAt) return "unknown";
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return "unknown";
+  const seconds = Math.max(0, Math.round((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function shortRunId(runId: string): string {
+  return runId.length > 18 ? `${runId.slice(0, 10)}...${runId.slice(-5)}` : runId;
+}
+
+function formatProjectLabel(run: OperatorRun): string {
+  const value = run.cwd || run.projectRoot || "project unknown";
+  const parts = value.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] || value;
 }

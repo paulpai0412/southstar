@@ -28,6 +28,7 @@ export function SouthstarWorkflowCanvas(props: {
   canvas: WorkflowCanvasModel;
   selectedTaskId: string | null;
   onSelectTask: (taskId: string) => void;
+  direction?: "DOWN" | "RIGHT";
 }) {
   const [nodes, setNodes] = useState<Array<Node<WorkflowTaskNodeData>>>([]);
   const [edges, setEdges] = useState<Array<Edge<WorkflowDependencyEdgeData>>>([]);
@@ -40,6 +41,7 @@ export function SouthstarWorkflowCanvas(props: {
         const next = await buildWorkflowFlowLayout({
           canvas: props.canvas,
           selectedTaskId: props.selectedTaskId,
+          direction: props.direction,
         });
         if (cancelled) return;
         setLayoutError(null);
@@ -54,7 +56,7 @@ export function SouthstarWorkflowCanvas(props: {
     return () => {
       cancelled = true;
     };
-  }, [props.canvas, props.selectedTaskId]);
+  }, [props.canvas, props.selectedTaskId, props.direction]);
 
   const minimapColor = useMemo(
     () => (node: Node<WorkflowTaskNodeData>) => statusColorFor(node.data.status).edge,

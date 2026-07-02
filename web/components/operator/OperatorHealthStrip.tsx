@@ -16,7 +16,7 @@ export function OperatorHealthStrip({
 
   return (
     <section className="operator-health-strip" aria-label="Operator runtime health">
-      <div><strong>{overview.runs.length}</strong><span>active runs</span></div>
+      <div><strong>{overview.runtimeHealth.activeRunCount}</strong><span>active runs</span></div>
       <div><strong>{blocked}</strong><span>blocked incidents</span></div>
       <div><strong>{atRisk}</strong><span>at risk</span></div>
       <div><strong>{overview.runtimeHealth.attentionCount}</strong><span>attention events</span></div>
