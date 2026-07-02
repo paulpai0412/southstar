@@ -37,12 +37,17 @@ export async function buildLibraryGraphReadModel(
   const scopedEdges = activeScope === "all" ? await listLibraryEdges(db) : await listLibraryEdges(db, { scope: activeScope });
   const objectByKey = new Map(scopedObjects.map((object) => [object.objectKey, object]));
   const candidateEdges = scopedEdges.filter((edge) => objectByKey.has(edge.fromObjectKey) && objectByKey.has(edge.toObjectKey));
-  const visibleKeys = input.objectKey
+  const scopeVisibleKeys = buildScopeVisibleKeys(activeScope, scopedObjects, candidateEdges);
+  const neighborhoodKeys = input.objectKey
     ? buildNeighborhoodKeys(input.objectKey, objectByKey, candidateEdges, input.depth ?? 1)
-    : buildScopeVisibleKeys(activeScope, scopedObjects, candidateEdges);
+    : null;
+  const visibleKeys = neighborhoodKeys ? intersectSets(scopeVisibleKeys, neighborhoodKeys) : scopeVisibleKeys;
 
   const visibleEdges = candidateEdges.filter((edge) => visibleKeys.has(edge.fromObjectKey) && visibleKeys.has(edge.toObjectKey));
-  const nodes = scopedObjects.filter((object) => visibleKeys.has(object.objectKey)).map(toGraphNode);
+  const nodes = scopedObjects
+    .filter((object) => visibleKeys.has(object.objectKey))
+    .sort((left, right) => compareVisibleObjects(activeScope, left, right))
+    .map(toGraphNode);
 
   return {
     activeScope,
@@ -111,6 +116,14 @@ function buildAvailableScopes(objects: LibraryObjectSummary[]): string[] {
   return ["all", ...Array.from(scopes).sort((left, right) => left.localeCompare(right))];
 }
 
+function intersectSets(left: Set<string>, right: Set<string>): Set<string> {
+  const intersection = new Set<string>();
+  for (const value of left) {
+    if (right.has(value)) intersection.add(value);
+  }
+  return intersection;
+}
+
 function toGraphNode(object: LibraryObjectSummary): LibraryGraphNode {
   return {
     id: object.id,
@@ -120,6 +133,15 @@ function toGraphNode(object: LibraryObjectSummary): LibraryGraphNode {
     title: getObjectTitle(object),
     scope: getObjectScope(object),
   };
+}
+
+function compareVisibleObjects(activeScope: string, left: LibraryObjectSummary, right: LibraryObjectSummary): number {
+  if (activeScope !== "all" && activeScope !== "global") {
+    const leftRank = objectBelongsToScope(left, activeScope) ? 0 : 1;
+    const rightRank = objectBelongsToScope(right, activeScope) ? 0 : 1;
+    if (leftRank !== rightRank) return leftRank - rightRank;
+  }
+  return 0;
 }
 
 function toGraphEdge(edge: LibraryEdgeRecord): LibraryGraphEdge {

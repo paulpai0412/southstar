@@ -139,8 +139,8 @@ export async function listLibraryObjects(
         and ($2::text is null or object_kind = $2)
         and (
           $3::text is null
-          or state_json->>'scope' = $3
-          or state_json->>'scope' = 'global'
+          or coalesce(state_json->>'scope', 'global') = $3
+          or coalesce(state_json->>'scope', 'global') = 'global'
           or state_json->'domainRefs' ? $3
         )
       order by coalesce(state_json->>'scope', 'global'), object_kind, object_key`,

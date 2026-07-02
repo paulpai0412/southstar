@@ -19,6 +19,8 @@ export type LibraryWorkspaceObjectGroup = {
 export type LibraryWorkspaceDomain = {
   scope: string;
   objectCount: number;
+  counts: Partial<Record<LibraryDefinitionKind, number>>;
+  objects: LibraryWorkspaceObject[];
   objectKindCounts: Partial<Record<LibraryDefinitionKind, number>>;
   objectGroups: LibraryWorkspaceObjectGroup[];
 };
@@ -58,6 +60,8 @@ export async function buildLibraryWorkspaceReadModel(
         return {
           scope,
           objectCount: domainObjects.length,
+          counts: objectKindCounts,
+          objects: domainObjects,
           objectKindCounts,
           objectGroups: Array.from(groups.entries()).map(([objectKind, groupObjects]) => ({
             objectKind,

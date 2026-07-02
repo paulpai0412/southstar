@@ -25,10 +25,62 @@ test("builds library workspace domains grouped by scope and object kind", async 
 
     assert.equal(globalDomain?.objectKindCounts.tool_definition, 1);
     assert.equal(softwareDomain?.objectKindCounts.agent_definition, 1);
+    assert.equal(softwareDomain?.counts.agent_definition, 1);
+    assert.deepEqual(
+      softwareDomain?.objects.map((object) => object.objectKey),
+      ["agent.frontend-developer"],
+    );
     assert.deepEqual(
       softwareDomain?.objectGroups.map((group) => [group.objectKind, group.objects.map((object) => object.objectKey)]),
       [["agent_definition", ["agent.frontend-developer"]]],
     );
+  } finally {
+    await db.close();
+  }
+});
+
+test("includes missing-scope global objects adjacent to scoped software nodes", async () => {
+  const db = await createTestPostgresDb();
+
+  try {
+    await seedObject(db, "agent.frontend-developer", "agent_definition", "software", "Frontend Developer");
+    await seedObject(db, "tool.implicit-global", "tool_definition", undefined, "Implicit Global");
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "requires_tool",
+      toObjectKey: "tool.implicit-global",
+      scope: "software",
+    });
+
+    const softwareGraph = await buildLibraryGraphReadModel(db, { scope: "software" });
+
+    assert.deepEqual(
+      softwareGraph.nodes.map((node) => node.objectKey),
+      ["agent.frontend-developer", "tool.implicit-global"],
+    );
+    assert.deepEqual(
+      softwareGraph.edges.map((edge) => [edge.fromObjectKey, edge.edgeType, edge.toObjectKey]),
+      [["agent.frontend-developer", "requires_tool", "tool.implicit-global"]],
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("focused scoped graph hides global-only neighborhoods under concrete domains", async () => {
+  const db = await createTestPostgresDb();
+
+  try {
+    await seedLibraryGraph(db);
+
+    const focusedGlobalGraph = await buildLibraryGraphReadModel(db, {
+      scope: "software",
+      objectKey: "tool.browser",
+      depth: 1,
+    });
+
+    assert.deepEqual(focusedGlobalGraph.nodes, []);
+    assert.deepEqual(focusedGlobalGraph.edges, []);
   } finally {
     await db.close();
   }
@@ -115,13 +167,13 @@ async function seedObject(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   objectKey: string,
   objectKind: Parameters<typeof upsertLibraryObject>[1]["objectKind"],
-  scope: string,
+  scope: string | undefined,
   title: string,
 ): Promise<void> {
   await upsertLibraryObject(db, {
     objectKey,
     objectKind,
     status: "approved",
-    state: { title, scope },
+    state: scope === undefined ? { title } : { title, scope },
   });
 }
