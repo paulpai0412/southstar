@@ -3,9 +3,11 @@ import { isTaskRecoverableStatus } from "../task-recovery.ts";
 
 const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "scheduling", "running", "paused", "blocked"] as const;
 const TERMINAL_RUN_STATUSES = ["completed", "passed", "failed", "cancelled"] as const;
+const OPERATOR_ATTENTION_RUN_STATUSES = ["paused", "blocked", "failed", "cancelled"] as const;
 const RECENT_RESOLVED_RUN_STATUSES = ["completed", "passed"] as const;
 const ACTIVE_EXECUTOR_STATUSES = ["submitted", "queued", "starting", "running", "heartbeat-lost", "queue-timeout", "hard-timeout", "callback-missing", "orphaned"] as const;
-const TERMINAL_RESOURCE_STATUSES = ["resolved", "rejected", "completed", "passed", "cancelled", "superseded"] as const;
+const NORMAL_EXECUTOR_RESOURCE_STATUSES = ["submitted", "queued", "starting", "running"] as const;
+const TERMINAL_RESOURCE_STATUSES = ["resolved", "rejected", "completed", "passed", "cancelled", "superseded", "applied"] as const;
 
 type InterventionMode = "run" | "task" | "exception" | "executor" | "approval" | "recovery";
 
@@ -88,12 +90,16 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
              where attention.run_id = southstar.workflow_runs.id
                and attention.resource_type in ('runtime_exception', 'approval', 'recovery_decision', 'executor_binding', 'hand_execution')
                and attention.status <> all($3::text[])
+               and (
+                 attention.resource_type not in ('executor_binding', 'hand_execution')
+                 or attention.status <> all($5::text[])
+               )
           )
         )
          or status = any($4::text[])
       order by updated_at desc, id
       limit 50`,
-    [[...ACTIVE_RUN_STATUSES], [...TERMINAL_RUN_STATUSES], [...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES]],
+    [[...ACTIVE_RUN_STATUSES], [...TERMINAL_RUN_STATUSES], [...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES], [...NORMAL_EXECUTOR_RESOURCE_STATUSES]],
   )).rows.map((run): ActiveRun => {
     const runtimeContext = asRecord(run.runtime_context_json);
     const cwd = stringValue(runtimeContext.cwd);
@@ -120,6 +126,7 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
   const taskAttention = taskRows.map(taskAttentionItem);
   const runAttention = activeRuns
     .filter((run) => !(RECENT_RESOLVED_RUN_STATUSES as readonly string[]).includes(run.status))
+    .filter((run) => (OPERATOR_ATTENTION_RUN_STATUSES as readonly string[]).includes(run.status))
     .map(runAttentionItem);
   const attentionItems = [
     ...resourceAttention,
@@ -153,6 +160,7 @@ async function readAttentionResourceRows(db: SouthstarDb) {
     run_id: string | null;
     task_id: string | null;
     task_status: string | null;
+    run_status: string | null;
     status: string;
     title: string | null;
     payload_json: unknown;
@@ -164,6 +172,7 @@ async function readAttentionResourceRows(db: SouthstarDb) {
             resources.run_id,
             resources.task_id,
             tasks.status as task_status,
+            runs.status as run_status,
             resources.status,
             resources.title,
             resources.payload_json,
@@ -173,11 +182,18 @@ async function readAttentionResourceRows(db: SouthstarDb) {
        left join southstar.workflow_tasks tasks
          on tasks.run_id = resources.run_id
         and tasks.id = resources.task_id
+       left join southstar.workflow_runs runs
+         on runs.id = resources.run_id
       where resources.resource_type in ('runtime_exception', 'approval', 'recovery_decision', 'executor_binding', 'hand_execution')
         and resources.status <> all($1::text[])
+        and (runs.status is null or runs.status <> all($2::text[]))
+        and (
+          resources.resource_type not in ('executor_binding', 'hand_execution')
+          or resources.status <> all($3::text[])
+        )
       order by resources.updated_at desc, resources.resource_key
       limit 100`,
-    [[...TERMINAL_RESOURCE_STATUSES]],
+    [[...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES], [...NORMAL_EXECUTOR_RESOURCE_STATUSES]],
   )).rows;
 }
 
@@ -242,7 +258,7 @@ function resourceAttentionItem(row: Awaited<ReturnType<typeof readAttentionResou
   return {
     id: `${row.resource_type}:${row.resource_key}`,
     kind: row.resource_type,
-    severity: severityFor(row.resource_type, row.status),
+    severity: severityFor(row.resource_type, row.status, payload),
     interventionMode: mode,
     source: {
       resourceType: row.resource_type,
@@ -315,9 +331,9 @@ function runAttentionItem(run: ActiveRun): OperatorAttentionItem {
       ref: `southstar.workflow_runs:${run.runId}`,
     },
     runId: run.runId,
-    title: failed ? `Failed run: ${run.title}` : cancelled ? `Cancelled run: ${run.title}` : paused ? `Paused run: ${run.title}` : `Active run: ${run.title}`,
+    title: failed ? `Failed run: ${run.title}` : cancelled ? `Cancelled run: ${run.title}` : paused ? `Paused run: ${run.title}` : blocked ? `Blocked run: ${run.title}` : `Active run: ${run.title}`,
     status: run.status,
-    reason: failed || cancelled ? "terminal run has unresolved operator attention" : paused ? "paused run" : "normal active run watch",
+    reason: failed || cancelled ? "terminal run has unresolved operator attention" : paused ? "paused run" : blocked ? "blocked run" : "normal active run watch",
     detail: {
       runId: run.runId,
       status: run.status,
@@ -325,7 +341,7 @@ function runAttentionItem(run: ActiveRun): OperatorAttentionItem {
       ...(run.domain ? { domain: run.domain } : {}),
     },
     updatedAt: run.updatedAt,
-    suggestedActions: failed || cancelled ? ["review-attention", "inspect-run"] : paused ? ["resume-run", "cancel-run"] : ["watch-events", "pause-run", "cancel-run"],
+    suggestedActions: failed || cancelled ? ["review-attention", "inspect-run"] : paused || blocked ? ["resume-run", "cancel-run"] : ["watch-events", "pause-run", "cancel-run"],
     commands,
     ...(firstEnabledCommandId(commands) ? { suggestedCommandId: firstEnabledCommandId(commands) } : {}),
   };
@@ -511,11 +527,20 @@ function interventionModeForResource(resourceType: string): InterventionMode | n
   return null;
 }
 
-function severityFor(resourceType: string, status: string): "blocked" | "error" | "warning" | "info" {
-  if (resourceType === "runtime_exception") return "blocked";
+function severityFor(resourceType: string, status: string, payload: Record<string, unknown> = {}): "blocked" | "error" | "warning" | "info" {
+  if (resourceType === "runtime_exception") return runtimeExceptionSeverity(payload);
   if (status.includes("failed") || status.includes("timeout") || status.includes("lost") || status.includes("missing")) return "error";
   if (resourceType === "approval" || resourceType === "recovery_decision") return "warning";
   return "info";
+}
+
+function runtimeExceptionSeverity(payload: Record<string, unknown>): "blocked" | "error" | "warning" | "info" {
+  const severity = stringValue(payload.severity)?.toLowerCase();
+  if (severity === "blocking" || severity === "blocked" || severity === "critical") return "blocked";
+  if (severity === "error" || severity === "failed" || severity === "failure") return "error";
+  if (severity === "warning" || severity === "warn" || severity === "recoverable") return "warning";
+  if (severity === "info" || severity === "observed") return "info";
+  return "blocked";
 }
 
 function compareAttention(a: { severity: string; updatedAt: string; id: string }, b: { severity: string; updatedAt: string; id: string }): number {

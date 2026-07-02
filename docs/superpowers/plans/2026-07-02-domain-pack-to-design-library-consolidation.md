@@ -21,7 +21,7 @@
 
 **Created:**
 - `src/v2/design-library/runtime-types.ts` — runtime value types relocated from `domain-packs/types.ts` (`AgentProvider`, `ToolPolicy`, `BudgetPolicy`, `RoleDefinition`, `AgentProfile`, `ArtifactContract`, `EvaluatorPipelineDefinition`, `ContextPolicyDefinition`, `SessionPolicyDefinition`, `MemoryPolicyDefinition`, `WorkspacePolicyDefinition`, `StopConditionDefinition`, `WorkflowGeneratorPolicyDefinition`, `WorkflowStageTemplate`, `IntentDefinition`)
-- `src/v2/design-library/library-snapshot.ts` — `LibrarySnapshot` type + `loadLibrarySnapshot(db, scopes)` loader
+- `src/v2/design-library/library-snapshot.ts` — `LibrarySnapshot` type + `loadLibrarySnapshot(db, scopes)` and `loadRunLibrarySnapshot(db, { scopes, selectedRefs })` loaders
 - `src/v2/design-library/domain-router.ts` — prompt → `(scopes, intentId, templateRef)` routing (moved from `domain-packs/registry.ts`)
 - `tests/v2/library-snapshot.test.ts` — shape-parity test for the snapshot loader
 - `tests/v2/design-library-runtime-types.test.ts` — compile/type smoke test
@@ -204,7 +204,7 @@ export type QualityPattern =
   | "maker-checker"
   | "multi-angle-research"
   | "competing-hypotheses"
-  | "fanout-fan-in"
+  | "fanout-fanin"
   | "rollback-on-test-failure"
   | "fork-on-checker-reject";
 
@@ -386,7 +386,9 @@ git commit -m "feat: add design-library/runtime-types with relocated domain-pack
 **Files:**
 - Modify: `src/v2/design-library/types.ts` (the `LibraryDefinitionKind` and `LibraryEdgeType` unions)
 - Modify: `src/v2/design-library/library-graph-store.ts` (no SQL change — kinds are data, but add a guard test)
+- Modify: `src/v2/design-library/validators.ts` (payload validation for the 7 new kinds)
 - Test: `tests/v2/library-graph-store.test.ts` (append one case)
+- Test: `tests/v2/design-library-validators.test.ts` (valid and invalid payload coverage for the 7 new kinds)
 
 - [ ] **Step 1: Write the failing test for a new kind round-trip**
 
@@ -401,7 +403,7 @@ test("library graph store round-trips a context_policy kind object", async () =>
       objectKind: "context_policy",
       status: "approved",
       headVersionId: "context_policy.software-context-default@v1",
-      state: { scope: "software", id: "software-context-default", maxInputTokens: 20000, memoryPolicyRef: "software-memory-default", includeAgentsMd: true, includeWorkspaceSummary: true },
+      state: { schemaVersion: "southstar.library.context_policy.v1", scope: "software", id: "software-context-default", maxInputTokens: 20000, memoryPolicyRef: "software-memory-default", includeAgentsMd: true, includeWorkspaceSummary: true },
     });
     assert.equal(obj.objectKind, "context_policy");
     const found = await findApprovedLibraryObjectsByKind(db, "context_policy", "software");
@@ -466,16 +468,151 @@ In the same file, add to the `LibraryEdgeType` union (keep all existing members)
 
 (`checked_by_stop_condition` is not needed — stop conditions are referenced by `stopConditionRefs` inside the stage template's `state.stages[]`.)
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [ ] **Step 5: Add payload validators for the 7 new kinds**
+
+Append valid examples for the new kinds in `tests/v2/design-library-validators.test.ts`'s `validPayloads()` return object:
+
+```ts
+    context_policy: { schemaVersion: "southstar.library.context_policy.v1", scope: "software", id: "software-context-default", maxInputTokens: 20000, memoryPolicyRef: "software-memory-default", includeAgentsMd: true, includeWorkspaceSummary: true },
+    session_policy: { schemaVersion: "southstar.library.session_policy.v1", scope: "software", id: "software-session-default", checkpointOn: ["task-start", "artifact-accepted", "before-recovery"], allowFork: true, allowReset: true, allowRollback: true },
+    memory_policy: { schemaVersion: "southstar.library.memory_policy.v1", scope: "software", id: "software-memory-default", providerRef: "postgres", scopes: ["workspace", "run"], maxInjectedTokens: 1500, maxCandidates: 8, requireWriteApproval: false, allowedKinds: ["preference"], ranking: { relevanceWeight: 1, recencyWeight: 1, successWeight: 1, confidenceWeight: 1 }, compression: { strategy: "extractive", maxTokensPerMemory: 400 } },
+    workspace_policy: { schemaVersion: "southstar.library.workspace_policy.v1", scope: "software", id: "software-git-workspace", provider: "git", snapshotAtTaskStart: true, snapshotAtAcceptedArtifact: true, forkOnCheckerReject: true, rollbackOnTestFailure: true },
+    stop_condition: { schemaVersion: "southstar.library.stop_condition.v1", scope: "software", id: "software-feature-complete", type: "custom", evaluatorRefs: ["software-feature-quality"] },
+    evaluator_pipeline: { schemaVersion: "southstar.library.evaluator_pipeline.v1", scope: "software", id: "software-feature-quality", evaluators: [{ id: "schema", kind: "schema", config: { artifactRef: "implementation_report" }, required: true }], onFailure: { defaultStrategy: "retry-same-agent" } },
+    workflow_generator_policy: { schemaVersion: "southstar.library.workflow_generator_policy.v1", scope: "software", id: "software-feature-generator", intentRefs: ["implement_feature"], templateRefs: ["software-feature-template"], allowedRoleRefs: ["maker"], allowedAgentProfileRefs: ["software-maker-pi"], allowedEvaluatorPipelineRefs: ["software-feature-quality"], allowedArtifactContractRefs: ["implementation_report"], maxTasks: 8, maxParallelTasks: 2, maxAgentInvocations: 8, maxEstimatedInputTokens: 80000, qualityPatterns: ["maker-checker"] },
+```
+
+Add an invalid-shape test:
+
+```ts
+test("validator rejects malformed consolidated library payloads", () => {
+  for (const kind of ["context_policy", "session_policy", "memory_policy", "workspace_policy", "stop_condition", "evaluator_pipeline", "workflow_generator_policy"] as const) {
+    const result = validateLibraryPayload(kind, { schemaVersion: `southstar.library.${kind}.v1` });
+    assert.equal(result.ok, false, `${kind} should reject missing required fields`);
+  }
+});
+```
+
+In `src/v2/design-library/validators.ts`, add switch cases:
+
+```ts
+    case "context_policy":
+      if (schemaVersion !== "southstar.library.context_policy.v1") issues.push({ path: "schemaVersion", message: "context_policy schemaVersion must be southstar.library.context_policy.v1" });
+      requireString(payload.id, "id", issues);
+      requireNumber(payload.maxInputTokens, "maxInputTokens", issues);
+      requireString(payload.memoryPolicyRef, "memoryPolicyRef", issues);
+      requireBoolean(payload.includeAgentsMd, "includeAgentsMd", issues);
+      requireBoolean(payload.includeWorkspaceSummary, "includeWorkspaceSummary", issues);
+      break;
+    case "session_policy":
+      if (schemaVersion !== "southstar.library.session_policy.v1") issues.push({ path: "schemaVersion", message: "session_policy schemaVersion must be southstar.library.session_policy.v1" });
+      requireString(payload.id, "id", issues);
+      requireArray(payload.checkpointOn, "checkpointOn", issues);
+      requireBoolean(payload.allowFork, "allowFork", issues);
+      requireBoolean(payload.allowReset, "allowReset", issues);
+      requireBoolean(payload.allowRollback, "allowRollback", issues);
+      break;
+    case "memory_policy":
+      if (schemaVersion !== "southstar.library.memory_policy.v1") issues.push({ path: "schemaVersion", message: "memory_policy schemaVersion must be southstar.library.memory_policy.v1" });
+      requireString(payload.id, "id", issues);
+      requireString(payload.providerRef, "providerRef", issues);
+      requireArray(payload.scopes, "scopes", issues);
+      requireNumber(payload.maxInjectedTokens, "maxInjectedTokens", issues);
+      requireNumber(payload.maxCandidates, "maxCandidates", issues);
+      requireBoolean(payload.requireWriteApproval, "requireWriteApproval", issues);
+      requireArray(payload.allowedKinds, "allowedKinds", issues);
+      requireObject(payload.ranking, "ranking", issues);
+      requireObject(payload.compression, "compression", issues);
+      break;
+    case "workspace_policy":
+      if (schemaVersion !== "southstar.library.workspace_policy.v1") issues.push({ path: "schemaVersion", message: "workspace_policy schemaVersion must be southstar.library.workspace_policy.v1" });
+      requireString(payload.id, "id", issues);
+      requireString(payload.provider, "provider", issues);
+      requireBoolean(payload.snapshotAtTaskStart, "snapshotAtTaskStart", issues);
+      requireBoolean(payload.snapshotAtAcceptedArtifact, "snapshotAtAcceptedArtifact", issues);
+      requireBoolean(payload.forkOnCheckerReject, "forkOnCheckerReject", issues);
+      requireBoolean(payload.rollbackOnTestFailure, "rollbackOnTestFailure", issues);
+      break;
+    case "stop_condition":
+      if (schemaVersion !== "southstar.library.stop_condition.v1") issues.push({ path: "schemaVersion", message: "stop_condition schemaVersion must be southstar.library.stop_condition.v1" });
+      requireString(payload.id, "id", issues);
+      requireString(payload.type, "type", issues);
+      requireArray(payload.evaluatorRefs, "evaluatorRefs", issues);
+      break;
+    case "evaluator_pipeline":
+      if (schemaVersion !== "southstar.library.evaluator_pipeline.v1") issues.push({ path: "schemaVersion", message: "evaluator_pipeline schemaVersion must be southstar.library.evaluator_pipeline.v1" });
+      requireString(payload.id, "id", issues);
+      requireArray(payload.evaluators, "evaluators", issues);
+      requireObject(payload.onFailure, "onFailure", issues);
+      break;
+    case "workflow_generator_policy":
+      if (schemaVersion !== "southstar.library.workflow_generator_policy.v1") issues.push({ path: "schemaVersion", message: "workflow_generator_policy schemaVersion must be southstar.library.workflow_generator_policy.v1" });
+      requireString(payload.id, "id", issues);
+      requireArray(payload.intentRefs, "intentRefs", issues);
+      requireArray(payload.templateRefs, "templateRefs", issues);
+      requireArray(payload.allowedRoleRefs, "allowedRoleRefs", issues);
+      requireArray(payload.allowedAgentProfileRefs, "allowedAgentProfileRefs", issues);
+      requireArray(payload.allowedEvaluatorPipelineRefs, "allowedEvaluatorPipelineRefs", issues);
+      requireArray(payload.allowedArtifactContractRefs, "allowedArtifactContractRefs", issues);
+      requireNumber(payload.maxTasks, "maxTasks", issues);
+      requireNumber(payload.maxParallelTasks, "maxParallelTasks", issues);
+      requireNumber(payload.maxAgentInvocations, "maxAgentInvocations", issues);
+      requireNumber(payload.maxEstimatedInputTokens, "maxEstimatedInputTokens", issues);
+      requireArray(payload.qualityPatterns, "qualityPatterns", issues);
+      break;
+```
+
+Add helpers near the existing `requireString` helper:
+
+```ts
+function requireNumber(value: unknown, path: string, issues: Array<{ path: string; message: string }>): void {
+  if (typeof value !== "number" || !Number.isFinite(value)) issues.push({ path, message: `${path} must be a finite number` });
+}
+
+function requireBoolean(value: unknown, path: string, issues: Array<{ path: string; message: string }>): void {
+  if (typeof value !== "boolean") issues.push({ path, message: `${path} must be boolean` });
+}
+```
+
+Also update the existing `workflow_template` validator branch so it accepts all three template models:
+
+```ts
+    case "workflow_template": {
+      const templateModel = typeof payload.templateModel === "string" ? payload.templateModel : undefined;
+      if (templateModel === "stage_dag") {
+        requireString(payload.id, "id", issues);
+        requireArray(payload.intentRefs, "intentRefs", issues);
+        requireArray(payload.intents, "intents", issues);
+        requireArray(payload.stages, "stages", issues);
+        break;
+      }
+      if (templateModel === "composition_slots") {
+        requireArray(payload.intentRefs, "intentRefs", issues);
+        requireObject(payload.compositionConstraints, "compositionConstraints", issues);
+        break;
+      }
+      if (schemaVersion !== "southstar.library.workflow_template.v1") {
+        issues.push({ path: "schemaVersion", message: "workflow_template schemaVersion must be southstar.library.workflow_template.v1" });
+      }
+      const graphValidation = validateWorkflowTemplateGraph(payload as WorkflowTemplatePayload);
+      if (!graphValidation.ok) issues.push(...graphValidation.issues);
+      break;
+    }
+```
+
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `npx tsx --test tests/v2/library-graph-store.test.ts`
 Expected: PASS — all cases including the new `context_policy` round-trip.
 
-- [ ] **Step 6: Commit**
+Run: `npx tsx --test tests/v2/design-library-validators.test.ts`
+Expected: PASS — existing payloads plus the 7 new consolidated kinds validate, and malformed payloads fail.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/v2/design-library/types.ts tests/v2/library-graph-store.test.ts
-git commit -m "feat: add context/session/memory/workspace policy, stop_condition, evaluator_pipeline, workflow_generator_policy library kinds"
+git add src/v2/design-library/types.ts src/v2/design-library/validators.ts tests/v2/library-graph-store.test.ts tests/v2/design-library-validators.test.ts
+git commit -m "feat: add consolidated library kinds and payload validators"
 ```
 
 ---
@@ -496,7 +633,7 @@ Create `tests/v2/library-snapshot.test.ts`:
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
-import { loadLibrarySnapshot } from "../../src/v2/design-library/library-snapshot.ts";
+import { loadLibrarySnapshot, loadRunLibrarySnapshot } from "../../src/v2/design-library/library-snapshot.ts";
 import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 
 test("loadLibrarySnapshot returns software scope with parity to softwareDomainPack", async () => {
@@ -504,7 +641,7 @@ test("loadLibrarySnapshot returns software scope with parity to softwareDomainPa
   try {
     await seedSoftwareLibraryGraph(db);
     const snapshot = await loadLibrarySnapshot(db, ["software"]);
-    assert.equal(snapshot.scopes, 1);
+    assert.equal(snapshot.scopes.length, 1);
     assert.equal(snapshot.scopes[0], "software");
     const roleIds = snapshot.roles.map((r) => r.id).sort();
     assert.ok(roleIds.includes("explorer"));
@@ -522,10 +659,20 @@ test("loadLibrarySnapshot returns software scope with parity to softwareDomainPa
     assert.ok(snapshot.workspacePolicies.some((w) => w.id === "software-git-workspace"));
     assert.ok(snapshot.stopConditions.some((s) => s.id === "software-feature-complete"));
     assert.ok(snapshot.workflowGeneratorPolicies.some((g) => g.id === "software-feature-generator"));
-    const stageTemplate = snapshot.workflowTemplates.find((t) => t.id === "software-feature-template");
+    const stageTemplate = snapshot.workflowTemplates.find((t) => t.templateModel === "stage_dag" && t.id === "software-feature-template");
     assert.ok(stageTemplate, "stage template present");
     assert.ok(stageTemplate && stageTemplate.stages.length === 4, "stage template has 4 stages");
     assert.ok(stageTemplate && stageTemplate.intents.length === 2, "stage template has 2 intents");
+
+    const runSnapshot = await loadRunLibrarySnapshot(db, {
+      scopes: ["software"],
+      selectedRefs: ["maker", "software-maker-pi", "implementation_report", "software-feature-quality"],
+    });
+    assert.ok(runSnapshot.agentProfiles.some((p) => p.id === "software-maker-pi"));
+    assert.equal(runSnapshot.agentProfiles.some((p) => p.id === "software-explorer-codex"), false);
+    assert.ok(runSnapshot.contextPolicies.some((p) => p.id === "software-context-default"));
+    assert.ok(runSnapshot.sessionPolicies.some((p) => p.id === "software-session-default"));
+    assert.ok(runSnapshot.memoryPolicies.some((p) => p.id === "software-memory-default"));
   } finally {
     await db.close();
   }
@@ -545,6 +692,9 @@ Create `src/v2/design-library/library-snapshot.ts`:
 import type { SouthstarDb } from "../db/postgres.ts";
 import { findApprovedLibraryObjectsByKind, type LibraryObjectSummary } from "./library-graph-store.ts";
 import type {
+  WorkflowTemplatePayload,
+} from "./types.ts";
+import type {
   AgentProfile,
   ArtifactContract,
   ContextPolicyDefinition,
@@ -558,14 +708,32 @@ import type {
   WorkspacePolicyDefinition,
 } from "./runtime-types.ts";
 
-export type WorkflowTemplateSnapshot = {
-  key: string;
-  id: string;
-  intentRefs: string[];
-  intents: IntentDefinition[];
-  stages: WorkflowStageSnapshot[];
-  scope: string;
-};
+export type WorkflowTemplateSnapshot =
+  | {
+      templateModel: "composition_slots";
+      key: string;
+      id: string;
+      intentRefs: string[];
+      compositionConstraints: Record<string, unknown>;
+      scope: string;
+    }
+  | {
+      templateModel: "stage_dag";
+      key: string;
+      id: string;
+      intentRefs: string[];
+      intents: IntentDefinition[];
+      stages: WorkflowStageSnapshot[];
+      scope: string;
+    }
+  | {
+      templateModel: "flow_nodes";
+      key: string;
+      id: string;
+      intentRefs: string[];
+      payload: WorkflowTemplatePayload;
+      scope: string;
+    };
 
 export type WorkflowStageSnapshot = {
   id: string;
@@ -611,7 +779,12 @@ export async function loadLibrarySnapshot(db: SouthstarDb, scopes: string[]): Pr
   ]);
 
   const scopeSet = new Set(scopes);
-  const inScopes = (obj: LibraryObjectSummary) => scopes.length === 0 || scopeSet.size === 0 || obj.state.scope === scopes[0] || scopeSet.has(String(obj.state.scope ?? ""));
+  const inScopes = (obj: LibraryObjectSummary) => {
+    if (scopeSet.size === 0) return true;
+    const scope = String(obj.state.scope ?? "");
+    const domainRefs = asStringArray(obj.state.domainRefs);
+    return scope === "global" || scopeSet.has(scope) || domainRefs.some((ref) => scopeSet.has(ref));
+  };
 
   return {
     scopes: [...scopes],
@@ -626,6 +799,42 @@ export async function loadLibrarySnapshot(db: SouthstarDb, scopes: string[]): Pr
     stopConditions: stopConditions.filter(inScopes).map((o) => o.state as unknown as StopConditionDefinition),
     workflowTemplates: templates.filter(inScopes).map((o) => mapTemplate(o.objectKey, o.state)),
     workflowGeneratorPolicies: generatorPolicies.filter(inScopes).map((o) => o.state as unknown as WorkflowGeneratorPolicyDefinition),
+  };
+}
+
+export async function loadRunLibrarySnapshot(
+  db: SouthstarDb,
+  input: { scopes: string[]; selectedRefs: string[] },
+): Promise<LibrarySnapshot> {
+  const snapshot = await loadLibrarySnapshot(db, input.scopes);
+  const selected = new Set(input.selectedRefs);
+  const agentProfiles = snapshot.agentProfiles.filter((profile) => selected.has(profile.id));
+  const contextPolicyIds = new Set([
+    ...input.selectedRefs,
+    ...agentProfiles.map((profile) => profile.contextPolicyRef),
+  ]);
+  const sessionPolicyIds = new Set([
+    ...input.selectedRefs,
+    ...agentProfiles.map((profile) => profile.sessionPolicyRef),
+  ]);
+  const contextPolicies = snapshot.contextPolicies.filter((policy) => contextPolicyIds.has(policy.id));
+  const memoryPolicyIds = new Set([
+    ...input.selectedRefs,
+    ...contextPolicies.map((policy) => policy.memoryPolicyRef),
+  ]);
+  return {
+    ...snapshot,
+    roles: snapshot.roles.filter((role) => selected.has(role.id)),
+    agentProfiles,
+    artifactContracts: snapshot.artifactContracts.filter((contract) => selected.has(contract.id)),
+    evaluatorPipelines: snapshot.evaluatorPipelines.filter((pipeline) => selected.has(pipeline.id)),
+    contextPolicies,
+    sessionPolicies: snapshot.sessionPolicies.filter((policy) => sessionPolicyIds.has(policy.id)),
+    memoryPolicies: snapshot.memoryPolicies.filter((policy) => memoryPolicyIds.has(policy.id)),
+    workspacePolicies: snapshot.workspacePolicies.filter((policy) => selected.has(policy.id)),
+    stopConditions: snapshot.stopConditions.filter((condition) => selected.has(condition.id)),
+    workflowTemplates: snapshot.workflowTemplates.filter((template) => selected.has(template.id) || selected.has(template.key)),
+    workflowGeneratorPolicies: snapshot.workflowGeneratorPolicies.filter((policy) => selected.has(policy.id)),
   };
 }
 
@@ -672,13 +881,31 @@ function mapArtifactContract(state: Record<string, unknown>): ArtifactContract {
 }
 
 function mapTemplate(key: string, state: Record<string, unknown>): WorkflowTemplateSnapshot {
-  return {
+  const base = {
     key,
     id: String(state.id ?? key),
     intentRefs: asStringArray(state.intentRefs),
-    intents: (state.intents ?? []) as IntentDefinition[],
-    stages: (state.stages ?? []) as WorkflowStageSnapshot[],
     scope: String(state.scope ?? ""),
+  };
+  if (state.templateModel === "stage_dag" || Array.isArray(state.stages)) {
+    return {
+      ...base,
+      templateModel: "stage_dag",
+      intents: (state.intents ?? []) as IntentDefinition[],
+      stages: state.stages as WorkflowStageSnapshot[],
+    };
+  }
+  if (state.templateModel === "composition_slots" || (state.compositionConstraints && typeof state.compositionConstraints === "object")) {
+    return {
+      ...base,
+      templateModel: "composition_slots",
+      compositionConstraints: state.compositionConstraints as Record<string, unknown>,
+    };
+  }
+  return {
+    ...base,
+    templateModel: "flow_nodes",
+    payload: state as unknown as WorkflowTemplatePayload,
   };
 }
 
@@ -734,45 +961,58 @@ Then, after the existing `SOFTWARE_OBJECTS` array declaration (before `SOFTWARE_
 
 ```ts
 const SOFTWARE_POLICY_OBJECTS: readonly SeedObject[] = [
+  ...softwareDomainPack.agentProfiles.map((p) => ({
+    objectKey: `profile.${p.id}`,
+    objectKind: "agent_profile" as const,
+    state: {
+      scope: SOFTWARE_SCOPE,
+      provider: p.provider,
+      model: p.model,
+      role: p.id.replace(/^software-/, "").replace(/-(codex|pi)$/, ""),
+      runtimeProfile: p,
+    },
+  })),
   ...softwareDomainPack.contextPolicies.map((p) => ({
     objectKey: `context_policy.${p.id}`,
     objectKind: "context_policy" as const,
-    state: { ...p },
+    state: { schemaVersion: "southstar.library.context_policy.v1", scope: SOFTWARE_SCOPE, ...p },
   })),
   ...softwareDomainPack.sessionPolicies.map((p) => ({
     objectKey: `session_policy.${p.id}`,
     objectKind: "session_policy" as const,
-    state: { ...p },
+    state: { schemaVersion: "southstar.library.session_policy.v1", scope: SOFTWARE_SCOPE, ...p },
   })),
   ...softwareDomainPack.memoryPolicies.map((p) => ({
     objectKey: `memory_policy.${p.id}`,
     objectKind: "memory_policy" as const,
-    state: { ...p },
+    state: { schemaVersion: "southstar.library.memory_policy.v1", scope: SOFTWARE_SCOPE, ...p },
   })),
   ...softwareDomainPack.workspacePolicies.map((p) => ({
     objectKey: `workspace_policy.${p.id}`,
     objectKind: "workspace_policy" as const,
-    state: { ...p },
+    state: { schemaVersion: "southstar.library.workspace_policy.v1", scope: SOFTWARE_SCOPE, ...p },
   })),
   ...softwareDomainPack.stopConditions.map((s) => ({
     objectKey: `stop_condition.${s.id}`,
     objectKind: "stop_condition" as const,
-    state: { ...s },
+    state: { schemaVersion: "southstar.library.stop_condition.v1", scope: SOFTWARE_SCOPE, ...s },
   })),
   ...softwareDomainPack.evaluatorPipelines.map((e) => ({
     objectKey: `evaluator_pipeline.${e.id}`,
     objectKind: "evaluator_pipeline" as const,
-    state: { ...e },
+    state: { schemaVersion: "southstar.library.evaluator_pipeline.v1", scope: SOFTWARE_SCOPE, ...e },
   })),
   ...softwareDomainPack.workflowGeneratorPolicies.map((g) => ({
     objectKey: `workflow_generator_policy.${g.id}`,
     objectKind: "workflow_generator_policy" as const,
-    state: { ...g },
+    state: { schemaVersion: "southstar.library.workflow_generator_policy.v1", scope: SOFTWARE_SCOPE, ...g },
   })),
   {
     objectKey: "template.software-feature-stages",
     objectKind: "workflow_template",
     state: {
+      templateModel: "stage_dag",
+      scope: SOFTWARE_SCOPE,
       id: softwareDomainPack.workflowTemplates[0]!.id,
       intentRefs: softwareDomainPack.workflowTemplates[0]!.intentRefs,
       intents: softwareDomainPack.intents,
@@ -1260,7 +1500,7 @@ In `evolution/sandbox.ts:6`, remove `import { softwareDomainPack }`. At `sandbox
 const snapshot = await loadLibrarySnapshot(db, ["software"]);
 // ... pass snapshot where domainPack was passed
 ```
-The downstream consumer (`evolution/context-cards.ts`'s `matchesOptional(appliesTo.intents, [input.intent])`) reads intents — point it at `snapshot.workflowTemplates.flatMap(t => t.intents)`.
+The downstream consumer (`evolution/context-cards.ts`'s `matchesOptional(appliesTo.intents, [input.intent])`) reads intents — point it at `snapshot.workflowTemplates.filter(t => t.templateModel === "stage_dag").flatMap(t => t.intents)`.
 
 - [ ] **Step 2: Update the test**
 
@@ -1324,11 +1564,11 @@ export type GenerateConstrainedWorkflowPlanInput = {
 
 export function generateConstrainedWorkflowPlan(input: GenerateConstrainedWorkflowPlanInput): WorkflowGenerationPlan {
   const intent = required(
-    input.snapshot.workflowTemplates.flatMap((t) => t.intents).find((i) => i.id === input.intentId),
+    input.snapshot.workflowTemplates.filter((t) => t.templateModel === "stage_dag").flatMap((t) => t.intents).find((i) => i.id === input.intentId),
     `unknown intent ${input.intentId}`,
   );
   const template = required(
-    input.snapshot.workflowTemplates.find((t) => t.id === intent.workflowTemplateRef),
+    input.snapshot.workflowTemplates.find((t) => t.templateModel === "stage_dag" && t.id === intent.workflowTemplateRef),
     `unknown template ${intent.workflowTemplateRef}`,
   );
   const policy = required(
@@ -1361,7 +1601,7 @@ Change signature `(domainPack: DomainPack, plan)` → `(snapshot: LibrarySnapsho
 
 - [ ] **Step 4: Rewrite `materialize.ts`**
 
-Change input `domainPack: DomainPack` → `snapshot: LibrarySnapshot`. Replace every `input.domainPack.X` with `input.snapshot.X` (roles, agentProfiles, artifactContracts, evaluatorPipelines, contextPolicies, sessionPolicies, memoryPolicies, workspacePolicies). The `input.domainPack.workflowTemplates.flatMap(template => template.stages).find(stage => stage.roleRef === task.roleRef)?.workspacePolicyRef` lookup becomes `input.snapshot.workflowTemplates.flatMap(t => t.stages).find(s => s.roleRef === task.roleRef)?.workspacePolicyRef` — identical shape, the stage template's `stages` are in the snapshot.
+Change input `domainPack: DomainPack` → `snapshot: LibrarySnapshot`. Replace every `input.domainPack.X` with `input.snapshot.X` (roles, agentProfiles, artifactContracts, evaluatorPipelines, contextPolicies, sessionPolicies, memoryPolicies, workspacePolicies). The `input.domainPack.workflowTemplates.flatMap(template => template.stages).find(stage => stage.roleRef === task.roleRef)?.workspacePolicyRef` lookup becomes `input.snapshot.workflowTemplates.filter(t => t.templateModel === "stage_dag").flatMap(t => t.stages).find(s => s.roleRef === task.roleRef)?.workspacePolicyRef` — identical shape, but only the stage template's `stages` are read.
 
 `domain: input.domainPack.id as WorkflowTaskDefinition["domain"]` → `domain: input.snapshot.scopes[0] ?? "software"`.
 `domainPackRef: input.plan.domainPackRef` → `libraryRef: input.plan.libraryRef`.
@@ -1408,7 +1648,12 @@ const scope = input.scopes.length === 1 ? input.scopes[0]! : undefined;
 Then pass `scope` (which is `undefined` for multi-scope, meaning "all approved") to every `findApprovedLibraryObjectsByKind(db, kind, scope)` and `findLibraryEdgesTo/From(ref, edgeType, { scope })` call. The graph store already treats `scope = null/undefined` as "all approved". For the multi-scope case, after fetching, filter results to `input.scopes` membership in TypeScript:
 ```ts
 const scopeSet = new Set(input.scopes);
-const inScopes = (obj: LibraryObjectSummary) => scopeSet.size === 0 || scopeSet.has(String(obj.state.scope ?? ""));
+const inScopes = (obj: LibraryObjectSummary) => {
+  if (scopeSet.size === 0) return true;
+  const scope = String(obj.state.scope ?? "");
+  const domainRefs = Array.isArray(obj.state.domainRefs) ? obj.state.domainRefs.filter((item): item is string => typeof item === "string") : [];
+  return scope === "global" || scopeSet.has(scope) || domainRefs.some((ref) => scopeSet.has(ref));
+};
 ```
 Apply `inScopes` to the `workflowTemplateCandidates`, `policyConstraints`, and the per-capability agent candidate lists.
 
@@ -1520,7 +1765,8 @@ export type DomainRouteResult = { scopes: string[]; intent: IntentDefinition; te
 
 export function routeGoal(snapshot: LibrarySnapshot, input: DomainRouteInput): DomainRouteResult {
   const normalized = input.goalPrompt.toLowerCase();
-  for (const template of snapshot.workflowTemplates) {
+  const templates = snapshot.workflowTemplates.filter((template) => template.templateModel === "stage_dag");
+  for (const template of templates) {
     for (const intent of template.intents) {
       if (intent.examples.some((ex) => normalized.includes(ex.toLowerCase()))) {
         return { scopes: snapshot.scopes, intent, templateRef: template.id };
@@ -1528,7 +1774,7 @@ export function routeGoal(snapshot: LibrarySnapshot, input: DomainRouteInput): D
     }
   }
   // fallback: first intent of first template
-  const firstTemplate = snapshot.workflowTemplates[0];
+  const firstTemplate = templates[0];
   const firstIntent = firstTemplate?.intents[0];
   if (!firstTemplate || !firstIntent) throw new Error("no workflow template/intent in snapshot");
   return { scopes: snapshot.scopes, intent: firstIntent, templateRef: firstTemplate.id };
@@ -1560,12 +1806,12 @@ If the directory is now empty, `rmdir src/v2/domain-packs`.
 
 Run all three gates:
 ```bash
-rg "domain-packs" src/ web/ components/ || echo "OK: no src/web/components references"
+rg "domain-packs|DomainPack|domainPackId|softwareDomainPack" src/ web/ components/ lib/ tests/ || echo "OK: no runtime domain-pack references"
 npm run test:v2
 npm run test:postgres
 npm --prefix web run build
 ```
-Expected: `rg` returns only `docs/` historical references; `test:v2` PASS; `test:postgres` PASS; `web build` PASS.
+Expected: `rg` returns no runtime references except explicitly documented backward-compatible manifest/API fields; `test:v2` PASS; `test:postgres` PASS; `web build` PASS.
 
 - [ ] **Step 7: Commit**
 
@@ -1587,7 +1833,7 @@ policies, and stage templates. domain-packs/ no longer exists."
 **Spec coverage check** — map each spec section to a task:
 - §3.1 new kinds → Task 2
 - §3.2 new edges → Task 2 (kinds) + Task 4 (edges seeded)
-- §3.3 payload types → Task 1 (`runtime-types.ts` reuses the same shapes; full schema-versioned payloads are deferred — the seed stores the plain objects, which is sufficient since the graph is the source of truth)
+- §3.3 payload types → Task 1 (`runtime-types.ts` owns the shared runtime shapes) + Task 2 (schema-versioned payload validators for the new library kinds)
 - §3.4 domain as scope → Task 13 (`scopes: string[]`)
 - §3.5 two template notions → Task 4 (`template.software-feature-stages` distinct from `template.software-feature`)
 - §4 type relocation → Tasks 1, 5, 6, 7
@@ -1601,9 +1847,9 @@ policies, and stage templates. domain-packs/ no longer exists."
 - §12 testing → embedded in each task + the cross-domain test in Task 13
 - §14 acceptance criteria → Task 14 Step 6 is the gate that checks all of them
 
-**Gap note:** §3.3 mentions schema-versioned payloads (`southstar.library.context_policy.v1` etc.). This plan stores the plain typed objects in `state` without a `schemaVersion` wrapper, matching how the existing seed stores skills/templates (no wrapper). If schema-versioned payloads are required, that is a follow-up; it is not needed for behavior parity or cross-domain selection. Flagged here so the engineer does not assume it was forgotten.
+**Validator check:** §3.3's schema-versioned payloads are implemented in Task 2. Task 4 seeds the new consolidated kinds with `schemaVersion` plus `scope`, and `library-snapshot.ts` maps those payload states back into runtime value types while ignoring the metadata fields.
 
-**Type consistency check:** `LibrarySnapshot.workflowTemplates` uses `WorkflowTemplateSnapshot` (defined in Task 3) with `.intents: IntentDefinition[]` and `.stages: WorkflowStageSnapshot[]`. Task 12's `constrained-generator` reads `snapshot.workflowTemplates.flatMap(t => t.intents)` and `snapshot.workflowTemplates.find(t => t.id === intent.workflowTemplateRef)` then `template.stages` — matches. Task 4 seeds `state.intents = softwareDomainPack.intents` and `state.stages = softwareDomainPack.workflowTemplates[0].stages` — `mapTemplate` in Task 3 reads `state.intents` and `state.stages` — matches.
+**Type consistency check:** `LibrarySnapshot.workflowTemplates` uses the discriminated `WorkflowTemplateSnapshot` union from Task 3. Task 12's `constrained-generator` filters `templateModel === "stage_dag"` before reading `intents` or `stages`; Task 4 seeds `template.software-feature-stages.state.intents = softwareDomainPack.intents` and `state.stages = softwareDomainPack.workflowTemplates[0].stages`; `mapTemplate` in Task 3 maps objects with `state.stages` to `templateModel: "stage_dag"` — matches.
 
 **Placeholder scan:** No TBD/TODO/"add error handling"/"similar to Task N". Every code step contains the actual code.
 

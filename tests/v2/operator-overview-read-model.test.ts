@@ -131,6 +131,7 @@ test("operator overview does not enable retry for runtime exceptions on complete
     const exception = model.attentionItems.find((item) => item.id === "runtime_exception:runtime-exception-completed-task");
     const retry = exception?.commands.find((command) => command.id === "task.retry");
 
+    assert.equal(exception?.severity, "warning");
     assert.equal(retry?.enabled, false);
     assert.equal(retry?.disabledReason, "task status completed does not allow retry");
   } finally {
@@ -154,6 +155,36 @@ test("operator overview keeps recently passed runs visible after refresh without
       metricsJson: "{}",
     });
     await createWorkflowTaskPg(db, { id: "task-done", runId, taskKey: "Done", status: "completed", sortOrder: 0, dependsOn: [] });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "runtime_exception",
+      resourceKey: "runtime-exception-passed-stale-callback",
+      runId,
+      taskId: "task-done",
+      scope: "runtime",
+      status: "observed",
+      title: "Late callback",
+      payload: { kind: "stale_callback", severity: "warning" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "hand_execution",
+      resourceKey: "hand-execution-passed-lost",
+      runId,
+      taskId: "task-done",
+      scope: "hand",
+      status: "lost",
+      title: "Superseded hand execution",
+      payload: { externalJobId: "job-old-attempt", lostReason: "reprovision-hand" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_decision",
+      resourceKey: "recovery-passed-applied",
+      runId,
+      taskId: "task-done",
+      scope: "recovery",
+      status: "applied",
+      title: "Applied recovery",
+      payload: { decisionId: "recovery-passed-applied", path: "reprovision-hand" },
+    });
 
     const model = await buildOperatorOverviewReadModelPg(db);
 
@@ -199,6 +230,55 @@ test("operator overview disables managed recovery decisions because runtime appl
 
     assert.equal(apply?.enabled, false);
     assert.equal(apply?.disabledReason, "managed recovery decisions are applied by the runtime loop");
+  } finally {
+    await db.close();
+  }
+});
+
+test("operator overview does not count normal running executions as attention", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-operator-normal-running";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "normal running execution",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, { id: "task-running", runId, taskKey: "Run", status: "running", sortOrder: 0, dependsOn: [] });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "hand_execution",
+      resourceKey: "hand-execution-running",
+      runId,
+      taskId: "task-running",
+      scope: "hand",
+      status: "running",
+      title: "Hand execution running",
+      payload: { externalJobId: "job-running", attemptId: "attempt-running" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "executor_binding",
+      resourceKey: "executor-binding-queued",
+      runId,
+      taskId: "task-running",
+      scope: "executor",
+      status: "queued",
+      title: "Executor binding queued",
+      payload: { torkJobId: "job-queued", attemptId: "attempt-queued" },
+    });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+
+    assert.equal(model.activeRuns.some((run) => run.runId === runId && run.status === "running"), true);
+    assert.equal(model.runtimeHealth.activeRunCount, 1);
+    assert.equal(model.runtimeHealth.attentionCount, 0);
+    assert.equal(model.attentionItems.some((item) => item.runId === runId), false);
+    assert.equal(model.defaultSelection?.runId, runId);
   } finally {
     await db.close();
   }
@@ -340,7 +420,6 @@ test("operator overview classifies all operator attention sources from runtime s
       "task:blocked:task",
       "task:failed:task",
       "run:paused:run",
-      "run:running:run",
     ]) {
       assert.equal(signatures.includes(expected), true, `missing attention signature ${expected}; saw ${signatures.join(", ")}`);
     }

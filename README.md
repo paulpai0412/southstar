@@ -16,6 +16,7 @@ Then open:
 - Runtime API: `http://127.0.0.1:3100`
 - Web UI: `http://127.0.0.1:30141`
 - Tork: `http://127.0.0.1:8000`
+- Tork Web Admin: `http://127.0.0.1:8100`
 - Postgres: `postgres://postgres:postgres@127.0.0.1:55432/southstar`
 
 Check status:
@@ -36,13 +37,15 @@ npm run southstar:stop
 
 1. Docker Postgres container `southstar-postgres`.
 2. Tork standalone runtime on port `8000`.
-3. Southstar runtime server on port `3100`.
-4. Southstar web UI on port `30141`.
+3. Tork Web Admin container `southstar-tork-web` on port `8100`.
+4. Southstar runtime server on port `3100`.
+5. Southstar web UI on port `30141`.
 
 The runtime reads configuration from environment variables:
 
 - `SOUTHSTAR_DATABASE_URL` or `SOUTHSTAR_DB`
 - `TORK_BASE_URL`
+- `TORK_WEB_URL`
 - `SOUTHSTAR_SERVER_URL`
 - `SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL`
 - `SOUTHSTAR_REQUIRE_DOCKER`

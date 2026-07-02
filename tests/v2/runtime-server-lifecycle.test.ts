@@ -107,6 +107,7 @@ test("start exports canonical Postgres and Tork env into detached serve process"
     cwd: "/tmp/southstar",
     envLoader: () => localEnv({
       databaseUrl: "postgres://southstar:secret@127.0.0.1:55432/southstar",
+      testAdminDatabaseUrl: "postgres://postgres:secret@127.0.0.1:55432/postgres",
       torkBaseUrl: "http://127.0.0.1:8000",
       serverUrl: "http://127.0.0.1:3100",
       containerCallbackBaseUrl: "http://172.17.0.1:3100",
@@ -144,6 +145,7 @@ test("start exports canonical Postgres and Tork env into detached serve process"
   await lifecycle.start();
 
   assert.match(launchedScript, /SOUTHSTAR_DATABASE_URL='postgres:\/\/southstar:secret@127\.0\.0\.1:55432\/southstar'/);
+  assert.match(launchedScript, /SOUTHSTAR_TEST_ADMIN_DATABASE_URL='postgres:\/\/postgres:secret@127\.0\.0\.1:55432\/postgres'/);
   assert.match(launchedScript, /TORK_BASE_URL='http:\/\/127\.0\.0\.1:8000'/);
   assert.match(launchedScript, /SOUTHSTAR_SERVER_URL='http:\/\/127\.0\.0\.1:3100'/);
   assert.match(launchedScript, /SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL='http:\/\/172\.17\.0\.1:3100'/);
@@ -180,7 +182,9 @@ test("fails fast for non-transient Postgres errors", async () => {
 function localEnv(overrides: Partial<SouthstarEnv> = {}): SouthstarEnv {
   return {
     databaseUrl: "postgres://postgres:postgres@127.0.0.1:55432/southstar",
+    testAdminDatabaseUrl: "postgres://postgres:postgres@127.0.0.1:55432/postgres",
     torkBaseUrl: "http://127.0.0.1:8000",
+    torkWebUrl: "http://127.0.0.1:8100",
     serverUrl: "http://127.0.0.1:3100",
     dockerRequired: true,
     piPlannerEndpoint: undefined,

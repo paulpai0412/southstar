@@ -96,6 +96,9 @@ test("Operator sidebar splits running and completed workflow runs", () => {
   assert.match(sidebar, /Completed Workflow Runs/);
   assert.match(sidebar, /emptyLabel="All projects"/);
   assert.match(sidebar, /operator-list-row-compact/);
+  assert.match(sidebar, /AlertTriangle/);
+  assert.match(sidebar, /operator-run-meta-row/);
+  assert.match(sidebar, /operator-run-attention-badge/);
   assert.match(sidebar, /isCompletedRun/);
   assert.match(sidebar, /compareRunUpdatedAt/);
   assert.match(sidebar, /aria-pressed/);

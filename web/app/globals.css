@@ -1169,6 +1169,38 @@ span.linenumber {
   font-size: 11px;
 }
 
+.operator-run-meta-row {
+  grid-column: 2;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.operator-list-row .operator-run-meta-row em {
+  grid-column: auto;
+}
+
+.operator-run-attention-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 3px;
+  color: #d97706;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.operator-list-row .operator-run-attention-badge,
+.operator-list-row .operator-run-attention-badge span {
+  min-width: auto;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
 .operator-run-severity {
   grid-column: 2;
   width: max-content;

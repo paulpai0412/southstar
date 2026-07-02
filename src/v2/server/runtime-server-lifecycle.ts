@@ -186,6 +186,7 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
     const shellCommand = `nohup setsid ${[command, ...args].map(quoteShellArg).join(" ")} >> ${quoteShellArg(startLogPath)} 2>&1 < /dev/null & echo $!`;
     const envScript = [
       `export SOUTHSTAR_DATABASE_URL=${quoteShellArg(options.env.databaseUrl)}`,
+      `export SOUTHSTAR_TEST_ADMIN_DATABASE_URL=${quoteShellArg(options.env.testAdminDatabaseUrl)}`,
       `export TORK_BASE_URL=${quoteShellArg(options.env.torkBaseUrl)}`,
       `export SOUTHSTAR_SERVER_URL=${quoteShellArg(options.env.serverUrl)}`,
       ...(options.env.containerCallbackBaseUrl ? [`export SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL=${quoteShellArg(options.env.containerCallbackBaseUrl)}`] : []),

@@ -15,12 +15,17 @@ export type PostgresInfraStatus =
 export type TorkInfraStatus =
   | { status: "started" | "already-running" | "running" | "stopped" | "not-running"; baseUrl: string; pidFilePath: string; pid?: number };
 
+export type TorkWebInfraStatus =
+  | { status: "started" | "already-running" | "running" | "stopped" | "not-running"; url: string; containerName: string; reason?: string };
+
 export type SouthstarInfraStartResult = {
   postgres: PostgresInfraStatus;
   tork: TorkInfraStatus;
+  torkWeb: TorkWebInfraStatus;
 };
 
 export type SouthstarInfraStopResult = {
+  torkWeb: TorkWebInfraStatus;
   tork: TorkInfraStatus;
   postgres: PostgresInfraStatus;
 };
@@ -28,6 +33,7 @@ export type SouthstarInfraStopResult = {
 export type SouthstarInfraStatusResult = {
   postgres: PostgresInfraStatus;
   tork: TorkInfraStatus;
+  torkWeb: TorkWebInfraStatus;
 };
 
 export type SouthstarInfraLifecycle = ReturnType<typeof createSouthstarInfraLifecycle>;
@@ -48,13 +54,17 @@ type InfraLifecycleInput = {
   waitForTcp?: (host: string, port: number, timeoutMs: number) => Promise<void>;
   waitForPostgresReady?: (databaseUrl: string, timeoutMs: number) => Promise<void>;
   isTorkHealthy?: (baseUrl: string) => Promise<boolean>;
+  isTorkWebHealthy?: (url: string) => Promise<boolean>;
   listWorkspaceMountSources?: (env: SouthstarEnv) => Promise<string[]>;
 };
 
 const POSTGRES_CONTAINER_NAME = "southstar-postgres";
+const TORK_WEB_CONTAINER_NAME = "southstar-tork-web";
+const TORK_WEB_IMAGE = "runabol/tork-web";
 const POSTGRES_STARTUP_TIMEOUT_MS = 30_000;
 const TORK_STARTUP_TIMEOUT_MS = 30_000;
 const TORK_SHUTDOWN_TIMEOUT_MS = 10_000;
+const TORK_WEB_STARTUP_TIMEOUT_MS = 30_000;
 const DEFAULT_TORK_CONFIG = `[datastore]
 type = "postgres"
 
@@ -94,6 +104,7 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
   const waitForPostgresReady = input.waitForPostgresReady
     ?? ((databaseUrl, timeoutMs) => waitForPostgresQueryReady(databaseUrl, timeoutMs, sleep));
   const isTorkHealthy = input.isTorkHealthy ?? defaultIsTorkHealthy;
+  const isTorkWebHealthy = input.isTorkWebHealthy ?? defaultIsTorkWebHealthy;
   const listWorkspaceMountSources = input.listWorkspaceMountSources
     ?? ((env) => listWorkflowWorkspaceMountSources(env.databaseUrl));
   const torkPidFilePath = resolve(cwd, ".southstar/logs/tork.pid");
@@ -103,21 +114,24 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
       const env = envLoader();
       const postgres = await startPostgres(env);
       const tork = await startTork(env);
-      return { postgres, tork };
+      const torkWeb = await startTorkWeb(env);
+      return { postgres, tork, torkWeb };
     },
 
     async stop(): Promise<SouthstarInfraStopResult> {
       const env = envLoader();
+      const torkWeb = await stopTorkWeb(env);
       const tork = await stopTork(env);
       const postgres = await stopPostgres(env);
-      return { tork, postgres };
+      return { torkWeb, tork, postgres };
     },
 
     async status(): Promise<SouthstarInfraStatusResult> {
       const env = envLoader();
       const postgres = await postgresStatus(env);
       const tork = await torkStatus(env);
-      return { postgres, tork };
+      const torkWeb = await torkWebStatus(env);
+      return { postgres, tork, torkWeb };
     },
   };
 
@@ -231,6 +245,92 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
     return { status: "stopped", baseUrl: env.torkBaseUrl, pidFilePath: torkPidFilePath };
   }
 
+  async function startTorkWeb(env: SouthstarEnv): Promise<TorkWebInfraStatus> {
+    const managedRunning = await isTorkWebManagedContainerRunning();
+    if (await isTorkWebHealthy(env.torkWebUrl)) {
+      return {
+        status: "already-running",
+        url: env.torkWebUrl,
+        containerName: TORK_WEB_CONTAINER_NAME,
+        ...(managedRunning ? {} : { reason: "Tork Web URL is already healthy outside the managed container" }),
+      };
+    }
+    await removeExistingTorkWebContainer();
+    const port = portFromUrl(env.torkWebUrl);
+    if (!port) throw new Error(`invalid Tork Web URL: ${env.torkWebUrl}`);
+    const backendUrl = dockerReachableHostUrl(env.torkBaseUrl);
+    const dockerHostArgs = backendUrl.includes("host.docker.internal")
+      ? ["--add-host", "host.docker.internal:host-gateway"]
+      : [];
+    const started = await runCommand("docker", [
+      "run",
+      "-d",
+      "--name",
+      TORK_WEB_CONTAINER_NAME,
+      "-p",
+      `${port}:8100`,
+      ...dockerHostArgs,
+      "-e",
+      `BACKEND_URL=${backendUrl}`,
+      TORK_WEB_IMAGE,
+    ]);
+    if (started.exitCode !== 0) {
+      const detail = (started.stderr || started.stdout).trim();
+      throw new Error(`failed to start docker container ${TORK_WEB_CONTAINER_NAME}${detail ? `: ${detail}` : ""}`);
+    }
+    await waitForTorkWebReady(env.torkWebUrl);
+    return { status: "started", url: env.torkWebUrl, containerName: TORK_WEB_CONTAINER_NAME };
+  }
+
+  async function stopTorkWeb(env: SouthstarEnv): Promise<TorkWebInfraStatus> {
+    const stopped = await runCommand("docker", ["stop", TORK_WEB_CONTAINER_NAME]);
+    if (stopped.exitCode !== 0) {
+      const detail = (stopped.stderr || stopped.stdout).trim();
+      if (/No such container|not running|is not running/i.test(detail)) {
+        return {
+          status: "not-running",
+          url: env.torkWebUrl,
+          containerName: TORK_WEB_CONTAINER_NAME,
+          ...(await isTorkWebHealthy(env.torkWebUrl) ? { reason: "managed Tork Web container is not running, but the URL is served by another process" } : {}),
+        };
+      }
+      throw new Error(`failed to stop docker container ${TORK_WEB_CONTAINER_NAME}${detail ? `: ${detail}` : ""}`);
+    }
+    return { status: "stopped", url: env.torkWebUrl, containerName: TORK_WEB_CONTAINER_NAME };
+  }
+
+  async function torkWebStatus(env: SouthstarEnv): Promise<TorkWebInfraStatus> {
+    const inspected = await runCommand("docker", ["inspect", "-f", "{{.State.Running}}", TORK_WEB_CONTAINER_NAME]);
+    if (inspected.exitCode === 0) {
+      return inspected.stdout.trim() === "true"
+        ? { status: "running", url: env.torkWebUrl, containerName: TORK_WEB_CONTAINER_NAME }
+        : { status: "stopped", url: env.torkWebUrl, containerName: TORK_WEB_CONTAINER_NAME };
+    }
+    if (await isTorkWebHealthy(env.torkWebUrl)) {
+      return {
+        status: "running",
+        url: env.torkWebUrl,
+        containerName: TORK_WEB_CONTAINER_NAME,
+        reason: "Tork Web URL is healthy outside the managed container",
+      };
+    }
+    return { status: "not-running", url: env.torkWebUrl, containerName: TORK_WEB_CONTAINER_NAME };
+  }
+
+  async function isTorkWebManagedContainerRunning(): Promise<boolean> {
+    const inspected = await runCommand("docker", ["inspect", "-f", "{{.State.Running}}", TORK_WEB_CONTAINER_NAME]);
+    return inspected.exitCode === 0 && inspected.stdout.trim() === "true";
+  }
+
+  async function removeExistingTorkWebContainer(): Promise<void> {
+    const removed = await runCommand("docker", ["rm", "-f", TORK_WEB_CONTAINER_NAME]);
+    if (removed.exitCode === 0) return;
+    const detail = (removed.stderr || removed.stdout).trim();
+    if (!/No such container/i.test(detail)) {
+      throw new Error(`failed to remove docker container ${TORK_WEB_CONTAINER_NAME}${detail ? `: ${detail}` : ""}`);
+    }
+  }
+
   async function waitForTorkReady(baseUrl: string): Promise<void> {
     const deadline = Date.now() + TORK_STARTUP_TIMEOUT_MS;
     while (Date.now() < deadline) {
@@ -238,6 +338,15 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
       await sleep(250);
     }
     throw new Error(`timed out waiting for Tork startup at ${baseUrl}`);
+  }
+
+  async function waitForTorkWebReady(url: string): Promise<void> {
+    const deadline = Date.now() + TORK_WEB_STARTUP_TIMEOUT_MS;
+    while (Date.now() < deadline) {
+      if (await isTorkWebHealthy(url)) return;
+      await sleep(250);
+    }
+    throw new Error(`timed out waiting for Tork Web startup at ${url}`);
   }
 
   async function readManagedTorkPid(): Promise<number | undefined> {
@@ -292,7 +401,8 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
       cwd,
       ...workspaceMountSources,
     ]);
-    await writeTextFile(managedConfigPath, mergeTorkBindSources(baseConfig, sourcePaths));
+    const mergedConfig = mergeTorkBindSources(baseConfig, sourcePaths);
+    await writeTextFile(managedConfigPath, ensureTorkCoordinatorAddress(mergedConfig, env.torkBaseUrl));
     return managedConfigPath;
   }
 }
@@ -319,6 +429,28 @@ ${uniqueSourcePaths.map((sourcePath) => `  ${quoteTomlString(sourcePath)}`).join
   return `${configText.slice(0, match.index)}${match[1]}
 ${mergedSources.map((sourcePath) => `  ${quoteTomlString(sourcePath)}`).join(",\n")}
 ]${configText.slice(match.index + match[0].length)}`;
+}
+
+function ensureTorkCoordinatorAddress(configText: string, torkBaseUrl: string): string {
+  const address = torkListenAddress(torkBaseUrl);
+  const addressLine = `address = ${quoteTomlString(address)}`;
+  const coordinatorSection = configText.match(/(^|\n)(\[coordinator\]\n)([\s\S]*?)(?=\n\[|$)/);
+  if (!coordinatorSection || coordinatorSection.index === undefined) {
+    return `${configText.trimEnd()}
+
+[coordinator]
+${addressLine}
+`;
+  }
+  const sectionText = coordinatorSection[0];
+  const nextSection = sectionText.replace(/address\s*=\s*"[^"]*"/, addressLine);
+  const updatedSection = nextSection === sectionText ? `${sectionText.trimEnd()}\n${addressLine}\n` : nextSection;
+  return `${configText.slice(0, coordinatorSection.index)}${updatedSection}${configText.slice(coordinatorSection.index + sectionText.length)}`;
+}
+
+function torkListenAddress(torkBaseUrl: string): string {
+  const port = portFromUrl(torkBaseUrl) ?? 8000;
+  return `0.0.0.0:${port}`;
 }
 
 function quotedTomlStrings(value: string): string[] {
@@ -387,6 +519,18 @@ function isLoopbackHost(host: string): boolean {
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1";
 }
 
+function dockerReachableHostUrl(baseUrl: string): string {
+  try {
+    const parsed = new URL(baseUrl);
+    if (isLoopbackHost(parsed.hostname)) {
+      parsed.hostname = "host.docker.internal";
+    }
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return baseUrl;
+  }
+}
+
 function portFromUrl(baseUrl: string): number | undefined {
   try {
     const parsed = new URL(baseUrl);
@@ -402,7 +546,7 @@ function torkEnv(env: SouthstarEnv): Record<string, string> {
     TORK_BASE_URL: env.torkBaseUrl,
     SOUTHSTAR_SERVER_URL: env.serverUrl,
     SOUTHSTAR_DATABASE_URL: env.databaseUrl,
-    SOUTHSTAR_TEST_ADMIN_DATABASE_URL: adminDatabaseUrl(env.databaseUrl),
+    SOUTHSTAR_TEST_ADMIN_DATABASE_URL: env.testAdminDatabaseUrl,
   };
 }
 
@@ -426,6 +570,17 @@ async function defaultIsTorkHealthy(baseUrl: string): Promise<boolean> {
     }
   }
   return false;
+}
+
+async function defaultIsTorkWebHealthy(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return false;
+    const contentType = response.headers.get("content-type") ?? "";
+    return contentType.includes("text/html") || contentType.includes("application/javascript") || contentType.includes("text/plain");
+  } catch {
+    return false;
+  }
 }
 
 function defaultIsProcessRunning(pid: number): boolean {

@@ -137,11 +137,13 @@ test("server lifecycle commands execute through runtime + web lifecycle dependen
       return {
         postgres: { status: "started" as const, containerName: "southstar-postgres" },
         tork: { status: "started" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        torkWeb: { status: "started" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
       };
     },
     stop: async () => {
       infraCalls.push("stop");
       return {
+        torkWeb: { status: "stopped" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
         tork: { status: "stopped" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
         postgres: { status: "stopped" as const, containerName: "southstar-postgres" },
       };
@@ -151,6 +153,7 @@ test("server lifecycle commands execute through runtime + web lifecycle dependen
       return {
         postgres: { status: "running" as const, containerName: "southstar-postgres" },
         tork: { status: "running" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        torkWeb: { status: "running" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
       };
     },
   } satisfies SouthstarInfraLifecycle;
@@ -251,11 +254,13 @@ test("server start and stop manage infra in dependency order", async () => {
       return {
         postgres: { status: "started" as const, containerName: "southstar-postgres" },
         tork: { status: "started" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        torkWeb: { status: "started" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
       };
     },
     stop: async () => {
       calls.push("infra:stop");
       return {
+        torkWeb: { status: "stopped" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
         tork: { status: "stopped" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
         postgres: { status: "stopped" as const, containerName: "southstar-postgres" },
       };
@@ -265,6 +270,7 @@ test("server start and stop manage infra in dependency order", async () => {
       return {
         postgres: { status: "running" as const, containerName: "southstar-postgres" },
         tork: { status: "running" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        torkWeb: { status: "running" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
       };
     },
   } satisfies SouthstarInfraLifecycle;
@@ -432,14 +438,17 @@ test("main supports injected runtime lifecycle for server status", async () => {
       start: async () => ({
         postgres: { status: "started" as const, containerName: "southstar-postgres" },
         tork: { status: "started" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        torkWeb: { status: "started" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
       }),
       stop: async () => ({
+        torkWeb: { status: "stopped" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
         tork: { status: "stopped" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
         postgres: { status: "stopped" as const, containerName: "southstar-postgres" },
       }),
       status: async () => ({
         postgres: { status: "running" as const, containerName: "southstar-postgres" },
         tork: { status: "running" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+        torkWeb: { status: "running" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
       }),
     } satisfies SouthstarInfraLifecycle,
     serverLifecycle: runtimeLifecycle as RuntimeServerLifecycle,

@@ -45,6 +45,7 @@ npm --prefix web run build
 
 - Docker Postgres container `southstar-postgres`, using `SOUTHSTAR_DATABASE_URL` or the default `postgres://postgres:postgres@127.0.0.1:55432/southstar`.
 - Tork on `http://127.0.0.1:8000`.
+- Tork Web Admin on `http://127.0.0.1:8100`, using managed Docker container `southstar-tork-web`.
 - Southstar runtime server on `http://127.0.0.1:3100`.
 - Next.js web UI on `http://127.0.0.1:30141`.
 

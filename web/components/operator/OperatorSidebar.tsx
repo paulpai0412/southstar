@@ -1,5 +1,6 @@
 "use client";
 
+import { AlertTriangle } from "lucide-react";
 import { ProjectScopePicker } from "../ProjectScopePicker";
 import type { OperatorIncident, OperatorRun } from "@/lib/operator/types";
 
@@ -58,8 +59,8 @@ export function OperatorSidebar({
           selectedRunId={selectedRunId}
           selectedTaskId={selectedTaskId}
           onSelectRun={onSelectRun}
-          incidents={[]}
-          selectedIncidentId={null}
+          incidents={incidents}
+          selectedIncidentId={selectedIncidentId}
           onSelectIncident={onSelectIncident}
         />
       </section>
@@ -109,9 +110,16 @@ function RunSection({
           >
             <strong>{run.status}</strong>
             <span>{run.title}</span>
-            <em>{formatRunAge(run.updatedAt)}</em>
+            <div className="operator-run-meta-row">
+              <em>{formatRunAge(run.updatedAt)}</em>
+              {runIncidents.length > 0 ? (
+                <span className="operator-run-attention-badge" aria-label={`${runIncidents.length} attention`}>
+                  <AlertTriangle aria-hidden="true" size={13} strokeWidth={2.5} />
+                  <span>{runIncidents.length}</span>
+                </span>
+              ) : null}
+            </div>
             {selectedRunId === run.runId && selectedTaskId ? <em>task {selectedTaskId}</em> : null}
-            {runIncidents.length > 0 ? <small className="operator-run-severity">{runIncidents.length} attention</small> : null}
           </button>
         );
       })}

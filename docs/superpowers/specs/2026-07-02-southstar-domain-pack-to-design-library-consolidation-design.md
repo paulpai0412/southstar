@@ -81,8 +81,7 @@ export type LibraryDefinitionKind =
   | "workspace_policy"          // NEW
   | "stop_condition"            // NEW
   | "workflow_generator_policy" // NEW
-  | "evaluator_profile"         // DEPRECATED — keep for migration read; stop seeding
-  | "skill_spec";
+  | "evaluator_profile";        // DEPRECATED — keep for migration read; stop seeding
 ```
 
 `evaluator_profile` is retained only so existing rows can be read during migration; it is no longer seeded and no consumer reads it after migration.
@@ -97,10 +96,11 @@ Add edges so the graph can express the relationships `managed-context-assembler`
 | "uses_memory_policy"
 | "uses_workspace_policy"
 | "enforces_generator_policy"   // workflow_template -> workflow_generator_policy
-| "checked_by_stop_condition"   // workflow_template stage -> stop_condition (encoded in template state)
 ```
 
 Existing edges that already cover relationships (`implements`, `supports_skill`, `allows_tool`, `allows_mcp_grant`, `uses_instruction`, `requires_secret_group`, `produces_artifact`, `consumes_artifact`, `validates_artifact`, `provides_capability`, `requires_capability`, `part_of_template`) are reused unchanged.
+
+No `checked_by_stop_condition` edge is added in this consolidation. Stop conditions remain referenced from the stage-template state's `stages[].stopConditionRefs`. A future graph-indexing pass can add stop-condition edges if the operator UI needs reverse lookup by stop condition.
 
 ### 3.3 New payload types in `design-library/types.ts`
 
@@ -136,6 +136,14 @@ The template object's `state.intents: TemplateIntent[]` replaces the standalone 
 
 A domain is a `scope` string on every object and edge (already supported by `library_objects.state_json->>'scope'` and `library_edges.scope`). There is no `domain` kind. Cross-domain selection is achieved by passing a set of scopes (or `null` for "all approved") to graph queries; see §5.
 
+Scope invariants:
+
+- Every seeded or imported library object must include `state.scope` or `state.domainRefs`.
+- `state.scope = "global"` means the object is visible to all scope-filtered snapshots and candidate queries.
+- A multi-scope query includes objects whose `state.scope` is in the requested scopes, whose `state.scope` is `"global"`, or whose `state.domainRefs` intersects the requested scopes.
+- Library edges use `library_edges.scope`; a multi-scope query includes edges whose `scope` is in the requested scopes or `"global"`.
+- If two objects expose the same runtime `id` across scopes, snapshot loading deduplicates by `(kind, id)` and prefers the first requested scope, then `"global"`, then lexical `objectKey`. This makes cross-domain selection deterministic.
+
 ### 3.5 Two template notions — keep both, do not merge
 
 The codebase has **two structurally different workflow-template concepts** that both happen to be called `workflow_template`. They serve two different generation paths and must remain distinct objects in the graph:
@@ -147,9 +155,41 @@ The codebase has **two structurally different workflow-template concepts** that 
 
 The `WorkflowTemplatePayload` already in `design-library/types.ts` (with `flow.nodes: WorkflowTemplateNode[]`, `nodeType`, `agentSpecRef`, `contractRefs`, `validatorRefs`, `capabilityRefs`, `mcpCapabilityRefs`) is a **third** shape that the library-constrained path's `WorkflowTemplatePayload` schema describes but the current seed does not populate with `flow` — the seeded `template.software-feature` only carries `compositionConstraints`.
 
-**Consolidation rule:** the stage template (`software-feature-template`) becomes its **own** `workflow_template` library object, keyed `template.software-feature-stages`, with `state.stages: WorkflowStageTemplate[]` and `state.intents: TemplateIntent[]`. It is **not** merged into `template.software-feature` (the composition-slot template). The composition-slot template keeps its `compositionConstraints` shape unchanged. The `WorkflowTemplatePayload`/`flow.nodes` shape is left as-is (out of scope to populate); this spec does not touch the `flow` model.
+**Consolidation rule:** the stage template (`software-feature-template`) becomes its **own** `workflow_template` library object, keyed `template.software-feature-stages`, with `state.templateModel = "stage_dag"`, `state.stages: WorkflowStageTemplate[]`, and `state.intents: TemplateIntent[]`. It is **not** merged into `template.software-feature` (the composition-slot template). The composition-slot template keeps its `compositionConstraints` shape unchanged and should carry `state.templateModel = "composition_slots"` once touched by this migration. The `WorkflowTemplatePayload`/`flow.nodes` shape is left as-is (out of scope to populate); this spec does not touch the `flow` model.
 
 This means the `software` scope will have **two** `workflow_template` objects after consolidation: `template.software-feature` (slots, unchanged) and `template.software-feature-stages` (stages + intents, new). Consumers that read stages (`constrained-generator`, `materialize`) read the latter; the LLM composer reads the former. The `WorkflowGeneratorPolicyPayload.templateRefs` lists the stage-template key.
+
+Snapshot code must not treat all `workflow_template` objects as one shape. Use an explicit discriminant:
+
+```ts
+type LibraryWorkflowTemplateSnapshot =
+  | {
+      templateModel: "composition_slots";
+      key: string;
+      id: string;
+      scope: string;
+      intentRefs: string[];
+      compositionConstraints: Record<string, unknown>;
+    }
+  | {
+      templateModel: "stage_dag";
+      key: string;
+      id: string;
+      scope: string;
+      intentRefs: string[];
+      intents: TemplateIntent[];
+      stages: WorkflowStageTemplate[];
+    }
+  | {
+      templateModel: "flow_nodes";
+      key: string;
+      id: string;
+      scope: string;
+      payload: WorkflowTemplatePayload;
+    };
+```
+
+Runtime consumers that need stages must filter `templateModel === "stage_dag"` before reading `stages` or `intents`. The composition resolver keeps using `templateModel === "composition_slots"`.
 
 ---
 
@@ -224,14 +264,17 @@ export type LibrarySnapshot = {
   memoryPolicies: MemoryPolicyDefinition[];
   workspacePolicies: WorkspacePolicyDefinition[];
   stopConditions: StopConditionDefinition[];
-  workflowTemplates: WorkflowTemplateDefinition[];   // with .intents[] inline
+  workflowTemplates: LibraryWorkflowTemplateSnapshot[];
   workflowGeneratorPolicies: WorkflowGeneratorPolicyDefinition[];
 };
 
 export async function loadLibrarySnapshot(db: SouthstarDb, scopes: string[]): Promise<LibrarySnapshot>;
+export async function loadRunLibrarySnapshot(db: SouthstarDb, input: { scopes: string[]; selectedRefs: string[] }): Promise<LibrarySnapshot>;
 ```
 
-`loadLibrarySnapshot` runs the existing `findApprovedLibraryObjectsByKind` per kind (with `scope = null` when `scopes.length > 1`, or the single scope when one), then maps each object's `state` into the typed payload. This is the single read path that replaces both `softwareDomainPack.*` direct reads and `domainPackForWorkflow`'s `workflow.* ?? softwareDomainPack.*` fallbacks.
+`loadLibrarySnapshot` runs the existing `findApprovedLibraryObjectsByKind` per kind (with `scope = null` when `scopes.length > 1`, or the single scope when one), then filters by the scope invariants in §3.4 and maps each object's `state` into typed payloads. This is the management/read-model path that replaces static `softwareDomainPack.*` direct reads.
+
+`loadRunLibrarySnapshot` is the runtime/task-envelope path. It starts from selected refs already present in the plan or manifest and loads only that closure plus required policy edges (`uses_context_policy`, `uses_session_policy`, `uses_memory_policy`, `uses_workspace_policy`, `enforces_generator_policy`, `validates_artifact`). This prevents every runtime context build from loading every approved persona once the 266-agent import lands.
 
 ### 5.1 Cross-domain candidate resolution
 
@@ -244,7 +287,7 @@ export type ResolveWorkflowCandidatesInput = {
 };
 ```
 
-The graph store already supports `scope = null` (returns all approved). For the multi-scope case, `findApprovedLibraryObjectsByKind` and the edge queries are called with `scope = null` and the result filtered to `scopes` membership in TypeScript (cheap, and keeps the SQL simple). `CandidatePacket` shape is unchanged; it just may contain candidates from multiple scopes. Composition validation's `ref_not_in_candidate_packet` check is unchanged — a ref from any included scope is valid.
+The graph store already supports `scope = null` (returns all approved). For the multi-scope case, `findApprovedLibraryObjectsByKind` and edge queries are called with `scope = null`, then filtered by the scope invariants in §3.4. `CandidatePacket` shape is unchanged; it just may contain candidates from multiple scopes. Composition validation's `ref_not_in_candidate_packet` check is unchanged — a ref from any included scope, or from `"global"`, is valid.
 
 `composition-compiler.ts`'s `scope = input.scope ?? "software"` default is removed; the compiler receives `scopes` and forwards them.
 
@@ -255,17 +298,17 @@ The graph store already supports `scope = null` (returns all approved). For the 
 Six static-`softwareDomainPack` consumers become graph-backed.
 
 ### 6.1 `context/managed-context-assembler.ts`
-- `domainPack = options.domainPack ?? softwareDomainPack` → `snapshot = options.snapshot ?? await loadLibrarySnapshot(db, [workflow.domain ?? "software"])`.
+- `domainPack = options.domainPack ?? softwareDomainPack` → `snapshot = options.snapshot ?? await loadRunLibrarySnapshot(db, { scopes: workflow.libraryScopes ?? [workflow.domain ?? "software"], selectedRefs: selectedRefsFromWorkflowTask(workflow, task) })`.
 - `domainPack.evaluatorPipelines.find(...)` → `snapshot.evaluatorPipelines.find(...)`.
 - `domainPack.contextPolicies.find(...)` / `memoryPolicies` / `artifactContractsForTask` → same, off `snapshot`.
-- `options.domainPack` field replaced with `options.snapshot` (a `LibrarySnapshot`), loaded once per run and cached on the assembler instance.
+- `options.domainPack` field replaced with `options.snapshot` (a `LibrarySnapshot`), loaded once per run/task closure and cached on the assembler instance.
 
 ### 6.2 `ui-api/postgres-run-api.ts`
-- `domainPackForWorkflow(workflow)` (the `workflow.* ?? softwareDomainPack.*` fallback) is removed. The manifest's `roles/agentProfiles/...` arrays are already snapshotted at compile time (see §7), so `domainPackForWorkflow` becomes `loadLibrarySnapshot(db, [workflow.domain ?? scopesFromTasks(workflow)])`.
+- `domainPackForWorkflow(workflow)` (the `workflow.* ?? softwareDomainPack.*` fallback) is removed. The manifest's `roles/agentProfiles/...` arrays are already snapshotted at compile time (see §7), so `domainPackForWorkflow` becomes `loadRunLibrarySnapshot(db, { scopes: workflow.libraryScopes ?? [workflow.domain ?? "software"], selectedRefs: selectedRefsFromWorkflow(workflow) })` only when a legacy manifest is missing a snapshotted array.
 - `materializeWorkflowTaskProfileOverrides`'s `softwareDomainPack.agentProfiles` fallback → `snapshot.agentProfiles`.
 
 ### 6.3 `ui-api/postgres-task-envelope.ts`
-- `domainPack.evaluatorPipelines.find(...)` → `snapshot.evaluatorPipelines.find(...)`.
+- `domainPack.evaluatorPipelines.find(...)` → `snapshot.evaluatorPipelines.find(...)`, with the snapshot loaded through `loadRunLibrarySnapshot` from workflow/task selected refs.
 - The `seedSoftwareLibraryGraph` call at the top of task envelope creation stays (it is idempotent upsert), but the evaluator lookup moves to the snapshot.
 
 ### 6.4 `read-models/agent-library.ts`
@@ -290,8 +333,8 @@ Six static-`softwareDomainPack` consumers become graph-backed.
 
 Rewrite to take a `LibrarySnapshot`:
 
-- `input.domainPack.intents.find(id)` → `snapshot.workflowTemplates.flatMap(t => t.intents ?? []).find(i => i.id === id)`.
-- `input.domainPack.workflowTemplates.find(id)` → `snapshot.workflowTemplates.find(t => t.key === id)` (the stage template, see §3.5).
+- `input.domainPack.intents.find(id)` → `snapshot.workflowTemplates.filter(t => t.templateModel === "stage_dag").flatMap(t => t.intents).find(i => i.id === id)`.
+- `input.domainPack.workflowTemplates.find(id)` → `snapshot.workflowTemplates.find(t => t.templateModel === "stage_dag" && t.key === id)` (the stage template, see §3.5).
 - `input.domainPack.workflowGeneratorPolicies.find(...)` → `snapshot.workflowGeneratorPolicies.find(...)`.
 - `materialize.ts`'s `input.domainPack.roles/agentProfiles/artifactContracts/evaluatorPipelines/contextPolicies/sessionPolicies/memoryPolicies/workspacePolicies` → snapshot fields.
 - `materialize.ts`'s `input.domainPack.workflowTemplates.flatMap(template => template.stages).find(stage => stage.roleRef === task.roleRef)?.workspacePolicyRef` is preserved unchanged in shape — the stage template object (`template.software-feature-stages`) carries `state.stages: WorkflowStageTemplate[]`, so the snapshot's `workflowTemplates` entry for it exposes `.stages` and the same `flatMap(...).find(...)` lookup works. This is **not** the `WorkflowTemplatePayload.flow.nodes` model; that model is untouched (§3.5).
@@ -314,8 +357,8 @@ The seed grows to populate the 7 new kinds for the `software` scope, preserving 
 - `workspace_policy.software-git-workspace` ← `softwareDomainPack.workspacePolicies[0]`
 - `stop_condition.software-feature-complete` ← `softwareDomainPack.stopConditions[0]` (the only one; `type: custom`, `evaluatorRefs: [software-feature-quality, software-verification-quality, software-completion-quality]`)
 - `evaluator_pipeline.software-plan-quality`, `evaluator_pipeline.software-feature-quality`, `evaluator_pipeline.software-verification-quality`, `evaluator_pipeline.software-completion-quality` ← `softwareDomainPack.evaluatorPipelines` (full `evaluators[]` + `onFailure`)
-- `workflow_generator_policy.software-feature` ← `softwareDomainPack.workflowGeneratorPolicies[0]`
-- `workflow_template.software-feature` gains `intents: [implement_feature, fix_bug]` inside its state (folded from `softwareDomainPack.intents`)
+- `workflow_generator_policy.software-feature-generator` ← `softwareDomainPack.workflowGeneratorPolicies[0]`
+- `workflow_template.software-feature-stages` gains `intents: [implement_feature, fix_bug]` inside its state (folded from `softwareDomainPack.intents`). `workflow_template.software-feature` remains the composition-slot template and does not gain `intents`.
 
 ### 8.2 Existing objects updated
 
@@ -340,7 +383,7 @@ The seed grows to populate the 7 new kinds for the `software` scope, preserving 
 
 ## 9. Manifest Compatibility
 
-`SouthstarWorkflowManifest` already snapshosts `roles/agentProfiles/artifactContracts/evaluatorPipelines/contextPolicies/sessionPolicies/memoryPolicies/workspacePolicies/stopConditions` into the manifest at compile time (see `materialize.ts`). This is preserved — the manifest remains a self-contained snapshot, so existing runs keep executing without reading the graph.
+`SouthstarWorkflowManifest` already snapshosts `roles/agentProfiles/artifactContracts/evaluatorPipelines/contextPolicies/sessionPolicies/memoryPolicies/workspacePolicies/stopConditions` into the manifest at compile time (see `materialize.ts`). This is preserved — the manifest remains a self-contained snapshot, so existing runs keep executing without reading static domain packs. Consumers such as `managed-context-assembler.ts` must prefer manifest-snapshotted arrays and use `loadRunLibrarySnapshot` only as a graph-backed legacy fallback.
 
 Changes:
 - `domain?: string` → `domain?: string` stays (primary scope).
@@ -357,9 +400,9 @@ No migration of existing `workflow_runs.workflow_manifest_json` rows is required
 After §4–§8 land and all tests pass:
 
 1. Delete `src/v2/domain-packs/types.ts`, `software.ts`, `registry.ts`.
-2. Grep-verify: `rg "domain-packs" src/ web/ tests/` returns only historical references in `docs/` and test fixtures being migrated.
+2. Grep-verify: `rg "domain-packs|DomainPack|domainPackId|softwareDomainPack" src/ web/ components/ lib/ tests/` returns only historical references in `docs/` or explicitly documented backward-compatible manifest/API fields.
 3. Remove the `components/southstar/pages/DomainPacksAgentStudioPage.tsx` page and its `getUiDomainPacks` API client method (§11), or repoint them to the design-library read model.
-4. `createDomainPackRegistry` and `routeByPrompt`/`routeIntent` logic moves to a new `design-library/domain-router.ts` that routes a goal prompt to `(scopes, intentId, templateRef)` by scanning `snapshot.workflowTemplates[].intents[]` and matching `examples`. This preserves prompt→intent routing without the `DomainPack` aggregate.
+4. `createDomainPackRegistry` and `routeByPrompt`/`routeIntent` logic moves to a new `design-library/domain-router.ts` that routes a goal prompt to `(scopes, intentId, templateRef)` by scanning `stage_dag` templates' `intents[]` and matching `examples`. Tie-breaker order is: explicit domain/scope hint, exact example/regex match, requirement `workType`/capability match, first default stage template for the primary scope. This preserves prompt→intent routing without the `DomainPack` aggregate.
 
 ---
 
@@ -367,6 +410,7 @@ After §4–§8 land and all tests pass:
 
 - `/api/v2/agent-library?domain=software` → accept any `domain` value; return snapshot-projected data for that scope. The hard `throw` is gone.
 - `/api/v2/agent-library/candidates` → unchanged shape; may now return candidates across multiple scopes when the draft's `libraryScopes` has >1 entry.
+- `domainPackId` remains accepted only as a backward-compatible input alias for `libraryScopes: [domainPackId]`; new API responses and UI state use `libraryScopes`.
 - `getUiDomainPacks` API client method and `DomainPacksAgentStudioPage` are removed (or repointed to a new `/api/v2/library-snapshot?scopes=...` endpoint that returns the `LibrarySnapshot` projection). The page is currently the only consumer of the domain-pack-as-aggregate UI; with the aggregate gone, it is replaced by a library-snapshot view.
 
 ---
@@ -377,11 +421,13 @@ Existing tests that touch `domain-packs` (11 files) and `design-library`/`compos
 
 1. **Type-move tests first.** After §4, run `npm run test:v2`. All tests that imported `domain-packs/types` must still compile and pass with the new import path. No behavior change expected.
 2. **Seed tests.** `tests/v2/library-graph-store.test.ts` and any seed-coverage test get assertions for the 7 new kinds and the new edges in the `software` scope.
-3. **Snapshot loader test.** New `tests/v2/library-snapshot.test.ts` seeds the software library and asserts `loadLibrarySnapshot(db, ["software"])` returns the same `roles/profiles/policies/evaluatorPipelines` shapes that `softwareDomainPack` exposed (shape parity is the acceptance gate).
-4. **Consumer parity tests.** `managed-context-assembler.test.ts`, `postgres-task-envelope.test.ts`, `postgres-run-api.test.ts`, `workflow-ui` read-model tests, and `evolution-context-builder-postgres.test.ts` are updated to inject a `LibrarySnapshot` instead of `softwareDomainPack` and assert unchanged outputs.
-5. **Cross-domain candidate test.** New case in `library-candidate-resolver.test.ts`: seed two scopes (e.g. `software` + `research`), call `resolveWorkflowCandidates` with `scopes: ["software","research"]`, assert the packet contains agents/policies from both and validation passes for a plan mixing them.
-6. **Generator rewrite test.** `constrained-generator`/`validator`/`materialize` tests pass a `LibrarySnapshot` and assert the generated plan/manifest is byte-equivalent to the pre-rewrite output (modulo `domainPackRef` → `libraryRef` rename).
-7. **Deletion gate.** `rg "domain-packs" src/ web/` returns zero hits; `npm run test:v2` and `npm run test:postgres` pass; `npm --prefix web run build` passes.
+3. **Payload validator tests.** `tests/v2/design-library-validators.test.ts` gets one valid and one invalid case for each new kind: `context_policy`, `session_policy`, `memory_policy`, `workspace_policy`, `stop_condition`, `evaluator_pipeline`, `workflow_generator_policy`. Invalid rows must be rejected before they can become approved library objects.
+4. **Snapshot loader test.** New `tests/v2/library-snapshot.test.ts` seeds the software library and asserts `loadLibrarySnapshot(db, ["software"])` returns the same `roles/profiles/policies/evaluatorPipelines` shapes that `softwareDomainPack` exposed (shape parity is the acceptance gate). It also asserts `loadRunLibrarySnapshot` returns only selected refs plus policy closure.
+5. **Consumer parity tests.** `managed-context-assembler.test.ts`, `postgres-task-envelope.test.ts`, `postgres-run-api.test.ts`, `workflow-ui` read-model tests, and `evolution-context-builder-postgres.test.ts` are updated to inject a `LibrarySnapshot` instead of `softwareDomainPack` and assert unchanged outputs.
+6. **Routing parity tests.** New `domain-router` tests preserve current prompt behavior: explicit software hint, feature prompt, bug/failure prompt, and non-software research prompt. Multi-scope tie-breakers follow §10.
+7. **Cross-domain candidate test.** New case in `library-candidate-resolver.test.ts`: seed two scopes (e.g. `software` + `research`), call `resolveWorkflowCandidates` with `scopes: ["software","research"]`, assert the packet contains agents/policies from both and validation passes for a plan mixing them.
+8. **Generator rewrite test.** `constrained-generator`/`validator`/`materialize` tests pass a `LibrarySnapshot` and assert the generated plan/manifest is byte-equivalent to the pre-rewrite output (modulo `domainPackRef` → `libraryRef` rename).
+9. **Deletion gate.** `rg "domain-packs|DomainPack|domainPackId|softwareDomainPack" src/ web/ components/ lib/ tests/` returns only documented backward-compatible fields; `npm run test:v2` and `npm run test:postgres` pass; `npm --prefix web run build` passes.
 
 Per AGENTS.md, do **not** run `test:e2e:*` or `test:live` as routine verification. The `test:v2` + `test:postgres` + web build gate is the verification loop.
 
@@ -403,13 +449,16 @@ These are explicitly **not** part of this consolidation:
 
 The consolidation is complete when **all** of the following hold:
 
-1. `rg "domain-packs" src/ web/` returns zero hits (only `docs/` historical references remain).
+1. `rg "domain-packs|DomainPack|domainPackId|softwareDomainPack" src/ web/ components/ lib/ tests/` returns only historical docs or explicitly documented backward-compatible manifest/API fields.
 2. `src/v2/domain-packs/` directory does not exist.
 3. `npm run test:v2` passes.
 4. `npm run test:postgres` passes.
 5. `npm --prefix web run build` passes.
 6. `loadLibrarySnapshot(db, ["software"])` produces role/profile/policy/evaluator-pipeline shapes equal to the old `softwareDomainPack` (shape-parity test passes).
-7. `resolveWorkflowCandidates` accepts `scopes: string[]` and a 2-scope test returns a packet with candidates from both scopes.
-8. `/api/v2/agent-library?domain=research` no longer throws `unsupported domain pack` (returns empty snapshot or seeded research data, but does not throw).
-9. No source file imports `DomainPack` (the aggregate type no longer exists).
-10. New `LibraryDefinitionKind` values `context_policy`, `session_policy`, `memory_policy`, `workspace_policy`, `stop_condition`, `evaluator_pipeline`, `workflow_generator_policy` are seeded for the `software` scope and queryable via `findApprovedLibraryObjectsByKind`.
+7. `loadRunLibrarySnapshot(db, { scopes, selectedRefs })` returns selected refs plus required policy closure without loading unrelated approved agents.
+8. `resolveWorkflowCandidates` accepts `scopes: string[]` and a 2-scope test returns a packet with candidates from both scopes.
+9. `/api/v2/agent-library?domain=research` no longer throws `unsupported domain pack` (returns empty snapshot or seeded research data, but does not throw).
+10. No source file imports `DomainPack` (the aggregate type no longer exists).
+11. New `LibraryDefinitionKind` values `context_policy`, `session_policy`, `memory_policy`, `workspace_policy`, `stop_condition`, `evaluator_pipeline`, `workflow_generator_policy` are seeded for the `software` scope and queryable via `findApprovedLibraryObjectsByKind`.
+12. Payload validators reject malformed state for every new kind before approval.
+13. Prompt routing parity tests cover the old feature/fix/research behavior and the new multi-scope tie-breaker.

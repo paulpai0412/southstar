@@ -79,8 +79,17 @@ export class TorkClient {
   }
 
   async cancelJob(jobId: string): Promise<void> {
-    const response = await this.fetchJobEndpoint(jobId, ["", "/api/v1"], { method: "DELETE" });
-    if (!response.ok) throw new Error(`Tork cancel failed: ${response.status} ${await response.text()}`);
+    const encoded = encodeURIComponent(jobId);
+    let last: Response | undefined;
+    for (const prefix of ["", "/api/v1"]) {
+      const response = await this.fetchWithRetry(`${this.baseUrl}${prefix}/jobs/${encoded}/cancel`, { method: "PUT" }, {
+        retryOnStatuses: [408, 429, 500, 502, 503, 504],
+      });
+      if (response.ok) return;
+      if (response.status !== 404) throw new Error(`Tork cancel failed: ${response.status} ${await response.text()}`);
+      last = response;
+    }
+    throw new Error(`Tork cancel failed: ${last?.status ?? 404} ${last ? await last.text() : "not found"}`);
   }
 
   async getJobLogs(jobId: string): Promise<string> {

@@ -116,6 +116,31 @@ test("Tork client fails on non-2xx responses", async () => {
   }
 });
 
+test("Tork client cancels jobs with the current Tork cancel endpoint", async () => {
+  let receivedPath = "";
+  let receivedMethod = "";
+  const server = createServer((request, response) => {
+    receivedPath = request.url ?? "";
+    receivedMethod = request.method ?? "";
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const address = server.address();
+  assert.equal(typeof address, "object");
+
+  try {
+    const client = new TorkClient({ baseUrl: `http://127.0.0.1:${address.port}` });
+    await client.cancelJob("job-cancel-1");
+
+    assert.equal(receivedMethod, "PUT");
+    assert.equal(receivedPath, "/jobs/job-cancel-1/cancel");
+  } finally {
+    server.close();
+  }
+});
+
 test("Tork client aborts requests when timeout is exceeded", async () => {
   const server = createServer((_request, _response) => {
     // Intentionally hold the connection open to trigger timeout.

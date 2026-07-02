@@ -6,9 +6,10 @@ import { createSouthstarInfraLifecycle, filterAllowedTorkBindSources, mergeTorkB
 test("infra start brings up local Postgres before Tork", async () => {
   const calls: string[] = [];
   let spawnedTorkConfig: string | undefined;
+  let spawnedTestAdminDatabaseUrl: string | undefined;
   const lifecycle = createSouthstarInfraLifecycle({
     cwd: "/tmp/southstar",
-    envLoader: () => localEnv(),
+    envLoader: () => localEnv({ testAdminDatabaseUrl: "postgres://admin:postgres@127.0.0.1:55432/postgres" }),
     runCommand: async (command, args) => {
       calls.push(`${command} ${args.join(" ")}`);
       return { exitCode: 0, stdout: "", stderr: "" };
@@ -28,6 +29,9 @@ sources = [
     },
     spawnChild: (command, args, options) => {
       spawnedTorkConfig = typeof options.env?.TORK_CONFIG === "string" ? options.env.TORK_CONFIG : undefined;
+      spawnedTestAdminDatabaseUrl = typeof options.env?.SOUTHSTAR_TEST_ADMIN_DATABASE_URL === "string"
+        ? options.env.SOUTHSTAR_TEST_ADMIN_DATABASE_URL
+        : undefined;
       calls.push(`${command} ${args.join(" ")}`);
       return { pid: 42, unref: () => calls.push("tork:unref") };
     },
@@ -35,6 +39,10 @@ sources = [
     isTorkHealthy: async () => {
       calls.push("tork:health");
       return calls.filter((call) => call === "tork:health").length > 1;
+    },
+    isTorkWebHealthy: async () => {
+      calls.push("tork-web:health");
+      return calls.filter((call) => call === "tork-web:health").length > 1;
     },
     waitForTcp: async (host, port) => {
       calls.push(`tcp:${host}:${port}`);
@@ -55,7 +63,10 @@ sources = [
 
   assert.equal(result.postgres.status, "started");
   assert.equal(result.tork.status, "started");
+  assert.equal(result.torkWeb.status, "started");
+  assert.equal(result.torkWeb.url, "http://127.0.0.1:8100");
   assert.equal(spawnedTorkConfig, "/tmp/southstar/.southstar/tork.generated.toml");
+  assert.equal(spawnedTestAdminDatabaseUrl, "postgres://admin:postgres@127.0.0.1:55432/postgres");
   assert.deepEqual(calls, [
     "docker start southstar-postgres",
     "tcp:127.0.0.1:55432",
@@ -71,11 +82,49 @@ sources = [
   "/tmp/southstar",
   "/home/timmypai/apps/southstar-vocab"
 ]
+
+[coordinator]
+address = "0.0.0.0:8000"
 `}`,
     "/tmp/southstar/scripts/run-local-tork.sh ",
     "tork:unref",
     "write:/tmp/southstar/.southstar/logs/tork.pid:42",
     "tork:health",
+    "docker inspect -f {{.State.Running}} southstar-tork-web",
+    "tork-web:health",
+    "docker rm -f southstar-tork-web",
+    "docker run -d --name southstar-tork-web -p 8100:8100 --add-host host.docker.internal:host-gateway -e BACKEND_URL=http://host.docker.internal:8000 runabol/tork-web",
+    "tork-web:health",
+  ]);
+});
+
+test("infra start reuses an already healthy Tork Web container", async () => {
+  const calls: string[] = [];
+  const lifecycle = createSouthstarInfraLifecycle({
+    cwd: "/tmp/southstar",
+    envLoader: () => localEnv(),
+    runCommand: async (command, args) => {
+      calls.push(`${command} ${args.join(" ")}`);
+      return { exitCode: 0, stdout: "", stderr: "" };
+    },
+    spawnChild: () => ({ pid: 42, unref: () => {} }),
+    isTorkHealthy: async () => true,
+    isTorkWebHealthy: async () => {
+      calls.push("tork-web:health");
+      return true;
+    },
+    waitForTcp: async () => {},
+    waitForPostgresReady: async () => {},
+  });
+
+  const result = await lifecycle.start();
+
+  assert.equal(result.tork.status, "already-running");
+  assert.equal(result.torkWeb.status, "already-running");
+  assert.deepEqual(calls, [
+    "docker start southstar-postgres",
+    "docker inspect -f {{.State.Running}} southstar-tork-web",
+    "tork-web:health",
   ]);
 });
 
@@ -130,6 +179,10 @@ test("infra start reuses an already healthy Tork process", async () => {
       calls.push("tork:health");
       return true;
     },
+    isTorkWebHealthy: async () => {
+      calls.push("tork-web:health");
+      return true;
+    },
     waitForTcp: async () => {},
     waitForPostgresReady: async (databaseUrl) => {
       calls.push(`pg:${databaseUrl}`);
@@ -139,10 +192,13 @@ test("infra start reuses an already healthy Tork process", async () => {
   const result = await lifecycle.start();
 
   assert.equal(result.tork.status, "already-running");
+  assert.equal(result.torkWeb.status, "already-running");
   assert.deepEqual(calls, [
     "docker start southstar-postgres",
     "pg:postgres://postgres:postgres@127.0.0.1:55432/postgres",
     "tork:health",
+    "docker inspect -f {{.State.Running}} southstar-tork-web",
+    "tork-web:health",
   ]);
 });
 
@@ -174,9 +230,11 @@ test("infra stop shuts down Tork before local Postgres", async () => {
 
   const result = await lifecycle.stop();
 
+  assert.equal(result.torkWeb.status, "stopped");
   assert.equal(result.tork.status, "stopped");
   assert.equal(result.postgres.status, "stopped");
   assert.deepEqual(calls, [
+    "docker stop southstar-tork-web",
     "lsof -tiTCP:8000 -sTCP:LISTEN",
     "kill:77:SIGTERM",
     "rm:/tmp/southstar/.southstar/logs/tork.pid",
@@ -209,9 +267,11 @@ test("infra stop falls back to the Tork listen port when the pid file is stale",
 
   const result = await lifecycle.stop();
 
+  assert.equal(result.torkWeb.status, "stopped");
   assert.equal(result.tork.status, "stopped");
   assert.equal(result.tork.pid, 88);
   assert.deepEqual(calls, [
+    "docker stop southstar-tork-web",
     "lsof -tiTCP:8000 -sTCP:LISTEN",
     "kill:88:SIGTERM",
     "rm:/tmp/southstar/.southstar/logs/tork.pid",
@@ -223,6 +283,7 @@ function localEnv(overrides: Partial<SouthstarEnv> = {}): SouthstarEnv {
   return {
     databaseUrl: "postgres://postgres:postgres@127.0.0.1:55432/southstar",
     torkBaseUrl: "http://127.0.0.1:8000",
+    torkWebUrl: "http://127.0.0.1:8100",
     serverUrl: "http://127.0.0.1:3100",
     dockerRequired: true,
     codexCliPath: "codex",

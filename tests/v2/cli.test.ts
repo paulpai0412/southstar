@@ -135,14 +135,17 @@ function fakeInfraLifecycle(): SouthstarInfraLifecycle {
     start: async () => ({
       postgres: { status: "started" as const, containerName: "southstar-postgres" },
       tork: { status: "started" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      torkWeb: { status: "started" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
     }),
     stop: async () => ({
+      torkWeb: { status: "stopped" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
       tork: { status: "stopped" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
       postgres: { status: "stopped" as const, containerName: "southstar-postgres" },
     }),
     status: async () => ({
       postgres: { status: "running" as const, containerName: "southstar-postgres" },
       tork: { status: "running" as const, baseUrl: "http://127.0.0.1:8000", pidFilePath: ".southstar/logs/tork.pid" },
+      torkWeb: { status: "running" as const, url: "http://127.0.0.1:8100", containerName: "southstar-tork-web" },
     }),
   };
 }
