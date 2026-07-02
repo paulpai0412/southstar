@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { normalizeImportProposal } from "../design-library/importers/import-proposal-normalizer.ts";
 import { createPromptLibraryImportProposal } from "../design-library/importers/prompt-library-importer.ts";
+import { saveWorkflowTemplateDraft } from "../design-library/templates/workflow-template-save-service.ts";
 import {
   listLibraryFiles,
   readLibraryFile,
@@ -52,6 +53,21 @@ export async function handleLibraryRoute(
 
   if (request.method === "GET" && url.pathname === "/api/v2/library/files") {
     return json("library-files", { files: await listLibraryFiles({ root: libraryRoot(context) }) });
+  }
+
+  const saveTemplateMatch = url.pathname.match(/^\/api\/v2\/workflow\/drafts\/([^/]+)\/save-template$/);
+  if (request.method === "POST" && saveTemplateMatch) {
+    const body = await readJsonBody<any>(request);
+    const draftId = decodeURIComponent(saveTemplateMatch[1]!);
+    const result = await saveWorkflowTemplateDraft(context.db, {
+      root: libraryRoot(context),
+      scope: optionalString(body.scope) ?? "software",
+      templateId: requiredString(body.templateId, "templateId"),
+      title: requiredString(body.title, "title"),
+      nodes: Array.isArray(body.nodes) ? body.nodes : [],
+      edges: Array.isArray(body.edges) ? body.edges : [],
+    });
+    return json("workflow-template-save", { draftId, ...result });
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/library/import-prompts") {

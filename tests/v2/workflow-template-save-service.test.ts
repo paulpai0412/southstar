@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../../src/v2/design-library/library-graph-store.ts";
 import { saveWorkflowTemplateDraft } from "../../src/v2/design-library/templates/workflow-template-save-service.ts";
+import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("saves workflow template and generated profile files then syncs draft objects", async () => {
@@ -106,5 +107,39 @@ test("rejects unsafe template and node identifiers before writing files", async 
   } finally {
     await db.close();
     await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime save-template route writes workflow template drafts", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-template-route-"));
+  try {
+    const response = await handleRuntimeRoute({ db, libraryRoot } as any, new Request("http://local/api/v2/workflow/drafts/draft-route/save-template", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "software",
+        templateId: "template.route-save",
+        title: "Route Save",
+        nodes: [{
+          id: "implement-ui",
+          title: "Implement UI",
+          agentRef: "agent.frontend-developer",
+          skillRefs: [],
+          toolGrantRefs: [],
+          mcpGrantRefs: [],
+        }],
+        edges: [],
+      }),
+    }));
+
+    assert.equal(response.status, 200);
+    const payload = await response.json() as { kind: string; result: { draftId: string; template: { relativePath: string } } };
+    assert.equal(payload.kind, "workflow-template-save");
+    assert.equal(payload.result.draftId, "draft-route");
+    assert.equal(payload.result.template.relativePath, "templates/saved/route-save.workflow.yaml");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
   }
 });

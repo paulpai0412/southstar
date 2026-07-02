@@ -44,6 +44,30 @@ export function WorkflowDagBlock({
     void runDraft();
   };
 
+  async function saveTemplate() {
+    const draftId = state.draft?.draftId ?? dag.draftId;
+    if (!draftId) return;
+    const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(draftId)}/save-template`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "software",
+        templateId: `template.${toTemplateSlug(dag.id ?? draftId)}`,
+        title: dag.templateTitle ?? "Saved Workflow Template",
+        nodes: dag.nodes.map((node) => ({
+          id: node.id,
+          title: nodeLabel(node),
+          agentRef: nodeAgentRef(node),
+          skillRefs: stringArray(nodeRecord(node).skillRefs),
+          toolGrantRefs: stringArray(nodeRecord(node).toolGrantRefs),
+          mcpGrantRefs: stringArray(nodeRecord(node).mcpGrantRefs),
+        })),
+        edges: dag.edges.map((edge) => ({ from: edge.from, to: edge.to })),
+      }),
+    });
+    if (!response.ok) throw new Error(await response.text());
+  }
+
   const handleSelectTask = (taskId: string) => {
     setSelectedNodeId(taskId);
     const node = nodeById.get(taskId);
@@ -152,6 +176,15 @@ export function WorkflowDagBlock({
             >
               {canRunActiveDraft ? "Run Workflow" : "Run"}
             </button>
+            <button
+              type="button"
+              data-testid="workflow-action-save-template"
+              onClick={() => void saveTemplate()}
+              disabled={!draftReady}
+              style={actionButtonStyle(!draftReady)}
+            >
+              Save Template
+            </button>
             <div
               data-testid="workflow-lifecycle-notice"
               style={{
@@ -255,6 +288,39 @@ function nodeStatus(node: WorkflowDagNode): string {
   if (node.state === "blocked") return "blocked";
   if (node.state === "warning") return "paused";
   return "ready";
+}
+
+function nodeLabel(node: WorkflowDagNode): string {
+  const maybeTitle = nodeRecord(node).title;
+  return typeof maybeTitle === "string" && maybeTitle.trim() ? maybeTitle : node.label ?? node.id;
+}
+
+function nodeAgentRef(node: WorkflowDagNode): string {
+  const maybeAgentDefinitionRef = nodeRecord(node).agentDefinitionRef;
+  if (typeof maybeAgentDefinitionRef === "string" && maybeAgentDefinitionRef.startsWith("agent.")) {
+    return maybeAgentDefinitionRef;
+  }
+  if (typeof node.agentRef === "string" && node.agentRef.startsWith("agent.")) {
+    return node.agentRef;
+  }
+  return `agent.${toTemplateSlug(node.role || "generated")}`;
+}
+
+function nodeRecord(node: WorkflowDagNode): Record<string, unknown> {
+  return node as unknown as Record<string, unknown>;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function toTemplateSlug(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^template\./, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "generated";
 }
 
 function actionButtonStyle(disabled: boolean) {

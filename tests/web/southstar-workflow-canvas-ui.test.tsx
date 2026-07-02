@@ -167,6 +167,12 @@ test("web workflow DAG block renders the shared React Flow canvas inside a scrol
   assert.match(block, /onSelectTask=\{handleSelectTask\}/);
 });
 
+test("Workflow DAG block exposes Save Template action for draft DAGs", () => {
+  const sourceText = source("web/components/WorkflowDagBlock.tsx");
+  assert.match(sourceText, /Save Template/);
+  assert.match(sourceText, /save-template/);
+});
+
 test("workflow lifecycle starts generated planner DAGs as backend drafts", () => {
   const lifecycle = source("web/lib/workflow/lifecycle.ts");
   const hook = source("web/hooks/useWorkflowLifecycle.ts");
