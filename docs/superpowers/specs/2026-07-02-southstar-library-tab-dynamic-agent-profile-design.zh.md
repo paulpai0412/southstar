@@ -610,6 +610,7 @@ workflow template -> generated profile
 The block is read-only in chat. It should provide:
 
 - selected domain/scope
+- a domain filter control with `All`, `global`, and each discovered domain/scope option
 - graph node counts by kind
 - highlighted path for the entities mentioned in the chat response
 - compact graph visualization implemented as a React component inside the message block
@@ -617,6 +618,8 @@ The block is read-only in chat. It should provide:
 - links that open the selected object in the Library tab right file viewer
 
 The chat graph block reads from the same Postgres graph read model as the Library tab. It must not reconstruct relationships from raw files or from message text. The graph chart should be rendered by React using ordinary HTML/SVG elements inside the message block; it should not depend on backend-generated images, iframes, or a separate graph service for the first implementation.
+
+The graph block's domain filter defaults to the currently selected Library sidebar domain. `All` shows the whole graph, `global` shows only global library primitives, and a concrete domain such as `software` shows that domain plus shared global primitives when those shared primitives are connected to visible domain objects. Changing the filter refetches `GET /api/v2/library/graph?scope=<scope>` or the matching neighborhood endpoint and rerenders the React chart in place. The block must display the active filter label so screenshots and operator review are unambiguous.
 
 ---
 
@@ -780,7 +783,7 @@ For long-running imports, `POST /api/v2/library/import-drafts` returns an import
 
 `POST /api/v2/library/import-prompts` is retained as a narrow compatibility/helper endpoint for direct import prompt calls, but the Library tab should prefer `POST /api/v2/library/chat/messages` so all progress and result blocks land in the center chat timeline. It returns either an import draft id, a new object draft, or a clarification issue. It never writes approved graph truth directly.
 
-`GET /api/v2/library/graph` powers the Library Graph workspace and the chat message graph block. It accepts filters such as `scope`, `kind`, `status`, `objectKey`, and `depth`. `GET /api/v2/library/graph/neighborhood` returns a focused subgraph around selected objects for compact rendering.
+`GET /api/v2/library/graph` powers the Library Graph workspace and the chat message graph block. It accepts filters such as `scope`, `kind`, `status`, `objectKey`, and `depth`. `scope` is the domain filter: omitted scope or `scope=all` returns every domain; `scope=global` returns global primitives and global edges only; `scope=<domain>` returns that domain's objects/edges plus connected shared global objects/edges when needed for a complete visible graph. The response includes `activeScope` and `availableScopes` so the frontend can render filter controls from backend truth. `GET /api/v2/library/graph/neighborhood` returns a focused subgraph around selected objects for compact rendering and applies the same `scope` semantics before selecting the neighborhood.
 
 ---
 
@@ -924,6 +927,7 @@ Backend tests:
 - Validate generated profile success and failure paths.
 - Save workflow template and generated profiles.
 - Resync local files to Postgres graph.
+- Library graph API returns correctly filtered graphs for `scope=all`, `scope=global`, and concrete domains such as `software` and `research`.
 
 UI tests:
 
@@ -935,6 +939,7 @@ UI tests:
 - Create/edit/validate/save agent.
 - Import wizard shows proposal and validation issues.
 - Chat message graph block renders Postgres graph relationships and links to Library items.
+- Chat message graph block exposes a domain filter, defaults to the selected Library domain, refetches the graph API on change, and rerenders the React chart for the selected domain.
 - Chat message graph block includes a React graph chart component rather than static text only.
 - Approve draft changes status and makes it available in candidates.
 - Workflow DAG Save creates template/profile drafts and shows result.

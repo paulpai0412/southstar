@@ -684,7 +684,7 @@ test("library workspace groups objects by scope and kind", async () => {
   }
 });
 
-test("library graph read model returns object-edge neighborhood", async () => {
+test("library graph read model filters by domain and returns object-edge neighborhood", async () => {
   const db = await createTestPostgresDb();
   try {
     await upsertLibraryObject(db, {
@@ -701,16 +701,58 @@ test("library graph read model returns object-edge neighborhood", async () => {
       headVersionId: "capability.react-ui@v1",
       state: { scope: "software", title: "React UI" },
     });
+    await upsertLibraryObject(db, {
+      objectKey: "agent.research-scout",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.research-scout@v1",
+      state: { scope: "research", title: "Research Scout" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "capability.literature-review",
+      objectKind: "capability_spec",
+      status: "approved",
+      headVersionId: "capability.literature-review@v1",
+      state: { scope: "research", title: "Literature Review" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "tool.browser",
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: "tool.browser@v1",
+      state: { scope: "global", title: "Browser" },
+    });
     await upsertLibraryEdge(db, {
       fromObjectKey: "agent.frontend-developer",
       edgeType: "provides_capability",
       toObjectKey: "capability.react-ui",
       scope: "software",
     });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.research-scout",
+      edgeType: "provides_capability",
+      toObjectKey: "capability.literature-review",
+      scope: "research",
+    });
 
-    const graph = await buildLibraryGraphReadModel(db, { scope: "software", objectKey: "agent.frontend-developer", depth: 1 });
-    assert.deepEqual(graph.nodes.map((node) => node.objectKey).sort(), ["agent.frontend-developer", "capability.react-ui"]);
-    assert.equal(graph.edges[0]?.edgeType, "provides_capability");
+    const softwareGraph = await buildLibraryGraphReadModel(db, { scope: "software", objectKey: "agent.frontend-developer", depth: 1 });
+    assert.deepEqual(softwareGraph.nodes.map((node) => node.objectKey).sort(), ["agent.frontend-developer", "capability.react-ui"]);
+    assert.equal(softwareGraph.edges[0]?.edgeType, "provides_capability");
+
+    const researchGraph = await buildLibraryGraphReadModel(db, { scope: "research" });
+    assert.equal(researchGraph.nodes.some((node) => node.objectKey === "agent.research-scout"), true);
+    assert.equal(researchGraph.nodes.some((node) => node.objectKey === "agent.frontend-developer"), false);
+    assert.equal(researchGraph.nodes.some((node) => node.objectKey === "tool.browser"), false);
+
+    const globalGraph = await buildLibraryGraphReadModel(db, { scope: "global" });
+    assert.deepEqual(globalGraph.nodes.map((node) => node.objectKey), ["tool.browser"]);
+
+    const allGraph = await buildLibraryGraphReadModel(db);
+    const explicitAllGraph = await buildLibraryGraphReadModel(db, { scope: "all" });
+    assert.deepEqual(
+      explicitAllGraph.nodes.map((node) => node.objectKey).sort(),
+      allGraph.nodes.map((node) => node.objectKey).sort(),
+    );
   } finally {
     await db.close();
   }
@@ -790,6 +832,8 @@ export type LibraryGraphEdge = {
 };
 
 export type LibraryGraphReadModel = {
+  activeScope: string;
+  availableScopes: string[];
   nodes: LibraryGraphNode[];
   edges: LibraryGraphEdge[];
 };
@@ -798,13 +842,21 @@ export async function buildLibraryGraphReadModel(
   db: SouthstarDb,
   input: { scope?: string; objectKey?: string; depth?: number } = {},
 ): Promise<LibraryGraphReadModel> {
-  const objects = await listLibraryObjects(db, { scope: input.scope });
-  const edges = await listLibraryEdges(db, { scope: input.scope });
+  const scope = normalizeScopeFilter(input.scope);
+  const allObjects = await listLibraryObjects(db);
+  const objects = await listLibraryObjects(db, { scope });
+  const edges = await listLibraryEdges(db, { scope });
   const selected = input.objectKey ? neighborhood(input.objectKey, input.depth ?? 1, edges) : null;
   const visibleObjects = selected ? objects.filter((object) => selected.has(object.objectKey)) : objects;
-  const visibleKeys = new Set(visibleObjects.map((object) => object.objectKey));
+  const connectedKeys = new Set(edges.flatMap((edge) => [edge.fromObjectKey, edge.toObjectKey]));
+  const domainScopedObjects = scope && scope !== "global"
+    ? visibleObjects.filter((object) => (stringValue(object.state.scope) ?? "global") !== "global" || connectedKeys.has(object.objectKey))
+    : visibleObjects;
+  const visibleKeys = new Set(domainScopedObjects.map((object) => object.objectKey));
   return {
-    nodes: visibleObjects.map((object) => ({
+    activeScope: input.scope && input.scope.length > 0 ? input.scope : "all",
+    availableScopes: ["all", ...Array.from(new Set(allObjects.map((object) => stringValue(object.state.scope) ?? "global"))).sort()],
+    nodes: domainScopedObjects.map((object) => ({
       id: object.id,
       objectKey: object.objectKey,
       objectKind: object.objectKind,
@@ -823,6 +875,10 @@ export async function buildLibraryGraphReadModel(
         status: edge.status,
       })),
   };
+}
+
+function normalizeScopeFilter(scope: string | undefined): string | undefined {
+  return !scope || scope === "all" ? undefined : scope;
 }
 
 function neighborhood(root: string, depth: number, edges: Array<{ fromObjectKey: string; toObjectKey: string }>): Set<string> {
@@ -927,6 +983,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
+import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 
 test("library routes expose workspace and graph envelopes", async () => {
   const db = await createTestPostgresDb();
@@ -939,12 +996,49 @@ test("library routes expose workspace and graph envelopes", async () => {
     assert.equal(workspace.ok, true);
     assert.equal(workspace.kind, "library-workspace");
 
+    await upsertLibraryObject(db, {
+      objectKey: "agent.frontend-developer",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.frontend-developer@v1",
+      state: { scope: "software", title: "Frontend Developer" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "agent.research-scout",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.research-scout@v1",
+      state: { scope: "research", title: "Research Scout" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "tool.browser",
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: "tool.browser@v1",
+      state: { scope: "global", title: "Browser" },
+    });
+
     const graphResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/graph?scope=software"));
     assert.equal(graphResponse.status, 200);
-    const graph = await graphResponse.json() as { ok: boolean; kind: string; result: { nodes: unknown[]; edges: unknown[] } };
+    const graph = await graphResponse.json() as { ok: boolean; kind: string; result: { nodes: Array<{ objectKey: string }>; edges: unknown[] } };
     assert.equal(graph.ok, true);
     assert.equal(graph.kind, "library-graph");
-    assert.deepEqual(graph.result.nodes, []);
+    assert.deepEqual(graph.result.nodes.map((node) => node.objectKey), ["agent.frontend-developer"]);
+
+    const researchResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/graph?scope=research"));
+    assert.equal(researchResponse.status, 200);
+    const researchGraph = await researchResponse.json() as { ok: boolean; result: { nodes: Array<{ objectKey: string }> } };
+    assert.deepEqual(researchGraph.result.nodes.map((node) => node.objectKey), ["agent.research-scout"]);
+
+    const globalResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/graph?scope=global"));
+    assert.equal(globalResponse.status, 200);
+    const globalGraph = await globalResponse.json() as { ok: boolean; result: { nodes: Array<{ objectKey: string }> } };
+    assert.deepEqual(globalGraph.result.nodes.map((node) => node.objectKey), ["tool.browser"]);
+
+    const allResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/graph?scope=all"));
+    assert.equal(allResponse.status, 200);
+    const allGraph = await allResponse.json() as { ok: boolean; result: { nodes: Array<{ objectKey: string }> } };
+    assert.deepEqual(allGraph.result.nodes.map((node) => node.objectKey).sort(), ["agent.frontend-developer", "agent.research-scout", "tool.browser"]);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -987,9 +1081,16 @@ export async function handleLibraryRoute(context: RuntimeServerContext & { libra
   }
   if (request.method === "GET" && url.pathname === "/api/v2/library/graph") {
     return json("library-graph", await buildLibraryGraphReadModel(context.db, {
-      scope: url.searchParams.get("scope") ?? undefined,
+      scope: normalizeScopeParam(url.searchParams.get("scope")),
       objectKey: url.searchParams.get("objectKey") ?? undefined,
       depth: numberParam(url.searchParams.get("depth")),
+    }));
+  }
+  if (request.method === "GET" && url.pathname === "/api/v2/library/graph/neighborhood") {
+    return json("library-graph-neighborhood", await buildLibraryGraphReadModel(context.db, {
+      scope: normalizeScopeParam(url.searchParams.get("scope")),
+      objectKey: requiredSearchParam(url, "objectKey"),
+      depth: numberParam(url.searchParams.get("depth")) ?? 1,
     }));
   }
   if (request.method === "GET" && url.pathname === "/api/v2/library/files") {
@@ -1018,6 +1119,16 @@ export async function handleLibraryRoute(context: RuntimeServerContext & { libra
 
 function libraryRoot(context: { libraryRoot?: string }): string {
   return context.libraryRoot ?? process.env.SOUTHSTAR_LIBRARY_ROOT ?? "library";
+}
+
+function normalizeScopeParam(value: string | null): string | undefined {
+  return !value || value === "all" ? undefined : value;
+}
+
+function requiredSearchParam(url: URL, name: string): string {
+  const value = url.searchParams.get(name);
+  if (!value) throw new Error(`${name} is required`);
+  return value;
 }
 
 function numberParam(value: string | null): number | undefined {
@@ -1621,6 +1732,8 @@ test("Library workspace has domain sidebar, chat SSE center, and right file view
   assert.match(workspace, /LibraryFileViewer/);
   assert.match(source("web/components/library/LibraryChatWindow.tsx"), /runLibraryChatCommand/);
   assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /LibraryGraphChart/);
+  assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /library-graph-domain-filter/);
+  assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /\/api\/library\/graph\?scope=/);
   assert.match(source("web/components/library/LibraryGraphChart.tsx"), /<svg/);
   assert.match(source("web/components/library/LibraryFileViewer.tsx"), /textarea/);
 });
@@ -1729,7 +1842,7 @@ export function LibraryChatWindow({ scope, pendingPrompt, onPromptConsumed }: { 
           <div key={`${frame.event}:${index}`} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, marginBottom: 8 }}>
             <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 6 }}>{frame.event}</div>
             {frame.event === "library.graph.snapshot" ? (
-              <LibraryGraphBlock data={frame.data} />
+              <LibraryGraphBlock data={frame.data} defaultScope={scope} />
             ) : frame.event === "library.validation.completed" ? (
               <LibraryValidationBlock data={frame.data} />
             ) : (
@@ -1828,15 +1941,62 @@ Create `web/components/library/LibraryGraphBlock.tsx`:
 ```tsx
 "use client";
 
+import { useEffect, useMemo, useState } from "react";
+import { unwrapEnvelope } from "@/lib/library/api";
 import { LibraryGraphChart } from "./LibraryGraphChart";
 
-export function LibraryGraphBlock({ data }: { data: Record<string, any> }) {
-  const nodes = Array.isArray(data.nodes) ? data.nodes : [];
-  const edges = Array.isArray(data.edges) ? data.edges : [];
+type LibraryGraphData = {
+  activeScope?: string;
+  availableScopes?: string[];
+  nodes?: Array<Record<string, any>>;
+  edges?: Array<Record<string, any>>;
+};
+
+export function LibraryGraphBlock({ data, defaultScope }: { data: Record<string, any>; defaultScope: string }) {
+  const initialScope = typeof data.activeScope === "string" && data.activeScope.length > 0 ? data.activeScope : defaultScope || "all";
+  const [selectedScope, setSelectedScope] = useState(initialScope);
+  const [graph, setGraph] = useState<LibraryGraphData>(data);
+  const options = useMemo(() => {
+    const discovered = Array.isArray(graph.availableScopes)
+      ? graph.availableScopes.filter((scope): scope is string => typeof scope === "string" && scope.length > 0)
+      : [];
+    const domains = [defaultScope, ...discovered].filter((scope) => scope.length > 0 && scope !== "all" && scope !== "global");
+    return ["all", "global", ...Array.from(new Set(domains)).sort()];
+  }, [defaultScope, graph.availableScopes]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`/api/library/graph?scope=${encodeURIComponent(selectedScope)}`, { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload) => {
+        if (!cancelled) setGraph(unwrapEnvelope<LibraryGraphData>(payload));
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [selectedScope]);
+
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const edges = Array.isArray(graph.edges) ? graph.edges : [];
   return (
     <div data-testid="library-graph-block" style={{ display: "grid", gap: 6 }}>
-      <div style={{ fontWeight: 700 }}>Graph snapshot</div>
-      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{nodes.length} nodes / {edges.length} edges</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+        <div style={{ fontWeight: 700 }}>Graph snapshot</div>
+        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+          <span>Domain</span>
+          <select
+            data-testid="library-graph-domain-filter"
+            value={selectedScope}
+            onChange={(event) => setSelectedScope(event.currentTarget.value)}
+          >
+            {options.map((scope) => (
+              <option key={scope} value={scope}>{scope}</option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
+        {selectedScope} / {nodes.length} nodes / {edges.length} edges
+      </div>
       <LibraryGraphChart nodes={nodes} edges={edges} />
     </div>
   );
@@ -2649,6 +2809,7 @@ git commit -m "docs: document library authoring workflow"
 - Prompt calls backend API for import/create: Tasks 5, 6, 8, and 9.
 - Right file viewer/editor: Tasks 2, 4, and 8.
 - Chat graph block and React chart: Tasks 3, 6, and 8.
+- Library graph domain filtering: Task 3 covers read model filtering, Task 4 covers API `scope`, and Task 8 covers frontend filter controls.
 - Postgres graph from local files: Tasks 1 through 4.
 - LLM proposal seam: Task 9 creates the deterministic importer and future LLM seam; full live LLM extraction can be added after the deterministic path is stable.
 - Dynamic generated profile validation: Task 10.
