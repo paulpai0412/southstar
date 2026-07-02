@@ -26,7 +26,8 @@ test("Library workspace has domain sidebar, chat SSE center, and right file view
   assert.match(source("web/components/library/LibraryChatWindow.tsx"), /runLibraryChatCommand/);
   assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /LibraryGraphChart/);
   assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /library-graph-domain-filter/);
-  assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /\/api\/library\/graph\?scope=/);
+  assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /new URLSearchParams\(\{ scope: selectedScope \}\)/);
+  assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /\/api\/library\/graph\?\$\{params\.toString\(\)\}/);
   assert.match(source("web/components/library/LibraryGraphChart.tsx"), /<svg/);
   assert.match(source("web/components/library/LibraryFileViewer.tsx"), /textarea/);
 });

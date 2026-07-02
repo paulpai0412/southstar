@@ -11,12 +11,34 @@ type LibraryGraphData = {
   edges?: LibraryGraphChartEdge[];
 };
 
-export function LibraryGraphBlock({ data, defaultScope }: { data: Record<string, unknown>; defaultScope: string }) {
+const KIND_OPTIONS = [
+  "agent_definition",
+  "agent_profile",
+  "skill_spec",
+  "tool_definition",
+  "mcp_tool_grant",
+  "capability_spec",
+  "workflow_template",
+];
+
+const STATUS_OPTIONS = ["draft", "approved", "deprecated", "blocked"];
+
+export function LibraryGraphBlock({
+  data,
+  defaultScope,
+  onSelectNode,
+}: {
+  data: Record<string, unknown>;
+  defaultScope: string;
+  onSelectNode?: (node: LibraryGraphChartNode) => void;
+}) {
   const initialGraph = toGraphData(data);
   const initialScope = typeof initialGraph.activeScope === "string" && initialGraph.activeScope.length > 0
     ? initialGraph.activeScope
     : defaultScope || "all";
   const [selectedScope, setSelectedScope] = useState(initialScope);
+  const [selectedKind, setSelectedKind] = useState("all");
+  const [selectedStatus, setSelectedStatus] = useState("all");
   const [graph, setGraph] = useState<LibraryGraphData>(initialGraph);
   const options = useMemo(() => {
     const discovered = Array.isArray(graph.availableScopes)
@@ -28,7 +50,10 @@ export function LibraryGraphBlock({ data, defaultScope }: { data: Record<string,
 
   useEffect(() => {
     let cancelled = false;
-    fetch(`/api/library/graph?scope=${encodeURIComponent(selectedScope)}`, { cache: "no-store" })
+    const params = new URLSearchParams({ scope: selectedScope });
+    if (selectedKind !== "all") params.set("kind", selectedKind);
+    if (selectedStatus !== "all") params.set("status", selectedStatus);
+    fetch(`/api/library/graph?${params.toString()}`, { cache: "no-store" })
       .then((response) => response.json())
       .then((payload) => {
         if (!cancelled) setGraph(unwrapEnvelope<LibraryGraphData>(payload));
@@ -37,7 +62,7 @@ export function LibraryGraphBlock({ data, defaultScope }: { data: Record<string,
     return () => {
       cancelled = true;
     };
-  }, [selectedScope]);
+  }, [selectedKind, selectedScope, selectedStatus]);
 
   const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter(isGraphNode) : [];
   const edges = Array.isArray(graph.edges) ? graph.edges.filter(isGraphEdge) : [];
@@ -45,23 +70,51 @@ export function LibraryGraphBlock({ data, defaultScope }: { data: Record<string,
     <div data-testid="library-graph-block" style={{ display: "grid", gap: 6 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
         <div style={{ fontWeight: 700 }}>Graph snapshot</div>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-          <span>Domain</span>
-          <select
-            data-testid="library-graph-domain-filter"
-            value={selectedScope}
-            onChange={(event) => setSelectedScope(event.currentTarget.value)}
-          >
-            {options.map((scope) => (
-              <option key={scope} value={scope}>{scope}</option>
-            ))}
-          </select>
-        </label>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <span>Domain</span>
+            <select
+              data-testid="library-graph-domain-filter"
+              value={selectedScope}
+              onChange={(event) => setSelectedScope(event.currentTarget.value)}
+            >
+              {options.map((scope) => (
+                <option key={scope} value={scope}>{scope}</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <span>Kind</span>
+            <select
+              data-testid="library-graph-kind-filter"
+              value={selectedKind}
+              onChange={(event) => setSelectedKind(event.currentTarget.value)}
+            >
+              <option value="all">all</option>
+              {KIND_OPTIONS.map((kind) => (
+                <option key={kind} value={kind}>{kind}</option>
+              ))}
+            </select>
+          </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <span>Status</span>
+            <select
+              data-testid="library-graph-status-filter"
+              value={selectedStatus}
+              onChange={(event) => setSelectedStatus(event.currentTarget.value)}
+            >
+              <option value="all">all</option>
+              {STATUS_OPTIONS.map((status) => (
+                <option key={status} value={status}>{status}</option>
+              ))}
+            </select>
+          </label>
+        </div>
       </div>
       <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-        {selectedScope} / {nodes.length} nodes / {edges.length} edges
+        {selectedScope} / {selectedKind} / {selectedStatus} / {nodes.length} nodes / {edges.length} edges
       </div>
-      <LibraryGraphChart nodes={nodes} edges={edges} />
+      <LibraryGraphChart nodes={nodes} edges={edges} onSelectNode={onSelectNode} />
     </div>
   );
 }

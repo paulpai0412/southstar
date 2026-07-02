@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
+import type { LibraryDefinitionKind, LibraryDefinitionStatus } from "../design-library/types.ts";
 import {
   applyLibraryObjectLifecycleAction,
   type LibraryObjectLifecycleAction,
@@ -50,9 +51,11 @@ export async function handleLibraryRoute(
     return json(
       "library-graph",
       await buildLibraryGraphReadModel(context.db, {
-        scope: url.searchParams.get("scope") ?? undefined,
+        scope: graphScope(url),
         objectKey: url.searchParams.get("objectKey") ?? undefined,
         depth: optionalNumber(url.searchParams.get("depth")),
+        kind: optionalLibraryKind(url.searchParams.get("kind")),
+        status: optionalLibraryStatus(url.searchParams.get("status")),
       }),
     );
   }
@@ -61,9 +64,11 @@ export async function handleLibraryRoute(
     return json(
       "library-graph-neighborhood",
       await buildLibraryGraphReadModel(context.db, {
-        scope: url.searchParams.get("scope") ?? undefined,
+        scope: graphScope(url),
         objectKey: requiredQueryParam(url, "objectKey"),
         depth: optionalNumber(url.searchParams.get("depth")),
+        kind: optionalLibraryKind(url.searchParams.get("kind")),
+        status: optionalLibraryStatus(url.searchParams.get("status")),
       }),
     );
   }
@@ -276,6 +281,49 @@ function optionalNumber(value: string | null): number | undefined {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`number query param is invalid: ${value}`);
   return parsed;
+}
+
+function graphScope(url: URL): string | undefined {
+  return url.searchParams.get("scope") ?? url.searchParams.get("domain") ?? undefined;
+}
+
+const LIBRARY_DEFINITION_KINDS = new Set<LibraryDefinitionKind>([
+  "agent_spec",
+  "agent_definition",
+  "agent_profile",
+  "skill_definition",
+  "mcp_tool_grant",
+  "artifact_contract",
+  "evaluator_profile",
+  "capability_spec",
+  "contract_spec",
+  "validator_spec",
+  "policy_bundle",
+  "workflow_template",
+  "workflow_recipe",
+  "tool_definition",
+  "instruction_template",
+  "vault_lease_policy",
+  "skill_spec",
+]);
+
+const LIBRARY_DEFINITION_STATUSES = new Set<LibraryDefinitionStatus>([
+  "draft",
+  "approved",
+  "deprecated",
+  "blocked",
+]);
+
+function optionalLibraryKind(value: string | null): LibraryDefinitionKind | undefined {
+  if (!value || value === "all") return undefined;
+  if (!LIBRARY_DEFINITION_KINDS.has(value as LibraryDefinitionKind)) throw new Error(`invalid library kind: ${value}`);
+  return value as LibraryDefinitionKind;
+}
+
+function optionalLibraryStatus(value: string | null): LibraryDefinitionStatus | undefined {
+  if (!value || value === "all") return undefined;
+  if (!LIBRARY_DEFINITION_STATUSES.has(value as LibraryDefinitionStatus)) throw new Error(`invalid library status: ${value}`);
+  return value as LibraryDefinitionStatus;
 }
 
 function requiredNodeProfileDraft(value: unknown): NodeProfileDraft {

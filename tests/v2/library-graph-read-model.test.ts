@@ -6,6 +6,7 @@ import {
   upsertLibraryEdge,
   upsertLibraryObject,
 } from "../../src/v2/design-library/library-graph-store.ts";
+import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { buildLibraryGraphReadModel } from "../../src/v2/read-models/library-graph.ts";
 import { buildLibraryWorkspaceReadModel } from "../../src/v2/read-models/library-workspace.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -141,6 +142,57 @@ test("builds scoped library graph neighborhoods and keeps unconnected global nod
   }
 });
 
+test("filters library graph read model and route by domain kind and status", async () => {
+  const db = await createTestPostgresDb();
+
+  try {
+    await seedObject(db, "agent.frontend-developer", "agent_definition", "software", "Frontend Developer", "approved");
+    await seedObject(db, "agent.draft-planner", "agent_definition", "software", "Draft Planner", "draft");
+    await seedObject(db, "skill.react-ui", "skill_spec", "software", "React UI", "approved");
+    await seedObject(db, "agent.researcher", "agent_definition", "research", "Researcher", "approved");
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "requires_skill",
+      toObjectKey: "skill.react-ui",
+      scope: "software",
+    });
+
+    const model = await buildLibraryGraphReadModel(db, {
+      scope: "software",
+      kind: "agent_definition",
+      status: "approved",
+    });
+
+    assert.deepEqual(
+      model.nodes.map((node) => node.objectKey),
+      ["agent.frontend-developer"],
+    );
+    assert.deepEqual(model.edges, []);
+
+    const response = await handleRuntimeRoute(
+      { db } as any,
+      new Request("http://local/api/v2/library/graph?scope=software&kind=skill_spec&status=approved"),
+    );
+    assert.equal(response.status, 200);
+    const envelope = await response.json() as any;
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.kind, "library-graph");
+    assert.deepEqual(
+      envelope.result.nodes.map((node: { objectKey: string }) => node.objectKey),
+      ["skill.react-ui"],
+    );
+
+    const invalid = await handleRuntimeRoute(
+      { db } as any,
+      new Request("http://local/api/v2/library/graph?scope=software&kind=nope&status=approved"),
+    );
+    assert.equal(invalid.status, 400);
+    assert.match((await invalid.json() as any).error, /invalid library kind: nope/);
+  } finally {
+    await db.close();
+  }
+});
+
 test("list helpers treat all scope as no scope", async () => {
   const db = await createTestPostgresDb();
 
@@ -199,11 +251,12 @@ async function seedObject(
   objectKind: Parameters<typeof upsertLibraryObject>[1]["objectKind"],
   scope: string | undefined,
   title: string,
+  status: Parameters<typeof upsertLibraryObject>[1]["status"] = "approved",
 ): Promise<void> {
   await upsertLibraryObject(db, {
     objectKey,
     objectKind,
-    status: "approved",
+    status,
     state: scope === undefined ? { title } : { title, scope },
   });
 }

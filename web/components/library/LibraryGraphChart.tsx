@@ -3,6 +3,7 @@
 export type LibraryGraphChartNode = {
   objectKey: string;
   objectKind?: string;
+  status?: string;
   title?: string;
 };
 
@@ -15,9 +16,11 @@ export type LibraryGraphChartEdge = {
 export function LibraryGraphChart({
   nodes,
   edges,
+  onSelectNode,
 }: {
   nodes: LibraryGraphChartNode[];
   edges: LibraryGraphChartEdge[];
+  onSelectNode?: (node: LibraryGraphChartNode) => void;
 }) {
   const width = 560;
   const rowHeight = 54;
@@ -58,7 +61,21 @@ export function LibraryGraphChart({
           const position = positions.get(node.objectKey);
           if (!position) return null;
           return (
-            <g key={node.objectKey}>
+            <g
+              key={node.objectKey}
+              data-testid="library-graph-node"
+              role={onSelectNode ? "button" : undefined}
+              aria-label={onSelectNode ? (node.title ?? node.objectKey) : undefined}
+              tabIndex={onSelectNode ? 0 : undefined}
+              onClick={() => onSelectNode?.(node)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelectNode?.(node);
+                }
+              }}
+              style={{ cursor: onSelectNode ? "pointer" : "default" }}
+            >
               <rect x={position.x - 92} y={position.y - 18} width="184" height="36" rx="6" fill="var(--bg)" stroke="var(--border)" />
               <text x={position.x} y={position.y - 3} textAnchor="middle" fontSize="11" fill="var(--text)" fontWeight="600">
                 {node.title ?? node.objectKey}

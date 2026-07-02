@@ -1,6 +1,12 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { listLibraryEdges, listLibraryObjects } from "../design-library/library-graph-store.ts";
-import type { LibraryDefinitionKind, LibraryEdgeRecord, LibraryEdgeType, LibraryObjectSummary } from "../design-library/types.ts";
+import type {
+  LibraryDefinitionKind,
+  LibraryDefinitionStatus,
+  LibraryEdgeRecord,
+  LibraryEdgeType,
+  LibraryObjectSummary,
+} from "../design-library/types.ts";
 
 export type LibraryGraphNode = {
   id: string;
@@ -30,11 +36,21 @@ export type LibraryGraphReadModel = {
 
 export async function buildLibraryGraphReadModel(
   db: SouthstarDb,
-  input: { scope?: string; objectKey?: string; depth?: number } = {},
+  input: {
+    scope?: string;
+    objectKey?: string;
+    depth?: number;
+    kind?: LibraryDefinitionKind;
+    status?: LibraryDefinitionStatus;
+  } = {},
 ): Promise<LibraryGraphReadModel> {
   const activeScope = input.scope && input.scope !== "all" ? input.scope : "all";
   const allObjects = await listLibraryObjects(db);
-  const scopedObjects = activeScope === "all" ? allObjects : await listLibraryObjects(db, { scope: activeScope });
+  const scopedObjects = await listLibraryObjects(db, {
+    scope: activeScope,
+    objectKind: input.kind,
+    status: input.status,
+  });
   const scopedEdges = activeScope === "all" ? await listLibraryEdges(db) : await listLibraryEdges(db, { scope: activeScope });
   const objectByKey = new Map(scopedObjects.map((object) => [object.objectKey, object]));
   const candidateEdges = scopedEdges.filter((edge) => objectByKey.has(edge.fromObjectKey) && objectByKey.has(edge.toObjectKey));
