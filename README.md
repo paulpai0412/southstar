@@ -86,7 +86,7 @@ The web UI has four main surfaces:
 
 - **Chat**: browse and continue Pi agent sessions, inspect files, and manage models/skills.
 - **Workflow**: generate, validate, revise, and launch Southstar workflow manifests.
-- **Library**: author local agent, skill, tool, MCP, generated profile, and workflow template files, then sync validated content to the Postgres design library graph.
+- **Library**: author local agent, skill, tool, MCP, generated profile, and workflow template files; import external library content through draft review; sync validated content to the Postgres design library graph; inspect graph relationships by domain/kind/status.
 - **Operator**: monitor workflow runs, inspect tasks/artifacts/history, and apply recovery actions.
 
 ## Current Design Architecture
@@ -183,6 +183,21 @@ Web API routes proxy browser requests to the runtime server and keep browser com
 ### Library Tab And Local Library Files
 
 Southstar Library content is authored under `library/` as editable files and synced to the Postgres design library graph through the Library tab/API. Agents and skills use Markdown with YAML frontmatter; tools, MCP grants, generated profiles, and saved workflow templates use YAML. Runtime workflow generation reads the validated Postgres graph, not raw files.
+
+The current Library flow is:
+
+```text
+local library file -> parse -> validate -> sync -> southstar.library_objects / library_edges
+library chat/import -> import draft -> approve -> file write -> graph sync
+workflow generate -> approved primitive candidates -> generated node profile -> validation -> planner draft
+workflow DAG save -> generated profiles/template -> libraryVersionRefs -> graph sync
+```
+
+`web/components/library/*` renders the Library workspace: a compact domain/kind sidebar, center chat/SSE surface, graph message blocks, and a right file viewer/editor. The graph block calls `/api/v2/library/graph` with `scope`, `kind`, `status`, `objectKey`, and `depth` filters and renders the result as an in-app React/SVG chart.
+
+Import commands create `library_import_draft` resources first. Approval writes proposed files under the configured library root and syncs those files into draft graph rows. Approval is explicit; LLM or prompt import output is never treated as approved graph truth by itself.
+
+Workflow generation can compose per-node profiles from approved graph primitives. Saved workflow DAGs write generated profile YAML plus a workflow template YAML. The saved template records `libraryVersionRefs` from the selected graph objects' `headVersionId` values so later reuse can be audited against the exact agent/skill/tool/MCP versions used at save time.
 
 ## Data Flow
 

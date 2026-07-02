@@ -121,6 +121,23 @@ Workflow creation is library-constrained:
 
 Generated manifests are not execution truth until validated and persisted.
 
+### 3.1 Library Authoring And Dynamic Profiles
+
+The active Library architecture is file-authored and graph-backed:
+
+```text
+local library file -> parse -> validate -> sync -> library_objects/library_edges
+library chat/import -> import draft -> approve -> file write -> graph sync
+workflow generate -> primitive candidates -> generated node profile -> validation -> planner draft
+workflow DAG save -> generated profiles/template -> version refs -> graph sync
+```
+
+Agents and skills are Markdown files with YAML frontmatter. Tools, MCP grants, generated profiles, and saved workflow templates are YAML. The browser edits files through Library APIs; runtime planning and execution read the Postgres graph.
+
+Workflow generation can use approved independent primitives rather than requiring a hand-authored `agent_profile`. Candidate resolution exposes approved agent, skill, tool, MCP, and instruction primitives; the composer may propose generated node profiles; validators ensure selected primitives exist, are graph-backed, and satisfy skill/tool/MCP constraints before compilation.
+
+`POST /api/v2/workflow/drafts/:draftId/save-template` writes generated profile files plus a workflow template file. Saved workflow templates must include `libraryVersionRefs` derived from selected graph objects' `headVersionId` values. Missing graph objects or missing version refs should fail before files are written.
+
 ### 4. Workflow Run Materialization
 
 There are two creation paths:

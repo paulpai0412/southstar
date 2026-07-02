@@ -1,7 +1,7 @@
 # Southstar: Library Tab, Import Graph, And Dynamic Agent Profile Design
 
 **Date:** 2026-07-02
-**Status:** Draft (pending user review)
+**Status:** Baseline implemented (2026-07-03); live external import jobs and richer graph diff UI remain future hardening.
 **Goal:** Add a Southstar Library tab panel that lets operators manage agent, skill, tool, and MCP library primitives as editable local files, import external libraries with LLM-assisted graph extraction, sync validated objects into the Postgres design library graph, and let Workflow Generate dynamically compose per-node agent profiles that can be validated, run, and saved with reusable workflow templates.
 
 ---
@@ -31,6 +31,15 @@ local editable library files
 ```
 
 This design intentionally removes `software-library-seed.ts` from the active authoring path. It may remain as a legacy bootstrap, migration helper, or test fixture, but not as the product mechanism for managing agent library content.
+
+Current implemented baseline:
+
+```text
+local library file -> parse -> validate -> sync -> library_objects/library_edges
+library chat/import -> import draft -> approve -> file write -> graph sync
+workflow generate -> primitive candidates -> generated node profile -> validation -> planner draft
+workflow DAG save -> generated profiles/template -> version refs -> graph sync
+```
 
 ---
 
@@ -239,6 +248,14 @@ id: template.todo-webapp
 title: Todo Webapp Workflow
 scope: software
 status: draft
+libraryVersionRefs:
+  - agent.frontend-developer@2026-07-03
+  - skill.react-ui@2026-07-03
+  - tool.workspace-write@2026-07-03
+  - mcp.filesystem-workspace@2026-07-03
+profileRefs:
+  - profile.generated.todo-webapp.implement-ui
+  - profile.generated.todo-webapp.verify-ui
 nodes:
   - id: implement-ui
     title: Implement UI
@@ -335,6 +352,8 @@ Library tab
   -> save local files
   -> upsert Postgres draft objects/edges
 ```
+
+The implemented first path stores an import proposal as a `library_import_draft` runtime resource. Approval writes proposed files with no-clobber behavior, syncs each file into the graph, and marks the draft approved in one controlled operation. The current extractor supports pasted content and the API shape for GitHub/local sources; live remote fetching can be layered behind the same draft contract.
 
 Supported import sources:
 
@@ -707,6 +726,8 @@ When the user clicks Save:
 
 Save must not silently approve generated profiles. Approval is a separate command.
 
+Save also records graph lineage. The runtime route derives selected agent, skill, tool, and MCP refs from the persisted planner draft, resolves each ref through `library_objects`, and writes the selected objects' `headVersionId` values into `libraryVersionRefs`. Missing graph objects or missing head versions reject the save before generated files are written.
+
 The saved template captures:
 
 - nodes
@@ -764,7 +785,6 @@ POST   /api/v2/library/import-drafts
 GET    /api/v2/library/import-drafts/:importId
 POST   /api/v2/library/import-drafts/:importId/analyze
 POST   /api/v2/library/import-drafts/:importId/validate
-POST   /api/v2/library/import-drafts/:importId/save
 POST   /api/v2/library/import-drafts/:importId/approve
 
 GET    /api/v2/library/graph
@@ -784,6 +804,8 @@ For long-running imports, `POST /api/v2/library/import-drafts` returns an import
 `POST /api/v2/library/import-prompts` is retained as a narrow compatibility/helper endpoint for direct import prompt calls, but the Library tab should prefer `POST /api/v2/library/chat/messages` so all progress and result blocks land in the center chat timeline. It returns either an import draft id, a new object draft, or a clarification issue. It never writes approved graph truth directly.
 
 `GET /api/v2/library/graph` powers the Library Graph workspace and the chat message graph block. It accepts filters such as `scope`, `kind`, `status`, `objectKey`, and `depth`. `scope` is the domain filter: omitted scope or `scope=all` returns every domain; `scope=global` returns global primitives and global edges only; `scope=<domain>` returns that domain's objects/edges plus connected shared global objects/edges when needed for a complete visible graph. The response includes `activeScope` and `availableScopes` so the frontend can render filter controls from backend truth. `GET /api/v2/library/graph/neighborhood` returns a focused subgraph around selected objects for compact rendering and applies the same `scope` semantics before selecting the neighborhood.
+
+`POST /api/v2/workflow/drafts/:draftId/save-template` ignores browser-provided node bodies and uses the server-side planner draft as source. It saves generated profile files and a workflow template draft, then syncs them to the graph. The template YAML includes `libraryVersionRefs` for the graph primitives used to produce the saved template.
 
 ---
 
