@@ -391,28 +391,108 @@ The tab must preserve local UI state when switching tabs, matching the existing 
 
 ### 7.1 Main Areas
 
-Use a dense operational layout:
+Use the same overall interaction model as the Workflow tab panel: a persistent left navigation panel, a main working surface, and a right detail surface that behaves like a file viewer/editor. Switching away from the Library tab and back must preserve the selected domain, selected item, prompt text, graph view state, and unsaved editor draft.
 
 ```text
-left sidebar: kinds, scopes, statuses, imports
-center: table/list or graph view
-right panel: detail editor, validation, provenance, edges
+left sidebar: domain-grouped library tree + prompt import command
+center: table/list/graph workspace for selected domain and kind
+right panel: file viewer/editor for agent, skill, tool, MCP, profile, or template
 ```
 
-Primary sections:
+Left sidebar grouping:
 
-- Agents
-- Skills
-- Tools
-- MCP
-- Generated Profiles
-- Workflow Templates
-- Imports
-- Graph
+```text
+All Domains
+  software
+    Agents
+    Skills
+    Tools
+    MCP
+    Generated Profiles
+    Workflow Templates
+  research
+    Agents
+    Skills
+    Tools
+    MCP
+  global
+    Tools
+    MCP
+    Capabilities
+Imports
+Graph
+```
 
-The first MVP can put `Generated Profiles` and `Workflow Templates` under a `Drafts` or `Saved` section if the UI needs to stay compact, but the data model should include them from the start because Workflow Generate Save depends on them.
+The first MVP can put `Generated Profiles` and `Workflow Templates` under a compact `Drafts` or `Saved` group, but the data model should include them from the start because Workflow Generate Save depends on them.
 
-### 7.2 CRUD Operations
+### 7.2 Domain Library Sidebar
+
+The left sidebar is the primary navigation surface. It should show counts and status hints per domain/kind:
+
+```text
+software
+  Agents 24
+  Skills 18
+  Tools 7
+  MCP 3
+  Generated Profiles 5
+  Workflow Templates 2
+```
+
+Each group supports quick filters:
+
+- `approved`
+- `draft`
+- `invalid`
+- `blocked`
+- `deprecated`
+- `imported`
+- `generated`
+
+Items should be tightly packed like an operational tree, not displayed as large cards. The user should be able to select an item and immediately see its file in the right panel.
+
+### 7.3 Prompt Import Command
+
+The Library sidebar includes a prompt command box. The user can type natural language such as:
+
+```text
+import the frontend developer agent from github repo jnMetaCode/agency-agents-zh into software
+```
+
+or:
+
+```text
+create a browser verification skill that uses tool.browser and mcp.filesystem-workspace
+```
+
+The prompt command calls a Southstar backend API, not a UI-side skill. The backend interprets the prompt, chooses an import/create action, and returns an import draft or object draft.
+
+```text
+Prompt command
+  -> POST /api/v2/library/import-prompts
+  -> backend intent parser / LLM proposal
+  -> draft import or draft object
+  -> UI preview
+```
+
+The prompt command does not directly approve or write runtime truth. It creates a draft and opens the preview/editor flow.
+
+### 7.4 Right File Viewer And Editor
+
+The right panel is a file viewer/editor for the selected library item. It should feel like the Workflow tab's task detail panel: stable while the center workspace changes, and never reset unexpectedly on selection changes unless a new file is explicitly selected.
+
+Right panel modes:
+
+- `Preview`: rendered Markdown/YAML summary
+- `Edit`: Markdown frontmatter editor for agents/skills, YAML editor/form for tools/MCP/profiles/templates
+- `Validate`: validation report and graph edge checks
+- `Edges`: inbound/outbound graph edges
+- `Usage`: templates, generated profiles, or workflow drafts using this item
+- `Provenance`: source path, source repo, source hash, imported by, timestamps
+
+Agent and skill files are edited as Markdown with frontmatter. Tool, MCP, generated profile, and workflow template files are edited as YAML. Save writes the local file first, then syncs the draft graph row to Postgres.
+
+### 7.5 CRUD Operations
 
 For agent, skill, tool, and MCP:
 
@@ -429,7 +509,7 @@ For agent, skill, tool, and MCP:
 
 Approved objects should not be destructively edited in place. Editing an approved item creates a new draft version. Approval moves the new version into active runtime selection.
 
-### 7.3 Import Wizard
+### 7.6 Import Wizard
 
 Import wizard steps:
 
@@ -453,7 +533,7 @@ missing refs
 risky permissions
 ```
 
-### 7.4 Detail Editor
+### 7.7 Detail Editor
 
 Agent and skill editors use Markdown body editing plus structured frontmatter fields. Tool and MCP editors use structured YAML forms or a YAML editor with validation.
 
@@ -467,6 +547,35 @@ The editor should include:
 - usage references
 - risk summary
 - version history
+
+### 7.8 Chat Message Graph Block
+
+Chat message view should support a new library graph block. This block can appear when the assistant answers questions about the current library, imports, workflow generation candidates, or saved templates.
+
+The graph block renders relationships currently stored in Postgres:
+
+```text
+agent -> capability
+agent -> instruction
+skill -> required capability
+skill -> required tool
+skill -> required MCP
+tool -> capability
+MCP -> capability
+generated profile -> agent / skill / tool / MCP
+workflow template -> generated profile
+```
+
+The block is read-only in chat. It should provide:
+
+- selected domain/scope
+- graph node counts by kind
+- highlighted path for the entities mentioned in the chat response
+- compact graph visualization
+- expandable object/edge details
+- links that open the selected object in the Library tab right file viewer
+
+The chat graph block reads from the same Postgres graph read model as the Library tab. It must not reconstruct relationships from raw files or from message text.
 
 ---
 
@@ -591,17 +700,27 @@ GET    /api/v2/library/objects/:objectKey
 PATCH  /api/v2/library/objects/:objectKey
 DELETE /api/v2/library/objects/:objectKey
 
+GET    /api/v2/library/files
+GET    /api/v2/library/files/:fileId
+PATCH  /api/v2/library/files/:fileId
+POST   /api/v2/library/files/:fileId/validate
+POST   /api/v2/library/files/:fileId/sync
+
 POST   /api/v2/library/objects/:objectKey/validate
 POST   /api/v2/library/objects/:objectKey/approve
 POST   /api/v2/library/objects/:objectKey/deprecate
 POST   /api/v2/library/objects/:objectKey/block
 
+POST   /api/v2/library/import-prompts
 POST   /api/v2/library/import-drafts
 GET    /api/v2/library/import-drafts/:importId
 POST   /api/v2/library/import-drafts/:importId/analyze
 POST   /api/v2/library/import-drafts/:importId/validate
 POST   /api/v2/library/import-drafts/:importId/save
 POST   /api/v2/library/import-drafts/:importId/approve
+
+GET    /api/v2/library/graph
+GET    /api/v2/library/graph/neighborhood
 
 POST   /api/v2/library/profile-drafts/compose
 POST   /api/v2/library/profile-drafts/validate
@@ -611,6 +730,10 @@ POST   /api/v2/workflow/drafts/:draftId/save-template
 ```
 
 For long-running imports, `POST /api/v2/library/import-drafts` returns an import id and progress is polled or streamed.
+
+`POST /api/v2/library/import-prompts` is the prompt-command entry point used by the Library sidebar. It returns either an import draft id, a new object draft, or a clarification issue. It never writes approved graph truth directly.
+
+`GET /api/v2/library/graph` powers the Library Graph workspace and the chat message graph block. It accepts filters such as `scope`, `kind`, `status`, `objectKey`, and `depth`. `GET /api/v2/library/graph/neighborhood` returns a focused subgraph around selected objects for compact rendering.
 
 ---
 
@@ -628,6 +751,7 @@ src/v2/design-library/importers/
   library-import-orchestrator.ts
   github-library-importer.ts
   local-folder-library-importer.ts
+  prompt-library-importer.ts
   llm-library-extractor.ts
   import-proposal-normalizer.ts
 
@@ -641,6 +765,7 @@ src/v2/design-library/templates/
 
 src/v2/read-models/
   library-workspace.ts
+  library-graph.ts
 ```
 
 Existing graph store functions should remain the persistence interface for Postgres writes. File parsing/writing and LLM extraction sit above it.
@@ -706,11 +831,17 @@ library files
 ## 14. UI Acceptance Criteria
 
 - The app has a `Library` tab panel next to Chat, Workflow, and Operator.
+- Library uses the same broad layout model as Workflow: left persistent navigation, center workspace, right detail/file viewer.
 - Switching away from and back to Library preserves filters, selected item, import progress, and editor state.
+- The left sidebar groups agents, skills, tools, MCP grants, generated profiles, and workflow templates by domain/scope.
+- The left sidebar includes a prompt command that calls the backend import/create API and opens the resulting draft preview.
+- The right panel can view and edit selected agent, skill, tool, MCP, generated profile, and workflow template files.
 - Operators can list, create, edit, validate, save, approve, deprecate, and block agents, skills, tools, and MCP grants.
 - Operators can import from GitHub URL, local folder, file, or pasted content.
 - Import preview shows proposed files, graph objects, graph edges, conflicts, validation issues, and risk flags.
 - Library item detail shows metadata, body/config, validation, provenance, inbound/outbound edges, usage, and version status.
+- Chat message view can render a read-only graph block showing current Postgres agent, skill, tool, MCP, generated profile, and template relationships.
+- Clicking an object in the chat graph block opens that object in the Library tab file viewer.
 - Workflow Generate DAG UI has Save.
 - Save writes workflow template draft plus generated node profile drafts.
 - Saved drafts are visible in Library.
@@ -747,8 +878,12 @@ Backend tests:
 UI tests:
 
 - Library tab appears and preserves state across tab changes.
+- Library left sidebar groups items by domain and kind.
+- Prompt import command creates an import/object draft through the backend API and opens preview.
+- Right file viewer edits Markdown frontmatter and YAML files without resetting on tab switches.
 - Create/edit/validate/save agent.
 - Import wizard shows proposal and validation issues.
+- Chat message graph block renders Postgres graph relationships and links to Library items.
 - Approve draft changes status and makes it available in candidates.
 - Workflow DAG Save creates template/profile drafts and shows result.
 
