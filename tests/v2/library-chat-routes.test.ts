@@ -128,6 +128,75 @@ test("library routes allow browser PATCH preflight", async () => {
   }
 });
 
+test("accepts library chat messages and streams deterministic SSE events", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-route-"));
+
+  try {
+    const context = { db, libraryRoot } as any;
+    const messageResponse = await handleRuntimeRoute(
+      context,
+      new Request("http://local/api/v2/library/chat/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: "library-chat-test",
+          prompt: "create a browser verification skill in software",
+          scope: "software",
+        }),
+      }),
+    );
+
+    assert.equal(messageResponse.status, 200);
+    const message = await readEnvelope(messageResponse);
+    assert.equal(message.ok, true);
+    assert.equal(message.kind, "library-chat-message");
+    assert.equal(message.result.sessionId, "library-chat-test");
+    assert.equal(message.result.status, "accepted");
+    assert.match(message.result.actionId, /^library-action-/);
+
+    const actionResource = await db.one<{
+      resource_type: string;
+      resource_key: string;
+      session_id: string;
+      scope: string;
+      status: string;
+      payload_json: { schemaVersion: string; actionId: string; sessionId: string; prompt: string; selectedScope: string };
+    }>(
+      `select resource_type, resource_key, session_id, scope, status, payload_json
+       from southstar.runtime_resources
+       where resource_type = 'library_chat_action' and resource_key = $1`,
+      [message.result.actionId],
+    );
+    assert.equal(actionResource.resource_key, message.result.actionId);
+    assert.equal(actionResource.session_id, "library-chat-test");
+    assert.equal(actionResource.scope, "library");
+    assert.equal(actionResource.status, "active");
+    assert.equal(actionResource.payload_json.schemaVersion, "southstar.library.chat_action.v1");
+    assert.equal(actionResource.payload_json.actionId, message.result.actionId);
+    assert.equal(actionResource.payload_json.sessionId, "library-chat-test");
+    assert.equal(actionResource.payload_json.prompt, "create a browser verification skill in software");
+    assert.equal(actionResource.payload_json.selectedScope, "software");
+
+    const streamResponse = await handleRuntimeRoute(
+      context,
+      new Request(
+        `http://local/api/v2/library/chat/events?sessionId=library-chat-test&actionId=${message.result.actionId}`,
+      ),
+    );
+
+    assert.equal(streamResponse.status, 200);
+    assert.match(streamResponse.headers.get("content-type") ?? "", /^text\/event-stream/);
+    const stream = await streamResponse.text();
+    assert.match(stream, /event: library\.intent\.started/);
+    assert.match(stream, /event: library\.proposal\.created/);
+    assert.match(stream, /event: library\.command\.completed/);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 async function graphObjectKeys(context: any, scope: string): Promise<string[]> {
   const response = await handleRuntimeRoute(context, new Request(`http://local/api/v2/library/graph?scope=${scope}`));
   assert.equal(response.status, 200);

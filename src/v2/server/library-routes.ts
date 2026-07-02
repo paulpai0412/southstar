@@ -1,11 +1,14 @@
+import { randomUUID } from "node:crypto";
 import {
   listLibraryFiles,
   readLibraryFile,
   syncLibraryFileToGraph,
   writeLibraryFile,
 } from "../design-library/files/library-file-store.ts";
+import type { LibraryChatAction } from "../read-models/library-chat.ts";
 import { buildLibraryGraphReadModel } from "../read-models/library-graph.ts";
 import { buildLibraryWorkspaceReadModel } from "../read-models/library-workspace.ts";
+import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -47,6 +50,46 @@ export async function handleLibraryRoute(
 
   if (request.method === "GET" && url.pathname === "/api/v2/library/files") {
     return json("library-files", { files: await listLibraryFiles({ root: libraryRoot(context) }) });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v2/library/chat/messages") {
+    const body = await readJsonBody<{ sessionId?: unknown; prompt?: unknown; scope?: unknown }>(request);
+    const prompt = requiredString(body.prompt, "prompt");
+    const action: LibraryChatAction = {
+      actionId: `library-action-${randomUUID()}`,
+      sessionId: optionalString(body.sessionId) ?? `library-chat-${randomUUID()}`,
+      prompt,
+      scope: optionalString(body.scope) ?? "software",
+    };
+
+    await upsertRuntimeResourcePg(context.db, {
+      resourceType: "library_chat_action",
+      resourceKey: action.actionId,
+      sessionId: action.sessionId,
+      scope: "library",
+      status: "active",
+      title: `Library action: ${prompt.slice(0, 80)}`,
+      payload: {
+        schemaVersion: "southstar.library.chat_action.v1",
+        actionId: action.actionId,
+        sessionId: action.sessionId,
+        prompt: action.prompt,
+        selectedScope: action.scope,
+      },
+      summary: { prompt: action.prompt, selectedScope: action.scope },
+    });
+
+    return json("library-chat-message", {
+      sessionId: action.sessionId,
+      actionId: action.actionId,
+      status: "accepted",
+    });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/v2/library/chat/events") {
+    const sessionId = requiredQueryParam(url, "sessionId");
+    const actionId = requiredQueryParam(url, "actionId");
+    return libraryChatEventStream({ sessionId, actionId });
   }
 
   const syncMatch = url.pathname.match(/^\/api\/v2\/library\/files\/(.+)\/sync$/);
@@ -94,6 +137,10 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function requiredQueryParam(url: URL, name: string): string {
   const value = url.searchParams.get(name);
   if (!value) throw new Error(`${name} is required`);
@@ -115,4 +162,49 @@ function json<T>(kind: string, result: T): Response {
       "access-control-allow-origin": "*",
     },
   });
+}
+
+function libraryChatEventStream(input: { sessionId: string; actionId: string }): Response {
+  const events = [
+    {
+      event: "library.intent.started",
+      data: { sessionId: input.sessionId, actionId: input.actionId, status: "started" },
+    },
+    {
+      event: "library.intent.completed",
+      data: { sessionId: input.sessionId, actionId: input.actionId, intent: "create-library-object" },
+    },
+    {
+      event: "library.proposal.created",
+      data: {
+        sessionId: input.sessionId,
+        actionId: input.actionId,
+        proposal: {
+          title: "Browser verification skill",
+          objectKeys: ["skill.browser-verification"],
+          filePaths: ["skills/browser-verification/SKILL.md"],
+        },
+      },
+    },
+    {
+      event: "library.validation.completed",
+      data: { sessionId: input.sessionId, actionId: input.actionId, ok: true, issues: [] },
+    },
+    {
+      event: "library.command.completed",
+      data: { sessionId: input.sessionId, actionId: input.actionId, status: "completed" },
+    },
+  ];
+  return new Response(events.map(({ event, data }) => sse(event, data)).join(""), {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "access-control-allow-origin": "*",
+    },
+  });
+}
+
+function sse(event: string, data: unknown): string {
+  return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
 }
