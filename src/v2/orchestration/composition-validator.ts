@@ -1,4 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { validateGeneratedNodeProfile } from "../design-library/profile-composer/generated-profile-validator.ts";
 import { findLibraryEdgesFrom } from "../design-library/library-graph-store.ts";
 import type {
   CandidatePacket,
@@ -31,7 +32,8 @@ export async function validateWorkflowCompositionPlan(
   validateCoverageConstraints(constraints, plan, issues);
   validateInputArtifactsAreSatisfied(plan, constraints, issues);
   validateTemplateSlotConstraints(plan.selectedWorkflowTemplateRef, constraints, plan, issues);
-  validateCandidateMembership(plan, candidateRefSet, issues);
+  validateCandidateMembership(plan, packet, candidateRefSet, issues);
+  await validateGeneratedProfileClosure(db, plan, issues, options.scope ?? "software");
   await validateEdgeConstraints(db, plan, issues, options.scope ?? "software");
   return { ok: issues.length === 0, issues };
 }
@@ -346,30 +348,124 @@ function validateTaskDependencies(plan: WorkflowCompositionPlan, issues: Workflo
 
 function validateCandidateMembership(
   plan: WorkflowCompositionPlan,
+  packet: CandidatePacket,
   candidateRefSet: Set<string>,
   issues: WorkflowCompositionValidationIssue[],
 ): void {
   const generatedRefs = new Set(plan.generatedComponentProposals.map((proposal) => proposal.id));
+  const validatedGeneratedAgentProfileRefs = validatedGeneratedAgentProfiles(plan);
   for (const [taskIndex, task] of plan.tasks.entries()) {
-    const selectedRefs = [
-      task.agentDefinitionRef,
-      task.agentProfileRef,
-      task.evaluatorProfileRef,
-      ...task.instructionRefs,
-      ...task.skillRefs,
-      ...task.toolGrantRefs,
-      ...task.mcpGrantRefs,
-      ...task.vaultLeasePolicyRefs,
-      ...task.inputArtifactRefs,
-      ...task.outputArtifactRefs,
-    ];
+    const generatedProfileSelected = generatedRefs.has(task.agentProfileRef);
+    if (generatedProfileSelected && !validatedGeneratedAgentProfileRefs.has(task.agentProfileRef)) {
+      issues.push(
+        issue(
+          "generated_component_selected",
+          `tasks.${taskIndex}.agentProfileRef`,
+          `generated proposal cannot be selected for runtime: ${task.agentProfileRef}`,
+        ),
+      );
+    }
+
+    const selectedRefs = generatedProfileSelected
+      ? [
+          task.evaluatorProfileRef,
+          ...task.vaultLeasePolicyRefs,
+          ...task.inputArtifactRefs,
+          ...task.outputArtifactRefs,
+        ]
+      : [
+          task.agentDefinitionRef,
+          task.agentProfileRef,
+          task.evaluatorProfileRef,
+          ...task.instructionRefs,
+          ...task.skillRefs,
+          ...task.toolGrantRefs,
+          ...task.mcpGrantRefs,
+          ...task.vaultLeasePolicyRefs,
+          ...task.inputArtifactRefs,
+          ...task.outputArtifactRefs,
+        ];
     for (const ref of selectedRefs) {
-      if (generatedRefs.has(ref)) {
-        issues.push(issue("generated_component_selected", `tasks.${taskIndex}`, `generated proposal cannot be selected for runtime: ${ref}`));
-      }
       if (!candidateRefSet.has(ref)) {
         issues.push(issue("ref_not_in_candidate_packet", `tasks.${taskIndex}`, `ref is not in candidate packet: ${ref}`));
       }
+    }
+    if (validatedGeneratedAgentProfileRefs.has(task.agentProfileRef)) {
+      validateGeneratedProfilePrimitiveMembership(packet, task, taskIndex, issues);
+    }
+  }
+}
+
+function validateGeneratedProfilePrimitiveMembership(
+  packet: CandidatePacket,
+  task: WorkflowCompositionPlan["tasks"][number],
+  taskIndex: number,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const primitiveCandidates = packet.profilePrimitiveCandidates ?? {
+    agents: [],
+    skills: [],
+    tools: [],
+    mcpGrants: [],
+    instructions: [],
+  };
+  requirePrimitiveRef(primitiveCandidates.agents, task.agentDefinitionRef, `tasks.${taskIndex}.agentDefinitionRef`, issues);
+  for (const [index, ref] of task.skillRefs.entries()) {
+    requirePrimitiveRef(primitiveCandidates.skills, ref, `tasks.${taskIndex}.skillRefs.${index}`, issues);
+  }
+  for (const [index, ref] of task.toolGrantRefs.entries()) {
+    requirePrimitiveRef(primitiveCandidates.tools, ref, `tasks.${taskIndex}.toolGrantRefs.${index}`, issues);
+  }
+  for (const [index, ref] of task.mcpGrantRefs.entries()) {
+    requirePrimitiveRef(primitiveCandidates.mcpGrants, ref, `tasks.${taskIndex}.mcpGrantRefs.${index}`, issues);
+  }
+  for (const [index, ref] of task.instructionRefs.entries()) {
+    requirePrimitiveRef(primitiveCandidates.instructions, ref, `tasks.${taskIndex}.instructionRefs.${index}`, issues);
+  }
+}
+
+function validatedGeneratedAgentProfiles(plan: WorkflowCompositionPlan): Set<string> {
+  return new Set(
+    plan.generatedComponentProposals
+      .filter((proposal) => proposal.kind === "agent_profile" && proposal.validationStatus === "validated")
+      .map((proposal) => proposal.id),
+  );
+}
+
+function requirePrimitiveRef(
+  allowedRefs: string[],
+  ref: string,
+  path: string,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  if (allowedRefs.includes(ref)) return;
+  issues.push(issue("ref_not_in_candidate_packet", path, `ref is not in profile primitive candidates: ${ref}`));
+}
+
+async function validateGeneratedProfileClosure(
+  db: SouthstarDb,
+  plan: WorkflowCompositionPlan,
+  issues: WorkflowCompositionValidationIssue[],
+  scope: string,
+): Promise<void> {
+  const generatedProfileRefs = validatedGeneratedAgentProfiles(plan);
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    if (!generatedProfileRefs.has(task.agentProfileRef)) continue;
+    const validation = await validateGeneratedNodeProfile(db, {
+      scope,
+      nodeId: task.id,
+      agentRef: task.agentDefinitionRef,
+      skillRefs: task.skillRefs,
+      toolGrantRefs: task.toolGrantRefs,
+      mcpGrantRefs: task.mcpGrantRefs,
+      instructionRefs: task.instructionRefs,
+    });
+    for (const validationIssue of validation.issues) {
+      issues.push(issue(
+        validationIssue.code as WorkflowCompositionValidationIssue["code"],
+        `tasks.${taskIndex}.${validationIssue.path}`,
+        validationIssue.message,
+      ));
     }
   }
 }
@@ -380,76 +476,79 @@ async function validateEdgeConstraints(
   issues: WorkflowCompositionValidationIssue[],
   scope: string,
 ): Promise<void> {
+  const generatedProfileRefs = validatedGeneratedAgentProfiles(plan);
   for (const [taskIndex, task] of plan.tasks.entries()) {
-    await requireOutgoingEdge(
-      db,
-      task.agentProfileRef,
-      "implements",
-      task.agentDefinitionRef,
-      scope,
-      issues,
-      "profile_does_not_implement_agent",
-      `tasks.${taskIndex}.agentProfileRef`,
-    );
-    for (const skillRef of task.skillRefs) {
+    if (!generatedProfileRefs.has(task.agentProfileRef)) {
       await requireOutgoingEdge(
         db,
         task.agentProfileRef,
-        "supports_skill",
-        skillRef,
+        "implements",
+        task.agentDefinitionRef,
         scope,
         issues,
-        "profile_does_not_allow_skill",
-        `tasks.${taskIndex}.skillRefs`,
+        "profile_does_not_implement_agent",
+        `tasks.${taskIndex}.agentProfileRef`,
       );
-    }
-    for (const toolRef of task.toolGrantRefs) {
-      await requireOutgoingEdge(
-        db,
-        task.agentProfileRef,
-        "allows_tool",
-        toolRef,
-        scope,
-        issues,
-        "profile_does_not_allow_tool",
-        `tasks.${taskIndex}.toolGrantRefs`,
-      );
-    }
-    for (const mcpRef of task.mcpGrantRefs) {
-      await requireOutgoingEdge(
-        db,
-        task.agentProfileRef,
-        "allows_mcp_grant",
-        mcpRef,
-        scope,
-        issues,
-        "profile_does_not_allow_mcp",
-        `tasks.${taskIndex}.mcpGrantRefs`,
-      );
-    }
-    for (const vaultRef of task.vaultLeasePolicyRefs) {
-      await requireOutgoingEdge(
-        db,
-        task.agentProfileRef,
-        "requires_secret_group",
-        vaultRef,
-        scope,
-        issues,
-        "profile_does_not_allow_vault_lease",
-        `tasks.${taskIndex}.vaultLeasePolicyRefs`,
-      );
-    }
-    for (const instructionRef of task.instructionRefs) {
-      await requireOutgoingEdge(
-        db,
-        task.agentProfileRef,
-        "uses_instruction",
-        instructionRef,
-        scope,
-        issues,
-        "profile_does_not_allow_instruction",
-        `tasks.${taskIndex}.instructionRefs`,
-      );
+      for (const skillRef of task.skillRefs) {
+        await requireOutgoingEdge(
+          db,
+          task.agentProfileRef,
+          "supports_skill",
+          skillRef,
+          scope,
+          issues,
+          "profile_does_not_allow_skill",
+          `tasks.${taskIndex}.skillRefs`,
+        );
+      }
+      for (const toolRef of task.toolGrantRefs) {
+        await requireOutgoingEdge(
+          db,
+          task.agentProfileRef,
+          "allows_tool",
+          toolRef,
+          scope,
+          issues,
+          "profile_does_not_allow_tool",
+          `tasks.${taskIndex}.toolGrantRefs`,
+        );
+      }
+      for (const mcpRef of task.mcpGrantRefs) {
+        await requireOutgoingEdge(
+          db,
+          task.agentProfileRef,
+          "allows_mcp_grant",
+          mcpRef,
+          scope,
+          issues,
+          "profile_does_not_allow_mcp",
+          `tasks.${taskIndex}.mcpGrantRefs`,
+        );
+      }
+      for (const vaultRef of task.vaultLeasePolicyRefs) {
+        await requireOutgoingEdge(
+          db,
+          task.agentProfileRef,
+          "requires_secret_group",
+          vaultRef,
+          scope,
+          issues,
+          "profile_does_not_allow_vault_lease",
+          `tasks.${taskIndex}.vaultLeasePolicyRefs`,
+        );
+      }
+      for (const instructionRef of task.instructionRefs) {
+        await requireOutgoingEdge(
+          db,
+          task.agentProfileRef,
+          "uses_instruction",
+          instructionRef,
+          scope,
+          issues,
+          "profile_does_not_allow_instruction",
+          `tasks.${taskIndex}.instructionRefs`,
+        );
+      }
     }
     for (const artifactRef of task.outputArtifactRefs) {
       await requireOutgoingEdge(

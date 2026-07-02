@@ -1,6 +1,11 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { CandidatePacket, WorkflowCompositionPlan, WorkflowCompositionValidationResult } from "../design-library/types.ts";
+import type {
+  CandidatePacket,
+  WorkflowCompositionPlan,
+  WorkflowCompositionTask,
+  WorkflowCompositionValidationResult,
+} from "../design-library/types.ts";
 import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
 import type { AgentProfile, RoleDefinition } from "../domain-packs/types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
@@ -282,20 +287,62 @@ async function resolveRuntimeRoles(db: SouthstarDb, plan: WorkflowCompositionPla
 }
 
 async function resolveRuntimeProfiles(db: SouthstarDb, plan: WorkflowCompositionPlan): Promise<ResolvedRuntimeProfiles> {
+  const generatedProfileRefs = validatedGeneratedAgentProfiles(plan);
   const byProfileRef = new Map<string, AgentProfile>();
   const byProfileId = new Map<string, AgentProfile>();
   for (const task of plan.tasks) {
     if (byProfileRef.has(task.agentProfileRef)) continue;
     const profile = await findLibraryObjectByKey(db, task.agentProfileRef);
-    const profileState = required(profile?.state, `library object not found for ${task.agentProfileRef}`);
-    const runtimeProfile = parseRuntimeProfile(
-      profileState.runtimeProfile,
-      `agent profile ${task.agentProfileRef} state.runtimeProfile`,
-    );
+    const runtimeProfile = profile
+      ? parseRuntimeProfile(
+        profile.state.runtimeProfile,
+        `agent profile ${task.agentProfileRef} state.runtimeProfile`,
+      )
+      : generatedProfileRefs.has(task.agentProfileRef)
+        ? synthesizeGeneratedRuntimeProfile(
+          task.agentProfileRef,
+          plan.tasks.filter((candidate) => candidate.agentProfileRef === task.agentProfileRef),
+        )
+        : required<AgentProfile>(null, `library object not found for ${task.agentProfileRef}`);
     byProfileRef.set(task.agentProfileRef, runtimeProfile);
     byProfileId.set(runtimeProfile.id, runtimeProfile);
   }
   return { byProfileRef, byProfileId };
+}
+
+function validatedGeneratedAgentProfiles(plan: WorkflowCompositionPlan): Set<string> {
+  return new Set(
+    plan.generatedComponentProposals
+      .filter((proposal) => proposal.kind === "agent_profile" && proposal.validationStatus === "validated")
+      .map((proposal) => proposal.id),
+  );
+}
+
+function synthesizeGeneratedRuntimeProfile(profileRef: string, tasks: WorkflowCompositionTask[]): AgentProfile {
+  const firstTask = required(tasks[0], `missing task for generated profile ${profileRef}`);
+  return {
+    id: profileRef,
+    name: titleFromRef(profileRef),
+    provider: "codex",
+    model: "gpt-5",
+    harnessRef: "codex",
+    agentsMdRefs: [],
+    promptTemplateRef: normalizeInstructionRef(firstTask.instructionRefs[0] ?? profileRef),
+    skillRefs: uniqueSorted(tasks.flatMap((task) => task.skillRefs)),
+    mcpGrantRefs: uniqueSorted(tasks.flatMap((task) => task.mcpGrantRefs)),
+    memoryScopes: [],
+    contextPolicyRef: firstTask.contextPolicyRef ?? "context.generated",
+    sessionPolicyRef: "session.generated",
+    toolPolicy: {
+      allowedTools: uniqueSorted(tasks.flatMap((task) => task.toolGrantRefs)),
+      deniedTools: [],
+      requiresApprovalFor: [],
+    },
+    budgetPolicy: {
+      maxInputTokens: 120_000,
+      maxOutputTokens: 8_192,
+    },
+  };
 }
 
 function parseRuntimeRole(value: unknown, path: string): RoleDefinition {
@@ -412,6 +459,19 @@ function normalizeArtifactRef(artifactRef: string): string {
 
 function normalizeEvaluatorRef(evaluatorRef: string): string {
   return evaluatorRef.replace(/^evaluator\./, "");
+}
+
+function titleFromRef(ref: string): string {
+  const lastSegment = ref.split(".").at(-1) ?? ref;
+  return lastSegment
+    .split(/[-_]+/g)
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
+    .join(" ") || ref;
+}
+
+function uniqueSorted(values: string[]): string[] {
+  return [...new Set(values)].sort();
 }
 
 function required<T>(value: T | null | undefined, message: string): T {

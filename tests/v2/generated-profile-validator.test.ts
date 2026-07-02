@@ -82,6 +82,32 @@ test("generated profile validator rejects missing required MCP grant", async () 
   }
 });
 
+test("generated profile validator rejects missing required instruction refs", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
+    await seedPrimitive(db, "skill.react-ui", "skill_spec");
+    await seedPrimitive(db, "instruction.react-review", "instruction_template");
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses_instruction", toObjectKey: "instruction.react-review", scope: "software" });
+
+    const result = await validateGeneratedNodeProfile(db, {
+      scope: "software",
+      nodeId: "implement-ui",
+      agentRef: "agent.frontend-developer",
+      skillRefs: ["skill.react-ui"],
+      toolGrantRefs: [],
+      mcpGrantRefs: [],
+      instructionRefs: [],
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.issues[0]?.code, "missing_required_instruction");
+  } finally {
+    await db.close();
+  }
+});
+
 test("generated profile validator rejects skills not supported by the selected agent", async () => {
   const db = await createTestPostgresDb();
   try {

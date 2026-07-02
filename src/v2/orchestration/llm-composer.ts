@@ -217,13 +217,24 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Do not use alias fields. Use exactly the property names defined in OutputJsonSchema.",
     "Select refs only from the candidate packet.",
     "Do not output runtime manifests, secrets, credentials, tool grant definitions, MCP grant definitions, or vault lease values.",
-    "Generated component proposals are proposal-only and cannot be selected in tasks.",
+    "You may propose a generated agent profile only by combining refs from profilePrimitiveCandidates.",
+    "When selecting a generated profile, include it in generatedComponentProposals with kind agent_profile and validationStatus validated.",
+    "Generated component proposals are proposal-only unless they are validated agent_profile proposals selected as agentProfileRef.",
     "Use SkillGuidance as workflow-shaping guidance. Prefer the smallest sufficient DAG; add review or summary nodes only when the skill guidance and task risk justify them.",
     "",
     `Goal: ${goalPrompt}`,
     "",
     "SkillGuidance:",
     renderSkillGuidance(boundedPacket),
+    "",
+    "ProfilePrimitiveCandidates:",
+    JSON.stringify(boundedPacket.profilePrimitiveCandidates ?? {
+      agents: [],
+      skills: [],
+      tools: [],
+      mcpGrants: [],
+      instructions: [],
+    }),
     "",
     "OutputJsonSchema:",
     JSON.stringify(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA),
@@ -486,6 +497,15 @@ function boundCandidatePacket(packet: CandidatePacket): CandidatePacket {
     artifactContractCandidates: packet.artifactContractCandidates.slice(0, 50),
     evaluatorCandidatesByArtifact: boundCandidateMap(packet.evaluatorCandidatesByArtifact),
     policyConstraints: packet.policyConstraints.slice(0, 50),
+    profilePrimitiveCandidates: packet.profilePrimitiveCandidates
+      ? {
+        agents: packet.profilePrimitiveCandidates.agents.slice(0, 100),
+        skills: packet.profilePrimitiveCandidates.skills.slice(0, 100),
+        tools: packet.profilePrimitiveCandidates.tools.slice(0, 100),
+        mcpGrants: packet.profilePrimitiveCandidates.mcpGrants.slice(0, 100),
+        instructions: packet.profilePrimitiveCandidates.instructions.slice(0, 100),
+      }
+      : undefined,
   };
 }
 

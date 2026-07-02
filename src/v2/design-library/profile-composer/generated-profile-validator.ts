@@ -57,6 +57,16 @@ export async function validateGeneratedNodeProfile(
         });
       }
     }
+    const requiredInstructions = await findLibraryEdgesFrom(db, skillRef, "uses_instruction", { scope: input.scope });
+    for (const edge of requiredInstructions) {
+      if (!input.instructionRefs.includes(edge.toObjectKey)) {
+        issues.push({
+          code: "missing_required_instruction",
+          path: `skillRefs.${index}`,
+          message: `${skillRef} requires ${edge.toObjectKey}`,
+        });
+      }
+    }
   }
 
   for (const [index, toolRef] of input.toolGrantRefs.entries()) {

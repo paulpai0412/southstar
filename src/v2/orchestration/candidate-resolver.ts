@@ -4,7 +4,9 @@ import {
   findLibraryEdgesFrom,
   findLibraryEdgesTo,
   findLibraryObjectByKey,
+  listLibraryObjects,
 } from "../design-library/library-graph-store.ts";
+import { resolveGraphProfileCandidates } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
 import type { CandidatePacket, CandidateSummary, LibraryEdgeType, RequirementSpecV2 } from "../design-library/types.ts";
 
 export type ResolveWorkflowCandidatesInput = {
@@ -87,6 +89,17 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   const policyConstraints = (
     await findApprovedLibraryObjectsByKind(db, "policy_bundle", input.scope)
   ).map((object) => summary(object.objectKey, object.headVersionId, object.objectKind, object.state, "approved policy bundle"));
+  const graphProfileCandidates = await resolveGraphProfileCandidates(db, { scope: input.scope });
+  const profilePrimitiveCandidates = {
+    ...graphProfileCandidates,
+    instructions: (
+      await listLibraryObjects(db, {
+        scope: input.scope,
+        status: "approved",
+        objectKind: "instruction_template",
+      })
+    ).map((object) => object.objectKey).sort(),
+  };
 
   return {
     requirementSpec: input.requirementSpec,
@@ -101,6 +114,7 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     artifactContractCandidates,
     evaluatorCandidatesByArtifact,
     policyConstraints,
+    profilePrimitiveCandidates,
     unavailableRequirements,
   };
 }

@@ -43,6 +43,7 @@ await import("./node-profile-draft-service.test.ts");
 await import("./library-candidate-resolver.test.ts");
 await import("./workflow-composition-validator.test.ts");
 await import("./workflow-composition-compiler.test.ts");
+await import("./workflow-dynamic-profile-composition.test.ts");
 await import("./composition-repair-loop.test.ts");
 await import("./workflow-composer-registry.test.ts");
 await import("./llm-workflow-composer.test.ts");

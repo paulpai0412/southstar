@@ -243,6 +243,13 @@ export type CandidatePacket = {
   artifactContractCandidates: CandidateSummary[];
   evaluatorCandidatesByArtifact: Record<string, CandidateSummary[]>;
   policyConstraints: CandidateSummary[];
+  profilePrimitiveCandidates?: {
+    agents: string[];
+    skills: string[];
+    tools: string[];
+    mcpGrants: string[];
+    instructions: string[];
+  };
   unavailableRequirements: Array<{
     capabilityRef: string;
     reason: "no_approved_candidate" | "blocked_by_policy" | "requires_approval";
