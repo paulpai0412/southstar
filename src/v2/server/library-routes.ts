@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
+import {
+  applyLibraryObjectLifecycleAction,
+  type LibraryObjectLifecycleAction,
+} from "../design-library/lifecycle/library-object-lifecycle.ts";
 import { normalizeImportProposal } from "../design-library/importers/import-proposal-normalizer.ts";
 import { createPromptLibraryImportProposal } from "../design-library/importers/prompt-library-importer.ts";
 import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
@@ -137,6 +141,18 @@ export async function handleLibraryRoute(
     const actionId = requiredQueryParam(url, "actionId");
     await requireLibraryChatAction(context, { sessionId, actionId });
     return libraryChatEventStream({ sessionId, actionId });
+  }
+
+  const lifecycleMatch = url.pathname.match(/^\/api\/v2\/library\/objects\/([^/]+)\/(approve|deprecate|block)$/);
+  if (request.method === "POST" && lifecycleMatch) {
+    const body = await readJsonBody<{ actor?: unknown; reason?: unknown }>(request);
+    const action = lifecycleMatch[2] as LibraryObjectLifecycleAction;
+    return json("library-object-lifecycle", await applyLibraryObjectLifecycleAction(context.db, {
+      objectKey: decodeURIComponent(lifecycleMatch[1]!),
+      action,
+      actor: optionalString(body.actor) ?? "operator",
+      reason: requiredNonBlankString(body.reason, "reason"),
+    }));
   }
 
   const syncMatch = url.pathname.match(/^\/api\/v2\/library\/files\/(.+)\/sync$/);

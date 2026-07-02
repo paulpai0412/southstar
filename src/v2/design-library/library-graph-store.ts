@@ -128,6 +128,36 @@ export async function findLibraryObjectByKey(db: SouthstarDb, objectKey: string)
   return row ? mapObject(row) : null;
 }
 
+export async function findLibraryObjectByKeyForUpdate(
+  db: SouthstarDb,
+  objectKey: string,
+): Promise<LibraryObjectSummary | null> {
+  const row = await db.maybeOne<LibraryObjectRow>(
+    `select id, object_key, object_kind, status, head_version_id, state_json
+       from southstar.library_objects
+      where object_key = $1
+      for update`,
+    [objectKey],
+  );
+  return row ? mapObject(row) : null;
+}
+
+export async function updateLibraryObjectStatus(
+  db: SouthstarDb,
+  input: { objectKey: string; status: LibraryDefinitionStatus },
+): Promise<LibraryObjectSummary> {
+  const row = await db.maybeOne<LibraryObjectRow>(
+    `update southstar.library_objects
+        set status = $2,
+            updated_at = now()
+      where object_key = $1
+      returning id, object_key, object_kind, status, head_version_id, state_json`,
+    [input.objectKey, input.status],
+  );
+  if (!row) throw new Error(`library object not found: ${input.objectKey}`);
+  return mapObject(row);
+}
+
 export async function listLibraryObjects(
   db: SouthstarDb,
   input: ListLibraryObjectsInput = {},
