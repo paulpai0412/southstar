@@ -132,6 +132,8 @@ async function classifyRecoveryPath(
     case "hand_provision_failed":
     case "hand_submit_failed":
       return { recoveryPath: "reprovision-hand" };
+    case "dispatch_preparation_failed":
+      return { recoveryPath: "retry-same-task-new-attempt" };
     case "scheduler_claim_stale":
       return { recoveryPath: "retry-same-task-new-attempt" };
     case "intake_invalid":

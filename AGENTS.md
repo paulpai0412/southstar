@@ -69,6 +69,7 @@ Important directories:
 - `src/v2/manifests/` - `SouthstarWorkflowManifest` types, validation, and revision utilities.
 - `src/v2/orchestration/` - prompt-to-workflow orchestration and library-constrained workflow composition.
 - `src/v2/design-library/` - reusable workflow templates, recipes, validators, and library objects.
+- Library authoring uses local files under `library/` plus the Postgres design library graph. Do not add new active library content by hardcoding `software-library-seed.ts`; use the Library file/import/sync path. `software-library-seed.ts` remains only for migration/test/demo bootstrap.
 - `src/v2/executor/` - Tork provider, callbacks, bindings, reconciliation, and provider recovery actions.
 - `src/v2/hands/` - hand providers that materialize workflow tasks into Tork/Pi-agent executions.
 - `src/v2/session/` and `src/v2/session-recovery/` - durable session history, checkpoints, and recovery controller.

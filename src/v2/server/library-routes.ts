@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
+import type { SouthstarDb } from "../db/postgres.ts";
 import { normalizeImportProposal } from "../design-library/importers/import-proposal-normalizer.ts";
 import { createPromptLibraryImportProposal } from "../design-library/importers/prompt-library-importer.ts";
-import { saveWorkflowTemplateDraft } from "../design-library/templates/workflow-template-save-service.ts";
+import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
+import {
+  saveWorkflowTemplateDraft,
+  type SaveWorkflowTemplateDraftInput,
+} from "../design-library/templates/workflow-template-save-service.ts";
 import {
   listLibraryFiles,
   readLibraryFile,
@@ -59,13 +64,16 @@ export async function handleLibraryRoute(
   if (request.method === "POST" && saveTemplateMatch) {
     const body = await readJsonBody<any>(request);
     const draftId = decodeURIComponent(saveTemplateMatch[1]!);
+    const draft = await getResourceByKeyPg(context.db, "planner_draft", draftId);
+    if (!draft) return errorJson(`planner draft not found: ${draftId}`, 404);
+    const workflow = asRecord(asRecord(draft.payload).workflow);
+    const scope = optionalString(body.scope) ?? "software";
     const result = await saveWorkflowTemplateDraft(context.db, {
       root: libraryRoot(context),
-      scope: optionalString(body.scope) ?? "software",
+      scope,
       templateId: requiredString(body.templateId, "templateId"),
       title: requiredString(body.title, "title"),
-      nodes: Array.isArray(body.nodes) ? body.nodes : [],
-      edges: Array.isArray(body.edges) ? body.edges : [],
+      ...await saveTemplateGraphFromWorkflow(context.db, workflow, scope),
     });
     return json("workflow-template-save", { draftId, ...result });
   }
@@ -206,6 +214,100 @@ function json<T>(kind: string, result: T): Response {
       "access-control-allow-origin": "*",
     },
   });
+}
+
+function errorJson(error: string, status: number): Response {
+  return new Response(JSON.stringify({ ok: false, error }), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+    },
+  });
+}
+
+async function saveTemplateGraphFromWorkflow(
+  db: SouthstarDb,
+  workflow: Record<string, unknown>,
+  scope: string,
+): Promise<Pick<SaveWorkflowTemplateDraftInput, "nodes" | "edges">> {
+  const tasks = Array.isArray(workflow.tasks)
+    ? workflow.tasks.filter((task): task is Record<string, unknown> => isRecord(task))
+    : [];
+  const nodeIds = new Set(tasks.map((task) => requiredString(task.id, "workflow.tasks.id")));
+  return {
+    nodes: await Promise.all(tasks.map(async (task) => {
+      const id = requiredString(task.id, "workflow.tasks.id");
+      return {
+        id,
+        title: optionalString(task.name) ?? id,
+        agentRef: await agentRefForWorkflowTask(db, task, scope),
+        skillRefs: libraryRefs(task.skillRefs, "skill."),
+        toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool."),
+        mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp."),
+      };
+    })),
+    edges: tasks.flatMap((task) => {
+      const to = requiredString(task.id, "workflow.tasks.id");
+      return libraryRefs(task.dependsOn, "").filter((from) => nodeIds.has(from)).map((from) => ({ from, to }));
+    }),
+  };
+}
+
+async function agentRefForWorkflowTask(db: SouthstarDb, task: Record<string, unknown>, scope: string): Promise<string> {
+  const explicit = optionalString(task.agentDefinitionRef);
+  if (explicit?.startsWith("agent.")) {
+    await requireAgentDefinition(db, explicit);
+    return explicit;
+  }
+
+  const profileRef = profileObjectKey(optionalString(task.agentProfileRef));
+  if (profileRef) {
+    const edges = await findLibraryEdgesFrom(db, profileRef, "implements", { scope });
+    const agentRefs = [...new Set(edges
+      .map((edge) => edge.toObjectKey)
+      .filter((toObjectKey) => toObjectKey.startsWith("agent.")))];
+    if (agentRefs.length === 1) {
+      await requireAgentDefinition(db, agentRefs[0]!);
+      return agentRefs[0]!;
+    }
+    if (agentRefs.length > 1) {
+      throw new Error(`ambiguous agentRef for workflow task ${requiredString(task.id, "workflow.tasks.id")}: ${agentRefs.join(", ")}`);
+    }
+  }
+
+  throw new Error(
+    `cannot derive graph-backed agentRef for workflow task ${requiredString(task.id, "workflow.tasks.id")}; persisted workflow must include agentDefinitionRef or a library-backed agentProfileRef`,
+  );
+}
+
+function libraryRefs(value: unknown, prefix: string): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => (
+    typeof item === "string" && item.length > 0 && (prefix.length === 0 || item.startsWith(prefix))
+  ));
+}
+
+function profileObjectKey(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return undefined;
+  return trimmed.startsWith("profile.") ? trimmed : `profile.${trimmed}`;
+}
+
+async function requireAgentDefinition(db: SouthstarDb, objectKey: string): Promise<void> {
+  const object = await findLibraryObjectByKey(db, objectKey);
+  if (object?.objectKind !== "agent_definition") {
+    throw new Error(`agentRef does not resolve to a graph-backed agent definition: ${objectKey}`);
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function requireLibraryChatAction(

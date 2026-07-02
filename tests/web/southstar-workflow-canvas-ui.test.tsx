@@ -173,6 +173,54 @@ test("Workflow DAG block exposes Save Template action for draft DAGs", () => {
   assert.match(sourceText, /save-template/);
 });
 
+test("workflow template save request uses encoded draft route and server-derived DAG payload", async () => {
+  const { buildWorkflowTemplateSaveRequest } = await import("../../web/lib/workflow/template-save.ts");
+  const request = buildWorkflowTemplateSaveRequest({
+    draftId: "draft/with space",
+    dag: {
+      id: "template.Fancy Todo!",
+      draftId: "draft/with space",
+      templateId: "template.software",
+      templateTitle: "Fancy Todo",
+      prompt: "todo",
+      expandedByDefault: true,
+      readiness: "ready",
+      nodes: [{
+        id: "implement-ui",
+        label: "Implement UI",
+        role: "frontend",
+        agentRef: "agent.frontend",
+        profileRef: "profile.frontend",
+        profileResourcePath: "profiles/frontend.json",
+        provider: "codex",
+        model: "gpt-5",
+        level: 0,
+        state: "ready",
+      }],
+      edges: [],
+      createdAt: "2026-07-02T00:00:00.000Z",
+    },
+  });
+
+  assert.equal(request.url, "/api/workflow/planner-drafts/draft%2Fwith%20space/save-template");
+  assert.deepEqual(request.body, {
+    scope: "software",
+    templateId: "template.fancy-todo",
+    title: "Fancy Todo",
+  });
+});
+
+test("Workflow DAG Save Template action surfaces progress and errors", () => {
+  const sourceText = source("web/components/WorkflowDagBlock.tsx");
+  assert.match(sourceText, /saveTemplateStatus/);
+  assert.match(sourceText, /setSaveTemplateStatus\(\{\s*phase:\s*"saving"/);
+  assert.match(sourceText, /setSaveTemplateStatus\(\{\s*phase:\s*"saved"/);
+  assert.match(sourceText, /setSaveTemplateStatus\(\{\s*phase:\s*"error"/);
+  assert.match(sourceText, /catch \(error\)/);
+  assert.match(sourceText, /workflow-save-template-status/);
+  assert.match(sourceText, /Saving\.\.\./);
+});
+
 test("workflow lifecycle starts generated planner DAGs as backend drafts", () => {
   const lifecycle = source("web/lib/workflow/lifecycle.ts");
   const hook = source("web/hooks/useWorkflowLifecycle.ts");

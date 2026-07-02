@@ -15,7 +15,7 @@ type HandExecutionRow = {
 
 export async function observeTorkHandExecutionExceptionsPg(
   db: SouthstarDb,
-  input: { now?: string; providerActions?: RecoveryProviderActions } = {},
+  input: { now?: string; providerActions?: RecoveryProviderActions; providerPollReason?: string } = {},
 ): Promise<{ observedKinds: string[] }> {
   const now = input.now ? new Date(input.now) : new Date();
   const nowMs = now.getTime();
@@ -45,6 +45,7 @@ export async function observeTorkHandExecutionExceptionsPg(
         providerActions: input.providerActions,
         runId,
         externalJobId,
+        reason: input.providerPollReason ?? "observe-tork-provider-status",
       });
       if (providerObservation?.terminal) {
         const patched = await patchTerminalWithoutCallbackPg(db, {
@@ -173,6 +174,7 @@ async function pollProviderStatus(input: {
   providerActions: RecoveryProviderActions;
   runId: string;
   externalJobId: string;
+  reason: string;
 }): Promise<{
   status: string;
   category: TorkStatusCategory;
@@ -185,7 +187,7 @@ async function pollProviderStatus(input: {
     observation = await input.providerActions.poll?.({
       externalJobId: input.externalJobId,
       runId: input.runId,
-      reason: "observe-tork-provider-status",
+      reason: input.reason,
     });
   } catch {
     return null;

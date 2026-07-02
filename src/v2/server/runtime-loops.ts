@@ -131,6 +131,7 @@ export function createManagedRuntimeLoopRunners(input: ManagedRuntimeLoopDeps): 
       runOnce: async () => {
         await observeTorkHandExecutionExceptionsPg(input.db, {
           ...(input.providerActions ? { providerActions: input.providerActions } : {}),
+          providerPollReason: "observe-tork-terminal-without-callback",
         });
         return { observed: true };
       },

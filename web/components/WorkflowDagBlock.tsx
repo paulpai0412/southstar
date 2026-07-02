@@ -4,7 +4,14 @@ import { useMemo, useState } from "react";
 import { SouthstarWorkflowCanvas } from "./workflow-canvas/SouthstarWorkflowCanvas";
 import type { WorkflowCanvasModel, WorkflowDependencyModel, WorkflowTaskNodeModel } from "./workflow-canvas/types";
 import { useWorkflowLifecycle } from "@/hooks/useWorkflowLifecycle";
+import { buildWorkflowTemplateSaveRequest } from "@/lib/workflow/template-save";
 import type { WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
+
+type SaveTemplateStatus =
+  | { phase: "idle" }
+  | { phase: "saving"; message: string }
+  | { phase: "saved"; message: string }
+  | { phase: "error"; message: string };
 
 export function WorkflowDagBlock({
   dag,
@@ -17,6 +24,7 @@ export function WorkflowDagBlock({
 }) {
   const [expanded, setExpanded] = useState<boolean>(dag.expandedByDefault);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [saveTemplateStatus, setSaveTemplateStatus] = useState<SaveTemplateStatus>({ phase: "idle" });
   const { state, createDraft, validateDraft, runDraft, retryExecute } = useWorkflowLifecycle(dag, cwd);
   const busy = state.phase === "drafting" || state.phase === "validating" || state.phase === "running" || state.phase === "executing";
   const activeDraftId = state.draft?.draftId ?? dag.draftId;
@@ -24,6 +32,7 @@ export function WorkflowDagBlock({
   const draftReady = Boolean(activeDraftId);
   const canValidateActiveDag = draftReady || Boolean(dag.compositionPlan);
   const canRunActiveDraft = state.canRun || Boolean(dag.draftId && (dag.draftStatus === "validated" || dag.readiness === "ready"));
+  const saveTemplateBusy = saveTemplateStatus.phase === "saving";
   const validateDisabled = busy || !canValidateActiveDag;
   const runDisabled = busy || !draftReady || !canRunActiveDraft;
   const nodeById = useMemo(() => new Map(dag.nodes.map((node) => [node.id, node])), [dag.nodes]);
@@ -47,25 +56,19 @@ export function WorkflowDagBlock({
   async function saveTemplate() {
     const draftId = state.draft?.draftId ?? dag.draftId;
     if (!draftId) return;
-    const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(draftId)}/save-template`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        scope: "software",
-        templateId: `template.${toTemplateSlug(dag.id ?? draftId)}`,
-        title: dag.templateTitle ?? "Saved Workflow Template",
-        nodes: dag.nodes.map((node) => ({
-          id: node.id,
-          title: nodeLabel(node),
-          agentRef: nodeAgentRef(node),
-          skillRefs: stringArray(nodeRecord(node).skillRefs),
-          toolGrantRefs: stringArray(nodeRecord(node).toolGrantRefs),
-          mcpGrantRefs: stringArray(nodeRecord(node).mcpGrantRefs),
-        })),
-        edges: dag.edges.map((edge) => ({ from: edge.from, to: edge.to })),
-      }),
-    });
-    if (!response.ok) throw new Error(await response.text());
+    setSaveTemplateStatus({ phase: "saving", message: "Saving..." });
+    try {
+      const request = buildWorkflowTemplateSaveRequest({ draftId, dag });
+      const response = await fetch(request.url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(request.body),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      setSaveTemplateStatus({ phase: "saved", message: "Template saved" });
+    } catch (error) {
+      setSaveTemplateStatus({ phase: "error", message: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   const handleSelectTask = (taskId: string) => {
@@ -180,11 +183,23 @@ export function WorkflowDagBlock({
               type="button"
               data-testid="workflow-action-save-template"
               onClick={() => void saveTemplate()}
-              disabled={!draftReady}
-              style={actionButtonStyle(!draftReady)}
+              disabled={!draftReady || saveTemplateBusy}
+              style={actionButtonStyle(!draftReady || saveTemplateBusy)}
             >
-              Save Template
+              {saveTemplateBusy ? "Saving..." : "Save Template"}
             </button>
+            {saveTemplateStatus.phase !== "idle" && (
+              <span
+                data-testid="workflow-save-template-status"
+                style={{
+                  fontSize: 11,
+                  color: saveTemplateStatus.phase === "error" ? "var(--danger)" : "var(--text-muted)",
+                  fontFamily: "var(--font-mono)",
+                }}
+              >
+                {saveTemplateStatus.message}
+              </span>
+            )}
             <div
               data-testid="workflow-lifecycle-notice"
               style={{
@@ -288,39 +303,6 @@ function nodeStatus(node: WorkflowDagNode): string {
   if (node.state === "blocked") return "blocked";
   if (node.state === "warning") return "paused";
   return "ready";
-}
-
-function nodeLabel(node: WorkflowDagNode): string {
-  const maybeTitle = nodeRecord(node).title;
-  return typeof maybeTitle === "string" && maybeTitle.trim() ? maybeTitle : node.label ?? node.id;
-}
-
-function nodeAgentRef(node: WorkflowDagNode): string {
-  const maybeAgentDefinitionRef = nodeRecord(node).agentDefinitionRef;
-  if (typeof maybeAgentDefinitionRef === "string" && maybeAgentDefinitionRef.startsWith("agent.")) {
-    return maybeAgentDefinitionRef;
-  }
-  if (typeof node.agentRef === "string" && node.agentRef.startsWith("agent.")) {
-    return node.agentRef;
-  }
-  return `agent.${toTemplateSlug(node.role || "generated")}`;
-}
-
-function nodeRecord(node: WorkflowDagNode): Record<string, unknown> {
-  return node as unknown as Record<string, unknown>;
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-}
-
-function toTemplateSlug(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/^template\./, "")
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "") || "generated";
 }
 
 function actionButtonStyle(disabled: boolean) {

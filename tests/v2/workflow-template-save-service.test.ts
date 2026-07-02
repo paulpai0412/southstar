@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../../src/v2/design-library/library-graph-store.ts";
+import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 import { saveWorkflowTemplateDraft } from "../../src/v2/design-library/templates/workflow-template-save-service.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
+import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("saves workflow template and generated profile files then syncs draft objects", async () => {
@@ -114,6 +116,36 @@ test("runtime save-template route writes workflow template drafts", async () => 
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-template-route-"));
   try {
+    await seedSoftwareLibraryGraph(db);
+    await upsertRuntimeResourcePg(db, {
+      id: "draft-route",
+      resourceType: "planner_draft",
+      resourceKey: "draft-route",
+      scope: "planner",
+      status: "validated",
+      title: "Route Draft",
+      payload: {
+        workflow: {
+          workflowId: "wf-route",
+          title: "Route Workflow",
+          tasks: [{
+            id: "implement-ui",
+            name: "Implement UI",
+            roleRef: "maker",
+            agentProfileRef: "software-maker-pi",
+            dependsOn: [],
+            skillRefs: ["skill.react-ui"],
+            toolGrantRefs: ["tool.workspace-write"],
+            mcpGrantRefs: ["mcp.browser"],
+          }],
+        },
+      },
+      summary: {
+        goalPrompt: "implement ui",
+        workflowId: "wf-route",
+      },
+    });
+
     const response = await handleRuntimeRoute({ db, libraryRoot } as any, new Request("http://local/api/v2/workflow/drafts/draft-route/save-template", {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -122,14 +154,13 @@ test("runtime save-template route writes workflow template drafts", async () => 
         templateId: "template.route-save",
         title: "Route Save",
         nodes: [{
-          id: "implement-ui",
-          title: "Implement UI",
-          agentRef: "agent.frontend-developer",
+          id: "browser-body-must-not-win",
+          title: "Browser Body Must Not Win",
+          agentRef: "agent.browser-body",
           skillRefs: [],
           toolGrantRefs: [],
           mcpGrantRefs: [],
         }],
-        edges: [],
       }),
     }));
 
@@ -138,6 +169,93 @@ test("runtime save-template route writes workflow template drafts", async () => 
     assert.equal(payload.kind, "workflow-template-save");
     assert.equal(payload.result.draftId, "draft-route");
     assert.equal(payload.result.template.relativePath, "templates/saved/route-save.workflow.yaml");
+    const profile = await readFile(join(libraryRoot, "profiles/generated/route-save/implement-ui.profile.yaml"), "utf8");
+    assert.match(profile, /agent\.software-maker/);
+    assert.match(profile, /skill\.react-ui/);
+    assert.match(profile, /tool\.workspace-write/);
+    assert.match(profile, /mcp\.browser/);
+    assert.doesNotMatch(profile, /agent\.browser-body/);
+    assert.equal(await findLibraryObjectByKey(db, "agent.maker"), null);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime save-template route rejects workflow tasks without a graph-backed agent ref", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-template-route-unknown-agent-"));
+  try {
+    await upsertRuntimeResourcePg(db, {
+      id: "draft-unknown-agent",
+      resourceType: "planner_draft",
+      resourceKey: "draft-unknown-agent",
+      scope: "planner",
+      status: "validated",
+      title: "Unknown Agent Draft",
+      payload: {
+        workflow: {
+          workflowId: "wf-unknown-agent",
+          title: "Unknown Agent Workflow",
+          tasks: [{
+            id: "implement-ui",
+            name: "Implement UI",
+            roleRef: "maker",
+            agentProfileRef: "unknown-maker-profile",
+            dependsOn: [],
+          }],
+        },
+      },
+      summary: {
+        goalPrompt: "implement ui",
+        workflowId: "wf-unknown-agent",
+      },
+    });
+
+    const response = await handleRuntimeRoute({ db, libraryRoot } as any, new Request("http://local/api/v2/workflow/drafts/draft-unknown-agent/save-template", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "software",
+        templateId: "template.unknown-agent-save",
+        title: "Unknown Agent Save",
+      }),
+    }));
+
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /cannot derive graph-backed agentRef/);
+    assert.deepEqual(await readdir(libraryRoot), []);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime save-template route rejects missing planner draft ids", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-template-route-missing-"));
+  try {
+    const response = await handleRuntimeRoute({ db, libraryRoot } as any, new Request("http://local/api/v2/workflow/drafts/missing-draft/save-template", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "software",
+        templateId: "template.missing-save",
+        title: "Missing Save",
+        nodes: [{
+          id: "should-not-write",
+          title: "Should Not Write",
+          agentRef: "agent.browser-verifier",
+          skillRefs: [],
+          toolGrantRefs: [],
+          mcpGrantRefs: [],
+        }],
+        edges: [],
+      }),
+    }));
+
+    assert.equal(response.status, 404);
+    assert.deepEqual(await readdir(libraryRoot), []);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

@@ -82,10 +82,11 @@ southstar-agent-runner task process
 Southstar runtime server
 ```
 
-The web UI has three main surfaces:
+The web UI has four main surfaces:
 
 - **Chat**: browse and continue Pi agent sessions, inspect files, and manage models/skills.
 - **Workflow**: generate, validate, revise, and launch Southstar workflow manifests.
+- **Library**: author local agent, skill, tool, MCP, generated profile, and workflow template files, then sync validated content to the Postgres design library graph.
 - **Operator**: monitor workflow runs, inspect tasks/artifacts/history, and apply recovery actions.
 
 ## Current Design Architecture
@@ -178,6 +179,10 @@ Relevant code:
 - Sidecar file/resource/task inspection.
 
 Web API routes proxy browser requests to the runtime server and keep browser components decoupled from runtime internals.
+
+### Library Tab And Local Library Files
+
+Southstar Library content is authored under `library/` as editable files and synced to the Postgres design library graph through the Library tab/API. Agents and skills use Markdown with YAML frontmatter; tools, MCP grants, generated profiles, and saved workflow templates use YAML. Runtime workflow generation reads the validated Postgres graph, not raw files.
 
 ## Data Flow
 
