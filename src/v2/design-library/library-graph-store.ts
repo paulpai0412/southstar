@@ -33,6 +33,17 @@ export type FindLibraryEdgesFilters = {
   status?: LibraryEdgeStatus;
 };
 
+export type ListLibraryObjectsInput = {
+  scope?: string;
+  status?: LibraryDefinitionStatus;
+  objectKind?: LibraryDefinitionKind;
+};
+
+export type ListLibraryEdgesInput = {
+  scope?: string;
+  status?: LibraryEdgeStatus;
+};
+
 export async function upsertLibraryObject(db: SouthstarDb, input: UpsertLibraryObjectInput): Promise<LibraryObjectSummary> {
   const id = `lib-${hash(input.objectKey).slice(0, 16)}`;
   const row = await db.one<LibraryObjectRow>(
@@ -117,6 +128,41 @@ export async function findLibraryObjectByKey(db: SouthstarDb, objectKey: string)
   return row ? mapObject(row) : null;
 }
 
+export async function listLibraryObjects(
+  db: SouthstarDb,
+  input: ListLibraryObjectsInput = {},
+): Promise<LibraryObjectSummary[]> {
+  const result = await db.query<LibraryObjectRow>(
+    `select id, object_key, object_kind, status, head_version_id, state_json
+       from southstar.library_objects
+      where ($1::text is null or status = $1)
+        and ($2::text is null or object_kind = $2)
+        and (
+          $3::text is null
+          or state_json->>'scope' = $3
+          or state_json->>'scope' = 'global'
+          or state_json->'domainRefs' ? $3
+        )
+      order by coalesce(state_json->>'scope', 'global'), object_kind, object_key`,
+    [input.status ?? null, input.objectKind ?? null, input.scope ?? null],
+  );
+  return result.rows.map(mapObject);
+}
+
+export async function listLibraryEdges(db: SouthstarDb, input: ListLibraryEdgesInput = {}): Promise<LibraryEdgeRecord[]> {
+  const result = await db.query<LibraryEdgeRow>(
+    `select
+        id, from_object_key, from_version_ref, edge_type, to_object_key, to_version_ref,
+        scope, status, weight, metadata_json
+       from southstar.library_edges
+      where ($1::text is null or scope = $1 or scope = 'global')
+        and status = $2
+      order by scope, edge_type, from_object_key, to_object_key`,
+    [input.scope ?? null, input.status ?? "active"],
+  );
+  return result.rows.map(mapEdge);
+}
+
 export async function findLibraryEdgesFrom(
   db: SouthstarDb,
   fromObjectKey: string,
@@ -183,7 +229,7 @@ type LibraryEdgeRow = {
   metadata_json: Record<string, unknown>;
 };
 
-type LibraryEdgeStatus = "active" | "inactive" | "blocked";
+export type LibraryEdgeStatus = "active" | "inactive" | "blocked";
 
 function mapObject(row: LibraryObjectRow): LibraryObjectSummary {
   return {
