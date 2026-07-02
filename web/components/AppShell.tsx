@@ -13,6 +13,7 @@ import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
 import { OperatorWorkspace } from "./operator/OperatorWorkspace";
+import { LibraryWorkspace } from "./library/LibraryWorkspace";
 import type { Tab } from "./TabBar";
 import { SidecarShell, type SidecarMode } from "./SidecarShell";
 import { ModelsConfig } from "./ModelsConfig";
@@ -564,9 +565,9 @@ export function AppShell() {
   const chatShowChat = selectedSession !== null || chatEffectiveNewSessionCwd !== null;
   const workflowShowChat = workflowSelectedSession !== null || workflowEffectiveNewSessionCwd !== null;
 
-  const activeSelectedSession = appMode === "workflow" ? workflowSelectedSession : appMode === "operator" ? null : selectedSession;
-  const activeNewSessionCwd = appMode === "workflow" ? workflowNewSessionCwd : appMode === "operator" ? null : newSessionCwd;
-  const showChat = appMode === "workflow" ? workflowShowChat : appMode === "operator" ? false : chatShowChat;
+  const activeSelectedSession = appMode === "workflow" ? workflowSelectedSession : appMode === "chat" ? selectedSession : null;
+  const activeNewSessionCwd = appMode === "workflow" ? workflowNewSessionCwd : appMode === "chat" ? newSessionCwd : null;
+  const showChat = appMode === "workflow" ? workflowShowChat : appMode === "chat" ? chatShowChat : false;
 
   const currentCwd = activeSelectedSession?.cwd ?? activeNewSessionCwd ?? activeCwd ?? null;
   const sessionStats = appMode === "workflow" ? workflowSessionStats : appMode === "chat" ? chatSessionStats : null;
@@ -1355,6 +1356,9 @@ export function AppShell() {
                 setOperatorSelectedIncidentId(null);
               }}
             />
+          </div>
+          <div data-testid="library-mode-panel" style={modePanelStyle(appMode === "library")} aria-hidden={appMode !== "library"}>
+            <LibraryWorkspace />
           </div>
           <div data-testid="chat-mode-panel" style={modePanelStyle(appMode === "chat")} aria-hidden={appMode !== "chat"}>
             {chatShowChat ? (
