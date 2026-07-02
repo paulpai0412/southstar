@@ -25,7 +25,10 @@ test("approves a draft library object and records lifecycle audit resource", asy
     });
 
     assert.equal(result.object.status, "approved");
-    assert.equal((await findLibraryObjectByKey(db, "skill.browser-verification"))?.status, "approved");
+    assert.equal(result.object.state.status, "approved");
+    const persisted = await findLibraryObjectByKey(db, "skill.browser-verification");
+    assert.equal(persisted?.status, "approved");
+    assert.equal(persisted?.state.status, "approved");
 
     const audit = await db.one<{
       resource_type: string;
@@ -202,7 +205,10 @@ test("library object lifecycle route deprecates and blocks objects", async () =>
       assert.equal(result.kind, "library-object-lifecycle");
       assert.equal(result.result.object.objectKey, objectKey);
       assert.equal(result.result.object.status, nextStatus);
-      assert.equal((await findLibraryObjectByKey(db, objectKey))?.status, nextStatus);
+      assert.equal(result.result.object.state.status, nextStatus);
+      const persisted = await findLibraryObjectByKey(db, objectKey);
+      assert.equal(persisted?.status, nextStatus);
+      assert.equal(persisted?.state.status, nextStatus);
 
       const audit = await db.one<{ payload_json: { actor: string; action: string; objectKey: string; reason: string } }>(
         `select payload_json

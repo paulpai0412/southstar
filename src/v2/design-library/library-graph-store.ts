@@ -149,6 +149,7 @@ export async function updateLibraryObjectStatus(
   const row = await db.maybeOne<LibraryObjectRow>(
     `update southstar.library_objects
         set status = $2,
+            state_json = jsonb_set(coalesce(state_json, '{}'::jsonb), '{status}', to_jsonb($2::text), true),
             updated_at = now()
       where object_key = $1
       returning id, object_key, object_kind, status, head_version_id, state_json`,
