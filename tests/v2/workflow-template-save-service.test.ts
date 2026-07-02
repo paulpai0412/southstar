@@ -35,6 +35,7 @@ test("saves workflow template and generated profile files then syncs draft objec
         mcpGrantRefs: [],
       }],
       edges: [{ from: "implement-ui", to: "validate-ui" }],
+      libraryVersionRefs: ["agent.frontend-developer@test", "skill.react-ui@test"],
     });
 
     assert.equal(result.template.relativePath, "templates/saved/todo-webapp.workflow.yaml");
@@ -72,6 +73,7 @@ test("quotes YAML scalar-like titles before syncing", async () => {
         mcpGrantRefs: [],
       }],
       edges: [],
+      libraryVersionRefs: [],
     });
 
     assert.match(await readFile(join(root, result.template.relativePath), "utf8"), /title: "true"/);
@@ -102,6 +104,7 @@ test("rejects unsafe template and node identifiers before writing files", async 
           mcpGrantRefs: [],
         }],
         edges: [],
+        libraryVersionRefs: [],
       }),
       /templateId must match/,
     );
@@ -134,9 +137,9 @@ test("runtime save-template route writes workflow template drafts", async () => 
             roleRef: "maker",
             agentProfileRef: "software-maker-pi",
             dependsOn: [],
-            skillRefs: ["skill.react-ui"],
+            skillRefs: ["skill.software-implementation"],
             toolGrantRefs: ["tool.workspace-write"],
-            mcpGrantRefs: ["mcp.browser"],
+            mcpGrantRefs: ["mcp.filesystem-workspace"],
           }],
         },
       },
@@ -170,10 +173,16 @@ test("runtime save-template route writes workflow template drafts", async () => 
     assert.equal(payload.result.draftId, "draft-route");
     assert.equal(payload.result.template.relativePath, "templates/saved/route-save.workflow.yaml");
     const profile = await readFile(join(libraryRoot, "profiles/generated/route-save/implement-ui.profile.yaml"), "utf8");
+    const templateYaml = await readFile(join(libraryRoot, payload.result.template.relativePath), "utf8");
     assert.match(profile, /agent\.software-maker/);
-    assert.match(profile, /skill\.react-ui/);
+    assert.match(profile, /skill\.software-implementation/);
     assert.match(profile, /tool\.workspace-write/);
-    assert.match(profile, /mcp\.browser/);
+    assert.match(profile, /mcp\.filesystem-workspace/);
+    assert.match(templateYaml, /libraryVersionRefs:/);
+    assert.match(templateYaml, /agent\.software-maker@/);
+    assert.match(templateYaml, /skill\.software-implementation@/);
+    assert.match(templateYaml, /tool\.workspace-write@/);
+    assert.match(templateYaml, /mcp\.filesystem-workspace@/);
     assert.doesNotMatch(profile, /agent\.browser-body/);
     assert.equal(await findLibraryObjectByKey(db, "agent.maker"), null);
   } finally {
@@ -224,6 +233,56 @@ test("runtime save-template route rejects workflow tasks without a graph-backed 
 
     assert.equal(response.status, 400);
     assert.match(await response.text(), /cannot derive graph-backed agentRef/);
+    assert.deepEqual(await readdir(libraryRoot), []);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("runtime save-template route rejects selected primitive refs missing from the graph", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-template-route-unknown-primitive-"));
+  try {
+    await seedSoftwareLibraryGraph(db);
+    await upsertRuntimeResourcePg(db, {
+      id: "draft-unknown-primitive",
+      resourceType: "planner_draft",
+      resourceKey: "draft-unknown-primitive",
+      scope: "planner",
+      status: "validated",
+      title: "Unknown Primitive Draft",
+      payload: {
+        workflow: {
+          workflowId: "wf-unknown-primitive",
+          title: "Unknown Primitive Workflow",
+          tasks: [{
+            id: "implement-ui",
+            name: "Implement UI",
+            agentProfileRef: "software-maker-pi",
+            dependsOn: [],
+            skillRefs: ["skill.missing-primitive"],
+          }],
+        },
+      },
+      summary: {
+        goalPrompt: "implement ui",
+        workflowId: "wf-unknown-primitive",
+      },
+    });
+
+    const response = await handleRuntimeRoute({ db, libraryRoot } as any, new Request("http://local/api/v2/workflow/drafts/draft-unknown-primitive/save-template", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "software",
+        templateId: "template.unknown-primitive-save",
+        title: "Unknown Primitive Save",
+      }),
+    }));
+
+    assert.equal(response.status, 400);
+    assert.match(await response.text(), /library ref does not resolve to a graph object: skill\.missing-primitive/);
     assert.deepEqual(await readdir(libraryRoot), []);
   } finally {
     await db.close();

@@ -358,28 +358,52 @@ async function saveTemplateGraphFromWorkflow(
   db: SouthstarDb,
   workflow: Record<string, unknown>,
   scope: string,
-): Promise<Pick<SaveWorkflowTemplateDraftInput, "nodes" | "edges">> {
+): Promise<Pick<SaveWorkflowTemplateDraftInput, "nodes" | "edges" | "libraryVersionRefs">> {
   const tasks = Array.isArray(workflow.tasks)
     ? workflow.tasks.filter((task): task is Record<string, unknown> => isRecord(task))
     : [];
   const nodeIds = new Set(tasks.map((task) => requiredString(task.id, "workflow.tasks.id")));
+  const nodes = await Promise.all(tasks.map(async (task) => {
+    const id = requiredString(task.id, "workflow.tasks.id");
+    return {
+      id,
+      title: optionalString(task.name) ?? id,
+      agentRef: await agentRefForWorkflowTask(db, task, scope),
+      skillRefs: libraryRefs(task.skillRefs, "skill."),
+      toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool."),
+      mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp."),
+    };
+  }));
   return {
-    nodes: await Promise.all(tasks.map(async (task) => {
-      const id = requiredString(task.id, "workflow.tasks.id");
-      return {
-        id,
-        title: optionalString(task.name) ?? id,
-        agentRef: await agentRefForWorkflowTask(db, task, scope),
-        skillRefs: libraryRefs(task.skillRefs, "skill."),
-        toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool."),
-        mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp."),
-      };
-    })),
+    nodes,
     edges: tasks.flatMap((task) => {
       const to = requiredString(task.id, "workflow.tasks.id");
       return libraryRefs(task.dependsOn, "").filter((from) => nodeIds.has(from)).map((from) => ({ from, to }));
     }),
+    libraryVersionRefs: await libraryVersionRefsForNodes(db, nodes),
   };
+}
+
+async function libraryVersionRefsForNodes(
+  db: SouthstarDb,
+  nodes: SaveWorkflowTemplateDraftInput["nodes"],
+): Promise<string[]> {
+  const objectKeys = new Set<string>();
+  for (const node of nodes) {
+    objectKeys.add(node.agentRef);
+    for (const ref of node.skillRefs) objectKeys.add(ref);
+    for (const ref of node.toolGrantRefs) objectKeys.add(ref);
+    for (const ref of node.mcpGrantRefs) objectKeys.add(ref);
+  }
+
+  const versionRefs: string[] = [];
+  for (const objectKey of objectKeys) {
+    const object = await findLibraryObjectByKey(db, objectKey);
+    if (!object) throw new Error(`library ref does not resolve to a graph object: ${objectKey}`);
+    if (!object.headVersionId) throw new Error(`library ref does not have a head version: ${objectKey}`);
+    versionRefs.push(object.headVersionId);
+  }
+  return versionRefs;
 }
 
 async function agentRefForWorkflowTask(db: SouthstarDb, task: Record<string, unknown>, scope: string): Promise<string> {

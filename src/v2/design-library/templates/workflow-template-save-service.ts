@@ -16,6 +16,7 @@ export type SaveWorkflowTemplateDraftInput = {
     mcpGrantRefs: string[];
   }>;
   edges: Array<{ from: string; to: string }>;
+  libraryVersionRefs: string[];
 };
 
 type LibraryDraftFile = { relativePath: string; content: string };
@@ -92,6 +93,8 @@ id: ${yamlScalar(input.templateId)}
 title: ${yamlScalar(input.title)}
 scope: ${yamlScalar(input.scope)}
 status: draft
+libraryVersionRefs:
+${yamlList(input.libraryVersionRefs)}
 profileRefs:
 ${yamlList(input.nodes.map((node) => `profile.generated.${templateSlug}.${node.id}`))}
 nodes:
