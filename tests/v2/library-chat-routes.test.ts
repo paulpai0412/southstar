@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
-import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
+import { getResourceByKeyPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -251,7 +251,7 @@ test("library chat messages reject blank prompts", async () => {
   }
 });
 
-test("library prompt import creates a draft skill file for create skill prompts", async () => {
+test("library prompt import creates an import draft without writing files", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-prompt-"));
   try {
@@ -262,14 +262,24 @@ test("library prompt import creates a draft skill file for create skill prompts"
       body: JSON.stringify({ prompt: "create a browser verification skill that uses tool.browser", scope: "software" }),
     }));
     assert.equal(response.status, 200);
-    const payload = await response.json() as { result: { files: Array<{ relativePath: string }> } };
-    assert.equal(payload.result.files[0]?.relativePath, "skills/browser-verification.skill.md");
-    const content = await readFile(join(libraryRoot, "skills/browser-verification.skill.md"), "utf8");
-    const parsed = parseLibraryFileContent({ path: "library/skills/browser-verification.skill.md", content });
-    assert.equal(parsed.ok, true);
-    if (!parsed.ok) throw new Error("expected generated skill draft to parse");
-    assert.equal(parsed.file.id, "skill.browser-verification");
-    assert.equal(parsed.file.status, "draft");
+    const payload = await response.json() as {
+      result: {
+        draftId: string;
+        proposal: { files: Array<{ relativePath: string }> };
+        status: string;
+      };
+    };
+    assert.match(payload.result.draftId, /^library-import-draft-/);
+    assert.equal(payload.result.status, "ready_for_review");
+    assert.equal(payload.result.proposal.files[0]?.relativePath, "skills/browser-verification.skill.md");
+    await assert.rejects(
+      () => access(join(libraryRoot, "skills/browser-verification.skill.md")),
+      /ENOENT/,
+    );
+
+    const resource = await getResourceByKeyPg(db, "library_import_draft", payload.result.draftId);
+    assert.equal(resource?.status, "draft");
+    assert.equal((resource?.payload as any).proposal.files[0].relativePath, "skills/browser-verification.skill.md");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

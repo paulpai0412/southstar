@@ -4,8 +4,11 @@ import {
   applyLibraryObjectLifecycleAction,
   type LibraryObjectLifecycleAction,
 } from "../design-library/lifecycle/library-object-lifecycle.ts";
-import { normalizeImportProposal } from "../design-library/importers/import-proposal-normalizer.ts";
-import { createPromptLibraryImportProposal } from "../design-library/importers/prompt-library-importer.ts";
+import { asImportSource } from "../design-library/importers/library-import-extractor.ts";
+import {
+  approveLibraryImportDraft,
+  createLibraryImportDraft,
+} from "../design-library/importers/library-import-draft-store.ts";
 import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
 import {
   saveWorkflowTemplateDraft,
@@ -64,6 +67,25 @@ export async function handleLibraryRoute(
     return json("library-files", { files: await listLibraryFiles({ root: libraryRoot(context) }) });
   }
 
+  if (request.method === "POST" && url.pathname === "/api/v2/library/import-drafts") {
+    const body = await readJsonBody<{ source?: unknown; scope?: unknown }>(request);
+    return json("library-import-draft", await createLibraryImportDraft(context.db, {
+      source: asImportSource(body.source),
+      scope: optionalString(body.scope) ?? "software",
+    }));
+  }
+
+  const importDraftApproveMatch = url.pathname.match(/^\/api\/v2\/library\/import-drafts\/([^/]+)\/approve$/);
+  if (request.method === "POST" && importDraftApproveMatch) {
+    const body = await readJsonBody<{ actor?: unknown; reason?: unknown }>(request);
+    return json("library-import-draft-approval", await approveLibraryImportDraft(context.db, {
+      root: libraryRoot(context),
+      draftId: decodeURIComponent(importDraftApproveMatch[1]!),
+      actor: optionalString(body.actor) ?? "operator",
+      reason: requiredNonBlankString(body.reason, "reason"),
+    }));
+  }
+
   const saveTemplateMatch = url.pathname.match(/^\/api\/v2\/workflow\/drafts\/([^/]+)\/save-template$/);
   if (request.method === "POST" && saveTemplateMatch) {
     const body = await readJsonBody<any>(request);
@@ -86,19 +108,15 @@ export async function handleLibraryRoute(
     const body = await readJsonBody<{ prompt?: unknown; scope?: unknown }>(request);
     const prompt = requiredString(body.prompt, "prompt");
     const scope = optionalString(body.scope) ?? "software";
-    const proposal = normalizeImportProposal(createPromptLibraryImportProposal({ prompt, scope }));
-    const files = [];
-    for (const file of proposal.files) {
-      files.push(await writeLibraryFile({
-        root: libraryRoot(context),
-        relativePath: file.relativePath,
-        content: file.content,
-      }));
-    }
+    const draft = await createLibraryImportDraft(context.db, {
+      source: { kind: "paste", label: "Prompt import", content: prompt },
+      scope,
+    });
     return json("library-import-prompt", {
-      files,
-      objectKeys: proposal.objectKeys,
-      status: "draft_files_written",
+      ...draft,
+      files: draft.proposal.files.map((file) => ({ relativePath: file.relativePath })),
+      objectKeys: draft.proposal.objectKeys,
+      status: "ready_for_review",
     });
   }
 

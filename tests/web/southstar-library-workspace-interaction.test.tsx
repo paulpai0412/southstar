@@ -389,6 +389,97 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
   });
 });
 
+test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an import draft", async () => {
+  const requests: Array<{ method: string; path: string }> = [];
+  let workspaceFetches = 0;
+
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+
+    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+  `, async (page) => {
+    await page.locator('[data-testid="library-quick-prompt"]').fill("create a browser verification skill");
+    await page.locator('[data-testid="library-quick-prompt-submit"]').click();
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.getByRole("button", { name: /Browser Verification/ }).waitFor();
+
+    assert.equal(workspaceFetches, 2);
+    assert.equal(await page.locator('[data-testid="library-object-row"]').filter({ hasText: "skill.browser-verification" }).count(), 1);
+    assert.deepEqual(requests.map((request) => [request.method, request.path]), [
+      ["GET", "/api/library/workspace"],
+      ["POST", "/api/library/import-drafts"],
+      ["POST", "/api/library/import-drafts/library-import-draft-1/approve"],
+      ["GET", "/api/library/workspace"],
+    ]);
+  }, async (page) => {
+    await page.route("**/api/library/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      requests.push({ method: request.method(), path: url.pathname });
+
+      if (url.pathname === "/api/library/workspace") {
+        workspaceFetches += 1;
+        const objects = workspaceFetches === 1
+          ? []
+          : [libraryObject(
+              "skill.browser-verification",
+              "Browser Verification",
+              "skills/browser-verification.skill.md",
+              "software",
+              "skill_spec",
+            )];
+        await route.fulfill({
+          contentType: "application/json",
+          body: workspaceEnvelope(objects),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/import-drafts" && request.method() === "POST") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            result: {
+              draftId: "library-import-draft-1",
+              status: "draft",
+              proposal: {
+                objectKeys: ["skill.browser-verification"],
+                files: [{ relativePath: "skills/browser-verification.skill.md", content: "content" }],
+              },
+            },
+          }),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/import-drafts/library-import-draft-1/approve" && request.method() === "POST") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            result: {
+              draftId: "library-import-draft-1",
+              status: "approved",
+              proposal: {
+                objectKeys: ["skill.browser-verification"],
+                files: [{ relativePath: "skills/browser-verification.skill.md", content: "content" }],
+              },
+              files: [{ relativePath: "skills/browser-verification.skill.md" }],
+              synced: [{ object: { objectKey: "skill.browser-verification" }, edges: [] }],
+            },
+          }),
+        });
+        return;
+      }
+
+      await route.abort();
+    });
+  }, { mockLibraryChat: false });
+});
+
 test("LibraryWorkspace ignores stale file load results after selecting a different object", async () => {
   let releasePlanner: (() => Promise<void>) | undefined;
 
@@ -676,6 +767,7 @@ async function withBrowserHarness(
   entry: string,
   run: (page: Page) => Promise<void>,
   beforeLoad?: (page: Page) => Promise<void>,
+  options: { mockLibraryChat?: boolean } = {},
 ): Promise<void> {
   const dir = await mkdir(join(tmpdir(), `southstar-library-test-${Date.now()}-${Math.random().toString(16).slice(2)}`), { recursive: true });
   const outfile = join(dir, "bundle.js");
@@ -691,7 +783,11 @@ async function withBrowserHarness(
     platform: "browser",
     format: "iife",
     jsx: "automatic",
-    plugins: [reactAliasPlugin(), webAliasPlugin(), libraryChatMockPlugin()],
+    plugins: [
+      reactAliasPlugin(),
+      webAliasPlugin(),
+      ...(options.mockLibraryChat === false ? [] : [libraryChatMockPlugin()]),
+    ],
   });
 
   const browser = await chromium.launch();
@@ -795,18 +891,34 @@ function workspaceEnvelope(objects: Array<{
       selectedScope: "software",
       domains: Array.from(groupsByScope.entries()).map(([scope, scopedObjects]) => ({
         scope,
-        counts: { agent_definition: scopedObjects.length },
-        objectGroups: [{ objectKind: "agent_definition", objects: scopedObjects }],
+        counts: scopedObjects.reduce<Record<string, number>>((counts, object) => {
+          counts[object.objectKind] = (counts[object.objectKind] ?? 0) + 1;
+          return counts;
+        }, {}),
+        objectGroups: Array.from(
+          scopedObjects.reduce<Map<string, typeof objects>>((groups, object) => {
+            const group = groups.get(object.objectKind) ?? [];
+            group.push(object);
+            groups.set(object.objectKind, group);
+            return groups;
+          }, new Map()).entries(),
+        ).map(([objectKind, objects]) => ({ objectKind, objects })),
       })),
     },
   });
 }
 
-function libraryObject(objectKey: string, title: string, sourcePath: string, scope = "software") {
+function libraryObject(
+  objectKey: string,
+  title: string,
+  sourcePath: string,
+  scope = "software",
+  objectKind = "agent_definition",
+) {
   return {
     id: objectKey,
     objectKey,
-    objectKind: "agent_definition",
+    objectKind,
     status: "approved",
     title,
     scope,

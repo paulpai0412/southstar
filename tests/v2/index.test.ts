@@ -38,6 +38,7 @@ await import("./library-file-store.test.ts");
 await import("./library-object-lifecycle.test.ts");
 await import("./library-graph-read-model.test.ts");
 await import("./library-chat-routes.test.ts");
+await import("./library-import-drafts.test.ts");
 await import("./library-candidate-resolver.test.ts");
 await import("./workflow-composition-validator.test.ts");
 await import("./workflow-composition-compiler.test.ts");

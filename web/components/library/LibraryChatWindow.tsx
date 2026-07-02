@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { approveLibraryImportDraft, createLibraryImportDraft } from "@/lib/library/api";
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
 import type { LibrarySseFrame } from "@/lib/library/types";
 import { LibraryGraphBlock } from "./LibraryGraphBlock";
@@ -10,14 +11,17 @@ export function LibraryChatWindow({
   scope,
   pendingPrompt,
   onPromptConsumed,
+  onLibraryChanged,
 }: {
   scope: string;
   pendingPrompt: string;
   onPromptConsumed: () => void;
+  onLibraryChanged?: () => void;
 }) {
   const [frames, setFrames] = useState<LibrarySseFrame[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
+  const [draftStatuses, setDraftStatuses] = useState<Record<string, "draft" | "approving" | "approved">>({});
 
   const submitText = useCallback(async (prompt: string) => {
     const text = prompt.trim();
@@ -25,6 +29,27 @@ export function LibraryChatWindow({
     setRunning(true);
     setFrames((current) => [...current, { event: "library.chat.delta", data: { prompt: text } }]);
     try {
+      if (isImportDraftPrompt(text)) {
+        const draft = await createLibraryImportDraft({
+          source: { kind: "paste", label: "Library chat prompt", content: text },
+          scope,
+        });
+        setDraftStatuses((current) => ({ ...current, [draft.draftId]: "draft" }));
+        setFrames((current) => [...current, {
+          event: "library.proposal.created",
+          data: {
+            draftId: draft.draftId,
+            status: draft.status,
+            title: "Draft library proposal",
+            objectKeys: draft.proposal.objectKeys,
+            filePaths: draft.proposal.files.map((file) => file.relativePath),
+          },
+        }, {
+          event: "library.command.completed",
+          data: { draftId: draft.draftId, status: "ready_for_review" },
+        }]);
+        return;
+      }
       await runLibraryChatCommand({
         prompt: text,
         scope,
@@ -39,6 +64,35 @@ export function LibraryChatWindow({
       setRunning(false);
     }
   }, [running, scope]);
+
+  const approveDraft = useCallback(async (draftId: string) => {
+    setDraftStatuses((current) => ({ ...current, [draftId]: "approving" }));
+    try {
+      const approved = await approveLibraryImportDraft({
+        draftId,
+        actor: "operator",
+        reason: "approved from library chat",
+      });
+      setDraftStatuses((current) => ({ ...current, [draftId]: "approved" }));
+      setFrames((current) => [...current, {
+        event: "library.file.saved",
+        data: { draftId, filePaths: approved.files.map((file) => file.relativePath) },
+      }, {
+        event: "library.db.synced",
+        data: { draftId, objectKeys: approved.proposal.objectKeys },
+      }, {
+        event: "library.command.completed",
+        data: { draftId, status: "approved" },
+      }]);
+      onLibraryChanged?.();
+    } catch (error) {
+      setDraftStatuses((current) => ({ ...current, [draftId]: "draft" }));
+      setFrames((current) => [...current, {
+        event: "library.error",
+        data: { draftId, message: error instanceof Error ? error.message : String(error) },
+      }]);
+    }
+  }, [onLibraryChanged]);
 
   useEffect(() => {
     const text = pendingPrompt.trim();
@@ -57,6 +111,12 @@ export function LibraryChatWindow({
               <LibraryGraphBlock data={frame.data} defaultScope={scope} />
             ) : frame.event === "library.validation.completed" ? (
               <LibraryValidationBlock data={frame.data} />
+            ) : frame.event === "library.proposal.created" && typeof frame.data.draftId === "string" ? (
+              <LibraryImportDraftReview
+                data={frame.data}
+                status={draftStatuses[frame.data.draftId] ?? "draft"}
+                onApprove={() => void approveDraft(frame.data.draftId as string)}
+              />
             ) : (
               <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 12 }}>{JSON.stringify(frame.data, null, 2)}</pre>
             )}
@@ -85,4 +145,40 @@ export function LibraryChatWindow({
       </div>
     </div>
   );
+}
+
+function LibraryImportDraftReview({
+  data,
+  status,
+  onApprove,
+}: {
+  data: Record<string, unknown>;
+  status: "draft" | "approving" | "approved";
+  onApprove: () => void;
+}) {
+  const objectKeys = Array.isArray(data.objectKeys) ? data.objectKeys.filter(isString) : [];
+  const filePaths = Array.isArray(data.filePaths) ? data.filePaths.filter(isString) : [];
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      <div style={{ fontWeight: 700 }}>{typeof data.title === "string" ? data.title : "Draft library proposal"}</div>
+      <div style={{ fontSize: 12, color: "var(--text-dim)" }}>{typeof data.draftId === "string" ? data.draftId : ""}</div>
+      <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
+        {objectKeys.map((objectKey) => <div key={objectKey}>{objectKey}</div>)}
+        {filePaths.map((filePath) => <div key={filePath}>{filePath}</div>)}
+      </div>
+      <div>
+        <button type="button" onClick={onApprove} disabled={status !== "draft"}>
+          {status === "approved" ? "Approved" : status === "approving" ? "Approving..." : "Approve"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function isImportDraftPrompt(prompt: string): boolean {
+  return /\b(create|import)\b/i.test(prompt);
+}
+
+function isString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
 }

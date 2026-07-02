@@ -26,11 +26,7 @@ export function LibraryWorkspace() {
   const saveRequestRef = useRef(0);
   const syncRequestRef = useRef(0);
 
-  useEffect(() => {
-    selectedFilePathRef.current = selectedFilePath;
-  }, [selectedFilePath]);
-
-  useEffect(() => {
+  const loadWorkspace = useCallback(() => {
     let cancelled = false;
     fetch(`/api/library/workspace?scope=${encodeURIComponent(selectedScope)}`, { cache: "no-store" })
       .then((response) => response.json())
@@ -44,6 +40,12 @@ export function LibraryWorkspace() {
       cancelled = true;
     };
   }, [selectedScope]);
+
+  useEffect(() => {
+    selectedFilePathRef.current = selectedFilePath;
+  }, [selectedFilePath]);
+
+  useEffect(() => loadWorkspace(), [loadWorkspace]);
 
   const handlePromptSubmit = useCallback(() => {
     const text = quickPrompt.trim();
@@ -197,6 +199,7 @@ export function LibraryWorkspace() {
           scope={selectedScope}
           pendingPrompt={pendingPrompt}
           onPromptConsumed={handlePromptConsumed}
+          onLibraryChanged={loadWorkspace}
         />
       </main>
       <aside

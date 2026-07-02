@@ -88,8 +88,8 @@ export async function syncLibraryFileToGraph(db: SouthstarDb, input: { root: str
     );
   }
 
+  validateLibraryFileGraphReferences(file.parsed.file);
   const projection = projectFileToGraph(file.parsed.file);
-  validateReferencedObjects(projection);
 
   return db.tx(async (tx) => {
     const existing = await findLibraryObjectByKeyForUpdate(tx, projection.object.objectKey);
@@ -136,6 +136,10 @@ function projectFileToGraph(file: LibraryFileRecord): LibraryFileGraphProjection
     },
     edges: edgeProjection(file),
   };
+}
+
+export function validateLibraryFileGraphReferences(file: LibraryFileRecord): void {
+  validateReferencedObjects(projectFileToGraph(file));
 }
 
 function edgeProjection(file: LibraryFileRecord): LibraryFileGraphProjection["edges"] {
