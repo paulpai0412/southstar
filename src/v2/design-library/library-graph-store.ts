@@ -28,6 +28,12 @@ export type UpsertLibraryEdgeInput = {
   metadata?: Record<string, unknown>;
 };
 
+export type LibraryEdgeIdentityInput = {
+  edgeType: LibraryEdgeType;
+  toObjectKey: string;
+  scope?: string;
+};
+
 export type FindLibraryEdgesFilters = {
   scope?: string;
   status?: LibraryEdgeStatus;
@@ -99,6 +105,40 @@ export async function upsertLibraryEdge(db: SouthstarDb, input: UpsertLibraryEdg
     ],
   );
   return mapEdge(row);
+}
+
+export async function deactivateLibraryEdgesForSourceExcept(
+  db: SouthstarDb,
+  input: {
+    fromObjectKey: string;
+    sourcePath: string;
+    keepEdges: LibraryEdgeIdentityInput[];
+  },
+): Promise<number> {
+  const active = await db.query<Pick<LibraryEdgeRow, "id" | "edge_type" | "to_object_key" | "scope">>(
+    `select id, edge_type, to_object_key, scope
+       from southstar.library_edges
+      where from_object_key = $1
+        and status = 'active'
+        and metadata_json->>'sourcePath' = $2`,
+    [input.fromObjectKey, input.sourcePath],
+  );
+  const keep = new Set(input.keepEdges.map(edgeIdentityKey));
+  const staleIds = active.rows
+    .filter((row) => !keep.has(edgeIdentityKey({
+      edgeType: row.edge_type,
+      toObjectKey: row.to_object_key,
+      scope: row.scope,
+    })))
+    .map((row) => row.id);
+  if (staleIds.length === 0) return 0;
+  const result = await db.query(
+    `update southstar.library_edges
+        set status = 'inactive'
+      where id = any($1::text[])`,
+    [staleIds],
+  );
+  return result.rowCount ?? 0;
 }
 
 export async function findApprovedLibraryObjectsByKind(
@@ -263,6 +303,10 @@ type LibraryEdgeRow = {
 };
 
 export type LibraryEdgeStatus = "active" | "inactive" | "blocked";
+
+function edgeIdentityKey(edge: LibraryEdgeIdentityInput): string {
+  return [edge.edgeType, edge.toObjectKey, edge.scope ?? "global"].join("\0");
+}
 
 function mapObject(row: LibraryObjectRow): LibraryObjectSummary {
   return {

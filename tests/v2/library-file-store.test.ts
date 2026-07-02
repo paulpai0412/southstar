@@ -129,6 +129,101 @@ Verify browser behavior.
   }
 });
 
+test("sync deactivates source-file edges that are removed from the file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
+  const db = await createTestPostgresDb();
+
+  try {
+    const relativePath = "agents/capability-cleanup.agent.md";
+    const withRef = `---
+schemaVersion: southstar.library.agent_definition_file.v1
+id: agent.capability-cleanup
+title: Capability Cleanup
+scope: software
+status: draft
+requiresCapabilityRefs:
+  - capability.old
+---
+
+# Identity
+`;
+    const withoutRef = `---
+schemaVersion: southstar.library.agent_definition_file.v1
+id: agent.capability-cleanup
+title: Capability Cleanup
+scope: software
+status: draft
+---
+
+# Identity
+`;
+
+    await writeLibraryFile({ root, relativePath, content: withRef });
+    await syncLibraryFileToGraph(db, { root, relativePath });
+
+    assert.deepEqual(
+      (await findLibraryEdgesFrom(db, "agent.capability-cleanup", "requires_capability", {
+        scope: "software",
+        status: "active",
+      })).map((edge) => edge.toObjectKey),
+      ["capability.old"],
+    );
+
+    await writeLibraryFile({ root, relativePath, content: withoutRef });
+    await syncLibraryFileToGraph(db, { root, relativePath });
+
+    assert.deepEqual(
+      (await findLibraryEdgesFrom(db, "agent.capability-cleanup", "requires_capability", {
+        scope: "software",
+        status: "active",
+      })).map((edge) => edge.toObjectKey),
+      [],
+    );
+    assert.deepEqual(
+      (await findLibraryEdgesFrom(db, "agent.capability-cleanup", "requires_capability", {
+        scope: "software",
+        status: "inactive",
+      })).map((edge) => edge.toObjectKey),
+      ["capability.old"],
+    );
+  } finally {
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("writes create a missing library root safely", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "southstar-library-parent-"));
+  const root = join(parent, "missing-library-root");
+
+  try {
+    const content = `---
+schemaVersion: southstar.library.agent_definition_file.v1
+id: agent.new
+title: New Agent
+scope: software
+status: draft
+---
+
+# Identity
+`;
+
+    const written = await writeLibraryFile({ root, relativePath: "agents/new.agent.md", content });
+    assert.equal(written.relativePath, "agents/new.agent.md");
+
+    const read = await readLibraryFile({ root, relativePath: "agents/new.agent.md" });
+    assert.equal(read.content, content);
+    assert.equal(read.parsed.ok, true);
+
+    assert.deepEqual(
+      (await listLibraryFiles({ root })).map((file) => file.relativePath),
+      ["agents/new.agent.md"],
+    );
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("rejects read and write paths outside the library root", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
   const outside = await mkdtemp(join(tmpdir(), "southstar-library-outside-"));

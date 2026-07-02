@@ -2,6 +2,7 @@ import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
 import {
+  deactivateLibraryEdgesForSourceExcept,
   findLibraryObjectByKey,
   findLibraryObjectByKeyForUpdate,
   upsertLibraryEdge,
@@ -73,7 +74,7 @@ export async function writeLibraryFile(input: {
   relativePath: string;
   content: string;
 }): Promise<{ relativePath: string }> {
-  const safePath = await resolveLibraryPath(input);
+  const safePath = await resolveLibraryPath(input, { allowMissingRoot: true });
   await mkdir(dirname(safePath.absolutePath), { recursive: true });
   await writeFile(safePath.absolutePath, input.content, "utf8");
   return { relativePath: safePath.relativePath };
@@ -100,6 +101,11 @@ export async function syncLibraryFileToGraph(db: SouthstarDb, input: { root: str
         }
       : projection.object;
     const object = await upsertLibraryObject(tx, objectInput);
+    await deactivateLibraryEdgesForSourceExcept(tx, {
+      fromObjectKey: projection.object.objectKey,
+      sourcePath: file.parsed.file.path,
+      keepEdges: projection.edges,
+    });
     const edges = [];
     for (const edge of projection.edges) {
       await ensureReferencedObject(tx, edge.toObjectKey, edge.scope);
@@ -211,7 +217,7 @@ function validateReferencedObjects(projection: LibraryFileGraphProjection): void
 async function resolveLibraryPath(input: {
   root: string;
   relativePath: string;
-}): Promise<{ absolutePath: string; relativePath: string }> {
+}, options: { allowMissingRoot?: boolean } = {}): Promise<{ absolutePath: string; relativePath: string }> {
   const root = resolve(input.root);
   const absolutePath = isAbsolute(input.relativePath)
     ? resolve(input.relativePath)
@@ -226,12 +232,21 @@ async function resolveLibraryPath(input: {
     throw new Error(`library file path escapes root: ${input.relativePath}`);
   }
 
-  await rejectSymlinkComponents(root, normalizedRelativePath, input.relativePath);
+  await rejectSymlinkComponents(root, normalizedRelativePath, input.relativePath, options);
   return { absolutePath, relativePath: normalizedRelativePath.split(sep).join("/") };
 }
 
-async function rejectSymlinkComponents(root: string, normalizedRelativePath: string, requestedPath: string): Promise<void> {
-  await rejectSymlink(root, requestedPath);
+async function rejectSymlinkComponents(
+  root: string,
+  normalizedRelativePath: string,
+  requestedPath: string,
+  options: { allowMissingRoot?: boolean } = {},
+): Promise<void> {
+  const rootExists = await rejectSymlinkIfExists(root, requestedPath);
+  if (!rootExists) {
+    if (options.allowMissingRoot) return;
+    await rejectSymlink(root, requestedPath);
+  }
 
   let currentPath = root;
   for (const component of normalizedRelativePath.split(sep)) {
