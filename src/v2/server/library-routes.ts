@@ -9,6 +9,11 @@ import {
   approveLibraryImportDraft,
   createLibraryImportDraft,
 } from "../design-library/importers/library-import-draft-store.ts";
+import {
+  composeNodeProfileDraft,
+  saveNodeProfileDraft,
+  type NodeProfileDraft,
+} from "../design-library/profile-composer/node-profile-draft-service.ts";
 import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
 import {
   saveWorkflowTemplateDraft,
@@ -118,6 +123,39 @@ export async function handleLibraryRoute(
       objectKeys: draft.proposal.objectKeys,
       status: "ready_for_review",
     });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v2/library/profile-drafts/compose") {
+    const body = await readJsonBody<{
+      scope?: unknown;
+      nodeId?: unknown;
+      requirement?: unknown;
+      preferredAgentRef?: unknown;
+      templateId?: unknown;
+    }>(request);
+    return json("library-profile-draft", await composeNodeProfileDraft(context.db, {
+      scope: optionalString(body.scope) ?? "software",
+      nodeId: requiredNonBlankString(body.nodeId, "nodeId"),
+      requirement: requiredNonBlankString(body.requirement, "requirement"),
+      preferredAgentRef: requiredNonBlankString(body.preferredAgentRef, "preferredAgentRef"),
+      templateId: optionalString(body.templateId),
+    }));
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v2/library/profile-drafts/save") {
+    const body = await readJsonBody<{
+      draft?: unknown;
+      templateId?: unknown;
+      actor?: unknown;
+      reason?: unknown;
+    }>(request);
+    return json("library-profile-draft-save", await saveNodeProfileDraft(context.db, {
+      root: libraryRoot(context),
+      draft: requiredNodeProfileDraft(body.draft),
+      templateId: requiredNonBlankString(body.templateId, "templateId"),
+      actor: optionalString(body.actor) ?? "operator",
+      reason: requiredNonBlankString(body.reason, "reason"),
+    }));
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/library/chat/messages") {
@@ -238,6 +276,14 @@ function optionalNumber(value: string | null): number | undefined {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) throw new Error(`number query param is invalid: ${value}`);
   return parsed;
+}
+
+function requiredNodeProfileDraft(value: unknown): NodeProfileDraft {
+  if (!isRecord(value)) throw new Error("draft is required");
+  const profile = isRecord(value.profile) ? value.profile : null;
+  const validation = isRecord(value.validation) ? value.validation : null;
+  if (!profile || !validation) throw new Error("draft is required");
+  return value as NodeProfileDraft;
 }
 
 function json<T>(kind: string, result: T): Response {

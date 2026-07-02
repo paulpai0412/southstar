@@ -23,9 +23,20 @@ export async function validateGeneratedNodeProfile(
 ): Promise<GeneratedProfileValidationResult> {
   const issues: GeneratedProfileValidationResult["issues"] = [];
   await requireObject(db, input.agentRef, "agentRef", "agent_definition", input.scope, issues);
+  const agentSupportedSkillRefs = new Set(
+    (await findLibraryEdgesFrom(db, input.agentRef, "supports_skill", { scope: input.scope }))
+      .map((edge) => edge.toObjectKey),
+  );
 
   for (const [index, skillRef] of input.skillRefs.entries()) {
     await requireObject(db, skillRef, `skillRefs.${index}`, "skill_spec", input.scope, issues);
+    if (!agentSupportedSkillRefs.has(skillRef)) {
+      issues.push({
+        code: "agent_does_not_support_skill",
+        path: `skillRefs.${index}`,
+        message: `${input.agentRef} does not support ${skillRef}`,
+      });
+    }
     const requiredTools = await findLibraryEdgesFrom(db, skillRef, "requires_tool", { scope: input.scope });
     for (const edge of requiredTools) {
       if (!input.toolGrantRefs.includes(edge.toObjectKey)) {

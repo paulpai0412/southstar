@@ -12,6 +12,7 @@ test("generated profile validator accepts agent skill tool MCP graph closure", a
     await seedPrimitive(db, "skill.react-ui", "skill_spec");
     await seedPrimitive(db, "tool.workspace-write", "tool_definition");
     await seedPrimitive(db, "mcp.filesystem-workspace", "mcp_tool_grant");
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.workspace-write", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
 
@@ -36,6 +37,7 @@ test("generated profile validator rejects missing required tool", async () => {
     await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
     await seedPrimitive(db, "skill.react-ui", "skill_spec");
     await seedPrimitive(db, "tool.workspace-write", "tool_definition");
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.workspace-write", scope: "software" });
 
     const result = await validateGeneratedNodeProfile(db, {
@@ -60,6 +62,7 @@ test("generated profile validator rejects missing required MCP grant", async () 
     await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
     await seedPrimitive(db, "skill.react-ui", "skill_spec");
     await seedPrimitive(db, "mcp.filesystem-workspace", "mcp_tool_grant");
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
 
     const result = await validateGeneratedNodeProfile(db, {
@@ -74,6 +77,29 @@ test("generated profile validator rejects missing required MCP grant", async () 
 
     assert.equal(result.ok, false);
     assert.equal(result.issues[0]?.code, "missing_required_mcp");
+  } finally {
+    await db.close();
+  }
+});
+
+test("generated profile validator rejects skills not supported by the selected agent", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
+    await seedPrimitive(db, "skill.database-design", "skill_spec");
+
+    const result = await validateGeneratedNodeProfile(db, {
+      scope: "software",
+      nodeId: "implement-ui",
+      agentRef: "agent.frontend-developer",
+      skillRefs: ["skill.database-design"],
+      toolGrantRefs: [],
+      mcpGrantRefs: [],
+      instructionRefs: [],
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.issues[0]?.code, "agent_does_not_support_skill");
   } finally {
     await db.close();
   }
