@@ -6,8 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { build } from "esbuild";
 import { chromium, type Page } from "playwright";
-import React from "../../web/node_modules/react";
-import { renderToStaticMarkup } from "../../web/node_modules/react-dom/server";
+import React from "react";
 
 const root = join(import.meta.dirname, "../..");
 const require = createRequire(import.meta.url);
@@ -108,26 +107,33 @@ test("LibrarySidebar filters object rows and calls onSelectObject when a row is 
 });
 
 test("LibraryFileViewer exposes file tabs, editor, Save button, Sync button, and validation issues", async () => {
-  const { LibraryFileViewer } = await import("../../web/components/library/LibraryFileViewer.tsx");
-  const html = renderToStaticMarkup(React.createElement(LibraryFileViewer, {
-    selectedFilePath: "software/agents/planner.agent.md",
-    content: "schemaVersion: southstar.library.agent.v1\nid: planner\n",
-    dirty: true,
-    saving: false,
-    syncing: false,
-    issues: [{ severity: "error", path: "id", message: "id is required", code: "missing_id" }],
-    onContentChange: () => {},
-    onSave: () => {},
-    onSync: () => {},
-  } as any));
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryFileViewer } from "./web/components/library/LibraryFileViewer";
 
-  for (const tab of ["Preview", "Edit", "Validate", "Edges", "Usage", "Provenance"]) {
-    assert.match(html, new RegExp(`>${tab}<`));
-  }
-  assert.match(html, /data-testid="library-file-editor"/);
-  assert.match(html, /data-testid="library-file-save"/);
-  assert.match(html, /data-testid="library-file-sync"/);
-  assert.match(html, /id is required/);
+    createRoot(document.getElementById("root")).render(
+      <LibraryFileViewer
+        selectedFilePath="software/agents/planner.agent.md"
+        content={"schemaVersion: southstar.library.agent.v1\\nid: planner\\n"}
+        dirty={true}
+        saving={false}
+        syncing={false}
+        issues={[{ severity: "error", path: "id", message: "id is required", code: "missing_id" }]}
+        onContentChange={() => {}}
+        onSave={() => {}}
+        onSync={() => {}}
+      />
+    );
+  `, async (page) => {
+    for (const tab of ["Preview", "Edit", "Validate", "Edges", "Usage", "Provenance"]) {
+      await page.getByRole("button", { name: tab }).waitFor();
+    }
+    await page.locator('[data-testid="library-file-editor"]').waitFor();
+    await page.locator('[data-testid="library-file-save"]').waitFor();
+    await page.locator('[data-testid="library-file-sync"]').waitFor();
+    await assertText(page, "body", "id is required");
+  });
 });
 
 test("LibraryFileViewer updates action disabled states and switches tabs on click", async () => {
@@ -714,10 +720,10 @@ function reactAliasPlugin() {
   return {
     name: "react-alias",
     setup(buildApi: any) {
-      buildApi.onResolve({ filter: /^react$/ }, () => ({ path: join(root, "web/node_modules/react/index.js") }));
-      buildApi.onResolve({ filter: /^react\/jsx-runtime$/ }, () => ({ path: join(root, "web/node_modules/react/jsx-runtime.js") }));
-      buildApi.onResolve({ filter: /^react-dom$/ }, () => ({ path: join(root, "web/node_modules/react-dom/index.js") }));
-      buildApi.onResolve({ filter: /^react-dom\/client$/ }, () => ({ path: join(root, "web/node_modules/react-dom/client.js") }));
+      buildApi.onResolve({ filter: /^react$/ }, () => ({ path: join(root, "node_modules/react/index.js") }));
+      buildApi.onResolve({ filter: /^react\/jsx-runtime$/ }, () => ({ path: join(root, "node_modules/react/jsx-runtime.js") }));
+      buildApi.onResolve({ filter: /^react-dom$/ }, () => ({ path: join(root, "node_modules/react-dom/index.js") }));
+      buildApi.onResolve({ filter: /^react-dom\/client$/ }, () => ({ path: join(root, "node_modules/react-dom/client.js") }));
     },
   };
 }
