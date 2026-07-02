@@ -61,7 +61,7 @@ test("runnable scheduler dispatches a dependent pending task when dependencies h
     const implementHandExecution = handExecutions.find((resource) => resource.runId === "run-scheduler-dependent-ready" && resource.taskId === "implement");
     assert.equal(implementHandExecution?.status, "queued");
     assert.equal(implementHandExecution?.payload.externalJobId, "job-implement");
-    assert.equal(implementHandExecution?.payload.queueTimeoutSeconds, 120);
+    assert.equal(implementHandExecution?.payload.queueTimeoutSeconds, 3600);
     assert.equal(implementHandExecution?.payload.heartbeatTimeoutSeconds, 60);
 
     const intents = await listResourcesPg(db, { resourceType: "task_execution_intent" });

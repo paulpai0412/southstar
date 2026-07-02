@@ -260,9 +260,7 @@ function extractProviderStartedAt(value: unknown): string | undefined {
   const record = asRecord(value);
   const raw = asRecord(record.raw);
   return firstStartedAtFromExecutions(record.execution)
-    ?? firstStartedAtFromExecutions(raw.execution)
-    ?? stringValue(record.startedAt)
-    ?? stringValue(raw.startedAt);
+    ?? firstStartedAtFromExecutions(raw.execution);
 }
 
 function firstStartedAtFromExecutions(value: unknown): string | undefined {

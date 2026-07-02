@@ -6,6 +6,7 @@ import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manif
 import { normalizeLibraryRefs, type LibraryRefKind } from "../orchestration/library-ref-compat.ts";
 import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
 import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
 import { assembleContextBlocks } from "./assembly-policy.ts";
 import { collectContextSourcesPg } from "./source-builder.ts";
 import {
@@ -249,6 +250,7 @@ async function readWorkspaceHandle(db: SouthstarDb, runId: string): Promise<Task
   const runtimeContext = asRecord(row?.runtime_context_json);
   const projectRoot = stringValue(runtimeContext.projectRoot) ?? stringValue(runtimeContext.cwd);
   if (!projectRoot || !isHostMountPath(projectRoot)) return undefined;
+  assertWorkspaceMountAllowed(projectRoot);
   return {
     handle: {
       repoRoot: "/workspace/repo",

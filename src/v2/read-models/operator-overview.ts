@@ -3,6 +3,7 @@ import { isTaskRecoverableStatus } from "../task-recovery.ts";
 
 const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "scheduling", "running", "paused", "blocked"] as const;
 const TERMINAL_RUN_STATUSES = ["completed", "passed", "failed", "cancelled"] as const;
+const RECENT_RESOLVED_RUN_STATUSES = ["completed", "passed"] as const;
 const ACTIVE_EXECUTOR_STATUSES = ["submitted", "queued", "starting", "running", "heartbeat-lost", "queue-timeout", "hard-timeout", "callback-missing", "orphaned"] as const;
 const TERMINAL_RESOURCE_STATUSES = ["resolved", "rejected", "completed", "passed", "cancelled", "superseded"] as const;
 
@@ -89,9 +90,10 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
                and attention.status <> all($3::text[])
           )
         )
+         or status = any($4::text[])
       order by updated_at desc, id
       limit 50`,
-    [[...ACTIVE_RUN_STATUSES], [...TERMINAL_RUN_STATUSES], [...TERMINAL_RESOURCE_STATUSES]],
+    [[...ACTIVE_RUN_STATUSES], [...TERMINAL_RUN_STATUSES], [...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES]],
   )).rows.map((run): ActiveRun => {
     const runtimeContext = asRecord(run.runtime_context_json);
     const cwd = stringValue(runtimeContext.cwd);
@@ -116,7 +118,9 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
 
   const resourceAttention = resourceRows.map(resourceAttentionItem).filter((item): item is OperatorAttentionItem => item !== null);
   const taskAttention = taskRows.map(taskAttentionItem);
-  const runAttention = activeRuns.map(runAttentionItem);
+  const runAttention = activeRuns
+    .filter((run) => !(RECENT_RESOLVED_RUN_STATUSES as readonly string[]).includes(run.status))
+    .map(runAttentionItem);
   const attentionItems = [
     ...resourceAttention,
     ...taskAttention,
@@ -130,7 +134,7 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
     attentionItems,
     commandResults,
     runtimeHealth: {
-      activeRunCount: activeRuns.length,
+      activeRunCount: activeRuns.filter((run) => (ACTIVE_RUN_STATUSES as readonly string[]).includes(run.status)).length,
       attentionCount: attentionItems.length,
       blockedCount: attentionItems.filter((item) => item.severity === "blocked").length,
     },
@@ -148,17 +152,30 @@ async function readAttentionResourceRows(db: SouthstarDb) {
     resource_key: string;
     run_id: string | null;
     task_id: string | null;
+    task_status: string | null;
     status: string;
     title: string | null;
     payload_json: unknown;
     summary_json: unknown;
     updated_at: Date;
   }>(
-    `select resource_type, resource_key, run_id, task_id, status, title, payload_json, summary_json, updated_at
-       from southstar.runtime_resources
-      where resource_type in ('runtime_exception', 'approval', 'recovery_decision', 'executor_binding', 'hand_execution')
-        and status <> all($1::text[])
-      order by updated_at desc, resource_key
+    `select resources.resource_type,
+            resources.resource_key,
+            resources.run_id,
+            resources.task_id,
+            tasks.status as task_status,
+            resources.status,
+            resources.title,
+            resources.payload_json,
+            resources.summary_json,
+            resources.updated_at
+       from southstar.runtime_resources resources
+       left join southstar.workflow_tasks tasks
+         on tasks.run_id = resources.run_id
+        and tasks.id = resources.task_id
+      where resources.resource_type in ('runtime_exception', 'approval', 'recovery_decision', 'executor_binding', 'hand_execution')
+        and resources.status <> all($1::text[])
+      order by resources.updated_at desc, resources.resource_key
       limit 100`,
     [[...TERMINAL_RESOURCE_STATUSES]],
   )).rows;
@@ -217,6 +234,7 @@ function resourceAttentionItem(row: Awaited<ReturnType<typeof readAttentionResou
   const commands = commandsForResource(row.resource_type, {
     runId,
     taskId,
+    taskStatus: row.task_status ?? undefined,
     status: row.status,
     resourceKey: row.resource_key,
     payload,
@@ -341,6 +359,7 @@ function commandResultView(row: Awaited<ReturnType<typeof readRuntimeCommandRows
 function commandsForResource(resourceType: string, input: {
   runId?: string;
   taskId?: string;
+  taskStatus?: string;
   status: string;
   resourceKey: string;
   payload: Record<string, unknown>;
@@ -349,10 +368,10 @@ function commandsForResource(resourceType: string, input: {
     return executorCommands(input.runId, executorJobId(input.payload, input.resourceKey), input.status);
   }
   if (resourceType === "approval") return approvalCommands(input.runId, approvalId(input.payload, input.resourceKey));
-  if (resourceType === "recovery_decision") return recoveryCommands(input.runId, recoveryDecisionId(input.payload, input.resourceKey), input.status);
+  if (resourceType === "recovery_decision") return recoveryCommands(input.runId, recoveryDecisionId(input.payload, input.resourceKey), input.status, input.resourceKey);
   if (resourceType === "runtime_exception") {
     return [
-      ...input.runId && input.taskId ? taskCommands(input.runId, input.taskId, "blocked").slice(0, 1) : [],
+      ...input.runId && input.taskId ? taskCommands(input.runId, input.taskId, input.taskStatus ?? "unknown").slice(0, 1) : [],
     ];
   }
   return [];
@@ -435,29 +454,31 @@ function approvalCommands(runId: string | undefined, approvalIdValue: string | u
   ];
 }
 
-function recoveryCommands(runId: string | undefined, decisionIdValue: string | undefined, status: string): OperatorCommand[] {
+function recoveryCommands(runId: string | undefined, decisionIdValue: string | undefined, status: string, resourceKey?: string): OperatorCommand[] {
   const hasTarget = Boolean(runId && decisionIdValue);
+  const managed = Boolean(resourceKey?.startsWith("managed-recovery:"));
   const approvalEndpoint = hasTarget ? `/api/v2/runs/${encodeURIComponent(runId!)}/recovery-decisions/${encodeURIComponent(decisionIdValue!)}/approval` : undefined;
   const applyEndpoint = hasTarget ? `/api/v2/runs/${encodeURIComponent(runId!)}/recovery-decisions/${encodeURIComponent(decisionIdValue!)}/apply` : undefined;
   const waiting = status === "waiting_operator_approval";
   const approved = status === "approved" || status === "recorded";
+  const managedReason = "managed recovery decisions are applied by the runtime loop";
   return [
     command("recovery.approve", "Approve Recovery", approvalEndpoint, {
-      enabled: hasTarget && waiting,
+      enabled: hasTarget && waiting && !managed,
       requiresConfirmation: true,
-      disabledReason: !hasTarget ? "recovery decision target is missing" : waiting ? undefined : `recovery decision cannot approve from status ${status}`,
+      disabledReason: managed ? managedReason : !hasTarget ? "recovery decision target is missing" : waiting ? undefined : `recovery decision cannot approve from status ${status}`,
       body: { decision: "approved" },
     }),
     command("recovery.reject", "Reject Recovery", approvalEndpoint, {
-      enabled: hasTarget && waiting,
+      enabled: hasTarget && waiting && !managed,
       requiresConfirmation: true,
-      disabledReason: !hasTarget ? "recovery decision target is missing" : waiting ? undefined : `recovery decision cannot reject from status ${status}`,
+      disabledReason: managed ? managedReason : !hasTarget ? "recovery decision target is missing" : waiting ? undefined : `recovery decision cannot reject from status ${status}`,
       body: { decision: "rejected" },
     }),
     command("recovery.apply", "Apply Recovery", applyEndpoint, {
-      enabled: hasTarget && approved,
+      enabled: hasTarget && approved && !managed,
       requiresConfirmation: true,
-      disabledReason: !hasTarget ? "recovery decision target is missing" : approved ? undefined : `recovery decision cannot apply from status ${status}`,
+      disabledReason: managed ? managedReason : !hasTarget ? "recovery decision target is missing" : approved ? undefined : `recovery decision cannot apply from status ${status}`,
     }),
   ];
 }

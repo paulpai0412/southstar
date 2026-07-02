@@ -100,6 +100,110 @@ test("operator overview keeps failed runs visible when unresolved attention exis
   }
 });
 
+test("operator overview does not enable retry for runtime exceptions on completed tasks", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-operator-completed-exception";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "failed",
+      domain: "software",
+      goalPrompt: "failed run with stale callback",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, { id: "task-done", runId, taskKey: "Done", status: "completed", sortOrder: 0, dependsOn: [] });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "runtime_exception",
+      resourceKey: "runtime-exception-completed-task",
+      runId,
+      taskId: "task-done",
+      scope: "runtime",
+      status: "observed",
+      title: "Stale callback",
+      payload: { kind: "stale_callback", severity: "warning" },
+    });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+    const exception = model.attentionItems.find((item) => item.id === "runtime_exception:runtime-exception-completed-task");
+    const retry = exception?.commands.find((command) => command.id === "task.retry");
+
+    assert.equal(retry?.enabled, false);
+    assert.equal(retry?.disabledReason, "task status completed does not allow retry");
+  } finally {
+    await db.close();
+  }
+});
+
+test("operator overview keeps recently passed runs visible after refresh without counting them active", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-operator-passed-visible";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "passed",
+      domain: "software",
+      goalPrompt: "recently passed run",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: JSON.stringify({ cwd: "/home/timmypai/apps/southstar", projectRoot: "/home/timmypai/apps/southstar" }),
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, { id: "task-done", runId, taskKey: "Done", status: "completed", sortOrder: 0, dependsOn: [] });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+
+    assert.equal(model.activeRuns.some((run) => run.runId === runId && run.status === "passed"), true);
+    assert.equal(model.runtimeHealth.activeRunCount, 0);
+    assert.equal(model.runtimeHealth.attentionCount, 0);
+    assert.equal(model.attentionItems.some((item) => item.runId === runId), false);
+    assert.equal(model.defaultSelection?.runId, runId);
+  } finally {
+    await db.close();
+  }
+});
+
+test("operator overview disables managed recovery decisions because runtime applies them internally", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-operator-managed-recovery";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "failed",
+      domain: "software",
+      goalPrompt: "failed run with managed recovery",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "recovery_decision",
+      resourceKey: "managed-recovery:run-operator-managed-recovery:task-a",
+      runId,
+      taskId: "task-a",
+      scope: "recovery",
+      status: "recorded",
+      title: "Managed recovery",
+      payload: { schemaVersion: "southstar.managed-recovery-decision.v1", path: "reprovision-hand", reason: "managed recovery" },
+    });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+    const recovery = model.attentionItems.find((item) => item.id === "recovery_decision:managed-recovery:run-operator-managed-recovery:task-a");
+    const apply = recovery?.commands.find((command) => command.id === "recovery.apply");
+
+    assert.equal(apply?.enabled, false);
+    assert.equal(apply?.disabledReason, "managed recovery decisions are applied by the runtime loop");
+  } finally {
+    await db.close();
+  }
+});
+
 test("operator overview classifies all operator attention sources from runtime state", async () => {
   const db = await createTestPostgresDb();
   try {

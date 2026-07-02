@@ -20,6 +20,7 @@ await import("./session-recovery-execution-planner.test.ts");
 await import("./session-recovery-policy.test.ts");
 await import("./session-recovery-operations.test.ts");
 await import("./workspace-snapshot.test.ts");
+await import("./workspace-mount-policy.test.ts");
 await import("./planner.test.ts");
 await import("./pi-sdk-harness.test.ts");
 await import("./tork-client.test.ts");

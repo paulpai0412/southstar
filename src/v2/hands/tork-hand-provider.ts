@@ -6,6 +6,7 @@ import { withMaterializationMount } from "../executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { validateWorkflowManifest } from "../manifests/validate.ts";
+import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
 import type { ExecuteTaskInput, HandBinding, HandCall, HandProvider, HandResult, HandSnapshotRef, ProvisionHandInput } from "./types.ts";
 
 export function createTorkHandProvider(input: {
@@ -273,6 +274,7 @@ function workspaceMountFromEnvelope(envelope: AnyTaskEnvelope): { source: string
   const handle = envelope.workspace?.handle;
   const source = handle?.hostMountPath;
   if (!source || !isHostMountPath(source)) return undefined;
+  assertWorkspaceMountAllowed(source);
   return {
     source,
     target: containerWorkspacePath(handle),

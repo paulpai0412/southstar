@@ -182,7 +182,7 @@ test("TorkHandProvider.executeTask mounts host workspace at the container repo p
             handle: {
               repoRoot: "/workspace/repo",
               worktreePath: "/workspace/repo",
-              hostMountPath: "/home/timmypai/apps/southstar",
+              hostMountPath: "/home/timmypai/apps/customer-todo-web",
             },
           },
         },
@@ -192,17 +192,54 @@ test("TorkHandProvider.executeTask mounts host workspace at the container repo p
     assert.equal(result.ok, true);
     assert.deepEqual(
       submitted[0]!.workflow.tasks[0]!.execution.mounts.find((mount) => mount.target === "/workspace/repo"),
-      { source: "/home/timmypai/apps/southstar", target: "/workspace/repo", readonly: false },
+      { source: "/home/timmypai/apps/customer-todo-web", target: "/workspace/repo", readonly: false },
     );
     const materializedEnvelope = JSON.parse(await readFile(join(runRoot, "run-hand", "task-a", "envelope.json"), "utf8"));
     assert.deepEqual(materializedEnvelope.workspace.handle, {
       repoRoot: "/workspace/repo",
       worktreePath: "/workspace/repo",
-      hostMountPath: "/home/timmypai/apps/southstar",
+      hostMountPath: "/home/timmypai/apps/customer-todo-web",
     });
   } finally {
     await rm(runRoot, { recursive: true, force: true });
   }
+});
+
+test("TorkHandProvider.executeTask rejects the Southstar project as a host workspace mount", async () => {
+  let submitted = false;
+  const provider = createTorkHandProvider({
+    callbackUrl: "http://127.0.0.1/default-callback",
+    executorProvider: {
+      executorType: "tork",
+      submit: async () => {
+        submitted = true;
+        throw new Error("submit should not be called");
+      },
+    },
+  });
+  const binding = handBinding({ taskId: "task-a" });
+
+  const result = await provider.executeTask!(
+    binding,
+    executeTaskInput({
+      taskEnvelope: {
+        ...taskEnvelope("task-a"),
+        workspace: {
+          handle: {
+            repoRoot: "/workspace/repo",
+            worktreePath: "/workspace/repo",
+            hostMountPath: process.cwd(),
+          },
+        },
+      },
+    }),
+  );
+
+  assert.equal(result.ok, false);
+  assert.match(result.output, /refusing to mount Southstar project as workspace repo/);
+  assert.equal(binding.status, "failed");
+  assert.match(String(binding.payload.lastError), /refusing to mount Southstar project as workspace repo/);
+  assert.equal(submitted, false);
 });
 
 test("TorkHandProvider.executeTask fails missing workflow input and marks binding failed", async () => {

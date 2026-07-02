@@ -7,6 +7,7 @@ import { resolve } from "node:path";
 import { Client } from "pg";
 import type { SouthstarEnv } from "../config/env.ts";
 import { loadSouthstarEnv } from "../config/env.ts";
+import { isSouthstarProjectPath } from "../workspace/workspace-mount-policy.ts";
 
 export type PostgresInfraStatus =
   | { status: "started" | "already-running" | "running" | "stopped" | "not-running" | "skipped"; containerName: string; reason?: string };
@@ -47,6 +48,7 @@ type InfraLifecycleInput = {
   waitForTcp?: (host: string, port: number, timeoutMs: number) => Promise<void>;
   waitForPostgresReady?: (databaseUrl: string, timeoutMs: number) => Promise<void>;
   isTorkHealthy?: (baseUrl: string) => Promise<boolean>;
+  listWorkspaceMountSources?: (env: SouthstarEnv) => Promise<string[]>;
 };
 
 const POSTGRES_CONTAINER_NAME = "southstar-postgres";
@@ -92,6 +94,8 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
   const waitForPostgresReady = input.waitForPostgresReady
     ?? ((databaseUrl, timeoutMs) => waitForPostgresQueryReady(databaseUrl, timeoutMs, sleep));
   const isTorkHealthy = input.isTorkHealthy ?? defaultIsTorkHealthy;
+  const listWorkspaceMountSources = input.listWorkspaceMountSources
+    ?? ((env) => listWorkflowWorkspaceMountSources(env.databaseUrl));
   const torkPidFilePath = resolve(cwd, ".southstar/logs/tork.pid");
 
   return {
@@ -164,7 +168,7 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
     await ensureDirectory(logsDir);
     const logPath = resolve(logsDir, "tork-standalone.log");
     const scriptPath = resolve(cwd, "scripts/run-local-tork.sh");
-    const managedConfigPath = await writeManagedTorkConfig();
+    const managedConfigPath = await writeManagedTorkConfig(env);
     const spawnEnv = {
       ...process.env,
       ...torkEnv(env),
@@ -272,7 +276,7 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
     }
   }
 
-  async function writeManagedTorkConfig(): Promise<string> {
+  async function writeManagedTorkConfig(env: SouthstarEnv): Promise<string> {
     const managedConfigPath = resolve(cwd, ".southstar/tork.generated.toml");
     const baseConfigPath = resolve(cwd, ".tools/tork/southstar.config.toml");
     let baseConfig = DEFAULT_TORK_CONFIG;
@@ -281,14 +285,20 @@ export function createSouthstarInfraLifecycle(input: InfraLifecycleInput = {}) {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    const sourcePaths = [
+    const workspaceMountSources = await listWorkspaceMountSources(env);
+    const sourcePaths = filterAllowedTorkBindSources([
       "/tmp/southstar-runs",
       resolve(homedir(), ".pi/agent"),
       cwd,
-    ];
+      ...workspaceMountSources,
+    ]);
     await writeTextFile(managedConfigPath, mergeTorkBindSources(baseConfig, sourcePaths));
     return managedConfigPath;
   }
+}
+
+export function filterAllowedTorkBindSources(sourcePaths: string[]): string[] {
+  return unique(sourcePaths.filter(isAllowedTorkBindSource));
 }
 
 export function mergeTorkBindSources(configText: string, sourcePaths: string[]): string {
@@ -322,6 +332,33 @@ function quoteTomlString(value: string): string {
 
 function unique(values: string[]): string[] {
   return Array.from(new Set(values));
+}
+
+function isAllowedTorkBindSource(sourcePath: string): boolean {
+  const trimmed = sourcePath.trim();
+  if (!trimmed.startsWith("/") || trimmed.startsWith("/workspace/")) return false;
+  return !isSouthstarProjectPath(trimmed);
+}
+
+async function listWorkflowWorkspaceMountSources(databaseUrl: string): Promise<string[]> {
+  const client = new Client({ connectionString: databaseUrl });
+  await client.connect();
+  try {
+    const result = await client.query<{ source_path: string | null }>(
+      `select distinct coalesce(nullif(runtime_context_json->>'projectRoot', ''), nullif(runtime_context_json->>'cwd', '')) as source_path
+         from southstar.workflow_runs
+        where coalesce(nullif(runtime_context_json->>'projectRoot', ''), nullif(runtime_context_json->>'cwd', '')) is not null
+        order by source_path`,
+    );
+    return result.rows
+      .map((row) => row.source_path?.trim() ?? "")
+      .filter((sourcePath) => sourcePath.length > 0);
+  } catch (error) {
+    if ((error as { code?: string }).code === "42P01") return [];
+    throw error;
+  } finally {
+    await client.end();
+  }
 }
 
 function postgresTargetForManagedDocker(env: SouthstarEnv): { host: string; port: number } | undefined {

@@ -80,8 +80,8 @@ test("ManagedContextAssembler maps host project root into mounted container work
       executionProjectionJson: "{}",
       snapshotJson: "{}",
       runtimeContextJson: JSON.stringify({
-        cwd: "/home/timmypai/apps/southstar",
-        projectRoot: "/home/timmypai/apps/southstar",
+        cwd: "/home/timmypai/apps/customer-todo-web",
+        projectRoot: "/home/timmypai/apps/customer-todo-web",
       }),
       metricsJson: "{}",
     });
@@ -108,7 +108,7 @@ test("ManagedContextAssembler maps host project root into mounted container work
     assert.deepEqual(assembled.taskEnvelope.workspace?.handle, {
       repoRoot: "/workspace/repo",
       worktreePath: "/workspace/repo",
-      hostMountPath: "/home/timmypai/apps/southstar",
+      hostMountPath: "/home/timmypai/apps/customer-todo-web",
     });
   } finally {
     await db.close();

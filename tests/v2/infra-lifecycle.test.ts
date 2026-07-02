@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SouthstarEnv } from "../../src/v2/config/env.ts";
-import { createSouthstarInfraLifecycle, mergeTorkBindSources } from "../../src/v2/server/infra-lifecycle.ts";
+import { createSouthstarInfraLifecycle, filterAllowedTorkBindSources, mergeTorkBindSources } from "../../src/v2/server/infra-lifecycle.ts";
 
 test("infra start brings up local Postgres before Tork", async () => {
   const calls: string[] = [];
@@ -42,6 +42,7 @@ sources = [
     waitForPostgresReady: async (databaseUrl) => {
       calls.push(`pg:${databaseUrl}`);
     },
+    listWorkspaceMountSources: async () => ["/home/timmypai/apps/southstar-vocab"],
     writeTextFile: async (path, text) => {
       calls.push(`write:${path}:${text}`);
     },
@@ -67,7 +68,8 @@ allowed = true
 sources = [
   "/tmp/southstar-runs",
   "${process.env.HOME}/.pi/agent",
-  "/tmp/southstar"
+  "/tmp/southstar",
+  "/home/timmypai/apps/southstar-vocab"
 ]
 `}`,
     "/tmp/southstar/scripts/run-local-tork.sh ",
@@ -97,6 +99,19 @@ dir = "/tmp"
   assert.match(merged, /"\/tmp\/southstar-runs"/);
   assert.match(merged, /"\/home\/timmypai\/apps\/southstar"/);
   assert.equal((merged.match(/"\/tmp\/southstar-runs"/g) ?? []).length, 1);
+});
+
+test("filterAllowedTorkBindSources keeps legal repos and excludes Southstar project roots", () => {
+  assert.deepEqual(filterAllowedTorkBindSources([
+    "/home/timmypai/apps/southstar-vocab",
+    process.cwd(),
+    `${process.cwd()}/web`,
+    "/workspace/repo",
+    "relative/path",
+    "/home/timmypai/apps/southstar-vocab",
+  ]), [
+    "/home/timmypai/apps/southstar-vocab",
+  ]);
 });
 
 test("infra start reuses an already healthy Tork process", async () => {

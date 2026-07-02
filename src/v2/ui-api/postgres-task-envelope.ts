@@ -7,6 +7,7 @@ import type { ContextPacket } from "../context/types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { normalizeLibraryRefs, type LibraryRefKind } from "../orchestration/library-ref-compat.ts";
 import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
+import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
 
 export async function getPostgresTaskEnvelope(db: SouthstarDb, input: { runId: string; taskId: string }): Promise<TaskEnvelopeV2> {
   const persisted = await latestPersistedTaskEnvelope(db, input);
@@ -26,7 +27,10 @@ async function latestPersistedTaskEnvelope(db: SouthstarDb, input: { runId: stri
       limit 1`,
     [input.runId, input.taskId],
   );
-  return row?.payload_json.envelope ?? null;
+  const envelope = row?.payload_json.envelope ?? null;
+  const hostMountPath = envelope?.workspace?.handle?.hostMountPath;
+  if (hostMountPath && isHostMountPath(hostMountPath)) assertWorkspaceMountAllowed(hostMountPath);
+  return envelope;
 }
 
 async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input: { runId: string; taskId: string }): Promise<TaskEnvelopeV2> {
@@ -104,6 +108,7 @@ async function readWorkspaceHandle(db: SouthstarDb, runId: string): Promise<Task
   const runtimeContext = asRecord(row?.runtime_context_json);
   const projectRoot = stringValue(runtimeContext.projectRoot) ?? stringValue(runtimeContext.cwd);
   if (!projectRoot || !isHostMountPath(projectRoot)) return undefined;
+  assertWorkspaceMountAllowed(projectRoot);
   return {
     handle: {
       repoRoot: "/workspace/repo",

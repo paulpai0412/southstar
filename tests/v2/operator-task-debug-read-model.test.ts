@@ -140,20 +140,20 @@ test("run creation preserves planner draft cwd and operator overview exposes cwd
   try {
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with cwd",
-      cwd: "/home/timmypai/apps/southstar",
+      cwd: "/home/timmypai/apps/customer-todo-web",
     });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     const row = await db.one<{ runtime_context_json: { cwd?: string; projectRoot?: string } }>(
       "select runtime_context_json from southstar.workflow_runs where id = $1",
       [run.runId],
     );
-    assert.equal(row.runtime_context_json.cwd, "/home/timmypai/apps/southstar");
-    assert.equal(row.runtime_context_json.projectRoot, "/home/timmypai/apps/southstar");
+    assert.equal(row.runtime_context_json.cwd, "/home/timmypai/apps/customer-todo-web");
+    assert.equal(row.runtime_context_json.projectRoot, "/home/timmypai/apps/customer-todo-web");
 
     const overview = await buildOperatorOverviewReadModelPg(db);
     assert.equal(overview.activeRuns[0]?.runId, run.runId);
-    assert.equal(overview.activeRuns[0]?.cwd, "/home/timmypai/apps/southstar");
-    assert.equal(overview.activeRuns[0]?.projectRoot, "/home/timmypai/apps/southstar");
+    assert.equal(overview.activeRuns[0]?.cwd, "/home/timmypai/apps/customer-todo-web");
+    assert.equal(overview.activeRuns[0]?.projectRoot, "/home/timmypai/apps/customer-todo-web");
   } finally {
     await db.close();
   }

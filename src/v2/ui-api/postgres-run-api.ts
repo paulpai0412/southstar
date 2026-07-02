@@ -32,6 +32,7 @@ import {
   type PatchPlannerDraftTaskProfileOverrideInput,
   type PatchPlannerDraftTaskProfileOverrideResult,
 } from "./planner-draft-task-overrides.ts";
+import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
 
 export type {
   PatchPlannerDraftTaskProfileOverrideInput,
@@ -729,6 +730,7 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const draftSummary = asRecord(draft.summary);
   const plannerRequest = plannerRequestFromStored(draftSummary.plannerRequest) ?? plannerRequestFromStored(draftPayload.plannerRequest);
   const cwd = plannerRequest?.cwd;
+  if (cwd) assertWorkspaceMountAllowed(cwd);
 
   await createWorkflowRunPg(db, {
     id: runId,

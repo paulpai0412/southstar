@@ -262,6 +262,63 @@ test("tork observer patches queued hand execution to running when provider execu
   }
 });
 
+test("tork observer keeps scheduled provider jobs queued until task execution starts", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-tork-observer-provider-scheduled";
+    const taskId = "task-a";
+    const attemptId = "attempt-1";
+    await seedRunAndTask(db, runId, taskId, {
+      runStatus: "scheduling",
+      taskStatus: "queued",
+    });
+    await seedHandExecution(db, {
+      runId,
+      taskId,
+      sessionId: "session-a",
+      attemptId,
+      status: "queued",
+      queuedAt: "2026-07-01T00:00:00.000Z",
+      queueTimeoutSeconds: 3600,
+      heartbeatTimeoutSeconds: 60,
+      externalJobId: "job-scheduled-only",
+    });
+
+    const result = await observeTorkHandExecutionExceptionsPg(db, {
+      now: "2026-07-01T00:02:00.000Z",
+      providerActions: {
+        poll: async (input) => {
+          assert.equal(input.externalJobId, "job-scheduled-only");
+          assert.equal(input.reason, "observe-tork-provider-status");
+          return {
+            state: "SCHEDULED",
+            raw: {
+              state: "SCHEDULED",
+              startedAt: "2026-07-01T00:00:01.000Z",
+              execution: [{
+                id: "tork-execution-1",
+                state: "SCHEDULED",
+                scheduledAt: "2026-07-01T00:00:02.000Z",
+              }],
+            },
+          };
+        },
+      },
+    });
+
+    assert.deepEqual(result.observedKinds, []);
+    const hand = await getResourceByKeyPg(db, "hand_execution", `hand-execution:${runId}:${taskId}:${attemptId}`);
+    assert.equal(hand?.status, "queued");
+    assert.equal(hand?.payload.status, "queued");
+    assert.equal(hand?.payload.startedAt, undefined);
+    const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
+      .filter((resource) => resource.runId === runId);
+    assert.equal(exceptions.length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
 async function seedRunAndTask(
   db: SouthstarDb,
   runId: string,

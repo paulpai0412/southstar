@@ -109,7 +109,7 @@ async function dispatchTask(
   const baseRecoveryKey = `task-dispatch:${input.runId}:${input.taskId}`;
   const recoveryKey = attemptId === firstDispatchAttemptId(input.taskId) ? baseRecoveryKey : `${baseRecoveryKey}:${attemptId}`;
   const handExecutionId = `hand-execution:${input.runId}:${input.taskId}:${attemptId}`;
-  const queueTimeoutSeconds = 120;
+  const queueTimeoutSeconds = 3600;
   const heartbeatTimeoutSeconds = 60;
   let contextPacketId = `context-${input.runId}-${input.taskId}`;
   let taskEnvelopeId = "";

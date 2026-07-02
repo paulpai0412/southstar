@@ -37,7 +37,7 @@ test("Postgres task envelope maps host project root into mounted container works
     await seedKnowledgeCard(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement todo app features",
-      cwd: "/home/timmypai/apps/southstar",
+      cwd: "/home/timmypai/apps/customer-todo-web",
     });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
 
@@ -46,8 +46,23 @@ test("Postgres task envelope maps host project root into mounted container works
     assert.deepEqual(envelope.workspace?.handle, {
       repoRoot: "/workspace/repo",
       worktreePath: "/workspace/repo",
-      hostMountPath: "/home/timmypai/apps/southstar",
+      hostMountPath: "/home/timmypai/apps/customer-todo-web",
     });
+  });
+});
+
+test("Postgres run creation rejects mounting the Southstar project as workspace repo", async () => {
+  await withDb(async (db) => {
+    await seedKnowledgeCard(db);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement todo app features",
+      cwd: process.cwd(),
+    });
+
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
+      /refusing to mount Southstar project as workspace repo/,
+    );
   });
 });
 
