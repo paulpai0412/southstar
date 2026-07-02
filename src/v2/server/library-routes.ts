@@ -8,7 +8,7 @@ import {
 import type { LibraryChatAction } from "../read-models/library-chat.ts";
 import { buildLibraryGraphReadModel } from "../read-models/library-graph.ts";
 import { buildLibraryWorkspaceReadModel } from "../read-models/library-workspace.ts";
-import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -89,6 +89,7 @@ export async function handleLibraryRoute(
   if (request.method === "GET" && url.pathname === "/api/v2/library/chat/events") {
     const sessionId = requiredQueryParam(url, "sessionId");
     const actionId = requiredQueryParam(url, "actionId");
+    await requireLibraryChatAction(context, { sessionId, actionId });
     return libraryChatEventStream({ sessionId, actionId });
   }
 
@@ -133,8 +134,8 @@ async function readJsonBody<T>(request: Request): Promise<T> {
 }
 
 function requiredString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.length === 0) throw new Error(`${field} is required`);
-  return value;
+  if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${field} is required`);
+  return value.trim();
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -164,26 +165,35 @@ function json<T>(kind: string, result: T): Response {
   });
 }
 
+async function requireLibraryChatAction(
+  context: RuntimeServerContext,
+  input: { sessionId: string; actionId: string },
+): Promise<void> {
+  const action = await getResourceByKeyPg(context.db, "library_chat_action", input.actionId);
+  if (!action) throw new Error(`library chat action ${input.actionId} was not found`);
+  if (action.sessionId !== input.sessionId) {
+    throw new Error(`library chat action ${input.actionId} does not belong to session ${input.sessionId}`);
+  }
+}
+
 function libraryChatEventStream(input: { sessionId: string; actionId: string }): Response {
   const events = [
     {
       event: "library.intent.started",
-      data: { sessionId: input.sessionId, actionId: input.actionId, status: "started" },
+      data: { sessionId: input.sessionId, actionId: input.actionId, message: "Reading library command." },
     },
     {
       event: "library.intent.completed",
-      data: { sessionId: input.sessionId, actionId: input.actionId, intent: "create-library-object" },
+      data: { sessionId: input.sessionId, actionId: input.actionId, intent: "create_or_import_library_item", confidence: 0.8 },
     },
     {
       event: "library.proposal.created",
       data: {
         sessionId: input.sessionId,
         actionId: input.actionId,
-        proposal: {
-          title: "Browser verification skill",
-          objectKeys: ["skill.browser-verification"],
-          filePaths: ["skills/browser-verification/SKILL.md"],
-        },
+        title: "Draft library proposal",
+        objectKeys: [],
+        filePaths: [],
       },
     },
     {
@@ -192,10 +202,17 @@ function libraryChatEventStream(input: { sessionId: string; actionId: string }):
     },
     {
       event: "library.command.completed",
-      data: { sessionId: input.sessionId, actionId: input.actionId, status: "completed" },
+      data: { sessionId: input.sessionId, actionId: input.actionId, status: "ready_for_review" },
     },
   ];
-  return new Response(events.map(({ event, data }) => sse(event, data)).join(""), {
+  const encoder = new TextEncoder();
+  const frames = events.map(({ event, data }) => sse(event, data)).join("");
+  return new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(frames));
+      controller.close();
+    },
+  }), {
     headers: {
       "content-type": "text/event-stream",
       "cache-control": "no-cache, no-transform",

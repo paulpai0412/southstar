@@ -191,6 +191,56 @@ test("accepts library chat messages and streams deterministic SSE events", async
     assert.match(stream, /event: library\.intent\.started/);
     assert.match(stream, /event: library\.proposal\.created/);
     assert.match(stream, /event: library\.command\.completed/);
+
+    const frames = parseSseFrames(stream);
+    const proposal = frames.find((frame) => frame.event === "library.proposal.created");
+    assert.equal(proposal?.data.title, "Draft library proposal");
+    assert.deepEqual(proposal?.data.objectKeys, []);
+    assert.deepEqual(proposal?.data.filePaths, []);
+    const completed = frames.find((frame) => frame.event === "library.command.completed");
+    assert.equal(completed?.data.status, "ready_for_review");
+
+    const mismatchedStream = await handleRuntimeRoute(
+      context,
+      new Request(`http://local/api/v2/library/chat/events?sessionId=other-session&actionId=${message.result.actionId}`),
+    );
+    assert.equal(mismatchedStream.status, 400);
+    const mismatchedError = await readEnvelope(mismatchedStream);
+    assert.equal(mismatchedError.ok, false);
+    assert.match(mismatchedError.error, /does not belong to session/);
+
+    const missingStream = await handleRuntimeRoute(
+      context,
+      new Request("http://local/api/v2/library/chat/events?sessionId=library-chat-test&actionId=library-action-missing"),
+    );
+    assert.equal(missingStream.status, 400);
+    const missingError = await readEnvelope(missingStream);
+    assert.equal(missingError.ok, false);
+    assert.match(missingError.error, /was not found/);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("library chat messages reject blank prompts", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-route-"));
+
+  try {
+    const response = await handleRuntimeRoute(
+      { db, libraryRoot } as any,
+      new Request("http://local/api/v2/library/chat/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sessionId: "library-chat-test", prompt: "   ", scope: "software" }),
+      }),
+    );
+
+    assert.equal(response.status, 400);
+    const error = await readEnvelope(response);
+    assert.equal(error.ok, false);
+    assert.match(error.error, /prompt is required/);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -208,6 +258,20 @@ async function graphObjectKeys(context: any, scope: string): Promise<string[]> {
 
 async function readEnvelope(response: Response): Promise<any> {
   return await response.json();
+}
+
+function parseSseFrames(text: string): Array<{ event: string; data: any }> {
+  return text
+    .trim()
+    .split(/\n\n+/)
+    .filter(Boolean)
+    .map((frame) => {
+      const lines = frame.split("\n");
+      const event = lines.find((line) => line.startsWith("event: "))?.slice("event: ".length);
+      const data = lines.find((line) => line.startsWith("data: "))?.slice("data: ".length);
+      if (!event || !data) throw new Error(`invalid SSE frame: ${frame}`);
+      return { event, data: JSON.parse(data) };
+    });
 }
 
 async function seedObject(
