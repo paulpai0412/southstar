@@ -1,7 +1,12 @@
 import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
-import { findLibraryObjectByKey, upsertLibraryEdge, upsertLibraryObject } from "../library-graph-store.ts";
+import {
+  findLibraryObjectByKey,
+  findLibraryObjectByKeyForUpdate,
+  upsertLibraryEdge,
+  upsertLibraryObject,
+} from "../library-graph-store.ts";
 import type { LibraryDefinitionKind, LibraryDefinitionStatus, LibraryEdgeType } from "../types.ts";
 import { parseLibraryFileContent } from "./library-file-parser.ts";
 import type { LibraryFileGraphProjection, LibraryFileParseResult, LibraryFileRecord } from "./library-file-types.ts";
@@ -86,7 +91,15 @@ export async function syncLibraryFileToGraph(db: SouthstarDb, input: { root: str
   validateReferencedObjects(projection);
 
   return db.tx(async (tx) => {
-    const object = await upsertLibraryObject(tx, projection.object);
+    const existing = await findLibraryObjectByKeyForUpdate(tx, projection.object.objectKey);
+    const objectInput = existing?.headVersionId === projection.object.headVersionId
+      ? {
+          ...projection.object,
+          status: existing.status,
+          state: { ...projection.object.state, status: existing.status },
+        }
+      : projection.object;
+    const object = await upsertLibraryObject(tx, objectInput);
     const edges = [];
     for (const edge of projection.edges) {
       await ensureReferencedObject(tx, edge.toObjectKey, edge.scope);

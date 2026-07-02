@@ -35,6 +35,7 @@ await import("./design-library-validators.test.ts");
 await import("./library-graph-store.test.ts");
 await import("./library-file-parser.test.ts");
 await import("./library-file-store.test.ts");
+await import("./library-object-lifecycle.test.ts");
 await import("./library-graph-read-model.test.ts");
 await import("./library-chat-routes.test.ts");
 await import("./library-candidate-resolver.test.ts");

@@ -3,6 +3,7 @@ import { access, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { applyLibraryObjectLifecycleAction } from "../../src/v2/design-library/lifecycle/library-object-lifecycle.ts";
 import { listLibraryFiles, readLibraryFile, syncLibraryFileToGraph, writeLibraryFile } from "../../src/v2/design-library/files/library-file-store.ts";
 import { findLibraryEdgesFrom, findLibraryObjectByKey, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -70,6 +71,58 @@ Builds React interfaces.
 
     const fileText = await readFile(join(root, "agents/frontend-developer.agent.md"), "utf8");
     assert.match(fileText, /Builds React interfaces/);
+  } finally {
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("preserves lifecycle status when syncing an unchanged library file", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
+  const db = await createTestPostgresDb();
+
+  try {
+    const relativePath = "skills/browser-verification.skill.md";
+    const draftContent = `---
+schemaVersion: southstar.library.skill_spec_file.v1
+id: skill.browser-verification
+title: Browser Verification
+scope: software
+status: draft
+---
+
+# Instructions
+
+Verify browser behavior.
+`;
+
+    await writeLibraryFile({ root, relativePath, content: draftContent });
+    const initialSync = await syncLibraryFileToGraph(db, { root, relativePath });
+    assert.equal(initialSync.object.status, "draft");
+
+    await applyLibraryObjectLifecycleAction(db, {
+      objectKey: "skill.browser-verification",
+      action: "approve",
+      actor: "operator",
+      reason: "validated in a local workflow",
+    });
+
+    const unchangedSync = await syncLibraryFileToGraph(db, { root, relativePath });
+    assert.equal(unchangedSync.object.headVersionId, initialSync.object.headVersionId);
+    assert.equal(unchangedSync.object.status, "approved");
+    assert.equal(unchangedSync.object.state.status, "approved");
+    assert.equal((await findLibraryObjectByKey(db, "skill.browser-verification"))?.status, "approved");
+
+    await writeLibraryFile({
+      root,
+      relativePath,
+      content: draftContent.replace("Verify browser behavior.", "Verify browser behavior after UI changes."),
+    });
+
+    const changedSync = await syncLibraryFileToGraph(db, { root, relativePath });
+    assert.notEqual(changedSync.object.headVersionId, initialSync.object.headVersionId);
+    assert.equal(changedSync.object.status, "draft");
+    assert.equal(changedSync.object.state.status, "draft");
   } finally {
     await db.close();
     await rm(root, { recursive: true, force: true });
