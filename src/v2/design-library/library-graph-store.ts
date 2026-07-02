@@ -132,6 +132,7 @@ export async function listLibraryObjects(
   db: SouthstarDb,
   input: ListLibraryObjectsInput = {},
 ): Promise<LibraryObjectSummary[]> {
+  const scope = normalizeScopeInput(input.scope);
   const result = await db.query<LibraryObjectRow>(
     `select id, object_key, object_kind, status, head_version_id, state_json
        from southstar.library_objects
@@ -144,12 +145,13 @@ export async function listLibraryObjects(
           or state_json->'domainRefs' ? $3
         )
       order by coalesce(state_json->>'scope', 'global'), object_kind, object_key`,
-    [input.status ?? null, input.objectKind ?? null, input.scope ?? null],
+    [input.status ?? null, input.objectKind ?? null, scope ?? null],
   );
   return result.rows.map(mapObject);
 }
 
 export async function listLibraryEdges(db: SouthstarDb, input: ListLibraryEdgesInput = {}): Promise<LibraryEdgeRecord[]> {
+  const scope = normalizeScopeInput(input.scope);
   const result = await db.query<LibraryEdgeRow>(
     `select
         id, from_object_key, from_version_ref, edge_type, to_object_key, to_version_ref,
@@ -158,7 +160,7 @@ export async function listLibraryEdges(db: SouthstarDb, input: ListLibraryEdgesI
       where ($1::text is null or scope = $1 or scope = 'global')
         and status = $2
       order by scope, edge_type, from_object_key, to_object_key`,
-    [input.scope ?? null, input.status ?? "active"],
+    [scope ?? null, input.status ?? "active"],
   );
   return result.rows.map(mapEdge);
 }
@@ -259,6 +261,10 @@ function mapEdge(row: LibraryEdgeRow): LibraryEdgeRecord {
 
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
+}
+
+function normalizeScopeInput(scope: string | undefined): string | undefined {
+  return !scope || scope === "all" ? undefined : scope;
 }
 
 function resolveReadFilters(

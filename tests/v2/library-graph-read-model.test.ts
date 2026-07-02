@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import {
+  listLibraryEdges,
+  listLibraryObjects,
+  upsertLibraryEdge,
+  upsertLibraryObject,
+} from "../../src/v2/design-library/library-graph-store.ts";
 import { buildLibraryGraphReadModel } from "../../src/v2/read-models/library-graph.ts";
 import { buildLibraryWorkspaceReadModel } from "../../src/v2/read-models/library-workspace.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -107,6 +112,7 @@ test("builds scoped library graph neighborhoods and keeps unconnected global nod
       softwareNeighborhood.edges.map((edge) => [edge.fromObjectKey, edge.edgeType, edge.toObjectKey, edge.scope]),
       [["agent.frontend-developer", "provides_capability", "capability.react-ui", "software"]],
     );
+    assert.equal(softwareNeighborhood.edges[0]?.status, "active");
 
     const researchGraph = await buildLibraryGraphReadModel(db, { scope: "research" });
     assert.deepEqual(
@@ -130,6 +136,30 @@ test("builds scoped library graph neighborhoods and keeps unconnected global nod
     const allGraph = await buildLibraryGraphReadModel(db);
     const explicitAllGraph = await buildLibraryGraphReadModel(db, { scope: "all" });
     assert.deepEqual(explicitAllGraph, allGraph);
+  } finally {
+    await db.close();
+  }
+});
+
+test("list helpers treat all scope as no scope", async () => {
+  const db = await createTestPostgresDb();
+
+  try {
+    await seedLibraryGraph(db);
+
+    const implicitAllObjects = await listLibraryObjects(db);
+    const explicitAllObjects = await listLibraryObjects(db, { scope: "all" });
+    assert.deepEqual(
+      explicitAllObjects.map((object) => object.objectKey),
+      implicitAllObjects.map((object) => object.objectKey),
+    );
+
+    const implicitAllEdges = await listLibraryEdges(db);
+    const explicitAllEdges = await listLibraryEdges(db, { scope: "all" });
+    assert.deepEqual(
+      explicitAllEdges.map((edge) => edge.id),
+      implicitAllEdges.map((edge) => edge.id),
+    );
   } finally {
     await db.close();
   }

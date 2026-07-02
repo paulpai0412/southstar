@@ -17,6 +17,7 @@ export type LibraryGraphEdge = {
   edgeType: LibraryEdgeType;
   toObjectKey: string;
   scope: string;
+  status: LibraryEdgeRecord["status"];
   weight: number;
 };
 
@@ -151,6 +152,7 @@ function toGraphEdge(edge: LibraryEdgeRecord): LibraryGraphEdge {
     edgeType: edge.edgeType,
     toObjectKey: edge.toObjectKey,
     scope: edge.scope,
+    status: edge.status,
     weight: edge.weight,
   };
 }
