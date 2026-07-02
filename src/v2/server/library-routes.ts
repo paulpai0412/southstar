@@ -54,7 +54,7 @@ export async function handleLibraryRoute(
 
   if (request.method === "POST" && url.pathname === "/api/v2/library/chat/messages") {
     const body = await readJsonBody<{ sessionId?: unknown; prompt?: unknown; scope?: unknown }>(request);
-    const prompt = requiredString(body.prompt, "prompt");
+    const prompt = requiredNonBlankString(body.prompt, "prompt");
     const action: LibraryChatAction = {
       actionId: `library-action-${randomUUID()}`,
       sessionId: optionalString(body.sessionId) ?? `library-chat-${randomUUID()}`,
@@ -134,6 +134,11 @@ async function readJsonBody<T>(request: Request): Promise<T> {
 }
 
 function requiredString(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new Error(`${field} is required`);
+  return value;
+}
+
+function requiredNonBlankString(value: unknown, field: string): string {
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${field} is required`);
   return value.trim();
 }

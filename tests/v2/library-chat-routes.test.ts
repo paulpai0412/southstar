@@ -63,13 +63,14 @@ allowedToolRefs:
 
 Builds React interfaces.
 `;
+    const contentToWrite = `${content}  \n`;
 
     const patchResponse = await handleRuntimeRoute(
       context,
       new Request(`http://local/api/v2/library/files/${relativePath}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content }),
+        body: JSON.stringify({ content: contentToWrite }),
       }),
     );
     assert.equal(patchResponse.status, 200);
@@ -77,6 +78,7 @@ Builds React interfaces.
     assert.equal(patched.ok, true);
     assert.equal(patched.kind, "library-file");
     assert.equal(patched.result.relativePath, relativePath);
+    assert.equal(patched.result.content, contentToWrite);
     assert.equal(patched.result.parsed.ok, true);
 
     const listResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/files"));
@@ -94,6 +96,7 @@ Builds React interfaces.
     assert.equal(read.ok, true);
     assert.equal(read.kind, "library-file");
     assert.equal(read.result.relativePath, relativePath);
+    assert.equal(read.result.content, contentToWrite);
     assert.equal(read.result.parsed.ok, true);
 
     const syncResponse = await handleRuntimeRoute(
