@@ -1035,5 +1035,5 @@ function isReadModelKind(kind: string): kind is ReadModelKind {
 }
 
 function corsHeaders(): Record<string, string> {
-  return { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,OPTIONS", "access-control-allow-headers": "content-type,authorization,last-event-id" };
+  return { "access-control-allow-origin": "*", "access-control-allow-methods": "GET,POST,PATCH,OPTIONS", "access-control-allow-headers": "content-type,authorization,last-event-id" };
 }

@@ -46,7 +46,7 @@ export async function handleLibraryRoute(
   }
 
   if (request.method === "GET" && url.pathname === "/api/v2/library/files") {
-    return json("library-files", await listLibraryFiles({ root: libraryRoot(context) }));
+    return json("library-files", { files: await listLibraryFiles({ root: libraryRoot(context) }) });
   }
 
   const syncMatch = url.pathname.match(/^\/api\/v2\/library\/files\/(.+)\/sync$/);

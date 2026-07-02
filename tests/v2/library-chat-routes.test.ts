@@ -84,7 +84,7 @@ Builds React interfaces.
     const listed = await readEnvelope(listResponse);
     assert.equal(listed.kind, "library-files");
     assert.deepEqual(
-      listed.result.map((file: { relativePath: string }) => file.relativePath),
+      listed.result.files.map((file: { relativePath: string }) => file.relativePath),
       [relativePath],
     );
 
@@ -104,6 +104,24 @@ Builds React interfaces.
     const synced = await readEnvelope(syncResponse);
     assert.equal(synced.kind, "library-file-sync");
     assert.equal(synced.result.object.objectKey, "agent.frontend-developer");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("library routes allow browser PATCH preflight", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-route-"));
+
+  try {
+    const response = await handleRuntimeRoute(
+      { db, libraryRoot } as any,
+      new Request("http://local/api/v2/library/files/agents/frontend-developer.agent.md", { method: "OPTIONS" }),
+    );
+
+    assert.equal(response.status, 204);
+    assert.match(response.headers.get("access-control-allow-methods") ?? "", /PATCH/);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
