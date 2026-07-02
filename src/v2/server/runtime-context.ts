@@ -18,6 +18,7 @@ export type RuntimeServerContext = {
   callbackUrl?: string;
   serverUrl?: string;
   runRoot?: string;
+  libraryRoot?: string;
   reconcileIntervalMs?: number;
   createReconcileLoop?: () => RuntimeLoopController;
   runtimeLoopRegistry?: RuntimeLoopRegistry;

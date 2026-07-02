@@ -37,6 +37,7 @@ import { handleExecutionRoute } from "./execution-routes.ts";
 import { handleRunLifecycleRoute } from "./run-lifecycle-routes.ts";
 import { handleMemoryRoute } from "./memory-routes.ts";
 import { handleChatRoute } from "./chat-routes.ts";
+import { handleLibraryRoute } from "./library-routes.ts";
 import { handleSessionRoute } from "./session-routes.ts";
 import { handleTaskCommandRoute } from "./task-command-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
@@ -67,6 +68,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (memoryResponse) return memoryResponse;
     const chatResponse = await handleChatRoute(context, request, url);
     if (chatResponse) return chatResponse;
+    const libraryResponse = await handleLibraryRoute(context, request, url);
+    if (libraryResponse) return libraryResponse;
     const executionResponse = await handleExecutionRoute(context, request, url);
     if (executionResponse) return executionResponse;
     const taskCommandResponse = await handleTaskCommandRoute(context, request, url);
