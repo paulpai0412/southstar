@@ -17,3 +17,16 @@ test("App mode rail exposes Library mode and AppShell renders persistent library
   assert.match(appShell, /data-testid="library-mode-panel"/);
   assert.match(appShell, /modePanelStyle\(appMode === "library"\)/);
 });
+
+test("Library workspace has domain sidebar, chat SSE center, and right file viewer", () => {
+  const workspace = source("web/components/library/LibraryWorkspace.tsx");
+  assert.match(workspace, /LibrarySidebar/);
+  assert.match(workspace, /LibraryChatWindow/);
+  assert.match(workspace, /LibraryFileViewer/);
+  assert.match(source("web/components/library/LibraryChatWindow.tsx"), /runLibraryChatCommand/);
+  assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /LibraryGraphChart/);
+  assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /library-graph-domain-filter/);
+  assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /\/api\/library\/graph\?scope=/);
+  assert.match(source("web/components/library/LibraryGraphChart.tsx"), /<svg/);
+  assert.match(source("web/components/library/LibraryFileViewer.tsx"), /textarea/);
+});
