@@ -402,6 +402,44 @@ allowedToolRefs:
   }
 });
 
+test("placeholder creation does not downgrade existing referenced objects", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
+  const db = await createTestPostgresDb();
+
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "tool.workspace-read",
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: "tool.workspace-read@approved",
+      state: { title: "Workspace Read", scope: "global" },
+    });
+    const content = `---
+schemaVersion: southstar.library.skill_spec_file.v1
+id: skill.safe-placeholder
+title: Safe Placeholder
+scope: software
+status: draft
+requiresToolRefs:
+  - tool.workspace-read
+---
+
+# Instructions
+`;
+
+    await writeLibraryFile({ root, relativePath: "skills/safe-placeholder.skill.md", content });
+    await syncLibraryFileToGraph(db, { root, relativePath: "skills/safe-placeholder.skill.md" });
+
+    const tool = await findLibraryObjectByKey(db, "tool.workspace-read");
+    assert.equal(tool?.status, "approved");
+    assert.equal(tool?.headVersionId, "tool.workspace-read@approved");
+    assert.equal(tool?.state.title, "Workspace Read");
+  } finally {
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects unknown referenced object prefixes before writing graph rows", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
   const db = await createTestPostgresDb();

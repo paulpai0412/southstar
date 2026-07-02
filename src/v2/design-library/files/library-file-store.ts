@@ -1,7 +1,8 @@
-import { lstat, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
 import {
+  createLibraryObject,
   deactivateLibraryEdgesForSourceExcept,
   findLibraryObjectByKey,
   findLibraryObjectByKeyForUpdate,
@@ -80,6 +81,35 @@ export async function writeLibraryFile(input: {
   return { relativePath: safePath.relativePath };
 }
 
+export async function writeNewLibraryFile(input: {
+  root: string;
+  relativePath: string;
+  content: string;
+}): Promise<{ relativePath: string }> {
+  const safePath = await resolveLibraryPath(input, { allowMissingRoot: true });
+  await mkdir(dirname(safePath.absolutePath), { recursive: true });
+  await writeFile(safePath.absolutePath, input.content, { encoding: "utf8", flag: "wx" });
+  return { relativePath: safePath.relativePath };
+}
+
+export async function removeLibraryFileIfContentMatches(input: {
+  root: string;
+  relativePath: string;
+  content: string;
+}): Promise<boolean> {
+  const safePath = await resolveLibraryPath(input, { allowMissingRoot: true });
+  let existing;
+  try {
+    existing = await readFile(safePath.absolutePath, "utf8");
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (existing !== input.content) return false;
+  await rm(safePath.absolutePath, { force: true });
+  return true;
+}
+
 export async function syncLibraryFileToGraph(db: SouthstarDb, input: { root: string; relativePath: string }) {
   const file = await readLibraryFile(input);
   if (!file.parsed.ok) {
@@ -88,34 +118,75 @@ export async function syncLibraryFileToGraph(db: SouthstarDb, input: { root: str
     );
   }
 
-  validateLibraryFileGraphReferences(file.parsed.file);
-  const projection = projectFileToGraph(file.parsed.file);
+  return db.tx(async (tx) => syncLibraryFileRecordToGraph(tx, file.parsed.file));
+}
 
-  return db.tx(async (tx) => {
-    const existing = await findLibraryObjectByKeyForUpdate(tx, projection.object.objectKey);
-    const objectInput = existing?.headVersionId === projection.object.headVersionId
-      ? {
-          ...projection.object,
-          status: existing.status,
-          state: { ...projection.object.state, status: existing.status },
-        }
-      : projection.object;
-    const object = await upsertLibraryObject(tx, objectInput);
-    await deactivateLibraryEdgesForSourceExcept(tx, {
+export async function syncLibraryFileRecordToGraph(
+  db: SouthstarDb,
+  file: LibraryFileRecord,
+  options: { rejectExistingObject?: boolean } = {},
+) {
+  validateLibraryFileGraphReferences(file);
+  const projection = projectLibraryFileToGraph(file);
+
+  const existing = await findLibraryObjectByKeyForUpdate(db, projection.object.objectKey);
+  if (options.rejectExistingObject && existing) {
+    throw new Error(`library import object already exists: ${projection.object.objectKey}`);
+  }
+  const objectInput = existing?.headVersionId === projection.object.headVersionId
+    ? {
+        ...projection.object,
+        status: existing.status,
+        state: { ...projection.object.state, status: existing.status },
+      }
+    : projection.object;
+  const object = await upsertLibraryObject(db, objectInput);
+  await deactivateLibraryEdgesForSourceExcept(db, {
+    fromObjectKey: projection.object.objectKey,
+    sourcePath: file.path,
+    keepEdges: projection.edges,
+  });
+  const edges = [];
+  for (const edge of projection.edges) {
+    await ensureReferencedObject(db, edge.toObjectKey, edge.scope);
+    edges.push(await upsertLibraryEdge(db, { ...edge, status: "active", weight: 1 }));
+  }
+  return { object, edges };
+}
+
+export async function syncNewLibraryFileRecordsToGraph(db: SouthstarDb, files: LibraryFileRecord[]) {
+  const projections = files.map((file) => {
+    validateLibraryFileGraphReferences(file);
+    return { file, projection: projectLibraryFileToGraph(file) };
+  });
+  const importedKeys = new Set(projections.map(({ projection }) => projection.object.objectKey));
+  const objects = [];
+  for (const { projection } of projections) {
+    objects.push(await createLibraryObject(db, projection.object));
+  }
+
+  const results = [];
+  for (const { file, projection } of projections) {
+    await deactivateLibraryEdgesForSourceExcept(db, {
       fromObjectKey: projection.object.objectKey,
-      sourcePath: file.parsed.file.path,
+      sourcePath: file.path,
       keepEdges: projection.edges,
     });
     const edges = [];
     for (const edge of projection.edges) {
-      await ensureReferencedObject(tx, edge.toObjectKey, edge.scope);
-      edges.push(await upsertLibraryEdge(tx, { ...edge, status: "active", weight: 1 }));
+      if (!importedKeys.has(edge.toObjectKey)) {
+        await ensureReferencedObject(db, edge.toObjectKey, edge.scope);
+      }
+      edges.push(await upsertLibraryEdge(db, { ...edge, status: "active", weight: 1 }));
     }
-    return { object, edges };
-  });
+    const object = objects.find((candidate) => candidate.objectKey === projection.object.objectKey);
+    if (!object) throw new Error(`library object sync result missing: ${projection.object.objectKey}`);
+    results.push({ object, edges });
+  }
+  return results;
 }
 
-function projectFileToGraph(file: LibraryFileRecord): LibraryFileGraphProjection {
+export function projectLibraryFileToGraph(file: LibraryFileRecord): LibraryFileGraphProjection {
   const status: LibraryDefinitionStatus = file.status === "invalid" ? "draft" : file.status;
   const state = {
     ...file.definition,
@@ -139,7 +210,7 @@ function projectFileToGraph(file: LibraryFileRecord): LibraryFileGraphProjection
 }
 
 export function validateLibraryFileGraphReferences(file: LibraryFileRecord): void {
-  validateReferencedObjects(projectFileToGraph(file));
+  validateReferencedObjects(projectLibraryFileToGraph(file));
 }
 
 function edgeProjection(file: LibraryFileRecord): LibraryFileGraphProjection["edges"] {
@@ -187,17 +258,22 @@ async function ensureReferencedObject(db: SouthstarDb, objectKey: string, scope:
   const existing = await findLibraryObjectByKey(db, objectKey);
   if (existing) return;
 
-  await upsertLibraryObject(db, {
-    objectKey,
-    objectKind: inferObjectKind(objectKey),
-    status: "draft",
-    headVersionId: `${objectKey}@placeholder`,
-    state: {
-      title: objectKey,
-      scope,
-      source: "library-file-sync-placeholder",
-    },
-  });
+  try {
+    await createLibraryObject(db, {
+      objectKey,
+      objectKind: inferObjectKind(objectKey),
+      status: "draft",
+      headVersionId: `${objectKey}@placeholder`,
+      state: {
+        title: objectKey,
+        scope,
+        source: "library-file-sync-placeholder",
+      },
+    });
+  } catch (error: unknown) {
+    if ((error as Error).message === `library object already exists: ${objectKey}`) return;
+    throw error;
+  }
 }
 
 function inferObjectKind(objectKey: string): LibraryDefinitionKind {

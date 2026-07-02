@@ -402,6 +402,9 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an imp
   `, async (page) => {
     await page.locator('[data-testid="library-quick-prompt"]').fill("create a browser verification skill");
     await page.locator('[data-testid="library-quick-prompt-submit"]').click();
+    await page.getByText("Dependencies").waitFor();
+    assert.equal(await page.getByText("Browser Verification").count() > 0, true);
+    assert.equal(await page.getByText(/requires_tool/).count() > 0, true);
     await page.getByRole("button", { name: "Approve" }).click();
     await page.getByRole("button", { name: /Browser Verification/ }).waitFor();
 
@@ -447,6 +450,20 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an imp
               status: "draft",
               proposal: {
                 objectKeys: ["skill.browser-verification"],
+                objectSummaries: [{
+                  objectKey: "skill.browser-verification",
+                  objectKind: "skill_spec",
+                  title: "Browser Verification",
+                  scope: "software",
+                  status: "draft",
+                  relativePath: "skills/browser-verification.skill.md",
+                }],
+                dependencies: [{
+                  fromObjectKey: "skill.browser-verification",
+                  edgeType: "requires_tool",
+                  toObjectKey: "tool.browser",
+                  scope: "software",
+                }],
                 files: [{ relativePath: "skills/browser-verification.skill.md", content: "content" }],
               },
             },
@@ -465,6 +482,20 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an imp
               status: "approved",
               proposal: {
                 objectKeys: ["skill.browser-verification"],
+                objectSummaries: [{
+                  objectKey: "skill.browser-verification",
+                  objectKind: "skill_spec",
+                  title: "Browser Verification",
+                  scope: "software",
+                  status: "draft",
+                  relativePath: "skills/browser-verification.skill.md",
+                }],
+                dependencies: [{
+                  fromObjectKey: "skill.browser-verification",
+                  edgeType: "requires_tool",
+                  toObjectKey: "tool.browser",
+                  scope: "software",
+                }],
                 files: [{ relativePath: "skills/browser-verification.skill.md", content: "content" }],
               },
               files: [{ relativePath: "skills/browser-verification.skill.md" }],

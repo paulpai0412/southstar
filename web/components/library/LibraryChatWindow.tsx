@@ -42,6 +42,8 @@ export function LibraryChatWindow({
             status: draft.status,
             title: "Draft library proposal",
             objectKeys: draft.proposal.objectKeys,
+            objectSummaries: draft.proposal.objectSummaries,
+            dependencies: draft.proposal.dependencies,
             filePaths: draft.proposal.files.map((file) => file.relativePath),
           },
         }, {
@@ -157,15 +159,52 @@ function LibraryImportDraftReview({
   onApprove: () => void;
 }) {
   const objectKeys = Array.isArray(data.objectKeys) ? data.objectKeys.filter(isString) : [];
+  const objectSummaries = Array.isArray(data.objectSummaries) ? data.objectSummaries.filter(isRecord) : [];
+  const dependencies = Array.isArray(data.dependencies) ? data.dependencies.filter(isRecord) : [];
   const filePaths = Array.isArray(data.filePaths) ? data.filePaths.filter(isString) : [];
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div style={{ fontWeight: 700 }}>{typeof data.title === "string" ? data.title : "Draft library proposal"}</div>
       <div style={{ fontSize: 12, color: "var(--text-dim)" }}>{typeof data.draftId === "string" ? data.draftId : ""}</div>
-      <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
-        {objectKeys.map((objectKey) => <div key={objectKey}>{objectKey}</div>)}
-        {filePaths.map((filePath) => <div key={filePath}>{filePath}</div>)}
-      </div>
+      {objectSummaries.length > 0 ? (
+        <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
+          <div style={{ color: "var(--text-dim)", fontWeight: 700 }}>Objects</div>
+          {objectSummaries.map((summary) => {
+            const objectKey = stringField(summary, "objectKey");
+            const title = stringField(summary, "title");
+            const status = stringField(summary, "status");
+            const relativePath = stringField(summary, "relativePath");
+            return (
+              <div key={objectKey || relativePath} style={{ display: "grid", gap: 2 }}>
+                <div>{title || objectKey}</div>
+                <div style={{ color: "var(--text-dim)", overflowWrap: "anywhere" }}>
+                  {objectKey} {status ? `/ ${status}` : ""} {relativePath ? `/ ${relativePath}` : ""}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
+          {objectKeys.map((objectKey) => <div key={objectKey}>{objectKey}</div>)}
+          {filePaths.map((filePath) => <div key={filePath}>{filePath}</div>)}
+        </div>
+      )}
+      {dependencies.length > 0 && (
+        <div style={{ display: "grid", gap: 4, fontSize: 12 }}>
+          <div style={{ color: "var(--text-dim)", fontWeight: 700 }}>Dependencies</div>
+          {dependencies.map((dependency) => {
+            const fromObjectKey = stringField(dependency, "fromObjectKey");
+            const edgeType = stringField(dependency, "edgeType");
+            const toObjectKey = stringField(dependency, "toObjectKey");
+            return (
+              <div key={`${fromObjectKey}:${edgeType}:${toObjectKey}`} style={{ color: "var(--text-dim)", overflowWrap: "anywhere" }}>
+                {fromObjectKey} - {edgeType} - {toObjectKey}
+              </div>
+            );
+          })}
+        </div>
+      )}
       <div>
         <button type="button" onClick={onApprove} disabled={status !== "draft"}>
           {status === "approved" ? "Approved" : status === "approving" ? "Approving..." : "Approve"}
@@ -181,4 +220,13 @@ function isImportDraftPrompt(prompt: string): boolean {
 
 function isString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringField(record: Record<string, unknown>, field: string): string {
+  const value = record[field];
+  return typeof value === "string" ? value : "";
 }

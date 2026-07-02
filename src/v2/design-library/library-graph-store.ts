@@ -68,6 +68,25 @@ export async function upsertLibraryObject(db: SouthstarDb, input: UpsertLibraryO
   return mapObject(row);
 }
 
+export async function createLibraryObject(db: SouthstarDb, input: UpsertLibraryObjectInput): Promise<LibraryObjectSummary> {
+  const id = `lib-${hash(input.objectKey).slice(0, 16)}`;
+  try {
+    const row = await db.one<LibraryObjectRow>(
+      `insert into southstar.library_objects (
+         id, object_key, object_kind, status, head_version_id, state_json, updated_at
+       ) values ($1, $2, $3, $4, $5, $6::jsonb, now())
+       returning id, object_key, object_kind, status, head_version_id, state_json`,
+      [id, input.objectKey, input.objectKind, input.status, input.headVersionId ?? null, JSON.stringify(input.state)],
+    );
+    return mapObject(row);
+  } catch (error: unknown) {
+    if ((error as { code?: string }).code === "23505") {
+      throw new Error(`library object already exists: ${input.objectKey}`);
+    }
+    throw error;
+  }
+}
+
 export async function upsertLibraryEdge(db: SouthstarDb, input: UpsertLibraryEdgeInput): Promise<LibraryEdgeRecord> {
   const id = `edge-${hash([
     input.fromObjectKey,

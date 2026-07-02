@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -7,7 +7,7 @@ import { listLibraryFiles } from "../../src/v2/design-library/files/library-file
 import { createLibraryImportDraft, approveLibraryImportDraft } from "../../src/v2/design-library/importers/library-import-draft-store.ts";
 import { asImportSource, extractLibraryImportProposal } from "../../src/v2/design-library/importers/library-import-extractor.ts";
 import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
-import { findLibraryObjectByKey } from "../../src/v2/design-library/library-graph-store.ts";
+import { findLibraryObjectByKey, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -30,6 +30,28 @@ test("createLibraryImportDraft creates a runtime draft without writing library f
     assert.equal(draft.status, "draft");
     assert.deepEqual(draft.proposal.objectKeys, ["skill.browser-verification"]);
     assert.equal(draft.proposal.files[0]?.relativePath, "skills/browser-verification.skill.md");
+    assert.deepEqual(draft.proposal.objectSummaries, [{
+      objectKey: "skill.browser-verification",
+      objectKind: "skill_spec",
+      title: "Browser Verification",
+      scope: "software",
+      status: "draft",
+      relativePath: "skills/browser-verification.skill.md",
+    }]);
+    assert.deepEqual(draft.proposal.dependencies, [
+      {
+        fromObjectKey: "skill.browser-verification",
+        edgeType: "requires_capability",
+        toObjectKey: "capability.browser-verification",
+        scope: "software",
+      },
+      {
+        fromObjectKey: "skill.browser-verification",
+        edgeType: "requires_tool",
+        toObjectKey: "tool.browser",
+        scope: "software",
+      },
+    ]);
     assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
 
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
@@ -37,6 +59,8 @@ test("createLibraryImportDraft creates a runtime draft without writing library f
     assert.equal(resource?.scope, "library");
     assert.equal((resource?.payload as any).schemaVersion, "southstar.library.import_draft.v1");
     assert.deepEqual((resource?.payload as any).proposal.objectKeys, ["skill.browser-verification"]);
+    assert.equal((resource?.payload as any).proposal.objectSummaries[0].title, "Browser Verification");
+    assert.equal((resource?.payload as any).proposal.dependencies[0].toObjectKey, "capability.browser-verification");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -411,6 +435,186 @@ Bad reference prefix.
   }
 });
 
+test("approveLibraryImportDraft rejects existing files before overwriting library content", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-file-conflict-"));
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/browser-verification.skill.md"), "existing library truth", { encoding: "utf8", flag: "wx" });
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "browser skill prompt",
+        content: "create a browser verification skill that uses tool.browser",
+      },
+      scope: "software",
+    });
+
+    await assert.rejects(
+      () => approveLibraryImportDraft(db, {
+        root: libraryRoot,
+        draftId: draft.draftId,
+        actor: "operator",
+        reason: "must not overwrite existing files",
+      }),
+      /library import file already exists: skills\/browser-verification\.skill\.md/,
+    );
+
+    assert.equal(await readFile(join(libraryRoot, "skills/browser-verification.skill.md"), "utf8"), "existing library truth");
+    assert.equal(await findLibraryObjectByKey(db, "skill.browser-verification"), null);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("approveLibraryImportDraft rejects existing graph objects before downgrading library truth", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-object-conflict-"));
+
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "skill.browser-verification",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.browser-verification@approved",
+      state: { title: "Approved Browser Verification", scope: "software" },
+    });
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "browser skill prompt",
+        content: "create a browser verification skill that uses tool.browser",
+      },
+      scope: "software",
+    });
+
+    await assert.rejects(
+      () => approveLibraryImportDraft(db, {
+        root: libraryRoot,
+        draftId: draft.draftId,
+        actor: "operator",
+        reason: "must not overwrite approved graph object",
+      }),
+      /library import object already exists: skill\.browser-verification/,
+    );
+
+    assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
+    assert.equal((await findLibraryObjectByKey(db, "skill.browser-verification"))?.status, "approved");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("approveLibraryImportDraft cleans written files when graph transaction sees a late object conflict", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-late-conflict-"));
+
+  try {
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "browser skill prompt",
+        content: "create a browser verification skill that uses tool.browser",
+      },
+      scope: "software",
+    });
+    let txCount = 0;
+    const racingDb = {
+      ...db,
+      tx: async <T>(fn: (tx: typeof db) => Promise<T>): Promise<T> => {
+        txCount += 1;
+        if (txCount === 2) {
+          await upsertLibraryObject(db, {
+            objectKey: "skill.browser-verification",
+            objectKind: "skill_spec",
+            status: "approved",
+            headVersionId: "skill.browser-verification@racing-actor",
+            state: { title: "Racing Browser Verification", scope: "software" },
+          });
+        }
+        return await db.tx(fn);
+      },
+    };
+
+    await assert.rejects(
+      () => approveLibraryImportDraft(racingDb, {
+        root: libraryRoot,
+        draftId: draft.draftId,
+        actor: "operator",
+        reason: "late graph conflict should rollback file side effects",
+      }),
+      /library object already exists: skill\.browser-verification/,
+    );
+
+    assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
+    assert.equal((await findLibraryObjectByKey(db, "skill.browser-verification"))?.status, "approved");
+
+    const failed = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
+    assert.equal(failed?.status, "draft");
+    assert.match((failed?.payload as any).lastError.message, /library object already exists/);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("approveLibraryImportDraft rejects active applying approvals without side effects", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-active-lease-"));
+
+  try {
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "browser skill prompt",
+        content: "create a browser verification skill that uses tool.browser",
+      },
+      scope: "software",
+    });
+    const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
+    const payload = resource?.payload as any;
+    await db.query(
+      `update southstar.runtime_resources
+          set status = 'applying',
+              payload_json = $1::jsonb
+        where resource_type = 'library_import_draft' and resource_key = $2`,
+      [JSON.stringify({
+        ...payload,
+        status: "applying",
+        approval: {
+          actor: "first-operator",
+          reason: "first request is still applying",
+          approvedAt: "2026-07-03T00:00:00.000Z",
+        },
+        approvalLease: {
+          attemptId: "active-attempt",
+          startedAt: new Date().toISOString(),
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      }), draft.draftId],
+    );
+
+    await assert.rejects(
+      () => approveLibraryImportDraft(db, {
+        root: libraryRoot,
+        draftId: draft.draftId,
+        actor: "second-operator",
+        reason: "must not overlap active apply",
+      }),
+      /library import draft is already applying/,
+    );
+
+    assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
+    assert.equal(await findLibraryObjectByKey(db, "skill.browser-verification"), null);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("approveLibraryImportDraft resumes applying drafts and preserves in-flight approval metadata", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-applying-"));
@@ -440,6 +644,11 @@ test("approveLibraryImportDraft resumes applying drafts and preserves in-flight 
         ...payload,
         status: "applying",
         approval: firstApproval,
+        approvalLease: {
+          attemptId: "expired-attempt",
+          startedAt: "2000-01-01T00:00:00.000Z",
+          expiresAt: "2000-01-01T00:01:00.000Z",
+        },
         applied: {
           files: [{ relativePath: "skills/browser-verification.skill.md" }],
           objectKeys: ["skill.browser-verification"],
