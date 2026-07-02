@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { normalizeImportProposal } from "../design-library/importers/import-proposal-normalizer.ts";
+import { createPromptLibraryImportProposal } from "../design-library/importers/prompt-library-importer.ts";
 import {
   listLibraryFiles,
   readLibraryFile,
@@ -50,6 +52,26 @@ export async function handleLibraryRoute(
 
   if (request.method === "GET" && url.pathname === "/api/v2/library/files") {
     return json("library-files", { files: await listLibraryFiles({ root: libraryRoot(context) }) });
+  }
+
+  if (request.method === "POST" && url.pathname === "/api/v2/library/import-prompts") {
+    const body = await readJsonBody<{ prompt?: unknown; scope?: unknown }>(request);
+    const prompt = requiredString(body.prompt, "prompt");
+    const scope = optionalString(body.scope) ?? "software";
+    const proposal = normalizeImportProposal(createPromptLibraryImportProposal({ prompt, scope }));
+    const files = [];
+    for (const file of proposal.files) {
+      files.push(await writeLibraryFile({
+        root: libraryRoot(context),
+        relativePath: file.relativePath,
+        content: file.content,
+      }));
+    }
+    return json("library-import-prompt", {
+      files,
+      objectKeys: proposal.objectKeys,
+      status: "draft_files_written",
+    });
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/library/chat/messages") {

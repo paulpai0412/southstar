@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -244,6 +245,31 @@ test("library chat messages reject blank prompts", async () => {
     const error = await readEnvelope(response);
     assert.equal(error.ok, false);
     assert.match(error.error, /prompt is required/);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("library prompt import creates a draft skill file for create skill prompts", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-prompt-"));
+  try {
+    const context = { db, libraryRoot } as any;
+    const response = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/import-prompts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "create a browser verification skill that uses tool.browser", scope: "software" }),
+    }));
+    assert.equal(response.status, 200);
+    const payload = await response.json() as { result: { files: Array<{ relativePath: string }> } };
+    assert.equal(payload.result.files[0]?.relativePath, "skills/browser-verification.skill.md");
+    const content = await readFile(join(libraryRoot, "skills/browser-verification.skill.md"), "utf8");
+    const parsed = parseLibraryFileContent({ path: "library/skills/browser-verification.skill.md", content });
+    assert.equal(parsed.ok, true);
+    if (!parsed.ok) throw new Error("expected generated skill draft to parse");
+    assert.equal(parsed.file.id, "skill.browser-verification");
+    assert.equal(parsed.file.status, "draft");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
