@@ -45,6 +45,7 @@ await import("./web/southstar-productized-app-shell-ui.test.tsx");
 await import("./web/southstar-evolution-control-center.test.tsx");
 await import("./web/southstar-pi-web-shell-ui.test.tsx");
 await import("./web/southstar-workflow-canvas-ui.test.tsx");
+await import("./web/southstar-library-workspace-interaction.test.tsx");
 await import("./web/southstar-operator-ui.test.tsx");
 await import("./web/southstar-web-operator-control-tower.test.tsx");
 await import("./web/southstar-operator-product-control-tower.test.tsx");

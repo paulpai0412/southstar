@@ -9,6 +9,7 @@ export type LibraryWorkspaceObject = {
   status: LibraryObjectSummary["status"];
   title: string;
   scope: string;
+  sourcePath?: string;
 };
 
 export type LibraryWorkspaceObjectGroup = {
@@ -80,6 +81,7 @@ function toWorkspaceObject(object: LibraryObjectSummary, scope: string): Library
     status: object.status,
     title: getObjectTitle(object),
     scope,
+    sourcePath: getObjectSourcePath(object),
   };
 }
 
@@ -91,4 +93,10 @@ function getObjectTitle(object: LibraryObjectSummary): string {
   if (typeof object.state.title === "string" && object.state.title.length > 0) return object.state.title;
   if (typeof object.state.displayName === "string" && object.state.displayName.length > 0) return object.state.displayName;
   return object.objectKey;
+}
+
+function getObjectSourcePath(object: LibraryObjectSummary): string | undefined {
+  const sourcePath = object.state.sourcePath;
+  if (typeof sourcePath !== "string" || sourcePath.length === 0) return undefined;
+  return sourcePath.replace(/^(?:library\/)+/, "");
 }

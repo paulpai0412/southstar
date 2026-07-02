@@ -19,16 +19,69 @@ export type LibrarySseFrame = {
   data: Record<string, unknown>;
 };
 
+export type LibraryObjectStatus = "draft" | "approved" | "deprecated" | "blocked";
+
+export type LibraryWorkspaceObject = {
+  id: string;
+  objectKey: string;
+  objectKind: string;
+  status: LibraryObjectStatus | string;
+  title: string;
+  scope: string;
+  sourcePath?: string;
+};
+
+export type LibraryWorkspaceObjectGroup = {
+  objectKind: string;
+  objects: LibraryWorkspaceObject[];
+};
+
 export type LibraryWorkspaceModel = {
   selectedScope: string;
   domains: Array<{
     scope: string;
+    objectCount?: number;
     counts: Record<string, number>;
-    objects: Array<{
-      objectKey: string;
-      objectKind: string;
-      status: string;
-      title: string;
-    }>;
+    objects?: LibraryWorkspaceObject[];
+    objectKindCounts?: Record<string, number>;
+    objectGroups?: LibraryWorkspaceObjectGroup[];
   }>;
+};
+
+export type LibraryFileValidationIssue = {
+  severity: "info" | "warning" | "error";
+  path: string;
+  message: string;
+  code: string;
+};
+
+export type LibraryFileRecord = {
+  path?: string;
+  kind?: string;
+  objectKey?: string;
+  objectKind?: string;
+  id?: string;
+  title?: string;
+  scope?: string;
+  status?: string;
+  schemaVersion?: string;
+  frontmatter?: Record<string, unknown>;
+  definition?: Record<string, unknown>;
+  body?: string;
+  sourceHash?: string;
+};
+
+export type LibraryFileParseResult =
+  | { ok: true; file: LibraryFileRecord; issues: LibraryFileValidationIssue[] }
+  | { ok: false; issues: LibraryFileValidationIssue[] };
+
+export type LibraryFileEnvelope = {
+  relativePath: string;
+  content: string;
+  parsed: LibraryFileParseResult;
+};
+
+export type LibraryFileSyncResult = {
+  object?: unknown;
+  edges?: unknown[];
 };
