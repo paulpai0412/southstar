@@ -612,11 +612,11 @@ The block is read-only in chat. It should provide:
 - selected domain/scope
 - graph node counts by kind
 - highlighted path for the entities mentioned in the chat response
-- compact graph visualization
+- compact graph visualization implemented as a React component inside the message block
 - expandable object/edge details
 - links that open the selected object in the Library tab right file viewer
 
-The chat graph block reads from the same Postgres graph read model as the Library tab. It must not reconstruct relationships from raw files or from message text.
+The chat graph block reads from the same Postgres graph read model as the Library tab. It must not reconstruct relationships from raw files or from message text. The graph chart should be rendered by React using ordinary HTML/SVG elements inside the message block; it should not depend on backend-generated images, iframes, or a separate graph service for the first implementation.
 
 ---
 
@@ -890,6 +890,7 @@ library files
 - Import preview shows proposed files, graph objects, graph edges, conflicts, validation issues, and risk flags.
 - Library item detail shows metadata, body/config, validation, provenance, inbound/outbound edges, usage, and version status.
 - Library chat message view can render a read-only graph block showing current Postgres agent, skill, tool, MCP, generated profile, and template relationships.
+- The graph block's chart is implemented as an in-app React component.
 - Clicking an object in the chat graph block opens that object in the Library tab file viewer.
 - Workflow Generate DAG UI has Save.
 - Save writes workflow template draft plus generated node profile drafts.
@@ -934,6 +935,7 @@ UI tests:
 - Create/edit/validate/save agent.
 - Import wizard shows proposal and validation issues.
 - Chat message graph block renders Postgres graph relationships and links to Library items.
+- Chat message graph block includes a React graph chart component rather than static text only.
 - Approve draft changes status and makes it available in candidates.
 - Workflow DAG Save creates template/profile drafts and shows result.
 
