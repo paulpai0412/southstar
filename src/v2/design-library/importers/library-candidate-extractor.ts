@@ -1,7 +1,12 @@
 import type { LibraryImportSourceDocument } from "./library-source-fetcher.ts";
 
 export type LibraryImportCandidateKind = "agent" | "skill" | "mcp" | "tool";
-export type LibraryImportEdgeType = "uses" | "requires";
+export type LibraryImportEdgeType =
+  | "uses"
+  | "requires"
+  | "conflicts_with"
+  | "workflow_precedes"
+  | "similar_to";
 
 export type LibraryImportCandidate = {
   objectKey: string;

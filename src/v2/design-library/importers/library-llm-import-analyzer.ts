@@ -7,6 +7,14 @@ import {
 } from "./library-candidate-extractor.ts";
 import type { LibraryImportSourceDocument } from "./library-source-fetcher.ts";
 
+const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
+  "uses",
+  "requires",
+  "conflicts_with",
+  "workflow_precedes",
+  "similar_to",
+];
+
 export type LibraryImportLlmProvider = (input: {
   prompt: string;
   scope: string;
@@ -27,7 +35,10 @@ export async function analyzeLibraryImportWithLlm(input: {
     documents: input.documents,
     prompt: buildLibraryImportAnalysisPrompt(input.documents, input.scope),
   });
-  return normalizeLlmImportAnalysis(raw, input.scope);
+  return normalizeLlmImportAnalysis(raw, {
+    scope: input.scope,
+    sourcePaths: new Set(input.documents.map((document) => document.path)),
+  });
 }
 
 export function buildLibraryImportAnalysisPrompt(documents: LibraryImportSourceDocument[], scope: string): string {
@@ -36,7 +47,7 @@ export function buildLibraryImportAnalysisPrompt(documents: LibraryImportSourceD
     "Classify these repository/library documents into Southstar library candidates.",
     "Return JSON with candidates and ontology edges.",
     "Allowed candidate kinds: agent, skill, mcp, tool.",
-    "Allowed ontology edges: uses, requires.",
+    `Allowed ontology edges: ${ALLOWED_ONTOLOGY_EDGE_TYPES.join(", ")}.`,
     `Scope: ${scope}`,
     "Documents:",
     manifest,
@@ -45,17 +56,17 @@ export function buildLibraryImportAnalysisPrompt(documents: LibraryImportSourceD
 
 function normalizeLlmImportAnalysis(
   raw: unknown,
-  scope: string,
+  options: { scope: string; sourcePaths: Set<string> },
 ): { candidates: LibraryImportCandidate[]; proposedEdges: LibraryImportProposedEdge[] } {
   const value = typeof raw === "string" ? safeJsonParse(raw) : raw;
   const record = isRecord(value) ? value : {};
-  const candidates = normalizeCandidates(record.candidates, scope);
+  const candidates = normalizeCandidates(record.candidates, options);
   const candidateKeys = new Set(candidates.map((candidate) => candidate.objectKey));
-  const proposedEdges = normalizeEdges(record.proposedEdges, candidateKeys);
+  const proposedEdges = normalizeEdges(edgeArrayFromRecord(record), candidateKeys);
   return { candidates, proposedEdges };
 }
 
-function normalizeCandidates(value: unknown, scope: string): LibraryImportCandidate[] {
+function normalizeCandidates(value: unknown, options: { scope: string; sourcePaths: Set<string> }): LibraryImportCandidate[] {
   if (!Array.isArray(value)) return [];
   const candidates: LibraryImportCandidate[] = [];
   const seen = new Set<string>();
@@ -65,13 +76,15 @@ function normalizeCandidates(value: unknown, scope: string): LibraryImportCandid
     if (!kind) continue;
     const objectKey = optionalString(candidate.objectKey) ?? objectKeyFromKindAndTitle(kind, optionalString(candidate.title));
     if (!objectKey || !objectKey.startsWith(`${kind}.`) || seen.has(objectKey)) continue;
+    const sourcePath = optionalString(candidate.sourcePath);
+    if (sourcePath && !options.sourcePaths.has(sourcePath)) continue;
     seen.add(objectKey);
     candidates.push({
       objectKey,
       kind,
       title: optionalString(candidate.title) ?? titleFromObjectKey(objectKey),
-      scope,
-      ...(optionalString(candidate.sourcePath) ? { sourcePath: optionalString(candidate.sourcePath) } : {}),
+      scope: options.scope,
+      ...(sourcePath ? { sourcePath } : {}),
       selectedByDefault: typeof candidate.selectedByDefault === "boolean" ? candidate.selectedByDefault : true,
       confidence: clampConfidence(candidate.confidence),
     });
@@ -104,6 +117,10 @@ function normalizeEdges(value: unknown, candidateKeys: Set<string>): LibraryImpo
   return edges;
 }
 
+function edgeArrayFromRecord(record: Record<string, unknown>): unknown {
+  return Array.isArray(record.proposedEdges) ? record.proposedEdges : record.edges;
+}
+
 function safeJsonParse(value: string): unknown {
   try {
     return JSON.parse(value);
@@ -117,7 +134,9 @@ function normalizeKind(value: unknown): LibraryImportCandidateKind | null {
 }
 
 function normalizeEdgeType(value: unknown): LibraryImportEdgeType | null {
-  return value === "uses" || value === "requires" ? value : null;
+  return ALLOWED_ONTOLOGY_EDGE_TYPES.includes(value as LibraryImportEdgeType)
+    ? value as LibraryImportEdgeType
+    : null;
 }
 
 function clampConfidence(value: unknown): number {

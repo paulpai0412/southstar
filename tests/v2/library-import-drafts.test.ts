@@ -211,6 +211,61 @@ test("analyzeLibraryImportWithLlm prompts for classification and ontology edges 
   ]);
 });
 
+test("analyzeLibraryImportWithLlm accepts full ontology edge vocabulary and drops candidates with untrusted source paths", async () => {
+  const prompts: string[] = [];
+  const provider: LibraryImportLlmProvider = async (input) => {
+    prompts.push(input.prompt);
+    return {
+      candidates: [
+        { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", sourcePath: "agents/reviewer.agent.md" },
+        { objectKey: "skill.review", kind: "skill", title: "Review", sourcePath: "skills/review.skill.md" },
+        { objectKey: "skill.audit", kind: "skill", title: "Audit", sourcePath: "skills/audit.skill.md" },
+        { objectKey: "tool.github", kind: "tool", title: "GitHub", sourcePath: "tools/github.tool.yaml" },
+        { objectKey: "skill.untrusted", kind: "skill", title: "Untrusted", sourcePath: "missing.md" },
+      ],
+      edges: [
+        { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.9 },
+        { fromObjectKey: "skill.review", edgeType: "conflicts_with", toObjectKey: "tool.github", confidence: 0.7 },
+        { fromObjectKey: "skill.review", edgeType: "workflow_precedes", toObjectKey: "skill.audit", confidence: 0.8 },
+        { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.audit", confidence: 0.6 },
+        { fromObjectKey: "skill.review", edgeType: "contains", toObjectKey: "skill.audit", confidence: 1 },
+        { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.untrusted", confidence: 1 },
+      ],
+    };
+  };
+
+  const result = await analyzeLibraryImportWithLlm({
+    scope: "software",
+    documents: [
+      { path: "agents/reviewer.agent.md", label: "Reviewer", content: "# Reviewer" },
+      { path: "skills/review.skill.md", label: "Review", content: "# Review" },
+      { path: "skills/audit.skill.md", label: "Audit", content: "# Audit" },
+      { path: "tools/github.tool.yaml", label: "GitHub", content: "name: github" },
+    ],
+    llmProvider: provider,
+  });
+
+  assert.match(prompts[0] ?? "", /conflicts_with/);
+  assert.match(prompts[0] ?? "", /workflow_precedes/);
+  assert.match(prompts[0] ?? "", /similar_to/);
+  assert.deepEqual(result.candidates.map((candidate) => candidate.objectKey), [
+    "agent.reviewer",
+    "skill.review",
+    "skill.audit",
+    "tool.github",
+  ]);
+  assert.deepEqual(result.proposedEdges.map((edge) => ({
+    fromObjectKey: edge.fromObjectKey,
+    edgeType: edge.edgeType,
+    toObjectKey: edge.toObjectKey,
+  })), [
+    { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review" },
+    { fromObjectKey: "skill.review", edgeType: "conflicts_with", toObjectKey: "tool.github" },
+    { fromObjectKey: "skill.review", edgeType: "workflow_precedes", toObjectKey: "skill.audit" },
+    { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.audit" },
+  ]);
+});
+
 test("createLibraryImportDraft preserves the legacy proposal and persists analyzed documents, candidates, and proposed edges", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-analysis-"));
