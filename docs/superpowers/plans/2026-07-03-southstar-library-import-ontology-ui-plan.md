@@ -56,15 +56,36 @@
 
 ---
 
-## Task 1: Sidebar Contract For Four Primitive Sections
+## Task 1: Workflow-Style Library Sidebar Contract
 
 **Files:**
 - Modify: `src/v2/read-models/library-workspace.ts`
 - Modify: `web/lib/library/types.ts`
 - Modify: `web/components/library/LibrarySidebar.tsx`
+- Modify: `web/components/library/LibraryWorkspace.tsx`
+- Modify: `web/components/library/LibraryChatWindow.tsx`
 - Test: `tests/web/southstar-library-sidebar-layout.test.tsx`
 
 - [ ] **Step 1: Write the failing sidebar layout test**
+
+The Library sidebar must follow the Workflow sidebar's two-section shape:
+
+```text
+Filter field
+Library LLM Sessions
+Library Domain Tree
+  domain
+    agents
+      agent nodes
+    skills
+      skill nodes
+    mcp
+      mcp nodes
+    tools
+      tool nodes
+```
+
+The filter field applies only to the domain tree. It must not hide or filter the Library LLM session list.
 
 Create `tests/web/southstar-library-sidebar-layout.test.tsx`:
 

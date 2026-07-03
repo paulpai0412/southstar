@@ -175,6 +175,7 @@ test("LibrarySidebar renders sessions above a filtered domain tree and selects s
     for (const folder of ["agents", "skills", "mcp", "tools"]) {
       await page.getByText(folder, { exact: true }).waitFor();
     }
+    assert.equal(await page.getByText("[]", { exact: true }).count(), 0);
 
     for (const title of ["Frontend Agent", "Agent Spec", "React Skill", "Skill Definition", "GitHub MCP", "Browser Tool"]) {
       assert.equal(await page.getByText(title).isVisible(), true);

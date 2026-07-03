@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject, LibraryWorkspaceObjectGroup } from "@/lib/library/types";
+import { FolderIcon } from "../FileIcons";
 
 const domainTreeFolders = [
   { label: "agents", objectKinds: ["agent_definition", "agent_spec"] },
@@ -319,7 +320,7 @@ function TreeFolderRow({
       }}
     >
       <Chevron open={open} />
-      <span style={{ color: "var(--text-muted)", width: 14 }}>[]</span>
+      <FolderIcon size={14} open={open} />
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
     </button>
   );
@@ -372,9 +373,25 @@ function LibraryObjectRow({
 
 function Chevron({ open }: { open: boolean }) {
   return (
-    <span aria-hidden="true" style={{ width: 12, display: "inline-flex", justifyContent: "center", color: "var(--text-dim)" }}>
-      {open ? "v" : ">"}
-    </span>
+    <svg
+      aria-hidden
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{
+        color: "var(--text-dim)",
+        transform: open ? "rotate(90deg)" : "none",
+        transition: "transform 0.12s",
+        flexShrink: 0,
+      }}
+    >
+      <polyline points="3 2 7 5 3 8" />
+    </svg>
   );
 }
 
