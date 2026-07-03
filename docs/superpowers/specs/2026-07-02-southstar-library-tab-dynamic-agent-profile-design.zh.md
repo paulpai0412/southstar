@@ -41,6 +41,29 @@ workflow generate -> primitive candidates -> generated node profile -> validatio
 workflow DAG save -> generated profiles/template -> version refs -> graph sync
 ```
 
+Baseline implemented on 2026-07-03 includes:
+
+- Library tab with three-pane layout: domain/object sidebar, center chat/SSE workspace, and right file viewer/editor.
+- Local file read/save/sync APIs for library files.
+- Import draft creation and approval for deterministic paste imports, plus API-shaped GitHub/local sources with inline content.
+- Object lifecycle actions for approve, deprecate, and block.
+- Postgres graph read model with domain, kind, and status filters.
+- Chat message graph block rendered as an in-app React/SVG chart with domain filters and node selection that opens the right file viewer.
+- Object detail API for inbound/outbound graph edges, usage counts, provenance basics, and validation summary.
+- File validation and generated profile validation APIs.
+- Workflow generation integration with graph-derived profile candidates and generated profile validation.
+- Workflow DAG save-template API that derives graph refs from the server-side planner draft and records `libraryVersionRefs`.
+
+Phase 2 hardening still includes:
+
+- Full object CRUD from the UI beyond file-backed editing and lifecycle state changes.
+- Durable Library chat session read model (`GET /api/v2/library/chat/session`) and resumable long-running chat/import jobs.
+- Live GitHub fetch and local folder traversal without inline content.
+- Import draft inspect/analyze/validate endpoints before approval.
+- Rich graph diff wizard for import conflicts, risk flags, and merge decisions.
+- Full audit metadata for validation report hashes, evaluator refs, imported-by timestamps, and external source repo refs.
+- Background import jobs for large repositories such as `jnMetaCode/agency-agents-zh`.
+
 ---
 
 ## 2. Design Principles
@@ -756,45 +779,45 @@ The saved profiles capture:
 
 The UI should use Southstar APIs. The API may internally use LLM clients, importer workers, or Southstar workflow jobs.
 
-Suggested endpoints:
+Endpoint inventory:
 
 ```text
-GET    /api/v2/library/objects
-POST   /api/v2/library/objects
-GET    /api/v2/library/objects/:objectKey
-PATCH  /api/v2/library/objects/:objectKey
-DELETE /api/v2/library/objects/:objectKey
+GET    /api/v2/library/objects                         # Phase 2
+POST   /api/v2/library/objects                         # Phase 2
+GET    /api/v2/library/objects/:objectKey              # Implemented
+PATCH  /api/v2/library/objects/:objectKey              # Phase 2; edit source files first
+DELETE /api/v2/library/objects/:objectKey              # Phase 2; prefer deprecate/block
 
-GET    /api/v2/library/chat/session
-POST   /api/v2/library/chat/messages
-GET    /api/v2/library/chat/events
+GET    /api/v2/library/chat/session                    # Phase 2
+POST   /api/v2/library/chat/messages                   # Implemented
+GET    /api/v2/library/chat/events                     # Implemented
 
-GET    /api/v2/library/files
-GET    /api/v2/library/files/:fileId
-PATCH  /api/v2/library/files/:fileId
-POST   /api/v2/library/files/:fileId/validate
-POST   /api/v2/library/files/:fileId/sync
+GET    /api/v2/library/files                           # Implemented
+GET    /api/v2/library/files/:fileId                   # Implemented
+PATCH  /api/v2/library/files/:fileId                   # Implemented
+POST   /api/v2/library/files/:fileId/validate          # Implemented
+POST   /api/v2/library/files/:fileId/sync              # Implemented
 
-POST   /api/v2/library/objects/:objectKey/validate
-POST   /api/v2/library/objects/:objectKey/approve
-POST   /api/v2/library/objects/:objectKey/deprecate
-POST   /api/v2/library/objects/:objectKey/block
+POST   /api/v2/library/objects/:objectKey/validate     # Implemented
+POST   /api/v2/library/objects/:objectKey/approve      # Implemented
+POST   /api/v2/library/objects/:objectKey/deprecate    # Implemented
+POST   /api/v2/library/objects/:objectKey/block        # Implemented
 
-POST   /api/v2/library/import-prompts
-POST   /api/v2/library/import-drafts
-GET    /api/v2/library/import-drafts/:importId
-POST   /api/v2/library/import-drafts/:importId/analyze
-POST   /api/v2/library/import-drafts/:importId/validate
-POST   /api/v2/library/import-drafts/:importId/approve
+POST   /api/v2/library/import-prompts                  # Implemented helper
+POST   /api/v2/library/import-drafts                   # Implemented
+GET    /api/v2/library/import-drafts/:importId         # Phase 2
+POST   /api/v2/library/import-drafts/:importId/analyze # Phase 2
+POST   /api/v2/library/import-drafts/:importId/validate # Phase 2
+POST   /api/v2/library/import-drafts/:importId/approve # Implemented
 
-GET    /api/v2/library/graph
-GET    /api/v2/library/graph/neighborhood
+GET    /api/v2/library/graph                           # Implemented
+GET    /api/v2/library/graph/neighborhood              # Implemented
 
-POST   /api/v2/library/profile-drafts/compose
-POST   /api/v2/library/profile-drafts/validate
-POST   /api/v2/library/profile-drafts/save
+POST   /api/v2/library/profile-drafts/compose          # Implemented
+POST   /api/v2/library/profile-drafts/validate         # Implemented
+POST   /api/v2/library/profile-drafts/save             # Implemented
 
-POST   /api/v2/workflow/drafts/:draftId/save-template
+POST   /api/v2/workflow/drafts/:draftId/save-template  # Implemented
 ```
 
 `POST /api/v2/library/chat/messages` is the primary center-panel command surface. It accepts the user prompt plus current UI context (`scope`, selected object, selected file, selected import draft, and visible graph filters), starts a backend library action, and returns the updated chat message metadata. The action streams progress over `GET /api/v2/library/chat/events` as SSE.

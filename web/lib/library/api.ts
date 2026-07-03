@@ -1,6 +1,7 @@
 import type {
   LibraryFileEnvelope,
   LibraryFileSyncResult,
+  LibraryObjectDetail,
 } from "./types";
 
 export type LibraryImportSource =
@@ -56,6 +57,10 @@ export function unwrapEnvelope<T>(payload: unknown): T {
 
 export async function readLibraryFile(relativePath: string): Promise<LibraryFileEnvelope> {
   return requestLibraryJson<LibraryFileEnvelope>(libraryFileUrl(relativePath));
+}
+
+export async function readLibraryObjectDetail(objectKey: string): Promise<LibraryObjectDetail> {
+  return requestLibraryJson<LibraryObjectDetail>(`/api/library/objects/${encodeURIComponent(objectKey)}`);
 }
 
 export async function saveLibraryFile(relativePath: string, content: string): Promise<LibraryFileEnvelope> {

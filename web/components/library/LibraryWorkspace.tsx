@@ -1,10 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { readLibraryFile, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
-import type { LibraryFileEnvelope, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
+import { readLibraryFile, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
+import type { LibraryFileEnvelope, LibraryObjectDetail, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
 import { LibraryChatWindow } from "./LibraryChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
+import type { LibraryGraphChartNode } from "./LibraryGraphChart";
 import { LibrarySidebar } from "./LibrarySidebar";
 
 export function LibraryWorkspace() {
@@ -13,6 +14,7 @@ export function LibraryWorkspace() {
   const [selectedObjectKey, setSelectedObjectKey] = useState<string | undefined>(undefined);
   const [selectedFilePath, setSelectedFilePath] = useState<string | undefined>(undefined);
   const [fileRecord, setFileRecord] = useState<LibraryFileEnvelope | null>(null);
+  const [objectDetail, setObjectDetail] = useState<LibraryObjectDetail | null>(null);
   const [dirtyFileContent, setDirtyFileContent] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [saving, setSaving] = useState(false);
@@ -23,6 +25,7 @@ export function LibraryWorkspace() {
   const selectedFilePathRef = useRef<string | undefined>(undefined);
   const dirtyFileContentRef = useRef("");
   const loadRequestRef = useRef(0);
+  const detailRequestRef = useRef(0);
   const saveRequestRef = useRef(0);
   const syncRequestRef = useRef(0);
 
@@ -65,12 +68,14 @@ export function LibraryWorkspace() {
 
   const resetSelectedFile = useCallback(() => {
     loadRequestRef.current += 1;
+    detailRequestRef.current += 1;
     saveRequestRef.current += 1;
     syncRequestRef.current += 1;
     setSelectedObjectKey(undefined);
     selectedFilePathRef.current = undefined;
     setSelectedFilePath(undefined);
     setFileRecord(null);
+    setObjectDetail(null);
     updateDirtyFileContent("");
     setSaving(false);
     setSyncing(false);
@@ -88,12 +93,25 @@ export function LibraryWorkspace() {
 
     const requestId = loadRequestRef.current + 1;
     loadRequestRef.current = requestId;
+    const detailRequestId = detailRequestRef.current + 1;
+    detailRequestRef.current = detailRequestId;
     saveRequestRef.current += 1;
     syncRequestRef.current += 1;
     setSelectedObjectKey(object.objectKey);
     setSaving(false);
     setSyncing(false);
     setFileStatusMessage(undefined);
+    setObjectDetail(null);
+    readLibraryObjectDetail(object.objectKey)
+      .then((detail) => {
+        if (detailRequestRef.current !== detailRequestId) return;
+        setObjectDetail(detail);
+      })
+      .catch((error: unknown) => {
+        if (detailRequestRef.current !== detailRequestId) return;
+        setFileStatusMessage(`Failed to load object detail: ${error instanceof Error ? error.message : String(error)}`);
+      });
+
     if (!object.sourcePath) {
       selectedFilePathRef.current = undefined;
       setSelectedFilePath(undefined);
@@ -122,6 +140,15 @@ export function LibraryWorkspace() {
         setFileStatusMessage(`Failed to load file: ${error instanceof Error ? error.message : String(error)}`);
       });
   }, [selectedFilePath, selectedObjectKey, updateDirtyFileContent]);
+
+  const handleSelectGraphNode = useCallback((node: LibraryGraphChartNode) => {
+    const object = findWorkspaceObjectByKey(model, node.objectKey);
+    if (!object) {
+      setFileStatusMessage(`Library object is not available in the current workspace: ${node.objectKey}`);
+      return;
+    }
+    handleSelectObject(object);
+  }, [handleSelectObject, model]);
 
   const handleSaveFile = useCallback(() => {
     if (!selectedFilePath || saving) return;
@@ -200,6 +227,7 @@ export function LibraryWorkspace() {
           pendingPrompt={pendingPrompt}
           onPromptConsumed={handlePromptConsumed}
           onLibraryChanged={loadWorkspace}
+          onSelectGraphNode={handleSelectGraphNode}
         />
       </main>
       <aside
@@ -209,6 +237,7 @@ export function LibraryWorkspace() {
         <LibraryFileViewer
           selectedFilePath={selectedFilePath}
           fileRecord={fileRecord}
+          objectDetail={objectDetail}
           content={dirtyFileContent}
           dirty={fileRecord ? dirtyFileContent !== fileRecord.content : false}
           saving={saving}
@@ -221,4 +250,21 @@ export function LibraryWorkspace() {
       </aside>
     </div>
   );
+}
+
+function findWorkspaceObjectByKey(model: LibraryWorkspaceModel | null, objectKey: string): LibraryWorkspaceObject | undefined {
+  if (!model) return undefined;
+  for (const domain of model.domains) {
+    if (domain.objects) {
+      const direct = domain.objects.find((object) => object.objectKey === objectKey);
+      if (direct) return direct;
+    }
+    if (domain.objectGroups) {
+      for (const group of domain.objectGroups) {
+        const grouped = group.objects.find((object) => object.objectKey === objectKey);
+        if (grouped) return grouped;
+      }
+    }
+  }
+  return undefined;
 }

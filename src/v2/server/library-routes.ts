@@ -15,7 +15,8 @@ import {
   saveNodeProfileDraft,
   type NodeProfileDraft,
 } from "../design-library/profile-composer/node-profile-draft-service.ts";
-import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
+import { validateGeneratedNodeProfile } from "../design-library/profile-composer/generated-profile-validator.ts";
+import { findLibraryEdgesFrom, findLibraryEdgesTo, findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
 import {
   saveWorkflowTemplateDraft,
   type SaveWorkflowTemplateDraftInput,
@@ -130,6 +131,15 @@ export async function handleLibraryRoute(
     });
   }
 
+  if (request.method === "POST" && url.pathname === "/api/v2/library/profile-drafts/validate") {
+    const body = await readJsonBody<{ profile?: unknown; draft?: unknown }>(request);
+    const profile = requiredGeneratedProfileInput(isRecord(body.draft) && body.draft.profile ? body.draft.profile : body.profile);
+    return json("library-profile-draft-validation", {
+      profile,
+      validation: await validateGeneratedNodeProfile(context.db, profile),
+    });
+  }
+
   if (request.method === "POST" && url.pathname === "/api/v2/library/profile-drafts/compose") {
     const body = await readJsonBody<{
       scope?: unknown;
@@ -214,6 +224,37 @@ export async function handleLibraryRoute(
       actor: optionalString(body.actor) ?? "operator",
       reason: requiredNonBlankString(body.reason, "reason"),
     }));
+  }
+
+  const objectValidateMatch = url.pathname.match(/^\/api\/v2\/library\/objects\/([^/]+)\/validate$/);
+  if (request.method === "POST" && objectValidateMatch) {
+    return json(
+      "library-object-validation",
+      await buildLibraryObjectDetail(context.db, decodeURIComponent(objectValidateMatch[1]!)),
+    );
+  }
+
+  const objectMatch = url.pathname.match(/^\/api\/v2\/library\/objects\/([^/]+)$/);
+  if (request.method === "GET" && objectMatch) {
+    return json(
+      "library-object-detail",
+      await buildLibraryObjectDetail(context.db, decodeURIComponent(objectMatch[1]!)),
+    );
+  }
+
+  const fileValidateMatch = url.pathname.match(/^\/api\/v2\/library\/files\/(.+)\/validate$/);
+  if (request.method === "POST" && fileValidateMatch) {
+    const relativePath = decodeURIComponent(fileValidateMatch[1]!);
+    const file = await readLibraryFile({ root: libraryRoot(context), relativePath });
+    const issues = file.parsed.issues;
+    return json("library-file-validation", {
+      relativePath,
+      parsed: file.parsed,
+      validation: {
+        ok: file.parsed.ok && !issues.some((issue) => issue.severity === "error"),
+        issues,
+      },
+    });
   }
 
   const syncMatch = url.pathname.match(/^\/api\/v2\/library\/files\/(.+)\/sync$/);
@@ -334,6 +375,26 @@ function requiredNodeProfileDraft(value: unknown): NodeProfileDraft {
   return value as NodeProfileDraft;
 }
 
+function requiredGeneratedProfileInput(value: unknown): Parameters<typeof validateGeneratedNodeProfile>[1] {
+  if (!isRecord(value)) throw new Error("profile is required");
+  return {
+    scope: requiredNonBlankString(value.scope, "profile.scope"),
+    nodeId: requiredNonBlankString(value.nodeId, "profile.nodeId"),
+    agentRef: requiredNonBlankString(value.agentRef, "profile.agentRef"),
+    skillRefs: stringArray(value.skillRefs, "profile.skillRefs"),
+    toolGrantRefs: stringArray(value.toolGrantRefs, "profile.toolGrantRefs"),
+    mcpGrantRefs: stringArray(value.mcpGrantRefs, "profile.mcpGrantRefs"),
+    instructionRefs: stringArray(value.instructionRefs, "profile.instructionRefs"),
+  };
+}
+
+function stringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value)) return [];
+  const invalid = value.find((item) => typeof item !== "string" || item.length === 0);
+  if (invalid !== undefined) throw new Error(`${field} must contain strings`);
+  return value as string[];
+}
+
 function json<T>(kind: string, result: T): Response {
   const envelope: ApiEnvelope<T> = { ok: true, kind, result };
   return new Response(JSON.stringify(envelope), {
@@ -381,6 +442,34 @@ async function saveTemplateGraphFromWorkflow(
       return libraryRefs(task.dependsOn, "").filter((from) => nodeIds.has(from)).map((from) => ({ from, to }));
     }),
     libraryVersionRefs: await libraryVersionRefsForNodes(db, nodes),
+  };
+}
+
+async function buildLibraryObjectDetail(db: SouthstarDb, objectKey: string) {
+  const object = await findLibraryObjectByKey(db, objectKey);
+  if (!object) throw new Error(`library object not found: ${objectKey}`);
+  const [inboundEdges, outboundEdges] = await Promise.all([
+    findLibraryEdgesTo(db, objectKey),
+    findLibraryEdgesFrom(db, objectKey),
+  ]);
+  return {
+    object,
+    inboundEdges,
+    outboundEdges,
+    usage: {
+      inboundCount: inboundEdges.length,
+      outboundCount: outboundEdges.length,
+      usedByObjectKeys: inboundEdges.map((edge) => edge.fromObjectKey),
+      dependsOnObjectKeys: outboundEdges.map((edge) => edge.toObjectKey),
+    },
+    validation: {
+      ok: object.status === "approved",
+      issues: object.status === "approved" ? [] : [{
+        code: "object_not_approved",
+        path: "status",
+        message: `${objectKey} is ${object.status}`,
+      }],
+    },
   };
 }
 

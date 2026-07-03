@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { LibraryFileEnvelope, LibraryFileValidationIssue } from "@/lib/library/types";
+import type { LibraryFileEnvelope, LibraryFileValidationIssue, LibraryObjectDetail } from "@/lib/library/types";
 
 type FileViewerTab = "Preview" | "Edit" | "Validate" | "Edges" | "Usage" | "Provenance";
 
@@ -10,6 +10,7 @@ const tabs: FileViewerTab[] = ["Preview", "Edit", "Validate", "Edges", "Usage", 
 export function LibraryFileViewer({
   selectedFilePath,
   fileRecord,
+  objectDetail,
   content,
   dirty,
   saving,
@@ -22,6 +23,7 @@ export function LibraryFileViewer({
 }: {
   selectedFilePath?: string;
   fileRecord?: LibraryFileEnvelope | null;
+  objectDetail?: LibraryObjectDetail | null;
   content: string;
   dirty: boolean;
   saving: boolean;
@@ -135,7 +137,13 @@ export function LibraryFileViewer({
             }}
           />
         ) : (
-          <ReadOnlyPanel tab={activeTab} fileRecord={fileRecord ?? null} content={content} issues={visibleIssues} />
+          <ReadOnlyPanel
+            tab={activeTab}
+            fileRecord={fileRecord ?? null}
+            objectDetail={objectDetail ?? null}
+            content={content}
+            issues={visibleIssues}
+          />
         )}
       </div>
     </div>
@@ -145,11 +153,13 @@ export function LibraryFileViewer({
 function ReadOnlyPanel({
   tab,
   fileRecord,
+  objectDetail,
   content,
   issues,
 }: {
   tab: FileViewerTab;
   fileRecord: LibraryFileEnvelope | null;
+  objectDetail: LibraryObjectDetail | null;
   content: string;
   issues: LibraryFileValidationIssue[];
 }) {
@@ -157,9 +167,20 @@ function ReadOnlyPanel({
   let body: unknown;
   if (tab === "Preview") body = parsedFile ?? content;
   if (tab === "Validate") body = issues.length > 0 ? issues : [{ severity: "info", path: "$", message: "No validation issues", code: "ok" }];
-  if (tab === "Edges") body = edgeRefs(parsedFile?.frontmatter);
-  if (tab === "Usage") body = { objectKey: parsedFile?.objectKey, objectKind: parsedFile?.objectKind, scope: parsedFile?.scope };
-  if (tab === "Provenance") body = { path: fileRecord?.relativePath, sourceHash: parsedFile?.sourceHash, status: parsedFile?.status };
+  if (tab === "Edges") body = objectDetail ? {
+    inboundEdges: objectDetail.inboundEdges,
+    outboundEdges: objectDetail.outboundEdges,
+  } : edgeRefs(parsedFile?.frontmatter);
+  if (tab === "Usage") body = objectDetail?.usage ?? { objectKey: parsedFile?.objectKey, objectKind: parsedFile?.objectKind, scope: parsedFile?.scope };
+  if (tab === "Provenance") body = {
+    path: fileRecord?.relativePath,
+    sourceHash: parsedFile?.sourceHash,
+    status: objectDetail?.object.status ?? parsedFile?.status,
+    headVersionId: objectDetail?.object.headVersionId,
+    objectKey: objectDetail?.object.objectKey ?? parsedFile?.objectKey,
+    objectKind: objectDetail?.object.objectKind ?? parsedFile?.objectKind,
+    state: objectDetail?.object.state,
+  };
 
   return (
     <pre

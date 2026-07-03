@@ -5,6 +5,7 @@ import { approveLibraryImportDraft, createLibraryImportDraft } from "@/lib/libra
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
 import type { LibrarySseFrame } from "@/lib/library/types";
 import { LibraryGraphBlock } from "./LibraryGraphBlock";
+import type { LibraryGraphChartNode } from "./LibraryGraphChart";
 import { LibraryValidationBlock } from "./LibraryValidationBlock";
 
 export function LibraryChatWindow({
@@ -12,11 +13,13 @@ export function LibraryChatWindow({
   pendingPrompt,
   onPromptConsumed,
   onLibraryChanged,
+  onSelectGraphNode,
 }: {
   scope: string;
   pendingPrompt: string;
   onPromptConsumed: () => void;
   onLibraryChanged?: () => void;
+  onSelectGraphNode?: (node: LibraryGraphChartNode) => void;
 }) {
   const [frames, setFrames] = useState<LibrarySseFrame[]>([]);
   const [input, setInput] = useState("");
@@ -110,7 +113,7 @@ export function LibraryChatWindow({
           <div key={`${frame.event}:${index}`} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, marginBottom: 8 }}>
             <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 6 }}>{frame.event}</div>
             {frame.event === "library.graph.snapshot" ? (
-              <LibraryGraphBlock data={frame.data} defaultScope={scope} />
+              <LibraryGraphBlock data={frame.data} defaultScope={scope} onSelectNode={onSelectGraphNode} />
             ) : frame.event === "library.validation.completed" ? (
               <LibraryValidationBlock data={frame.data} />
             ) : frame.event === "library.proposal.created" && typeof frame.data.draftId === "string" ? (

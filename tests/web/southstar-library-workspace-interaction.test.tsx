@@ -218,9 +218,77 @@ test("LibraryFileViewer updates action disabled states and switches tabs on clic
   });
 });
 
+test("LibraryFileViewer renders graph-backed edge usage and provenance detail", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryFileViewer } from "./web/components/library/LibraryFileViewer";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryFileViewer
+        selectedFilePath="software/skills/react-ui.skill.md"
+        fileRecord={{
+          relativePath: "software/skills/react-ui.skill.md",
+          content: "title: React UI",
+          parsed: {
+            ok: true,
+            file: {
+              objectKey: "skill.react-ui",
+              objectKind: "skill_spec",
+              title: "React UI",
+              scope: "software",
+              status: "approved",
+              frontmatter: {},
+              sourceHash: "abc123",
+            },
+            issues: [],
+          },
+        }}
+        objectDetail={{
+          object: {
+            objectKey: "skill.react-ui",
+            objectKind: "skill_spec",
+            status: "approved",
+            headVersionId: "skill.react-ui@v1",
+            state: { scope: "software", title: "React UI", sourcePath: "software/skills/react-ui.skill.md" },
+          },
+          inboundEdges: [{ fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" }],
+          outboundEdges: [{ fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.browser", scope: "software" }],
+          usage: {
+            inboundCount: 1,
+            outboundCount: 1,
+            usedByObjectKeys: ["agent.frontend-developer"],
+            dependsOnObjectKeys: ["tool.browser"],
+          },
+          validation: { ok: true, issues: [] },
+        }}
+        content="title: React UI"
+        dirty={false}
+        saving={false}
+        syncing={false}
+        onContentChange={() => {}}
+        onSave={() => {}}
+        onSync={() => {}}
+      />
+    );
+  `, async (page) => {
+    await page.getByRole("button", { name: "Edges" }).click();
+    await assertText(page, "pre", "agent.frontend-developer");
+    await assertText(page, "pre", "tool.browser");
+
+    await page.getByRole("button", { name: "Usage" }).click();
+    await assertText(page, "pre", "inboundCount");
+    await assertText(page, "pre", "outboundCount");
+
+    await page.getByRole("button", { name: "Provenance" }).click();
+    await assertText(page, "pre", "skill.react-ui@v1");
+  });
+});
+
 test("library file API helpers unwrap envelopes and call file read, save, and sync routes", async () => {
   const api = await import("../../web/lib/library/api.ts");
   assert.equal(typeof api.readLibraryFile, "function");
+  assert.equal(typeof api.readLibraryObjectDetail, "function");
   assert.equal(typeof api.saveLibraryFile, "function");
   assert.equal(typeof api.syncLibraryFile, "function");
 
@@ -228,6 +296,9 @@ test("library file API helpers unwrap envelopes and call file read, save, and sy
   const requests: Array<{ url: string; method: string; body?: string }> = [];
   globalThis.fetch = async (input, init) => {
     requests.push({ url: String(input), method: init?.method ?? "GET", body: init?.body as string | undefined });
+    if (String(input).includes("/api/library/objects/")) {
+      return new Response(JSON.stringify({ ok: true, result: { object: { objectKey: "agent.planner" }, inboundEdges: [], outboundEdges: [] } }));
+    }
     if (String(input).endsWith("/sync")) {
       return new Response(JSON.stringify({ ok: true, result: { object: { objectKey: "agent.planner" }, edges: [] } }));
     }
@@ -243,6 +314,7 @@ test("library file API helpers unwrap envelopes and call file read, save, and sy
 
   try {
     await api.readLibraryFile("software/agents/planner.agent.md");
+    await api.readLibraryObjectDetail("agent.planner");
     await api.saveLibraryFile("software/agents/planner.agent.md", "title: Planner v2");
     await api.syncLibraryFile("software/agents/planner.agent.md");
   } finally {
@@ -251,6 +323,7 @@ test("library file API helpers unwrap envelopes and call file read, save, and sy
 
   assert.deepEqual(requests, [
     { url: "/api/library/files/software/agents/planner.agent.md", method: "GET", body: undefined },
+    { url: "/api/library/objects/agent.planner", method: "GET", body: undefined },
     {
       url: "/api/library/files/software/agents/planner.agent.md",
       method: "PATCH",
@@ -318,6 +391,7 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
 
     assert.deepEqual(requests.map((request) => [request.method, request.path]), [
       ["GET", "/api/library/workspace"],
+      ["GET", "/api/library/objects/agent.planner"],
       ["GET", "/api/library/files/software/agents/planner.agent.md"],
       ["PATCH", "/api/library/files/software/agents/planner.agent.md"],
       ["POST", "/api/library/files/software/agents/planner.agent.md/sync"],
@@ -362,6 +436,11 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
             },
           }),
         });
+        return;
+      }
+
+      if (url.pathname === "/api/library/objects/agent.planner") {
+        await route.fulfill({ contentType: "application/json", body: libraryObjectDetailEnvelope("agent.planner") });
         return;
       }
 
@@ -502,6 +581,110 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an imp
               synced: [{ object: { objectKey: "skill.browser-verification" }, edges: [] }],
             },
           }),
+        });
+        return;
+      }
+
+      await route.abort();
+    });
+  }, { mockLibraryChat: false });
+});
+
+test("LibraryWorkspace opens the right file viewer when a chat graph node is selected", async () => {
+  const requests: Array<{ method: string; path: string }> = [];
+
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+
+    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+  `, async (page) => {
+    await page.locator('[data-testid="library-chat-input"]').fill("show the current library graph");
+    await page.locator('[data-testid="library-chat-send"]').click();
+
+    await page.locator('[data-testid="library-graph-block"]').getByRole("button", { name: "Frontend Developer" }).click();
+    await page.waitForFunction(() => {
+      const editor = document.querySelector('[data-testid="library-file-editor"]') as HTMLTextAreaElement | null;
+      return editor?.value === "title: Frontend Developer";
+    });
+
+    assert.equal(await page.getByText("software/agents/frontend-developer.agent.md").count(), 1);
+    assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), "title: Frontend Developer");
+    assert.deepEqual(requests.map((request) => [request.method, request.path]), [
+      ["GET", "/api/library/workspace"],
+      ["POST", "/api/library/chat/messages"],
+      ["GET", "/api/library/chat/events"],
+      ["GET", "/api/library/graph"],
+      ["GET", "/api/library/objects/agent.frontend-developer"],
+      ["GET", "/api/library/files/software/agents/frontend-developer.agent.md"],
+    ]);
+  }, async (page) => {
+    await page.route("**/api/library/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      requests.push({ method: request.method(), path: url.pathname });
+
+      if (url.pathname === "/api/library/workspace") {
+        await route.fulfill({ contentType: "application/json", body: workspaceEnvelope([
+          libraryObject("agent.frontend-developer", "Frontend Developer", "software/agents/frontend-developer.agent.md"),
+        ]) });
+        return;
+      }
+
+      if (url.pathname === "/api/library/chat/messages" && request.method() === "POST") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, result: { sessionId: "library-session-1", actionId: "action-1" } }),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/chat/events" && request.method() === "GET") {
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body: [
+            "event: library.graph.snapshot",
+            'data: {"activeScope":"software","availableScopes":["software"],"nodes":[{"objectKey":"agent.frontend-developer","objectKind":"agent_definition","status":"approved","title":"Frontend Developer"}],"edges":[]}',
+            "",
+            "event: library.command.completed",
+            'data: {"status":"completed"}',
+            "",
+          ].join("\n"),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/graph" && request.method() === "GET") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            result: {
+              activeScope: "software",
+              availableScopes: ["software"],
+              nodes: [{
+                objectKey: "agent.frontend-developer",
+                objectKind: "agent_definition",
+                status: "approved",
+                title: "Frontend Developer",
+              }],
+              edges: [],
+            },
+          }),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/objects/agent.frontend-developer") {
+        await route.fulfill({ contentType: "application/json", body: libraryObjectDetailEnvelope("agent.frontend-developer") });
+        return;
+      }
+
+      if (url.pathname === "/api/library/files/software/agents/frontend-developer.agent.md") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: libraryFileEnvelope("software/agents/frontend-developer.agent.md", "title: Frontend Developer"),
         });
         return;
       }
@@ -976,6 +1159,30 @@ function libraryFileEnvelope(relativePath: string, content: string): string {
         },
         issues: [],
       },
+    },
+  });
+}
+
+function libraryObjectDetailEnvelope(objectKey: string): string {
+  return JSON.stringify({
+    ok: true,
+    result: {
+      object: {
+        objectKey,
+        objectKind: objectKey.startsWith("skill.") ? "skill_spec" : "agent_definition",
+        status: "approved",
+        headVersionId: `${objectKey}@v1`,
+        state: { scope: "software", title: objectKey },
+      },
+      inboundEdges: [],
+      outboundEdges: [],
+      usage: {
+        inboundCount: 0,
+        outboundCount: 0,
+        usedByObjectKeys: [],
+        dependsOnObjectKeys: [],
+      },
+      validation: { ok: true, issues: [] },
     },
   });
 }

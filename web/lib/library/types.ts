@@ -85,3 +85,37 @@ export type LibraryFileSyncResult = {
   object?: unknown;
   edges?: unknown[];
 };
+
+export type LibraryGraphEdgeRecord = {
+  id?: string;
+  fromObjectKey: string;
+  edgeType: string;
+  toObjectKey: string;
+  scope?: string;
+  status?: string;
+  weight?: number;
+  metadata?: Record<string, unknown>;
+};
+
+export type LibraryObjectDetail = {
+  object: {
+    id?: string;
+    objectKey: string;
+    objectKind: string;
+    status: string;
+    headVersionId?: string | null;
+    state?: Record<string, unknown>;
+  };
+  inboundEdges: LibraryGraphEdgeRecord[];
+  outboundEdges: LibraryGraphEdgeRecord[];
+  usage?: {
+    inboundCount: number;
+    outboundCount: number;
+    usedByObjectKeys: string[];
+    dependsOnObjectKeys: string[];
+  };
+  validation?: {
+    ok: boolean;
+    issues: Array<{ code: string; path: string; message: string }>;
+  };
+};

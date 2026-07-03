@@ -3,7 +3,7 @@ import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { getResourceByKeyPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -280,6 +280,131 @@ test("library prompt import creates an import draft without writing files", asyn
     const resource = await getResourceByKeyPg(db, "library_import_draft", payload.result.draftId);
     assert.equal(resource?.status, "draft");
     assert.equal((resource?.payload as any).proposal.files[0].relativePath, "skills/browser-verification.skill.md");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("serves library object detail with inbound and outbound graph edges", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-object-detail-"));
+
+  try {
+    const context = { db, libraryRoot } as any;
+    await seedObject(db, "agent.frontend-developer", "agent_definition", "software", "Frontend Developer");
+    await seedObject(db, "skill.react-ui", "skill_spec", "software", "React UI");
+    await seedObject(db, "tool.browser", "tool_definition", "global", "Browser");
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "supports_skill",
+      toObjectKey: "skill.react-ui",
+      scope: "software",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "skill.react-ui",
+      edgeType: "requires_tool",
+      toObjectKey: "tool.browser",
+      scope: "software",
+    });
+
+    const response = await handleRuntimeRoute(
+      context,
+      new Request("http://local/api/v2/library/objects/skill.react-ui"),
+    );
+
+    assert.equal(response.status, 200);
+    const envelope = await readEnvelope(response);
+    assert.equal(envelope.kind, "library-object-detail");
+    assert.equal(envelope.result.object.objectKey, "skill.react-ui");
+    assert.deepEqual(envelope.result.inboundEdges.map((edge: { fromObjectKey: string }) => edge.fromObjectKey), [
+      "agent.frontend-developer",
+    ]);
+    assert.deepEqual(envelope.result.outboundEdges.map((edge: { toObjectKey: string }) => edge.toObjectKey), [
+      "tool.browser",
+    ]);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("validates library files without writing to the graph", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-file-validate-"));
+
+  try {
+    const context = { db, libraryRoot } as any;
+    const relativePath = "skills/broken.skill.md";
+    const patchResponse = await handleRuntimeRoute(context, new Request(`http://local/api/v2/library/files/${relativePath}`, {
+      method: "PATCH",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ content: "not a valid southstar library file" }),
+    }));
+    assert.equal(patchResponse.status, 200);
+
+    const response = await handleRuntimeRoute(
+      context,
+      new Request(`http://local/api/v2/library/files/${relativePath}/validate`, { method: "POST" }),
+    );
+
+    assert.equal(response.status, 200);
+    const envelope = await readEnvelope(response);
+    assert.equal(envelope.kind, "library-file-validation");
+    assert.equal(envelope.result.relativePath, relativePath);
+    assert.equal(envelope.result.validation.ok, false);
+    assert.match(envelope.result.validation.issues[0].message, /frontmatter|schema/i);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("validates generated profile drafts through the library route", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-profile-validate-"));
+
+  try {
+    const context = { db, libraryRoot } as any;
+    await seedObject(db, "agent.frontend-developer", "agent_definition", "software", "Frontend Developer");
+    await seedObject(db, "skill.react-ui", "skill_spec", "software", "React UI");
+    await seedObject(db, "tool.workspace-write", "tool_definition", "software", "Workspace Write");
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "supports_skill",
+      toObjectKey: "skill.react-ui",
+      scope: "software",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "skill.react-ui",
+      edgeType: "requires_tool",
+      toObjectKey: "tool.workspace-write",
+      scope: "software",
+    });
+
+    const response = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/profile-drafts/validate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        profile: {
+          scope: "software",
+          nodeId: "implement-ui",
+          agentRef: "agent.frontend-developer",
+          skillRefs: ["skill.react-ui"],
+          toolGrantRefs: [],
+          mcpGrantRefs: [],
+          instructionRefs: [],
+        },
+      }),
+    }));
+
+    assert.equal(response.status, 200);
+    const envelope = await readEnvelope(response);
+    assert.equal(envelope.kind, "library-profile-draft-validation");
+    assert.equal(envelope.result.validation.ok, false);
+    assert.deepEqual(envelope.result.validation.issues.map((issue: { code: string }) => issue.code), [
+      "missing_required_tool",
+    ]);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
