@@ -1,9 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { approveLibraryImportDraft, createLibraryImportDraft } from "@/lib/library/api";
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
-import type { LibrarySseFrame } from "@/lib/library/types";
+import type { LibrarySessionSummary, LibrarySseFrame } from "@/lib/library/types";
 import { LibraryGraphBlock } from "./LibraryGraphBlock";
 import type { LibraryGraphChartNode } from "./LibraryGraphChart";
 import { LibraryValidationBlock } from "./LibraryValidationBlock";
@@ -14,21 +14,35 @@ export function LibraryChatWindow({
   onPromptConsumed,
   onLibraryChanged,
   onSelectGraphNode,
+  onSessionActivity,
 }: {
   scope: string;
   pendingPrompt: string;
   onPromptConsumed: () => void;
   onLibraryChanged?: () => void;
   onSelectGraphNode?: (node: LibraryGraphChartNode) => void;
+  onSessionActivity?: (session: LibrarySessionSummary) => void;
 }) {
   const [frames, setFrames] = useState<LibrarySseFrame[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
   const [draftStatuses, setDraftStatuses] = useState<Record<string, "draft" | "approving" | "approved">>({});
+  const sessionCounterRef = useRef(0);
+  const draftSessionIdsRef = useRef<Record<string, string>>({});
 
   const submitText = useCallback(async (prompt: string) => {
     const text = prompt.trim();
     if (!text || running) return;
+    sessionCounterRef.current += 1;
+    const sessionId = `library-local-session-${Date.now()}-${sessionCounterRef.current}`;
+    const startedAt = new Date().toISOString();
+    onSessionActivity?.({
+      id: sessionId,
+      title: titleFromPrompt(text),
+      status: "running",
+      modified: startedAt,
+      detail: scope,
+    });
     setRunning(true);
     setFrames((current) => [...current, { event: "library.chat.delta", data: { prompt: text } }]);
     try {
@@ -36,6 +50,16 @@ export function LibraryChatWindow({
         const draft = await createLibraryImportDraft({
           source: { kind: "paste", label: "Library chat prompt", content: text },
           scope,
+        });
+        draftSessionIdsRef.current[draft.draftId] = sessionId;
+        const itemCount = draft.proposal.objectKeys.length;
+        onSessionActivity?.({
+          id: sessionId,
+          title: titleFromPrompt(text),
+          status: "ready_for_review",
+          modified: new Date().toISOString(),
+          detail: `${itemCount} ${itemCount === 1 ? "item" : "items"}`,
+          itemCount,
         });
         setDraftStatuses((current) => ({ ...current, [draft.draftId]: "draft" }));
         setFrames((current) => [...current, {
@@ -60,7 +84,21 @@ export function LibraryChatWindow({
         scope,
         onFrame: (frame) => setFrames((current) => [...current, frame]),
       });
+      onSessionActivity?.({
+        id: sessionId,
+        title: titleFromPrompt(text),
+        status: "completed",
+        modified: new Date().toISOString(),
+        detail: scope,
+      });
     } catch (error) {
+      onSessionActivity?.({
+        id: sessionId,
+        title: titleFromPrompt(text),
+        status: "error",
+        modified: new Date().toISOString(),
+        detail: error instanceof Error ? error.message : String(error),
+      });
       setFrames((current) => [...current, {
         event: "library.error",
         data: { message: error instanceof Error ? error.message : String(error) },
@@ -68,7 +106,7 @@ export function LibraryChatWindow({
     } finally {
       setRunning(false);
     }
-  }, [running, scope]);
+  }, [onSessionActivity, running, scope]);
 
   const approveDraft = useCallback(async (draftId: string) => {
     setDraftStatuses((current) => ({ ...current, [draftId]: "approving" }));
@@ -89,15 +127,37 @@ export function LibraryChatWindow({
         event: "library.command.completed",
         data: { draftId, status: "approved" },
       }]);
+      const sessionId = draftSessionIdsRef.current[draftId];
+      if (sessionId) {
+        const itemCount = approved.proposal.objectKeys.length;
+        onSessionActivity?.({
+          id: sessionId,
+          title: "Approved library import",
+          status: "approved",
+          modified: new Date().toISOString(),
+          detail: `${itemCount} ${itemCount === 1 ? "item" : "items"}`,
+          itemCount,
+        });
+      }
       onLibraryChanged?.();
     } catch (error) {
       setDraftStatuses((current) => ({ ...current, [draftId]: "draft" }));
+      const sessionId = draftSessionIdsRef.current[draftId];
+      if (sessionId) {
+        onSessionActivity?.({
+          id: sessionId,
+          title: "Library import approval",
+          status: "error",
+          modified: new Date().toISOString(),
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
       setFrames((current) => [...current, {
         event: "library.error",
         data: { draftId, message: error instanceof Error ? error.message : String(error) },
       }]);
     }
-  }, [onLibraryChanged]);
+  }, [onLibraryChanged, onSessionActivity]);
 
   useEffect(() => {
     const text = pendingPrompt.trim();
@@ -219,6 +279,12 @@ function LibraryImportDraftReview({
 
 function isImportDraftPrompt(prompt: string): boolean {
   return /\b(create|import)\b/i.test(prompt);
+}
+
+function titleFromPrompt(prompt: string): string {
+  const trimmed = prompt.trim().replace(/\s+/g, " ");
+  if (trimmed.length <= 48) return trimmed;
+  return `${trimmed.slice(0, 45)}...`;
 }
 
 function isString(value: unknown): value is string {

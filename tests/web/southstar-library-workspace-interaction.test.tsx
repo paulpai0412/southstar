@@ -12,7 +12,7 @@ const root = join(import.meta.dirname, "../..");
 const require = createRequire(import.meta.url);
 (globalThis as unknown as { React: typeof React }).React = React;
 
-test("LibrarySidebar filters object rows and calls onSelectObject when a row is clicked", async () => {
+test("LibrarySidebar renders the domain tree and calls onSelectObject when a row is clicked", async () => {
   await withBrowserHarness(`
     import React, { useState } from "react";
     import { createRoot } from "react-dom/client";
@@ -65,18 +65,16 @@ test("LibrarySidebar filters object rows and calls onSelectObject when a row is 
 
     function Harness() {
       const [selectedObjectKey, setSelectedObjectKey] = useState("");
-      const [statusFilter, setStatusFilter] = useState("all");
       return (
         <LibrarySidebar
           model={model}
+          sessions={[{ id: "library-session-1", title: "Research import run", status: "completed" }]}
+          selectedSessionId="library-session-1"
           selectedScope="software"
           selectedObjectKey={selectedObjectKey}
-          statusFilter={statusFilter}
+          statusFilter="all"
           onSelectScope={() => {}}
-          onStatusFilterChange={(value) => {
-            window.__statusFilter = value;
-            setStatusFilter(value);
-          }}
+          onStatusFilterChange={() => {}}
           onSelectObject={(object) => {
             window.__selectedObjectKey = object.objectKey;
             setSelectedObjectKey(object.objectKey);
@@ -92,12 +90,11 @@ test("LibrarySidebar filters object rows and calls onSelectObject when a row is 
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').first().waitFor();
     assert.equal(await page.locator('[data-testid="library-object-row"]').count(), 3);
-
-    await page.locator('[data-testid="library-status-filter"]').selectOption("approved");
-
-    assert.equal(await page.evaluate(() => (window as any).__statusFilter), "approved");
-    assert.equal(await page.locator('[data-testid="library-object-row"]').count(), 2);
-    assert.equal(await page.getByText("Legacy").count(), 0);
+    await page.getByText("Library LLM Sessions").waitFor();
+    await page.getByText("Library Domain Tree").waitFor();
+    await page.getByText("Research import run").waitFor();
+    await page.getByText("agents", { exact: true }).waitFor();
+    await page.getByText("skills", { exact: true }).waitFor();
 
     await page.getByRole("button", { name: "Planner agent.planner approved" }).click();
 
@@ -482,6 +479,8 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an imp
     await page.locator('[data-testid="library-quick-prompt"]').fill("create a browser verification skill");
     await page.locator('[data-testid="library-quick-prompt-submit"]').click();
     await page.getByText("Dependencies").waitFor();
+    await page.locator('[data-testid="library-session-row"]').filter({ hasText: "create a browser verification skill" }).waitFor();
+    assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "ready_for_review" }).count(), 1);
     assert.equal(await page.getByText("Browser Verification").count() > 0, true);
     assert.equal(await page.getByText(/requires_tool/).count() > 0, true);
     await page.getByRole("button", { name: "Approve" }).click();

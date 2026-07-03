@@ -36,6 +36,15 @@ export type LibraryWorkspaceObjectGroup = {
   objects: LibraryWorkspaceObject[];
 };
 
+export type LibrarySessionSummary = {
+  id: string;
+  title: string;
+  status: string;
+  modified?: string;
+  detail?: string;
+  itemCount?: number;
+};
+
 export type LibraryWorkspaceModel = {
   selectedScope: string;
   domains: Array<{

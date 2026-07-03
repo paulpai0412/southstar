@@ -12,7 +12,7 @@ const root = join(import.meta.dirname, "../..");
 const require = createRequire(import.meta.url);
 (globalThis as unknown as { React: typeof React }).React = React;
 
-test("LibrarySidebar renders fixed primitive domain trees and selects filtered objects", async () => {
+test("LibrarySidebar renders sessions above a filtered domain tree and selects sessions and objects", async () => {
   await withBrowserHarness(`
     import React, { useState } from "react";
     import { createRoot } from "react-dom/client";
@@ -25,7 +25,9 @@ test("LibrarySidebar renders fixed primitive domain trees and selects filtered o
           scope: "software",
           counts: {
             agent_definition: 1,
+            agent_spec: 1,
             skill_spec: 1,
+            skill_definition: 1,
             mcp_tool_grant: 1,
             tool_definition: 1,
           },
@@ -43,6 +45,18 @@ test("LibrarySidebar renders fixed primitive domain trees and selects filtered o
               }],
             },
             {
+              objectKind: "agent_spec",
+              objects: [{
+                id: "agent.researcher",
+                objectKey: "agent.researcher",
+                objectKind: "agent_spec",
+                status: "approved",
+                title: "Agent Spec",
+                scope: "software",
+                sourcePath: "software/agents/researcher.agent.md",
+              }],
+            },
+            {
               objectKind: "skill_spec",
               objects: [{
                 id: "skill.react",
@@ -52,6 +66,18 @@ test("LibrarySidebar renders fixed primitive domain trees and selects filtered o
                 title: "React Skill",
                 scope: "software",
                 sourcePath: "software/skills/react.skill.md",
+              }],
+            },
+            {
+              objectKind: "skill_definition",
+              objects: [{
+                id: "skill.codegen",
+                objectKey: "skill.codegen",
+                objectKind: "skill_definition",
+                status: "approved",
+                title: "Skill Definition",
+                scope: "software",
+                sourcePath: "software/skills/codegen.skill.md",
               }],
             },
             {
@@ -101,14 +127,28 @@ test("LibrarySidebar renders fixed primitive domain trees and selects filtered o
 
     function Harness() {
       const [selectedObjectKey, setSelectedObjectKey] = useState("");
+      const [selectedSessionId, setSelectedSessionId] = useState("");
       return (
         <LibrarySidebar
           model={model}
+          sessions={[{
+            id: "library-session-1",
+            title: "Research import run",
+            status: "completed",
+            modified: "2026-07-03T08:00:00.000Z",
+            detail: "1 item",
+            itemCount: 1,
+          }]}
+          selectedSessionId={selectedSessionId}
           selectedScope="software"
           selectedObjectKey={selectedObjectKey}
           statusFilter="all"
           onSelectScope={() => {}}
           onStatusFilterChange={() => {}}
+          onSelectSession={(session) => {
+            window.__selectedSessionId = session.id;
+            setSelectedSessionId(session.id);
+          }}
           onSelectObject={(object) => {
             window.__selectedObjectKey = object.objectKey;
             setSelectedObjectKey(object.objectKey);
@@ -124,17 +164,29 @@ test("LibrarySidebar renders fixed primitive domain trees and selects filtered o
   `, async (page) => {
     await page.locator('[data-testid="library-domain-filter"]').fill("soft");
 
-    for (const heading of ["Agent", "Skill", "MCP", "Tool"]) {
-      await page.getByRole("heading", { name: heading }).waitFor();
+    await page.getByText("Library LLM Sessions").waitFor();
+    await page.getByText("Library Domain Tree").waitFor();
+    assert.equal(await page.getByText("Research import run").isVisible(), true);
+
+    await page.getByRole("button", { name: "software" }).waitFor();
+    const domainTree = page.locator('[data-testid="library-domain-tree"]');
+    assert.equal(await domainTree.getByRole("button", { name: "research", exact: true }).count(), 0);
+
+    for (const folder of ["agents", "skills", "mcp", "tools"]) {
+      await page.getByText(folder, { exact: true }).waitFor();
     }
 
-    for (const title of ["Frontend Agent", "React Skill", "GitHub MCP", "Browser Tool"]) {
+    for (const title of ["Frontend Agent", "Agent Spec", "React Skill", "Skill Definition", "GitHub MCP", "Browser Tool"]) {
       assert.equal(await page.getByText(title).isVisible(), true);
     }
+    assert.equal(await domainTree.getByText("research", { exact: true }).count(), 0);
     assert.equal(await page.getByText("Literature Review").count(), 0);
 
     await page.getByRole("button", { name: "React Skill skill.react approved" }).click();
     assert.equal(await page.evaluate(() => (window as any).__selectedObjectKey), "skill.react");
+
+    await page.getByRole("button", { name: /Research import run/ }).click();
+    assert.equal(await page.evaluate(() => (window as any).__selectedSessionId), "library-session-1");
   });
 });
 

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { readLibraryFile, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
-import type { LibraryFileEnvelope, LibraryObjectDetail, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
+import type { LibraryFileEnvelope, LibraryObjectDetail, LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
 import { LibraryChatWindow } from "./LibraryChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
 import type { LibraryGraphChartNode } from "./LibraryGraphChart";
@@ -22,6 +22,8 @@ export function LibraryWorkspace() {
   const [fileStatusMessage, setFileStatusMessage] = useState<string | undefined>(undefined);
   const [quickPrompt, setQuickPrompt] = useState("");
   const [pendingPrompt, setPendingPrompt] = useState("");
+  const [librarySessions, setLibrarySessions] = useState<LibrarySessionSummary[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(undefined);
   const selectedFilePathRef = useRef<string | undefined>(undefined);
   const dirtyFileContentRef = useRef("");
   const loadRequestRef = useRef(0);
@@ -59,6 +61,21 @@ export function LibraryWorkspace() {
 
   const handlePromptConsumed = useCallback(() => {
     setPendingPrompt("");
+  }, []);
+
+  const handleSessionActivity = useCallback((session: LibrarySessionSummary) => {
+    setSelectedSessionId(session.id);
+    setLibrarySessions((current) => {
+      const existing = current.findIndex((item) => item.id === session.id);
+      if (existing === -1) return [session, ...current];
+      const next = [...current];
+      next[existing] = { ...next[existing], ...session };
+      return next;
+    });
+  }, []);
+
+  const handleSelectSession = useCallback((session: LibrarySessionSummary) => {
+    setSelectedSessionId(session.id);
   }, []);
 
   const updateDirtyFileContent = useCallback((content: string) => {
@@ -210,11 +227,14 @@ export function LibraryWorkspace() {
       >
         <LibrarySidebar
           model={model}
+          sessions={librarySessions}
+          selectedSessionId={selectedSessionId}
           selectedScope={selectedScope}
           selectedObjectKey={selectedObjectKey}
           statusFilter={statusFilter}
           onSelectScope={handleSelectScope}
           onStatusFilterChange={setStatusFilter}
+          onSelectSession={handleSelectSession}
           onSelectObject={handleSelectObject}
           prompt={quickPrompt}
           onPromptChange={setQuickPrompt}
@@ -228,6 +248,7 @@ export function LibraryWorkspace() {
           onPromptConsumed={handlePromptConsumed}
           onLibraryChanged={loadWorkspace}
           onSelectGraphNode={handleSelectGraphNode}
+          onSessionActivity={handleSessionActivity}
         />
       </main>
       <aside
