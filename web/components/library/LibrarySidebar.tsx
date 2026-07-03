@@ -1,6 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import type { LibraryWorkspaceModel, LibraryWorkspaceObject, LibraryWorkspaceObjectGroup } from "@/lib/library/types";
+
+const primitiveSections = [
+  { label: "Agent", objectKind: "agent_definition" },
+  { label: "Skill", objectKind: "skill_spec" },
+  { label: "MCP", objectKind: "mcp_tool_grant" },
+  { label: "Tool", objectKind: "tool_definition" },
+] as const;
 
 export function LibrarySidebar({
   model,
@@ -26,36 +34,35 @@ export function LibrarySidebar({
   onPromptSubmit: () => void;
 }) {
   const domains = model?.domains ?? [];
+  const [domainFilter, setDomainFilter] = useState("");
+  const normalizedDomainFilter = domainFilter.trim().toLowerCase();
+  const filteredDomains = normalizedDomainFilter
+    ? domains.filter((domain) => domain.scope.toLowerCase().includes(normalizedDomainFilter))
+    : domains;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div style={{ padding: 10, borderBottom: "1px solid var(--border)" }}>
+      <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
         <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Library</div>
-        <textarea
-          data-testid="library-quick-prompt"
-          value={prompt}
-          onChange={(event) => onPromptChange(event.currentTarget.value)}
-          placeholder="Import or create library item..."
-          rows={3}
+        <label style={{ display: "block", fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
+          Domain
+        </label>
+        <input
+          data-testid="library-domain-filter"
+          value={domainFilter}
+          onChange={(event) => setDomainFilter(event.currentTarget.value)}
+          placeholder="Filter domains..."
           style={{
             width: "100%",
-            resize: "vertical",
+            height: 28,
             fontSize: 12,
             border: "1px solid var(--border)",
             borderRadius: 6,
             background: "var(--bg)",
             color: "var(--text)",
-            padding: 8,
+            padding: "0 8px",
           }}
         />
-        <button
-          data-testid="library-quick-prompt-submit"
-          onClick={onPromptSubmit}
-          disabled={!prompt.trim()}
-          style={{ marginTop: 8, width: "100%", height: 28 }}
-        >
-          Send to Library chat
-        </button>
       </div>
       <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
         <label style={{ display: "block", fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>
@@ -82,87 +89,122 @@ export function LibrarySidebar({
           <option value="blocked">Blocked</option>
         </select>
       </div>
-      <div style={{ overflow: "auto", padding: 8 }}>
-        {domains.map((domain) => (
-          <section key={domain.scope} style={{ marginBottom: 10 }}>
-            <button
-              onClick={() => onSelectScope(domain.scope)}
-              aria-pressed={selectedScope === domain.scope}
-              style={{ width: "100%", textAlign: "left", fontWeight: 700 }}
-            >
-              {domain.scope}
-            </button>
-            {Object.entries(domain.counts).map(([kind, count]) => (
-              <div
-                key={`${domain.scope}:${kind}`}
-                style={{ display: "flex", justifyContent: "space-between", padding: "3px 8px", fontSize: 12, color: "var(--text-muted)" }}
-              >
-                <span>{kind}</span>
-                <span>{count}</span>
-              </div>
-            ))}
-            {objectGroupsForDomain(domain)
-              .map((group) => ({
-                ...group,
-                objects: group.objects.filter((object) => statusFilter === "all" || object.status === statusFilter),
-              }))
-              .filter((group) => group.objects.length > 0)
-              .map((group) => (
-                <div key={`${domain.scope}:${group.objectKind}:objects`} style={{ marginTop: 8 }}>
-                  <div
+      <div style={{ overflow: "auto", padding: 8, minHeight: 0 }}>
+        {primitiveSections.map((section) => (
+          <section key={section.objectKind} style={{ marginBottom: 14 }}>
+            <h2 style={{ fontSize: 12, margin: "2px 0 8px", fontWeight: 750 }}>{section.label}</h2>
+            {filteredDomains.map((domain) => {
+              const objects = objectsForDomainAndKind(domain, section.objectKind)
+                .filter((object) => statusFilter === "all" || object.status === statusFilter);
+              if (objects.length === 0) return null;
+              return (
+                <div key={`${section.objectKind}:${domain.scope}`} style={{ marginBottom: 8 }}>
+                  <button
+                    onClick={() => onSelectScope(domain.scope)}
+                    aria-pressed={selectedScope === domain.scope}
                     style={{
+                      width: "100%",
+                      textAlign: "left",
+                      fontWeight: 700,
+                      fontSize: 12,
                       padding: "4px 8px",
-                      fontSize: 11,
-                      color: "var(--text-muted)",
-                      textTransform: "uppercase",
                     }}
                   >
-                    {group.objectKind}
-                  </div>
-                  {group.objects.map((object) => {
-                    const selected = selectedObjectKey === object.objectKey;
-                    return (
-                      <button
-                        key={object.objectKey}
-                        type="button"
-                        data-testid="library-object-row"
-                        aria-pressed={selected}
-                        onClick={() => onSelectObject(object)}
-                        style={{
-                          width: "100%",
-                          display: "grid",
-                          gridTemplateColumns: "minmax(0, 1fr) auto",
-                          gap: 6,
-                          alignItems: "center",
-                          textAlign: "left",
-                          border: `1px solid ${selected ? "var(--accent)" : "transparent"}`,
-                          borderRadius: 6,
-                          background: selected ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "transparent",
-                          color: "var(--text)",
-                          padding: "6px 8px",
-                          marginTop: 2,
-                          cursor: "pointer",
-                        }}
-                      >
-                        <span style={{ minWidth: 0 }}>
-                          <span style={{ display: "block", fontSize: 12, fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {object.title}
-                          </span>
-                          <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                            {object.objectKey}
-                          </span>
-                        </span>
-                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{object.status}</span>
-                      </button>
-                    );
-                  })}
+                    {domain.scope}
+                  </button>
+                  {objects.map((object) => (
+                    <LibraryObjectRow
+                      key={object.objectKey}
+                      object={object}
+                      selected={selectedObjectKey === object.objectKey}
+                      onSelectObject={onSelectObject}
+                    />
+                  ))}
                 </div>
-              ))}
+              );
+            })}
           </section>
         ))}
       </div>
+      <div style={{ padding: 10, borderTop: "1px solid var(--border)" }}>
+        <textarea
+          data-testid="library-quick-prompt"
+          value={prompt}
+          onChange={(event) => onPromptChange(event.currentTarget.value)}
+          placeholder="Import or create library item..."
+          rows={3}
+          style={{
+            width: "100%",
+            resize: "vertical",
+            fontSize: 12,
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            background: "var(--bg)",
+            color: "var(--text)",
+            padding: 8,
+          }}
+        />
+        <button
+          data-testid="library-quick-prompt-submit"
+          onClick={onPromptSubmit}
+          disabled={!prompt.trim()}
+          style={{ marginTop: 8, width: "100%", height: 28 }}
+        >
+          Send to Library chat
+        </button>
+      </div>
     </div>
   );
+}
+
+function LibraryObjectRow({
+  object,
+  selected,
+  onSelectObject,
+}: {
+  object: LibraryWorkspaceObject;
+  selected: boolean;
+  onSelectObject: (object: LibraryWorkspaceObject) => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid="library-object-row"
+      aria-pressed={selected}
+      onClick={() => onSelectObject(object)}
+      style={{
+        width: "100%",
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) auto",
+        gap: 6,
+        alignItems: "center",
+        textAlign: "left",
+        border: `1px solid ${selected ? "var(--accent)" : "transparent"}`,
+        borderRadius: 6,
+        background: selected ? "color-mix(in srgb, var(--accent) 10%, transparent)" : "transparent",
+        color: "var(--text)",
+        padding: "6px 8px",
+        marginTop: 2,
+        cursor: "pointer",
+      }}
+    >
+      <span style={{ minWidth: 0 }}>
+        <span style={{ display: "block", fontSize: 12, fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {object.title}
+        </span>
+        <span style={{ display: "block", fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {object.objectKey}
+        </span>
+      </span>
+      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{object.status}</span>
+    </button>
+  );
+}
+
+function objectsForDomainAndKind(domain: LibraryWorkspaceModel["domains"][number], objectKind: string): LibraryWorkspaceObject[] {
+  return objectGroupsForDomain(domain)
+    .filter((group) => group.objectKind === objectKind)
+    .flatMap((group) => group.objects);
 }
 
 function objectGroupsForDomain(domain: LibraryWorkspaceModel["domains"][number]): LibraryWorkspaceObjectGroup[] {
