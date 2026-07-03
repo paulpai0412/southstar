@@ -13,6 +13,8 @@ import { asImportSource, extractLibraryImportProposal } from "../../src/v2/desig
 import { extractLibraryCandidatesFromDocuments } from "../../src/v2/design-library/importers/library-candidate-extractor.ts";
 import {
   analyzeLibraryImportWithLlm,
+  analyzeLibraryImportOntologyWithLlm,
+  buildLibraryImportAnalysisPrompt,
   type LibraryImportLlmProvider,
 } from "../../src/v2/design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../../src/v2/design-library/importers/library-source-fetcher.ts";
@@ -134,6 +136,22 @@ test("extractor accepts canonical github and local sources with inline content f
   assert.equal(localProposal.files[0]?.relativePath, "skills/browser-verification.skill.md");
 });
 
+test("buildLibraryImportAnalysisPrompt includes bounded document content excerpts for LLM classification", () => {
+  const prompt = buildLibraryImportAnalysisPrompt([
+    {
+      path: "engineering/engineering-frontend-developer.md",
+      label: "engineering-frontend-developer",
+      content: "# Frontend Developer\nBuilds production React UI and reviews accessibility.",
+    },
+  ], "software");
+
+  assert.match(prompt, /engineering\/engineering-frontend-developer\.md/);
+  assert.match(prompt, /# Frontend Developer/);
+  assert.match(prompt, /Builds production React UI/);
+  assert.match(prompt, /Return exactly one JSON object/);
+  assert.match(prompt, /Use this shape: \{"candidates":/);
+});
+
 test("extractLibraryCandidatesFromDocuments deterministically classifies obvious library docs and proposes simple edges", () => {
   const result = extractLibraryCandidatesFromDocuments({
     scope: "software",
@@ -180,7 +198,7 @@ test("extractLibraryCandidatesFromDocuments deterministically classifies obvious
   ]);
 });
 
-test("analyzeLibraryImportWithLlm prompts for classification and ontology edges and normalizes provider output", async () => {
+test("analyzeLibraryImportWithLlm prompts for candidate classification and normalizes provider output", async () => {
   const prompts: string[] = [];
   const provider: LibraryImportLlmProvider = async (input) => {
     prompts.push(input.prompt);
@@ -188,11 +206,6 @@ test("analyzeLibraryImportWithLlm prompts for classification and ontology edges 
       candidates: [
         { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", selectedByDefault: true, confidence: 0.8 },
         { objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true, confidence: -0.5 },
-      ],
-      proposedEdges: [
-        { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 1.2 },
-        { fromObjectKey: "agent.reviewer", edgeType: "contains", toObjectKey: "skill.review", confidence: 0.9 },
-        { fromObjectKey: "agent.missing", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.9 },
       ],
     };
   };
@@ -207,20 +220,13 @@ test("analyzeLibraryImportWithLlm prompts for classification and ontology edges 
   });
 
   assert.match(prompts[0] ?? "", /classify/i);
-  assert.match(prompts[0] ?? "", /ontology edges/i);
+  assert.doesNotMatch(prompts[0] ?? "", /ontology edges/i);
   assert.equal(result.candidates[0]?.confidence, 0.8);
   assert.equal(result.candidates[1]?.confidence, 0);
-  assert.deepEqual(result.proposedEdges, [
-    {
-      fromObjectKey: "agent.reviewer",
-      edgeType: "uses",
-      toObjectKey: "skill.review",
-      confidence: 1,
-    },
-  ]);
+  assert.deepEqual(result.proposedEdges, []);
 });
 
-test("analyzeLibraryImportWithLlm accepts full ontology edge vocabulary and drops candidates with untrusted source paths", async () => {
+test("analyzeLibraryImportWithLlm drops candidates with untrusted source paths", async () => {
   const prompts: string[] = [];
   const provider: LibraryImportLlmProvider = async (input) => {
     prompts.push(input.prompt);
@@ -231,14 +237,6 @@ test("analyzeLibraryImportWithLlm accepts full ontology edge vocabulary and drop
         { objectKey: "skill.audit", kind: "skill", title: "Audit", sourcePath: "skills/audit.skill.md" },
         { objectKey: "tool.github", kind: "tool", title: "GitHub", sourcePath: "tools/github.tool.yaml" },
         { objectKey: "skill.untrusted", kind: "skill", title: "Untrusted", sourcePath: "missing.md" },
-      ],
-      edges: [
-        { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.9 },
-        { fromObjectKey: "skill.review", edgeType: "conflicts_with", toObjectKey: "tool.github", confidence: 0.7 },
-        { fromObjectKey: "skill.review", edgeType: "workflow_precedes", toObjectKey: "skill.audit", confidence: 0.8 },
-        { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.audit", confidence: 0.6 },
-        { fromObjectKey: "skill.review", edgeType: "contains", toObjectKey: "skill.audit", confidence: 1 },
-        { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.untrusted", confidence: 1 },
       ],
     };
   };
@@ -254,16 +252,91 @@ test("analyzeLibraryImportWithLlm accepts full ontology edge vocabulary and drop
     llmProvider: provider,
   });
 
-  assert.match(prompts[0] ?? "", /conflicts_with/);
-  assert.match(prompts[0] ?? "", /workflow_precedes/);
-  assert.match(prompts[0] ?? "", /similar_to/);
   assert.deepEqual(result.candidates.map((candidate) => candidate.objectKey), [
     "agent.reviewer",
     "skill.review",
     "skill.audit",
     "tool.github",
   ]);
-  assert.deepEqual(result.proposedEdges.map((edge) => ({
+  assert.deepEqual(result.proposedEdges, []);
+});
+
+test("analyzeLibraryImportWithLlm canonicalizes folder-prefixed object keys from source paths", async () => {
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      {
+        objectKey: "agent.academic.academic-anthropologist",
+        kind: "agent",
+        title: "人类学家",
+        sourcePath: "academic/academic-anthropologist.md",
+      },
+      {
+        objectKey: "agent.supply-chain.supply-chain-route-optimizer",
+        kind: "agent",
+        title: "物流路线优化师",
+        sourcePath: "supply-chain/supply-chain-route-optimizer.md",
+      },
+      {
+        objectKey: "agency-agents-zh.engineering.engineering-frontend-developer",
+        kind: "agent",
+        title: "前端开发者",
+        sourcePath: "engineering/engineering-frontend-developer.md",
+      },
+      {
+        objectKey: "agent.game-development.blender.blender-addon-engineer",
+        kind: "agent",
+        title: "Blender 插件工程师",
+        sourcePath: "game-development/blender/blender-addon-engineer.md",
+      },
+    ],
+  });
+
+  const result = await analyzeLibraryImportWithLlm({
+    scope: "software",
+    documents: [],
+    sourceRepoPath: "/tmp/agency-agents-zh",
+    llmProvider: provider,
+  });
+
+  assert.deepEqual(result.candidates.map((candidate) => candidate.objectKey), [
+    "agent.academic-anthropologist",
+    "agent.supply-chain-route-optimizer",
+    "agent.engineering-frontend-developer",
+    "agent.blender-addon-engineer",
+  ]);
+});
+
+test("analyzeLibraryImportOntologyWithLlm accepts full ontology edge vocabulary for selected candidates", async () => {
+  const prompts: string[] = [];
+  const provider: LibraryImportLlmProvider = async (input) => {
+    prompts.push(input.prompt);
+    return {
+      proposedEdges: [
+        { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.9 },
+        { fromObjectKey: "skill.review", edgeType: "conflicts_with", toObjectKey: "tool.github", confidence: 0.7 },
+        { fromObjectKey: "skill.review", edgeType: "workflow_precedes", toObjectKey: "skill.audit", confidence: 0.8 },
+        { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.audit", confidence: 0.6 },
+        { fromObjectKey: "skill.review", edgeType: "contains", toObjectKey: "skill.audit", confidence: 1 },
+        { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.unselected", confidence: 1 },
+      ],
+    };
+  };
+
+  const edges = await analyzeLibraryImportOntologyWithLlm({
+    scope: "software",
+    candidates: [
+      { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", scope: "software", selectedByDefault: true },
+      { objectKey: "skill.review", kind: "skill", title: "Review", scope: "software", selectedByDefault: true },
+      { objectKey: "skill.audit", kind: "skill", title: "Audit", scope: "software", selectedByDefault: true },
+      { objectKey: "tool.github", kind: "tool", title: "GitHub", scope: "software", selectedByDefault: true },
+    ],
+    llmProvider: provider,
+  });
+
+  assert.match(prompts[0] ?? "", /conflicts_with/);
+  assert.match(prompts[0] ?? "", /workflow_precedes/);
+  assert.match(prompts[0] ?? "", /similar_to/);
+  assert.deepEqual(edges.map((edge) => ({
     fromObjectKey: edge.fromObjectKey,
     edgeType: edge.edgeType,
     toObjectKey: edge.toObjectKey,
@@ -275,16 +348,49 @@ test("analyzeLibraryImportWithLlm accepts full ontology edge vocabulary and drop
   ]);
 });
 
-test("createLibraryImportDraft preserves the legacy proposal and persists analyzed documents, candidates, and proposed edges", async () => {
+test("analyzeLibraryImportWithLlm requires an LLM provider instead of falling back to deterministic parsing", async () => {
+  await assert.rejects(
+    () => analyzeLibraryImportWithLlm({
+      scope: "software",
+      documents: [
+        { path: "engineering/engineering-frontend-developer.md", label: "engineering-frontend-developer", content: "# Frontend Developer Agent" },
+      ],
+    }),
+    /library import analysis requires an LLM provider/,
+  );
+});
+
+test("createLibraryImportDraft requires LLM analysis for github repository imports", async () => {
+  const db = await createTestPostgresDb();
+  const sourceFetcher: LibraryImportSourceFetcher = async () => [
+    {
+      path: "engineering/engineering-frontend-developer.md",
+      label: "engineering-frontend-developer",
+      content: "---\nname: Frontend Developer\n---\n# Frontend Developer Agent",
+    },
+  ];
+
+  try {
+    await assert.rejects(
+      () => createLibraryImportDraft(db, {
+        source: { kind: "github", repoUrl: "https://github.com/jnMetaCode/agency-agents-zh" },
+        scope: "software",
+        sourceFetcher,
+      }),
+      /library import analysis requires an LLM provider/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("createLibraryImportDraft preserves the legacy proposal and persists analyzed documents and candidates without ontology edges", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-analysis-"));
   const provider: LibraryImportLlmProvider = async () => ({
     candidates: [
       { objectKey: "agent.browser-reviewer", kind: "agent", title: "Browser Reviewer", selectedByDefault: true, confidence: 0.9 },
       { objectKey: "skill.browser-verification", kind: "skill", title: "Browser Verification", selectedByDefault: true, confidence: 0.9 },
-    ],
-    proposedEdges: [
-      { fromObjectKey: "agent.browser-reviewer", edgeType: "uses", toObjectKey: "skill.browser-verification", confidence: 1.2 },
     ],
   });
 
@@ -305,14 +411,7 @@ test("createLibraryImportDraft preserves the legacy proposal and persists analyz
       "agent.browser-reviewer",
       "skill.browser-verification",
     ]);
-    assert.deepEqual(draft.proposedEdges, [
-      {
-        fromObjectKey: "agent.browser-reviewer",
-        edgeType: "uses",
-        toObjectKey: "skill.browser-verification",
-        confidence: 1,
-      },
-    ]);
+    assert.deepEqual(draft.proposedEdges, []);
     assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
 
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
@@ -322,7 +421,7 @@ test("createLibraryImportDraft preserves the legacy proposal and persists analyz
       "agent.browser-reviewer",
       "skill.browser-verification",
     ]);
-    assert.equal((resource?.payload as any).proposedEdges[0].confidence, 1);
+    assert.deepEqual((resource?.payload as any).proposedEdges, []);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -381,6 +480,7 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
       selectedCandidateIds: ["agent.reviewer", "skill.review", "tool.github"],
       actor: "operator",
       reason: "selected reviewed candidates",
+      llmProvider: provider,
     });
 
     assert.equal(installed.draftId, draft.draftId);
@@ -462,6 +562,150 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("installLibraryImportCandidates preserves source markdown content for imported agent files", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-source-"));
+  const repoRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-agent-source-"));
+  const sourceContent = [
+    "---",
+    "name: 前端开发者",
+    "description: 精通现代 Web 技术的前端开发专家",
+    "---",
+    "",
+    "# 前端开发者 Agent 人格",
+    "",
+    "你是前端开发者，负责 React UI、可访问性和性能优化。",
+    "",
+  ].join("\n");
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      {
+        objectKey: "agent.engineering-frontend-developer",
+        kind: "agent",
+        title: "前端开发者",
+        sourcePath: "engineering/engineering-frontend-developer.md",
+        selectedByDefault: true,
+      },
+    ],
+    proposedEdges: [],
+  });
+
+  try {
+    await mkdir(join(repoRoot, "engineering"), { recursive: true });
+    await writeFile(join(repoRoot, "engineering", "engineering-frontend-developer.md"), sourceContent);
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "github",
+        repoUrl: "https://github.com/jnMetaCode/agency-agents-zh",
+      },
+      scope: "software",
+      sourceFetcher: async () => ({ documents: [], repoPath: repoRoot }),
+      llmProvider: provider,
+    });
+
+    await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: ["agent.engineering-frontend-developer"],
+      actor: "operator",
+      reason: "preserve source content",
+      llmProvider: provider,
+    });
+
+    const content = await readFile(join(libraryRoot, "agents/engineering-frontend-developer.agent.md"), "utf8");
+    const parsed = parseLibraryFileContent({
+      path: "library/agents/engineering-frontend-developer.agent.md",
+      content,
+    });
+    assert.equal(parsed.ok, true);
+    assert.match(content, /## Source Definition/);
+    assert.match(content, /# 前端开发者 Agent 人格/);
+    assert.match(content, /React UI、可访问性和性能优化/);
+    assert.equal((await findLibraryObjectByKey(db, "agent.engineering-frontend-developer"))?.objectKind, "agent_definition");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+    await rm(repoRoot, { recursive: true, force: true });
+  }
+});
+
+test("installLibraryImportCandidates copies full source skill directory for imported skills", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-skill-directory-"));
+  const repoRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-skill-source-"));
+  const skillRoot = join(repoRoot, "skills", "browser-verification");
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      {
+        objectKey: "skill.browser-verification",
+        kind: "skill",
+        title: "Browser Verification",
+        sourcePath: "skills/browser-verification/SKILL.md",
+        selectedByDefault: true,
+      },
+    ],
+    proposedEdges: [],
+  });
+
+  try {
+    await mkdir(join(skillRoot, "references"), { recursive: true });
+    await mkdir(join(skillRoot, "scripts"), { recursive: true });
+    await writeFile(
+      join(skillRoot, "SKILL.md"),
+      [
+        "---",
+        "name: browser-verification",
+        "description: Verify browser UI behavior",
+        "---",
+        "",
+        "# Browser Verification",
+        "",
+        "Use the browser to inspect candidate blocks and graph nodes.",
+        "",
+      ].join("\n"),
+    );
+    await writeFile(join(skillRoot, "references", "checklist.md"), "# Checklist\n\n- inspect UI\n");
+    await writeFile(join(skillRoot, "scripts", "verify.sh"), "echo verify\n");
+
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "github", repoUrl: "https://github.com/acme/skills" },
+      scope: "software",
+      sourceFetcher: async () => ({ documents: [], repoPath: repoRoot }),
+      llmProvider: provider,
+    });
+
+    await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: ["skill.browser-verification"],
+      actor: "operator",
+      reason: "install full skill directory",
+      llmProvider: provider,
+    });
+
+    const canonicalContent = await readFile(join(libraryRoot, "skills/browser-verification.skill.md"), "utf8");
+    assert.match(canonicalContent, /## Source Definition/);
+    assert.match(canonicalContent, /# Browser Verification/);
+    assert.equal(
+      await readFile(join(libraryRoot, "skills/browser-verification/SKILL.md"), "utf8"),
+      await readFile(join(skillRoot, "SKILL.md"), "utf8"),
+    );
+    assert.equal(
+      await readFile(join(libraryRoot, "skills/browser-verification/references/checklist.md"), "utf8"),
+      "# Checklist\n\n- inspect UI\n",
+    );
+    assert.equal(
+      await readFile(join(libraryRoot, "skills/browser-verification/scripts/verify.sh"), "utf8"),
+      "echo verify\n",
+    );
+    assert.equal((await findLibraryObjectByKey(db, "skill.browser-verification"))?.objectKind, "skill_spec");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+    await rm(repoRoot, { recursive: true, force: true });
   }
 });
 
@@ -1115,41 +1359,37 @@ test("POST /api/v2/library/import-drafts creates a draft from a canonical paste 
 test("POST /api/v2/library/import-drafts forwards configured import analysis providers for github sources", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-github-"));
-  const libraryImportSourceFetcher: LibraryImportSourceFetcher = async () => [
-    {
-      path: "agents/reviewer.agent.md",
-      label: "Reviewer",
-      content: "# Reviewer\nUses the review skill.",
-    },
-    {
-      path: "skills/review.skill.md",
-      label: "Review",
-      content: "# Review Skill\nReview changes.",
-    },
-  ];
-  const libraryImportLlmProvider: LibraryImportLlmProvider = async () => ({
-    candidates: [
-      {
-        objectKey: "agent.reviewer",
-        kind: "agent",
+  let llmPrompt = "";
+  const libraryImportSourceFetcher: LibraryImportSourceFetcher = async () => ({
+    documents: [],
+    repoPath: "/tmp/southstar-library-imports/acme-library",
+  });
+  const libraryImportLlmProvider: LibraryImportLlmProvider = async ({ prompt }) => {
+    llmPrompt = prompt;
+    return {
+      candidates: [
+        {
+          objectKey: "agent.reviewer",
+          kind: "agent",
         title: "Reviewer",
         sourcePath: "agents/reviewer.agent.md",
-        selectedByDefault: true,
-        confidence: 0.9,
-      },
-      {
-        objectKey: "skill.review",
-        kind: "skill",
+          selectedByDefault: true,
+          confidence: 0.9,
+        },
+        {
+          objectKey: "skill.review",
+          kind: "skill",
         title: "Review",
         sourcePath: "skills/review.skill.md",
-        selectedByDefault: true,
-        confidence: 0.8,
-      },
-    ],
-    proposedEdges: [
-      { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.95 },
-    ],
-  });
+          selectedByDefault: true,
+          confidence: 0.8,
+        },
+      ],
+      proposedEdges: [
+        { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.95 },
+      ],
+    };
+  };
 
   try {
     const response = await handleRuntimeRoute({
@@ -1163,6 +1403,7 @@ test("POST /api/v2/library/import-drafts forwards configured import analysis pro
       body: JSON.stringify({
         source: { kind: "github", repoUrl: "https://github.com/acme/library" },
         scope: "software",
+        requestPrompt: "import 266 agents from https://github.com/acme/library",
       }),
     }));
 
@@ -1171,21 +1412,17 @@ test("POST /api/v2/library/import-drafts forwards configured import analysis pro
     assert.equal(envelope.ok, true);
     assert.equal(envelope.kind, "library-import-draft");
     assert.deepEqual(envelope.result.documents.map((doc: any) => doc.path), [
-      "agents/reviewer.agent.md",
-      "skills/review.skill.md",
     ]);
     assert.deepEqual(envelope.result.candidates.map((candidate: any) => candidate.objectKey), [
       "agent.reviewer",
       "skill.review",
     ]);
-    assert.deepEqual(envelope.result.proposedEdges, [
-      {
-        fromObjectKey: "agent.reviewer",
-        edgeType: "uses",
-        toObjectKey: "skill.review",
-        confidence: 0.95,
-      },
-    ]);
+    assert.deepEqual(envelope.result.proposedEdges, []);
+    assert.match(llmPrompt, /UserImportRequest:\nimport 266 agents from https:\/\/github\.com\/acme\/library/);
+    assert.match(llmPrompt, /LocalRepositoryPath:\n\/tmp\/southstar-library-imports\/acme-library/);
+    const resource = await getResourceByKeyPg(db, "library_import_draft", envelope.result.draftId);
+    assert.equal((resource?.payload as any).requestPrompt, "import 266 agents from https://github.com/acme/library");
+    assert.equal((resource?.payload as any).sourceRepoPath, "/tmp/southstar-library-imports/acme-library");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

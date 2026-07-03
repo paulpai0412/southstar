@@ -79,9 +79,6 @@ test("LibrarySidebar renders the domain tree and calls onSelectObject when a row
             window.__selectedObjectKey = object.objectKey;
             setSelectedObjectKey(object.objectKey);
           }}
-          prompt=""
-          onPromptChange={() => {}}
-          onPromptSubmit={() => {}}
         />
       );
     }
@@ -282,6 +279,159 @@ test("LibraryFileViewer renders graph-backed edge usage and provenance detail", 
   });
 });
 
+test("LibraryChatWindow centers the workflow-style composer until the first prompt then docks it at the bottom", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryChatWindow } from "./web/components/library/LibraryChatWindow";
+
+    createRoot(document.getElementById("root")).render(
+      <div style={{ height: "720px", width: "960px" }}>
+        <LibraryChatWindow
+          scope="software"
+          pendingPrompt=""
+          onPromptConsumed={() => {}}
+        />
+      </div>
+    );
+  `, async (page) => {
+    await page.locator('[data-testid="library-chat-composer"]').waitFor();
+    await page.locator('[data-testid="library-chat-empty-new"]').waitFor();
+    await page.getByText("Southstar Mission Engine").waitFor();
+
+    const before = await composerGeometry(page);
+    assert.equal(before.emptyVisible, true);
+    assert.equal(before.timelineVisible, false);
+    assert.ok(before.centerOffset < 90, `expected empty composer near center, got center offset ${before.centerOffset}`);
+    assert.ok(before.bottomGap > 170, `expected empty composer away from bottom, got bottom gap ${before.bottomGap}`);
+
+    await page.locator('[data-testid="library-chat-window"] textarea').fill("show the current library graph");
+    await page.keyboard.press("Enter");
+    await page.locator('[data-testid="library-chat-timeline"]').waitFor();
+    await page.locator('[data-testid="library-graph-chart"]').waitFor();
+
+    const after = await composerGeometry(page);
+    assert.equal(after.emptyVisible, false);
+    assert.equal(after.timelineVisible, true);
+    assert.ok(after.bottomGap < 140, `expected prompted composer docked near bottom, got bottom gap ${after.bottomGap}`);
+    assert.ok(after.centerOffset > 140, `expected prompted composer below center, got center offset ${after.centerOffset}`);
+  }, async (page) => {
+    await page.route("**/api/models", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          models: { "gpt-5": "GPT-5" },
+          modelList: [{ provider: "openai", id: "gpt-5", name: "GPT-5" }],
+          defaultModel: { provider: "openai", modelId: "gpt-5" },
+          thinkingLevels: { "openai:gpt-5": ["auto", "medium", "high"] },
+          thinkingLevelMaps: {},
+        }),
+      });
+    });
+    await page.route("**/api/library/chat/messages", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, result: { sessionId: "library-session-1", actionId: "action-1" } }),
+      });
+    });
+    await page.route("**/api/library/chat/events?**", async (route) => {
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: "event: library.ontology.graph\ndata: {\"activeScope\":\"software\",\"availableScopes\":[\"software\"],\"nodes\":[{\"objectKey\":\"agent.frontend-developer\",\"objectKind\":\"agent_definition\",\"status\":\"approved\",\"title\":\"Frontend Developer\"}],\"edges\":[]}\n\n",
+      });
+    });
+    await page.route("**/api/library/graph**", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          ok: true,
+          result: {
+            activeScope: "software",
+            availableScopes: ["software"],
+            nodes: [{
+              objectKey: "agent.frontend-developer",
+              objectKind: "agent_definition",
+              status: "approved",
+              title: "Frontend Developer",
+            }],
+            edges: [],
+          },
+        }),
+      });
+    });
+  }, { mockLibraryChat: false });
+});
+
+test("LibraryChatWindow streams GitHub repo import prompts through the library chat SSE pipeline", async () => {
+  let chatMessageBody: any;
+
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryChatWindow } from "./web/components/library/LibraryChatWindow";
+
+    createRoot(document.getElementById("root")).render(
+      <div style={{ height: "720px", width: "960px" }}>
+        <LibraryChatWindow
+          scope="software"
+          pendingPrompt=""
+          onPromptConsumed={() => {}}
+        />
+      </div>
+    );
+  `, async (page) => {
+    await page.locator('[data-testid="library-chat-window"] textarea').fill(
+      "將 https://github.com/jnMetaCode/agency-agents-zh 內的 266 個 agent 存入 southstar library",
+    );
+    const sendButton = page.getByRole("button", { name: "Send" });
+    await page.waitForFunction(() => {
+      const buttons = Array.from(document.querySelectorAll("button"));
+      return buttons.some((button) => button.textContent?.includes("Send") && !button.hasAttribute("disabled"));
+    });
+    const chatMessageResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/library/chat/messages");
+    await sendButton.click();
+    await chatMessageResponse;
+    await page.getByText("Import candidates").waitFor();
+
+    assert.equal(chatMessageBody?.scope, "software");
+    assert.equal(chatMessageBody?.prompt, "將 https://github.com/jnMetaCode/agency-agents-zh 內的 266 個 agent 存入 southstar library");
+  }, async (page) => {
+    await page.route("**/api/models", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          models: { "gpt-5": "GPT-5" },
+          modelList: [{ provider: "openai", id: "gpt-5", name: "GPT-5" }],
+          defaultModel: { provider: "openai", modelId: "gpt-5" },
+        }),
+      });
+    });
+    await page.route("**/api/library/chat/messages", async (route) => {
+      chatMessageBody = JSON.parse(route.request().postData() ?? "{}");
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ ok: true, result: { sessionId: "library-session-github", actionId: "action-github" } }),
+      });
+    });
+    await page.route("**/api/library/chat/events?**", async (route) => {
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: [
+          "event: library.import.source.completed",
+          'data: {"sourceKind":"github","sourceRepoPath":"/tmp/southstar-library-imports/repo","documentCount":0}',
+          "",
+          "event: library.import.candidates",
+          'data: {"draftId":"library-import-draft-github","status":"draft","title":"Import candidates","candidates":[{"objectKey":"agent.frontend","kind":"agent","title":"Frontend","scope":"software","sourcePath":"engineering/frontend.md","selectedByDefault":true,"confidence":0.9}],"proposedEdges":[]}',
+          "",
+          "event: library.command.completed",
+          'data: {"draftId":"library-import-draft-github","status":"ready_for_review"}',
+          "",
+        ].join("\n"),
+      });
+    });
+  }, { mockLibraryChat: false });
+});
+
 test("library file API helpers unwrap envelopes and call file read, save, and sync routes", async () => {
   const api = await import("../../web/lib/library/api.ts");
   assert.equal(typeof api.readLibraryFile, "function");
@@ -358,9 +508,17 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
-    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
   `, async (page) => {
     await page.getByRole("button", { name: "Planner agent.planner approved" }).click();
     await page.locator('[data-testid="library-file-editor"]').waitFor();
@@ -465,6 +623,109 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
   });
 });
 
+test("LibraryWorkspace opens object detail sidecar for graph objects without source files", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider onOpenFile={(file) => { window.__openedLibraryFile = file; }}>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
+  `, async (page) => {
+    await page.getByRole("button", { name: "Checker agent.software-checker approved" }).click();
+    await page.getByRole("button", { name: "Preview" }).click();
+
+    assert.deepEqual(await page.evaluate(() => (window as any).__openedLibraryFile), {
+      objectKey: "agent.software-checker",
+      title: "Checker",
+    });
+    await assertText(page, "pre", "Verify implementation behavior");
+    await page.getByRole("button", { name: "Edges" }).click();
+    await assertText(page, "pre", "skill.software-verification");
+  }, async (page) => {
+    await page.route("**/api/library/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname === "/api/library/workspace") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            result: {
+              selectedScope: "software",
+              domains: [{
+                scope: "software",
+                counts: { agent_definition: 1 },
+                objectGroups: [{
+                  objectKind: "agent_definition",
+                  objects: [{
+                    id: "obj-1",
+                    objectKey: "agent.software-checker",
+                    objectKind: "agent_definition",
+                    status: "approved",
+                    title: "Checker",
+                    scope: "software",
+                  }],
+                }],
+              }],
+            },
+          }),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/objects/agent.software-checker") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            result: {
+              object: {
+                id: "obj-1",
+                objectKey: "agent.software-checker",
+                objectKind: "agent_definition",
+                status: "approved",
+                headVersionId: "agent.software-checker@v1",
+                state: {
+                  title: "Checker",
+                  role: "checker",
+                  runtimeRole: {
+                    responsibility: "Verify implementation behavior and test outcomes.",
+                  },
+                },
+              },
+              inboundEdges: [],
+              outboundEdges: [{
+                fromObjectKey: "agent.software-checker",
+                edgeType: "uses",
+                toObjectKey: "skill.software-verification",
+                scope: "software",
+              }],
+              usage: {
+                inboundCount: 0,
+                outboundCount: 1,
+                usedByObjectKeys: [],
+                dependsOnObjectKeys: ["skill.software-verification"],
+              },
+              validation: { ok: true, issues: [] },
+            },
+          }),
+        });
+        return;
+      }
+
+      await route.fulfill({ status: 404, body: `${request.method()} ${url.pathname}` });
+    });
+  });
+});
+
 test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs selected import candidates", async () => {
   const requests: Array<{ method: string; path: string; body?: string; query?: string }> = [];
   let workspaceFetches = 0;
@@ -472,12 +733,20 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
-    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
   `, async (page) => {
-    await page.locator('[data-testid="library-quick-prompt"]').fill("create a browser verification skill");
-    await page.locator('[data-testid="library-quick-prompt-submit"]').click();
+    await page.locator('[data-testid="library-chat-window"] textarea').fill("create a browser verification skill");
+    await page.keyboard.press("Enter");
     await page.getByText("Import candidates").waitFor();
     await page.locator('[data-testid="library-session-row"]').filter({ hasText: "create a browser verification skill" }).waitFor();
     assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "ready_for_review" }).count(), 1);
@@ -491,7 +760,7 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
 
     assert.equal(workspaceFetches, 2);
     assert.equal(await page.locator('[data-testid="library-object-row"]').filter({ hasText: "skill.browser-verification" }).count(), 1);
-    const installRequest = requests.find((request) => request.path === "/api/library/import-drafts/library-import-draft-1/install");
+    const installRequest = requests.find((request) => request.path === "/api/library/import-drafts/library-import-draft-1/install/stream");
     assert.equal(installRequest?.method, "POST");
     assert.deepEqual(JSON.parse(installRequest?.body ?? "{}"), {
       selectedCandidateIds: ["agent.browser-reviewer", "skill.browser-verification"],
@@ -528,112 +797,52 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
         return;
       }
 
-      if (url.pathname === "/api/library/import-drafts" && request.method() === "POST") {
+      if (url.pathname === "/api/library/chat/messages" && request.method() === "POST") {
         await route.fulfill({
           contentType: "application/json",
-          body: JSON.stringify({
-            ok: true,
-            result: {
-              draftId: "library-import-draft-1",
-              status: "draft",
-              proposal: {
-                objectKeys: ["skill.browser-verification"],
-                objectSummaries: [{
-                  objectKey: "skill.browser-verification",
-                  objectKind: "skill_spec",
-                  title: "Browser Verification",
-                  scope: "software",
-                  status: "draft",
-                  relativePath: "skills/browser-verification.skill.md",
-                }],
-                dependencies: [{
-                  fromObjectKey: "skill.browser-verification",
-                  edgeType: "requires_tool",
-                  toObjectKey: "tool.browser",
-                  scope: "software",
-                }],
-                files: [{ relativePath: "skills/browser-verification.skill.md", content: "content" }],
-              },
-              documents: [{ path: "software/skills/browser-verification.skill.md", label: "Browser Verification", content: "content" }],
-              candidates: [
-                {
-                  objectKey: "agent.browser-reviewer",
-                  kind: "agent",
-                  title: "Browser Reviewer",
-                  scope: "software",
-                  sourcePath: "agents/browser-reviewer.agent.md",
-                  selectedByDefault: true,
-                  confidence: 0.88,
-                },
-                {
-                  objectKey: "skill.browser-verification",
-                  kind: "skill",
-                  title: "Browser Verification",
-                  scope: "software",
-                  sourcePath: "skills/browser-verification.skill.md",
-                  selectedByDefault: true,
-                  confidence: 0.94,
-                },
-                {
-                  objectKey: "tool.browser",
-                  kind: "tool",
-                  title: "Browser Tool",
-                  scope: "software",
-                  sourcePath: "tools/browser.tool.yml",
-                  selectedByDefault: true,
-                  confidence: 0.81,
-                },
-              ],
-              proposedEdges: [{
-                fromObjectKey: "agent.browser-reviewer",
-                edgeType: "uses",
-                toObjectKey: "skill.browser-verification",
-                confidence: 0.91,
-                rationale: "Browser reviewer uses the browser verification skill.",
-              }],
-            },
-          }),
+          body: JSON.stringify({ ok: true, result: { sessionId: "library-session-1", actionId: "action-1" } }),
         });
         return;
       }
 
-      if (url.pathname === "/api/library/import-drafts/library-import-draft-1/install" && request.method() === "POST") {
+      if (url.pathname === "/api/library/chat/events" && request.method() === "GET") {
         await route.fulfill({
-          contentType: "application/json",
-          body: JSON.stringify({
-            ok: true,
-            result: {
-              draftId: "library-import-draft-1",
-              status: "installed",
-              installedObjects: [{
-                objectKey: "skill.browser-verification",
-                kind: "skill",
-                relativePath: "skills/browser-verification.skill.md",
-                object: {
-                  objectKey: "skill.browser-verification",
-                  objectKind: "skill_spec",
-                  status: "approved",
-                  title: "Browser Verification",
-                  scope: "software",
-                },
-              }],
-              installedEdges: [{
-                id: "edge-uses-browser-verification",
-                fromObjectKey: "agent.browser-reviewer",
-                edgeType: "uses",
-                toObjectKey: "skill.browser-verification",
-                scope: "software",
-                status: "active",
-                weight: 0.91,
-                metadata: { confidence: 0.91 },
-                ontology: { confidence: 0.91, category: "usage" },
-              }],
-              graph: {
-                objectKeys: ["skill.browser-verification"],
-                edgeIds: ["edge-uses-browser-verification"],
-              },
-            },
-          }),
+          contentType: "text/event-stream",
+          body: [
+            "event: library.import.source.completed",
+            'data: {"sourceKind":"paste","documentCount":1}',
+            "",
+            "event: library.import.candidates.started",
+            'data: {"sourceKind":"paste"}',
+            "",
+            "event: library.import.candidates",
+            'data: {"draftId":"library-import-draft-1","status":"draft","title":"Import candidates","candidates":[{"objectKey":"agent.browser-reviewer","kind":"agent","title":"Browser Reviewer","scope":"software","sourcePath":"agents/browser-reviewer.agent.md","selectedByDefault":true,"confidence":0.88},{"objectKey":"skill.browser-verification","kind":"skill","title":"Browser Verification","scope":"software","sourcePath":"skills/browser-verification.skill.md","selectedByDefault":true,"confidence":0.94},{"objectKey":"tool.browser","kind":"tool","title":"Browser Tool","scope":"software","sourcePath":"tools/browser.tool.yml","selectedByDefault":true,"confidence":0.81}],"proposedEdges":[]}',
+            "",
+            "event: library.command.completed",
+            'data: {"draftId":"library-import-draft-1","status":"ready_for_review"}',
+            "",
+          ].join("\n"),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/import-drafts/library-import-draft-1/install/stream" && request.method() === "POST") {
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body: [
+            "event: library.import.ontology.started",
+            'data: {"draftId":"library-import-draft-1","selectedCandidateCount":2}',
+            "",
+            "event: library.import.ontology.completed",
+            'data: {"draftId":"library-import-draft-1","proposedEdgeCount":1}',
+            "",
+            "event: library.db.synced",
+            'data: {"draftId":"library-import-draft-1","objectKeys":["skill.browser-verification"],"edgeIds":["edge-uses-browser-verification"]}',
+            "",
+            "event: library.command.completed",
+            'data: {"draftId":"library-import-draft-1","status":"installed"}',
+            "",
+          ].join("\n"),
         });
         return;
       }
@@ -683,12 +892,20 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
-    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
   `, async (page) => {
-    await page.locator('[data-testid="library-chat-input"]').fill("show the current library graph");
-    await page.locator('[data-testid="library-chat-send"]').click();
+    await page.locator('[data-testid="library-chat-window"] textarea').fill("show the current library graph");
+    await page.keyboard.press("Enter");
 
     await page.locator('[data-testid="library-graph-block"]').getByRole("button", { name: "Frontend Developer" }).click();
     await page.waitForFunction(() => {
@@ -713,9 +930,7 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
       requests.push({ method: request.method(), path: url.pathname });
 
       if (url.pathname === "/api/library/workspace") {
-        await route.fulfill({ contentType: "application/json", body: workspaceEnvelope([
-          libraryObject("agent.frontend-developer", "Frontend Developer", "software/agents/frontend-developer.agent.md"),
-        ]) });
+        await route.fulfill({ contentType: "application/json", body: workspaceEnvelope([]) });
         return;
       }
 
@@ -764,7 +979,10 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
       }
 
       if (url.pathname === "/api/library/objects/agent.frontend-developer") {
-        await route.fulfill({ contentType: "application/json", body: libraryObjectDetailEnvelope("agent.frontend-developer") });
+        await route.fulfill({
+          contentType: "application/json",
+          body: libraryObjectDetailEnvelope("agent.frontend-developer", "software/agents/frontend-developer.agent.md"),
+        });
         return;
       }
 
@@ -787,9 +1005,17 @@ test("LibraryWorkspace ignores stale file load results after selecting a differe
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
-    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').nth(0).click();
     await page.locator('[data-testid="library-object-row"]').nth(1).click();
@@ -855,9 +1081,17 @@ test("LibraryWorkspace preserves edits typed while a save response is in flight"
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
-    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').click();
     await page.waitForFunction(() => {
@@ -924,9 +1158,17 @@ test("LibraryWorkspace ignores stale save results after selecting a different ob
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
-    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').nth(0).click();
     await page.locator('[data-testid="library-file-editor"]').waitFor();
@@ -995,9 +1237,17 @@ test("LibraryWorkspace shows failed file loads and keeps Sync disabled", async (
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
-    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').click();
     await assertText(page, '[data-testid="library-file-status"]', "Failed to load");
@@ -1025,9 +1275,17 @@ test("LibraryWorkspace resets selected file state when changing scopes", async (
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibraryWorkspace } from "./web/components/library/LibraryWorkspace";
+    import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
-    createRoot(document.getElementById("root")).render(<LibraryWorkspace />);
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+          <LibraryFileSidecarPanel />
+        </div>
+      </LibraryWorkspaceProvider>
+    );
   `, async (page) => {
     await page.getByRole("button", { name: "software" }).click();
     await page.getByRole("button", { name: "Planner agent.planner approved" }).click();
@@ -1250,7 +1508,7 @@ function libraryFileEnvelope(relativePath: string, content: string): string {
   });
 }
 
-function libraryObjectDetailEnvelope(objectKey: string): string {
+function libraryObjectDetailEnvelope(objectKey: string, sourcePath?: string): string {
   return JSON.stringify({
     ok: true,
     result: {
@@ -1259,7 +1517,7 @@ function libraryObjectDetailEnvelope(objectKey: string): string {
         objectKind: objectKey.startsWith("skill.") ? "skill_spec" : "agent_definition",
         status: "approved",
         headVersionId: `${objectKey}@v1`,
-        state: { scope: "software", title: objectKey },
+        state: { scope: "software", title: objectKey, ...(sourcePath ? { sourcePath } : {}) },
       },
       inboundEdges: [],
       outboundEdges: [],
@@ -1277,4 +1535,27 @@ function libraryObjectDetailEnvelope(objectKey: string): string {
 async function assertText(page: Page, selector: string, expected: string): Promise<void> {
   const text = await page.locator(selector).textContent();
   assert.match(text ?? "", new RegExp(expected));
+}
+
+async function composerGeometry(page: Page): Promise<{
+  bottomGap: number;
+  centerOffset: number;
+  emptyVisible: boolean;
+  timelineVisible: boolean;
+}> {
+  return page.evaluate(() => {
+    const workspace = document.querySelector('[data-testid="library-chat-window"]') as HTMLElement | null;
+    const composer = document.querySelector('[data-testid="library-chat-composer"]') as HTMLElement | null;
+    if (!workspace || !composer) throw new Error("missing library chat workspace or composer");
+    const workspaceRect = workspace.getBoundingClientRect();
+    const composerRect = composer.getBoundingClientRect();
+    return {
+      bottomGap: workspaceRect.bottom - composerRect.bottom,
+      centerOffset: Math.abs(
+        (composerRect.top + composerRect.height / 2) - (workspaceRect.top + workspaceRect.height / 2),
+      ),
+      emptyVisible: Boolean(document.querySelector('[data-testid="library-chat-empty-new"]')),
+      timelineVisible: Boolean(document.querySelector('[data-testid="library-chat-timeline"]')),
+    };
+  });
 }

@@ -26,21 +26,29 @@ test("LibraryGraphBlock exposes domain kind and status filters and fetches filte
         data={{
           activeScope: "software",
           availableScopes: ["all", "software", "research"],
+          query: { edgeType: "workflow_precedes" },
           nodes: [{ objectKey: "agent.frontend-developer", objectKind: "agent_definition", status: "approved", title: "Frontend Developer" }],
           edges: [],
         }}
       />
     );
   `, async (page) => {
+    assert.equal(await page.locator('[data-testid="library-graph-edge-filter"]').inputValue(), "workflow_precedes");
+    await page.waitForFunction(() => (
+      window.__graphRequests?.some((query) => query.includes("edgeType=workflow_precedes"))
+    ));
+
     await page.locator('[data-testid="library-graph-domain-filter"]').selectOption("research");
     await page.locator('[data-testid="library-graph-kind-filter"]').selectOption("skill_spec");
     await page.locator('[data-testid="library-graph-status-filter"]').selectOption("draft");
+    await page.locator('[data-testid="library-graph-edge-filter"]').selectOption("uses");
 
     await page.waitForFunction(() => (
       window.__graphRequests?.some((query) => (
         query.includes("scope=research")
         && query.includes("kind=skill_spec")
         && query.includes("status=draft")
+        && query.includes("edgeType=uses")
       ))
     ));
 
@@ -48,6 +56,7 @@ test("LibraryGraphBlock exposes domain kind and status filters and fetches filte
       query.includes("scope=research")
       && query.includes("kind=skill_spec")
       && query.includes("status=draft")
+      && query.includes("edgeType=uses")
     )), true);
   }, async (page) => {
     await page.addInitScript(() => {

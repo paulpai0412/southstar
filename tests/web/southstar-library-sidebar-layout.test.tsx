@@ -149,19 +149,28 @@ test("LibrarySidebar renders sessions above a filtered domain tree and selects s
             window.__selectedSessionId = session.id;
             setSelectedSessionId(session.id);
           }}
+          onNewSession={() => {
+            window.__newLibrarySession = true;
+          }}
+          onRefresh={() => {
+            window.__libraryRefreshed = true;
+          }}
           onSelectObject={(object) => {
             window.__selectedObjectKey = object.objectKey;
             setSelectedObjectKey(object.objectKey);
           }}
-          prompt=""
-          onPromptChange={() => {}}
-          onPromptSubmit={() => {}}
         />
       );
     }
 
     createRoot(document.getElementById("root")).render(<Harness />);
   `, async (page) => {
+    await page.getByText("Southstar").waitFor();
+    await page.getByRole("button", { name: "New" }).click();
+    await page.getByRole("button", { name: "Refresh" }).click();
+    assert.equal(await page.evaluate(() => (window as any).__newLibrarySession), true);
+    assert.equal(await page.evaluate(() => (window as any).__libraryRefreshed), true);
+
     await page.locator('[data-testid="library-domain-filter"]').fill("soft");
 
     await page.getByText("Library LLM Sessions").waitFor();

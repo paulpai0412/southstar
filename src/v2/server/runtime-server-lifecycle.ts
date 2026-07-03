@@ -6,6 +6,7 @@ import { dirname, resolve } from "node:path";
 import { createPiBrainProvider } from "../brain/pi-brain-provider.ts";
 import { loadSouthstarEnv, type SouthstarEnv } from "../config/env.ts";
 import { openSouthstarDb } from "../db/postgres.ts";
+import { createGithubLibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { type RecoveryProviderActionInput, type RecoveryProviderActions } from "../executor/provider-actions.ts";
 import { TorkClient } from "../executor/tork-client.ts";
@@ -288,13 +289,14 @@ async function createRuntime(
     callbackUrl: `${baseUrl}/api/v2/tork/callback`,
     heartbeatUrl: `${baseUrl}/api/v2/executor/heartbeat`,
   });
+  const plannerClient = env.piPlannerEndpoint
+    ? createHttpPiPlannerClient({ endpoint: env.piPlannerEndpoint })
+    : createPiSdkPlannerClient();
   const server = await createSouthstarRuntimeServer({
     host,
     port,
     db,
-    plannerClient: env.piPlannerEndpoint
-      ? createHttpPiPlannerClient({ endpoint: env.piPlannerEndpoint })
-      : createPiSdkPlannerClient(),
+    plannerClient,
     executorProvider,
     torkObservationClient: {
       capabilities: () => torkClient.capabilities(),
@@ -303,6 +305,13 @@ async function createRuntime(
       cancelJob: (jobId) => torkClient.cancelJob(jobId),
     },
     callbackUrl: `${baseUrl}/api/v2/tork/callback`,
+    libraryImportSourceFetcher: createGithubLibraryImportSourceFetcher(),
+    libraryImportLlmProvider: async ({ prompt, sourceRepoPath }) => {
+      if (!env.piPlannerEndpoint && sourceRepoPath) {
+        return createPiSdkPlannerClient({ cwd: sourceRepoPath, noTools: null, timeoutMs: 600_000 }).generate(prompt);
+      }
+      return plannerClient.generate(prompt);
+    },
     runtimeLoopRegistry: createRuntimeLoopRegistry(),
     managedRuntime: {
       sessionStore: createPostgresSessionStore(db),

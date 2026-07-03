@@ -40,6 +40,14 @@ export type LibraryGraphEdgeOntology = {
 export type LibraryGraphReadModel = {
   activeScope: string;
   availableScopes: string[];
+  query: {
+    scope?: string;
+    objectKey?: string;
+    depth?: number;
+    kind?: LibraryDefinitionKind;
+    status?: LibraryDefinitionStatus;
+    edgeType?: LibraryEdgeType;
+  };
   nodes: LibraryGraphNode[];
   edges: LibraryGraphEdge[];
 };
@@ -52,6 +60,7 @@ export async function buildLibraryGraphReadModel(
     depth?: number;
     kind?: LibraryDefinitionKind;
     status?: LibraryDefinitionStatus;
+    edgeType?: LibraryEdgeType;
   } = {},
 ): Promise<LibraryGraphReadModel> {
   const activeScope = input.scope && input.scope !== "all" ? input.scope : "all";
@@ -63,7 +72,11 @@ export async function buildLibraryGraphReadModel(
   });
   const scopedEdges = activeScope === "all" ? await listLibraryEdges(db) : await listLibraryEdges(db, { scope: activeScope });
   const objectByKey = new Map(scopedObjects.map((object) => [object.objectKey, object]));
-  const candidateEdges = scopedEdges.filter((edge) => objectByKey.has(edge.fromObjectKey) && objectByKey.has(edge.toObjectKey));
+  const candidateEdges = scopedEdges.filter((edge) => (
+    objectByKey.has(edge.fromObjectKey)
+    && objectByKey.has(edge.toObjectKey)
+    && (!input.edgeType || edge.edgeType === input.edgeType)
+  ));
   const scopeVisibleKeys = buildScopeVisibleKeys(activeScope, scopedObjects, candidateEdges);
   const neighborhoodKeys = input.objectKey
     ? buildNeighborhoodKeys(input.objectKey, objectByKey, candidateEdges, input.depth ?? 1)
@@ -79,6 +92,14 @@ export async function buildLibraryGraphReadModel(
   return {
     activeScope,
     availableScopes: buildAvailableScopes(allObjects),
+    query: {
+      scope: input.scope && input.scope !== "all" ? input.scope : undefined,
+      objectKey: input.objectKey,
+      depth: input.depth,
+      kind: input.kind,
+      status: input.status,
+      edgeType: input.edgeType,
+    },
     nodes,
     edges: visibleEdges.map(toGraphEdge),
   };

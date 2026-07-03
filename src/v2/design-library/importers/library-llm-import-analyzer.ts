@@ -1,5 +1,4 @@
 import {
-  extractLibraryCandidatesFromDocuments,
   type LibraryImportCandidate,
   type LibraryImportCandidateKind,
   type LibraryImportEdgeType,
@@ -14,44 +13,177 @@ const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
   "workflow_precedes",
   "similar_to",
 ];
+const MAX_PROMPT_DOCUMENT_CHARS = 120_000;
+const MAX_DOCUMENT_EXCERPT_CHARS = 1_200;
 
 export type LibraryImportLlmProvider = (input: {
   prompt: string;
   scope: string;
   documents: LibraryImportSourceDocument[];
+  requestPrompt?: string;
+  sourceRepoPath?: string;
 }) => Promise<unknown>;
 
 export async function analyzeLibraryImportWithLlm(input: {
   documents: LibraryImportSourceDocument[];
   scope: string;
   llmProvider?: LibraryImportLlmProvider;
+  requestPrompt?: string;
+  sourceRepoPath?: string;
 }): Promise<{ candidates: LibraryImportCandidate[]; proposedEdges: LibraryImportProposedEdge[] }> {
+  const candidates = await analyzeLibraryImportCandidatesWithLlm(input);
+  return { candidates, proposedEdges: [] };
+}
+
+export async function analyzeLibraryImportCandidatesWithLlm(input: {
+  documents: LibraryImportSourceDocument[];
+  scope: string;
+  llmProvider?: LibraryImportLlmProvider;
+  requestPrompt?: string;
+  sourceRepoPath?: string;
+}): Promise<LibraryImportCandidate[]> {
   if (!input.llmProvider) {
-    return extractLibraryCandidatesFromDocuments({ documents: input.documents, scope: input.scope });
+    throw new Error("library import analysis requires an LLM provider");
   }
 
   const raw = await input.llmProvider({
     scope: input.scope,
     documents: input.documents,
-    prompt: buildLibraryImportAnalysisPrompt(input.documents, input.scope),
+    requestPrompt: input.requestPrompt,
+    sourceRepoPath: input.sourceRepoPath,
+    prompt: buildLibraryImportCandidatePrompt(input.documents, input.scope, {
+      requestPrompt: input.requestPrompt,
+      sourceRepoPath: input.sourceRepoPath,
+    }),
   });
   return normalizeLlmImportAnalysis(raw, {
     scope: input.scope,
     sourcePaths: new Set(input.documents.map((document) => document.path)),
-  });
+  }).candidates;
 }
 
-export function buildLibraryImportAnalysisPrompt(documents: LibraryImportSourceDocument[], scope: string): string {
+export async function analyzeLibraryImportOntologyWithLlm(input: {
+  candidates: LibraryImportCandidate[];
+  scope: string;
+  llmProvider?: LibraryImportLlmProvider;
+  requestPrompt?: string;
+  sourceRepoPath?: string;
+  documents?: LibraryImportSourceDocument[];
+}): Promise<LibraryImportProposedEdge[]> {
+  if (!input.llmProvider) {
+    throw new Error("library import ontology analysis requires an LLM provider");
+  }
+  const documents = input.documents ?? [];
+  const raw = await input.llmProvider({
+    scope: input.scope,
+    documents,
+    requestPrompt: input.requestPrompt,
+    sourceRepoPath: input.sourceRepoPath,
+    prompt: buildLibraryImportOntologyPrompt(input.candidates, input.scope, {
+      requestPrompt: input.requestPrompt,
+      sourceRepoPath: input.sourceRepoPath,
+    }),
+  });
+  const candidateKeys = new Set(input.candidates.map((candidate) => candidate.objectKey));
+  return normalizeEdges(edgeArrayFromRecord(isRecord(typeof raw === "string" ? safeJsonParse(raw) : raw) ? (typeof raw === "string" ? safeJsonParse(raw) : raw) as Record<string, unknown> : {}), candidateKeys);
+}
+
+export function buildLibraryImportAnalysisPrompt(
+  documents: LibraryImportSourceDocument[],
+  scope: string,
+  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+): string {
+  return buildLibraryImportCandidatePrompt(documents, scope, options);
+}
+
+export function buildLibraryImportCandidatePrompt(
+  documents: LibraryImportSourceDocument[],
+  scope: string,
+  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+): string {
   const manifest = documents.map((document) => `- ${document.path}: ${document.label}`).join("\n");
+  const excerpts = renderDocumentExcerpts(documents);
+  const requestSection = options.requestPrompt
+    ? ["UserImportRequest:", options.requestPrompt].join("\n")
+    : "";
+  const repoPathSection = options.sourceRepoPath
+    ? [
+      "LocalRepositoryPath:",
+      options.sourceRepoPath,
+      "Use this local repository path as the primary source of truth. Inspect the repository contents yourself before selecting candidates. Do not rely on path names alone.",
+    ].join("\n")
+    : "";
   return [
-    "Classify these repository/library documents into Southstar library candidates.",
-    "Return JSON with candidates and ontology edges.",
+    "Classify the requested repository/library source into Southstar library candidates.",
+    "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
+    "Use this shape: {\"candidates\":[{\"objectKey\":\"agent.example\",\"kind\":\"agent\",\"title\":\"Example\",\"sourcePath\":\"relative/path.md\",\"selectedByDefault\":true,\"confidence\":0.9}]}",
     "Allowed candidate kinds: agent, skill, mcp, tool.",
-    `Allowed ontology edges: ${ALLOWED_ONTOLOGY_EDGE_TYPES.join(", ")}.`,
+    "If the user asks to import agents from a repo catalog, inspect the repo and return one agent candidate per real agent definition. Do not collapse many agents into a summary candidate.",
+    "For large repositories, first inspect repository catalog/index/list documents when present, then inspect representative linked definitions as needed before returning JSON.",
+    "Treat LocalRepositoryPath as read-only for this analysis. Do not create, edit, delete, or install files while analyzing candidates.",
     `Scope: ${scope}`,
-    "Documents:",
-    manifest,
-  ].join("\n");
+    requestSection,
+    repoPathSection,
+    "OptionalDocumentManifest:",
+    manifest || "(none; inspect LocalRepositoryPath)",
+    "",
+    "OptionalDocumentContentExcerpts:",
+    excerpts || "(none; inspect LocalRepositoryPath)",
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+export function buildLibraryImportOntologyPrompt(
+  candidates: LibraryImportCandidate[],
+  scope: string,
+  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+): string {
+  const requestSection = options.requestPrompt
+    ? ["UserImportRequest:", options.requestPrompt].join("\n")
+    : "";
+  const repoPathSection = options.sourceRepoPath
+    ? [
+      "LocalRepositoryPath:",
+      options.sourceRepoPath,
+      "Use this local repository path as supporting evidence when deciding relationships. Treat it as read-only.",
+    ].join("\n")
+    : "";
+  return [
+    "Generate ontology edges for the selected Southstar library candidates.",
+    "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
+    "Use this shape: {\"proposedEdges\":[{\"fromObjectKey\":\"agent.example\",\"edgeType\":\"uses\",\"toObjectKey\":\"skill.example\",\"confidence\":0.8,\"rationale\":\"...\"}]}",
+    `Allowed ontology edges: ${ALLOWED_ONTOLOGY_EDGE_TYPES.join(", ")}.`,
+    "Only create edges between the selected candidates listed below. Omit uncertain edges.",
+    `Scope: ${scope}`,
+    requestSection,
+    repoPathSection,
+    "SelectedCandidates:",
+    JSON.stringify(candidates.map((candidate) => ({
+      objectKey: candidate.objectKey,
+      kind: candidate.kind,
+      title: candidate.title,
+      sourcePath: candidate.sourcePath,
+    }))),
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+function renderDocumentExcerpts(documents: LibraryImportSourceDocument[]): string {
+  const chunks: string[] = [];
+  let remaining = MAX_PROMPT_DOCUMENT_CHARS;
+  for (const document of documents) {
+    if (remaining <= 0) break;
+    const excerpt = normalizeExcerpt(document.content).slice(0, Math.min(MAX_DOCUMENT_EXCERPT_CHARS, remaining));
+    const chunk = [
+      `--- ${document.path}`,
+      excerpt,
+    ].join("\n");
+    chunks.push(chunk);
+    remaining -= chunk.length;
+  }
+  return chunks.join("\n\n");
+}
+
+function normalizeExcerpt(content: string): string {
+  return content.replaceAll(/\r\n?/g, "\n").trim();
 }
 
 function normalizeLlmImportAnalysis(
@@ -74,10 +206,14 @@ function normalizeCandidates(value: unknown, options: { scope: string; sourcePat
     if (!isRecord(candidate)) continue;
     const kind = normalizeKind(candidate.kind);
     if (!kind) continue;
-    const objectKey = optionalString(candidate.objectKey) ?? objectKeyFromKindAndTitle(kind, optionalString(candidate.title));
+    const objectKey = canonicalizeObjectKeyFromSourcePath(
+      kind,
+      optionalString(candidate.objectKey) ?? objectKeyFromKindAndTitle(kind, optionalString(candidate.title)),
+      optionalString(candidate.sourcePath),
+    );
     if (!objectKey || !objectKey.startsWith(`${kind}.`) || seen.has(objectKey)) continue;
     const sourcePath = optionalString(candidate.sourcePath);
-    if (sourcePath && !options.sourcePaths.has(sourcePath)) continue;
+    if (sourcePath && options.sourcePaths.size > 0 && !options.sourcePaths.has(sourcePath)) continue;
     seen.add(objectKey);
     candidates.push({
       objectKey,
@@ -148,6 +284,24 @@ function objectKeyFromKindAndTitle(kind: LibraryImportCandidateKind, title: stri
   if (!title) return null;
   const slug = title.replaceAll(/[^A-Za-z0-9._-]+/g, "-").replaceAll(/^-+|-+$/g, "").toLowerCase();
   return slug.length > 0 ? `${kind}.${slug}` : null;
+}
+
+function canonicalizeObjectKeyFromSourcePath(
+  kind: LibraryImportCandidateKind,
+  objectKey: string | null,
+  sourcePath: string | undefined,
+): string | null {
+  if (!objectKey || !sourcePath) return objectKey;
+  const normalizedPath = sourcePath.replaceAll("\\", "/");
+  const segments = normalizedPath.split("/").filter(Boolean);
+  if (segments.length === 0) return objectKey;
+  const fileName = segments.at(-1);
+  if (!fileName) return objectKey;
+  const stem = fileName.replace(/\.[^.]+$/, "");
+  if (!objectKey.startsWith(`${kind}.`)) return `${kind}.${stem}`;
+  const slugSegments = objectKey.slice(`${kind}.`.length).split(".").filter(Boolean);
+  if (slugSegments.length > 1 && slugSegments.at(-1) === stem) return `${kind}.${stem}`;
+  return objectKey;
 }
 
 function titleFromObjectKey(objectKey: string): string {

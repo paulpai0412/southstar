@@ -88,6 +88,34 @@ test("Pi SDK planner client applies configured model before prompting", async ()
   assert.deepEqual(prompts, ["plan this"]);
 });
 
+test("Pi SDK planner client can create a tool-enabled session rooted at a requested cwd", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const sessionInputs: Array<{ cwd: string; noTools?: "all" | null }> = [];
+  const session: PiSdkPlannerSession = {
+    async prompt() {
+      for (const listener of listeners) listener({ message: { role: "assistant", content: "{\"candidates\":[]}" } });
+      for (const listener of listeners) listener({ type: "agent_end" });
+    },
+    subscribe(listener: (event: unknown) => void) {
+      listeners.push(listener);
+      return () => undefined;
+    },
+  };
+
+  const client = createPiSdkPlannerClient({
+    cwd: "/tmp/southstar-library-imports/repo",
+    noTools: null,
+    createSession: async (input) => {
+      sessionInputs.push(input);
+      return session;
+    },
+    timeoutMs: 1_000,
+  });
+
+  assert.equal(await client.generate("inspect repo"), "{\"candidates\":[]}");
+  assert.deepEqual(sessionInputs, [{ cwd: "/tmp/southstar-library-imports/repo", noTools: null }]);
+});
+
 test("Pi SDK planner client marks sessions as workflow", async () => {
   const listeners: Array<(event: unknown) => void> = [];
   const customEntries: Array<{ customType: string; data?: unknown }> = [];

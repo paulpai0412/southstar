@@ -35,6 +35,7 @@ export function LibraryFileViewer({
   onSync: () => void;
 }) {
   const [activeTab, setActiveTab] = useState<FileViewerTab>("Edit");
+  const effectiveActiveTab = selectedFilePath || !objectDetail ? activeTab : activeTab === "Edit" ? "Preview" : activeTab;
   const visibleIssues = issues ?? fileRecord?.parsed.issues ?? [];
 
   return (
@@ -73,14 +74,14 @@ export function LibraryFileViewer({
             <button
               key={tab}
               type="button"
-              aria-pressed={activeTab === tab}
+              aria-pressed={effectiveActiveTab === tab}
               onClick={() => setActiveTab(tab)}
               style={{
                 height: 26,
                 padding: "0 7px",
                 border: "1px solid var(--border)",
                 borderRadius: 6,
-                background: activeTab === tab ? "var(--surface)" : "transparent",
+                background: effectiveActiveTab === tab ? "var(--surface)" : "transparent",
                 color: "var(--text)",
                 fontSize: 11,
               }}
@@ -116,7 +117,7 @@ export function LibraryFileViewer({
         ) : null}
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        {activeTab === "Edit" ? (
+        {effectiveActiveTab === "Edit" ? (
           <textarea
             data-testid="library-file-editor"
             value={content}
@@ -138,7 +139,7 @@ export function LibraryFileViewer({
           />
         ) : (
           <ReadOnlyPanel
-            tab={activeTab}
+            tab={effectiveActiveTab}
             fileRecord={fileRecord ?? null}
             objectDetail={objectDetail ?? null}
             content={content}
@@ -165,7 +166,7 @@ function ReadOnlyPanel({
 }) {
   const parsedFile = fileRecord?.parsed.ok ? fileRecord.parsed.file : null;
   let body: unknown;
-  if (tab === "Preview") body = parsedFile ?? content;
+  if (tab === "Preview") body = parsedFile ?? objectDetail?.object ?? content;
   if (tab === "Validate") body = issues.length > 0 ? issues : [{ severity: "info", path: "$", message: "No validation issues", code: "ok" }];
   if (tab === "Edges") body = objectDetail ? {
     inboundEdges: objectDetail.inboundEdges,

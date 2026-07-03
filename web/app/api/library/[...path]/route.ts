@@ -20,7 +20,14 @@ async function proxy(request: NextRequest, paramsPromise: Promise<{ path: string
   if (request.headers.get("accept")?.includes("text/event-stream")) {
     const upstream = buildWorkflowV2Url(pathname);
     upstream.search = request.nextUrl.search;
-    const response = await fetch(upstream, { headers: { accept: "text/event-stream" } });
+    const headers: HeadersInit = { accept: "text/event-stream" };
+    const contentType = request.headers.get("content-type");
+    if (contentType) headers["content-type"] = contentType;
+    const response = await fetch(upstream, {
+      method: request.method,
+      headers,
+      body: request.method === "GET" || request.method === "HEAD" ? undefined : await request.text(),
+    });
     if (!response.ok) return new Response(await response.text(), { status: response.status, statusText: response.statusText });
     if (!response.body) return new Response("library stream missing body", { status: 502 });
     return new Response(response.body, {

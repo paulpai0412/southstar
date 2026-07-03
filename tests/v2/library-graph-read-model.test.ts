@@ -270,6 +270,17 @@ test("filters library graph read model and route by domain kind and status", asy
       ["skill.react-ui"],
     );
 
+    const edgeFilteredResponse = await handleRuntimeRoute(
+      { db } as any,
+      new Request("http://local/api/v2/library/graph?scope=software&edgeType=requires_skill"),
+    );
+    assert.equal(edgeFilteredResponse.status, 200);
+    const edgeFiltered = await edgeFilteredResponse.json() as any;
+    assert.deepEqual(
+      edgeFiltered.result.edges.map((edge: { edgeType: string }) => edge.edgeType),
+      ["requires_skill"],
+    );
+
     const invalid = await handleRuntimeRoute(
       { db } as any,
       new Request("http://local/api/v2/library/graph?scope=software&kind=nope&status=approved"),

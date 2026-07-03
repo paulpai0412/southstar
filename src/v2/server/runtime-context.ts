@@ -23,6 +23,7 @@ export type RuntimeServerContext = {
   libraryRoot?: string;
   libraryImportSourceFetcher?: LibraryImportSourceFetcher;
   libraryImportLlmProvider?: LibraryImportLlmProvider;
+  libraryChatHeartbeatMs?: number;
   reconcileIntervalMs?: number;
   createReconcileLoop?: () => RuntimeLoopController;
   runtimeLoopRegistry?: RuntimeLoopRegistry;

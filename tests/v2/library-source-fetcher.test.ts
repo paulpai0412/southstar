@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  createGithubLibraryImportSourceFetcher,
   fetchLibraryImportSourceDocuments,
   type LibraryImportSourceFetcher,
 } from "../../src/v2/design-library/importers/library-source-fetcher.ts";
@@ -31,6 +32,46 @@ test("fetchLibraryImportSourceDocuments delegates github sources without inline 
     source: { kind: "github", repoUrl: "https://github.com/acme/library", path: "library" },
   });
   assert.deepEqual(docs.map((doc) => doc.path), ["agents/reviewer.md", "skills/review.md"]);
+});
+
+test("createGithubLibraryImportSourceFetcher clones the repository and returns the local repo path", async () => {
+  const cloned: Array<{ repoUrl: string; targetPath: string }> = [];
+  const importRoot = await mkdtemp(join(tmpdir(), "southstar-library-github-clone-"));
+  const fetcher = createGithubLibraryImportSourceFetcher({
+    importRoot,
+    cloneRepository: async (input) => {
+      cloned.push(input);
+      await mkdir(input.targetPath, { recursive: true });
+    },
+  });
+
+  try {
+    const snapshot = await fetcher({ source: { kind: "github", repoUrl: "https://github.com/jnMetaCode/agency-agents-zh" } });
+
+    assert.deepEqual(cloned.map((item) => item.repoUrl), ["https://github.com/jnMetaCode/agency-agents-zh"]);
+    assert.equal(Array.isArray(snapshot), false);
+    assert.deepEqual(Array.isArray(snapshot) ? snapshot : snapshot.documents, []);
+    assert.match(Array.isArray(snapshot) ? "" : snapshot.repoPath ?? "", /jnMetaCode-agency-agents-zh-/);
+    assert.equal(Array.isArray(snapshot) ? "" : snapshot.repoPath?.startsWith(importRoot), true);
+  } finally {
+    await rm(importRoot, { recursive: true, force: true });
+  }
+});
+
+test("fetchLibraryImportSourceDocuments keeps large github libraries within default bounds", async () => {
+  const sourceFetcher: LibraryImportSourceFetcher = async () => Array.from({ length: 266 }, (_, index) => ({
+    path: `agents/agent-${index + 1}.md`,
+    label: `agent-${index + 1}`,
+    content: `# Agent ${index + 1}`,
+  }));
+
+  const docs = await fetchLibraryImportSourceDocuments({
+    source: { kind: "github", repoUrl: "https://github.com/jnMetaCode/agency-agents-zh" },
+    sourceFetcher,
+  });
+
+  assert.equal(docs.length, 266);
+  assert.equal(docs[265]?.path, "agents/agent-266.md");
 });
 
 test("fetchLibraryImportSourceDocuments reads local folders recursively in sorted order and ignores dependency/control directories", async () => {

@@ -43,7 +43,8 @@ export function LibraryGraphChart({
 
   return (
     <div data-testid="library-graph-chart" style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
-      <svg width={width} height={height} role="img" aria-label="Library graph chart" style={{ display: "block", background: "var(--bg-subtle)" }}>
+      <div style={{ position: "relative", width, height, background: "var(--bg-subtle)" }}>
+      <svg width={width} height={height} role="img" aria-label="Library graph chart" style={{ display: "block" }}>
         {edges.map((edge, index) => {
           const from = positions.get(edge.fromObjectKey);
           const to = positions.get(edge.toObjectKey);
@@ -72,21 +73,7 @@ export function LibraryGraphChart({
           const position = positions.get(node.objectKey);
           if (!position) return null;
           return (
-            <g
-              key={node.objectKey}
-              data-testid="library-graph-node"
-              role={onSelectNode ? "button" : undefined}
-              aria-label={onSelectNode ? (node.title ?? node.objectKey) : undefined}
-              tabIndex={onSelectNode ? 0 : undefined}
-              onClick={() => onSelectNode?.(node)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onSelectNode?.(node);
-                }
-              }}
-              style={{ cursor: onSelectNode ? "pointer" : "default" }}
-            >
+            <g key={node.objectKey} aria-hidden="true">
               <rect x={position.x - 92} y={position.y - 18} width="184" height="36" rx="6" fill="var(--bg)" stroke="var(--border)" />
               <text x={position.x} y={position.y - 3} textAnchor="middle" fontSize="11" fill="var(--text)" fontWeight="600">
                 {node.title ?? node.objectKey}
@@ -98,6 +85,38 @@ export function LibraryGraphChart({
           );
         })}
       </svg>
+      {nodes.map((node) => {
+        const position = positions.get(node.objectKey);
+        if (!position) return null;
+        return (
+          <button
+            key={node.objectKey}
+            type="button"
+            data-testid="library-graph-node"
+            aria-label={node.title ?? node.objectKey}
+            onClick={() => onSelectNode?.(node)}
+            disabled={!onSelectNode}
+            style={{
+              position: "absolute",
+              left: position.x - 92,
+              top: position.y - 18,
+              width: 184,
+              height: 36,
+              padding: 0,
+              border: "none",
+              borderRadius: 6,
+              background: "transparent",
+              color: "transparent",
+              cursor: onSelectNode ? "pointer" : "default",
+            }}
+          >
+            <span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
+              {node.title ?? node.objectKey}
+            </span>
+          </button>
+        );
+      })}
+      </div>
     </div>
   );
 }

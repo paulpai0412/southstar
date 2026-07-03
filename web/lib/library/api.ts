@@ -87,6 +87,7 @@ export async function syncLibraryFile(relativePath: string): Promise<LibraryFile
 export async function createLibraryImportDraft(input: {
   source: LibraryImportSource;
   scope: string;
+  requestPrompt?: string;
 }): Promise<LibraryImportDraftResult> {
   return requestLibraryJson<LibraryImportDraftResult>("/api/library/import-drafts", {
     method: "POST",

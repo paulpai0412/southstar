@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import path from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
 import { parseLibraryFileContent } from "../files/library-file-parser.ts";
 import {
@@ -18,12 +20,13 @@ import {
   type LibraryImportSource,
 } from "./library-import-extractor.ts";
 import {
-  fetchLibraryImportSourceDocuments,
+  fetchLibraryImportSourceSnapshot,
   type LibraryImportSourceDocument,
   type LibraryImportSourceFetcher,
 } from "./library-source-fetcher.ts";
 import {
   analyzeLibraryImportWithLlm,
+  analyzeLibraryImportOntologyWithLlm,
   type LibraryImportLlmProvider,
 } from "./library-llm-import-analyzer.ts";
 import type {
@@ -89,6 +92,16 @@ type PreflightedLibraryImportFile = {
   file: LibraryFileRecord;
 };
 
+type SupportingLibraryImportFile = {
+  relativePath: string;
+  content: Buffer;
+};
+
+export type LibraryImportProgressListener = (event: {
+  event: string;
+  data: Record<string, unknown>;
+}) => void;
+
 export async function createLibraryImportDraft(
   db: SouthstarDb,
   input: {
@@ -99,26 +112,58 @@ export async function createLibraryImportDraft(
     localRoot?: string;
     maxFiles?: number;
     maxBytes?: number;
+    requestPrompt?: string;
+    progress?: LibraryImportProgressListener;
   },
 ): Promise<LibraryImportDraftResult> {
   const source = asImportSource(input.source);
-  const documents = await fetchLibraryImportSourceDocuments({
+  input.progress?.({ event: "library.import.source.started", data: { sourceKind: source.kind } });
+  const sourceSnapshot = await fetchLibraryImportSourceSnapshot({
     source,
     sourceFetcher: input.sourceFetcher,
     localRoot: input.localRoot,
     maxFiles: input.maxFiles,
     maxBytes: input.maxBytes,
   });
-  const proposal = extractLibraryImportProposal({
-    source: sourceHasInlineContent(source) ? source : sourceFromDocuments(documents),
-    scope: input.scope,
+  const documents = sourceSnapshot.documents;
+  input.progress?.({
+    event: "library.import.source.completed",
+    data: {
+      sourceKind: source.kind,
+      documentCount: documents.length,
+      ...(sourceSnapshot.repoPath ? { sourceRepoPath: sourceSnapshot.repoPath } : {}),
+    },
   });
-  const analysis = await analyzeLibraryImportWithLlm({
-    documents,
-    scope: input.scope,
-    llmProvider: input.llmProvider,
+  const inlineSource = sourceHasInlineContent(source);
+  input.progress?.({ event: "library.import.candidates.started", data: { sourceKind: source.kind } });
+  const analysis = input.llmProvider
+    ? await analyzeLibraryImportWithLlm({
+      documents,
+      scope: input.scope,
+      llmProvider: input.llmProvider,
+      requestPrompt: input.requestPrompt,
+      sourceRepoPath: sourceSnapshot.repoPath,
+    })
+    : inlineSource
+      ? { candidates: [], proposedEdges: [] }
+      : await analyzeLibraryImportWithLlm({
+        documents,
+        scope: input.scope,
+        llmProvider: input.llmProvider,
+        requestPrompt: input.requestPrompt,
+        sourceRepoPath: sourceSnapshot.repoPath,
+      });
+  input.progress?.({
+    event: "library.import.candidates.completed",
+    data: { candidateCount: analysis.candidates.length },
   });
   const draftId = `library-import-draft-${randomUUID()}`;
+  const proposal = inlineSource
+    ? extractLibraryImportProposal({
+      source,
+      scope: input.scope,
+    })
+    : proposalFromCandidates(draftId, analysis.candidates);
   await upsertRuntimeResourcePg(db, {
     resourceType: LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE,
     resourceKey: draftId,
@@ -131,6 +176,8 @@ export async function createLibraryImportDraft(
       status: "draft",
       source,
       scope: input.scope,
+      ...(input.requestPrompt ? { requestPrompt: input.requestPrompt } : {}),
+      ...(sourceSnapshot.repoPath ? { sourceRepoPath: sourceSnapshot.repoPath } : {}),
       proposal,
       documents,
       candidates: analysis.candidates,
@@ -142,6 +189,7 @@ export async function createLibraryImportDraft(
       filePaths: proposal.files.map((file) => file.relativePath),
       candidateKeys: analysis.candidates.map((candidate) => candidate.objectKey),
       proposedEdgeCount: analysis.proposedEdges.length,
+      ...(sourceSnapshot.repoPath ? { sourceRepoPath: sourceSnapshot.repoPath } : {}),
     },
   });
   return {
@@ -159,12 +207,28 @@ function sourceHasInlineContent(source: LibraryImportSource): boolean {
   return typeof source.content === "string" && source.content.length > 0;
 }
 
-function sourceFromDocuments(documents: LibraryImportSourceDocument[]): LibraryImportSource {
+function proposalFromCandidates(draftId: string, candidates: LibraryImportCandidate[]): LibraryPromptImportProposal {
+  const files = candidates.map((candidate) => renderLibraryImportCandidate(draftId, candidate));
   return {
-    kind: "paste",
-    label: "Fetched library import source",
-    content: documents.map((document) => document.content).join("\n\n"),
+    files,
+    objectKeys: candidates.map((candidate) => candidate.objectKey),
+    objectSummaries: candidates.map((candidate, index) => ({
+      objectKey: candidate.objectKey,
+      objectKind: candidateObjectKind(candidate.kind),
+      title: candidate.title,
+      scope: candidate.scope,
+      status: "draft",
+      relativePath: files[index]?.relativePath ?? candidateRelativePath(candidate.kind, slugFromCandidate(candidate)),
+    })),
+    dependencies: [],
   };
+}
+
+function candidateObjectKind(kind: LibraryImportCandidateKind): string {
+  if (kind === "agent") return "agent_definition";
+  if (kind === "skill") return "skill_spec";
+  if (kind === "tool") return "tool_definition";
+  return "mcp_grant";
 }
 
 export async function approveLibraryImportDraft(
@@ -252,19 +316,45 @@ export async function installLibraryImportCandidates(
     selectedEdgeIds?: string[];
     actor?: string;
     reason: string;
+    llmProvider?: LibraryImportLlmProvider;
+    progress?: LibraryImportProgressListener;
   },
 ): Promise<LibraryImportCandidateInstallResult> {
-  const createdFiles: Array<{ relativePath: string; content: string }> = [];
+  const createdFiles: Array<{ relativePath: string; content: string | Buffer }> = [];
 
   try {
     const draft = await loadLibraryImportCandidateDraft(db, input.draftId);
     const selectedCandidates = selectLibraryImportCandidates(draft.candidates, input.selectedCandidateIds);
+    input.progress?.({
+      event: "library.import.ontology.started",
+      data: { draftId: input.draftId, selectedCandidateCount: selectedCandidates.length },
+    });
+    const generatedEdges = input.llmProvider
+      ? await analyzeLibraryImportOntologyWithLlm({
+        candidates: selectedCandidates,
+        scope: selectedCandidates[0]?.scope ?? "software",
+        llmProvider: input.llmProvider,
+        requestPrompt: typeof draft.payload.requestPrompt === "string" ? draft.payload.requestPrompt : undefined,
+        sourceRepoPath: typeof draft.payload.sourceRepoPath === "string" ? draft.payload.sourceRepoPath : undefined,
+        documents: asImportSourceDocuments(draft.payload.documents),
+      })
+      : draft.proposedEdges;
+    input.progress?.({
+      event: "library.import.ontology.completed",
+      data: { draftId: input.draftId, proposedEdgeCount: generatedEdges.length },
+    });
+    input.progress?.({
+      event: "library.import.install.started",
+      data: { draftId: input.draftId, selectedCandidateCount: selectedCandidates.length },
+    });
     const preflighted = await preflightLibraryImportCandidates(db, {
       root: input.root,
       draftId: input.draftId,
       candidates: selectedCandidates,
+      documents: asImportSourceDocuments(draft.payload.documents),
+      sourceRepoPath: typeof draft.payload.sourceRepoPath === "string" ? draft.payload.sourceRepoPath : undefined,
     });
-    const proposedEdges = selectLibraryImportCandidateEdges(draft.proposedEdges, {
+    const proposedEdges = selectLibraryImportCandidateEdges(generatedEdges, {
       selectedObjectKeys: new Set(selectedCandidates.map((candidate) => candidate.objectKey)),
       selectedEdgeIds: input.selectedEdgeIds,
     });
@@ -276,13 +366,24 @@ export async function installLibraryImportCandidates(
           relativePath: file.relativePath,
           content: file.content,
         });
+        createdFiles.push({ relativePath: file.relativePath, content: file.content });
+        for (const supportingFile of file.supportingFiles) {
+          await writeNewSupportingImportFile({
+            root: input.root,
+            relativePath: supportingFile.relativePath,
+            content: supportingFile.content,
+          });
+          createdFiles.push({
+            relativePath: supportingFile.relativePath,
+            content: supportingFile.content,
+          });
+        }
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") {
           throw new Error(`library import file already exists: ${file.relativePath}`);
         }
         throw error;
       }
-      createdFiles.push({ relativePath: file.relativePath, content: file.content });
     }
 
     const result = await db.tx(async (tx) => {
@@ -322,6 +423,7 @@ export async function installLibraryImportCandidates(
         installedAt: new Date().toISOString(),
         selectedCandidateIds: input.selectedCandidateIds,
         ...(input.selectedEdgeIds ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
+        generatedOntologyAt: new Date().toISOString(),
         installedObjectKeys: installedObjects.map((object) => object.objectKey),
         installedObjects: installedObjects.map((object) => ({
           objectKey: object.objectKey,
@@ -353,6 +455,7 @@ export async function installLibraryImportCandidates(
           JSON.stringify({
             ...withoutTransientApplyState(draft.payload),
             status: "installed",
+            proposedEdges,
             install,
           }),
           JSON.stringify({
@@ -380,6 +483,14 @@ export async function installLibraryImportCandidates(
       };
     });
 
+    input.progress?.({
+      event: "library.import.install.completed",
+      data: {
+        draftId: input.draftId,
+        installedObjectCount: result.installedObjects.length,
+        installedEdgeCount: result.installedEdges.length,
+      },
+    });
     return result;
   } catch (error) {
     await cleanupCreatedImportFiles(input.root, createdFiles);
@@ -466,14 +577,32 @@ async function loadLibraryImportCandidateDraft(
 
 async function preflightLibraryImportCandidates(
   db: SouthstarDb,
-  input: { root: string; draftId: string; candidates: LibraryImportCandidate[] },
-): Promise<Array<PreflightedLibraryImportFile & { candidate: LibraryImportCandidate }>> {
+  input: {
+    root: string;
+    draftId: string;
+    candidates: LibraryImportCandidate[];
+    documents?: LibraryImportSourceDocument[];
+    sourceRepoPath?: string;
+  },
+): Promise<Array<PreflightedLibraryImportFile & {
+  candidate: LibraryImportCandidate;
+  supportingFiles: SupportingLibraryImportFile[];
+}>> {
   const seenPaths = new Set<string>();
   const seenObjectKeys = new Set<string>();
-  const preflighted: Array<PreflightedLibraryImportFile & { candidate: LibraryImportCandidate }> = [];
+  const preflighted: Array<PreflightedLibraryImportFile & {
+    candidate: LibraryImportCandidate;
+    supportingFiles: SupportingLibraryImportFile[];
+  }> = [];
+  const sourceDocuments = new Map((input.documents ?? []).map((document) => [document.path, document]));
 
   for (const candidate of input.candidates) {
-    const rendered = renderLibraryImportCandidate(input.draftId, candidate);
+    const rendered = renderLibraryImportCandidate(input.draftId, candidate, {
+      sourceContent: await sourceContentForCandidate(candidate, {
+        documents: sourceDocuments,
+        sourceRepoPath: input.sourceRepoPath,
+      }),
+    });
     if (seenPaths.has(rendered.relativePath)) {
       throw new Error(`library import candidates contain duplicate file: ${rendered.relativePath}`);
     }
@@ -499,11 +628,25 @@ async function preflightLibraryImportCandidates(
     if (await findLibraryObjectByKey(db, parsed.file.objectKey)) {
       throw new Error(`library import object already exists: ${parsed.file.objectKey}`);
     }
+    const supportingFiles = await supportingFilesForCandidate(candidate, {
+      sourceRepoPath: input.sourceRepoPath,
+      destinationSlug: slugFromCandidate(candidate),
+    });
+    for (const supportingFile of supportingFiles) {
+      if (seenPaths.has(supportingFile.relativePath)) {
+        throw new Error(`library import candidates contain duplicate file: ${supportingFile.relativePath}`);
+      }
+      seenPaths.add(supportingFile.relativePath);
+      if (await libraryFileExists(input.root, supportingFile.relativePath)) {
+        throw new Error(`library import file already exists: ${supportingFile.relativePath}`);
+      }
+    }
     preflighted.push({
       relativePath: rendered.relativePath,
       content: rendered.content,
       file: parsed.file,
       candidate,
+      supportingFiles,
     });
   }
 
@@ -560,6 +703,7 @@ function libraryImportEdgeId(edge: LibraryImportProposedEdge): string {
 function renderLibraryImportCandidate(
   draftId: string,
   candidate: LibraryImportCandidate,
+  options: { sourceContent?: string } = {},
 ): { relativePath: string; content: string } {
   const slug = slugFromCandidate(candidate);
   const relativePath = candidateRelativePath(candidate.kind, slug);
@@ -589,6 +733,23 @@ function renderLibraryImportCandidate(
   }
 
   const heading = candidate.kind === "agent" ? "Identity" : "Instructions";
+  const body = options.sourceContent
+    ? [
+      `# ${heading}`,
+      "",
+      `Imported ${candidate.kind} candidate from library import draft ${draftId}.`,
+      "",
+      "## Source Definition",
+      "",
+      options.sourceContent.trim(),
+      "",
+    ]
+    : [
+      `# ${heading}`,
+      "",
+      `Imported ${candidate.kind} candidate from library import draft ${draftId}.`,
+      "",
+    ];
   return {
     relativePath,
     content: [
@@ -601,12 +762,86 @@ function renderLibraryImportCandidate(
       provenance,
       "---",
       "",
-      `# ${heading}`,
-      "",
-      `Imported ${candidate.kind} candidate from library import draft ${draftId}.`,
-      "",
+      ...body,
     ].join("\n"),
   };
+}
+
+async function sourceContentForCandidate(
+  candidate: LibraryImportCandidate,
+  input: { documents: Map<string, LibraryImportSourceDocument>; sourceRepoPath?: string },
+): Promise<string | undefined> {
+  if (!candidate.sourcePath || (candidate.kind !== "agent" && candidate.kind !== "skill")) return undefined;
+  const document = input.documents.get(candidate.sourcePath);
+  if (document) return document.content;
+  if (!input.sourceRepoPath) return undefined;
+  return await readImportSourceFile(input.sourceRepoPath, candidate.sourcePath);
+}
+
+async function supportingFilesForCandidate(
+  candidate: LibraryImportCandidate,
+  input: { sourceRepoPath?: string; destinationSlug: string },
+): Promise<SupportingLibraryImportFile[]> {
+  if (candidate.kind !== "skill" || !candidate.sourcePath || !input.sourceRepoPath) return [];
+  const sourceDirectory = await resolveImportSourceDirectory(input.sourceRepoPath, candidate.sourcePath);
+  if (!sourceDirectory) return [];
+  const files = await collectImportSourceFiles(sourceDirectory.absolutePath, sourceDirectory.absolutePath);
+  return files.map((file) => ({
+    relativePath: path.posix.join("skills", input.destinationSlug, file.relativePath),
+    content: file.content,
+  }));
+}
+
+async function resolveImportSourceDirectory(
+  sourceRepoPath: string,
+  sourcePath: string,
+): Promise<{ absolutePath: string } | null> {
+  const sourceFile = resolveImportSourcePath(sourceRepoPath, sourcePath);
+  const sourceStats = await stat(sourceFile);
+  if (sourceStats.isDirectory()) return { absolutePath: sourceFile };
+  if (!sourceStats.isFile()) return null;
+  if (path.basename(sourceFile).toLowerCase() !== "skill.md") return null;
+  return { absolutePath: path.dirname(sourceFile) };
+}
+
+async function collectImportSourceFiles(
+  directory: string,
+  root: string,
+): Promise<Array<{ relativePath: string; content: Buffer }>> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files: Array<{ relativePath: string; content: Buffer }> = [];
+  for (const entry of entries) {
+    if (entry.name === ".git" || entry.name === "node_modules") continue;
+    const absolutePath = path.join(directory, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...await collectImportSourceFiles(absolutePath, root));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    files.push({
+      relativePath: toPosixPath(path.relative(root, absolutePath)),
+      content: await readFile(absolutePath),
+    });
+  }
+  return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
+}
+
+async function readImportSourceFile(sourceRepoPath: string, sourcePath: string): Promise<string> {
+  return await readFile(resolveImportSourcePath(sourceRepoPath, sourcePath), "utf8");
+}
+
+function resolveImportSourcePath(sourceRepoPath: string, sourcePath: string): string {
+  const normalizedSegments = sourcePath.split(/[\\/]+/g).filter(Boolean);
+  if (normalizedSegments.length === 0 || normalizedSegments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error(`library import candidate sourcePath is invalid: ${sourcePath}`);
+  }
+  const root = path.resolve(sourceRepoPath);
+  const filePath = path.resolve(root, ...normalizedSegments);
+  const relative = path.relative(root, filePath);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`library import candidate sourcePath escapes source repo: ${sourcePath}`);
+  }
+  return filePath;
 }
 
 function slugFromCandidate(candidate: LibraryImportCandidate): string {
@@ -649,6 +884,15 @@ function asImportCandidates(value: unknown): LibraryImportCandidate[] {
       selectedByDefault: typeof record.selectedByDefault === "boolean" ? record.selectedByDefault : true,
       ...(typeof record.confidence === "number" ? { confidence: record.confidence } : {}),
     };
+  });
+}
+
+function asImportSourceDocuments(value: unknown): LibraryImportSourceDocument[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    if (typeof record.path !== "string" || typeof record.label !== "string" || typeof record.content !== "string") return [];
+    return [{ path: record.path, label: record.label, content: record.content }];
   });
 }
 
@@ -698,10 +942,63 @@ async function libraryFileExists(root: string, relativePath: string): Promise<bo
   }
 }
 
-async function cleanupCreatedImportFiles(root: string, files: Array<{ relativePath: string; content: string }>): Promise<void> {
+async function cleanupCreatedImportFiles(
+  root: string,
+  files: Array<{ relativePath: string; content: string | Buffer }>,
+): Promise<void> {
   for (const file of [...files].reverse()) {
-    await removeLibraryFileIfContentMatches({ root, relativePath: file.relativePath, content: file.content });
+    if (typeof file.content === "string") {
+      await removeLibraryFileIfContentMatches({ root, relativePath: file.relativePath, content: file.content });
+    } else {
+      await removeSupportingImportFileIfContentMatches({ root, relativePath: file.relativePath, content: file.content });
+    }
   }
+}
+
+async function writeNewSupportingImportFile(input: {
+  root: string;
+  relativePath: string;
+  content: Buffer;
+}): Promise<void> {
+  const absolutePath = resolveLibraryImportPath(input.root, input.relativePath);
+  await mkdir(path.dirname(absolutePath), { recursive: true });
+  await writeFile(absolutePath, input.content, { flag: "wx" });
+}
+
+async function removeSupportingImportFileIfContentMatches(input: {
+  root: string;
+  relativePath: string;
+  content: Buffer;
+}): Promise<boolean> {
+  const absolutePath = resolveLibraryImportPath(input.root, input.relativePath);
+  let existing;
+  try {
+    existing = await readFile(absolutePath);
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+  if (!existing.equals(input.content)) return false;
+  await rm(absolutePath, { force: true });
+  return true;
+}
+
+function resolveLibraryImportPath(root: string, relativePath: string): string {
+  const normalizedSegments = relativePath.split(/[\\/]+/g).filter(Boolean);
+  if (normalizedSegments.length === 0 || normalizedSegments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error(`library import file path is invalid: ${relativePath}`);
+  }
+  const resolvedRoot = path.resolve(root);
+  const resolvedPath = path.resolve(resolvedRoot, ...normalizedSegments);
+  const relative = path.relative(resolvedRoot, resolvedPath);
+  if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new Error(`library import file path escapes library root: ${relativePath}`);
+  }
+  return resolvedPath;
+}
+
+function toPosixPath(value: string): string {
+  return value.split(path.sep).join("/");
 }
 
 async function reserveLibraryImportDraftApproval(

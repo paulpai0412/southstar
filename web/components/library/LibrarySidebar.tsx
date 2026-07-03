@@ -3,6 +3,7 @@
 import { useState } from "react";
 import type { LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject, LibraryWorkspaceObjectGroup } from "@/lib/library/types";
 import { FolderIcon } from "../FileIcons";
+import { PiAgentTitle } from "../SessionSidebar";
 
 const domainTreeFolders = [
   { label: "agents", objectKinds: ["agent_definition", "agent_spec"] },
@@ -20,10 +21,9 @@ export function LibrarySidebar({
   statusFilter,
   onSelectScope,
   onSelectSession,
+  onNewSession,
+  onRefresh,
   onSelectObject,
-  prompt,
-  onPromptChange,
-  onPromptSubmit,
 }: {
   model: LibraryWorkspaceModel | null;
   sessions?: LibrarySessionSummary[];
@@ -34,26 +34,104 @@ export function LibrarySidebar({
   onSelectScope: (scope: string) => void;
   onStatusFilterChange: (status: string) => void;
   onSelectSession?: (session: LibrarySessionSummary) => void;
+  onNewSession?: () => void;
+  onRefresh?: () => void;
   onSelectObject: (object: LibraryWorkspaceObject) => void;
-  prompt: string;
-  onPromptChange: (value: string) => void;
-  onPromptSubmit: () => void;
 }) {
   const domains = model?.domains ?? [];
   const [domainFilter, setDomainFilter] = useState("");
   const [sessionsOpen, setSessionsOpen] = useState(true);
   const [treeOpen, setTreeOpen] = useState(true);
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
+  const [refreshDone, setRefreshDone] = useState(false);
   const normalizedDomainFilter = domainFilter.trim().toLowerCase();
   const filteredDomains = normalizedDomainFilter
     ? domains.filter((domain) => domain.scope.toLowerCase().includes(normalizedDomainFilter))
     : domains;
   const isOpen = (key: string) => openMap[key] ?? true;
   const toggle = (key: string) => setOpenMap((current) => ({ ...current, [key]: !(current[key] ?? true) }));
+  const handleRefresh = () => {
+    onRefresh?.();
+    setRefreshDone(true);
+    window.setTimeout(() => setRefreshDone(false), 1800);
+  };
 
   return (
     <div data-testid="library-sidebar-content" style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div style={{ padding: "10px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
+      <div
+        style={{
+          padding: "12px 10px 10px",
+          borderBottom: "1px solid var(--border)",
+          flexShrink: 0,
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+          <PiAgentTitle />
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              type="button"
+              onClick={onNewSession}
+              disabled={!onNewSession}
+              title="New Library session"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 5,
+                background: "var(--bg-hover)",
+                border: "1px solid var(--border)",
+                color: onNewSession ? "var(--text-muted)" : "var(--text-dim)",
+                cursor: onNewSession ? "pointer" : "not-allowed",
+                height: 32,
+                paddingLeft: 10,
+                paddingRight: 12,
+                borderRadius: 7,
+                fontSize: 12,
+                fontWeight: 500,
+                letterSpacing: 0,
+                flexShrink: 0,
+                transition: "background 0.12s, color 0.12s, border-color 0.12s",
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <line x1="6" y1="1" x2="6" y2="11" />
+                <line x1="1" y1="6" x2="11" y2="6" />
+              </svg>
+              New
+            </button>
+            <button
+              type="button"
+              onClick={handleRefresh}
+              title="Refresh"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: refreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
+                border: `1px solid ${refreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
+                color: refreshDone ? "#4ade80" : "var(--text-muted)",
+                cursor: "pointer",
+                width: 32,
+                height: 32,
+                borderRadius: 7,
+                padding: 0,
+                flexShrink: 0,
+                transition: "background 0.3s, color 0.3s, border-color 0.3s",
+              }}
+            >
+              {refreshDone ? (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="20 6 9 17 4 12" />
+                </svg>
+              ) : (
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+                  <path d="M3 3v5h5" />
+                </svg>
+              )}
+            </button>
+          </div>
+        </div>
         <input
           data-testid="library-domain-filter"
           value={domainFilter}
@@ -140,33 +218,6 @@ export function LibrarySidebar({
         )}
       </section>
 
-      <div style={{ padding: 10, borderTop: "1px solid var(--border)", flexShrink: 0 }}>
-        <textarea
-          data-testid="library-quick-prompt"
-          value={prompt}
-          onChange={(event) => onPromptChange(event.currentTarget.value)}
-          placeholder="Import or create library item..."
-          rows={3}
-          style={{
-            width: "100%",
-            resize: "vertical",
-            fontSize: 12,
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            background: "var(--bg)",
-            color: "var(--text)",
-            padding: 8,
-          }}
-        />
-        <button
-          data-testid="library-quick-prompt-submit"
-          onClick={onPromptSubmit}
-          disabled={!prompt.trim()}
-          style={{ marginTop: 8, width: "100%", height: 28 }}
-        >
-          Send to Library chat
-        </button>
-      </div>
     </div>
   );
 }
