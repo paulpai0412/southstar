@@ -25,6 +25,16 @@ export type LibraryGraphEdge = {
   scope: string;
   status: LibraryEdgeRecord["status"];
   weight: number;
+  ontology?: LibraryGraphEdgeOntology;
+};
+
+export type LibraryGraphEdgeOntology = {
+  category?: string;
+  confidence?: number;
+  rationale?: string;
+  source?: string;
+  draftId?: string;
+  evidenceRefs?: string[];
 };
 
 export type LibraryGraphReadModel = {
@@ -162,6 +172,7 @@ function compareVisibleObjects(activeScope: string, left: LibraryObjectSummary, 
 }
 
 function toGraphEdge(edge: LibraryEdgeRecord): LibraryGraphEdge {
+  const ontology = toGraphEdgeOntology(edge);
   return {
     id: edge.id,
     fromObjectKey: edge.fromObjectKey,
@@ -170,7 +181,47 @@ function toGraphEdge(edge: LibraryEdgeRecord): LibraryGraphEdge {
     scope: edge.scope,
     status: edge.status,
     weight: edge.weight,
+    ...(ontology ? { ontology } : {}),
   };
+}
+
+function toGraphEdgeOntology(edge: LibraryEdgeRecord): LibraryGraphEdgeOntology | undefined {
+  const metadata = edge.metadata;
+  const ontology: LibraryGraphEdgeOntology = {};
+  const derivedCategory = ontologyCategoryForEdgeType(edge.edgeType);
+
+  if (typeof metadata.ontologyCategory === "string" && metadata.ontologyCategory.length > 0) {
+    ontology.category = metadata.ontologyCategory;
+  } else if (derivedCategory) {
+    ontology.category = derivedCategory;
+  }
+  if (typeof metadata.confidence === "number") ontology.confidence = metadata.confidence;
+  if (typeof metadata.rationale === "string") ontology.rationale = metadata.rationale;
+  if (typeof metadata.source === "string") ontology.source = metadata.source;
+  else if (typeof metadata.sourceKind === "string") ontology.source = metadata.sourceKind;
+  if (typeof metadata.draftId === "string") ontology.draftId = metadata.draftId;
+  if (Array.isArray(metadata.evidenceRefs) && metadata.evidenceRefs.every((ref) => typeof ref === "string")) {
+    ontology.evidenceRefs = metadata.evidenceRefs;
+  }
+
+  return Object.keys(ontology).length > 0 || derivedCategory ? ontology : undefined;
+}
+
+function ontologyCategoryForEdgeType(edgeType: LibraryEdgeType): string | undefined {
+  switch (edgeType) {
+    case "uses":
+      return "usage";
+    case "requires":
+      return "requirement";
+    case "conflicts_with":
+      return "conflict";
+    case "workflow_precedes":
+      return "workflow_order";
+    case "similar_to":
+      return "similarity";
+    default:
+      return undefined;
+  }
 }
 
 function objectBelongsToScope(object: LibraryObjectSummary, scope: string): boolean {
