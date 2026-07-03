@@ -1,9 +1,15 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { approveLibraryImportDraft, createLibraryImportDraft } from "@/lib/library/api";
+import {
+  approveLibraryImportDraft,
+  createLibraryImportDraft,
+  installLibraryImportCandidates,
+  readLibraryGraph,
+} from "@/lib/library/api";
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
-import type { LibrarySessionSummary, LibrarySseFrame } from "@/lib/library/types";
+import type { LibraryImportCandidate, LibraryImportProposedEdge, LibrarySessionSummary, LibrarySseFrame } from "@/lib/library/types";
+import { LibraryCandidateMessageBlock } from "./LibraryCandidateMessageBlock";
 import { LibraryGraphBlock } from "./LibraryGraphBlock";
 import type { LibraryGraphChartNode } from "./LibraryGraphChart";
 import { LibraryValidationBlock } from "./LibraryValidationBlock";
@@ -26,7 +32,7 @@ export function LibraryChatWindow({
   const [frames, setFrames] = useState<LibrarySseFrame[]>([]);
   const [input, setInput] = useState("");
   const [running, setRunning] = useState(false);
-  const [draftStatuses, setDraftStatuses] = useState<Record<string, "draft" | "approving" | "approved">>({});
+  const [draftStatuses, setDraftStatuses] = useState<Record<string, "draft" | "approving" | "approved" | "installing" | "installed">>({});
   const sessionCounterRef = useRef(0);
   const draftSessionIdsRef = useRef<Record<string, string>>({});
 
@@ -52,7 +58,8 @@ export function LibraryChatWindow({
           scope,
         });
         draftSessionIdsRef.current[draft.draftId] = sessionId;
-        const itemCount = draft.proposal.objectKeys.length;
+        const candidateCount = Array.isArray(draft.candidates) ? draft.candidates.length : 0;
+        const itemCount = candidateCount || draft.proposal.objectKeys.length;
         onSessionActivity?.({
           id: sessionId,
           title: titleFromPrompt(text),
@@ -62,6 +69,22 @@ export function LibraryChatWindow({
           itemCount,
         });
         setDraftStatuses((current) => ({ ...current, [draft.draftId]: "draft" }));
+        if (candidateCount > 0) {
+          setFrames((current) => [...current, {
+            event: "library.import.candidates",
+            data: {
+              draftId: draft.draftId,
+              status: draft.status,
+              title: "Import candidates",
+              candidates: draft.candidates,
+              proposedEdges: draft.proposedEdges ?? [],
+            },
+          }, {
+            event: "library.command.completed",
+            data: { draftId: draft.draftId, status: "ready_for_review" },
+          }]);
+          return;
+        }
         setFrames((current) => [...current, {
           event: "library.proposal.created",
           data: {
@@ -159,6 +182,64 @@ export function LibraryChatWindow({
     }
   }, [onLibraryChanged, onSessionActivity]);
 
+  const installCandidates = useCallback(async (draftId: string, selectedCandidateIds: string[]) => {
+    setDraftStatuses((current) => ({ ...current, [draftId]: "installing" }));
+    try {
+      const installed = await installLibraryImportCandidates({
+        draftId,
+        selectedCandidateIds,
+        actor: "operator",
+        reason: "installed from library chat",
+      });
+      setDraftStatuses((current) => ({ ...current, [draftId]: "installed" }));
+      setFrames((current) => [...current, {
+        event: "library.db.synced",
+        data: {
+          draftId,
+          objectKeys: installed.graph?.objectKeys ?? selectedCandidateIds,
+          edgeIds: installed.graph?.edgeIds ?? [],
+        },
+      }, {
+        event: "library.command.completed",
+        data: { draftId, status: "installed" },
+      }]);
+      const sessionId = draftSessionIdsRef.current[draftId];
+      if (sessionId) {
+        const itemCount = selectedCandidateIds.length;
+        onSessionActivity?.({
+          id: sessionId,
+          title: "Installed library candidates",
+          status: "installed",
+          modified: new Date().toISOString(),
+          detail: `${itemCount} ${itemCount === 1 ? "item" : "items"}`,
+          itemCount,
+        });
+      }
+      onLibraryChanged?.();
+      const graph = await readLibraryGraph(scope);
+      setFrames((current) => [...current, {
+        event: "library.ontology.graph",
+        data: graph,
+      }]);
+    } catch (error) {
+      setDraftStatuses((current) => ({ ...current, [draftId]: "draft" }));
+      const sessionId = draftSessionIdsRef.current[draftId];
+      if (sessionId) {
+        onSessionActivity?.({
+          id: sessionId,
+          title: "Library import install",
+          status: "error",
+          modified: new Date().toISOString(),
+          detail: error instanceof Error ? error.message : String(error),
+        });
+      }
+      setFrames((current) => [...current, {
+        event: "library.error",
+        data: { draftId, message: error instanceof Error ? error.message : String(error) },
+      }]);
+    }
+  }, [onLibraryChanged, onSessionActivity, scope]);
+
   useEffect(() => {
     const text = pendingPrompt.trim();
     if (!text || running) return;
@@ -172,14 +253,22 @@ export function LibraryChatWindow({
         {frames.map((frame, index) => (
           <div key={`${frame.event}:${index}`} style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, marginBottom: 8 }}>
             <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 6 }}>{frame.event}</div>
-            {frame.event === "library.graph.snapshot" ? (
+            {frame.event === "library.graph.snapshot" || frame.event === "library.ontology.graph" ? (
               <LibraryGraphBlock data={frame.data} defaultScope={scope} onSelectNode={onSelectGraphNode} />
             ) : frame.event === "library.validation.completed" ? (
               <LibraryValidationBlock data={frame.data} />
+            ) : frame.event === "library.import.candidates" && typeof frame.data.draftId === "string" ? (
+              <LibraryCandidateMessageBlock
+                draftId={frame.data.draftId}
+                candidates={toImportCandidates(frame.data.candidates)}
+                proposedEdges={toProposedEdges(frame.data.proposedEdges)}
+                status={candidateStatus(draftStatuses[frame.data.draftId] ?? "draft")}
+                onInstall={(selectedCandidateIds) => void installCandidates(frame.data.draftId as string, selectedCandidateIds)}
+              />
             ) : frame.event === "library.proposal.created" && typeof frame.data.draftId === "string" ? (
               <LibraryImportDraftReview
                 data={frame.data}
-                status={draftStatuses[frame.data.draftId] ?? "draft"}
+                status={legacyStatus(draftStatuses[frame.data.draftId] ?? "draft")}
                 onApprove={() => void approveDraft(frame.data.draftId as string)}
               />
             ) : (
@@ -279,6 +368,38 @@ function LibraryImportDraftReview({
 
 function isImportDraftPrompt(prompt: string): boolean {
   return /\b(create|import)\b/i.test(prompt);
+}
+
+function toImportCandidates(value: unknown): LibraryImportCandidate[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((candidate): candidate is LibraryImportCandidate => (
+    Boolean(candidate)
+    && typeof candidate === "object"
+    && typeof (candidate as { objectKey?: unknown }).objectKey === "string"
+    && typeof (candidate as { kind?: unknown }).kind === "string"
+    && typeof (candidate as { title?: unknown }).title === "string"
+  ));
+}
+
+function toProposedEdges(value: unknown): LibraryImportProposedEdge[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((edge): edge is LibraryImportProposedEdge => (
+    Boolean(edge)
+    && typeof edge === "object"
+    && typeof (edge as { fromObjectKey?: unknown }).fromObjectKey === "string"
+    && typeof (edge as { edgeType?: unknown }).edgeType === "string"
+    && typeof (edge as { toObjectKey?: unknown }).toObjectKey === "string"
+  ));
+}
+
+function candidateStatus(status: "draft" | "approving" | "approved" | "installing" | "installed"): "draft" | "installing" | "installed" {
+  if (status === "installing" || status === "installed") return status;
+  return "draft";
+}
+
+function legacyStatus(status: "draft" | "approving" | "approved" | "installing" | "installed"): "draft" | "approving" | "approved" {
+  if (status === "approving" || status === "approved") return status;
+  return "draft";
 }
 
 function titleFromPrompt(prompt: string): string {

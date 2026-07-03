@@ -11,6 +11,14 @@ export type LibraryGraphChartEdge = {
   fromObjectKey: string;
   toObjectKey: string;
   edgeType?: string;
+  ontology?: {
+    category?: string;
+    confidence?: number;
+    rationale?: string;
+    source?: string;
+    draftId?: string;
+    evidenceRefs?: string[];
+  };
 };
 
 export function LibraryGraphChart({
@@ -41,17 +49,20 @@ export function LibraryGraphChart({
           const to = positions.get(edge.toObjectKey);
           if (!from || !to) return null;
           const midX = (from.x + to.x) / 2;
+          const edgeStyle = edgeVisualStyle(edge);
+          const label = edgeLabel(edge);
           return (
             <g key={`${edge.fromObjectKey}:${edge.toObjectKey}:${index}`}>
               <path
                 d={`M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`}
                 fill="none"
-                stroke="var(--border)"
-                strokeWidth="1.4"
+                stroke={edgeStyle.stroke}
+                strokeDasharray={edgeStyle.dash}
+                strokeWidth="1.6"
               />
-              {edge.edgeType ? (
-                <text x={midX} y={(from.y + to.y) / 2 - 4} textAnchor="middle" fontSize="10" fill="var(--text-dim)">
-                  {edge.edgeType}
+              {label ? (
+                <text x={midX} y={(from.y + to.y) / 2 - 4} textAnchor="middle" fontSize="10" fill={edgeStyle.label}>
+                  {label}
                 </text>
               ) : null}
             </g>
@@ -89,4 +100,24 @@ export function LibraryGraphChart({
       </svg>
     </div>
   );
+}
+
+function edgeLabel(edge: LibraryGraphChartEdge): string {
+  const type = edge.edgeType ?? "";
+  const confidence = typeof edge.ontology?.confidence === "number" ? edge.ontology.confidence.toFixed(2) : "";
+  return [type, confidence].filter(Boolean).join(" ");
+}
+
+function edgeVisualStyle(edge: LibraryGraphChartEdge): { stroke: string; label: string; dash?: string } {
+  const kind = edge.ontology?.category ?? edge.edgeType ?? "";
+  if (kind.includes("conflict")) {
+    return { stroke: "var(--danger, #b42318)", label: "var(--danger, #b42318)", dash: "4 3" };
+  }
+  if (kind.includes("similar")) {
+    return { stroke: "var(--accent, #4f46e5)", label: "var(--accent, #4f46e5)", dash: "2 3" };
+  }
+  if (kind.includes("workflow") || kind.includes("preced")) {
+    return { stroke: "var(--warning, #b54708)", label: "var(--warning, #b54708)", dash: "6 3" };
+  }
+  return { stroke: "var(--border)", label: "var(--text-dim)" };
 }

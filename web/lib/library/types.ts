@@ -4,6 +4,7 @@ export type LibrarySseEvent =
   | "library.intent.completed"
   | "library.import.fetching"
   | "library.import.parsing"
+  | "library.import.candidates"
   | "library.llm_extract.delta"
   | "library.proposal.created"
   | "library.graph.diff"
@@ -11,6 +12,7 @@ export type LibrarySseEvent =
   | "library.file.saved"
   | "library.db.synced"
   | "library.graph.snapshot"
+  | "library.ontology.graph"
   | "library.command.completed"
   | "library.error";
 
@@ -95,6 +97,55 @@ export type LibraryFileSyncResult = {
   edges?: unknown[];
 };
 
+export type LibraryImportSourceDocument = {
+  path: string;
+  label: string;
+  content: string;
+};
+
+export type LibraryImportCandidateKind = "agent" | "skill" | "mcp" | "tool";
+
+export type LibraryImportEdgeType =
+  | "uses"
+  | "requires"
+  | "conflicts_with"
+  | "workflow_precedes"
+  | "similar_to";
+
+export type LibraryImportCandidate = {
+  objectKey: string;
+  kind: LibraryImportCandidateKind;
+  title: string;
+  scope: string;
+  sourcePath?: string;
+  selectedByDefault: boolean;
+  confidence?: number;
+};
+
+export type LibraryImportProposedEdge = {
+  fromObjectKey: string;
+  edgeType: LibraryImportEdgeType;
+  toObjectKey: string;
+  confidence: number;
+  rationale?: string;
+};
+
+export type LibraryImportCandidateInstallResult = {
+  draftId: string;
+  status: "installed";
+  installedObjects: Array<{
+    objectKey: string;
+    kind: LibraryImportCandidateKind;
+    relativePath: string;
+    object: unknown;
+  }>;
+  installedEdges: LibraryGraphEdgeRecord[];
+  graph: {
+    objectKeys: string[];
+    edgeIds: string[];
+  };
+};
+
 export type LibraryGraphEdgeRecord = {
   id?: string;
   fromObjectKey: string;
@@ -104,6 +155,14 @@ export type LibraryGraphEdgeRecord = {
   status?: string;
   weight?: number;
   metadata?: Record<string, unknown>;
+  ontology?: {
+    category?: string;
+    confidence?: number;
+    rationale?: string;
+    source?: string;
+    draftId?: string;
+    evidenceRefs?: string[];
+  };
 };
 
 export type LibraryObjectDetail = {

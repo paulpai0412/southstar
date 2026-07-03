@@ -88,14 +88,23 @@ test("LibraryGraphChart emits selected node events for file viewer integration",
 
     createRoot(document.getElementById("root")).render(
       <LibraryGraphChart
-        nodes={[{ objectKey: "agent.frontend-developer", objectKind: "agent_definition", title: "Frontend Developer" }]}
-        edges={[]}
+        nodes={[
+          { objectKey: "agent.frontend-developer", objectKind: "agent_definition", title: "Frontend Developer" },
+          { objectKey: "skill.react-ui", objectKind: "skill_spec", title: "React UI" },
+        ]}
+        edges={[{
+          fromObjectKey: "agent.frontend-developer",
+          edgeType: "uses",
+          toObjectKey: "skill.react-ui",
+          ontology: { confidence: 0.91, category: "usage" },
+        }]}
         onSelectNode={(node) => {
           window.__selectedGraphNode = node.objectKey;
         }}
       />
     );
   `, async (page) => {
+    await assertText(page, '[data-testid="library-graph-chart"]', "uses 0.91");
     const graphNode = page.getByRole("button", { name: "Frontend Developer" });
     await graphNode.press("Enter");
     assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.frontend-developer");
@@ -182,4 +191,9 @@ function resolveWebPath(path: string): { path: string } {
     }
   }
   return { path: base };
+}
+
+async function assertText(page: Page, selector: string, expected: string): Promise<void> {
+  const text = await page.locator(selector).textContent();
+  assert.match(text ?? "", new RegExp(expected));
 }

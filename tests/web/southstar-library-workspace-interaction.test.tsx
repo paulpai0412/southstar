@@ -465,8 +465,8 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
   });
 });
 
-test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an import draft", async () => {
-  const requests: Array<{ method: string; path: string }> = [];
+test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs selected import candidates", async () => {
+  const requests: Array<{ method: string; path: string; body?: string; query?: string }> = [];
   let workspaceFetches = 0;
 
   await withBrowserHarness(`
@@ -478,27 +478,37 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an imp
   `, async (page) => {
     await page.locator('[data-testid="library-quick-prompt"]').fill("create a browser verification skill");
     await page.locator('[data-testid="library-quick-prompt-submit"]').click();
-    await page.getByText("Dependencies").waitFor();
+    await page.getByText("Import candidates").waitFor();
     await page.locator('[data-testid="library-session-row"]').filter({ hasText: "create a browser verification skill" }).waitFor();
     assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "ready_for_review" }).count(), 1);
     assert.equal(await page.getByText("Browser Verification").count() > 0, true);
-    assert.equal(await page.getByText(/requires_tool/).count() > 0, true);
-    await page.getByRole("button", { name: "Approve" }).click();
-    await page.getByRole("button", { name: /Browser Verification/ }).waitFor();
+    assert.equal(await page.getByText("skill.browser-verification").count() > 0, true);
+    await page.getByRole("checkbox", { name: /Browser Tool/ }).setChecked(false);
+    await page.getByRole("button", { name: "Install selected" }).click();
+    await page.locator('[data-testid="library-object-row"]').filter({ hasText: "Browser Verification" }).waitFor();
+    await page.locator('[data-testid="library-graph-chart"]').waitFor();
+    await assertText(page, '[data-testid="library-chat-timeline"]', "uses 0.91");
 
     assert.equal(workspaceFetches, 2);
     assert.equal(await page.locator('[data-testid="library-object-row"]').filter({ hasText: "skill.browser-verification" }).count(), 1);
-    assert.deepEqual(requests.map((request) => [request.method, request.path]), [
-      ["GET", "/api/library/workspace"],
-      ["POST", "/api/library/import-drafts"],
-      ["POST", "/api/library/import-drafts/library-import-draft-1/approve"],
-      ["GET", "/api/library/workspace"],
-    ]);
+    const installRequest = requests.find((request) => request.path === "/api/library/import-drafts/library-import-draft-1/install");
+    assert.equal(installRequest?.method, "POST");
+    assert.deepEqual(JSON.parse(installRequest?.body ?? "{}"), {
+      selectedCandidateIds: ["agent.browser-reviewer", "skill.browser-verification"],
+      actor: "operator",
+      reason: "installed from library chat",
+    });
+    assert.equal(requests.some((request) => request.path === "/api/library/graph" && request.query?.includes("scope=software")), true);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
-      requests.push({ method: request.method(), path: url.pathname });
+      requests.push({
+        method: request.method(),
+        path: url.pathname,
+        body: request.method() === "POST" ? request.postData() ?? undefined : undefined,
+        query: url.searchParams.toString(),
+      });
 
       if (url.pathname === "/api/library/workspace") {
         workspaceFetches += 1;
@@ -544,40 +554,118 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow approves an imp
                 }],
                 files: [{ relativePath: "skills/browser-verification.skill.md", content: "content" }],
               },
+              documents: [{ path: "software/skills/browser-verification.skill.md", label: "Browser Verification", content: "content" }],
+              candidates: [
+                {
+                  objectKey: "agent.browser-reviewer",
+                  kind: "agent",
+                  title: "Browser Reviewer",
+                  scope: "software",
+                  sourcePath: "agents/browser-reviewer.agent.md",
+                  selectedByDefault: true,
+                  confidence: 0.88,
+                },
+                {
+                  objectKey: "skill.browser-verification",
+                  kind: "skill",
+                  title: "Browser Verification",
+                  scope: "software",
+                  sourcePath: "skills/browser-verification.skill.md",
+                  selectedByDefault: true,
+                  confidence: 0.94,
+                },
+                {
+                  objectKey: "tool.browser",
+                  kind: "tool",
+                  title: "Browser Tool",
+                  scope: "software",
+                  sourcePath: "tools/browser.tool.yml",
+                  selectedByDefault: true,
+                  confidence: 0.81,
+                },
+              ],
+              proposedEdges: [{
+                fromObjectKey: "agent.browser-reviewer",
+                edgeType: "uses",
+                toObjectKey: "skill.browser-verification",
+                confidence: 0.91,
+                rationale: "Browser reviewer uses the browser verification skill.",
+              }],
             },
           }),
         });
         return;
       }
 
-      if (url.pathname === "/api/library/import-drafts/library-import-draft-1/approve" && request.method() === "POST") {
+      if (url.pathname === "/api/library/import-drafts/library-import-draft-1/install" && request.method() === "POST") {
         await route.fulfill({
           contentType: "application/json",
           body: JSON.stringify({
             ok: true,
             result: {
               draftId: "library-import-draft-1",
-              status: "approved",
-              proposal: {
-                objectKeys: ["skill.browser-verification"],
-                objectSummaries: [{
+              status: "installed",
+              installedObjects: [{
+                objectKey: "skill.browser-verification",
+                kind: "skill",
+                relativePath: "skills/browser-verification.skill.md",
+                object: {
                   objectKey: "skill.browser-verification",
                   objectKind: "skill_spec",
+                  status: "approved",
                   title: "Browser Verification",
                   scope: "software",
-                  status: "draft",
-                  relativePath: "skills/browser-verification.skill.md",
-                }],
-                dependencies: [{
-                  fromObjectKey: "skill.browser-verification",
-                  edgeType: "requires_tool",
-                  toObjectKey: "tool.browser",
-                  scope: "software",
-                }],
-                files: [{ relativePath: "skills/browser-verification.skill.md", content: "content" }],
+                },
+              }],
+              installedEdges: [{
+                id: "edge-uses-browser-verification",
+                fromObjectKey: "agent.browser-reviewer",
+                edgeType: "uses",
+                toObjectKey: "skill.browser-verification",
+                scope: "software",
+                status: "active",
+                weight: 0.91,
+                metadata: { confidence: 0.91 },
+                ontology: { confidence: 0.91, category: "usage" },
+              }],
+              graph: {
+                objectKeys: ["skill.browser-verification"],
+                edgeIds: ["edge-uses-browser-verification"],
               },
-              files: [{ relativePath: "skills/browser-verification.skill.md" }],
-              synced: [{ object: { objectKey: "skill.browser-verification" }, edges: [] }],
+            },
+          }),
+        });
+        return;
+      }
+
+      if (url.pathname === "/api/library/graph" && request.method() === "GET") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: true,
+            result: {
+              activeScope: "software",
+              availableScopes: ["software"],
+              nodes: [
+                {
+                  objectKey: "agent.browser-reviewer",
+                  objectKind: "agent_definition",
+                  status: "approved",
+                  title: "Browser Reviewer",
+                },
+                {
+                  objectKey: "skill.browser-verification",
+                  objectKind: "skill_spec",
+                  status: "approved",
+                  title: "Browser Verification",
+                },
+              ],
+              edges: [{
+                fromObjectKey: "agent.browser-reviewer",
+                edgeType: "uses",
+                toObjectKey: "skill.browser-verification",
+                ontology: { confidence: 0.91, category: "usage" },
+              }],
             },
           }),
         });

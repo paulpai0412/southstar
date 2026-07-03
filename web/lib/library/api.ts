@@ -1,6 +1,10 @@
 import type {
   LibraryFileEnvelope,
   LibraryFileSyncResult,
+  LibraryImportCandidate,
+  LibraryImportCandidateInstallResult,
+  LibraryImportProposedEdge,
+  LibraryImportSourceDocument,
   LibraryObjectDetail,
 } from "./types";
 
@@ -32,6 +36,9 @@ export type LibraryImportDraftResult = {
   draftId: string;
   status: "draft";
   proposal: LibraryImportProposal;
+  documents?: LibraryImportSourceDocument[];
+  candidates?: LibraryImportCandidate[];
+  proposedEdges?: LibraryImportProposedEdge[];
 };
 
 export type LibraryImportDraftApprovalResult = {
@@ -101,6 +108,33 @@ export async function approveLibraryImportDraft(input: {
       body: JSON.stringify({ actor: input.actor, reason: input.reason }),
     },
   );
+}
+
+export async function installLibraryImportCandidates(input: {
+  draftId: string;
+  selectedCandidateIds: string[];
+  selectedEdgeIds?: string[];
+  actor?: string;
+  reason: string;
+}): Promise<LibraryImportCandidateInstallResult> {
+  return requestLibraryJson<LibraryImportCandidateInstallResult>(
+    `/api/library/import-drafts/${encodeURIComponent(input.draftId)}/install`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        selectedCandidateIds: input.selectedCandidateIds,
+        ...(input.selectedEdgeIds && input.selectedEdgeIds.length > 0 ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
+        actor: input.actor,
+        reason: input.reason,
+      }),
+    },
+  );
+}
+
+export async function readLibraryGraph(scope: string): Promise<Record<string, unknown>> {
+  const params = new URLSearchParams({ scope });
+  return requestLibraryJson<Record<string, unknown>>(`/api/library/graph?${params.toString()}`);
 }
 
 async function requestLibraryJson<T>(url: string, init?: RequestInit): Promise<T> {
