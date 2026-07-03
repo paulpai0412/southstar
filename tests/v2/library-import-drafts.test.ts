@@ -6,6 +6,11 @@ import test from "node:test";
 import { listLibraryFiles } from "../../src/v2/design-library/files/library-file-store.ts";
 import { createLibraryImportDraft, approveLibraryImportDraft } from "../../src/v2/design-library/importers/library-import-draft-store.ts";
 import { asImportSource, extractLibraryImportProposal } from "../../src/v2/design-library/importers/library-import-extractor.ts";
+import { extractLibraryCandidatesFromDocuments } from "../../src/v2/design-library/importers/library-candidate-extractor.ts";
+import {
+  analyzeLibraryImportWithLlm,
+  type LibraryImportLlmProvider,
+} from "../../src/v2/design-library/importers/library-llm-import-analyzer.ts";
 import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
 import { findLibraryObjectByKey, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -118,6 +123,146 @@ test("extractor accepts canonical github and local sources with inline content f
     scope: "software",
   });
   assert.equal(localProposal.files[0]?.relativePath, "skills/browser-verification.skill.md");
+});
+
+test("extractLibraryCandidatesFromDocuments deterministically classifies obvious library docs and proposes simple edges", () => {
+  const result = extractLibraryCandidatesFromDocuments({
+    scope: "software",
+    documents: [
+      { path: "agents/reviewer.agent.md", label: "Reviewer", content: "# Reviewer\nUses the review skill." },
+      { path: "skills/review.skill.md", label: "Review", content: "# Review\nRequires GitHub tooling." },
+      { path: "tools/github.tool.yaml", label: "GitHub", content: "name: github" },
+      { path: "mcp/filesystem.mcp.yaml", label: "Filesystem", content: "name: filesystem" },
+    ],
+  });
+
+  assert.deepEqual(result.candidates.map((candidate) => ({
+    objectKey: candidate.objectKey,
+    kind: candidate.kind,
+    selectedByDefault: candidate.selectedByDefault,
+  })), [
+    { objectKey: "agent.reviewer", kind: "agent", selectedByDefault: true },
+    { objectKey: "skill.review", kind: "skill", selectedByDefault: true },
+    { objectKey: "tool.github", kind: "tool", selectedByDefault: true },
+    { objectKey: "mcp.filesystem", kind: "mcp", selectedByDefault: true },
+  ]);
+  assert.deepEqual(result.proposedEdges, [
+    {
+      fromObjectKey: "agent.reviewer",
+      edgeType: "uses",
+      toObjectKey: "skill.review",
+      confidence: 0.6,
+      rationale: "Detected one agent and one skill in imported documents.",
+    },
+    {
+      fromObjectKey: "skill.review",
+      edgeType: "requires",
+      toObjectKey: "mcp.filesystem",
+      confidence: 0.6,
+      rationale: "Detected skill and imported MCP grant documents.",
+    },
+    {
+      fromObjectKey: "skill.review",
+      edgeType: "requires",
+      toObjectKey: "tool.github",
+      confidence: 0.6,
+      rationale: "Detected skill and imported tool documents.",
+    },
+  ]);
+});
+
+test("analyzeLibraryImportWithLlm prompts for classification and ontology edges and normalizes provider output", async () => {
+  const prompts: string[] = [];
+  const provider: LibraryImportLlmProvider = async (input) => {
+    prompts.push(input.prompt);
+    return {
+      candidates: [
+        { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", selectedByDefault: true, confidence: 0.8 },
+        { objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true, confidence: -0.5 },
+      ],
+      proposedEdges: [
+        { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 1.2 },
+        { fromObjectKey: "agent.reviewer", edgeType: "contains", toObjectKey: "skill.review", confidence: 0.9 },
+        { fromObjectKey: "agent.missing", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.9 },
+      ],
+    };
+  };
+
+  const result = await analyzeLibraryImportWithLlm({
+    scope: "software",
+    documents: [
+      { path: "agents/reviewer.agent.md", label: "Reviewer", content: "# Reviewer" },
+      { path: "skills/review.skill.md", label: "Review", content: "# Review" },
+    ],
+    llmProvider: provider,
+  });
+
+  assert.match(prompts[0] ?? "", /classify/i);
+  assert.match(prompts[0] ?? "", /ontology edges/i);
+  assert.equal(result.candidates[0]?.confidence, 0.8);
+  assert.equal(result.candidates[1]?.confidence, 0);
+  assert.deepEqual(result.proposedEdges, [
+    {
+      fromObjectKey: "agent.reviewer",
+      edgeType: "uses",
+      toObjectKey: "skill.review",
+      confidence: 1,
+    },
+  ]);
+});
+
+test("createLibraryImportDraft preserves the legacy proposal and persists analyzed documents, candidates, and proposed edges", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-analysis-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      { objectKey: "agent.browser-reviewer", kind: "agent", title: "Browser Reviewer", selectedByDefault: true, confidence: 0.9 },
+      { objectKey: "skill.browser-verification", kind: "skill", title: "Browser Verification", selectedByDefault: true, confidence: 0.9 },
+    ],
+    proposedEdges: [
+      { fromObjectKey: "agent.browser-reviewer", edgeType: "uses", toObjectKey: "skill.browser-verification", confidence: 1.2 },
+    ],
+  });
+
+  try {
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "browser skill prompt",
+        content: "create a browser verification skill that uses tool.browser",
+      },
+      scope: "software",
+      llmProvider: provider,
+    });
+
+    assert.deepEqual(draft.proposal.objectKeys, ["skill.browser-verification"]);
+    assert.deepEqual(draft.documents?.map((doc) => doc.path), ["browser-skill-prompt.md"]);
+    assert.deepEqual(draft.candidates?.map((candidate) => candidate.objectKey), [
+      "agent.browser-reviewer",
+      "skill.browser-verification",
+    ]);
+    assert.deepEqual(draft.proposedEdges, [
+      {
+        fromObjectKey: "agent.browser-reviewer",
+        edgeType: "uses",
+        toObjectKey: "skill.browser-verification",
+        confidence: 1,
+      },
+    ]);
+    assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
+
+    const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
+    assert.deepEqual((resource?.payload as any).proposal.objectKeys, ["skill.browser-verification"]);
+    assert.deepEqual((resource?.payload as any).documents.map((doc: any) => doc.path), ["browser-skill-prompt.md"]);
+    assert.deepEqual((resource?.payload as any).candidates.map((candidate: any) => candidate.objectKey), [
+      "agent.browser-reviewer",
+      "skill.browser-verification",
+    ]);
+    assert.equal((resource?.payload as any).proposedEdges[0].confidence, 1);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
 });
 
 test("approveLibraryImportDraft writes proposed files and syncs them to the graph", async () => {

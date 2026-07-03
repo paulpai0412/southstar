@@ -17,6 +17,19 @@ import {
   extractLibraryImportProposal,
   type LibraryImportSource,
 } from "./library-import-extractor.ts";
+import {
+  fetchLibraryImportSourceDocuments,
+  type LibraryImportSourceDocument,
+  type LibraryImportSourceFetcher,
+} from "./library-source-fetcher.ts";
+import {
+  analyzeLibraryImportWithLlm,
+  type LibraryImportLlmProvider,
+} from "./library-llm-import-analyzer.ts";
+import type {
+  LibraryImportCandidate,
+  LibraryImportProposedEdge,
+} from "./library-candidate-extractor.ts";
 import { findLibraryObjectByKey } from "../library-graph-store.ts";
 
 export const LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE = "library_import_draft";
@@ -27,6 +40,9 @@ export type LibraryImportDraftResult = {
   draftId: string;
   status: "draft";
   proposal: LibraryPromptImportProposal;
+  documents?: LibraryImportSourceDocument[];
+  candidates?: LibraryImportCandidate[];
+  proposedEdges?: LibraryImportProposedEdge[];
 };
 
 export type LibraryImportDraftApprovalResult = {
@@ -56,10 +72,33 @@ type PreflightedLibraryImportFile = {
 
 export async function createLibraryImportDraft(
   db: SouthstarDb,
-  input: { source: LibraryImportSource; scope: string },
+  input: {
+    source: LibraryImportSource;
+    scope: string;
+    sourceFetcher?: LibraryImportSourceFetcher;
+    llmProvider?: LibraryImportLlmProvider;
+    localRoot?: string;
+    maxFiles?: number;
+    maxBytes?: number;
+  },
 ): Promise<LibraryImportDraftResult> {
   const source = asImportSource(input.source);
-  const proposal = extractLibraryImportProposal({ source, scope: input.scope });
+  const documents = await fetchLibraryImportSourceDocuments({
+    source,
+    sourceFetcher: input.sourceFetcher,
+    localRoot: input.localRoot,
+    maxFiles: input.maxFiles,
+    maxBytes: input.maxBytes,
+  });
+  const proposal = extractLibraryImportProposal({
+    source: sourceHasInlineContent(source) ? source : sourceFromDocuments(documents),
+    scope: input.scope,
+  });
+  const analysis = await analyzeLibraryImportWithLlm({
+    documents,
+    scope: input.scope,
+    llmProvider: input.llmProvider,
+  });
   const draftId = `library-import-draft-${randomUUID()}`;
   await upsertRuntimeResourcePg(db, {
     resourceType: LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE,
@@ -74,14 +113,39 @@ export async function createLibraryImportDraft(
       source,
       scope: input.scope,
       proposal,
+      documents,
+      candidates: analysis.candidates,
+      proposedEdges: analysis.proposedEdges,
     },
     summary: {
       scope: input.scope,
       objectKeys: proposal.objectKeys,
       filePaths: proposal.files.map((file) => file.relativePath),
+      candidateKeys: analysis.candidates.map((candidate) => candidate.objectKey),
+      proposedEdgeCount: analysis.proposedEdges.length,
     },
   });
-  return { draftId, status: "draft", proposal };
+  return {
+    draftId,
+    status: "draft",
+    proposal,
+    documents,
+    candidates: analysis.candidates,
+    proposedEdges: analysis.proposedEdges,
+  };
+}
+
+function sourceHasInlineContent(source: LibraryImportSource): boolean {
+  if (source.kind === "paste") return true;
+  return typeof source.content === "string" && source.content.length > 0;
+}
+
+function sourceFromDocuments(documents: LibraryImportSourceDocument[]): LibraryImportSource {
+  return {
+    kind: "paste",
+    label: "Fetched library import source",
+    content: documents.map((document) => document.content).join("\n\n"),
+  };
 }
 
 export async function approveLibraryImportDraft(
