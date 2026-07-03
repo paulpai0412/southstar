@@ -28,9 +28,12 @@ import {
 } from "./library-llm-import-analyzer.ts";
 import type {
   LibraryImportCandidate,
+  LibraryImportCandidateKind,
+  LibraryImportEdgeType,
   LibraryImportProposedEdge,
 } from "./library-candidate-extractor.ts";
-import { findLibraryObjectByKey } from "../library-graph-store.ts";
+import { findLibraryObjectByKey, upsertLibraryEdge } from "../library-graph-store.ts";
+import type { LibraryEdgeRecord, LibraryObjectSummary } from "../types.ts";
 
 export const LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE = "library_import_draft";
 export const LIBRARY_IMPORT_DRAFT_SCHEMA_VERSION = "southstar.library.import_draft.v1";
@@ -51,6 +54,22 @@ export type LibraryImportDraftApprovalResult = {
   proposal: LibraryPromptImportProposal;
   files: Array<{ relativePath: string }>;
   synced: Array<Awaited<ReturnType<typeof syncLibraryFileToGraph>>>;
+};
+
+export type LibraryImportCandidateInstallResult = {
+  draftId: string;
+  status: "installed";
+  installedObjects: Array<{
+    objectKey: string;
+    kind: LibraryImportCandidateKind;
+    relativePath: string;
+    object: LibraryObjectSummary;
+  }>;
+  installedEdges: LibraryEdgeRecord[];
+  graph: {
+    objectKeys: string[];
+    edgeIds: string[];
+  };
 };
 
 type LibraryImportDraftApplyReservation = {
@@ -224,6 +243,151 @@ export async function approveLibraryImportDraft(
   }
 }
 
+export async function installLibraryImportCandidates(
+  db: SouthstarDb,
+  input: {
+    root: string;
+    draftId: string;
+    selectedCandidateIds: string[];
+    selectedEdgeIds?: string[];
+    actor?: string;
+    reason: string;
+  },
+): Promise<LibraryImportCandidateInstallResult> {
+  const createdFiles: Array<{ relativePath: string; content: string }> = [];
+
+  try {
+    const draft = await loadLibraryImportCandidateDraft(db, input.draftId);
+    const selectedCandidates = selectLibraryImportCandidates(draft.candidates, input.selectedCandidateIds);
+    const preflighted = await preflightLibraryImportCandidates(db, {
+      root: input.root,
+      draftId: input.draftId,
+      candidates: selectedCandidates,
+    });
+    const proposedEdges = selectLibraryImportCandidateEdges(draft.proposedEdges, {
+      selectedObjectKeys: new Set(selectedCandidates.map((candidate) => candidate.objectKey)),
+      selectedEdgeIds: input.selectedEdgeIds,
+    });
+
+    for (const file of preflighted) {
+      try {
+        await writeNewLibraryFile({
+          root: input.root,
+          relativePath: file.relativePath,
+          content: file.content,
+        });
+      } catch (error: unknown) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+          throw new Error(`library import file already exists: ${file.relativePath}`);
+        }
+        throw error;
+      }
+      createdFiles.push({ relativePath: file.relativePath, content: file.content });
+    }
+
+    const result = await db.tx(async (tx) => {
+      const syncedFiles = await syncNewLibraryFileRecordsToGraph(tx, preflighted.map((file) => file.file));
+      const installedObjects = preflighted.map((file) => {
+        const object = syncedFiles.find((synced) => synced.object.objectKey === file.file.objectKey)?.object;
+        if (!object) throw new Error(`library object sync result missing: ${file.file.objectKey}`);
+        return {
+          objectKey: file.file.objectKey,
+          kind: file.candidate.kind,
+          relativePath: file.relativePath,
+          object,
+        };
+      });
+
+      const installedEdges = [];
+      for (const edge of proposedEdges) {
+        installedEdges.push(await upsertLibraryEdge(tx, {
+          fromObjectKey: edge.fromObjectKey,
+          edgeType: edge.edgeType,
+          toObjectKey: edge.toObjectKey,
+          scope: selectedCandidates.find((candidate) => candidate.objectKey === edge.fromObjectKey)?.scope ?? "global",
+          status: "active",
+          weight: edge.confidence,
+          metadata: {
+            source: "library-import-candidate",
+            draftId: input.draftId,
+            confidence: edge.confidence,
+            ...(edge.rationale ? { rationale: edge.rationale } : {}),
+          },
+        }));
+      }
+
+      const install = {
+        actor: input.actor ?? "operator",
+        reason: input.reason,
+        installedAt: new Date().toISOString(),
+        selectedCandidateIds: input.selectedCandidateIds,
+        ...(input.selectedEdgeIds ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
+        installedObjectKeys: installedObjects.map((object) => object.objectKey),
+        installedObjects: installedObjects.map((object) => ({
+          objectKey: object.objectKey,
+          kind: object.kind,
+          relativePath: object.relativePath,
+          headVersionId: object.object.headVersionId,
+        })),
+        installedEdges: installedEdges.map((edge) => ({
+          id: edge.id,
+          fromObjectKey: edge.fromObjectKey,
+          edgeType: edge.edgeType,
+          toObjectKey: edge.toObjectKey,
+          scope: edge.scope,
+          metadata: edge.metadata,
+        })),
+      };
+
+      const updated = await tx.query(
+        `update southstar.runtime_resources
+            set status = 'installed',
+                payload_json = $3::jsonb,
+                summary_json = $4::jsonb,
+                updated_at = now()
+          where id = $1
+            and status = $2`,
+        [
+          draft.resourceId,
+          draft.status,
+          JSON.stringify({
+            ...withoutTransientApplyState(draft.payload),
+            status: "installed",
+            install,
+          }),
+          JSON.stringify({
+            ...draft.summary,
+            status: "installed",
+            installedBy: install.actor,
+            installedObjectKeys: install.installedObjectKeys,
+            installedEdgeCount: installedEdges.length,
+          }),
+        ],
+      );
+      if ((updated.rowCount ?? 0) === 0) {
+        throw new Error(`library import draft install state changed: ${input.draftId}`);
+      }
+
+      return {
+        draftId: input.draftId,
+        status: "installed" as const,
+        installedObjects,
+        installedEdges,
+        graph: {
+          objectKeys: installedObjects.map((object) => object.objectKey),
+          edgeIds: installedEdges.map((edge) => edge.id),
+        },
+      };
+    });
+
+    return result;
+  } catch (error) {
+    await cleanupCreatedImportFiles(input.root, createdFiles);
+    await markLibraryImportCandidateInstallFailed(db, input.draftId, error);
+    throw error;
+  }
+}
+
 async function preflightLibraryImportProposal(
   db: SouthstarDb,
   input: { root: string; proposal: LibraryPromptImportProposal },
@@ -257,6 +421,271 @@ async function preflightLibraryImportProposal(
     preflighted.push({ relativePath: file.relativePath, content: file.content, file: parsed.file });
   }
   return preflighted;
+}
+
+type LibraryImportCandidateDraft = {
+  resourceId: string;
+  status: string;
+  payload: Record<string, unknown>;
+  summary: Record<string, unknown>;
+  candidates: LibraryImportCandidate[];
+  proposedEdges: LibraryImportProposedEdge[];
+};
+
+async function loadLibraryImportCandidateDraft(
+  db: SouthstarDb,
+  draftId: string,
+): Promise<LibraryImportCandidateDraft> {
+  const resource = await db.maybeOne<LibraryImportDraftResourceRow>(
+    `select id, status, title, payload_json, summary_json
+       from southstar.runtime_resources
+      where resource_type = $1 and resource_key = $2`,
+    [LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE, draftId],
+  );
+  if (!resource) throw new Error(`library import draft not found: ${draftId}`);
+  const payload = asRecord(resource.payload_json);
+  if (payload.schemaVersion !== LIBRARY_IMPORT_DRAFT_SCHEMA_VERSION) {
+    throw new Error(`library import draft has unsupported schema: ${draftId}`);
+  }
+  if (resource.status !== "draft") {
+    throw new Error(`library import draft is already ${resource.status}: ${draftId}`);
+  }
+  const candidates = asImportCandidates(payload.candidates);
+  if (candidates.length === 0) {
+    throw new Error(`library import draft has no candidates to install: ${draftId}`);
+  }
+  return {
+    resourceId: resource.id,
+    status: resource.status,
+    payload,
+    summary: asRecord(resource.summary_json),
+    candidates,
+    proposedEdges: asImportProposedEdges(payload.proposedEdges),
+  };
+}
+
+async function preflightLibraryImportCandidates(
+  db: SouthstarDb,
+  input: { root: string; draftId: string; candidates: LibraryImportCandidate[] },
+): Promise<Array<PreflightedLibraryImportFile & { candidate: LibraryImportCandidate }>> {
+  const seenPaths = new Set<string>();
+  const seenObjectKeys = new Set<string>();
+  const preflighted: Array<PreflightedLibraryImportFile & { candidate: LibraryImportCandidate }> = [];
+
+  for (const candidate of input.candidates) {
+    const rendered = renderLibraryImportCandidate(input.draftId, candidate);
+    if (seenPaths.has(rendered.relativePath)) {
+      throw new Error(`library import candidates contain duplicate file: ${rendered.relativePath}`);
+    }
+    seenPaths.add(rendered.relativePath);
+    if (seenObjectKeys.has(candidate.objectKey)) {
+      throw new Error(`library import candidates contain duplicate object: ${candidate.objectKey}`);
+    }
+    seenObjectKeys.add(candidate.objectKey);
+
+    const parsed = parseLibraryFileContent({ path: `library/${rendered.relativePath}`, content: rendered.content });
+    if (!parsed.ok) {
+      throw new Error(
+        `library file is invalid: ${parsed.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")}`,
+      );
+    }
+    validateLibraryFileGraphReferences(parsed.file);
+    if (parsed.file.objectKey !== candidate.objectKey) {
+      throw new Error(`library import candidate rendered unexpected object: ${parsed.file.objectKey}`);
+    }
+    if (await libraryFileExists(input.root, rendered.relativePath)) {
+      throw new Error(`library import file already exists: ${rendered.relativePath}`);
+    }
+    if (await findLibraryObjectByKey(db, parsed.file.objectKey)) {
+      throw new Error(`library import object already exists: ${parsed.file.objectKey}`);
+    }
+    preflighted.push({
+      relativePath: rendered.relativePath,
+      content: rendered.content,
+      file: parsed.file,
+      candidate,
+    });
+  }
+
+  return preflighted;
+}
+
+function selectLibraryImportCandidates(
+  candidates: LibraryImportCandidate[],
+  selectedCandidateIds: string[],
+): LibraryImportCandidate[] {
+  if (!Array.isArray(selectedCandidateIds) || selectedCandidateIds.length === 0) {
+    throw new Error("selectedCandidateIds is required");
+  }
+  const byKey = new Map(candidates.map((candidate) => [candidate.objectKey, candidate]));
+  const selected: LibraryImportCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidateId of selectedCandidateIds) {
+    if (typeof candidateId !== "string" || candidateId.length === 0) {
+      throw new Error("selectedCandidateIds must contain strings");
+    }
+    if (seen.has(candidateId)) continue;
+    const candidate = byKey.get(candidateId);
+    if (!candidate) throw new Error(`library import candidate not found: ${candidateId}`);
+    selected.push(candidate);
+    seen.add(candidateId);
+  }
+  return selected;
+}
+
+function selectLibraryImportCandidateEdges(
+  proposedEdges: LibraryImportProposedEdge[],
+  input: { selectedObjectKeys: Set<string>; selectedEdgeIds?: string[] },
+): LibraryImportProposedEdge[] {
+  const selectedEdgeIds = input.selectedEdgeIds ? new Set(input.selectedEdgeIds) : null;
+  const availableEdgeIds = new Set(proposedEdges.map(libraryImportEdgeId));
+  if (selectedEdgeIds) {
+    for (const edgeId of selectedEdgeIds) {
+      if (!availableEdgeIds.has(edgeId)) throw new Error(`library import proposed edge not found: ${edgeId}`);
+    }
+  }
+
+  return proposedEdges.filter((edge) => {
+    if (!input.selectedObjectKeys.has(edge.fromObjectKey) || !input.selectedObjectKeys.has(edge.toObjectKey)) {
+      return false;
+    }
+    return selectedEdgeIds ? selectedEdgeIds.has(libraryImportEdgeId(edge)) : true;
+  });
+}
+
+function libraryImportEdgeId(edge: LibraryImportProposedEdge): string {
+  return `${edge.fromObjectKey}|${edge.edgeType}|${edge.toObjectKey}`;
+}
+
+function renderLibraryImportCandidate(
+  draftId: string,
+  candidate: LibraryImportCandidate,
+): { relativePath: string; content: string } {
+  const slug = slugFromCandidate(candidate);
+  const relativePath = candidateRelativePath(candidate.kind, slug);
+  const schemaVersion = candidateSchemaVersion(candidate.kind);
+  const title = yamlScalar(candidate.title);
+  const scope = yamlScalar(candidate.scope);
+  const provenance = [
+    `importDraftId: ${yamlScalar(draftId)}`,
+    `importCandidateKey: ${yamlScalar(candidate.objectKey)}`,
+    ...(candidate.sourcePath ? [`importSourcePath: ${yamlScalar(candidate.sourcePath)}`] : []),
+  ].join("\n");
+
+  if (candidate.kind === "tool" || candidate.kind === "mcp") {
+    return {
+      relativePath,
+      content: [
+        `schemaVersion: ${schemaVersion}`,
+        `id: ${candidate.objectKey}`,
+        `title: ${title}`,
+        `scope: ${scope}`,
+        "status: draft",
+        `description: ${yamlScalar(`Imported ${candidate.kind} candidate from library import draft.`)}`,
+        provenance,
+        "",
+      ].join("\n"),
+    };
+  }
+
+  const heading = candidate.kind === "agent" ? "Identity" : "Instructions";
+  return {
+    relativePath,
+    content: [
+      "---",
+      `schemaVersion: ${schemaVersion}`,
+      `id: ${candidate.objectKey}`,
+      `title: ${title}`,
+      `scope: ${scope}`,
+      "status: draft",
+      provenance,
+      "---",
+      "",
+      `# ${heading}`,
+      "",
+      `Imported ${candidate.kind} candidate from library import draft ${draftId}.`,
+      "",
+    ].join("\n"),
+  };
+}
+
+function slugFromCandidate(candidate: LibraryImportCandidate): string {
+  const prefix = `${candidate.kind}.`;
+  if (!candidate.objectKey.startsWith(prefix)) {
+    throw new Error(`library import candidate objectKey must start with ${prefix}: ${candidate.objectKey}`);
+  }
+  const slug = candidate.objectKey.slice(prefix.length)
+    .replaceAll(/[^A-Za-z0-9._-]+/g, "-")
+    .replaceAll(/^-+|-+$/g, "")
+    .toLowerCase();
+  if (slug.length === 0) throw new Error(`library import candidate objectKey has empty slug: ${candidate.objectKey}`);
+  return slug;
+}
+
+function candidateRelativePath(kind: LibraryImportCandidateKind, slug: string): string {
+  if (kind === "agent") return `agents/${slug}.agent.md`;
+  if (kind === "skill") return `skills/${slug}.skill.md`;
+  if (kind === "tool") return `tools/${slug}.tool.yaml`;
+  return `mcp/${slug}.mcp.yaml`;
+}
+
+function candidateSchemaVersion(kind: LibraryImportCandidateKind): string {
+  if (kind === "agent") return "southstar.library.agent_definition_file.v1";
+  if (kind === "skill") return "southstar.library.skill_spec_file.v1";
+  if (kind === "tool") return "southstar.library.tool_definition_file.v1";
+  return "southstar.library.mcp_grant_file.v1";
+}
+
+function asImportCandidates(value: unknown): LibraryImportCandidate[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const record = asRecord(item);
+    return {
+      objectKey: requiredString(record.objectKey, "candidates.objectKey"),
+      kind: requiredImportCandidateKind(record.kind),
+      title: requiredString(record.title, "candidates.title"),
+      scope: requiredString(record.scope, "candidates.scope"),
+      ...(typeof record.sourcePath === "string" && record.sourcePath.length > 0 ? { sourcePath: record.sourcePath } : {}),
+      selectedByDefault: typeof record.selectedByDefault === "boolean" ? record.selectedByDefault : true,
+      ...(typeof record.confidence === "number" ? { confidence: record.confidence } : {}),
+    };
+  });
+}
+
+function asImportProposedEdges(value: unknown): LibraryImportProposedEdge[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => {
+    const record = asRecord(item);
+    return {
+      fromObjectKey: requiredString(record.fromObjectKey, "proposedEdges.fromObjectKey"),
+      edgeType: requiredImportEdgeType(record.edgeType),
+      toObjectKey: requiredString(record.toObjectKey, "proposedEdges.toObjectKey"),
+      confidence: typeof record.confidence === "number" ? record.confidence : 0.5,
+      ...(typeof record.rationale === "string" && record.rationale.length > 0 ? { rationale: record.rationale } : {}),
+    };
+  });
+}
+
+function requiredImportCandidateKind(value: unknown): LibraryImportCandidateKind {
+  if (value === "agent" || value === "skill" || value === "tool" || value === "mcp") return value;
+  throw new Error(`library import candidate kind is invalid: ${String(value)}`);
+}
+
+function requiredImportEdgeType(value: unknown): LibraryImportEdgeType {
+  if (
+    value === "uses" ||
+    value === "requires" ||
+    value === "conflicts_with" ||
+    value === "workflow_precedes" ||
+    value === "similar_to"
+  ) {
+    return value;
+  }
+  throw new Error(`library import proposed edge type is invalid: ${String(value)}`);
+}
+
+function yamlScalar(value: string): string {
+  return JSON.stringify(value.replaceAll(/\r?\n/g, " ").trim());
 }
 
 async function libraryFileExists(root: string, relativePath: string): Promise<boolean> {
@@ -409,6 +838,40 @@ async function markLibraryImportDraftApplyFailed(
         lastError: message,
       }),
       reserved.approvalLease.attemptId,
+    ],
+  );
+}
+
+async function markLibraryImportCandidateInstallFailed(
+  db: SouthstarDb,
+  draftId: string,
+  error: unknown,
+): Promise<void> {
+  const message = error instanceof Error ? error.message : String(error);
+  await db.query(
+    `update southstar.runtime_resources
+        set status = 'draft',
+            payload_json = payload_json || $3::jsonb,
+            summary_json = coalesce(summary_json, '{}'::jsonb) || $4::jsonb,
+            updated_at = now()
+      where resource_type = $1
+        and resource_key = $2
+        and status = 'draft'`,
+    [
+      LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE,
+      draftId,
+      JSON.stringify({
+        status: "draft",
+        lastError: {
+          message,
+          failedAt: new Date().toISOString(),
+          installAttempt: true,
+        },
+      }),
+      JSON.stringify({
+        status: "draft",
+        lastError: message,
+      }),
     ],
   );
 }

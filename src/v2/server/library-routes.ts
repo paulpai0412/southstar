@@ -9,6 +9,7 @@ import { asImportSource } from "../design-library/importers/library-import-extra
 import {
   approveLibraryImportDraft,
   createLibraryImportDraft,
+  installLibraryImportCandidates,
 } from "../design-library/importers/library-import-draft-store.ts";
 import {
   composeNodeProfileDraft,
@@ -94,6 +95,26 @@ export async function handleLibraryRoute(
     return json("library-import-draft-approval", await approveLibraryImportDraft(context.db, {
       root: libraryRoot(context),
       draftId: decodeURIComponent(importDraftApproveMatch[1]!),
+      actor: optionalString(body.actor) ?? "operator",
+      reason: requiredNonBlankString(body.reason, "reason"),
+    }));
+  }
+
+  const importDraftInstallMatch = url.pathname.match(/^\/api\/v2\/library\/import-drafts\/([^/]+)\/install$/);
+  if (request.method === "POST" && importDraftInstallMatch) {
+    const body = await readJsonBody<{
+      selectedCandidateIds?: unknown;
+      selectedEdgeIds?: unknown;
+      actor?: unknown;
+      reason?: unknown;
+    }>(request);
+    return json("library-import-candidate-install", await installLibraryImportCandidates(context.db, {
+      root: libraryRoot(context),
+      draftId: decodeURIComponent(importDraftInstallMatch[1]!),
+      selectedCandidateIds: stringArray(body.selectedCandidateIds, "selectedCandidateIds"),
+      ...(Array.isArray(body.selectedEdgeIds)
+        ? { selectedEdgeIds: stringArray(body.selectedEdgeIds, "selectedEdgeIds") }
+        : {}),
       actor: optionalString(body.actor) ?? "operator",
       reason: requiredNonBlankString(body.reason, "reason"),
     }));

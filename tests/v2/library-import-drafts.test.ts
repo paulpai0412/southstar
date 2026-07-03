@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { listLibraryFiles } from "../../src/v2/design-library/files/library-file-store.ts";
-import { createLibraryImportDraft, approveLibraryImportDraft } from "../../src/v2/design-library/importers/library-import-draft-store.ts";
+import {
+  approveLibraryImportDraft,
+  createLibraryImportDraft,
+  installLibraryImportCandidates,
+} from "../../src/v2/design-library/importers/library-import-draft-store.ts";
 import { asImportSource, extractLibraryImportProposal } from "../../src/v2/design-library/importers/library-import-extractor.ts";
 import { extractLibraryCandidatesFromDocuments } from "../../src/v2/design-library/importers/library-candidate-extractor.ts";
 import {
@@ -13,7 +17,11 @@ import {
 } from "../../src/v2/design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../../src/v2/design-library/importers/library-source-fetcher.ts";
 import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
-import { findLibraryObjectByKey, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import {
+  findLibraryEdgesFrom,
+  findLibraryObjectByKey,
+  upsertLibraryObject,
+} from "../../src/v2/design-library/library-graph-store.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -315,6 +323,199 @@ test("createLibraryImportDraft preserves the legacy proposal and persists analyz
       "skill.browser-verification",
     ]);
     assert.equal((resource?.payload as any).proposedEdges[0].confidence, 1);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("installLibraryImportCandidates writes selected candidates, syncs graph objects, and persists ontology edges", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-install-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", selectedByDefault: true, confidence: 0.92 },
+      { objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true, confidence: 0.88 },
+      { objectKey: "tool.github", kind: "tool", title: "GitHub", selectedByDefault: true, confidence: 0.81 },
+      { objectKey: "mcp.filesystem", kind: "mcp", title: "Filesystem", selectedByDefault: false, confidence: 0.5 },
+    ],
+    proposedEdges: [
+      {
+        fromObjectKey: "agent.reviewer",
+        edgeType: "uses",
+        toObjectKey: "skill.review",
+        confidence: 0.91,
+        rationale: "Reviewer delegates review work to the review skill.",
+      },
+      {
+        fromObjectKey: "skill.review",
+        edgeType: "requires",
+        toObjectKey: "tool.github",
+        confidence: 0.83,
+        rationale: "Review skill needs GitHub access.",
+      },
+      {
+        fromObjectKey: "skill.review",
+        edgeType: "requires",
+        toObjectKey: "mcp.filesystem",
+        confidence: 0.7,
+        rationale: "Unselected endpoint should filter this edge.",
+      },
+    ],
+  });
+
+  try {
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "review library docs",
+        content: "reviewer agent uses a review skill and github tool",
+      },
+      scope: "software",
+      llmProvider: provider,
+    });
+
+    const installed = await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: ["agent.reviewer", "skill.review", "tool.github"],
+      actor: "operator",
+      reason: "selected reviewed candidates",
+    });
+
+    assert.equal(installed.draftId, draft.draftId);
+    assert.equal(installed.status, "installed");
+    assert.deepEqual(
+      installed.installedObjects.map((object) => object.objectKey),
+      ["agent.reviewer", "skill.review", "tool.github"],
+    );
+    assert.deepEqual(
+      installed.installedObjects.map((object) => object.relativePath),
+      ["agents/reviewer.agent.md", "skills/review.skill.md", "tools/github.tool.yaml"],
+    );
+    assert.deepEqual(
+      installed.installedEdges.map((edge) => ({
+        fromObjectKey: edge.fromObjectKey,
+        edgeType: edge.edgeType,
+        toObjectKey: edge.toObjectKey,
+        confidence: edge.metadata.confidence,
+        rationale: edge.metadata.rationale,
+        source: edge.metadata.source,
+        draftId: edge.metadata.draftId,
+      })),
+      [
+        {
+          fromObjectKey: "agent.reviewer",
+          edgeType: "uses",
+          toObjectKey: "skill.review",
+          confidence: 0.91,
+          rationale: "Reviewer delegates review work to the review skill.",
+          source: "library-import-candidate",
+          draftId: draft.draftId,
+        },
+        {
+          fromObjectKey: "skill.review",
+          edgeType: "requires",
+          toObjectKey: "tool.github",
+          confidence: 0.83,
+          rationale: "Review skill needs GitHub access.",
+          source: "library-import-candidate",
+          draftId: draft.draftId,
+        },
+      ],
+    );
+
+    for (const relativePath of ["agents/reviewer.agent.md", "skills/review.skill.md", "tools/github.tool.yaml"]) {
+      const content = await readFile(join(libraryRoot, relativePath), "utf8");
+      const parsed = parseLibraryFileContent({ path: `library/${relativePath}`, content });
+      assert.equal(parsed.ok, true, `${relativePath} should parse`);
+    }
+
+    assert.equal((await findLibraryObjectByKey(db, "agent.reviewer"))?.objectKind, "agent_definition");
+    assert.equal((await findLibraryObjectByKey(db, "skill.review"))?.objectKind, "skill_spec");
+    assert.equal((await findLibraryObjectByKey(db, "tool.github"))?.objectKind, "tool_definition");
+    assert.equal(await findLibraryObjectByKey(db, "mcp.filesystem"), null);
+
+    const agentEdges = await findLibraryEdgesFrom(db, "agent.reviewer", "uses", { scope: "software" });
+    assert.equal(agentEdges.length, 1);
+    assert.equal(agentEdges[0]?.metadata.source, "library-import-candidate");
+    assert.equal(agentEdges[0]?.metadata.draftId, draft.draftId);
+    assert.equal(agentEdges[0]?.metadata.confidence, 0.91);
+    assert.equal(agentEdges[0]?.metadata.rationale, "Reviewer delegates review work to the review skill.");
+    const skillEdges = await findLibraryEdgesFrom(db, "skill.review", "requires", { scope: "software" });
+    assert.deepEqual(skillEdges.map((edge) => edge.toObjectKey), ["tool.github"]);
+
+    const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
+    assert.equal(resource?.status, "installed");
+    assert.equal((resource?.payload as any).status, "installed");
+    assert.equal((resource?.payload as any).install.actor, "operator");
+    assert.equal((resource?.payload as any).install.reason, "selected reviewed candidates");
+    assert.deepEqual((resource?.payload as any).install.installedObjectKeys, [
+      "agent.reviewer",
+      "skill.review",
+      "tool.github",
+    ]);
+    assert.deepEqual((resource?.payload as any).install.installedEdges.map((edge: any) => edge.edgeType), [
+      "uses",
+      "requires",
+    ]);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("installLibraryImportCandidates preflights all selected candidates before writing any file", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-preflight-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", selectedByDefault: true },
+      { objectKey: "skill.existing", kind: "skill", title: "Existing", selectedByDefault: true },
+    ],
+    proposedEdges: [
+      { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.existing", confidence: 0.8 },
+    ],
+  });
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/existing.skill.md"), "existing library truth", {
+      encoding: "utf8",
+      flag: "wx",
+    });
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "review docs",
+        content: "create a browser verification skill that uses tool.browser",
+      },
+      scope: "software",
+      llmProvider: provider,
+    });
+
+    await assert.rejects(
+      () => installLibraryImportCandidates(db, {
+        root: libraryRoot,
+        draftId: draft.draftId,
+        selectedCandidateIds: ["agent.reviewer", "skill.existing"],
+        actor: "operator",
+        reason: "one selected candidate collides",
+      }),
+      /library import file already exists: skills\/existing\.skill\.md/,
+    );
+
+    assert.equal(await readFile(join(libraryRoot, "skills/existing.skill.md"), "utf8"), "existing library truth");
+    assert.deepEqual(
+      (await listLibraryFiles({ root: libraryRoot })).map((file) => file.relativePath),
+      ["skills/existing.skill.md"],
+    );
+    assert.equal(await findLibraryObjectByKey(db, "agent.reviewer"), null);
+    assert.equal(await findLibraryObjectByKey(db, "skill.existing"), null);
+
+    const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
+    assert.equal(resource?.status, "draft");
+    assert.match((resource?.payload as any).lastError.message, /library import file already exists/);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -985,6 +1186,75 @@ test("POST /api/v2/library/import-drafts forwards configured import analysis pro
         confidence: 0.95,
       },
     ]);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/v2/library/import-drafts/:draftId/install installs selected candidates", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-install-"));
+  const libraryImportLlmProvider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", selectedByDefault: true },
+      { objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true },
+    ],
+    proposedEdges: [
+      {
+        fromObjectKey: "agent.reviewer",
+        edgeType: "uses",
+        toObjectKey: "skill.review",
+        confidence: 0.86,
+        rationale: "Reviewer uses review skill.",
+      },
+    ],
+  });
+
+  try {
+    const context = { db, libraryRoot, libraryImportLlmProvider } as any;
+    const draftResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/import-drafts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source: { kind: "paste", label: "review docs", content: "reviewer uses review skill" },
+        scope: "software",
+      }),
+    }));
+    const draftEnvelope = await draftResponse.json() as any;
+
+    const installResponse = await handleRuntimeRoute(context, new Request(`http://local/api/v2/library/import-drafts/${draftEnvelope.result.draftId}/install`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        selectedCandidateIds: ["agent.reviewer", "skill.review"],
+        actor: "operator",
+        reason: "install reviewed candidates",
+      }),
+    }));
+
+    assert.equal(installResponse.status, 200);
+    const installEnvelope = await installResponse.json() as any;
+    assert.equal(installEnvelope.ok, true);
+    assert.equal(installEnvelope.kind, "library-import-candidate-install");
+    assert.equal(installEnvelope.result.status, "installed");
+    assert.deepEqual(
+      installEnvelope.result.installedObjects.map((object: any) => object.relativePath),
+      ["agents/reviewer.agent.md", "skills/review.skill.md"],
+    );
+    assert.deepEqual(
+      installEnvelope.result.installedEdges.map((edge: any) => edge.edgeType),
+      ["uses"],
+    );
+
+    const agentContent = await readFile(join(libraryRoot, "agents/reviewer.agent.md"), "utf8");
+    assert.match(agentContent, /schemaVersion: southstar\.library\.agent_definition_file\.v1/);
+    assert.equal((await findLibraryObjectByKey(db, "agent.reviewer"))?.objectKind, "agent_definition");
+    assert.equal((await findLibraryObjectByKey(db, "skill.review"))?.objectKind, "skill_spec");
+
+    const resource = await getResourceByKeyPg(db, "library_import_draft", draftEnvelope.result.draftId);
+    assert.equal(resource?.status, "installed");
+    assert.equal((resource?.payload as any).install.reason, "install reviewed candidates");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
