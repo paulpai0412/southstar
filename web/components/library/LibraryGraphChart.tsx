@@ -11,6 +11,14 @@ export type LibraryGraphChartEdge = {
   fromObjectKey: string;
   toObjectKey: string;
   edgeType?: string;
+  ontology?: {
+    category?: string;
+    confidence?: number;
+    rationale?: string;
+    source?: string;
+    draftId?: string;
+    evidenceRefs?: string[];
+  };
 };
 
 export function LibraryGraphChart({
@@ -35,23 +43,27 @@ export function LibraryGraphChart({
 
   return (
     <div data-testid="library-graph-chart" style={{ overflowX: "auto", border: "1px solid var(--border)", borderRadius: 6 }}>
-      <svg width={width} height={height} role="img" aria-label="Library graph chart" style={{ display: "block", background: "var(--bg-subtle)" }}>
+      <div style={{ position: "relative", width, height, background: "var(--bg-subtle)" }}>
+      <svg width={width} height={height} role="img" aria-label="Library graph chart" style={{ display: "block" }}>
         {edges.map((edge, index) => {
           const from = positions.get(edge.fromObjectKey);
           const to = positions.get(edge.toObjectKey);
           if (!from || !to) return null;
           const midX = (from.x + to.x) / 2;
+          const edgeStyle = edgeVisualStyle(edge);
+          const label = edgeLabel(edge);
           return (
             <g key={`${edge.fromObjectKey}:${edge.toObjectKey}:${index}`}>
               <path
                 d={`M ${from.x} ${from.y} C ${midX} ${from.y}, ${midX} ${to.y}, ${to.x} ${to.y}`}
                 fill="none"
-                stroke="var(--border)"
-                strokeWidth="1.4"
+                stroke={edgeStyle.stroke}
+                strokeDasharray={edgeStyle.dash}
+                strokeWidth="1.6"
               />
-              {edge.edgeType ? (
-                <text x={midX} y={(from.y + to.y) / 2 - 4} textAnchor="middle" fontSize="10" fill="var(--text-dim)">
-                  {edge.edgeType}
+              {label ? (
+                <text x={midX} y={(from.y + to.y) / 2 - 4} textAnchor="middle" fontSize="10" fill={edgeStyle.label}>
+                  {label}
                 </text>
               ) : null}
             </g>
@@ -61,21 +73,7 @@ export function LibraryGraphChart({
           const position = positions.get(node.objectKey);
           if (!position) return null;
           return (
-            <g
-              key={node.objectKey}
-              data-testid="library-graph-node"
-              role={onSelectNode ? "button" : undefined}
-              aria-label={onSelectNode ? (node.title ?? node.objectKey) : undefined}
-              tabIndex={onSelectNode ? 0 : undefined}
-              onClick={() => onSelectNode?.(node)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  onSelectNode?.(node);
-                }
-              }}
-              style={{ cursor: onSelectNode ? "pointer" : "default" }}
-            >
+            <g key={node.objectKey} aria-hidden="true">
               <rect x={position.x - 92} y={position.y - 18} width="184" height="36" rx="6" fill="var(--bg)" stroke="var(--border)" />
               <text x={position.x} y={position.y - 3} textAnchor="middle" fontSize="11" fill="var(--text)" fontWeight="600">
                 {node.title ?? node.objectKey}
@@ -87,6 +85,58 @@ export function LibraryGraphChart({
           );
         })}
       </svg>
+      {nodes.map((node) => {
+        const position = positions.get(node.objectKey);
+        if (!position) return null;
+        return (
+          <button
+            key={node.objectKey}
+            type="button"
+            data-testid="library-graph-node"
+            aria-label={node.title ?? node.objectKey}
+            onClick={() => onSelectNode?.(node)}
+            disabled={!onSelectNode}
+            style={{
+              position: "absolute",
+              left: position.x - 92,
+              top: position.y - 18,
+              width: 184,
+              height: 36,
+              padding: 0,
+              border: "none",
+              borderRadius: 6,
+              background: "transparent",
+              color: "transparent",
+              cursor: onSelectNode ? "pointer" : "default",
+            }}
+          >
+            <span style={{ position: "absolute", width: 1, height: 1, overflow: "hidden", clip: "rect(0 0 0 0)" }}>
+              {node.title ?? node.objectKey}
+            </span>
+          </button>
+        );
+      })}
+      </div>
     </div>
   );
+}
+
+function edgeLabel(edge: LibraryGraphChartEdge): string {
+  const type = edge.edgeType ?? "";
+  const confidence = typeof edge.ontology?.confidence === "number" ? edge.ontology.confidence.toFixed(2) : "";
+  return [type, confidence].filter(Boolean).join(" ");
+}
+
+function edgeVisualStyle(edge: LibraryGraphChartEdge): { stroke: string; label: string; dash?: string } {
+  const kind = edge.ontology?.category ?? edge.edgeType ?? "";
+  if (kind.includes("conflict")) {
+    return { stroke: "var(--danger, #b42318)", label: "var(--danger, #b42318)", dash: "4 3" };
+  }
+  if (kind.includes("similar")) {
+    return { stroke: "var(--accent, #4f46e5)", label: "var(--accent, #4f46e5)", dash: "2 3" };
+  }
+  if (kind.includes("workflow") || kind.includes("preced")) {
+    return { stroke: "var(--warning, #b54708)", label: "var(--warning, #b54708)", dash: "6 3" };
+  }
+  return { stroke: "var(--border)", label: "var(--text-dim)" };
 }

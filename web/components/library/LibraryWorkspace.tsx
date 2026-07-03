@@ -1,14 +1,54 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readLibraryFile, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
-import type { LibraryFileEnvelope, LibraryObjectDetail, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
+import type { LibraryFileEnvelope, LibraryObjectDetail, LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
 import { LibraryChatWindow } from "./LibraryChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
 import type { LibraryGraphChartNode } from "./LibraryGraphChart";
 import { LibrarySidebar } from "./LibrarySidebar";
 
-export function LibraryWorkspace() {
+type LibraryWorkspaceContextValue = {
+  model: LibraryWorkspaceModel | null;
+  selectedScope: string;
+  selectedObjectKey?: string;
+  selectedFilePath?: string;
+  fileRecord: LibraryFileEnvelope | null;
+  objectDetail: LibraryObjectDetail | null;
+  dirtyFileContent: string;
+  statusFilter: string;
+  saving: boolean;
+  syncing: boolean;
+  fileStatusMessage?: string;
+  librarySessions: LibrarySessionSummary[];
+  selectedSessionId?: string;
+  librarySessionKey: number;
+  loadWorkspace: () => void;
+  handleNewSession: () => void;
+  handleSelectScope: (scope: string) => void;
+  handleSelectObject: (object: LibraryWorkspaceObject) => void;
+  handleSelectSession: (session: LibrarySessionSummary) => void;
+  handleSelectGraphNode: (node: LibraryGraphChartNode) => void;
+  handleSessionActivity: (session: LibrarySessionSummary) => void;
+  setStatusFilter: (status: string) => void;
+  updateDirtyFileContent: (content: string) => void;
+  handleSaveFile: () => void;
+  handleSyncFile: () => void;
+};
+
+type SelectableLibraryObject = Pick<LibraryWorkspaceObject, "objectKey" | "title"> & {
+  sourcePath?: string;
+};
+
+const LibraryWorkspaceContext = createContext<LibraryWorkspaceContextValue | null>(null);
+
+export function LibraryWorkspaceProvider({
+  children,
+  onOpenFile,
+}: {
+  children: ReactNode;
+  onOpenFile?: (file: { objectKey: string; title: string; sourcePath?: string }) => void;
+}) {
   const [model, setModel] = useState<LibraryWorkspaceModel | null>(null);
   const [selectedScope, setSelectedScope] = useState("software");
   const [selectedObjectKey, setSelectedObjectKey] = useState<string | undefined>(undefined);
@@ -20,8 +60,9 @@ export function LibraryWorkspace() {
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [fileStatusMessage, setFileStatusMessage] = useState<string | undefined>(undefined);
-  const [quickPrompt, setQuickPrompt] = useState("");
-  const [pendingPrompt, setPendingPrompt] = useState("");
+  const [librarySessions, setLibrarySessions] = useState<LibrarySessionSummary[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(undefined);
+  const [librarySessionKey, setLibrarySessionKey] = useState(0);
   const selectedFilePathRef = useRef<string | undefined>(undefined);
   const dirtyFileContentRef = useRef("");
   const loadRequestRef = useRef(0);
@@ -29,7 +70,7 @@ export function LibraryWorkspace() {
   const saveRequestRef = useRef(0);
   const syncRequestRef = useRef(0);
 
-  const loadWorkspace = useCallback(() => {
+  const loadWorkspaceWithCleanup = useCallback(() => {
     let cancelled = false;
     fetch(`/api/library/workspace?scope=${encodeURIComponent(selectedScope)}`, { cache: "no-store" })
       .then((response) => response.json())
@@ -44,21 +85,34 @@ export function LibraryWorkspace() {
     };
   }, [selectedScope]);
 
+  const loadWorkspace = useCallback(() => {
+    loadWorkspaceWithCleanup();
+  }, [loadWorkspaceWithCleanup]);
+
   useEffect(() => {
     selectedFilePathRef.current = selectedFilePath;
   }, [selectedFilePath]);
 
-  useEffect(() => loadWorkspace(), [loadWorkspace]);
+  useEffect(() => loadWorkspaceWithCleanup(), [loadWorkspaceWithCleanup]);
 
-  const handlePromptSubmit = useCallback(() => {
-    const text = quickPrompt.trim();
-    if (!text) return;
-    setPendingPrompt(text);
-    setQuickPrompt("");
-  }, [quickPrompt]);
+  const handleSessionActivity = useCallback((session: LibrarySessionSummary) => {
+    setSelectedSessionId(session.id);
+    setLibrarySessions((current) => {
+      const existing = current.findIndex((item) => item.id === session.id);
+      if (existing === -1) return [session, ...current];
+      const next = [...current];
+      next[existing] = { ...next[existing], ...session };
+      return next;
+    });
+  }, []);
 
-  const handlePromptConsumed = useCallback(() => {
-    setPendingPrompt("");
+  const handleSelectSession = useCallback((session: LibrarySessionSummary) => {
+    setSelectedSessionId(session.id);
+  }, []);
+
+  const handleNewSession = useCallback(() => {
+    setSelectedSessionId(undefined);
+    setLibrarySessionKey((value) => value + 1);
   }, []);
 
   const updateDirtyFileContent = useCallback((content: string) => {
@@ -88,7 +142,7 @@ export function LibraryWorkspace() {
     setSelectedScope(scope);
   }, [resetSelectedFile, selectedScope]);
 
-  const handleSelectObject = useCallback((object: LibraryWorkspaceObject) => {
+  const selectObjectReference = useCallback((object: SelectableLibraryObject) => {
     if (object.objectKey === selectedObjectKey && selectedFilePath) return;
 
     const requestId = loadRequestRef.current + 1;
@@ -102,10 +156,37 @@ export function LibraryWorkspace() {
     setSyncing(false);
     setFileStatusMessage(undefined);
     setObjectDetail(null);
+
+    const loadSourcePath = (sourcePath: string) => {
+      selectedFilePathRef.current = sourcePath;
+      setSelectedFilePath(sourcePath);
+      setFileRecord(null);
+      updateDirtyFileContent("");
+      onOpenFile?.({ objectKey: object.objectKey, title: object.title, sourcePath });
+      readLibraryFile(sourcePath)
+        .then((record) => {
+          if (loadRequestRef.current !== requestId || selectedFilePathRef.current !== sourcePath) return;
+          setFileRecord(record);
+          updateDirtyFileContent(record.content);
+        })
+        .catch((error: unknown) => {
+          if (loadRequestRef.current !== requestId) return;
+          selectedFilePathRef.current = undefined;
+          setSelectedFilePath(undefined);
+          setFileRecord(null);
+          updateDirtyFileContent("");
+          setFileStatusMessage(`Failed to load file: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    };
+
     readLibraryObjectDetail(object.objectKey)
       .then((detail) => {
         if (detailRequestRef.current !== detailRequestId) return;
         setObjectDetail(detail);
+        if (!object.sourcePath) {
+          const sourcePath = sourcePathFromObjectDetail(detail);
+          if (sourcePath) loadSourcePath(sourcePath);
+        }
       })
       .catch((error: unknown) => {
         if (detailRequestRef.current !== detailRequestId) return;
@@ -117,38 +198,24 @@ export function LibraryWorkspace() {
       setSelectedFilePath(undefined);
       setFileRecord(null);
       updateDirtyFileContent("");
+      onOpenFile?.({ objectKey: object.objectKey, title: object.title });
       return;
     }
 
-    const sourcePath = object.sourcePath;
-    selectedFilePathRef.current = sourcePath;
-    setSelectedFilePath(sourcePath);
-    setFileRecord(null);
-    updateDirtyFileContent("");
-    readLibraryFile(sourcePath)
-      .then((record) => {
-        if (loadRequestRef.current !== requestId || selectedFilePathRef.current !== sourcePath) return;
-        setFileRecord(record);
-        updateDirtyFileContent(record.content);
-      })
-      .catch((error: unknown) => {
-        if (loadRequestRef.current !== requestId) return;
-        selectedFilePathRef.current = undefined;
-        setSelectedFilePath(undefined);
-        setFileRecord(null);
-        updateDirtyFileContent("");
-        setFileStatusMessage(`Failed to load file: ${error instanceof Error ? error.message : String(error)}`);
-      });
-  }, [selectedFilePath, selectedObjectKey, updateDirtyFileContent]);
+    loadSourcePath(object.sourcePath);
+  }, [onOpenFile, selectedFilePath, selectedObjectKey, updateDirtyFileContent]);
+
+  const handleSelectObject = useCallback((object: LibraryWorkspaceObject) => {
+    selectObjectReference(object);
+  }, [selectObjectReference]);
 
   const handleSelectGraphNode = useCallback((node: LibraryGraphChartNode) => {
     const object = findWorkspaceObjectByKey(model, node.objectKey);
-    if (!object) {
-      setFileStatusMessage(`Library object is not available in the current workspace: ${node.objectKey}`);
-      return;
-    }
-    handleSelectObject(object);
-  }, [handleSelectObject, model]);
+    selectObjectReference(object ?? {
+      objectKey: node.objectKey,
+      title: node.title ?? node.objectKey,
+    });
+  }, [model, selectObjectReference]);
 
   const handleSaveFile = useCallback(() => {
     if (!selectedFilePath || saving) return;
@@ -192,64 +259,152 @@ export function LibraryWorkspace() {
       });
   }, [selectedFilePath, syncing]);
 
+  const value = useMemo<LibraryWorkspaceContextValue>(() => ({
+    model,
+    selectedScope,
+    selectedObjectKey,
+    selectedFilePath,
+    fileRecord,
+    objectDetail,
+    dirtyFileContent,
+    statusFilter,
+    saving,
+    syncing,
+    fileStatusMessage,
+    librarySessions,
+    selectedSessionId,
+    librarySessionKey,
+    loadWorkspace,
+    handleNewSession,
+    handleSelectScope,
+    handleSelectObject,
+    handleSelectSession,
+    handleSelectGraphNode,
+    handleSessionActivity,
+    setStatusFilter,
+    updateDirtyFileContent,
+    handleSaveFile,
+    handleSyncFile,
+  }), [
+    dirtyFileContent,
+    fileRecord,
+    fileStatusMessage,
+    handleSaveFile,
+    handleNewSession,
+    handleSelectGraphNode,
+    handleSelectObject,
+    handleSelectScope,
+    handleSelectSession,
+    handleSessionActivity,
+    handleSyncFile,
+    librarySessions,
+    librarySessionKey,
+    loadWorkspace,
+    model,
+    objectDetail,
+    saving,
+    selectedFilePath,
+    selectedObjectKey,
+    selectedScope,
+    selectedSessionId,
+    statusFilter,
+    syncing,
+    updateDirtyFileContent,
+  ]);
+
+  return <LibraryWorkspaceContext.Provider value={value}>{children}</LibraryWorkspaceContext.Provider>;
+}
+
+export function LibrarySidebarPanel() {
+  const context = useLibraryWorkspaceContext();
+  return (
+    <div data-testid="library-sidebar" style={{ height: "100%", minHeight: 0, overflow: "auto" }}>
+      <LibrarySidebar
+        model={context.model}
+        sessions={context.librarySessions}
+        selectedSessionId={context.selectedSessionId}
+        selectedScope={context.selectedScope}
+        selectedObjectKey={context.selectedObjectKey}
+        statusFilter={context.statusFilter}
+        onSelectScope={context.handleSelectScope}
+        onStatusFilterChange={context.setStatusFilter}
+        onSelectSession={context.handleSelectSession}
+        onNewSession={context.handleNewSession}
+        onRefresh={context.loadWorkspace}
+        onSelectObject={context.handleSelectObject}
+      />
+    </div>
+  );
+}
+
+export function LibraryWorkspace() {
+  const context = useContext(LibraryWorkspaceContext);
+  if (!context) {
+    return (
+      <LibraryWorkspaceProvider>
+        <LibraryWorkspaceContent />
+      </LibraryWorkspaceProvider>
+    );
+  }
+  return <LibraryWorkspaceContent />;
+}
+
+function LibraryWorkspaceContent() {
+  const context = useLibraryWorkspaceContext();
   return (
     <div
       data-testid="library-workspace"
       style={{
         display: "grid",
-        gridTemplateColumns: "260px minmax(0, 1fr) 360px",
+        gridTemplateColumns: "minmax(0, 1fr)",
         height: "100%",
         minHeight: 0,
         background: "var(--bg)",
         color: "var(--text)",
       }}
     >
-      <aside
-        data-testid="library-sidebar"
-        style={{ borderRight: "1px solid var(--border)", minWidth: 0, overflow: "auto" }}
-      >
-        <LibrarySidebar
-          model={model}
-          selectedScope={selectedScope}
-          selectedObjectKey={selectedObjectKey}
-          statusFilter={statusFilter}
-          onSelectScope={handleSelectScope}
-          onStatusFilterChange={setStatusFilter}
-          onSelectObject={handleSelectObject}
-          prompt={quickPrompt}
-          onPromptChange={setQuickPrompt}
-          onPromptSubmit={handlePromptSubmit}
-        />
-      </aside>
       <main data-testid="library-chat-workspace" style={{ minWidth: 0, overflow: "hidden" }}>
         <LibraryChatWindow
-          scope={selectedScope}
-          pendingPrompt={pendingPrompt}
-          onPromptConsumed={handlePromptConsumed}
-          onLibraryChanged={loadWorkspace}
-          onSelectGraphNode={handleSelectGraphNode}
+          key={context.librarySessionKey}
+          scope={context.selectedScope}
+          pendingPrompt=""
+          onPromptConsumed={() => undefined}
+          onLibraryChanged={context.loadWorkspace}
+          onSelectGraphNode={context.handleSelectGraphNode}
+          onSessionActivity={context.handleSessionActivity}
         />
       </main>
-      <aside
-        data-testid="library-file-viewer"
-        style={{ borderLeft: "1px solid var(--border)", minWidth: 0, overflow: "auto" }}
-      >
-        <LibraryFileViewer
-          selectedFilePath={selectedFilePath}
-          fileRecord={fileRecord}
-          objectDetail={objectDetail}
-          content={dirtyFileContent}
-          dirty={fileRecord ? dirtyFileContent !== fileRecord.content : false}
-          saving={saving}
-          syncing={syncing}
-          statusMessage={fileStatusMessage}
-          onContentChange={updateDirtyFileContent}
-          onSave={handleSaveFile}
-          onSync={handleSyncFile}
-        />
-      </aside>
     </div>
   );
+}
+
+export function LibraryFileSidecarPanel() {
+  const context = useLibraryWorkspaceContext();
+  return (
+    <div data-testid="library-file-sidecar" style={{ height: "100%", minHeight: 0, overflow: "auto" }}>
+      <LibraryFileViewer
+        selectedFilePath={context.selectedFilePath}
+        fileRecord={context.fileRecord}
+        objectDetail={context.objectDetail}
+        content={context.dirtyFileContent}
+        dirty={context.fileRecord ? context.dirtyFileContent !== context.fileRecord.content : false}
+        saving={context.saving}
+        syncing={context.syncing}
+        statusMessage={context.fileStatusMessage}
+        onContentChange={context.updateDirtyFileContent}
+        onSave={context.handleSaveFile}
+        onSync={context.handleSyncFile}
+      />
+    </div>
+  );
+}
+
+function useLibraryWorkspaceContext(): LibraryWorkspaceContextValue {
+  const context = useContext(LibraryWorkspaceContext);
+  if (!context) {
+    throw new Error("Library workspace components must be rendered inside LibraryWorkspaceProvider");
+  }
+  return context;
 }
 
 function findWorkspaceObjectByKey(model: LibraryWorkspaceModel | null, objectKey: string): LibraryWorkspaceObject | undefined {
@@ -267,4 +422,9 @@ function findWorkspaceObjectByKey(model: LibraryWorkspaceModel | null, objectKey
     }
   }
   return undefined;
+}
+
+function sourcePathFromObjectDetail(detail: LibraryObjectDetail): string | undefined {
+  const sourcePath = detail.object.state?.sourcePath;
+  return typeof sourcePath === "string" && sourcePath.length > 0 ? sourcePath : undefined;
 }

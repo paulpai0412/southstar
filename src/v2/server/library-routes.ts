@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { LibraryDefinitionKind, LibraryDefinitionStatus } from "../design-library/types.ts";
+import type { LibraryDefinitionKind, LibraryDefinitionStatus, LibraryEdgeType } from "../design-library/types.ts";
 import {
   applyLibraryObjectLifecycleAction,
   type LibraryObjectLifecycleAction,
@@ -9,6 +9,7 @@ import { asImportSource } from "../design-library/importers/library-import-extra
 import {
   approveLibraryImportDraft,
   createLibraryImportDraft,
+  installLibraryImportCandidates,
 } from "../design-library/importers/library-import-draft-store.ts";
 import {
   composeNodeProfileDraft,
@@ -57,6 +58,7 @@ export async function handleLibraryRoute(
         depth: optionalNumber(url.searchParams.get("depth")),
         kind: optionalLibraryKind(url.searchParams.get("kind")),
         status: optionalLibraryStatus(url.searchParams.get("status")),
+        edgeType: optionalLibraryEdgeType(url.searchParams.get("edgeType")),
       }),
     );
   }
@@ -70,6 +72,7 @@ export async function handleLibraryRoute(
         depth: optionalNumber(url.searchParams.get("depth")),
         kind: optionalLibraryKind(url.searchParams.get("kind")),
         status: optionalLibraryStatus(url.searchParams.get("status")),
+        edgeType: optionalLibraryEdgeType(url.searchParams.get("edgeType")),
       }),
     );
   }
@@ -79,10 +82,13 @@ export async function handleLibraryRoute(
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/library/import-drafts") {
-    const body = await readJsonBody<{ source?: unknown; scope?: unknown }>(request);
+    const body = await readJsonBody<{ source?: unknown; scope?: unknown; requestPrompt?: unknown }>(request);
     return json("library-import-draft", await createLibraryImportDraft(context.db, {
       source: asImportSource(body.source),
       scope: optionalString(body.scope) ?? "software",
+      requestPrompt: optionalString(body.requestPrompt),
+      sourceFetcher: context.libraryImportSourceFetcher,
+      llmProvider: context.libraryImportLlmProvider,
     }));
   }
 
@@ -95,6 +101,46 @@ export async function handleLibraryRoute(
       actor: optionalString(body.actor) ?? "operator",
       reason: requiredNonBlankString(body.reason, "reason"),
     }));
+  }
+
+  const importDraftInstallMatch = url.pathname.match(/^\/api\/v2\/library\/import-drafts\/([^/]+)\/install$/);
+  if (request.method === "POST" && importDraftInstallMatch) {
+    const body = await readJsonBody<{
+      selectedCandidateIds?: unknown;
+      selectedEdgeIds?: unknown;
+      actor?: unknown;
+      reason?: unknown;
+    }>(request);
+    return json("library-import-candidate-install", await installLibraryImportCandidates(context.db, {
+      root: libraryRoot(context),
+      draftId: decodeURIComponent(importDraftInstallMatch[1]!),
+      selectedCandidateIds: stringArray(body.selectedCandidateIds, "selectedCandidateIds"),
+      ...(Array.isArray(body.selectedEdgeIds)
+        ? { selectedEdgeIds: stringArray(body.selectedEdgeIds, "selectedEdgeIds") }
+        : {}),
+      actor: optionalString(body.actor) ?? "operator",
+      reason: requiredNonBlankString(body.reason, "reason"),
+      llmProvider: context.libraryImportLlmProvider,
+    }));
+  }
+
+  const importDraftInstallStreamMatch = url.pathname.match(/^\/api\/v2\/library\/import-drafts\/([^/]+)\/install\/stream$/);
+  if (request.method === "POST" && importDraftInstallStreamMatch) {
+    const body = await readJsonBody<{
+      selectedCandidateIds?: unknown;
+      selectedEdgeIds?: unknown;
+      actor?: unknown;
+      reason?: unknown;
+    }>(request);
+    return libraryImportInstallEventStream(context, {
+      draftId: decodeURIComponent(importDraftInstallStreamMatch[1]!),
+      selectedCandidateIds: stringArray(body.selectedCandidateIds, "selectedCandidateIds"),
+      ...(Array.isArray(body.selectedEdgeIds)
+        ? { selectedEdgeIds: stringArray(body.selectedEdgeIds, "selectedEdgeIds") }
+        : {}),
+      actor: optionalString(body.actor) ?? "operator",
+      reason: requiredNonBlankString(body.reason, "reason"),
+    });
   }
 
   const saveTemplateMatch = url.pathname.match(/^\/api\/v2\/workflow\/drafts\/([^/]+)\/save-template$/);
@@ -122,6 +168,8 @@ export async function handleLibraryRoute(
     const draft = await createLibraryImportDraft(context.db, {
       source: { kind: "paste", label: "Prompt import", content: prompt },
       scope,
+      sourceFetcher: context.libraryImportSourceFetcher,
+      llmProvider: context.libraryImportLlmProvider,
     });
     return json("library-import-prompt", {
       ...draft,
@@ -210,8 +258,8 @@ export async function handleLibraryRoute(
   if (request.method === "GET" && url.pathname === "/api/v2/library/chat/events") {
     const sessionId = requiredQueryParam(url, "sessionId");
     const actionId = requiredQueryParam(url, "actionId");
-    await requireLibraryChatAction(context, { sessionId, actionId });
-    return libraryChatEventStream({ sessionId, actionId });
+    const action = await requireLibraryChatAction(context, { sessionId, actionId });
+    return libraryChatEventStream(context, { sessionId, actionId, prompt: action.prompt, scope: action.scope });
   }
 
   const lifecycleMatch = url.pathname.match(/^\/api\/v2\/library\/objects\/([^/]+)\/(approve|deprecate|block)$/);
@@ -355,6 +403,31 @@ const LIBRARY_DEFINITION_STATUSES = new Set<LibraryDefinitionStatus>([
   "blocked",
 ]);
 
+const LIBRARY_EDGE_TYPES = new Set<LibraryEdgeType>([
+  "implements",
+  "provides_capability",
+  "requires_capability",
+  "supports_skill",
+  "requires_skill",
+  "allows_tool",
+  "requires_tool",
+  "uses_instruction",
+  "requires_secret_group",
+  "allows_mcp_grant",
+  "produces_artifact",
+  "consumes_artifact",
+  "validates_artifact",
+  "uses_policy",
+  "part_of_template",
+  "supersedes",
+  "blocked_by",
+  "uses",
+  "requires",
+  "conflicts_with",
+  "workflow_precedes",
+  "similar_to",
+]);
+
 function optionalLibraryKind(value: string | null): LibraryDefinitionKind | undefined {
   if (!value || value === "all") return undefined;
   if (!LIBRARY_DEFINITION_KINDS.has(value as LibraryDefinitionKind)) throw new Error(`invalid library kind: ${value}`);
@@ -365,6 +438,96 @@ function optionalLibraryStatus(value: string | null): LibraryDefinitionStatus | 
   if (!value || value === "all") return undefined;
   if (!LIBRARY_DEFINITION_STATUSES.has(value as LibraryDefinitionStatus)) throw new Error(`invalid library status: ${value}`);
   return value as LibraryDefinitionStatus;
+}
+
+function optionalLibraryEdgeType(value: string | null): LibraryEdgeType | undefined {
+  if (!value || value === "all") return undefined;
+  if (!LIBRARY_EDGE_TYPES.has(value as LibraryEdgeType)) throw new Error(`invalid library edge type: ${value}`);
+  return value as LibraryEdgeType;
+}
+
+function graphQueryFromPrompt(
+  prompt: string,
+  defaultScope: string,
+): Parameters<typeof buildLibraryGraphReadModel>[1] {
+  const text = prompt.trim();
+  const lower = text.toLowerCase();
+  const query: Parameters<typeof buildLibraryGraphReadModel>[1] = { scope: defaultScope };
+
+  const explicitScope = matchTokenAfter(lower, ["scope", "domain", "domain:", "scope:"]);
+  if (explicitScope) query.scope = explicitScope;
+  else if (/\ball\b/.test(lower)) query.scope = "all";
+  else {
+    const namedScope = text.match(/\b([a-z][a-z0-9_-]*)\s+(?:domain|scope)\b/i)?.[1];
+    if (namedScope) query.scope = namedScope;
+  }
+
+  const objectKey = text.match(/\b(?:agent|skill|tool|mcp|profile|artifact|capability|instruction|policy|workflow)\.[A-Za-z0-9._-]+\b/)?.[0];
+  if (objectKey) query.objectKey = objectKey;
+
+  const depth = lower.match(/\bdepth[:=\s]+(\d+)\b/)?.[1] ?? lower.match(/\b(\d+)\s*(?:層|层|hop|hops)\b/)?.[1];
+  if (depth) query.depth = Number(depth);
+
+  const kind = kindFromPrompt(lower);
+  if (kind) query.kind = kind;
+
+  const status = statusFromPrompt(lower);
+  if (status) query.status = status;
+
+  const edgeType = edgeTypeFromPrompt(lower);
+  if (edgeType) query.edgeType = edgeType;
+
+  return query;
+}
+
+function matchTokenAfter(text: string, prefixes: string[]): string | undefined {
+  for (const prefix of prefixes) {
+    const escaped = prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const value = text.match(new RegExp(`\\b${escaped}\\s*([a-z][a-z0-9_-]*)\\b`))?.[1];
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function kindFromPrompt(text: string): LibraryDefinitionKind | undefined {
+  if (/\bagents?\b|agent_definition|代理|智能体/.test(text)) return "agent_definition";
+  if (/\bskills?\b|skill_definition|skill_spec|技能/.test(text)) return "skill_definition";
+  if (/\btools?\b|tool_definition|工具/.test(text)) return "tool_definition";
+  if (/\bmcp\b|mcp_tool_grant/.test(text)) return "mcp_tool_grant";
+  if (/\bprofiles?\b|agent_profile/.test(text)) return "agent_profile";
+  if (/\btemplates?\b|workflow_template/.test(text)) return "workflow_template";
+  return undefined;
+}
+
+function statusFromPrompt(text: string): LibraryDefinitionStatus | undefined {
+  if (/\bdraft\b|草稿/.test(text)) return "draft";
+  if (/\bapproved\b|已核准|已批准/.test(text)) return "approved";
+  if (/\bdeprecated\b|廢棄|废弃/.test(text)) return "deprecated";
+  if (/\bblocked\b|封鎖|封锁/.test(text)) return "blocked";
+  return undefined;
+}
+
+function edgeTypeFromPrompt(text: string): LibraryEdgeType | undefined {
+  const exact = text.match(/\b(?:edgeType|edge|relation|relationship)[:=\s]+([a-z_]+)\b/i)?.[1];
+  if (exact && LIBRARY_EDGE_TYPES.has(exact as LibraryEdgeType)) return exact as LibraryEdgeType;
+  if (/\bworkflow_precedes\b|先後|先后|順序|顺序/.test(text)) return "workflow_precedes";
+  if (/\bsimilar_to\b|相似/.test(text)) return "similar_to";
+  if (/\bconflicts_with\b|衝突|冲突/.test(text)) return "conflicts_with";
+  if (/\brequires\b|依賴|依赖|required/.test(text)) return "requires";
+  if (/\buses\b|使用/.test(text)) return "uses";
+  return undefined;
+}
+
+function asGraphQuery(value: unknown): Parameters<typeof buildLibraryGraphReadModel>[1] {
+  if (!isRecord(value)) return {};
+  return {
+    scope: optionalString(value.scope),
+    objectKey: optionalString(value.objectKey),
+    depth: typeof value.depth === "number" ? value.depth : undefined,
+    kind: LIBRARY_DEFINITION_KINDS.has(value.kind as LibraryDefinitionKind) ? value.kind as LibraryDefinitionKind : undefined,
+    status: LIBRARY_DEFINITION_STATUSES.has(value.status as LibraryDefinitionStatus) ? value.status as LibraryDefinitionStatus : undefined,
+    edgeType: LIBRARY_EDGE_TYPES.has(value.edgeType as LibraryEdgeType) ? value.edgeType as LibraryEdgeType : undefined,
+  };
 }
 
 function requiredNodeProfileDraft(value: unknown): NodeProfileDraft {
@@ -554,49 +717,102 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function requireLibraryChatAction(
   context: RuntimeServerContext,
   input: { sessionId: string; actionId: string },
-): Promise<void> {
+): Promise<LibraryChatAction> {
   const action = await getResourceByKeyPg(context.db, "library_chat_action", input.actionId);
   if (!action) throw new Error(`library chat action ${input.actionId} was not found`);
   if (action.sessionId !== input.sessionId) {
     throw new Error(`library chat action ${input.actionId} does not belong to session ${input.sessionId}`);
   }
+  const payload = asRecord(action.payload);
+  return {
+    actionId: input.actionId,
+    sessionId: input.sessionId,
+    prompt: requiredNonBlankString(payload.prompt, "library_chat_action.prompt"),
+    scope: optionalString(payload.selectedScope) ?? "software",
+  };
 }
 
-function libraryChatEventStream(input: { sessionId: string; actionId: string }): Response {
-  const events = [
-    {
-      event: "library.intent.started",
-      data: { sessionId: input.sessionId, actionId: input.actionId, message: "Reading library command." },
-    },
-    {
-      event: "library.intent.completed",
-      data: { sessionId: input.sessionId, actionId: input.actionId, intent: "create_or_import_library_item", confidence: 0.8 },
-    },
-    {
-      event: "library.proposal.created",
-      data: {
-        sessionId: input.sessionId,
-        actionId: input.actionId,
-        title: "Draft library proposal",
-        objectKeys: [],
-        filePaths: [],
-      },
-    },
-    {
-      event: "library.validation.completed",
-      data: { sessionId: input.sessionId, actionId: input.actionId, ok: true, issues: [] },
-    },
-    {
-      event: "library.command.completed",
-      data: { sessionId: input.sessionId, actionId: input.actionId, status: "ready_for_review" },
-    },
-  ];
+function libraryChatEventStream(
+  context: RuntimeServerContext,
+  input: { sessionId: string; actionId: string; prompt: string; scope: string },
+): Response {
   const encoder = new TextEncoder();
-  const frames = events.map(({ event, data }) => sse(event, data)).join("");
   return new Response(new ReadableStream<Uint8Array>({
-    start(controller) {
-      controller.enqueue(encoder.encode(frames));
-      controller.close();
+    async start(controller) {
+      let closed = false;
+      const emit = (event: string, data: Record<string, unknown>) => {
+        if (closed) return;
+        controller.enqueue(encoder.encode(sse(event, { sessionId: input.sessionId, actionId: input.actionId, ...data })));
+      };
+      const heartbeat = startLibrarySseHeartbeat(context, emit, { phase: "library_chat" });
+      try {
+        if (await replayCompletedLibraryChatAction(context, input, emit)) return;
+        await updateLibraryChatAction(context, input, "running", {
+          startedAt: new Date().toISOString(),
+        });
+        emit("library.intent.started", { message: "Reading library command." });
+        if (isImportDraftPrompt(input.prompt)) {
+          emit("library.intent.completed", { intent: "import_library_candidates", confidence: 0.95 });
+          const draft = await createLibraryImportDraft(context.db, {
+            source: importSourceFromPrompt(input.prompt) ?? { kind: "paste", label: "Library chat prompt", content: input.prompt },
+            scope: input.scope,
+            requestPrompt: input.prompt,
+            sourceFetcher: context.libraryImportSourceFetcher,
+            llmProvider: context.libraryImportLlmProvider,
+            progress: ({ event, data }) => emit(event, data),
+          });
+          const candidateCount = draft.candidates?.length ?? 0;
+          if (candidateCount > 0) {
+            emit("library.import.candidates", {
+              draftId: draft.draftId,
+              status: draft.status,
+              title: "Import candidates",
+              candidates: draft.candidates ?? [],
+              proposedEdges: [],
+            });
+          } else {
+            emit("library.proposal.created", {
+              draftId: draft.draftId,
+              status: draft.status,
+              title: "Draft library proposal",
+              objectKeys: draft.proposal.objectKeys,
+              objectSummaries: draft.proposal.objectSummaries,
+              dependencies: draft.proposal.dependencies,
+              filePaths: draft.proposal.files.map((file) => file.relativePath),
+            });
+          }
+          const result = { draftId: draft.draftId, status: "ready_for_review", candidateCount };
+          await updateLibraryChatAction(context, input, "completed", {
+            completedAt: new Date().toISOString(),
+            ...result,
+          });
+          emit("library.command.completed", result);
+          return;
+        }
+        emit("library.intent.completed", { intent: "library_graph", confidence: 0.7 });
+        const graphQuery = graphQueryFromPrompt(input.prompt, input.scope);
+        const graph = await buildLibraryGraphReadModel(context.db, graphQuery);
+        emit("library.graph.snapshot", graph as unknown as Record<string, unknown>);
+        emit("library.validation.completed", { ok: true, issues: [] });
+        await updateLibraryChatAction(context, input, "completed", {
+          completedAt: new Date().toISOString(),
+          intent: "library_graph",
+          graphQuery,
+          status: "completed",
+        });
+        emit("library.command.completed", { status: "completed" });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await updateLibraryChatAction(context, input, "failed", {
+          failedAt: new Date().toISOString(),
+          error: message,
+        }).catch(() => undefined);
+        emit("library.error", { message });
+      } finally {
+        clearInterval(heartbeat);
+        closed = true;
+        controller.close();
+      }
     },
   }), {
     headers: {
@@ -608,6 +824,183 @@ function libraryChatEventStream(input: { sessionId: string; actionId: string }):
   });
 }
 
+function libraryImportInstallEventStream(
+  context: RuntimeServerContext,
+  input: {
+    draftId: string;
+    selectedCandidateIds: string[];
+    selectedEdgeIds?: string[];
+    actor: string;
+    reason: string;
+  },
+): Response {
+  const encoder = new TextEncoder();
+  return new Response(new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let closed = false;
+      const emit = (event: string, data: Record<string, unknown>) => {
+        if (closed) return;
+        controller.enqueue(encoder.encode(sse(event, data)));
+      };
+      const heartbeat = startLibrarySseHeartbeat(context, emit, {
+        phase: "library_import_install",
+        draftId: input.draftId,
+      });
+      try {
+        emit("library.import.install.requested", {
+          draftId: input.draftId,
+          selectedCandidateCount: input.selectedCandidateIds.length,
+        });
+        const installed = await installLibraryImportCandidates(context.db, {
+          root: libraryRoot(context),
+          draftId: input.draftId,
+          selectedCandidateIds: input.selectedCandidateIds,
+          ...(input.selectedEdgeIds ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
+          actor: input.actor,
+          reason: input.reason,
+          llmProvider: context.libraryImportLlmProvider,
+          progress: ({ event, data }) => emit(event, data),
+        });
+        emit("library.db.synced", {
+          draftId: input.draftId,
+          objectKeys: installed.graph.objectKeys,
+          edgeIds: installed.graph.edgeIds,
+        });
+        emit("library.command.completed", { draftId: input.draftId, status: "installed" });
+      } catch (error) {
+        emit("library.error", {
+          draftId: input.draftId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      } finally {
+        clearInterval(heartbeat);
+        closed = true;
+        controller.close();
+      }
+    },
+  }), {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+      "access-control-allow-origin": "*",
+    },
+  });
+}
+
+function isImportDraftPrompt(prompt: string): boolean {
+  return /\b(create|import)\b/i.test(prompt)
+    || /(?:\u532f\u5165|\u5bfc\u5165|\u5b58\u5165|\u65b0\u589e|\u5b89\u88dd|\u5b89\u88c5)/.test(prompt);
+}
+
+function importSourceFromPrompt(prompt: string): Parameters<typeof createLibraryImportDraft>[1]["source"] | null {
+  const match = prompt.match(/https:\/\/github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)(?:[/?#][^\s\])>]*)?/i);
+  if (!match) return null;
+  return { kind: "github", repoUrl: `https://github.com/${match[1]}/${match[2]}` };
+}
+
 function sse(event: string, data: unknown): string {
   return `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+}
+
+function startLibrarySseHeartbeat(
+  context: RuntimeServerContext,
+  emit: (event: string, data: Record<string, unknown>) => void,
+  data: Record<string, unknown>,
+): ReturnType<typeof setInterval> {
+  const intervalMs = Math.max(1, context.libraryChatHeartbeatMs ?? 15_000);
+  return setInterval(() => {
+    emit("library.progress.keepalive", {
+      ...data,
+      at: new Date().toISOString(),
+    });
+  }, intervalMs);
+}
+
+async function replayCompletedLibraryChatAction(
+  context: RuntimeServerContext,
+  input: { sessionId: string; actionId: string; scope: string },
+  emit: (event: string, data: Record<string, unknown>) => void,
+): Promise<boolean> {
+  const action = await getResourceByKeyPg(context.db, "library_chat_action", input.actionId);
+  const actionPayload = asRecord(action?.payload);
+  const result = asRecord(actionPayload.result);
+  const draftId = optionalString(result.draftId);
+  if (action?.status !== "completed") return false;
+  if (!draftId && optionalString(result.intent) === "library_graph") {
+    const graphQuery = asGraphQuery(result.graphQuery);
+    emit("library.intent.completed", { intent: "cached_library_graph", confidence: 1 });
+    emit("library.graph.snapshot", await buildLibraryGraphReadModel(context.db, {
+      ...graphQuery,
+      scope: graphQuery.scope ?? input.scope,
+    }) as unknown as Record<string, unknown>);
+    emit("library.command.completed", { status: optionalString(result.status) ?? "completed", cached: true });
+    return true;
+  }
+  if (!draftId) return false;
+
+  const draft = await getResourceByKeyPg(context.db, "library_import_draft", draftId);
+  const draftPayload = asRecord(draft?.payload);
+  const candidates = Array.isArray(draftPayload.candidates) ? draftPayload.candidates : [];
+  emit("library.intent.completed", { intent: "cached_library_import", confidence: 1 });
+  if (candidates.length > 0) {
+    emit("library.import.candidates", {
+      draftId,
+      status: optionalString(draftPayload.status) ?? draft?.status ?? "draft",
+      title: "Import candidates",
+      candidates,
+      proposedEdges: Array.isArray(draftPayload.proposedEdges) ? draftPayload.proposedEdges : [],
+    });
+  } else {
+    const proposal = asRecord(draftPayload.proposal);
+    emit("library.proposal.created", {
+      draftId,
+      status: optionalString(draftPayload.status) ?? draft?.status ?? "draft",
+      title: "Draft library proposal",
+      objectKeys: Array.isArray(proposal.objectKeys) ? proposal.objectKeys : [],
+      objectSummaries: Array.isArray(proposal.objectSummaries) ? proposal.objectSummaries : [],
+      dependencies: Array.isArray(proposal.dependencies) ? proposal.dependencies : [],
+      filePaths: Array.isArray(proposal.files)
+        ? proposal.files.map((file) => isRecord(file) ? file.relativePath : undefined).filter(Boolean)
+        : [],
+    });
+  }
+  emit("library.command.completed", {
+    draftId,
+    status: optionalString(result.status) ?? "ready_for_review",
+    candidateCount: typeof result.candidateCount === "number" ? result.candidateCount : candidates.length,
+    cached: true,
+  });
+  return true;
+}
+
+async function updateLibraryChatAction(
+  context: RuntimeServerContext,
+  input: { sessionId: string; actionId: string },
+  status: string,
+  result: Record<string, unknown>,
+): Promise<void> {
+  const existing = await getResourceByKeyPg(context.db, "library_chat_action", input.actionId);
+  const payload = asRecord(existing?.payload);
+  const summary = asRecord(existing?.summary);
+  await upsertRuntimeResourcePg(context.db, {
+    resourceType: "library_chat_action",
+    resourceKey: input.actionId,
+    sessionId: input.sessionId,
+    scope: "library",
+    status,
+    title: existing?.title ?? `Library action: ${optionalString(payload.prompt) ?? input.actionId}`,
+    payload: {
+      ...payload,
+      result: {
+        ...asRecord(payload.result),
+        ...result,
+      },
+    },
+    summary: {
+      ...summary,
+      status,
+      result,
+    },
+  });
 }

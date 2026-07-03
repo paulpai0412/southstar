@@ -13,7 +13,7 @@ import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
 import { OperatorWorkspace } from "./operator/OperatorWorkspace";
-import { LibraryWorkspace } from "./library/LibraryWorkspace";
+import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./library/LibraryWorkspace";
 import type { Tab } from "./TabBar";
 import { SidecarShell, type SidecarMode } from "./SidecarShell";
 import { ModelsConfig } from "./ModelsConfig";
@@ -462,6 +462,18 @@ export function AppShell() {
     openSidecarTab({ id: `file:${filePath}`, label: fileName, filePath, kind: "file" });
   }, [openSidecarTab]);
 
+  const handleOpenLibraryFile = useCallback((file: { objectKey: string; title: string; sourcePath?: string }) => {
+    const tab: Tab = {
+      id: `library-file:${file.objectKey}`,
+      label: file.title || file.objectKey,
+      filePath: file.sourcePath ?? file.objectKey,
+      kind: "libraryFile",
+    };
+    setSidecarTabs((current) => [...current.filter((item) => item.kind !== "libraryFile"), tab]);
+    setActiveSidecarTabId(tab.id);
+    setSidecarMode((mode) => mode === "hidden" ? "floating" : mode);
+  }, []);
+
   const openOperatorTaskSidecar = useCallback((input: { runId: string; taskId: string; attentionId?: string }) => {
     const filePath = `${input.runId}/${input.taskId}`;
     const tabs: Tab[] = [
@@ -603,6 +615,9 @@ export function AppShell() {
         />
       );
     }
+    if (activeSidecarTab.kind === "libraryFile") {
+      return <LibraryFileSidecarPanel />;
+    }
     if (
       activeSidecarTab.kind === "operatorHistory" ||
       activeSidecarTab.kind === "operatorStream" ||
@@ -707,6 +722,9 @@ export function AppShell() {
           onNewSession={handleWorkflowSidebarNewSession}
           onRefreshSessions={handleWorkflowSidebarRefresh}
         />
+      </div>
+      <div data-testid="library-sidebar-panel" style={sidebarPanelStyle(appMode === "library")} aria-hidden={appMode !== "library"}>
+        <LibrarySidebarPanel />
       </div>
       <div data-testid="chat-sidebar-panel" style={sidebarPanelStyle(appMode === "chat")} aria-hidden={appMode !== "chat"}>
         <SessionSidebar
@@ -909,6 +927,7 @@ export function AppShell() {
         }
       }
     `}</style>
+    <LibraryWorkspaceProvider onOpenFile={handleOpenLibraryFile}>
     <div className="pi-app-shell" style={{ display: "flex", height: "100dvh", overflow: "hidden", background: "var(--bg)" }}>
       {/* Mobile overlay backdrop */}
       <div
@@ -1422,6 +1441,7 @@ export function AppShell() {
         {renderSidecarContent()}
       </SidecarShell>
     </div>
+    </LibraryWorkspaceProvider>
     {modelsConfigOpen && <ModelsConfig onClose={() => { setModelsConfigOpen(false); setModelsRefreshKey((k) => k + 1); }} />}
     {skillsConfigOpen && (skillsConfigCwd ?? currentCwd ?? activeCwd) && (
       <SkillsConfig cwd={(skillsConfigCwd ?? currentCwd ?? activeCwd)!} onClose={() => setSkillsConfigOpen(false)} />

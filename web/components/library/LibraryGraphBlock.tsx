@@ -7,6 +7,12 @@ import { LibraryGraphChart, type LibraryGraphChartEdge, type LibraryGraphChartNo
 type LibraryGraphData = {
   activeScope?: string;
   availableScopes?: string[];
+  query?: {
+    scope?: string;
+    kind?: string;
+    status?: string;
+    edgeType?: string;
+  };
   nodes?: LibraryGraphChartNode[];
   edges?: LibraryGraphChartEdge[];
 };
@@ -22,6 +28,30 @@ const KIND_OPTIONS = [
 ];
 
 const STATUS_OPTIONS = ["draft", "approved", "deprecated", "blocked"];
+const EDGE_TYPE_OPTIONS = [
+  "implements",
+  "provides_capability",
+  "requires_capability",
+  "supports_skill",
+  "requires_skill",
+  "allows_tool",
+  "requires_tool",
+  "uses_instruction",
+  "requires_secret_group",
+  "allows_mcp_grant",
+  "produces_artifact",
+  "consumes_artifact",
+  "validates_artifact",
+  "uses_policy",
+  "part_of_template",
+  "supersedes",
+  "blocked_by",
+  "uses",
+  "requires",
+  "conflicts_with",
+  "workflow_precedes",
+  "similar_to",
+];
 
 export function LibraryGraphBlock({
   data,
@@ -37,8 +67,9 @@ export function LibraryGraphBlock({
     ? initialGraph.activeScope
     : defaultScope || "all";
   const [selectedScope, setSelectedScope] = useState(initialScope);
-  const [selectedKind, setSelectedKind] = useState("all");
-  const [selectedStatus, setSelectedStatus] = useState("all");
+  const [selectedKind, setSelectedKind] = useState(initialGraph.query?.kind ?? "all");
+  const [selectedStatus, setSelectedStatus] = useState(initialGraph.query?.status ?? "all");
+  const [selectedEdgeType, setSelectedEdgeType] = useState(initialGraph.query?.edgeType ?? "all");
   const [graph, setGraph] = useState<LibraryGraphData>(initialGraph);
   const options = useMemo(() => {
     const discovered = Array.isArray(graph.availableScopes)
@@ -53,6 +84,7 @@ export function LibraryGraphBlock({
     const params = new URLSearchParams({ scope: selectedScope });
     if (selectedKind !== "all") params.set("kind", selectedKind);
     if (selectedStatus !== "all") params.set("status", selectedStatus);
+    if (selectedEdgeType !== "all") params.set("edgeType", selectedEdgeType);
     fetch(`/api/library/graph?${params.toString()}`, { cache: "no-store" })
       .then((response) => response.json())
       .then((payload) => {
@@ -62,7 +94,7 @@ export function LibraryGraphBlock({
     return () => {
       cancelled = true;
     };
-  }, [selectedKind, selectedScope, selectedStatus]);
+  }, [selectedEdgeType, selectedKind, selectedScope, selectedStatus]);
 
   const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter(isGraphNode) : [];
   const edges = Array.isArray(graph.edges) ? graph.edges.filter(isGraphEdge) : [];
@@ -109,10 +141,23 @@ export function LibraryGraphBlock({
               ))}
             </select>
           </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <span>Edge</span>
+            <select
+              data-testid="library-graph-edge-filter"
+              value={selectedEdgeType}
+              onChange={(event) => setSelectedEdgeType(event.currentTarget.value)}
+            >
+              <option value="all">all</option>
+              {EDGE_TYPE_OPTIONS.map((edgeType) => (
+                <option key={edgeType} value={edgeType}>{edgeType}</option>
+              ))}
+            </select>
+          </label>
         </div>
       </div>
       <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-        {selectedScope} / {selectedKind} / {selectedStatus} / {nodes.length} nodes / {edges.length} edges
+        {selectedScope} / {selectedKind} / {selectedStatus} / {selectedEdgeType} / {nodes.length} nodes / {edges.length} edges
       </div>
       <LibraryGraphChart nodes={nodes} edges={edges} onSelectNode={onSelectNode} />
     </div>
@@ -123,9 +168,14 @@ function toGraphData(value: Record<string, unknown>): LibraryGraphData {
   return {
     activeScope: typeof value.activeScope === "string" ? value.activeScope : undefined,
     availableScopes: Array.isArray(value.availableScopes) ? value.availableScopes.filter((scope): scope is string => typeof scope === "string") : undefined,
+    query: isGraphQuery(value.query) ? value.query : undefined,
     nodes: Array.isArray(value.nodes) ? value.nodes.filter(isGraphNode) : undefined,
     edges: Array.isArray(value.edges) ? value.edges.filter(isGraphEdge) : undefined,
   };
+}
+
+function isGraphQuery(value: unknown): value is NonNullable<LibraryGraphData["query"]> {
+  return Boolean(value && typeof value === "object");
 }
 
 function isGraphNode(value: unknown): value is LibraryGraphChartNode {

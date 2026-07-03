@@ -1,0 +1,321 @@
+import {
+  type LibraryImportCandidate,
+  type LibraryImportCandidateKind,
+  type LibraryImportEdgeType,
+  type LibraryImportProposedEdge,
+} from "./library-candidate-extractor.ts";
+import type { LibraryImportSourceDocument } from "./library-source-fetcher.ts";
+
+const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
+  "uses",
+  "requires",
+  "conflicts_with",
+  "workflow_precedes",
+  "similar_to",
+];
+const MAX_PROMPT_DOCUMENT_CHARS = 120_000;
+const MAX_DOCUMENT_EXCERPT_CHARS = 1_200;
+
+export type LibraryImportLlmProvider = (input: {
+  prompt: string;
+  scope: string;
+  documents: LibraryImportSourceDocument[];
+  requestPrompt?: string;
+  sourceRepoPath?: string;
+}) => Promise<unknown>;
+
+export async function analyzeLibraryImportWithLlm(input: {
+  documents: LibraryImportSourceDocument[];
+  scope: string;
+  llmProvider?: LibraryImportLlmProvider;
+  requestPrompt?: string;
+  sourceRepoPath?: string;
+}): Promise<{ candidates: LibraryImportCandidate[]; proposedEdges: LibraryImportProposedEdge[] }> {
+  const candidates = await analyzeLibraryImportCandidatesWithLlm(input);
+  return { candidates, proposedEdges: [] };
+}
+
+export async function analyzeLibraryImportCandidatesWithLlm(input: {
+  documents: LibraryImportSourceDocument[];
+  scope: string;
+  llmProvider?: LibraryImportLlmProvider;
+  requestPrompt?: string;
+  sourceRepoPath?: string;
+}): Promise<LibraryImportCandidate[]> {
+  if (!input.llmProvider) {
+    throw new Error("library import analysis requires an LLM provider");
+  }
+
+  const raw = await input.llmProvider({
+    scope: input.scope,
+    documents: input.documents,
+    requestPrompt: input.requestPrompt,
+    sourceRepoPath: input.sourceRepoPath,
+    prompt: buildLibraryImportCandidatePrompt(input.documents, input.scope, {
+      requestPrompt: input.requestPrompt,
+      sourceRepoPath: input.sourceRepoPath,
+    }),
+  });
+  return normalizeLlmImportAnalysis(raw, {
+    scope: input.scope,
+    sourcePaths: new Set(input.documents.map((document) => document.path)),
+  }).candidates;
+}
+
+export async function analyzeLibraryImportOntologyWithLlm(input: {
+  candidates: LibraryImportCandidate[];
+  scope: string;
+  llmProvider?: LibraryImportLlmProvider;
+  requestPrompt?: string;
+  sourceRepoPath?: string;
+  documents?: LibraryImportSourceDocument[];
+}): Promise<LibraryImportProposedEdge[]> {
+  if (!input.llmProvider) {
+    throw new Error("library import ontology analysis requires an LLM provider");
+  }
+  const documents = input.documents ?? [];
+  const raw = await input.llmProvider({
+    scope: input.scope,
+    documents,
+    requestPrompt: input.requestPrompt,
+    sourceRepoPath: input.sourceRepoPath,
+    prompt: buildLibraryImportOntologyPrompt(input.candidates, input.scope, {
+      requestPrompt: input.requestPrompt,
+      sourceRepoPath: input.sourceRepoPath,
+    }),
+  });
+  const candidateKeys = new Set(input.candidates.map((candidate) => candidate.objectKey));
+  return normalizeEdges(edgeArrayFromRecord(isRecord(typeof raw === "string" ? safeJsonParse(raw) : raw) ? (typeof raw === "string" ? safeJsonParse(raw) : raw) as Record<string, unknown> : {}), candidateKeys);
+}
+
+export function buildLibraryImportAnalysisPrompt(
+  documents: LibraryImportSourceDocument[],
+  scope: string,
+  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+): string {
+  return buildLibraryImportCandidatePrompt(documents, scope, options);
+}
+
+export function buildLibraryImportCandidatePrompt(
+  documents: LibraryImportSourceDocument[],
+  scope: string,
+  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+): string {
+  const manifest = documents.map((document) => `- ${document.path}: ${document.label}`).join("\n");
+  const excerpts = renderDocumentExcerpts(documents);
+  const requestSection = options.requestPrompt
+    ? ["UserImportRequest:", options.requestPrompt].join("\n")
+    : "";
+  const repoPathSection = options.sourceRepoPath
+    ? [
+      "LocalRepositoryPath:",
+      options.sourceRepoPath,
+      "Use this local repository path as the primary source of truth. Inspect the repository contents yourself before selecting candidates. Do not rely on path names alone.",
+    ].join("\n")
+    : "";
+  return [
+    "Classify the requested repository/library source into Southstar library candidates.",
+    "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
+    "Use this shape: {\"candidates\":[{\"objectKey\":\"agent.example\",\"kind\":\"agent\",\"title\":\"Example\",\"sourcePath\":\"relative/path.md\",\"selectedByDefault\":true,\"confidence\":0.9}]}",
+    "Allowed candidate kinds: agent, skill, mcp, tool.",
+    "If the user asks to import agents from a repo catalog, inspect the repo and return one agent candidate per real agent definition. Do not collapse many agents into a summary candidate.",
+    "For large repositories, first inspect repository catalog/index/list documents when present, then inspect representative linked definitions as needed before returning JSON.",
+    "Treat LocalRepositoryPath as read-only for this analysis. Do not create, edit, delete, or install files while analyzing candidates.",
+    `Scope: ${scope}`,
+    requestSection,
+    repoPathSection,
+    "OptionalDocumentManifest:",
+    manifest || "(none; inspect LocalRepositoryPath)",
+    "",
+    "OptionalDocumentContentExcerpts:",
+    excerpts || "(none; inspect LocalRepositoryPath)",
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+export function buildLibraryImportOntologyPrompt(
+  candidates: LibraryImportCandidate[],
+  scope: string,
+  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+): string {
+  const requestSection = options.requestPrompt
+    ? ["UserImportRequest:", options.requestPrompt].join("\n")
+    : "";
+  const repoPathSection = options.sourceRepoPath
+    ? [
+      "LocalRepositoryPath:",
+      options.sourceRepoPath,
+      "Use this local repository path as supporting evidence when deciding relationships. Treat it as read-only.",
+    ].join("\n")
+    : "";
+  return [
+    "Generate ontology edges for the selected Southstar library candidates.",
+    "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
+    "Use this shape: {\"proposedEdges\":[{\"fromObjectKey\":\"agent.example\",\"edgeType\":\"uses\",\"toObjectKey\":\"skill.example\",\"confidence\":0.8,\"rationale\":\"...\"}]}",
+    `Allowed ontology edges: ${ALLOWED_ONTOLOGY_EDGE_TYPES.join(", ")}.`,
+    "Only create edges between the selected candidates listed below. Omit uncertain edges.",
+    `Scope: ${scope}`,
+    requestSection,
+    repoPathSection,
+    "SelectedCandidates:",
+    JSON.stringify(candidates.map((candidate) => ({
+      objectKey: candidate.objectKey,
+      kind: candidate.kind,
+      title: candidate.title,
+      sourcePath: candidate.sourcePath,
+    }))),
+  ].filter((line) => line.length > 0).join("\n");
+}
+
+function renderDocumentExcerpts(documents: LibraryImportSourceDocument[]): string {
+  const chunks: string[] = [];
+  let remaining = MAX_PROMPT_DOCUMENT_CHARS;
+  for (const document of documents) {
+    if (remaining <= 0) break;
+    const excerpt = normalizeExcerpt(document.content).slice(0, Math.min(MAX_DOCUMENT_EXCERPT_CHARS, remaining));
+    const chunk = [
+      `--- ${document.path}`,
+      excerpt,
+    ].join("\n");
+    chunks.push(chunk);
+    remaining -= chunk.length;
+  }
+  return chunks.join("\n\n");
+}
+
+function normalizeExcerpt(content: string): string {
+  return content.replaceAll(/\r\n?/g, "\n").trim();
+}
+
+function normalizeLlmImportAnalysis(
+  raw: unknown,
+  options: { scope: string; sourcePaths: Set<string> },
+): { candidates: LibraryImportCandidate[]; proposedEdges: LibraryImportProposedEdge[] } {
+  const value = typeof raw === "string" ? safeJsonParse(raw) : raw;
+  const record = isRecord(value) ? value : {};
+  const candidates = normalizeCandidates(record.candidates, options);
+  const candidateKeys = new Set(candidates.map((candidate) => candidate.objectKey));
+  const proposedEdges = normalizeEdges(edgeArrayFromRecord(record), candidateKeys);
+  return { candidates, proposedEdges };
+}
+
+function normalizeCandidates(value: unknown, options: { scope: string; sourcePaths: Set<string> }): LibraryImportCandidate[] {
+  if (!Array.isArray(value)) return [];
+  const candidates: LibraryImportCandidate[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    if (!isRecord(candidate)) continue;
+    const kind = normalizeKind(candidate.kind);
+    if (!kind) continue;
+    const objectKey = canonicalizeObjectKeyFromSourcePath(
+      kind,
+      optionalString(candidate.objectKey) ?? objectKeyFromKindAndTitle(kind, optionalString(candidate.title)),
+      optionalString(candidate.sourcePath),
+    );
+    if (!objectKey || !objectKey.startsWith(`${kind}.`) || seen.has(objectKey)) continue;
+    const sourcePath = optionalString(candidate.sourcePath);
+    if (sourcePath && options.sourcePaths.size > 0 && !options.sourcePaths.has(sourcePath)) continue;
+    seen.add(objectKey);
+    candidates.push({
+      objectKey,
+      kind,
+      title: optionalString(candidate.title) ?? titleFromObjectKey(objectKey),
+      scope: options.scope,
+      ...(sourcePath ? { sourcePath } : {}),
+      selectedByDefault: typeof candidate.selectedByDefault === "boolean" ? candidate.selectedByDefault : true,
+      confidence: clampConfidence(candidate.confidence),
+    });
+  }
+  return candidates;
+}
+
+function normalizeEdges(value: unknown, candidateKeys: Set<string>): LibraryImportProposedEdge[] {
+  if (!Array.isArray(value)) return [];
+  const edges: LibraryImportProposedEdge[] = [];
+  const seen = new Set<string>();
+  for (const edge of value) {
+    if (!isRecord(edge)) continue;
+    const edgeType = normalizeEdgeType(edge.edgeType);
+    const fromObjectKey = optionalString(edge.fromObjectKey);
+    const toObjectKey = optionalString(edge.toObjectKey);
+    if (!edgeType || !fromObjectKey || !toObjectKey) continue;
+    if (!candidateKeys.has(fromObjectKey) || !candidateKeys.has(toObjectKey)) continue;
+    const identity = `${fromObjectKey}:${edgeType}:${toObjectKey}`;
+    if (seen.has(identity)) continue;
+    seen.add(identity);
+    edges.push({
+      fromObjectKey,
+      edgeType,
+      toObjectKey,
+      confidence: clampConfidence(edge.confidence),
+      ...(optionalString(edge.rationale) ? { rationale: optionalString(edge.rationale) } : {}),
+    });
+  }
+  return edges;
+}
+
+function edgeArrayFromRecord(record: Record<string, unknown>): unknown {
+  return Array.isArray(record.proposedEdges) ? record.proposedEdges : record.edges;
+}
+
+function safeJsonParse(value: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return {};
+  }
+}
+
+function normalizeKind(value: unknown): LibraryImportCandidateKind | null {
+  return value === "agent" || value === "skill" || value === "mcp" || value === "tool" ? value : null;
+}
+
+function normalizeEdgeType(value: unknown): LibraryImportEdgeType | null {
+  return ALLOWED_ONTOLOGY_EDGE_TYPES.includes(value as LibraryImportEdgeType)
+    ? value as LibraryImportEdgeType
+    : null;
+}
+
+function clampConfidence(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0.5;
+  return Math.min(1, Math.max(0, value));
+}
+
+function objectKeyFromKindAndTitle(kind: LibraryImportCandidateKind, title: string | undefined): string | null {
+  if (!title) return null;
+  const slug = title.replaceAll(/[^A-Za-z0-9._-]+/g, "-").replaceAll(/^-+|-+$/g, "").toLowerCase();
+  return slug.length > 0 ? `${kind}.${slug}` : null;
+}
+
+function canonicalizeObjectKeyFromSourcePath(
+  kind: LibraryImportCandidateKind,
+  objectKey: string | null,
+  sourcePath: string | undefined,
+): string | null {
+  if (!objectKey || !sourcePath) return objectKey;
+  const normalizedPath = sourcePath.replaceAll("\\", "/");
+  const segments = normalizedPath.split("/").filter(Boolean);
+  if (segments.length === 0) return objectKey;
+  const fileName = segments.at(-1);
+  if (!fileName) return objectKey;
+  const stem = fileName.replace(/\.[^.]+$/, "");
+  if (!objectKey.startsWith(`${kind}.`)) return `${kind}.${stem}`;
+  const slugSegments = objectKey.slice(`${kind}.`.length).split(".").filter(Boolean);
+  if (slugSegments.length > 1 && slugSegments.at(-1) === stem) return `${kind}.${stem}`;
+  return objectKey;
+}
+
+function titleFromObjectKey(objectKey: string): string {
+  const slug = objectKey.replace(/^[^.]+\./, "");
+  return slug.split(/[-_.]+/g)
+    .filter(Boolean)
+    .map((part) => `${part.slice(0, 1).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

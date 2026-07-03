@@ -13,6 +13,7 @@ export interface Tab {
     | "workflowResource"
     | "workflowStaticNodeProfile"
     | "workflowNodeProfile"
+    | "libraryFile"
     | "operatorHistory"
     | "operatorStream"
     | "operatorActions"

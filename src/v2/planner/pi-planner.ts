@@ -133,25 +133,34 @@ export type PiSdkPlannerSession = {
 };
 
 export type PiSdkPlannerClientOptions = {
-  createSession?: () => Promise<PiSdkPlannerSession>;
+  createSession?: (input: { cwd: string; noTools?: "all" | null }) => Promise<PiSdkPlannerSession>;
+  cwd?: string;
   model?: { provider: string; modelId: string };
+  noTools?: "all" | null;
   timeoutMs?: number;
 };
 
 export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}): PiPlannerClient {
   return {
     async generate(prompt: string): Promise<string> {
-      const session = await (options.createSession ?? createDefaultPiSdkSession)();
+      const session = await (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options));
       markPiSdkPlannerSessionAsWorkflow(session);
       await configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv());
       return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000);
     },
     async generateStream(prompt: string, handlers: PiPlannerStreamHandlers = {}): Promise<string> {
-      const session = await (options.createSession ?? createDefaultPiSdkSession)();
+      const session = await (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options));
       markPiSdkPlannerSessionAsWorkflow(session);
       await configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv());
       return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000, handlers);
     },
+  };
+}
+
+function plannerSessionOptions(options: PiSdkPlannerClientOptions): { cwd: string; noTools?: "all" | null } {
+  return {
+    cwd: options.cwd ?? process.cwd(),
+    noTools: options.noTools === undefined ? "all" : options.noTools,
   };
 }
 
@@ -448,14 +457,15 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-async function createDefaultPiSdkSession(): Promise<PiSdkPlannerSession> {
+async function createDefaultPiSdkSession(input: { cwd: string; noTools?: "all" | null }): Promise<PiSdkPlannerSession> {
   const pi = await import("@earendil-works/pi-coding-agent");
   const result = await pi.createAgentSession({
-    noTools: "all",
+    ...(input.noTools ? { noTools: input.noTools } : {}),
+    cwd: input.cwd,
     sessionStartEvent: {
       mode: "sdk",
       source: "southstar-pi-planner",
-      cwd: process.cwd(),
+      cwd: input.cwd,
     } as never,
   });
   return result.session as unknown as PiSdkPlannerSession;

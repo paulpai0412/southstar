@@ -199,8 +199,8 @@ test("accepts library chat messages and streams deterministic SSE events", async
     const frames = parseSseFrames(stream);
     const proposal = frames.find((frame) => frame.event === "library.proposal.created");
     assert.equal(proposal?.data.title, "Draft library proposal");
-    assert.deepEqual(proposal?.data.objectKeys, []);
-    assert.deepEqual(proposal?.data.filePaths, []);
+    assert.deepEqual(proposal?.data.objectKeys, ["skill.browser-verification"]);
+    assert.deepEqual(proposal?.data.filePaths, ["skills/browser-verification.skill.md"]);
     const completed = frames.find((frame) => frame.event === "library.command.completed");
     assert.equal(completed?.data.status, "ready_for_review");
 
@@ -221,6 +221,165 @@ test("accepts library chat messages and streams deterministic SSE events", async
     const missingError = await readEnvelope(missingStream);
     assert.equal(missingError.ok, false);
     assert.match(missingError.error, /was not found/);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("library chat import streams keepalive progress, candidates, and completes the action resource", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-chat-import-"));
+  const providerCalls: Array<{ sourceRepoPath?: string; prompt: string }> = [];
+
+  try {
+    const context = {
+      db,
+      libraryRoot,
+      libraryChatHeartbeatMs: 5,
+      libraryImportSourceFetcher: async () => ({
+        documents: [],
+        repoPath: "/tmp/southstar-library-imports/jnMetaCode-agency-agents-zh-test",
+      }),
+      libraryImportLlmProvider: async (input: any) => {
+        providerCalls.push({ sourceRepoPath: input.sourceRepoPath, prompt: input.prompt });
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        return {
+          candidates: [
+            {
+              objectKey: "agent.academic-anthropologist",
+              kind: "agent",
+              title: "人类学家",
+              sourcePath: "academic/academic-anthropologist.md",
+              selectedByDefault: true,
+              confidence: 0.99,
+            },
+            {
+              objectKey: "agent.engineering-frontend-developer",
+              kind: "agent",
+              title: "前端开发者",
+              sourcePath: "engineering/engineering-frontend-developer.md",
+              selectedByDefault: true,
+              confidence: 0.99,
+            },
+          ],
+        };
+      },
+    } as any;
+
+    const messageResponse = await handleRuntimeRoute(
+      context,
+      new Request("http://local/api/v2/library/chat/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: "library-chat-import-test",
+          prompt: "將 https://github.com/jnMetaCode/agency-agents-zh 內的266個agent存入southstar library",
+          scope: "software",
+        }),
+      }),
+    );
+    assert.equal(messageResponse.status, 200);
+    const message = await readEnvelope(messageResponse);
+
+    const streamResponse = await handleRuntimeRoute(
+      context,
+      new Request(
+        `http://local/api/v2/library/chat/events?sessionId=library-chat-import-test&actionId=${message.result.actionId}`,
+      ),
+    );
+
+    assert.equal(streamResponse.status, 200);
+    const frames = parseSseFrames(await streamResponse.text());
+    assert.ok(frames.some((frame) => frame.event === "library.progress.keepalive"));
+
+    const candidates = frames.find((frame) => frame.event === "library.import.candidates");
+    assert.equal(candidates?.data.status, "draft");
+    assert.deepEqual(candidates?.data.candidates.map((candidate: any) => candidate.objectKey), [
+      "agent.academic-anthropologist",
+      "agent.engineering-frontend-developer",
+    ]);
+
+    const completed = frames.find((frame) => frame.event === "library.command.completed");
+    assert.equal(completed?.data.status, "ready_for_review");
+    assert.equal(completed?.data.candidateCount, 2);
+    assert.equal(completed?.data.draftId, candidates?.data.draftId);
+
+    assert.equal(providerCalls[0]?.sourceRepoPath, "/tmp/southstar-library-imports/jnMetaCode-agency-agents-zh-test");
+
+    const actionResource = await getResourceByKeyPg(db, "library_chat_action", message.result.actionId);
+    assert.equal(actionResource?.status, "completed");
+    assert.equal((actionResource?.payload as any).result.draftId, candidates?.data.draftId);
+    assert.equal((actionResource?.payload as any).result.candidateCount, 2);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("library chat graph prompts stream and replay graph snapshot blocks", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-chat-graph-"));
+
+  try {
+    const context = { db, libraryRoot } as any;
+    await seedObject(db, "agent.frontend-developer", "agent_definition", "software", "Frontend Developer");
+    await seedObject(db, "skill.react-ui", "skill_definition", "software", "React UI");
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "requires_skill",
+      toObjectKey: "skill.react-ui",
+      scope: "software",
+    });
+
+    const messageResponse = await handleRuntimeRoute(
+      context,
+      new Request("http://local/api/v2/library/chat/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: "library-chat-graph-test",
+          prompt: "show software graph edgeType requires_skill",
+          scope: "software",
+        }),
+      }),
+    );
+    assert.equal(messageResponse.status, 200);
+    const message = await readEnvelope(messageResponse);
+
+    const firstStreamResponse = await handleRuntimeRoute(
+      context,
+      new Request(
+        `http://local/api/v2/library/chat/events?sessionId=library-chat-graph-test&actionId=${message.result.actionId}`,
+      ),
+    );
+    assert.equal(firstStreamResponse.status, 200);
+    const firstFrames = parseSseFrames(await firstStreamResponse.text());
+    const graph = firstFrames.find((frame) => frame.event === "library.graph.snapshot");
+    assert.deepEqual(graph?.data.nodes.map((node: any) => node.objectKey), [
+      "agent.frontend-developer",
+      "skill.react-ui",
+    ]);
+    assert.deepEqual(graph?.data.edges.map((edge: any) => edge.edgeType), ["requires_skill"]);
+
+    const actionResource = await getResourceByKeyPg(db, "library_chat_action", message.result.actionId);
+    assert.equal(actionResource?.status, "completed");
+    assert.equal((actionResource?.payload as any).result.intent, "library_graph");
+    assert.deepEqual((actionResource?.payload as any).result.graphQuery, {
+      edgeType: "requires_skill",
+      scope: "software",
+    });
+
+    const replayStreamResponse = await handleRuntimeRoute(
+      context,
+      new Request(
+        `http://local/api/v2/library/chat/events?sessionId=library-chat-graph-test&actionId=${message.result.actionId}`,
+      ),
+    );
+    assert.equal(replayStreamResponse.status, 200);
+    const replayFrames = parseSseFrames(await replayStreamResponse.text());
+    assert.equal(replayFrames.some((frame) => frame.event === "library.graph.snapshot"), true);
+    assert.equal(replayFrames.find((frame) => frame.event === "library.command.completed")?.data.cached, true);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

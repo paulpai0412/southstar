@@ -40,7 +40,12 @@ export type LibraryEdgeType =
   | "uses_policy"
   | "part_of_template"
   | "supersedes"
-  | "blocked_by";
+  | "blocked_by"
+  | "uses"
+  | "requires"
+  | "conflicts_with"
+  | "workflow_precedes"
+  | "similar_to";
 
 export type LibraryObjectSummary = {
   id: string;

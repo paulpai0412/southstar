@@ -26,21 +26,29 @@ test("LibraryGraphBlock exposes domain kind and status filters and fetches filte
         data={{
           activeScope: "software",
           availableScopes: ["all", "software", "research"],
+          query: { edgeType: "workflow_precedes" },
           nodes: [{ objectKey: "agent.frontend-developer", objectKind: "agent_definition", status: "approved", title: "Frontend Developer" }],
           edges: [],
         }}
       />
     );
   `, async (page) => {
+    assert.equal(await page.locator('[data-testid="library-graph-edge-filter"]').inputValue(), "workflow_precedes");
+    await page.waitForFunction(() => (
+      window.__graphRequests?.some((query) => query.includes("edgeType=workflow_precedes"))
+    ));
+
     await page.locator('[data-testid="library-graph-domain-filter"]').selectOption("research");
     await page.locator('[data-testid="library-graph-kind-filter"]').selectOption("skill_spec");
     await page.locator('[data-testid="library-graph-status-filter"]').selectOption("draft");
+    await page.locator('[data-testid="library-graph-edge-filter"]').selectOption("uses");
 
     await page.waitForFunction(() => (
       window.__graphRequests?.some((query) => (
         query.includes("scope=research")
         && query.includes("kind=skill_spec")
         && query.includes("status=draft")
+        && query.includes("edgeType=uses")
       ))
     ));
 
@@ -48,6 +56,7 @@ test("LibraryGraphBlock exposes domain kind and status filters and fetches filte
       query.includes("scope=research")
       && query.includes("kind=skill_spec")
       && query.includes("status=draft")
+      && query.includes("edgeType=uses")
     )), true);
   }, async (page) => {
     await page.addInitScript(() => {
@@ -88,14 +97,23 @@ test("LibraryGraphChart emits selected node events for file viewer integration",
 
     createRoot(document.getElementById("root")).render(
       <LibraryGraphChart
-        nodes={[{ objectKey: "agent.frontend-developer", objectKind: "agent_definition", title: "Frontend Developer" }]}
-        edges={[]}
+        nodes={[
+          { objectKey: "agent.frontend-developer", objectKind: "agent_definition", title: "Frontend Developer" },
+          { objectKey: "skill.react-ui", objectKind: "skill_spec", title: "React UI" },
+        ]}
+        edges={[{
+          fromObjectKey: "agent.frontend-developer",
+          edgeType: "uses",
+          toObjectKey: "skill.react-ui",
+          ontology: { confidence: 0.91, category: "usage" },
+        }]}
         onSelectNode={(node) => {
           window.__selectedGraphNode = node.objectKey;
         }}
       />
     );
   `, async (page) => {
+    await assertText(page, '[data-testid="library-graph-chart"]', "uses 0.91");
     const graphNode = page.getByRole("button", { name: "Frontend Developer" });
     await graphNode.press("Enter");
     assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.frontend-developer");
@@ -182,4 +200,9 @@ function resolveWebPath(path: string): { path: string } {
     }
   }
   return { path: base };
+}
+
+async function assertText(page: Page, selector: string, expected: string): Promise<void> {
+  const text = await page.locator(selector).textContent();
+  assert.match(text ?? "", new RegExp(expected));
 }

@@ -25,11 +25,29 @@ export type LibraryGraphEdge = {
   scope: string;
   status: LibraryEdgeRecord["status"];
   weight: number;
+  ontology?: LibraryGraphEdgeOntology;
+};
+
+export type LibraryGraphEdgeOntology = {
+  category?: string;
+  confidence?: number;
+  rationale?: string;
+  source?: string;
+  draftId?: string;
+  evidenceRefs?: string[];
 };
 
 export type LibraryGraphReadModel = {
   activeScope: string;
   availableScopes: string[];
+  query: {
+    scope?: string;
+    objectKey?: string;
+    depth?: number;
+    kind?: LibraryDefinitionKind;
+    status?: LibraryDefinitionStatus;
+    edgeType?: LibraryEdgeType;
+  };
   nodes: LibraryGraphNode[];
   edges: LibraryGraphEdge[];
 };
@@ -42,6 +60,7 @@ export async function buildLibraryGraphReadModel(
     depth?: number;
     kind?: LibraryDefinitionKind;
     status?: LibraryDefinitionStatus;
+    edgeType?: LibraryEdgeType;
   } = {},
 ): Promise<LibraryGraphReadModel> {
   const activeScope = input.scope && input.scope !== "all" ? input.scope : "all";
@@ -53,7 +72,11 @@ export async function buildLibraryGraphReadModel(
   });
   const scopedEdges = activeScope === "all" ? await listLibraryEdges(db) : await listLibraryEdges(db, { scope: activeScope });
   const objectByKey = new Map(scopedObjects.map((object) => [object.objectKey, object]));
-  const candidateEdges = scopedEdges.filter((edge) => objectByKey.has(edge.fromObjectKey) && objectByKey.has(edge.toObjectKey));
+  const candidateEdges = scopedEdges.filter((edge) => (
+    objectByKey.has(edge.fromObjectKey)
+    && objectByKey.has(edge.toObjectKey)
+    && (!input.edgeType || edge.edgeType === input.edgeType)
+  ));
   const scopeVisibleKeys = buildScopeVisibleKeys(activeScope, scopedObjects, candidateEdges);
   const neighborhoodKeys = input.objectKey
     ? buildNeighborhoodKeys(input.objectKey, objectByKey, candidateEdges, input.depth ?? 1)
@@ -69,6 +92,14 @@ export async function buildLibraryGraphReadModel(
   return {
     activeScope,
     availableScopes: buildAvailableScopes(allObjects),
+    query: {
+      scope: input.scope && input.scope !== "all" ? input.scope : undefined,
+      objectKey: input.objectKey,
+      depth: input.depth,
+      kind: input.kind,
+      status: input.status,
+      edgeType: input.edgeType,
+    },
     nodes,
     edges: visibleEdges.map(toGraphEdge),
   };
@@ -162,6 +193,7 @@ function compareVisibleObjects(activeScope: string, left: LibraryObjectSummary, 
 }
 
 function toGraphEdge(edge: LibraryEdgeRecord): LibraryGraphEdge {
+  const ontology = toGraphEdgeOntology(edge);
   return {
     id: edge.id,
     fromObjectKey: edge.fromObjectKey,
@@ -170,7 +202,47 @@ function toGraphEdge(edge: LibraryEdgeRecord): LibraryGraphEdge {
     scope: edge.scope,
     status: edge.status,
     weight: edge.weight,
+    ...(ontology ? { ontology } : {}),
   };
+}
+
+function toGraphEdgeOntology(edge: LibraryEdgeRecord): LibraryGraphEdgeOntology | undefined {
+  const metadata = edge.metadata;
+  const ontology: LibraryGraphEdgeOntology = {};
+  const derivedCategory = ontologyCategoryForEdgeType(edge.edgeType);
+
+  if (typeof metadata.ontologyCategory === "string" && metadata.ontologyCategory.length > 0) {
+    ontology.category = metadata.ontologyCategory;
+  } else if (derivedCategory) {
+    ontology.category = derivedCategory;
+  }
+  if (typeof metadata.confidence === "number") ontology.confidence = metadata.confidence;
+  if (typeof metadata.rationale === "string") ontology.rationale = metadata.rationale;
+  if (typeof metadata.source === "string") ontology.source = metadata.source;
+  else if (typeof metadata.sourceKind === "string") ontology.source = metadata.sourceKind;
+  if (typeof metadata.draftId === "string") ontology.draftId = metadata.draftId;
+  if (Array.isArray(metadata.evidenceRefs) && metadata.evidenceRefs.every((ref) => typeof ref === "string")) {
+    ontology.evidenceRefs = metadata.evidenceRefs;
+  }
+
+  return Object.keys(ontology).length > 0 || derivedCategory ? ontology : undefined;
+}
+
+function ontologyCategoryForEdgeType(edgeType: LibraryEdgeType): string | undefined {
+  switch (edgeType) {
+    case "uses":
+      return "usage";
+    case "requires":
+      return "requirement";
+    case "conflicts_with":
+      return "conflict";
+    case "workflow_precedes":
+      return "workflow_order";
+    case "similar_to":
+      return "similarity";
+    default:
+      return undefined;
+  }
 }
 
 function objectBelongsToScope(object: LibraryObjectSummary, scope: string): boolean {
