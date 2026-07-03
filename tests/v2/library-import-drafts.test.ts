@@ -11,6 +11,7 @@ import {
   analyzeLibraryImportWithLlm,
   type LibraryImportLlmProvider,
 } from "../../src/v2/design-library/importers/library-llm-import-analyzer.ts";
+import type { LibraryImportSourceFetcher } from "../../src/v2/design-library/importers/library-source-fetcher.ts";
 import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
 import { findLibraryObjectByKey, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -904,6 +905,86 @@ test("POST /api/v2/library/import-drafts creates a draft from a canonical paste 
     const resource = await getResourceByKeyPg(db, "library_import_draft", envelope.result.draftId);
     assert.equal((resource?.payload as any).source.kind, "paste");
     assert.equal((resource?.payload as any).source.label, "browser skill prompt");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("POST /api/v2/library/import-drafts forwards configured import analysis providers for github sources", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-github-"));
+  const libraryImportSourceFetcher: LibraryImportSourceFetcher = async () => [
+    {
+      path: "agents/reviewer.agent.md",
+      label: "Reviewer",
+      content: "# Reviewer\nUses the review skill.",
+    },
+    {
+      path: "skills/review.skill.md",
+      label: "Review",
+      content: "# Review Skill\nReview changes.",
+    },
+  ];
+  const libraryImportLlmProvider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      {
+        objectKey: "agent.reviewer",
+        kind: "agent",
+        title: "Reviewer",
+        sourcePath: "agents/reviewer.agent.md",
+        selectedByDefault: true,
+        confidence: 0.9,
+      },
+      {
+        objectKey: "skill.review",
+        kind: "skill",
+        title: "Review",
+        sourcePath: "skills/review.skill.md",
+        selectedByDefault: true,
+        confidence: 0.8,
+      },
+    ],
+    proposedEdges: [
+      { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.95 },
+    ],
+  });
+
+  try {
+    const response = await handleRuntimeRoute({
+      db,
+      libraryRoot,
+      libraryImportSourceFetcher,
+      libraryImportLlmProvider,
+    } as any, new Request("http://local/api/v2/library/import-drafts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        source: { kind: "github", repoUrl: "https://github.com/acme/library" },
+        scope: "software",
+      }),
+    }));
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json() as any;
+    assert.equal(envelope.ok, true);
+    assert.equal(envelope.kind, "library-import-draft");
+    assert.deepEqual(envelope.result.documents.map((doc: any) => doc.path), [
+      "agents/reviewer.agent.md",
+      "skills/review.skill.md",
+    ]);
+    assert.deepEqual(envelope.result.candidates.map((candidate: any) => candidate.objectKey), [
+      "agent.reviewer",
+      "skill.review",
+    ]);
+    assert.deepEqual(envelope.result.proposedEdges, [
+      {
+        fromObjectKey: "agent.reviewer",
+        edgeType: "uses",
+        toObjectKey: "skill.review",
+        confidence: 0.95,
+      },
+    ]);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

@@ -83,6 +83,8 @@ export async function handleLibraryRoute(
     return json("library-import-draft", await createLibraryImportDraft(context.db, {
       source: asImportSource(body.source),
       scope: optionalString(body.scope) ?? "software",
+      sourceFetcher: context.libraryImportSourceFetcher,
+      llmProvider: context.libraryImportLlmProvider,
     }));
   }
 
@@ -122,6 +124,8 @@ export async function handleLibraryRoute(
     const draft = await createLibraryImportDraft(context.db, {
       source: { kind: "paste", label: "Prompt import", content: prompt },
       scope,
+      sourceFetcher: context.libraryImportSourceFetcher,
+      llmProvider: context.libraryImportLlmProvider,
     });
     return json("library-import-prompt", {
       ...draft,
