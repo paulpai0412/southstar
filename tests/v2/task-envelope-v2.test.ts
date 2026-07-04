@@ -35,6 +35,25 @@ test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from Con
     vaultLeases: [{ leaseRef: "vault-lease-1", mountAs: "file", secretValue: "do-not-leak" }],
     artifactContracts,
     evaluatorPipeline,
+    toolProxyPolicy: {
+      schemaVersion: "southstar.tool_proxy_policy.v1",
+      runId: "run-env2",
+      sessionId: "session-1",
+      allowedTools: ["workspace-read"],
+      requiredProxyTools: ["workspace-read-proxy"],
+      forbiddenDirectEnvKeys: [],
+      vaultLeaseRefs: [],
+      maxLeaseTtlSeconds: 900,
+      redactResultPayloads: true,
+      failClosed: true,
+    },
+    materializedLibraryRefs: {
+      instructionRefs: ["instruction.software"],
+      skillRefs: ["skill.react-ui"],
+      toolGrantRefs: ["tool.workspace-read"],
+      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      vaultLeasePolicyRefs: [],
+    },
     session: { sessionId: "session-1", baseCheckpointId: "checkpoint-0" },
     workspace: {
       handle: { repoRoot: "/tmp/repo", worktreePath: "/tmp/repo" },
@@ -50,6 +69,12 @@ test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from Con
   assert.match(envelope.agentPrompt, /ContextPacket: ctx-env2/);
   assert.match(envelope.agentPrompt, /Task goal:\nImplement calc sum/);
   assert.match(envelope.agentPrompt, /Southstar runtime owns workflow orchestration, session state, evaluator execution, and stop-condition decisions/);
+  assert.match(envelope.agentPrompt, /Runtime grants:/);
+  assert.match(envelope.agentPrompt, /These entries are grant policy, not bundled tool or MCP server implementations/);
+  assert.match(envelope.agentPrompt, /Allowed tools: workspace-read/);
+  assert.match(envelope.agentPrompt, /Required proxy tools: workspace-read-proxy/);
+  assert.match(envelope.agentPrompt, /MCP grant filesystem-workspace: read, edit/);
+  assert.match(envelope.agentPrompt, /Materialized library refs: instruction\.software, skill\.react-ui, tool\.workspace-read, mcp\.filesystem-workspace/);
   assert.match(envelope.agentPrompt, /Memory:\n- Prefer tests around calc sum behavior/);
   assert.match(envelope.agentPrompt, /Artifact contracts:\n- implementation_report/);
   assert.doesNotMatch(JSON.stringify(envelope), /do-not-leak/);

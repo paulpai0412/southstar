@@ -3,6 +3,7 @@ export type LibraryDefinitionKind =
   | "agent_definition"
   | "agent_profile"
   | "skill_definition"
+  | "domain_taxonomy"
   | "mcp_tool_grant"
   | "artifact_contract"
   | "evaluator_profile"
@@ -41,11 +42,25 @@ export type LibraryEdgeType =
   | "part_of_template"
   | "supersedes"
   | "blocked_by"
+  | "belongs_to_domain"
+  | "has_capability"
+  | "provides"
   | "uses"
   | "requires"
   | "conflicts_with"
+  | "precedes"
   | "workflow_precedes"
-  | "similar_to";
+  | "unblocks"
+  | "validates"
+  | "reviews"
+  | "produces"
+  | "consumes"
+  | "similar_to"
+  | "substitutes"
+  | "complements"
+  | "incompatible_with"
+  | "requires_approval"
+  | "requires_secret";
 
 export type LibraryObjectSummary = {
   id: string;
@@ -235,6 +250,35 @@ export type CandidateSummary = {
   reason: string;
 };
 
+export type GraphMetadataNodeCandidate = {
+  ref: string;
+  kind: LibraryDefinitionKind;
+  status: LibraryDefinitionStatus;
+  versionRef: string | null;
+  scope: string;
+  title: string;
+  description?: string;
+  aliases: string[];
+  bodyPreview?: string;
+  runtime?: Record<string, unknown>;
+};
+
+export type GraphMetadataEdgeCandidate = {
+  from: string;
+  type: LibraryEdgeType;
+  to: string;
+  scope: string;
+  weight: number;
+  rationale?: string;
+};
+
+export type GraphMetadataCandidatePacket = {
+  schemaVersion: "southstar.graph_metadata_candidates.v1";
+  scope: string;
+  nodes: GraphMetadataNodeCandidate[];
+  edges: GraphMetadataEdgeCandidate[];
+};
+
 export type CandidatePacket = {
   requirementSpec: RequirementSpecV2;
   workflowTemplateCandidates: CandidateSummary[];
@@ -255,6 +299,7 @@ export type CandidatePacket = {
     mcpGrants: string[];
     instructions: string[];
   };
+  graphMetadataCandidates?: GraphMetadataCandidatePacket;
   unavailableRequirements: Array<{
     capabilityRef: string;
     reason: "no_approved_candidate" | "blocked_by_policy" | "requires_approval";
@@ -337,6 +382,7 @@ export type WorkflowCompositionValidationIssueCode =
   | "input_artifact_not_satisfied"
   | "template_slot_not_allowed"
   | "policy_conflict"
+  | "conflicting_refs"
   | "evaluator_does_not_validate_artifact"
   | "generated_component_selected";
 

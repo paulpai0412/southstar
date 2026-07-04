@@ -97,6 +97,69 @@ test("workflow composition rejects generated profiles with invalid primitive gra
   }
 });
 
+test("workflow composition rejects generated profile refs absent from graph metadata candidates", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+    packet.graphMetadataCandidates = {
+      schemaVersion: "southstar.graph_metadata_candidates.v1",
+      scope: "software",
+      nodes: packet.graphMetadataCandidates!.nodes.filter((node) => node.ref !== "skill.react-ui"),
+      edges: packet.graphMetadataCandidates!.edges.filter((edge) => edge.from !== "skill.react-ui" && edge.to !== "skill.react-ui"),
+    };
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, generatedProfilePlan(), { scope: "software" });
+
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((issue) => issue.code === "ref_not_in_candidate_packet" && issue.message.includes("skill.react-ui")), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow composition rejects generated profile that ignores graph metadata conflict edges", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    await upsertLibraryObject(db, {
+      objectKey: "skill.legacy-ui",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.legacy-ui@1",
+      state: { scope: "software", title: "Legacy UI" },
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "supports_skill",
+      toObjectKey: "skill.legacy-ui",
+      scope: "software",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "skill.react-ui",
+      edgeType: "conflicts_with",
+      toObjectKey: "skill.legacy-ui",
+      scope: "software",
+    });
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+    const plan = generatedProfilePlan();
+    plan.tasks[0]!.skillRefs = ["skill.react-ui", "skill.legacy-ui"];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
+
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((issue) => issue.code === "conflicting_refs"), true);
+  } finally {
+    await db.close();
+  }
+});
+
 function requirementSpec() {
   return {
     summary: "Build a todo web app",

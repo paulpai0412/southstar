@@ -138,6 +138,9 @@ export function buildTaskEnvelopeV2(input: Omit<TaskEnvelopeV2, "schemaVersion" 
     agentPrompt: input.agentPrompt ?? renderContextPacketPrompt(input.contextPacket, {
       role: input.role,
       agentProfile: input.agentProfile,
+      mcpGrants: input.mcpGrants,
+      toolProxyPolicy: input.toolProxyPolicy,
+      materializedLibraryRefs: input.materializedLibraryRefs,
       artifactContracts: input.artifactContracts,
       evaluatorPipeline: input.evaluatorPipeline,
     }),
@@ -151,6 +154,9 @@ export function refreshTaskEnvelopeV2Prompt(envelope: TaskEnvelopeV2): TaskEnvel
     agentPrompt: renderContextPacketPrompt(envelope.contextPacket, {
       role: envelope.role,
       agentProfile: envelope.agentProfile,
+      mcpGrants: envelope.mcpGrants,
+      toolProxyPolicy: envelope.toolProxyPolicy,
+      materializedLibraryRefs: envelope.materializedLibraryRefs,
       artifactContracts: envelope.artifactContracts,
       evaluatorPipeline: envelope.evaluatorPipeline,
     }),
@@ -162,6 +168,9 @@ function renderContextPacketPrompt(
   input: {
     role: RoleDefinition;
     agentProfile: AgentProfile;
+    mcpGrants: McpGrantInput[];
+    toolProxyPolicy?: ToolProxyPolicyPayload;
+    materializedLibraryRefs?: TaskEnvelopeV2["materializedLibraryRefs"];
     artifactContracts: ArtifactContract[];
     evaluatorPipeline: EvaluatorPipelineDefinition;
   },
@@ -192,6 +201,7 @@ function renderContextPacketPrompt(
     formatBlocks("Workspace", packet.workspaceSummary ? [packet.workspaceSummary] : []),
     formatBlocks("Skills", packet.skillInstructions),
     formatBlocks("MCP grants", packet.mcpGrantSummary),
+    formatRuntimeGrantContract(input),
     formatArtifactContracts(input.artifactContracts),
     "",
     `Evaluator pipeline: ${input.evaluatorPipeline.id}`,
@@ -203,6 +213,43 @@ function renderContextPacketPrompt(
 function formatBlocks(title: string, blocks: ContextBlock[]): string {
   if (blocks.length === 0) return "";
   return ["", `${title}:`, ...blocks.map((block) => `- ${block.text}`)].join("\n");
+}
+
+function formatRuntimeGrantContract(input: {
+  mcpGrants: McpGrantInput[];
+  toolProxyPolicy?: ToolProxyPolicyPayload;
+  materializedLibraryRefs?: TaskEnvelopeV2["materializedLibraryRefs"];
+}): string {
+  const lines = [
+    "",
+    "Runtime grants:",
+    "The task bundle is mounted read-only under /southstar-runs/<runId>/<taskId> in the container.",
+    "Use tools and MCP servers only when they are granted here. These entries are grant policy, not bundled tool or MCP server implementations.",
+    "Grant files can include: agent-profile/profile.json, context-packet.json, runtime-manifest.json, tools/tool-policy.json, mcp/grants.json, skills/<skillId>/SKILL.md.",
+  ];
+  if (input.toolProxyPolicy) {
+    lines.push(`Allowed tools: ${input.toolProxyPolicy.allowedTools.length > 0 ? input.toolProxyPolicy.allowedTools.join(", ") : "none"}.`);
+    lines.push(`Required proxy tools: ${input.toolProxyPolicy.requiredProxyTools.length > 0 ? input.toolProxyPolicy.requiredProxyTools.join(", ") : "none"}.`);
+  }
+  if (input.mcpGrants.length > 0) {
+    lines.push(
+      ...input.mcpGrants.map((grant) =>
+        `MCP grant ${grant.serverId}: ${grant.allowedTools.length > 0 ? grant.allowedTools.join(", ") : "no tools"}.`
+      ),
+    );
+  }
+  const refs = input.materializedLibraryRefs;
+  if (refs) {
+    const selectedRefs = [
+      ...refs.instructionRefs,
+      ...refs.skillRefs,
+      ...refs.toolGrantRefs,
+      ...refs.mcpGrantRefs,
+      ...refs.vaultLeasePolicyRefs,
+    ];
+    lines.push(`Materialized library refs: ${selectedRefs.length > 0 ? selectedRefs.join(", ") : "none"}.`);
+  }
+  return lines.join("\n");
 }
 
 function formatArtifactContracts(contracts: ArtifactContract[]): string {

@@ -393,6 +393,7 @@ function validateCandidateMembership(
     if (validatedGeneratedAgentProfileRefs.has(task.agentProfileRef)) {
       validateGeneratedProfilePrimitiveMembership(packet, task, taskIndex, issues);
     }
+    validateGraphMetadataConflictEdges(packet, task, taskIndex, issues);
   }
 }
 
@@ -409,18 +410,25 @@ function validateGeneratedProfilePrimitiveMembership(
     mcpGrants: [],
     instructions: [],
   };
-  requirePrimitiveRef(primitiveCandidates.agents, task.agentDefinitionRef, `tasks.${taskIndex}.agentDefinitionRef`, issues);
+  const metadataRefs = graphMetadataRefSet(packet);
+  const agents = metadataRefs ?? new Set(primitiveCandidates.agents);
+  const skills = metadataRefs ?? new Set(primitiveCandidates.skills);
+  const tools = metadataRefs ?? new Set(primitiveCandidates.tools);
+  const mcpGrants = metadataRefs ?? new Set(primitiveCandidates.mcpGrants);
+  const instructions = metadataRefs ?? new Set(primitiveCandidates.instructions);
+
+  requirePrimitiveRef(agents, task.agentDefinitionRef, `tasks.${taskIndex}.agentDefinitionRef`, issues);
   for (const [index, ref] of task.skillRefs.entries()) {
-    requirePrimitiveRef(primitiveCandidates.skills, ref, `tasks.${taskIndex}.skillRefs.${index}`, issues);
+    requirePrimitiveRef(skills, ref, `tasks.${taskIndex}.skillRefs.${index}`, issues);
   }
   for (const [index, ref] of task.toolGrantRefs.entries()) {
-    requirePrimitiveRef(primitiveCandidates.tools, ref, `tasks.${taskIndex}.toolGrantRefs.${index}`, issues);
+    requirePrimitiveRef(tools, ref, `tasks.${taskIndex}.toolGrantRefs.${index}`, issues);
   }
   for (const [index, ref] of task.mcpGrantRefs.entries()) {
-    requirePrimitiveRef(primitiveCandidates.mcpGrants, ref, `tasks.${taskIndex}.mcpGrantRefs.${index}`, issues);
+    requirePrimitiveRef(mcpGrants, ref, `tasks.${taskIndex}.mcpGrantRefs.${index}`, issues);
   }
   for (const [index, ref] of task.instructionRefs.entries()) {
-    requirePrimitiveRef(primitiveCandidates.instructions, ref, `tasks.${taskIndex}.instructionRefs.${index}`, issues);
+    requirePrimitiveRef(instructions, ref, `tasks.${taskIndex}.instructionRefs.${index}`, issues);
   }
 }
 
@@ -433,13 +441,41 @@ function validatedGeneratedAgentProfiles(plan: WorkflowCompositionPlan): Set<str
 }
 
 function requirePrimitiveRef(
-  allowedRefs: string[],
+  allowedRefs: Set<string>,
   ref: string,
   path: string,
   issues: WorkflowCompositionValidationIssue[],
 ): void {
-  if (allowedRefs.includes(ref)) return;
+  if (allowedRefs.has(ref)) return;
   issues.push(issue("ref_not_in_candidate_packet", path, `ref is not in profile primitive candidates: ${ref}`));
+}
+
+function validateGraphMetadataConflictEdges(
+  packet: CandidatePacket,
+  task: WorkflowCompositionPlan["tasks"][number],
+  taskIndex: number,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const graph = packet.graphMetadataCandidates;
+  if (!graph) return;
+  const selected = new Set([
+    task.agentDefinitionRef,
+    task.agentProfileRef,
+    ...task.instructionRefs,
+    ...task.skillRefs,
+    ...task.toolGrantRefs,
+    ...task.mcpGrantRefs,
+    ...task.vaultLeasePolicyRefs,
+    ...task.inputArtifactRefs,
+    ...task.outputArtifactRefs,
+    task.evaluatorProfileRef,
+  ]);
+  for (const edge of graph.edges) {
+    if (edge.type !== "conflicts_with" && edge.type !== "incompatible_with") continue;
+    if (selected.has(edge.from) && selected.has(edge.to)) {
+      issues.push(issue("conflicting_refs", `tasks.${taskIndex}`, `${edge.from} ${edge.type} ${edge.to}`));
+    }
+  }
 }
 
 async function validateGeneratedProfileClosure(
@@ -591,6 +627,8 @@ async function requireOutgoingEdge(
 }
 
 function candidateRefs(packet: CandidatePacket): Set<string> {
+  const metadataRefs = graphMetadataRefSet(packet);
+  if (metadataRefs) return metadataRefs;
   const refs = new Set<string>();
   for (const candidate of packet.workflowTemplateCandidates) refs.add(candidate.ref);
   for (const candidates of Object.values(packet.agentCandidatesByCapability)) for (const candidate of candidates) refs.add(candidate.ref);
@@ -604,6 +642,11 @@ function candidateRefs(packet: CandidatePacket): Set<string> {
   for (const candidates of Object.values(packet.evaluatorCandidatesByArtifact)) for (const candidate of candidates) refs.add(candidate.ref);
   for (const candidate of packet.policyConstraints) refs.add(candidate.ref);
   return refs;
+}
+
+function graphMetadataRefSet(packet: CandidatePacket): Set<string> | null {
+  if (!packet.graphMetadataCandidates) return null;
+  return new Set(packet.graphMetadataCandidates.nodes.map((node) => node.ref));
 }
 
 function hasCycle(tasks: Array<{ id: string; dependsOn: string[] }>): boolean {

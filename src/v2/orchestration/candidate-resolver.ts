@@ -8,6 +8,7 @@ import {
 } from "../design-library/library-graph-store.ts";
 import { resolveGraphProfileCandidates } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
 import type { CandidatePacket, CandidateSummary, LibraryEdgeType, RequirementSpecV2 } from "../design-library/types.ts";
+import { buildGraphMetadataCandidatePacket } from "./graph-metadata-packet.ts";
 
 export type ResolveWorkflowCandidatesInput = {
   requirementSpec: RequirementSpecV2;
@@ -100,6 +101,7 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
       })
     ).map((object) => object.objectKey).sort(),
   };
+  const graphMetadataCandidates = await buildGraphMetadataCandidatePacket(db, { scope: input.scope });
 
   return {
     requirementSpec: input.requirementSpec,
@@ -115,6 +117,7 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     evaluatorCandidatesByArtifact,
     policyConstraints,
     profilePrimitiveCandidates,
+    graphMetadataCandidates,
     unavailableRequirements,
   };
 }

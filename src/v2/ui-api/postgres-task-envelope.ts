@@ -1,5 +1,4 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import { seedSoftwareLibraryGraph } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
@@ -52,7 +51,6 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
   const artifactContracts = artifactContractsForTask(domainPack, task);
   const evaluatorPipeline = required(domainPack.evaluatorPipelines.find((candidate) => candidate.id === task.evaluatorPipelineRef), `missing evaluator pipeline ${task.evaluatorPipelineRef}`);
   const rootSessionId = taskRow.root_session_id ?? `root-${input.runId}-${input.taskId}`;
-  await seedSoftwareLibraryGraph(db);
   const materializedLibrary = await materializeTaskLibraryRefs(db, {
     runId: input.runId,
     taskId: input.taskId,
@@ -62,6 +60,7 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
     toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
     mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
     vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+    libraryRoot: process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
   });
   return buildTaskEnvelopeV2({
     runId: input.runId,

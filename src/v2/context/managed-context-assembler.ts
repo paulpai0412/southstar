@@ -93,6 +93,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
         mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
         vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+        libraryRoot: process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
       });
 
       const contextPacketId = `ctx-${input.runId}-${input.taskId}-${input.attemptId}`;

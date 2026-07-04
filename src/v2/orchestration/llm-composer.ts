@@ -217,6 +217,9 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Do not use alias fields. Use exactly the property names defined in OutputJsonSchema.",
     "Select refs only from the candidate packet.",
     "Do not output runtime manifests, secrets, credentials, tool grant definitions, MCP grant definitions, or vault lease values.",
+    "Use GraphMetadataCandidates as the direct source of selectable refs for DAG tasks and generated profiles.",
+    "Every selected agentDefinitionRef, agentProfileRef, skillRef, toolGrantRef, mcpGrantRef, instructionRef, artifact ref, and evaluator ref must come from GraphMetadataCandidates.nodes when that packet is present.",
+    "Use GraphMetadataCandidates.edges to justify profile closure: agent supports skill, skill requires tools, skill allows MCP grants, and skill uses instructions.",
     "You may propose a generated agent profile only by combining refs from profilePrimitiveCandidates.",
     "When selecting a generated profile, include it in generatedComponentProposals with kind agent_profile and validationStatus validated.",
     "Generated component proposals are proposal-only unless they are validated agent_profile proposals selected as agentProfileRef.",
@@ -234,6 +237,14 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
       tools: [],
       mcpGrants: [],
       instructions: [],
+    }),
+    "",
+    "GraphMetadataCandidates:",
+    JSON.stringify(boundedPacket.graphMetadataCandidates ?? {
+      schemaVersion: "southstar.graph_metadata_candidates.v1",
+      scope: "none",
+      nodes: [],
+      edges: [],
     }),
     "",
     "OutputJsonSchema:",
@@ -504,6 +515,13 @@ function boundCandidatePacket(packet: CandidatePacket): CandidatePacket {
         tools: packet.profilePrimitiveCandidates.tools.slice(0, 100),
         mcpGrants: packet.profilePrimitiveCandidates.mcpGrants.slice(0, 100),
         instructions: packet.profilePrimitiveCandidates.instructions.slice(0, 100),
+      }
+      : undefined,
+    graphMetadataCandidates: packet.graphMetadataCandidates
+      ? {
+        ...packet.graphMetadataCandidates,
+        nodes: packet.graphMetadataCandidates.nodes.slice(0, 500),
+        edges: packet.graphMetadataCandidates.edges.slice(0, 1_500),
       }
       : undefined,
   };

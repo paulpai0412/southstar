@@ -28,6 +28,10 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /Do not use alias fields/i);
   assert.match(prompts[0] ?? "", /SkillGuidance:/);
   assert.match(prompts[0] ?? "", /smallest sufficient DAG/i);
+  assert.match(prompts[0] ?? "", /GraphMetadataCandidates:/);
+  assert.match(prompts[0] ?? "", /Use GraphMetadataCandidates as the direct source of selectable refs/);
+  assert.match(prompts[0] ?? "", /agent\.frontend-developer/);
+  assert.match(prompts[0] ?? "", /supports_skill/);
   assert.match(prompts[0] ?? "", /skill-map-candidate\.keep-0 profile=skill-map\.keep-key-0 role=explorer artifacts=artifact\.implementation_plan/);
   assert.match(prompts[0] ?? "", /CandidatePacket:/);
   assert.match(prompts[0] ?? "", /template.keep-19/);
@@ -317,6 +321,19 @@ function candidatePacket(): CandidatePacket {
       ...Array.from({ length: 50 }, (_value, index) => candidate(`policy.keep-${index}`, "policy_bundle")),
       ...Array.from({ length: 2 }, (_value, index) => candidate(`policy.drop-${50 + index}`, "policy_bundle")),
     ],
+    graphMetadataCandidates: {
+      schemaVersion: "southstar.graph_metadata_candidates.v1",
+      scope: "software",
+      nodes: [
+        { ref: "agent.frontend-developer", kind: "agent_definition", status: "approved", versionRef: "agent.frontend-developer@1", scope: "software", title: "Frontend Developer", aliases: [] },
+        { ref: "skill.react-ui", kind: "skill_spec", status: "approved", versionRef: "skill.react-ui@1", scope: "software", title: "React UI", aliases: [] },
+        { ref: "tool.workspace-write", kind: "tool_definition", status: "approved", versionRef: "tool.workspace-write@1", scope: "global", title: "Workspace Write", aliases: [] },
+      ],
+      edges: [
+        { from: "agent.frontend-developer", type: "supports_skill", to: "skill.react-ui", scope: "software", weight: 1 },
+        { from: "skill.react-ui", type: "requires_tool", to: "tool.workspace-write", scope: "software", weight: 1 },
+      ],
+    },
     unavailableRequirements: [],
   };
 }
