@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.legal-contract-reviewer
 title: "合同审查专家"
-scope: "software"
-status: draft
+scope: "legal"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.legal-contract-reviewer"
 importSourcePath: "legal/legal-contract-reviewer.md"

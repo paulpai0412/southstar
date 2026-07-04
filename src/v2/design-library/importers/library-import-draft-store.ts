@@ -724,7 +724,7 @@ function renderLibraryImportCandidate(
         `id: ${candidate.objectKey}`,
         `title: ${title}`,
         `scope: ${scope}`,
-        "status: draft",
+        "status: approved",
         `description: ${yamlScalar(`Imported ${candidate.kind} candidate from library import draft.`)}`,
         provenance,
         "",
@@ -758,7 +758,7 @@ function renderLibraryImportCandidate(
       `id: ${candidate.objectKey}`,
       `title: ${title}`,
       `scope: ${scope}`,
-      "status: draft",
+      "status: approved",
       provenance,
       "---",
       "",
@@ -880,6 +880,11 @@ function asImportCandidates(value: unknown): LibraryImportCandidate[] {
       kind: requiredImportCandidateKind(record.kind),
       title: requiredString(record.title, "candidates.title"),
       scope: requiredString(record.scope, "candidates.scope"),
+      ...(typeof record.domain === "string" && record.domain.length > 0 ? { domain: record.domain } : {}),
+      ...(typeof record.displayDomain === "string" && record.displayDomain.length > 0 ? { displayDomain: record.displayDomain } : {}),
+      ...(typeof record.classificationReason === "string" && record.classificationReason.length > 0
+        ? { classificationReason: record.classificationReason }
+        : {}),
       ...(typeof record.sourcePath === "string" && record.sourcePath.length > 0 ? { sourcePath: record.sourcePath } : {}),
       selectedByDefault: typeof record.selectedByDefault === "boolean" ? record.selectedByDefault : true,
       ...(typeof record.confidence === "number" ? { confidence: record.confidence } : {}),
@@ -919,9 +924,23 @@ function requiredImportEdgeType(value: unknown): LibraryImportEdgeType {
   if (
     value === "uses" ||
     value === "requires" ||
+    value === "belongs_to_domain" ||
+    value === "has_capability" ||
+    value === "provides" ||
     value === "conflicts_with" ||
+    value === "precedes" ||
     value === "workflow_precedes" ||
-    value === "similar_to"
+    value === "unblocks" ||
+    value === "validates" ||
+    value === "reviews" ||
+    value === "produces" ||
+    value === "consumes" ||
+    value === "similar_to" ||
+    value === "substitutes" ||
+    value === "complements" ||
+    value === "incompatible_with" ||
+    value === "requires_approval" ||
+    value === "requires_secret"
   ) {
     return value;
   }

@@ -1,8 +1,8 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { readLibraryFile, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
-import type { LibraryFileEnvelope, LibraryObjectDetail, LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
+import { readLibraryFile, readLibraryGraphNeighborhood, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
+import type { LibraryFileEnvelope, LibraryGraphReadModel, LibraryObjectDetail, LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
 import { LibraryChatWindow } from "./LibraryChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
 import type { LibraryGraphChartNode } from "./LibraryGraphChart";
@@ -15,6 +15,7 @@ type LibraryWorkspaceContextValue = {
   selectedFilePath?: string;
   fileRecord: LibraryFileEnvelope | null;
   objectDetail: LibraryObjectDetail | null;
+  edgeGraph: LibraryGraphReadModel | null;
   dirtyFileContent: string;
   statusFilter: string;
   saving: boolean;
@@ -32,8 +33,7 @@ type LibraryWorkspaceContextValue = {
   handleSessionActivity: (session: LibrarySessionSummary) => void;
   setStatusFilter: (status: string) => void;
   updateDirtyFileContent: (content: string) => void;
-  handleSaveFile: () => void;
-  handleSyncFile: () => void;
+  handleSaveAndSyncFile: () => void;
 };
 
 type SelectableLibraryObject = Pick<LibraryWorkspaceObject, "objectKey" | "title"> & {
@@ -50,11 +50,12 @@ export function LibraryWorkspaceProvider({
   onOpenFile?: (file: { objectKey: string; title: string; sourcePath?: string }) => void;
 }) {
   const [model, setModel] = useState<LibraryWorkspaceModel | null>(null);
-  const [selectedScope, setSelectedScope] = useState("software");
+  const [selectedScope, setSelectedScope] = useState("all");
   const [selectedObjectKey, setSelectedObjectKey] = useState<string | undefined>(undefined);
   const [selectedFilePath, setSelectedFilePath] = useState<string | undefined>(undefined);
   const [fileRecord, setFileRecord] = useState<LibraryFileEnvelope | null>(null);
   const [objectDetail, setObjectDetail] = useState<LibraryObjectDetail | null>(null);
+  const [edgeGraph, setEdgeGraph] = useState<LibraryGraphReadModel | null>(null);
   const [dirtyFileContent, setDirtyFileContent] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [saving, setSaving] = useState(false);
@@ -130,6 +131,7 @@ export function LibraryWorkspaceProvider({
     setSelectedFilePath(undefined);
     setFileRecord(null);
     setObjectDetail(null);
+    setEdgeGraph(null);
     updateDirtyFileContent("");
     setSaving(false);
     setSyncing(false);
@@ -156,6 +158,7 @@ export function LibraryWorkspaceProvider({
     setSyncing(false);
     setFileStatusMessage(undefined);
     setObjectDetail(null);
+    setEdgeGraph(null);
 
     const loadSourcePath = (sourcePath: string) => {
       selectedFilePathRef.current = sourcePath;
@@ -193,6 +196,16 @@ export function LibraryWorkspaceProvider({
         setFileStatusMessage(`Failed to load object detail: ${error instanceof Error ? error.message : String(error)}`);
       });
 
+    readLibraryGraphNeighborhood({ objectKey: object.objectKey, scope: selectedScope, depth: 1 })
+      .then((graph) => {
+        if (detailRequestRef.current !== detailRequestId) return;
+        setEdgeGraph(graph);
+      })
+      .catch(() => {
+        if (detailRequestRef.current !== detailRequestId) return;
+        setEdgeGraph(null);
+      });
+
     if (!object.sourcePath) {
       selectedFilePathRef.current = undefined;
       setSelectedFilePath(undefined);
@@ -203,7 +216,7 @@ export function LibraryWorkspaceProvider({
     }
 
     loadSourcePath(object.sourcePath);
-  }, [onOpenFile, selectedFilePath, selectedObjectKey, updateDirtyFileContent]);
+  }, [onOpenFile, selectedFilePath, selectedObjectKey, selectedScope, updateDirtyFileContent]);
 
   const handleSelectObject = useCallback((object: LibraryWorkspaceObject) => {
     selectObjectReference(object);
@@ -217,47 +230,55 @@ export function LibraryWorkspaceProvider({
     });
   }, [model, selectObjectReference]);
 
-  const handleSaveFile = useCallback(() => {
-    if (!selectedFilePath || saving) return;
+  const handleSaveAndSyncFile = useCallback(() => {
+    if (!selectedFilePath || saving || syncing) return;
     const savePath = selectedFilePath;
     const savedContent = dirtyFileContent;
-    const requestId = saveRequestRef.current + 1;
-    saveRequestRef.current = requestId;
+    const saveRequestId = saveRequestRef.current + 1;
+    const syncRequestId = syncRequestRef.current + 1;
+    const objectKey = selectedObjectKey;
+    saveRequestRef.current = saveRequestId;
+    syncRequestRef.current = syncRequestId;
     setSaving(true);
+    setSyncing(false);
     setFileStatusMessage(undefined);
     saveLibraryFile(savePath, dirtyFileContent)
       .then((record) => {
-        if (saveRequestRef.current !== requestId || selectedFilePathRef.current !== savePath) return;
+        if (saveRequestRef.current !== saveRequestId || selectedFilePathRef.current !== savePath) return undefined;
         setFileRecord(record);
         if (dirtyFileContentRef.current === savedContent) {
           updateDirtyFileContent(record.content);
         }
+        setSaving(false);
+        setSyncing(true);
+        return syncLibraryFile(savePath)
+          .then(() => {
+            if (syncRequestRef.current !== syncRequestId || selectedFilePathRef.current !== savePath || !objectKey) return;
+            void readLibraryObjectDetail(objectKey)
+              .then((detail) => {
+                if (syncRequestRef.current === syncRequestId && selectedFilePathRef.current === savePath) setObjectDetail(detail);
+              })
+              .catch(() => undefined);
+            void readLibraryGraphNeighborhood({ objectKey, scope: selectedScope, depth: 1 })
+              .then((graph) => {
+                if (syncRequestRef.current === syncRequestId && selectedFilePathRef.current === savePath) setEdgeGraph(graph);
+              })
+              .catch(() => undefined);
+            loadWorkspace();
+          });
       })
       .catch((error: unknown) => {
-        if (saveRequestRef.current !== requestId || selectedFilePathRef.current !== savePath) return;
-        setFileStatusMessage(`Failed to save file: ${error instanceof Error ? error.message : String(error)}`);
+        if (selectedFilePathRef.current !== savePath) return;
+        const phase = saving ? "save" : "sync";
+        setFileStatusMessage(`Failed to ${phase} file: ${error instanceof Error ? error.message : String(error)}`);
       })
       .finally(() => {
-        if (saveRequestRef.current === requestId && selectedFilePathRef.current === savePath) setSaving(false);
+        if (selectedFilePathRef.current === savePath) {
+          setSaving(false);
+          setSyncing(false);
+        }
       });
-  }, [dirtyFileContent, saving, selectedFilePath, updateDirtyFileContent]);
-
-  const handleSyncFile = useCallback(() => {
-    if (!selectedFilePath || syncing) return;
-    const syncPath = selectedFilePath;
-    const requestId = syncRequestRef.current + 1;
-    syncRequestRef.current = requestId;
-    setSyncing(true);
-    setFileStatusMessage(undefined);
-    syncLibraryFile(syncPath)
-      .catch((error: unknown) => {
-        if (syncRequestRef.current !== requestId || selectedFilePathRef.current !== syncPath) return;
-        setFileStatusMessage(`Failed to sync file: ${error instanceof Error ? error.message : String(error)}`);
-      })
-      .finally(() => {
-        if (syncRequestRef.current === requestId && selectedFilePathRef.current === syncPath) setSyncing(false);
-      });
-  }, [selectedFilePath, syncing]);
+  }, [dirtyFileContent, loadWorkspace, saving, selectedFilePath, selectedObjectKey, selectedScope, syncing, updateDirtyFileContent]);
 
   const value = useMemo<LibraryWorkspaceContextValue>(() => ({
     model,
@@ -266,6 +287,7 @@ export function LibraryWorkspaceProvider({
     selectedFilePath,
     fileRecord,
     objectDetail,
+    edgeGraph,
     dirtyFileContent,
     statusFilter,
     saving,
@@ -283,25 +305,24 @@ export function LibraryWorkspaceProvider({
     handleSessionActivity,
     setStatusFilter,
     updateDirtyFileContent,
-    handleSaveFile,
-    handleSyncFile,
+    handleSaveAndSyncFile,
   }), [
     dirtyFileContent,
     fileRecord,
     fileStatusMessage,
-    handleSaveFile,
+    handleSaveAndSyncFile,
     handleNewSession,
     handleSelectGraphNode,
     handleSelectObject,
     handleSelectScope,
     handleSelectSession,
     handleSessionActivity,
-    handleSyncFile,
     librarySessions,
     librarySessionKey,
     loadWorkspace,
     model,
     objectDetail,
+    edgeGraph,
     saving,
     selectedFilePath,
     selectedObjectKey,
@@ -386,14 +407,15 @@ export function LibraryFileSidecarPanel() {
         selectedFilePath={context.selectedFilePath}
         fileRecord={context.fileRecord}
         objectDetail={context.objectDetail}
+        edgeGraph={context.edgeGraph}
         content={context.dirtyFileContent}
         dirty={context.fileRecord ? context.dirtyFileContent !== context.fileRecord.content : false}
         saving={context.saving}
         syncing={context.syncing}
         statusMessage={context.fileStatusMessage}
         onContentChange={context.updateDirtyFileContent}
-        onSave={context.handleSaveFile}
-        onSync={context.handleSyncFile}
+        onSaveAndSync={context.handleSaveAndSyncFile}
+        onSelectGraphNode={context.handleSelectGraphNode}
       />
     </div>
   );

@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.macos-spatial-metal-engineer
 title: "macOS Metal 空间工程师"
-scope: "software"
-status: draft
+scope: "spatial-computing"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.macos-spatial-metal-engineer"
 importSourcePath: "spatial-computing/macos-spatial-metal-engineer.md"

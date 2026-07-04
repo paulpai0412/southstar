@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.organizational-psychologist
 title: "组织心理学家"
-scope: "software"
-status: draft
+scope: "specialized"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.organizational-psychologist"
 importSourcePath: "specialized/organizational-psychologist.md"

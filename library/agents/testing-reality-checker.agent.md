@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.testing-reality-checker
 title: "现实检验者"
-scope: "software"
-status: draft
+scope: "testing"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.testing-reality-checker"
 importSourcePath: "testing/testing-reality-checker.md"

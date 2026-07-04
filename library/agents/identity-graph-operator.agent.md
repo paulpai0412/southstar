@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.identity-graph-operator
 title: "身份图谱操作员"
-scope: "software"
-status: draft
+scope: "specialized"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.identity-graph-operator"
 importSourcePath: "specialized/identity-graph-operator.md"

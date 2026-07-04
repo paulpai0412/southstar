@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.godot-gameplay-scripter
 title: "Godot 游戏脚本开发者"
-scope: "software"
-status: draft
+scope: "game-development"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.godot-gameplay-scripter"
 importSourcePath: "game-development/godot/godot-gameplay-scripter.md"

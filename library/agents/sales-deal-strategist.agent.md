@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.sales-deal-strategist
 title: "赢单策略师"
-scope: "software"
-status: draft
+scope: "sales"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.sales-deal-strategist"
 importSourcePath: "sales/sales-deal-strategist.md"

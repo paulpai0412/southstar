@@ -21,6 +21,19 @@ const MODES: Array<{
     ),
   },
   {
+    id: "library",
+    label: "Library",
+    title: "Agent, skill, tool, and MCP library",
+    icon: (
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M4 19.5V5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-1.5z" />
+        <path d="M8 7h6" />
+        <path d="M8 11h8" />
+        <path d="M8 15h5" />
+      </svg>
+    ),
+  },
+  {
     id: "workflow",
     label: "Workflow",
     title: "Workflow DAG generation and launch",
@@ -33,19 +46,6 @@ const MODES: Array<{
         <path d="M8 12h8" />
         <path d="m10.6 7.4 2.8 3.2" />
         <path d="m13.4 13.4-2.8 3.2" />
-      </svg>
-    ),
-  },
-  {
-    id: "library",
-    label: "Library",
-    title: "Agent, skill, tool, and MCP library",
-    icon: (
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M4 19.5V5a2 2 0 0 1 2-2h12v18H6a2 2 0 0 1-2-1.5z" />
-        <path d="M8 7h6" />
-        <path d="M8 11h8" />
-        <path d="M8 15h5" />
       </svg>
     ),
   },

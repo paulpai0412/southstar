@@ -12,6 +12,28 @@ const domainTreeFolders = [
   { label: "tools", objectKinds: ["tool_definition"] },
 ] as const;
 
+type LibraryTreeObjectNode = {
+  type: "object";
+  id: string;
+  object: LibraryWorkspaceObject;
+};
+
+type LibraryTreeFolderNode = {
+  type: "folder";
+  id: string;
+  label: string;
+  count: number;
+  objects: LibraryTreeObjectNode[];
+};
+
+type LibraryTreeDomainNode = {
+  type: "domain";
+  id: string;
+  label: string;
+  count: number;
+  folders: LibraryTreeFolderNode[];
+};
+
 export function LibrarySidebar({
   model,
   sessions = [],
@@ -45,9 +67,10 @@ export function LibrarySidebar({
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [refreshDone, setRefreshDone] = useState(false);
   const normalizedDomainFilter = domainFilter.trim().toLowerCase();
-  const filteredDomains = normalizedDomainFilter
-    ? domains.filter((domain) => domain.scope.toLowerCase().includes(normalizedDomainFilter))
-    : domains;
+  const treeNodes = buildLibraryTreeNodes(domains, {
+    domainFilter: normalizedDomainFilter,
+    statusFilter,
+  });
   const isOpen = (key: string) => openMap[key] ?? true;
   const toggle = (key: string) => setOpenMap((current) => ({ ...current, [key]: !(current[key] ?? true) }));
   const handleRefresh = () => {
@@ -173,44 +196,89 @@ export function LibrarySidebar({
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
         <SectionHeader title="Library Domain Tree" open={treeOpen} onToggle={() => setTreeOpen((value) => !value)} />
         {treeOpen && (
-          <div data-testid="library-domain-tree" style={{ padding: "0 6px 8px" }}>
-            {filteredDomains.map((domain) => {
-              const domainKey = `domain:${domain.scope}`;
-              const folders = domainTreeFolders.map((folder) => ({
-                ...folder,
-                objects: objectsForDomainAndKinds(domain, folder.objectKinds)
-                  .filter((object) => statusFilter === "all" || object.status === statusFilter),
-              })).filter((folder) => folder.objects.length > 0);
-              if (folders.length === 0) return null;
+          <div
+            data-testid="library-domain-tree"
+            role="tree"
+            aria-label="Library Domain Tree"
+            style={{ padding: "0 6px 8px" }}
+          >
+            {treeNodes.map((domain) => {
+              const domainKey = domain.id;
               return (
-                <div key={domain.scope}>
+                <div
+                  key={domain.id}
+                  role="treeitem"
+                  aria-level={1}
+                  aria-expanded={isOpen(domainKey)}
+                  aria-selected={selectedScope === domain.label}
+                  aria-label={`${domain.label} ${domain.count}`}
+                  style={{ position: "relative" }}
+                >
                   <DomainRow
-                    label={domain.scope}
-                    selected={selectedScope === domain.scope}
+                    label={domain.label}
+                    count={domain.count}
+                    selected={selectedScope === domain.label}
                     open={isOpen(domainKey)}
-                    onSelect={() => onSelectScope(domain.scope)}
+                    onToggle={() => toggle(domainKey)}
+                    onSelect={() => onSelectScope(domain.label)}
                   />
-                  {isOpen(domainKey) && folders.map((folder) => {
-                    const folderKey = `${domainKey}:${folder.label}`;
-                    return (
-                      <div key={folderKey}>
-                        <TreeFolderRow
-                          label={folder.label}
-                          depth={1}
-                          open={isOpen(folderKey)}
-                          onToggle={() => toggle(folderKey)}
-                        />
-                        {isOpen(folderKey) && folder.objects.map((object) => (
-                          <LibraryObjectRow
-                            key={object.objectKey}
-                            object={object}
-                            selected={selectedObjectKey === object.objectKey}
-                            onSelectObject={onSelectObject}
-                          />
-                        ))}
-                      </div>
-                    );
-                  })}
+                  {isOpen(domainKey) && (
+                    <div role="group" style={{ position: "relative", marginLeft: 9 }}>
+                      <span
+                        data-testid="library-tree-connector"
+                        aria-hidden="true"
+                        style={{
+                          position: "absolute",
+                          left: 7,
+                          top: 0,
+                          bottom: 6,
+                          width: 1,
+                          background: "var(--border)",
+                          opacity: 0.8,
+                        }}
+                      />
+                      {domain.folders.map((folder) => {
+                        const folderKey = folder.id;
+                        return (
+                          <div
+                            key={folderKey}
+                            role="treeitem"
+                            aria-level={2}
+                            aria-expanded={isOpen(folderKey)}
+                            aria-label={`${folder.label} ${folder.count}`}
+                            style={{ position: "relative" }}
+                          >
+                            <TreeFolderRow
+                              label={folder.label}
+                              count={folder.count}
+                              depth={1}
+                              open={isOpen(folderKey)}
+                              onToggle={() => toggle(folderKey)}
+                            />
+                            {isOpen(folderKey) && (
+                              <div role="group">
+                                {folder.objects.map((node) => (
+                                  <div
+                                    key={node.id}
+                                    role="treeitem"
+                                    aria-level={3}
+                                    aria-selected={selectedObjectKey === node.object.objectKey}
+                                    aria-label={`${node.object.title} ${node.object.objectKey} ${node.object.status}`}
+                                  >
+                                    <LibraryObjectRow
+                                      object={node.object}
+                                      selected={selectedObjectKey === node.object.objectKey}
+                                      onSelectObject={onSelectObject}
+                                    />
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               );
             })}
@@ -300,51 +368,93 @@ function LibrarySessionRow({
 
 function DomainRow({
   label,
+  count,
   selected,
   open,
+  onToggle,
   onSelect,
 }: {
   label: string;
+  count: number;
   selected: boolean;
   open: boolean;
+  onToggle: () => void;
   onSelect: () => void;
 }) {
   return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={onSelect}
+    <div
       style={{
         width: "100%",
         height: 26,
         display: "flex",
         alignItems: "center",
         gap: 4,
-        paddingLeft: 8,
-        paddingRight: 8,
-        border: "none",
         borderRadius: 5,
         background: selected ? "var(--bg-selected)" : "transparent",
         color: "var(--text)",
-        cursor: "pointer",
         fontSize: 12,
         fontWeight: 650,
         textAlign: "left",
       }}
     >
-      <Chevron open={open} />
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
-    </button>
+      <button
+        type="button"
+        aria-label={`Toggle ${label}`}
+        aria-expanded={open}
+        onClick={onToggle}
+        style={{
+          width: 24,
+          height: 24,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          border: "none",
+          background: "transparent",
+          color: "var(--text-dim)",
+          cursor: "pointer",
+          padding: 0,
+          flexShrink: 0,
+        }}
+      >
+        <Chevron open={open} />
+      </button>
+      <button
+        type="button"
+        aria-label={label}
+        aria-pressed={selected}
+        onClick={onSelect}
+        style={{
+          minWidth: 0,
+          flex: "1 1 auto",
+          height: 26,
+          display: "flex",
+          alignItems: "center",
+          border: "none",
+          background: "transparent",
+          color: "var(--text)",
+          cursor: "pointer",
+          padding: 0,
+          font: "inherit",
+          fontWeight: 650,
+          textAlign: "left",
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      </button>
+      <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 11 }}>{count}</span>
+    </div>
   );
 }
 
 function TreeFolderRow({
   label,
+  count,
   depth,
   open,
   onToggle,
 }: {
   label: string;
+  count: number;
   depth: number;
   open: boolean;
   onToggle: () => void;
@@ -370,9 +480,22 @@ function TreeFolderRow({
         textAlign: "left",
       }}
     >
+      <span
+        data-testid="library-tree-branch"
+        aria-hidden="true"
+        style={{
+          width: 12,
+          height: 1,
+          marginLeft: -8,
+          background: "var(--border)",
+          opacity: 0.8,
+          flexShrink: 0,
+        }}
+      />
       <Chevron open={open} />
       <FolderIcon size={14} open={open} />
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</span>
+      <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 11 }}>{count}</span>
     </button>
   );
 }
@@ -407,8 +530,22 @@ function LibraryObjectRow({
         marginTop: 2,
         marginLeft: 36,
         cursor: "pointer",
+        position: "relative",
       }}
     >
+      <span
+        data-testid="library-tree-branch"
+        aria-hidden="true"
+        style={{
+          position: "absolute",
+          left: -21,
+          top: "50%",
+          width: 18,
+          height: 1,
+          background: "var(--border)",
+          opacity: 0.8,
+        }}
+      />
       <span style={{ minWidth: 0 }}>
         <span style={{ display: "block", fontSize: 12, fontWeight: 650, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {object.title}
@@ -465,6 +602,40 @@ function objectGroupsForDomain(domain: LibraryWorkspaceModel["domains"][number])
     groups.set(object.objectKind, objects);
   }
   return Array.from(groups.entries()).map(([objectKind, objects]) => ({ objectKind, objects }));
+}
+
+function buildLibraryTreeNodes(
+  domains: LibraryWorkspaceModel["domains"],
+  input: { domainFilter: string; statusFilter: string },
+): LibraryTreeDomainNode[] {
+  return domains
+    .filter((domain) => !input.domainFilter || domain.scope.toLowerCase().includes(input.domainFilter))
+    .map((domain) => {
+      const folders = domainTreeFolders.map((folder) => {
+        const objects = objectsForDomainAndKinds(domain, folder.objectKinds)
+          .filter((object) => input.statusFilter === "all" || object.status === input.statusFilter)
+          .map((object): LibraryTreeObjectNode => ({
+            type: "object",
+            id: `object:${object.objectKey}`,
+            object,
+          }));
+        return {
+          type: "folder" as const,
+          id: `domain:${domain.scope}:folder:${folder.label}`,
+          label: folder.label,
+          count: objects.length,
+          objects,
+        };
+      }).filter((folder) => folder.count > 0);
+      return {
+        type: "domain" as const,
+        id: `domain:${domain.scope}`,
+        label: domain.scope,
+        count: folders.reduce((sum, folder) => sum + folder.count, 0),
+        folders,
+      };
+    })
+    .filter((domain) => domain.count > 0);
 }
 
 function formatRelativeTime(value?: string): string {

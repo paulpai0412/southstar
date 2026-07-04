@@ -1024,9 +1024,8 @@ export function AppShell() {
               </svg>
             )}
           </button>
-          <AppModeRail mode={appMode} onModeChange={setAppMode} orientation="horizontal" />
           {showChat && (
-            <div style={{ display: "flex", alignItems: "stretch", height: "100%" }}>
+            <div data-testid="chat-topbar-controls" style={{ display: "flex", alignItems: "stretch", height: "100%" }}>
               <button
                 onClick={handleExportSession}
                 disabled={!activeSelectedSession}
@@ -1092,6 +1091,7 @@ export function AppShell() {
               />
             </div>
           )}
+          <AppModeRail mode={appMode} onModeChange={setAppMode} orientation="horizontal" />
           {/* Session stats — right-aligned in top bar */}
           {showChat && (sessionStats || contextUsage) && (() => {
             const t = sessionStats?.tokens;

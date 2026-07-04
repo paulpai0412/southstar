@@ -15,8 +15,10 @@ import {
   analyzeLibraryImportWithLlm,
   analyzeLibraryImportOntologyWithLlm,
   buildLibraryImportAnalysisPrompt,
+  buildLibraryImportCandidatePrompt,
   type LibraryImportLlmProvider,
 } from "../../src/v2/design-library/importers/library-llm-import-analyzer.ts";
+import { CATALOG_CANONICAL_DOMAINS } from "../../src/v2/design-library/canonical-domains.ts";
 import type { LibraryImportSourceFetcher } from "../../src/v2/design-library/importers/library-source-fetcher.ts";
 import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
 import {
@@ -150,6 +152,26 @@ test("buildLibraryImportAnalysisPrompt includes bounded document content excerpt
   assert.match(prompt, /Builds production React UI/);
   assert.match(prompt, /Return exactly one JSON object/);
   assert.match(prompt, /Use this shape: \{"candidates":/);
+});
+
+test("library import candidate prompt constrains LLM domain classification to catalog departments", () => {
+  const prompt = buildLibraryImportCandidatePrompt([
+    {
+      path: "marketing/marketing-seo-specialist.md",
+      label: "marketing-seo-specialist",
+      content: "# SEO专家\nOptimizes search visibility.",
+    },
+  ], "software", {
+    sourceRepoPath: "/tmp/agency-agents-zh",
+  });
+
+  assert.match(prompt, /CanonicalDomainTaxonomy/);
+  assert.match(prompt, /"engineering"/);
+  assert.match(prompt, /"marketing"/);
+  assert.match(prompt, /"security"/);
+  assert.match(prompt, /domain.*canonical domain key/i);
+  assert.match(prompt, /classificationReason/);
+  assert.equal(CATALOG_CANONICAL_DOMAINS.length, 19);
 });
 
 test("extractLibraryCandidatesFromDocuments deterministically classifies obvious library docs and proposes simple edges", () => {
@@ -306,6 +328,65 @@ test("analyzeLibraryImportWithLlm canonicalizes folder-prefixed object keys from
   ]);
 });
 
+test("analyzeLibraryImportWithLlm maps candidates to canonical catalog domains from source path or LLM domain", async () => {
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      {
+        objectKey: "agent.marketing-seo-specialist",
+        kind: "agent",
+        title: "SEO专家",
+        domain: "engineering",
+        sourcePath: "marketing/marketing-seo-specialist.md",
+        classificationReason: "Path belongs to marketing department.",
+      },
+      {
+        objectKey: "skill.security-audit",
+        kind: "skill",
+        title: "Security Audit",
+        domain: "security",
+        sourcePath: "skills/security-audit/SKILL.md",
+        classificationReason: "Skill audits security findings.",
+      },
+      {
+        objectKey: "tool.freeform",
+        kind: "tool",
+        title: "Freeform",
+        domain: "software",
+        classificationReason: "Invalid domain should not be accepted.",
+      },
+    ],
+  });
+
+  const result = await analyzeLibraryImportWithLlm({
+    scope: "software",
+    documents: [
+      { path: "marketing/marketing-seo-specialist.md", label: "SEO专家", content: "# SEO专家" },
+      { path: "skills/security-audit/SKILL.md", label: "Security Audit", content: "# Security Audit" },
+    ],
+    llmProvider: provider,
+  });
+
+  assert.deepEqual(result.candidates.map((candidate) => ({
+    objectKey: candidate.objectKey,
+    scope: candidate.scope,
+    domain: candidate.domain,
+    classificationReason: candidate.classificationReason,
+  })), [
+    {
+      objectKey: "agent.marketing-seo-specialist",
+      scope: "marketing",
+      domain: "marketing",
+      classificationReason: "Path belongs to marketing department.",
+    },
+    {
+      objectKey: "skill.security-audit",
+      scope: "security",
+      domain: "security",
+      classificationReason: "Skill audits security findings.",
+    },
+  ]);
+});
+
 test("analyzeLibraryImportOntologyWithLlm accepts full ontology edge vocabulary for selected candidates", async () => {
   const prompts: string[] = [];
   const provider: LibraryImportLlmProvider = async (input) => {
@@ -313,6 +394,18 @@ test("analyzeLibraryImportOntologyWithLlm accepts full ontology edge vocabulary 
     return {
       proposedEdges: [
         { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review", confidence: 0.9 },
+        { fromObjectKey: "agent.reviewer", edgeType: "has_capability", toObjectKey: "skill.review", confidence: 0.86 },
+        { fromObjectKey: "skill.review", edgeType: "provides", toObjectKey: "tool.github", confidence: 0.81 },
+        { fromObjectKey: "skill.review", edgeType: "produces", toObjectKey: "skill.audit", confidence: 0.74 },
+        { fromObjectKey: "skill.audit", edgeType: "consumes", toObjectKey: "skill.review", confidence: 0.7 },
+        { fromObjectKey: "skill.review", edgeType: "validates", toObjectKey: "skill.audit", confidence: 0.76 },
+        { fromObjectKey: "skill.review", edgeType: "precedes", toObjectKey: "skill.audit", confidence: 0.8 },
+        { fromObjectKey: "skill.review", edgeType: "unblocks", toObjectKey: "skill.audit", confidence: 0.79 },
+        { fromObjectKey: "skill.review", edgeType: "substitutes", toObjectKey: "skill.audit", confidence: 0.63 },
+        { fromObjectKey: "skill.review", edgeType: "complements", toObjectKey: "tool.github", confidence: 0.77 },
+        { fromObjectKey: "skill.review", edgeType: "incompatible_with", toObjectKey: "tool.github", confidence: 0.52 },
+        { fromObjectKey: "tool.github", edgeType: "requires_approval", toObjectKey: "skill.review", confidence: 0.66 },
+        { fromObjectKey: "tool.github", edgeType: "requires_secret", toObjectKey: "skill.review", confidence: 0.67 },
         { fromObjectKey: "skill.review", edgeType: "conflicts_with", toObjectKey: "tool.github", confidence: 0.7 },
         { fromObjectKey: "skill.review", edgeType: "workflow_precedes", toObjectKey: "skill.audit", confidence: 0.8 },
         { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.audit", confidence: 0.6 },
@@ -335,6 +428,8 @@ test("analyzeLibraryImportOntologyWithLlm accepts full ontology edge vocabulary 
 
   assert.match(prompts[0] ?? "", /conflicts_with/);
   assert.match(prompts[0] ?? "", /workflow_precedes/);
+  assert.match(prompts[0] ?? "", /produces/);
+  assert.match(prompts[0] ?? "", /requires_secret/);
   assert.match(prompts[0] ?? "", /similar_to/);
   assert.deepEqual(edges.map((edge) => ({
     fromObjectKey: edge.fromObjectKey,
@@ -342,6 +437,18 @@ test("analyzeLibraryImportOntologyWithLlm accepts full ontology edge vocabulary 
     toObjectKey: edge.toObjectKey,
   })), [
     { fromObjectKey: "agent.reviewer", edgeType: "uses", toObjectKey: "skill.review" },
+    { fromObjectKey: "agent.reviewer", edgeType: "has_capability", toObjectKey: "skill.review" },
+    { fromObjectKey: "skill.review", edgeType: "provides", toObjectKey: "tool.github" },
+    { fromObjectKey: "skill.review", edgeType: "produces", toObjectKey: "skill.audit" },
+    { fromObjectKey: "skill.audit", edgeType: "consumes", toObjectKey: "skill.review" },
+    { fromObjectKey: "skill.review", edgeType: "validates", toObjectKey: "skill.audit" },
+    { fromObjectKey: "skill.review", edgeType: "precedes", toObjectKey: "skill.audit" },
+    { fromObjectKey: "skill.review", edgeType: "unblocks", toObjectKey: "skill.audit" },
+    { fromObjectKey: "skill.review", edgeType: "substitutes", toObjectKey: "skill.audit" },
+    { fromObjectKey: "skill.review", edgeType: "complements", toObjectKey: "tool.github" },
+    { fromObjectKey: "skill.review", edgeType: "incompatible_with", toObjectKey: "tool.github" },
+    { fromObjectKey: "tool.github", edgeType: "requires_approval", toObjectKey: "skill.review" },
+    { fromObjectKey: "tool.github", edgeType: "requires_secret", toObjectKey: "skill.review" },
     { fromObjectKey: "skill.review", edgeType: "conflicts_with", toObjectKey: "tool.github" },
     { fromObjectKey: "skill.review", edgeType: "workflow_precedes", toObjectKey: "skill.audit" },
     { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.audit" },
@@ -494,6 +601,10 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
       ["agents/reviewer.agent.md", "skills/review.skill.md", "tools/github.tool.yaml"],
     );
     assert.deepEqual(
+      installed.installedObjects.map((object) => object.object.status),
+      ["approved", "approved", "approved"],
+    );
+    assert.deepEqual(
       installed.installedEdges.map((edge) => ({
         fromObjectKey: edge.fromObjectKey,
         edgeType: edge.edgeType,
@@ -529,11 +640,27 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
       const content = await readFile(join(libraryRoot, relativePath), "utf8");
       const parsed = parseLibraryFileContent({ path: `library/${relativePath}`, content });
       assert.equal(parsed.ok, true, `${relativePath} should parse`);
+      if (parsed.ok) assert.equal(parsed.file.status, "approved", `${relativePath} should install as approved`);
     }
 
-    assert.equal((await findLibraryObjectByKey(db, "agent.reviewer"))?.objectKind, "agent_definition");
-    assert.equal((await findLibraryObjectByKey(db, "skill.review"))?.objectKind, "skill_spec");
-    assert.equal((await findLibraryObjectByKey(db, "tool.github"))?.objectKind, "tool_definition");
+    assert.deepEqual(
+      {
+        agentKind: (await findLibraryObjectByKey(db, "agent.reviewer"))?.objectKind,
+        agentStatus: (await findLibraryObjectByKey(db, "agent.reviewer"))?.status,
+        skillKind: (await findLibraryObjectByKey(db, "skill.review"))?.objectKind,
+        skillStatus: (await findLibraryObjectByKey(db, "skill.review"))?.status,
+        toolKind: (await findLibraryObjectByKey(db, "tool.github"))?.objectKind,
+        toolStatus: (await findLibraryObjectByKey(db, "tool.github"))?.status,
+      },
+      {
+        agentKind: "agent_definition",
+        agentStatus: "approved",
+        skillKind: "skill_spec",
+        skillStatus: "approved",
+        toolKind: "tool_definition",
+        toolStatus: "approved",
+      },
+    );
     assert.equal(await findLibraryObjectByKey(db, "mcp.filesystem"), null);
 
     const agentEdges = await findLibraryEdgesFrom(db, "agent.reviewer", "uses", { scope: "software" });

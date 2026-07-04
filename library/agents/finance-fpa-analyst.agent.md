@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.finance-fpa-analyst
 title: "FP&A 分析师"
-scope: "software"
-status: draft
+scope: "finance"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.finance-fpa-analyst"
 importSourcePath: "finance/finance-fpa-analyst.md"

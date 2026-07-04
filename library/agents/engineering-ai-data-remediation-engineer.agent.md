@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.engineering-ai-data-remediation-engineer
 title: "AI 数据修复工程师"
-scope: "software"
-status: draft
+scope: "engineering"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.engineering-ai-data-remediation-engineer"
 importSourcePath: "engineering/engineering-ai-data-remediation-engineer.md"

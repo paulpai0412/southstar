@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.marketing-multi-platform-publisher
 title: "多平台发布编排官"
-scope: "software"
-status: draft
+scope: "marketing"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.marketing-multi-platform-publisher"
 importSourcePath: "marketing/marketing-multi-platform-publisher.md"

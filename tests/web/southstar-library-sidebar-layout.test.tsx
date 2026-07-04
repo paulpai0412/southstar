@@ -177,13 +177,15 @@ test("LibrarySidebar renders sessions above a filtered domain tree and selects s
     await page.getByText("Library Domain Tree").waitFor();
     assert.equal(await page.getByText("Research import run").isVisible(), true);
 
-    await page.getByRole("button", { name: "software" }).waitFor();
+    await page.getByRole("button", { name: "software", exact: true }).waitFor();
     const domainTree = page.locator('[data-testid="library-domain-tree"]');
     assert.equal(await domainTree.getByRole("button", { name: "research", exact: true }).count(), 0);
 
     for (const folder of ["agents", "skills", "mcp", "tools"]) {
       await page.getByText(folder, { exact: true }).waitFor();
     }
+    assert.equal(await page.locator('[data-testid="library-tree-connector"]').count() > 0, true);
+    assert.equal(await page.locator('[data-testid="library-tree-branch"]').count() > 0, true);
     assert.equal(await page.getByText("[]", { exact: true }).count(), 0);
 
     for (const title of ["Frontend Agent", "Agent Spec", "React Skill", "Skill Definition", "GitHub MCP", "Browser Tool"]) {
@@ -197,6 +199,84 @@ test("LibrarySidebar renders sessions above a filtered domain tree and selects s
 
     await page.getByRole("button", { name: /Research import run/ }).click();
     assert.equal(await page.evaluate(() => (window as any).__selectedSessionId), "library-session-1");
+  });
+});
+
+test("LibrarySidebar renders the library domains as an accessible nested tree with counts", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibrarySidebar } from "./web/components/library/LibrarySidebar";
+
+    const agent = (domain, index) => ({
+      id: \`agent.\${domain}.\${index}\`,
+      objectKey: \`agent.\${domain}.\${index}\`,
+      objectKind: "agent_definition",
+      status: "approved",
+      title: \`\${domain} Agent \${index}\`,
+      scope: domain,
+      sourcePath: \`\${domain}/agents/\${index}.agent.md\`,
+    });
+
+    const marketingAgents = Array.from({ length: 42 }, (_, index) => agent("marketing", index + 1));
+    const engineeringAgents = Array.from({ length: 41 }, (_, index) => agent("engineering", index + 1));
+    const model = {
+      selectedScope: "all",
+      domains: [
+        {
+          scope: "engineering",
+          objectCount: 41,
+          objectKindCounts: { agent_definition: 41 },
+          objectGroups: [{ objectKind: "agent_definition", objects: engineeringAgents }],
+        },
+        {
+          scope: "marketing",
+          objectCount: 42,
+          objectKindCounts: { agent_definition: 42 },
+          objectGroups: [{ objectKind: "agent_definition", objects: marketingAgents }],
+        },
+      ],
+    };
+
+    createRoot(document.getElementById("root")).render(
+      <LibrarySidebar
+        model={model}
+        sessions={[]}
+        selectedScope="all"
+        statusFilter="all"
+        onSelectScope={(scope) => { window.__selectedScope = scope; }}
+        onStatusFilterChange={() => {}}
+        onSelectObject={(object) => { window.__selectedObjectKey = object.objectKey; }}
+      />
+    );
+  `, async (page) => {
+    const tree = page.getByRole("tree", { name: "Library Domain Tree" });
+    await tree.waitFor();
+
+    const marketing = tree.getByRole("treeitem", { name: "marketing 42" });
+    await marketing.waitFor();
+    assert.equal(await marketing.getAttribute("aria-level"), "1");
+    assert.equal(await marketing.getAttribute("aria-expanded"), "true");
+
+    await tree.getByRole("button", { name: "Toggle marketing" }).click();
+    assert.equal(await marketing.getAttribute("aria-expanded"), "false");
+    assert.equal(await tree.getByRole("treeitem", { name: "marketing Agent 42 agent.marketing.42 approved" }).count(), 0);
+
+    await tree.getByRole("button", { name: "Toggle marketing" }).click();
+    assert.equal(await marketing.getAttribute("aria-expanded"), "true");
+
+    const marketingAgentsFolder = tree.getByRole("treeitem", { name: "agents 42" });
+    assert.equal(await marketingAgentsFolder.getAttribute("aria-level"), "2");
+    assert.equal(await marketingAgentsFolder.getAttribute("aria-expanded"), "true");
+    assert.equal(await tree.getByRole("treeitem", { name: "marketing Agent 42 agent.marketing.42 approved" }).getAttribute("aria-level"), "3");
+
+    assert.equal(await tree.getByRole("treeitem").count(), 87);
+    await page.locator('[data-testid="library-domain-filter"]').fill("engineer");
+    await tree.getByRole("treeitem", { name: "engineering 41" }).waitFor();
+    assert.equal(await tree.getByRole("treeitem", { name: "marketing 42" }).count(), 0);
+
+    await tree.getByRole("treeitem", { name: "engineering Agent 7 agent.engineering.7 approved" }).click();
+    assert.equal(await page.evaluate(() => (window as any).__selectedObjectKey), "agent.engineering.7");
   });
 });
 

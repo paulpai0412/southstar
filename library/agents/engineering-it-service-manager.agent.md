@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.engineering-it-service-manager
 title: "IT 服务经理"
-scope: "software"
-status: draft
+scope: "engineering"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.engineering-it-service-manager"
 importSourcePath: "engineering/engineering-it-service-manager.md"

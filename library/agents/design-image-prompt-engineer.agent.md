@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.design-image-prompt-engineer
 title: "图像提示词工程师"
-scope: "software"
-status: draft
+scope: "design"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.design-image-prompt-engineer"
 importSourcePath: "design/design-image-prompt-engineer.md"

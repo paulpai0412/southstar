@@ -10,8 +10,15 @@ function source(path: string): string {
 }
 
 test("App mode rail exposes Library mode and AppShell renders persistent library panel", () => {
-  assert.match(source("web/components/AppModeRail.tsx"), /"library"/);
-  assert.match(source("web/components/AppModeRail.tsx"), /Library/);
+  const rail = source("web/components/AppModeRail.tsx");
+  assert.match(rail, /"library"/);
+  assert.match(rail, /Library/);
+  assert.ok(
+    rail.indexOf('id: "chat"') < rail.indexOf('id: "library"')
+      && rail.indexOf('id: "library"') < rail.indexOf('id: "workflow"')
+      && rail.indexOf('id: "workflow"') < rail.indexOf('id: "operator"'),
+    "App mode rail should order tabs Chat, Library, Workflow, Operator",
+  );
   const appShell = source("web/components/AppShell.tsx");
   assert.match(appShell, /LibraryWorkspaceProvider/);
   assert.match(appShell, /data-testid="library-sidebar-panel"/);
@@ -24,6 +31,18 @@ test("App mode rail exposes Library mode and AppShell renders persistent library
   assert.match(appShell, /LibraryWorkspace/);
   assert.match(appShell, /data-testid="library-mode-panel"/);
   assert.match(appShell, /modePanelStyle\(appMode === "library"\)/);
+});
+
+test("AppShell places export and branch controls beside theme before mode tabs", () => {
+  const appShell = source("web/components/AppShell.tsx");
+  assert.match(appShell, /data-testid="chat-topbar-controls"/);
+  assert.match(appShell, /aria-label="Export HTML"/);
+  assert.match(appShell, /BranchNavigator/);
+  assert.ok(
+    appShell.indexOf("toggleTheme") < appShell.indexOf('data-testid="chat-topbar-controls"')
+      && appShell.indexOf('data-testid="chat-topbar-controls"') < appShell.indexOf("<AppModeRail"),
+    "top bar should place theme, then chat controls, then tabs",
+  );
 });
 
 test("Library workspace follows AppShell sidebar plus center chat and file viewer layout", () => {

@@ -230,16 +230,44 @@ function toGraphEdgeOntology(edge: LibraryEdgeRecord): LibraryGraphEdgeOntology 
 
 function ontologyCategoryForEdgeType(edgeType: LibraryEdgeType): string | undefined {
   switch (edgeType) {
+    case "belongs_to_domain":
+      return "classification";
+    case "has_capability":
+    case "provides_capability":
+      return "capability";
+    case "provides":
+      return "profile_composition";
     case "uses":
       return "usage";
     case "requires":
+    case "requires_capability":
+    case "requires_skill":
+    case "requires_tool":
       return "requirement";
     case "conflicts_with":
+    case "incompatible_with":
       return "conflict";
+    case "precedes":
     case "workflow_precedes":
+    case "unblocks":
       return "workflow_order";
+    case "validates":
+    case "validates_artifact":
+    case "reviews":
+      return "quality_gate";
+    case "produces":
+    case "consumes":
+    case "produces_artifact":
+    case "consumes_artifact":
+      return "artifact_flow";
     case "similar_to":
+    case "substitutes":
+    case "complements":
       return "similarity";
+    case "requires_approval":
+    case "requires_secret":
+    case "requires_secret_group":
+      return "risk";
     default:
       return undefined;
   }

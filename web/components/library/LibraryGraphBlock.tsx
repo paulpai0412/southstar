@@ -20,6 +20,7 @@ type LibraryGraphData = {
 const KIND_OPTIONS = [
   "agent_definition",
   "agent_profile",
+  "domain_taxonomy",
   "skill_spec",
   "tool_definition",
   "mcp_tool_grant",
@@ -46,11 +47,25 @@ const EDGE_TYPE_OPTIONS = [
   "part_of_template",
   "supersedes",
   "blocked_by",
+  "belongs_to_domain",
+  "has_capability",
+  "provides",
   "uses",
   "requires",
   "conflicts_with",
+  "precedes",
   "workflow_precedes",
+  "unblocks",
+  "validates",
+  "reviews",
+  "produces",
+  "consumes",
   "similar_to",
+  "substitutes",
+  "complements",
+  "incompatible_with",
+  "requires_approval",
+  "requires_secret",
 ];
 
 export function LibraryGraphBlock({
@@ -70,6 +85,7 @@ export function LibraryGraphBlock({
   const [selectedKind, setSelectedKind] = useState(initialGraph.query?.kind ?? "all");
   const [selectedStatus, setSelectedStatus] = useState(initialGraph.query?.status ?? "all");
   const [selectedEdgeType, setSelectedEdgeType] = useState(initialGraph.query?.edgeType ?? "all");
+  const [open, setOpen] = useState(true);
   const [graph, setGraph] = useState<LibraryGraphData>(initialGraph);
   const options = useMemo(() => {
     const discovered = Array.isArray(graph.availableScopes)
@@ -98,10 +114,30 @@ export function LibraryGraphBlock({
 
   const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter(isGraphNode) : [];
   const edges = Array.isArray(graph.edges) ? graph.edges.filter(isGraphEdge) : [];
+  const layoutKey = `scope=${selectedScope};kind=${selectedKind};status=${selectedStatus};edge=${selectedEdgeType}`;
   return (
-    <div data-testid="library-graph-block" style={{ display: "grid", gap: 6 }}>
+    <div data-testid="library-graph-block" style={{ display: "grid", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-subtle)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div style={{ fontWeight: 700 }}>Graph snapshot</div>
+        <button
+          type="button"
+          data-testid="library-graph-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((value) => !value)}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            border: "none",
+            background: "transparent",
+            color: "var(--text)",
+            cursor: "pointer",
+            fontWeight: 700,
+            padding: 0,
+          }}
+        >
+          <span aria-hidden style={{ transform: open ? "rotate(90deg)" : "none", transition: "transform 0.12s" }}>›</span>
+          <span>Graph snapshot</span>
+        </button>
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
           <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
             <span>Domain</span>
@@ -159,7 +195,7 @@ export function LibraryGraphBlock({
       <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
         {selectedScope} / {selectedKind} / {selectedStatus} / {selectedEdgeType} / {nodes.length} nodes / {edges.length} edges
       </div>
-      <LibraryGraphChart nodes={nodes} edges={edges} onSelectNode={onSelectNode} />
+      {open ? <LibraryGraphChart nodes={nodes} edges={edges} onSelectNode={onSelectNode} persistLayoutKey={layoutKey} /> : null}
     </div>
   );
 }

@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.supply-chain-strategist
 title: "供应链采购策略师"
-scope: "software"
-status: draft
+scope: "supply-chain"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.supply-chain-strategist"
 importSourcePath: "supply-chain/supply-chain-strategist.md"

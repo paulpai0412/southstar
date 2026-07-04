@@ -1,6 +1,7 @@
 import type {
   LibraryFileEnvelope,
   LibraryFileSyncResult,
+  LibraryGraphReadModel,
   LibraryImportCandidate,
   LibraryImportCandidateInstallResult,
   LibraryImportProposedEdge,
@@ -68,6 +69,19 @@ export async function readLibraryFile(relativePath: string): Promise<LibraryFile
 
 export async function readLibraryObjectDetail(objectKey: string): Promise<LibraryObjectDetail> {
   return requestLibraryJson<LibraryObjectDetail>(`/api/library/objects/${encodeURIComponent(objectKey)}`);
+}
+
+export async function readLibraryGraphNeighborhood(input: {
+  objectKey: string;
+  scope?: string;
+  depth?: number;
+}): Promise<LibraryGraphReadModel> {
+  const params = new URLSearchParams({
+    objectKey: input.objectKey,
+    depth: String(input.depth ?? 1),
+  });
+  if (input.scope) params.set("scope", input.scope);
+  return requestLibraryJson<LibraryGraphReadModel>(`/api/library/graph?${params.toString()}`);
 }
 
 export async function saveLibraryFile(relativePath: string, content: string): Promise<LibraryFileEnvelope> {

@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.paid-media-programmatic-buyer
 title: "程序化广告采买专家"
-scope: "software"
-status: draft
+scope: "paid-media"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.paid-media-programmatic-buyer"
 importSourcePath: "paid-media/paid-media-programmatic-buyer.md"

@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.specialized-model-qa
 title: "模型 QA 专家"
-scope: "software"
-status: draft
+scope: "specialized"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.specialized-model-qa"
 importSourcePath: "specialized/specialized-model-qa.md"

@@ -1,16 +1,25 @@
 "use client";
 
-import { useState } from "react";
-import type { LibraryFileEnvelope, LibraryFileValidationIssue, LibraryObjectDetail } from "@/lib/library/types";
+import { useMemo, useState } from "react";
+import type {
+  LibraryFileEnvelope,
+  LibraryFileRecord,
+  LibraryFileValidationIssue,
+  LibraryGraphReadModel,
+  LibraryObjectDetail,
+} from "@/lib/library/types";
+import { LibraryGraphChart, type LibraryGraphChartNode } from "./LibraryGraphChart";
 
-type FileViewerTab = "Preview" | "Edit" | "Validate" | "Edges" | "Usage" | "Provenance";
+type FileViewerTab = "Edges" | "Preview" | "Edit" | "Validate" | "Usage";
 
-const tabs: FileViewerTab[] = ["Preview", "Edit", "Validate", "Edges", "Usage", "Provenance"];
+const tabs: FileViewerTab[] = ["Edges", "Preview", "Edit", "Validate", "Usage"];
+const validStatuses = new Set(["draft", "approved", "deprecated", "blocked", "invalid"]);
 
 export function LibraryFileViewer({
   selectedFilePath,
   fileRecord,
   objectDetail,
+  edgeGraph,
   content,
   dirty,
   saving,
@@ -18,12 +27,13 @@ export function LibraryFileViewer({
   issues,
   statusMessage,
   onContentChange,
-  onSave,
-  onSync,
+  onSaveAndSync,
+  onSelectGraphNode,
 }: {
   selectedFilePath?: string;
   fileRecord?: LibraryFileEnvelope | null;
   objectDetail?: LibraryObjectDetail | null;
+  edgeGraph?: LibraryGraphReadModel | null;
   content: string;
   dirty: boolean;
   saving: boolean;
@@ -31,12 +41,19 @@ export function LibraryFileViewer({
   issues?: LibraryFileValidationIssue[];
   statusMessage?: string;
   onContentChange: (value: string) => void;
-  onSave: () => void;
-  onSync: () => void;
+  onSaveAndSync: () => void;
+  onSelectGraphNode?: (node: LibraryGraphChartNode) => void;
 }) {
-  const [activeTab, setActiveTab] = useState<FileViewerTab>("Edit");
+  const [activeTab, setActiveTab] = useState<FileViewerTab>("Edges");
   const effectiveActiveTab = selectedFilePath || !objectDetail ? activeTab : activeTab === "Edit" ? "Preview" : activeTab;
-  const visibleIssues = issues ?? fileRecord?.parsed.issues ?? [];
+  const parsedFile = fileRecord?.parsed.ok ? fileRecord.parsed.file : null;
+  const validationIssues = useMemo(
+    () => currentValidationIssues({ selectedFilePath, content, dirty, fileRecord: fileRecord ?? null, providedIssues: issues }),
+    [content, dirty, fileRecord, issues, selectedFilePath],
+  );
+  const hasValidationErrors = validationIssues.some((issue) => issue.severity === "error");
+  const saveDisabled = !selectedFilePath || !dirty || saving || syncing || hasValidationErrors;
+  const graph = edgeGraph ?? fallbackGraphFromObjectDetail(objectDetail, parsedFile);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -48,26 +65,15 @@ export function LibraryFileViewer({
               {selectedFilePath ?? "Select a library object"}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 6 }}>
-            <button
-              type="button"
-              data-testid="library-file-save"
-              disabled={!selectedFilePath || !dirty || saving}
-              onClick={onSave}
-              style={{ height: 28, fontSize: 12 }}
-            >
-              {saving ? "Saving" : "Save"}
-            </button>
-            <button
-              type="button"
-              data-testid="library-file-sync"
-              disabled={!selectedFilePath || syncing || dirty}
-              onClick={onSync}
-              style={{ height: 28, fontSize: 12 }}
-            >
-              {syncing ? "Syncing" : "Sync"}
-            </button>
-          </div>
+          <button
+            type="button"
+            data-testid="library-file-save-sync"
+            disabled={saveDisabled}
+            onClick={onSaveAndSync}
+            style={{ height: 28, fontSize: 12, whiteSpace: "nowrap" }}
+          >
+            {saving ? "Saving" : syncing ? "Syncing" : "Save & Sync"}
+          </button>
         </div>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 8 }}>
           {tabs.map((tab) => (
@@ -106,11 +112,11 @@ export function LibraryFileViewer({
             {statusMessage}
           </div>
         ) : null}
-        {visibleIssues.length > 0 ? (
+        {validationIssues.length > 0 ? (
           <div style={{ marginTop: 8, display: "grid", gap: 4 }}>
-            {visibleIssues.map((issue, index) => (
-              <div key={`${issue.code}:${issue.path}:${index}`} style={{ fontSize: 11, color: issue.severity === "error" ? "var(--danger)" : "var(--text-muted)" }}>
-                {issue.severity}: {issue.path} - {issue.message}
+            {validationIssues.slice(0, 3).map((issue, index) => (
+              <div key={`${issue.code}:${issue.path}:${index}`} data-testid="library-file-line-issue" style={{ fontSize: 11, color: issue.severity === "error" ? "var(--danger)" : "var(--text-muted)" }}>
+                {formatLineIssue(issue)}
               </div>
             ))}
           </div>
@@ -118,86 +124,321 @@ export function LibraryFileViewer({
       </div>
       <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {effectiveActiveTab === "Edit" ? (
-          <textarea
-            data-testid="library-file-editor"
-            value={content}
-            onChange={(event) => onContentChange(event.currentTarget.value)}
-            placeholder="Select a library object with a source file..."
-            style={{
-              width: "100%",
-              height: "100%",
-              minHeight: 320,
-              border: "none",
-              resize: "none",
-              padding: 12,
-              fontFamily: "var(--font-mono)",
-              fontSize: 12,
-              background: "var(--bg)",
-              color: "var(--text)",
-              outline: "none",
-            }}
-          />
+          <div style={{ display: "grid", gridTemplateRows: validationIssues.length > 0 ? "auto minmax(0, 1fr)" : "minmax(0, 1fr)", height: "100%", minHeight: 320 }}>
+            {validationIssues.length > 0 ? (
+              <ValidationIssueList issues={validationIssues} compact />
+            ) : null}
+            <textarea
+              data-testid="library-file-editor"
+              value={content}
+              onChange={(event) => onContentChange(event.currentTarget.value)}
+              placeholder="Select a library object with a source file..."
+              style={{
+                width: "100%",
+                height: "100%",
+                minHeight: 260,
+                border: "none",
+                borderTop: validationIssues.length > 0 ? "1px solid var(--border)" : "none",
+                resize: "none",
+                padding: 12,
+                fontFamily: "var(--font-mono)",
+                fontSize: 12,
+                background: "var(--bg)",
+                color: "var(--text)",
+                outline: "none",
+              }}
+            />
+          </div>
+        ) : effectiveActiveTab === "Edges" ? (
+          <EdgesPanel graph={graph} objectDetail={objectDetail ?? null} parsedFile={parsedFile} onSelectGraphNode={onSelectGraphNode} />
+        ) : effectiveActiveTab === "Preview" ? (
+          <PreviewPanel fileRecord={fileRecord ?? null} objectDetail={objectDetail ?? null} content={content} />
+        ) : effectiveActiveTab === "Validate" ? (
+          <ValidationPanel issues={validationIssues} />
         ) : (
-          <ReadOnlyPanel
-            tab={effectiveActiveTab}
-            fileRecord={fileRecord ?? null}
-            objectDetail={objectDetail ?? null}
-            content={content}
-            issues={visibleIssues}
-          />
+          <UsagePanel objectDetail={objectDetail ?? null} parsedFile={parsedFile} />
         )}
       </div>
     </div>
   );
 }
 
-function ReadOnlyPanel({
-  tab,
+function EdgesPanel({
+  graph,
+  objectDetail,
+  parsedFile,
+  onSelectGraphNode,
+}: {
+  graph: LibraryGraphReadModel | null;
+  objectDetail: LibraryObjectDetail | null;
+  parsedFile: LibraryFileRecord | null;
+  onSelectGraphNode?: (node: LibraryGraphChartNode) => void;
+}) {
+  const nodes = graph?.nodes ?? [];
+  const edges = graph?.edges ?? [];
+  if (nodes.length === 0) {
+    return (
+      <div style={{ padding: 12, display: "grid", gap: 8, fontSize: 12 }}>
+        <div style={{ fontWeight: 700 }}>No graph edges</div>
+        <pre style={{ margin: 0, whiteSpace: "pre-wrap", fontFamily: "var(--font-mono)" }}>
+          {JSON.stringify(objectDetail ? { inboundEdges: objectDetail.inboundEdges, outboundEdges: objectDetail.outboundEdges } : edgeRefs(parsedFile?.frontmatter), null, 2)}
+        </pre>
+      </div>
+    );
+  }
+  return (
+    <div style={{ padding: 10, display: "grid", gap: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12, color: "var(--text-muted)" }}>
+        <span>{nodes.length} nodes / {edges.length} edges</span>
+        <span>{graph?.activeScope ?? parsedFile?.scope ?? stringValue(objectDetail?.object.state?.scope) ?? "all"}</span>
+      </div>
+      <LibraryGraphChart
+        nodes={nodes}
+        edges={edges}
+        onSelectNode={onSelectGraphNode}
+        persistLayoutKey={`file-viewer:${objectDetail?.object.objectKey ?? parsedFile?.objectKey ?? "unknown"}`}
+      />
+    </div>
+  );
+}
+
+function PreviewPanel({
   fileRecord,
   objectDetail,
   content,
-  issues,
 }: {
-  tab: FileViewerTab;
   fileRecord: LibraryFileEnvelope | null;
   objectDetail: LibraryObjectDetail | null;
   content: string;
-  issues: LibraryFileValidationIssue[];
 }) {
   const parsedFile = fileRecord?.parsed.ok ? fileRecord.parsed.file : null;
-  let body: unknown;
-  if (tab === "Preview") body = parsedFile ?? objectDetail?.object ?? content;
-  if (tab === "Validate") body = issues.length > 0 ? issues : [{ severity: "info", path: "$", message: "No validation issues", code: "ok" }];
-  if (tab === "Edges") body = objectDetail ? {
-    inboundEdges: objectDetail.inboundEdges,
-    outboundEdges: objectDetail.outboundEdges,
-  } : edgeRefs(parsedFile?.frontmatter);
-  if (tab === "Usage") body = objectDetail?.usage ?? { objectKey: parsedFile?.objectKey, objectKind: parsedFile?.objectKind, scope: parsedFile?.scope };
-  if (tab === "Provenance") body = {
-    path: fileRecord?.relativePath,
-    sourceHash: parsedFile?.sourceHash,
-    status: objectDetail?.object.status ?? parsedFile?.status,
-    headVersionId: objectDetail?.object.headVersionId,
-    objectKey: objectDetail?.object.objectKey ?? parsedFile?.objectKey,
-    objectKind: objectDetail?.object.objectKind ?? parsedFile?.objectKind,
-    state: objectDetail?.object.state,
-  };
+  const object = objectDetail?.object;
+  const title = stringValue(object?.state?.title) ?? parsedFile?.title ?? object?.objectKey ?? "No object selected";
+  const summary = stringValue(object?.state?.description)
+    ?? nestedStringValue(object?.state, ["runtimeRole", "responsibility"])
+    ?? firstBodyParagraph(parsedFile?.body ?? content);
+  const fields = [
+    ["Object key", object?.objectKey ?? parsedFile?.objectKey],
+    ["Kind", object?.objectKind ?? parsedFile?.objectKind],
+    ["Status", object?.status ?? parsedFile?.status],
+    ["Scope", stringValue(object?.state?.scope) ?? parsedFile?.scope],
+    ["Source path", fileRecord?.relativePath ?? stringValue(object?.state?.sourcePath)],
+    ["Head version", object?.headVersionId],
+    ["Source hash", parsedFile?.sourceHash],
+  ].filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0);
 
   return (
-    <pre
-      style={{
-        margin: 0,
-        padding: 12,
-        whiteSpace: "pre-wrap",
-        wordBreak: "break-word",
-        fontFamily: "var(--font-mono)",
-        fontSize: 12,
-        color: "var(--text)",
-      }}
-    >
-      {typeof body === "string" ? body : JSON.stringify(body ?? {}, null, 2)}
-    </pre>
+    <div data-testid="library-file-preview" style={{ padding: 12, display: "grid", gap: 12 }}>
+      <section style={{ display: "grid", gap: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 14 }}>{title}</h3>
+        {summary ? <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.45 }}>{summary}</p> : null}
+      </section>
+      <dl style={{ display: "grid", gridTemplateColumns: "112px minmax(0, 1fr)", gap: "7px 10px", margin: 0, fontSize: 12 }}>
+        {fields.map(([label, value]) => (
+          <div key={label} style={{ display: "contents" }}>
+            <dt style={{ color: "var(--text-muted)" }}>{label}</dt>
+            <dd style={{ margin: 0, minWidth: 0, overflowWrap: "anywhere", fontFamily: label.includes("hash") || label.includes("key") ? "var(--font-mono)" : undefined }}>
+              {value}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </div>
   );
+}
+
+function ValidationPanel({ issues }: { issues: LibraryFileValidationIssue[] }) {
+  return (
+    <div data-testid="library-validation-panel" style={{ padding: 12 }}>
+      {issues.length > 0 ? (
+        <ValidationIssueList issues={issues} />
+      ) : (
+        <div style={{ fontSize: 12, color: "var(--success, #0f766e)" }}>No validation issues</div>
+      )}
+    </div>
+  );
+}
+
+function ValidationIssueList({ issues, compact = false }: { issues: LibraryFileValidationIssue[]; compact?: boolean }) {
+  return (
+    <div style={{ display: "grid", gap: compact ? 4 : 8, padding: compact ? 8 : 0 }}>
+      {issues.map((issue, index) => (
+        <div
+          key={`${issue.code}:${issue.path}:${index}`}
+          data-testid="library-file-line-issue"
+          style={{
+            borderLeft: `3px solid ${issue.severity === "error" ? "var(--danger)" : "var(--warning, #b54708)"}`,
+            padding: "5px 8px",
+            background: "var(--surface)",
+            fontSize: 12,
+          }}
+        >
+          <div style={{ fontWeight: 700 }}>{formatLineIssue(issue)}</div>
+          <div style={{ color: "var(--text-muted)", marginTop: 2 }}>{issue.code}</div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function UsagePanel({
+  objectDetail,
+  parsedFile,
+}: {
+  objectDetail: LibraryObjectDetail | null;
+  parsedFile: LibraryFileRecord | null;
+}) {
+  const usage = objectDetail?.usage;
+  const usedBy = usage?.usedByObjectKeys ?? [];
+  const dependsOn = usage?.dependsOnObjectKeys ?? [];
+  return (
+    <div data-testid="library-usage-panel" style={{ padding: 12, display: "grid", gap: 14, fontSize: 12 }}>
+      <section style={{ display: "grid", gap: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 13 }}>Used by</h3>
+        {usedBy.length > 0 ? usedBy.map((key) => <code key={key}>{key}</code>) : <span style={{ color: "var(--text-muted)" }}>No inbound usage</span>}
+      </section>
+      <section style={{ display: "grid", gap: 6 }}>
+        <h3 style={{ margin: 0, fontSize: 13 }}>Depends on</h3>
+        {dependsOn.length > 0 ? dependsOn.map((key) => <code key={key}>{key}</code>) : <span style={{ color: "var(--text-muted)" }}>No outbound dependencies</span>}
+      </section>
+      <section style={{ display: "grid", gridTemplateColumns: "112px 1fr", gap: "6px 10px" }}>
+        <span style={{ color: "var(--text-muted)" }}>Object</span>
+        <code>{objectDetail?.object.objectKey ?? parsedFile?.objectKey ?? "none"}</code>
+        <span style={{ color: "var(--text-muted)" }}>Inbound</span>
+        <span>{usage?.inboundCount ?? objectDetail?.inboundEdges.length ?? 0}</span>
+        <span style={{ color: "var(--text-muted)" }}>Outbound</span>
+        <span>{usage?.outboundCount ?? objectDetail?.outboundEdges.length ?? 0}</span>
+      </section>
+    </div>
+  );
+}
+
+function currentValidationIssues(input: {
+  selectedFilePath?: string;
+  content: string;
+  dirty: boolean;
+  fileRecord: LibraryFileEnvelope | null;
+  providedIssues?: LibraryFileValidationIssue[];
+}): LibraryFileValidationIssue[] {
+  if (input.dirty && input.selectedFilePath) {
+    return validateLibraryFileContent(input.selectedFilePath, input.content);
+  }
+  if (input.providedIssues) return withLineNumbers(input.providedIssues, input.content);
+  return withLineNumbers(input.fileRecord?.parsed.issues ?? [], input.content);
+}
+
+function validateLibraryFileContent(relativePath: string, content: string): LibraryFileValidationIssue[] {
+  const yaml = relativePath.endsWith(".md") ? markdownFrontmatter(content) : { content, offset: 0, issues: [] };
+  if (yaml.issues.length > 0) return yaml.issues;
+  const parsed = parseTopLevelYaml(yaml.content, yaml.offset);
+  const issues = [...parsed.issues];
+  for (const key of ["schemaVersion", "id", "title", "scope", "status"]) {
+    if (!parsed.values.has(key)) {
+      issues.push(lineIssue("error", key, `${key} is required`, `${key}_required`, 1));
+    }
+  }
+  const status = parsed.values.get("status");
+  if (status && !validStatuses.has(status)) {
+    issues.push(lineIssue("error", "status", `status is not supported: ${status}`, "status_unsupported", parsed.lines.get("status") ?? 1));
+  }
+  return issues;
+}
+
+function markdownFrontmatter(content: string): { content: string; offset: number; issues: LibraryFileValidationIssue[] } {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(content);
+  if (!match) {
+    return {
+      content: "",
+      offset: 0,
+      issues: [lineIssue("error", "$", "markdown library file must start with YAML frontmatter", "frontmatter_required", 1)],
+    };
+  }
+  return { content: match[1] ?? "", offset: 1, issues: [] };
+}
+
+function parseTopLevelYaml(content: string, lineOffset: number): {
+  values: Map<string, string>;
+  lines: Map<string, number>;
+  issues: LibraryFileValidationIssue[];
+} {
+  const values = new Map<string, string>();
+  const lines = new Map<string, number>();
+  const issues: LibraryFileValidationIssue[] = [];
+  const rawLines = content.split(/\r?\n/);
+  for (let index = 0; index < rawLines.length; index += 1) {
+    const raw = rawLines[index]!;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.startsWith("#") || raw.startsWith(" ")) continue;
+    const separator = trimmed.indexOf(":");
+    if (separator === -1) {
+      issues.push(lineIssue("error", "$", "YAML entries must use key: value syntax", "yaml_key_value_required", lineOffset + index + 1));
+      continue;
+    }
+    const key = trimmed.slice(0, separator).trim();
+    const value = trimmed.slice(separator + 1).trim().replace(/^["']|["']$/g, "");
+    values.set(key, value);
+    lines.set(key, lineOffset + index + 1);
+  }
+  return { values, lines, issues };
+}
+
+function withLineNumbers(issues: LibraryFileValidationIssue[], content: string): LibraryFileValidationIssue[] {
+  return issues.map((issue) => {
+    if (issue.path.match(/^line \d+ /)) return issue;
+    return { ...issue, path: `line ${lineForPath(content, issue.path)} / ${issue.path}` };
+  });
+}
+
+function lineForPath(content: string, path: string): number {
+  const key = path.split(".").at(-1)?.replace(/[^A-Za-z0-9_-]/g, "");
+  if (!key) return 1;
+  const lines = content.split(/\r?\n/);
+  const found = lines.findIndex((line) => line.trimStart().startsWith(`${key}:`));
+  return found >= 0 ? found + 1 : 1;
+}
+
+function lineIssue(
+  severity: LibraryFileValidationIssue["severity"],
+  path: string,
+  message: string,
+  code: string,
+  line: number,
+): LibraryFileValidationIssue {
+  return { severity, path: `line ${line} / ${path}`, message, code };
+}
+
+function formatLineIssue(issue: LibraryFileValidationIssue): string {
+  return `${issue.severity}: ${issue.path} - ${issue.message}`;
+}
+
+function fallbackGraphFromObjectDetail(
+  objectDetail: LibraryObjectDetail | null | undefined,
+  parsedFile: LibraryFileRecord | null,
+): LibraryGraphReadModel | null {
+  const objectKey = objectDetail?.object.objectKey ?? parsedFile?.objectKey;
+  if (!objectKey) return null;
+  const objectNode = {
+    objectKey,
+    objectKind: objectDetail?.object.objectKind ?? parsedFile?.objectKind,
+    status: objectDetail?.object.status ?? parsedFile?.status,
+    title: stringValue(objectDetail?.object.state?.title) ?? parsedFile?.title ?? objectKey,
+    scope: stringValue(objectDetail?.object.state?.scope) ?? parsedFile?.scope,
+  };
+  const edges = [...(objectDetail?.inboundEdges ?? []), ...(objectDetail?.outboundEdges ?? [])];
+  const nodeKeys = new Set([objectKey]);
+  for (const edge of edges) {
+    nodeKeys.add(edge.fromObjectKey);
+    nodeKeys.add(edge.toObjectKey);
+  }
+  const nodes = [...nodeKeys].map((key) => key === objectKey ? objectNode : {
+    objectKey: key,
+    title: key,
+  });
+  return {
+    activeScope: objectNode.scope,
+    nodes,
+    edges,
+  };
 }
 
 function edgeRefs(frontmatter: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -207,4 +448,26 @@ function edgeRefs(frontmatter: Record<string, unknown> | undefined): Record<stri
     if (key.endsWith("Refs") || key.endsWith("Ref")) refs[key] = value;
   }
   return refs;
+}
+
+function firstBodyParagraph(content: string): string | undefined {
+  const paragraph = content
+    .split(/\n{2,}/)
+    .map((chunk) => chunk.replace(/^#+\s*/gm, "").trim())
+    .find((chunk) => chunk.length > 0);
+  if (!paragraph) return undefined;
+  return paragraph.length > 220 ? `${paragraph.slice(0, 217)}...` : paragraph;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function nestedStringValue(value: unknown, path: string[]): string | undefined {
+  let current = value;
+  for (const segment of path) {
+    if (!current || typeof current !== "object") return undefined;
+    current = (current as Record<string, unknown>)[segment];
+  }
+  return stringValue(current);
 }

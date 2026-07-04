@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.sales-outbound-strategist
 title: "Outbound 策略师"
-scope: "software"
-status: draft
+scope: "sales"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.sales-outbound-strategist"
 importSourcePath: "sales/sales-outbound-strategist.md"

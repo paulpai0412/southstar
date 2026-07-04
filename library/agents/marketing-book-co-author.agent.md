@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.marketing-book-co-author
 title: "图书联合作者"
-scope: "software"
-status: draft
+scope: "marketing"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.marketing-book-co-author"
 importSourcePath: "marketing/marketing-book-co-author.md"

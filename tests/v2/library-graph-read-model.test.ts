@@ -191,6 +191,24 @@ test("exposes ontology edge metadata in library graph read model and route", asy
         confidence: 0.42,
       },
     });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "produces",
+      toObjectKey: "workflow.ui-build",
+      scope: "software",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "workflow.ui-build",
+      edgeType: "unblocks",
+      toObjectKey: "workflow.ui-review",
+      scope: "software",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "tool.browser",
+      edgeType: "requires_secret",
+      toObjectKey: "skill.react-ui",
+      scope: "software",
+    });
 
     const model = await buildLibraryGraphReadModel(db, { scope: "software" });
     const usesEdge = graphEdge(model, "agent.frontend-developer", "uses", "skill.react-ui");
@@ -212,6 +230,15 @@ test("exposes ontology edge metadata in library graph read model and route", asy
     assert.deepEqual(graphEdge(model, "skill.react-ui", "similar_to", "tool.browser").ontology, {
       category: "similarity",
       confidence: 0.42,
+    });
+    assert.deepEqual(graphEdge(model, "agent.frontend-developer", "produces", "workflow.ui-build").ontology, {
+      category: "artifact_flow",
+    });
+    assert.deepEqual(graphEdge(model, "workflow.ui-build", "unblocks", "workflow.ui-review").ontology, {
+      category: "workflow_order",
+    });
+    assert.deepEqual(graphEdge(model, "tool.browser", "requires_secret", "skill.react-ui").ontology, {
+      category: "risk",
     });
 
     const response = await handleRuntimeRoute(

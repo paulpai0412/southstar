@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.testing-accessibility-auditor
 title: "无障碍审核员"
-scope: "software"
-status: draft
+scope: "testing"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.testing-accessibility-auditor"
 importSourcePath: "testing/testing-accessibility-auditor.md"

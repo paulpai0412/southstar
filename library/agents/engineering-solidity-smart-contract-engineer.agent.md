@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.engineering-solidity-smart-contract-engineer
 title: "Solidity 智能合约工程师"
-scope: "software"
-status: draft
+scope: "engineering"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.engineering-solidity-smart-contract-engineer"
 importSourcePath: "engineering/engineering-solidity-smart-contract-engineer.md"

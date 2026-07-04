@@ -357,6 +357,48 @@ mcpGrantRefs:
   }
 });
 
+test("sync projects catalog domain membership edges for agent files", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
+  const db = await createTestPostgresDb();
+
+  try {
+    await writeLibraryFile({
+      root,
+      relativePath: "agents/marketing-seo-specialist.agent.md",
+      content: `---
+schemaVersion: southstar.library.agent_definition_file.v1
+id: agent.marketing-seo-specialist
+title: SEO Specialist
+scope: marketing
+status: approved
+---
+
+# Identity
+
+Plans organic search programs.
+`,
+    });
+
+    await syncLibraryFileToGraph(db, { root, relativePath: "agents/marketing-seo-specialist.agent.md" });
+
+    const domainObject = await findLibraryObjectByKey(db, "domain.marketing");
+    assert.equal(domainObject?.objectKind, "domain_taxonomy");
+    assert.equal(domainObject?.state.scope, "marketing");
+
+    const edges = await findLibraryEdgesFrom(db, "agent.marketing-seo-specialist", "belongs_to_domain", {
+      scope: "marketing",
+      status: "active",
+    });
+    assert.deepEqual(
+      edges.map((edge) => edge.toObjectKey),
+      ["domain.marketing"],
+    );
+  } finally {
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("creates identifiable placeholders for missing refs and lets real upserts replace them", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
   const db = await createTestPostgresDb();

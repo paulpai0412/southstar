@@ -89,6 +89,50 @@ test("LibraryGraphBlock exposes domain kind and status filters and fetches filte
   });
 });
 
+test("LibraryGraphBlock renders an expanded collapsible message block with zoom controls", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryGraphBlock } from "./web/components/library/LibraryGraphBlock";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryGraphBlock
+        defaultScope="marketing"
+        data={{
+          activeScope: "marketing",
+          availableScopes: ["all", "marketing"],
+          nodes: [
+            { objectKey: "agent.marketing-seo-specialist", objectKind: "agent_definition", status: "approved", title: "SEO专家" },
+            { objectKey: "skill.keyword-research", objectKind: "skill_spec", status: "approved", title: "Keyword Research" },
+          ],
+          edges: [{
+            fromObjectKey: "agent.marketing-seo-specialist",
+            edgeType: "uses",
+            toObjectKey: "skill.keyword-research",
+            ontology: { confidence: 0.92, category: "usage" },
+          }],
+        }}
+      />
+    );
+  `, async (page) => {
+    const block = page.locator('[data-testid="library-graph-block"]');
+    await block.waitFor();
+    await page.locator('[data-testid="library-graph-chart"]').waitFor();
+    assert.equal(await page.locator('[data-testid="library-graph-toggle"]').getAttribute("aria-expanded"), "true");
+    assert.equal(await page.locator('[data-testid="library-graph-zoom-in"]').isVisible(), true);
+    assert.equal(await page.locator('[data-testid="library-graph-zoom-out"]').isVisible(), true);
+
+    const before = await page.locator('[data-testid="library-graph-viewport"]').getAttribute("data-zoom");
+    await page.locator('[data-testid="library-graph-zoom-in"]').click();
+    const after = await page.locator('[data-testid="library-graph-viewport"]').getAttribute("data-zoom");
+    assert.notEqual(after, before);
+
+    await page.locator('[data-testid="library-graph-toggle"]').click();
+    assert.equal(await page.locator('[data-testid="library-graph-toggle"]').getAttribute("aria-expanded"), "false");
+    assert.equal(await page.locator('[data-testid="library-graph-chart"]').count(), 0);
+  });
+});
+
 test("LibraryGraphChart emits selected node events for file viewer integration", async () => {
   await withBrowserHarness(`
     import React from "react";
@@ -114,6 +158,8 @@ test("LibraryGraphChart emits selected node events for file viewer integration",
     );
   `, async (page) => {
     await assertText(page, '[data-testid="library-graph-chart"]', "uses 0.91");
+    assert.equal(await page.locator('[data-testid="library-graph-edge"]').count(), 1);
+    assert.equal(await page.locator('[data-testid="library-graph-dot"]').count(), 2);
     const graphNode = page.getByRole("button", { name: "Frontend Developer" });
     await graphNode.press("Enter");
     assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.frontend-developer");
@@ -122,6 +168,73 @@ test("LibraryGraphChart emits selected node events for file viewer integration",
     });
     await graphNode.press(" ");
     assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.frontend-developer");
+  });
+});
+
+test("LibraryGraphChart lets users drag graph nodes and keeps them selectable", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryGraphChart } from "./web/components/library/LibraryGraphChart";
+
+    const nodes = [
+      { objectKey: "agent.marketing-seo-specialist", objectKind: "agent_definition", title: "SEO Agent" },
+      { objectKey: "domain.marketing", objectKind: "domain_taxonomy", title: "Marketing" },
+    ];
+    const edges = [{
+      fromObjectKey: "agent.marketing-seo-specialist",
+      edgeType: "belongs_to_domain",
+      toObjectKey: "domain.marketing",
+      ontology: { confidence: 1, category: "classification" },
+    }];
+
+    function Harness() {
+      const [version, setVersion] = React.useState(0);
+      window.__remountGraph = () => setVersion((value) => value + 1);
+      return (
+        <LibraryGraphChart
+          key={version}
+          persistLayoutKey="drag-layout-test"
+          nodes={nodes}
+          edges={edges}
+          onSelectNode={(node) => {
+            window.__selectedGraphNode = node.objectKey;
+          }}
+        />
+      );
+    }
+
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    const node = page.getByRole("button", { name: "SEO Agent" });
+    await node.waitFor();
+    const before = await node.boundingBox();
+    if (!before) throw new Error("missing graph node bounding box before drag");
+
+    await node.dragTo(page.locator('[data-testid="library-graph-viewport"]'), {
+      targetPosition: { x: before.x + 120, y: before.y + 40 },
+    });
+
+    const after = await node.boundingBox();
+    if (!after) throw new Error("missing graph node bounding box after drag");
+    assert.ok(Math.abs(after.x - before.x) > 20 || Math.abs(after.y - before.y) > 20);
+    assert.match(
+      await page.evaluate(() => window.localStorage.getItem("southstar:library-graph-layout:drag-layout-test") ?? ""),
+      /agent\.marketing-seo-specialist/,
+    );
+
+    await page.evaluate(() => (window as any).__remountGraph());
+    await page.waitForTimeout(50);
+    const restored = await node.boundingBox();
+    if (!restored) throw new Error("missing graph node bounding box after remount");
+    assert.ok(Math.abs(restored.x - after.x) < 6);
+    assert.ok(Math.abs(restored.y - after.y) < 6);
+
+    await node.click();
+    assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.marketing-seo-specialist");
+
+    await page.locator('[data-testid="library-graph-reset-layout"]').click();
+    assert.equal(await page.evaluate(() => window.localStorage.getItem("southstar:library-graph-layout:drag-layout-test")), null);
   });
 });
 

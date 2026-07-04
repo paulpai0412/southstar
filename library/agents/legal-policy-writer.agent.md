@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.legal-policy-writer
 title: "制度文件撰写专家"
-scope: "software"
-status: draft
+scope: "legal"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.legal-policy-writer"
 importSourcePath: "legal/legal-policy-writer.md"

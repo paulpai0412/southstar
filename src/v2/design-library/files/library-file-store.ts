@@ -2,6 +2,12 @@ import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
 import {
+  catalogDomainTitle,
+  isCatalogCanonicalDomain,
+  type CatalogCanonicalDomain,
+  CATALOG_CANONICAL_DOMAINS,
+} from "../canonical-domains.ts";
+import {
   createLibraryObject,
   deactivateLibraryEdgesForSourceExcept,
   findLibraryObjectByKey,
@@ -215,6 +221,21 @@ export function validateLibraryFileGraphReferences(file: LibraryFileRecord): voi
 
 function edgeProjection(file: LibraryFileRecord): LibraryFileGraphProjection["edges"] {
   const edges: LibraryFileGraphProjection["edges"] = [];
+  if (isCatalogCanonicalDomain(file.scope)) {
+    edges.push({
+      fromObjectKey: file.objectKey,
+      edgeType: "belongs_to_domain",
+      toObjectKey: domainObjectKey(file.scope),
+      scope: file.scope,
+      metadata: {
+        sourcePath: file.path,
+        sourceHash: file.sourceHash,
+        source: "library-file-sync",
+        sourceKind: "catalog-domain-scope",
+        confidence: 1,
+      },
+    });
+  }
   for (const { key, edgeType } of EDGE_REF_PROJECTIONS) {
     addRefs(edges, file, key, edgeType);
   }
@@ -259,6 +280,24 @@ async function ensureReferencedObject(db: SouthstarDb, objectKey: string, scope:
   if (existing) return;
 
   try {
+    const domain = catalogDomainFromObjectKey(objectKey);
+    if (domain) {
+      await createLibraryObject(db, {
+        objectKey,
+        objectKind: "domain_taxonomy",
+        status: "approved",
+        headVersionId: `${objectKey}@catalog-v1`,
+        state: {
+          title: domain.title,
+          scope: domain.key,
+          domainKey: domain.key,
+          source: "catalog-canonical-domain",
+          sourcePathPrefixes: domain.sourcePathPrefixes,
+        },
+      });
+      return;
+    }
+
     await createLibraryObject(db, {
       objectKey,
       objectKind: inferObjectKind(objectKey),
@@ -279,6 +318,7 @@ async function ensureReferencedObject(db: SouthstarDb, objectKey: string, scope:
 function inferObjectKind(objectKey: string): LibraryDefinitionKind {
   if (objectKey.startsWith("agent.")) return "agent_definition";
   if (objectKey.startsWith("capability.")) return "capability_spec";
+  if (objectKey.startsWith("domain.")) return "domain_taxonomy";
   if (objectKey.startsWith("instruction.")) return "instruction_template";
   if (objectKey.startsWith("mcp.")) return "mcp_tool_grant";
   if (objectKey.startsWith("profile.")) return "agent_profile";
@@ -286,6 +326,17 @@ function inferObjectKind(objectKey: string): LibraryDefinitionKind {
   if (objectKey.startsWith("template.")) return "workflow_template";
   if (objectKey.startsWith("tool.")) return "tool_definition";
   throw new Error(`unsupported referenced object key prefix: ${objectKey}`);
+}
+
+function domainObjectKey(scope: string): string {
+  return `domain.${scope}`;
+}
+
+function catalogDomainFromObjectKey(objectKey: string): CatalogCanonicalDomain | undefined {
+  const key = objectKey.startsWith("domain.") ? objectKey.slice("domain.".length) : undefined;
+  if (!isCatalogCanonicalDomain(key)) return undefined;
+  return CATALOG_CANONICAL_DOMAINS.find((domain) => domain.key === key)
+    ?? { key, title: catalogDomainTitle(key) ?? key, sourcePathPrefixes: [] };
 }
 
 function validateReferencedObjects(projection: LibraryFileGraphProjection): void {

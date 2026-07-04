@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.support-executive-summary-generator
 title: "高管摘要师"
-scope: "software"
-status: draft
+scope: "support"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.support-executive-summary-generator"
 importSourcePath: "support/support-executive-summary-generator.md"

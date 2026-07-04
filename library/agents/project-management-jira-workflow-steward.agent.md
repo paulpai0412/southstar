@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.project-management-jira-workflow-steward
 title: "Jira工作流管家"
-scope: "software"
-status: draft
+scope: "project-management"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.project-management-jira-workflow-steward"
 importSourcePath: "project-management/project-management-jira-workflow-steward.md"

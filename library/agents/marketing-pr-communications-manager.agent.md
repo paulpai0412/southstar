@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.marketing-pr-communications-manager
 title: "PR 与传播经理"
-scope: "software"
-status: draft
+scope: "marketing"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.marketing-pr-communications-manager"
 importSourcePath: "marketing/marketing-pr-communications-manager.md"

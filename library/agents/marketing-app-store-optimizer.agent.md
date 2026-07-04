@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.marketing-app-store-optimizer
 title: "应用商店优化师"
-scope: "software"
-status: draft
+scope: "marketing"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.marketing-app-store-optimizer"
 importSourcePath: "marketing/marketing-app-store-optimizer.md"

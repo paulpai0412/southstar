@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.recruitment-specialist
 title: "招聘专家"
-scope: "software"
-status: draft
+scope: "specialized"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.recruitment-specialist"
 importSourcePath: "specialized/recruitment-specialist.md"

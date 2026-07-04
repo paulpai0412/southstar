@@ -100,7 +100,7 @@ test("LibrarySidebar renders the domain tree and calls onSelectObject when a row
   });
 });
 
-test("LibraryFileViewer exposes file tabs, editor, Save button, Sync button, and validation issues", async () => {
+test("LibraryFileViewer exposes graph-first tabs, one Save & Sync action, editor, and validation line issues", async () => {
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
@@ -115,22 +115,27 @@ test("LibraryFileViewer exposes file tabs, editor, Save button, Sync button, and
         syncing={false}
         issues={[{ severity: "error", path: "id", message: "id is required", code: "missing_id" }]}
         onContentChange={() => {}}
-        onSave={() => {}}
-        onSync={() => {}}
+        onSaveAndSync={() => {}}
       />
     );
   `, async (page) => {
-    for (const tab of ["Preview", "Edit", "Validate", "Edges", "Usage", "Provenance"]) {
+    const tabs = page.getByRole("button").filter({ hasText: /^(Edges|Preview|Edit|Validate|Usage)$/ });
+    assert.deepEqual(await tabs.allTextContents(), ["Edges", "Preview", "Edit", "Validate", "Usage"]);
+    await assertText(page, "body", "Provenance", false);
+    for (const tab of ["Edges", "Preview", "Edit", "Validate", "Usage"]) {
       await page.getByRole("button", { name: tab }).waitFor();
     }
+    await page.getByRole("button", { name: "Edit" }).click();
     await page.locator('[data-testid="library-file-editor"]').waitFor();
-    await page.locator('[data-testid="library-file-save"]').waitFor();
-    await page.locator('[data-testid="library-file-sync"]').waitFor();
+    await page.locator('[data-testid="library-file-save-sync"]').waitFor();
+    assert.equal(await page.locator('[data-testid="library-file-save"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="library-file-sync"]').count(), 0);
+    await assertText(page, '[data-testid="library-file-line-issue"]', "line");
     await assertText(page, "body", "id is required");
   });
 });
 
-test("LibraryFileViewer updates action disabled states and switches tabs on click", async () => {
+test("LibraryFileViewer validates edited content, disables Save & Sync on errors, and renders a pretty preview", async () => {
   await withBrowserHarness(`
     import React, { useState } from "react";
     import { createRoot } from "react-dom/client";
@@ -168,13 +173,25 @@ test("LibraryFileViewer updates action disabled states and switches tabs on clic
           <LibraryFileViewer
             selectedFilePath={selectedFilePath}
             fileRecord={selectedFilePath ? fileRecord : null}
-            content={selectedFilePath ? fileRecord.content : ""}
+            objectDetail={selectedFilePath ? {
+              object: {
+                objectKey: "agent.planner",
+                objectKind: "agent_definition",
+                status: "approved",
+                headVersionId: "agent.planner@v1",
+                state: { scope: "software", title: "Planner Agent", sourcePath: fileRecord.relativePath },
+              },
+              inboundEdges: [],
+              outboundEdges: [],
+              usage: { inboundCount: 0, outboundCount: 0, usedByObjectKeys: [], dependsOnObjectKeys: [] },
+              validation: { ok: true, issues: [] },
+            } : null}
+            content={selectedFilePath ? (dirty ? "title: Planner Agent" : fileRecord.content) : ""}
             dirty={dirty}
             saving={saving}
             syncing={syncing}
             onContentChange={() => {}}
-            onSave={() => { window.__saved = true; }}
-            onSync={() => { window.__synced = true; }}
+            onSaveAndSync={() => { window.__savedAndSynced = true; }}
           />
         </>
       );
@@ -182,37 +199,35 @@ test("LibraryFileViewer updates action disabled states and switches tabs on clic
 
     createRoot(document.getElementById("root")).render(<Harness />);
   `, async (page) => {
-    const save = page.locator('[data-testid="library-file-save"]');
-    const sync = page.locator('[data-testid="library-file-sync"]');
-    await save.waitFor();
+    const saveSync = page.locator('[data-testid="library-file-save-sync"]');
+    await saveSync.waitFor();
 
-    assert.equal(await save.isDisabled(), true);
-    assert.equal(await sync.isDisabled(), true);
+    assert.equal(await saveSync.isDisabled(), true);
 
     await page.locator('[data-testid="select-clean"]').click();
-    assert.equal(await save.isDisabled(), true);
-    assert.equal(await sync.isDisabled(), false);
+    assert.equal(await saveSync.isDisabled(), true);
 
     await page.locator('[data-testid="mark-dirty"]').click();
-    assert.equal(await save.isDisabled(), false);
-    assert.equal(await sync.isDisabled(), true);
+    assert.equal(await saveSync.isDisabled(), true);
+    await assertText(page, '[data-testid="library-file-line-issue"]', "frontmatter");
 
     await page.locator('[data-testid="mark-saving"]').click();
-    assert.equal(await save.isDisabled(), true);
+    assert.equal(await saveSync.isDisabled(), true);
 
     await page.locator('[data-testid="select-clean"]').click();
     await page.locator('[data-testid="mark-syncing"]').click();
-    assert.equal(await sync.isDisabled(), true);
+    assert.equal(await saveSync.isDisabled(), true);
 
     await page.getByRole("button", { name: "Validate" }).click();
-    await assertText(page, "pre", "missing_id");
+    await assertText(page, '[data-testid="library-validation-panel"]', "missing_id");
 
     await page.getByRole("button", { name: "Preview" }).click();
-    await assertText(page, "pre", "Planner Agent");
+    await assertText(page, '[data-testid="library-file-preview"]', "Planner Agent");
+    await assertText(page, '[data-testid="library-file-preview"]', "agent.planner@v1");
   });
 });
 
-test("LibraryFileViewer renders graph-backed edge usage and provenance detail", async () => {
+test("LibraryFileViewer renders graph-backed edge chart, usage, and merged provenance preview", async () => {
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
@@ -261,21 +276,38 @@ test("LibraryFileViewer renders graph-backed edge usage and provenance detail", 
         saving={false}
         syncing={false}
         onContentChange={() => {}}
-        onSave={() => {}}
-        onSync={() => {}}
+        onSaveAndSync={() => {}}
+        edgeGraph={{
+          activeScope: "software",
+          availableScopes: ["software"],
+          nodes: [
+            { objectKey: "agent.frontend-developer", objectKind: "agent_definition", status: "approved", title: "Frontend Developer" },
+            { objectKey: "skill.react-ui", objectKind: "skill_spec", status: "approved", title: "React UI" },
+            { objectKey: "tool.browser", objectKind: "tool_definition", status: "approved", title: "Browser Tool" },
+          ],
+          edges: [
+            { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", ontology: { confidence: 0.9 } },
+            { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.browser", ontology: { confidence: 0.8 } },
+          ],
+        }}
+        onSelectGraphNode={(node) => {
+          window.__selectedGraphNode = node.objectKey;
+        }}
       />
     );
   `, async (page) => {
-    await page.getByRole("button", { name: "Edges" }).click();
-    await assertText(page, "pre", "agent.frontend-developer");
-    await assertText(page, "pre", "tool.browser");
+    await page.locator('[data-testid="library-graph-chart"]').waitFor();
+    assert.equal(await page.locator('[data-testid="library-graph-edge"]').count(), 2);
+    await page.getByRole("button", { name: "Frontend Developer" }).click();
+    assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.frontend-developer");
 
     await page.getByRole("button", { name: "Usage" }).click();
-    await assertText(page, "pre", "inboundCount");
-    await assertText(page, "pre", "outboundCount");
+    await assertText(page, '[data-testid="library-usage-panel"]', "Used by");
+    await assertText(page, '[data-testid="library-usage-panel"]', "Depends on");
 
-    await page.getByRole("button", { name: "Provenance" }).click();
-    await assertText(page, "pre", "skill.react-ui@v1");
+    await page.getByRole("button", { name: "Preview" }).click();
+    await assertText(page, '[data-testid="library-file-preview"]', "skill.react-ui@v1");
+    await assertText(page, '[data-testid="library-file-preview"]', "abc123");
   });
 });
 
@@ -503,7 +535,8 @@ test("library file API helpers report HTTP and non-JSON failures predictably", a
 
 test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs clean content", async () => {
   const requests: Array<{ method: string; path: string; body?: string }> = [];
-  let fileContent = "title: Planner Agent";
+  let fileContent = validAgentContent("agent.planner", "Planner Agent");
+  const updatedContent = validAgentContent("agent.planner", "Planner Agent v2");
 
   await withBrowserHarness(`
     import React from "react";
@@ -521,39 +554,32 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
     );
   `, async (page) => {
     await page.getByRole("button", { name: "Planner agent.planner approved" }).click();
+    await page.getByRole("button", { name: "Edit" }).click();
     await page.locator('[data-testid="library-file-editor"]').waitFor();
 
     assert.equal(await page.getByText("software/agents/planner.agent.md").count(), 1);
-    assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), "title: Planner Agent");
+    assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), fileContent);
 
-    await page.locator('[data-testid="library-file-editor"]').fill("title: Planner Agent v2");
-    assert.equal(await page.locator('[data-testid="library-file-save"]').isDisabled(), false);
-    assert.equal(await page.locator('[data-testid="library-file-sync"]').isDisabled(), true);
+    await page.locator('[data-testid="library-file-editor"]').fill(updatedContent);
+    assert.equal(await page.locator('[data-testid="library-file-save-sync"]').isDisabled(), false);
 
     await Promise.all([
       page.waitForResponse((response) => response.url().endsWith("/api/library/files/software/agents/planner.agent.md") && response.request().method() === "PATCH"),
-      page.locator('[data-testid="library-file-save"]').click(),
-    ]);
-    await page.waitForFunction(() => {
-      const save = document.querySelector('[data-testid="library-file-save"]') as HTMLButtonElement | null;
-      const sync = document.querySelector('[data-testid="library-file-sync"]') as HTMLButtonElement | null;
-      return save?.disabled === true && sync?.disabled === false;
-    });
-    await Promise.all([
       page.waitForResponse((response) => response.url().endsWith("/api/library/files/software/agents/planner.agent.md/sync")),
-      page.locator('[data-testid="library-file-sync"]').click(),
+      page.locator('[data-testid="library-file-save-sync"]').click(),
     ]);
 
     assert.deepEqual(requests.map((request) => [request.method, request.path]), [
       ["GET", "/api/library/workspace"],
       ["GET", "/api/library/objects/agent.planner"],
+      ["GET", "/api/library/graph"],
       ["GET", "/api/library/files/software/agents/planner.agent.md"],
       ["PATCH", "/api/library/files/software/agents/planner.agent.md"],
       ["POST", "/api/library/files/software/agents/planner.agent.md/sync"],
     ]);
     assert.equal(
       requests.find((request) => request.method === "PATCH")?.body,
-      JSON.stringify({ content: "title: Planner Agent v2" }),
+      JSON.stringify({ content: updatedContent }),
     );
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
@@ -599,6 +625,11 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
         return;
       }
 
+      if (url.pathname === "/api/library/graph") {
+        await route.fulfill({ contentType: "application/json", body: libraryGraphEnvelope("agent.planner", "Planner Agent") });
+        return;
+      }
+
       if (url.pathname === "/api/library/files/software/agents/planner.agent.md" && request.method() === "GET") {
         await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", fileContent) });
         return;
@@ -618,6 +649,51 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
         return;
       }
 
+      await route.abort();
+    });
+  });
+});
+
+test("LibraryWorkspace defaults to all domains so imported catalog agents are visible", async () => {
+  const requests: Array<{ path: string; query: string }> = [];
+
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibrarySidebarPanel, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <LibrarySidebarPanel />
+      </LibraryWorkspaceProvider>
+    );
+  `, async (page) => {
+    await page.locator('[data-testid="library-domain-tree"]').getByRole("button", { name: "marketing", exact: true }).waitFor();
+    await page.getByText("SEO Agent").waitFor();
+
+    assert.deepEqual(requests, [
+      { path: "/api/library/workspace", query: "scope=all" },
+    ]);
+  }, async (page) => {
+    await page.route("**/api/library/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      requests.push({ path: url.pathname, query: url.searchParams.toString() });
+      if (url.pathname === "/api/library/workspace" && url.searchParams.get("scope") === "all") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: workspaceEnvelope([
+            libraryObject(
+              "agent.marketing-seo-specialist",
+              "SEO Agent",
+              "marketing/agents/marketing-seo-specialist.agent.md",
+              "marketing",
+              "agent_definition",
+            ),
+          ], "all"),
+        });
+        return;
+      }
       await route.abort();
     });
   });
@@ -646,9 +722,10 @@ test("LibraryWorkspace opens object detail sidecar for graph objects without sou
       objectKey: "agent.software-checker",
       title: "Checker",
     });
-    await assertText(page, "pre", "Verify implementation behavior");
+    await assertText(page, '[data-testid="library-file-preview"]', "Verify implementation behavior");
     await page.getByRole("button", { name: "Edges" }).click();
-    await assertText(page, "pre", "skill.software-verification");
+    await page.locator('[data-testid="library-graph-chart"]').waitFor();
+    await assertText(page, '[data-testid="library-graph-chart"]', "skill.software-verification");
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
@@ -908,6 +985,7 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
     await page.keyboard.press("Enter");
 
     await page.locator('[data-testid="library-graph-block"]').getByRole("button", { name: "Frontend Developer" }).click();
+    await page.getByRole("button", { name: "Edit" }).click();
     await page.waitForFunction(() => {
       const editor = document.querySelector('[data-testid="library-file-editor"]') as HTMLTextAreaElement | null;
       return editor?.value === "title: Frontend Developer";
@@ -921,6 +999,7 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
       ["GET", "/api/library/chat/events"],
       ["GET", "/api/library/graph"],
       ["GET", "/api/library/objects/agent.frontend-developer"],
+      ["GET", "/api/library/graph"],
       ["GET", "/api/library/files/software/agents/frontend-developer.agent.md"],
     ]);
   }, async (page) => {
@@ -1019,6 +1098,7 @@ test("LibraryWorkspace ignores stale file load results after selecting a differe
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').nth(0).click();
     await page.locator('[data-testid="library-object-row"]').nth(1).click();
+    await page.getByRole("button", { name: "Edit" }).click();
     await page.waitForFunction(() => {
       const editor = document.querySelector('[data-testid="library-file-editor"]') as HTMLTextAreaElement | null;
       return editor?.value === "title: Builder Agent";
@@ -1077,6 +1157,9 @@ test("LibraryWorkspace ignores stale file load results after selecting a differe
 test("LibraryWorkspace preserves edits typed while a save response is in flight", async () => {
   let releaseSave: (() => Promise<void>) | undefined;
   const requests: Array<{ method: string; path: string; body?: string }> = [];
+  const initialContent = validAgentContent("agent.planner", "Planner Agent");
+  const v2Content = validAgentContent("agent.planner", "Planner Agent v2");
+  const v3Content = validAgentContent("agent.planner", "Planner Agent v3");
 
   await withBrowserHarness(`
     import React from "react";
@@ -1094,26 +1177,27 @@ test("LibraryWorkspace preserves edits typed while a save response is in flight"
     );
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').click();
+    await page.getByRole("button", { name: "Edit" }).click();
     await page.waitForFunction(() => {
       const editor = document.querySelector('[data-testid="library-file-editor"]') as HTMLTextAreaElement | null;
-      return editor?.value === "title: Planner Agent";
+      return editor?.value.includes("Planner Agent");
     });
 
-    await page.locator('[data-testid="library-file-editor"]').fill("title: Planner Agent v2");
-    await page.locator('[data-testid="library-file-save"]').click();
-    await page.locator('[data-testid="library-file-editor"]').fill("title: Planner Agent v3");
+    await page.locator('[data-testid="library-file-editor"]').fill(v2Content);
+    await page.locator('[data-testid="library-file-save-sync"]').click();
+    await page.locator('[data-testid="library-file-editor"]').fill(v3Content);
 
     await releaseSave?.();
     await page.waitForFunction(() => {
-      const save = document.querySelector('[data-testid="library-file-save"]') as HTMLButtonElement | null;
-      return save?.textContent === "Save";
+      const save = document.querySelector('[data-testid="library-file-save-sync"]') as HTMLButtonElement | null;
+      return save?.textContent === "Save & Sync";
     });
 
-    assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), "title: Planner Agent v3");
-    assert.equal(await page.locator('[data-testid="library-file-save"]').isDisabled(), false);
+    assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), v3Content);
+    assert.equal(await page.locator('[data-testid="library-file-save-sync"]').isDisabled(), false);
     assert.equal(
       requests.find((request) => request.method === "PATCH")?.body,
-      JSON.stringify({ content: "title: Planner Agent v2" }),
+      JSON.stringify({ content: v2Content }),
     );
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
@@ -1133,17 +1217,22 @@ test("LibraryWorkspace preserves edits typed while a save response is in flight"
       }
 
       if (url.pathname === "/api/library/files/software/agents/planner.agent.md" && request.method() === "GET") {
-        await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", "title: Planner Agent") });
+        await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", initialContent) });
         return;
       }
 
       if (url.pathname === "/api/library/files/software/agents/planner.agent.md" && request.method() === "PATCH") {
         await new Promise<void>((resolve) => {
           releaseSave = async () => {
-            await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", "title: Planner Agent v2") });
+            await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", v2Content) });
             resolve();
           };
         });
+        return;
+      }
+
+      if (url.pathname === "/api/library/files/software/agents/planner.agent.md/sync" && request.method() === "POST") {
+        await route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result: { object: { objectKey: "agent.planner" }, edges: [] } }) });
         return;
       }
 
@@ -1154,6 +1243,9 @@ test("LibraryWorkspace preserves edits typed while a save response is in flight"
 
 test("LibraryWorkspace ignores stale save results after selecting a different object", async () => {
   let releasePlannerSave: (() => Promise<void>) | undefined;
+  const plannerInitial = validAgentContent("agent.planner", "Planner Agent");
+  const plannerV2 = validAgentContent("agent.planner", "Planner Agent v2");
+  const builderInitial = validAgentContent("agent.builder", "Builder Agent");
 
   await withBrowserHarness(`
     import React from "react";
@@ -1171,14 +1263,16 @@ test("LibraryWorkspace ignores stale save results after selecting a different ob
     );
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').nth(0).click();
+    await page.getByRole("button", { name: "Edit" }).click();
     await page.locator('[data-testid="library-file-editor"]').waitFor();
-    await page.locator('[data-testid="library-file-editor"]').fill("title: Planner Agent v2");
-    await page.locator('[data-testid="library-file-save"]').click();
+    await page.locator('[data-testid="library-file-editor"]').fill(plannerV2);
+    await page.locator('[data-testid="library-file-save-sync"]').click();
 
     await page.locator('[data-testid="library-object-row"]').nth(1).click();
+    await page.getByRole("button", { name: "Edit" }).click();
     await page.waitForFunction(() => {
       const editor = document.querySelector('[data-testid="library-file-editor"]') as HTMLTextAreaElement | null;
-      return editor?.value === "title: Builder Agent";
+      return editor?.value.includes("Builder Agent");
     });
 
     await Promise.all([
@@ -1190,11 +1284,11 @@ test("LibraryWorkspace ignores stale save results after selecting a different ob
     ]);
     await page.waitForFunction(() => {
       const editor = document.querySelector('[data-testid="library-file-editor"]') as HTMLTextAreaElement | null;
-      return document.body.textContent?.includes("software/agents/builder.agent.md") && editor?.value === "title: Builder Agent";
+      return document.body.textContent?.includes("software/agents/builder.agent.md") && editor?.value.includes("Builder Agent");
     });
 
     assert.equal(await page.getByText("software/agents/builder.agent.md").count(), 1);
-    assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), "title: Builder Agent");
+    assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), builderInitial);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
@@ -1209,14 +1303,14 @@ test("LibraryWorkspace ignores stale save results after selecting a different ob
       }
 
       if (url.pathname === "/api/library/files/software/agents/planner.agent.md" && request.method() === "GET") {
-        await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", "title: Planner Agent") });
+        await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", plannerInitial) });
         return;
       }
 
       if (url.pathname === "/api/library/files/software/agents/planner.agent.md" && request.method() === "PATCH") {
         await new Promise<void>((resolve) => {
           releasePlannerSave = async () => {
-            await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", "title: Planner Agent v2") });
+            await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/planner.agent.md", plannerV2) });
             resolve();
           };
         });
@@ -1224,7 +1318,7 @@ test("LibraryWorkspace ignores stale save results after selecting a different ob
       }
 
       if (url.pathname === "/api/library/files/software/agents/builder.agent.md") {
-        await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/builder.agent.md", "title: Builder Agent") });
+        await route.fulfill({ contentType: "application/json", body: libraryFileEnvelope("software/agents/builder.agent.md", builderInitial) });
         return;
       }
 
@@ -1233,7 +1327,7 @@ test("LibraryWorkspace ignores stale save results after selecting a different ob
   });
 });
 
-test("LibraryWorkspace shows failed file loads and keeps Sync disabled", async () => {
+test("LibraryWorkspace shows failed file loads and keeps Save & Sync disabled", async () => {
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
@@ -1251,8 +1345,7 @@ test("LibraryWorkspace shows failed file loads and keeps Sync disabled", async (
   `, async (page) => {
     await page.locator('[data-testid="library-object-row"]').click();
     await assertText(page, '[data-testid="library-file-status"]', "Failed to load");
-    assert.equal(await page.locator('[data-testid="library-file-sync"]').isDisabled(), true);
-    assert.equal(await page.locator('[data-testid="library-file-save"]').isDisabled(), true);
+    assert.equal(await page.locator('[data-testid="library-file-save-sync"]').isDisabled(), true);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const url = new URL(route.request().url());
@@ -1287,8 +1380,9 @@ test("LibraryWorkspace resets selected file state when changing scopes", async (
       </LibraryWorkspaceProvider>
     );
   `, async (page) => {
-    await page.getByRole("button", { name: "software" }).click();
+    await page.getByRole("button", { name: "software", exact: true }).click();
     await page.getByRole("button", { name: "Planner agent.planner approved" }).click();
+    await page.getByRole("button", { name: "Edit" }).click();
     await page.waitForFunction(() => {
       const editor = document.querySelector('[data-testid="library-file-editor"]') as HTMLTextAreaElement | null;
       return editor?.value === "title: Planner Agent";
@@ -1299,7 +1393,7 @@ test("LibraryWorkspace resets selected file state when changing scopes", async (
 
     assert.equal(await page.getByText("Select a library object").count(), 1);
     assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), "");
-    assert.equal(await page.locator('[data-testid="library-file-sync"]').isDisabled(), true);
+    assert.equal(await page.locator('[data-testid="library-file-save-sync"]').isDisabled(), true);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const url = new URL(route.request().url());
@@ -1437,7 +1531,7 @@ function workspaceEnvelope(objects: Array<{
   title: string;
   scope: string;
   sourcePath: string;
-}>): string {
+}>, selectedScope = "software"): string {
   const groupsByScope = new Map<string, typeof objects>();
   for (const object of objects) {
     const scoped = groupsByScope.get(object.scope) ?? [];
@@ -1447,7 +1541,7 @@ function workspaceEnvelope(objects: Array<{
   return JSON.stringify({
     ok: true,
     result: {
-      selectedScope: "software",
+      selectedScope,
       domains: Array.from(groupsByScope.entries()).map(([scope, scopedObjects]) => ({
         scope,
         counts: scopedObjects.reduce<Record<string, number>>((counts, object) => {
@@ -1486,6 +1580,7 @@ function libraryObject(
 }
 
 function libraryFileEnvelope(relativePath: string, content: string): string {
+  const title = /title:\s*"?([^"\n]+)"?/.exec(content)?.[1] ?? content.replace(/^title:\s*/, "");
   return JSON.stringify({
     ok: true,
     result: {
@@ -1496,7 +1591,7 @@ function libraryFileEnvelope(relativePath: string, content: string): string {
         file: {
           objectKey: relativePath.includes("builder") ? "agent.builder" : "agent.planner",
           objectKind: "agent_definition",
-          title: content.replace(/^title:\s*/, ""),
+          title,
           scope: "software",
           status: "approved",
           frontmatter: {},
@@ -1504,6 +1599,33 @@ function libraryFileEnvelope(relativePath: string, content: string): string {
         },
         issues: [],
       },
+    },
+  });
+}
+
+function validAgentContent(objectKey: string, title: string): string {
+  return [
+    "---",
+    "schemaVersion: southstar.library.agent_definition_file.v1",
+    `id: ${objectKey}`,
+    `title: ${title}`,
+    "scope: software",
+    "status: approved",
+    "---",
+    "",
+    `# ${title}`,
+    "",
+  ].join("\n");
+}
+
+function libraryGraphEnvelope(objectKey: string, title: string): string {
+  return JSON.stringify({
+    ok: true,
+    result: {
+      activeScope: "software",
+      availableScopes: ["software"],
+      nodes: [{ objectKey, objectKind: "agent_definition", status: "approved", title }],
+      edges: [],
     },
   });
 }
@@ -1532,9 +1654,10 @@ function libraryObjectDetailEnvelope(objectKey: string, sourcePath?: string): st
   });
 }
 
-async function assertText(page: Page, selector: string, expected: string): Promise<void> {
-  const text = await page.locator(selector).textContent();
-  assert.match(text ?? "", new RegExp(expected));
+async function assertText(page: Page, selector: string, expected: string, shouldMatch = true): Promise<void> {
+  const text = await page.locator(selector).first().textContent();
+  if (shouldMatch) assert.match(text ?? "", new RegExp(expected));
+  else assert.doesNotMatch(text ?? "", new RegExp(expected));
 }
 
 async function composerGeometry(page: Page): Promise<{

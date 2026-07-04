@@ -5,7 +5,6 @@ import type {
   WorkflowCompositionPlan,
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
-import { seedSoftwareLibraryGraph } from "../design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { DomainPack } from "../domain-packs/types.ts";
 import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
@@ -417,8 +416,6 @@ async function createPlannerDraftFromComposition(
   composition: WorkflowCompositionPlan,
 ): Promise<PostgresPlannerDraftResult> {
   const draftRunId = `draft-composition-${hash(JSON.stringify(composition)).slice(0, 12)}`;
-  await seedSoftwareLibraryGraph(db);
-  input.onProgress?.({ stage: "library.seeded", message: "Software workflow library graph is ready." });
   const requirementSpec = analyzeRequirementDeterministically(input.goalPrompt);
   input.onProgress?.({ stage: "requirement.analyzed", message: "Requirement analysis completed." });
   input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
@@ -548,8 +545,6 @@ async function createLibraryConstrainedPlannerDraft(
   input: CreatePostgresPlannerDraftInput,
 ): Promise<PostgresPlannerDraftResult> {
   const draftRunId = `draft-library-${hash(input.goalPrompt).slice(0, 12)}`;
-  await seedSoftwareLibraryGraph(db);
-  input.onProgress?.({ stage: "library.seeded", message: "Software workflow library graph is ready." });
   const requirementSpec = analyzeRequirementDeterministically(input.goalPrompt);
   input.onProgress?.({ stage: "requirement.analyzed", message: "Requirement analysis completed." });
   input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });

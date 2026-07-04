@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.product-manager
 title: "产品经理"
-scope: "software"
-status: draft
+scope: "product"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.product-manager"
 importSourcePath: "product/product-manager.md"

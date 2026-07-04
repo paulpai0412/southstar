@@ -106,17 +106,34 @@ export type LibraryImportSourceDocument = {
 export type LibraryImportCandidateKind = "agent" | "skill" | "mcp" | "tool";
 
 export type LibraryImportEdgeType =
+  | "belongs_to_domain"
+  | "has_capability"
+  | "provides"
   | "uses"
   | "requires"
   | "conflicts_with"
+  | "precedes"
   | "workflow_precedes"
-  | "similar_to";
+  | "unblocks"
+  | "validates"
+  | "reviews"
+  | "produces"
+  | "consumes"
+  | "similar_to"
+  | "substitutes"
+  | "complements"
+  | "incompatible_with"
+  | "requires_approval"
+  | "requires_secret";
 
 export type LibraryImportCandidate = {
   objectKey: string;
   kind: LibraryImportCandidateKind;
   title: string;
   scope: string;
+  domain?: string;
+  displayDomain?: string;
+  classificationReason?: string;
   sourcePath?: string;
   selectedByDefault: boolean;
   confidence?: number;
@@ -163,6 +180,23 @@ export type LibraryGraphEdgeRecord = {
     draftId?: string;
     evidenceRefs?: string[];
   };
+};
+
+export type LibraryGraphNodeRecord = {
+  id?: string;
+  objectKey: string;
+  objectKind?: string;
+  status?: string;
+  title?: string;
+  scope?: string;
+};
+
+export type LibraryGraphReadModel = {
+  activeScope?: string;
+  availableScopes?: string[];
+  query?: Record<string, unknown>;
+  nodes: LibraryGraphNodeRecord[];
+  edges: LibraryGraphEdgeRecord[];
 };
 
 export type LibraryObjectDetail = {

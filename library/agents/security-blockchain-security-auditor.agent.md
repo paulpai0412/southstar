@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.security-blockchain-security-auditor
 title: "区块链安全审计师"
-scope: "software"
-status: draft
+scope: "security"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.security-blockchain-security-auditor"
 importSourcePath: "security/security-blockchain-security-auditor.md"

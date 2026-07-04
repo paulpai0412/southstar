@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.design-inclusive-visuals-specialist
 title: "包容性视觉专家"
-scope: "software"
-status: draft
+scope: "design"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.design-inclusive-visuals-specialist"
 importSourcePath: "design/design-inclusive-visuals-specialist.md"

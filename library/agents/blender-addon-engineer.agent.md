@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.blender-addon-engineer
 title: "Blender 插件工程师"
-scope: "software"
-status: draft
+scope: "game-development"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.blender-addon-engineer"
 importSourcePath: "game-development/blender/blender-addon-engineer.md"

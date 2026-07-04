@@ -5,13 +5,33 @@ import {
   type LibraryImportProposedEdge,
 } from "./library-candidate-extractor.ts";
 import type { LibraryImportSourceDocument } from "./library-source-fetcher.ts";
+import {
+  CATALOG_CANONICAL_DOMAINS,
+  catalogDomainFromSourcePath,
+  catalogDomainTitle,
+  isCatalogCanonicalDomain,
+} from "../canonical-domains.ts";
 
 const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
+  "belongs_to_domain",
+  "has_capability",
+  "provides",
   "uses",
   "requires",
   "conflicts_with",
+  "precedes",
   "workflow_precedes",
+  "unblocks",
+  "validates",
+  "reviews",
+  "produces",
+  "consumes",
   "similar_to",
+  "substitutes",
+  "complements",
+  "incompatible_with",
+  "requires_approval",
+  "requires_secret",
 ];
 const MAX_PROMPT_DOCUMENT_CHARS = 120_000;
 const MAX_DOCUMENT_EXCERPT_CHARS = 1_200;
@@ -116,14 +136,22 @@ export function buildLibraryImportCandidatePrompt(
   return [
     "Classify the requested repository/library source into Southstar library candidates.",
     "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
-    "Use this shape: {\"candidates\":[{\"objectKey\":\"agent.example\",\"kind\":\"agent\",\"title\":\"Example\",\"sourcePath\":\"relative/path.md\",\"selectedByDefault\":true,\"confidence\":0.9}]}",
+    "Use this shape: {\"candidates\":[{\"objectKey\":\"agent.example\",\"kind\":\"agent\",\"title\":\"Example\",\"domain\":\"engineering\",\"sourcePath\":\"relative/path.md\",\"selectedByDefault\":true,\"confidence\":0.9,\"classificationReason\":\"...\"}]}",
     "Allowed candidate kinds: agent, skill, mcp, tool.",
+    "domain must be one canonical domain key from CanonicalDomainTaxonomy. Do not invent domains and do not use software unless it appears in the taxonomy.",
+    "If source paths clearly map to a canonical domain prefix, use that domain even when the item is broadly useful.",
     "If the user asks to import agents from a repo catalog, inspect the repo and return one agent candidate per real agent definition. Do not collapse many agents into a summary candidate.",
     "For large repositories, first inspect repository catalog/index/list documents when present, then inspect representative linked definitions as needed before returning JSON.",
     "Treat LocalRepositoryPath as read-only for this analysis. Do not create, edit, delete, or install files while analyzing candidates.",
     `Scope: ${scope}`,
     requestSection,
     repoPathSection,
+    "CanonicalDomainTaxonomy:",
+    JSON.stringify(CATALOG_CANONICAL_DOMAINS.map((domain) => ({
+      key: domain.key,
+      title: domain.title,
+      sourcePathPrefixes: domain.sourcePathPrefixes,
+    }))),
     "OptionalDocumentManifest:",
     manifest || "(none; inspect LocalRepositoryPath)",
     "",
@@ -152,6 +180,7 @@ export function buildLibraryImportOntologyPrompt(
     "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
     "Use this shape: {\"proposedEdges\":[{\"fromObjectKey\":\"agent.example\",\"edgeType\":\"uses\",\"toObjectKey\":\"skill.example\",\"confidence\":0.8,\"rationale\":\"...\"}]}",
     `Allowed ontology edges: ${ALLOWED_ONTOLOGY_EDGE_TYPES.join(", ")}.`,
+    "Generate incremental ontology edges for the selected candidates. Relate new nodes to other selected nodes when evidence supports profile composition, workflow order, artifact flow, similarity, substitution, complementarity, risk, or conflict.",
     "Only create edges between the selected candidates listed below. Omit uncertain edges.",
     `Scope: ${scope}`,
     requestSection,
@@ -214,12 +243,20 @@ function normalizeCandidates(value: unknown, options: { scope: string; sourcePat
     if (!objectKey || !objectKey.startsWith(`${kind}.`) || seen.has(objectKey)) continue;
     const sourcePath = optionalString(candidate.sourcePath);
     if (sourcePath && options.sourcePaths.size > 0 && !options.sourcePaths.has(sourcePath)) continue;
+    const pathDomain = catalogDomainFromSourcePath(sourcePath);
+    const llmDomain = optionalString(candidate.domain) ?? optionalString(candidate.scope);
+    const invalidExplicitDomain = Boolean(llmDomain && !isCatalogCanonicalDomain(llmDomain));
+    if (!pathDomain && invalidExplicitDomain) continue;
+    const domain = pathDomain?.key ?? (isCatalogCanonicalDomain(llmDomain) ? llmDomain : undefined);
+    const scope = domain ?? options.scope;
     seen.add(objectKey);
     candidates.push({
       objectKey,
       kind,
       title: optionalString(candidate.title) ?? titleFromObjectKey(objectKey),
-      scope: options.scope,
+      scope,
+      ...(domain ? { domain, displayDomain: catalogDomainTitle(domain) } : {}),
+      ...(optionalString(candidate.classificationReason) ? { classificationReason: optionalString(candidate.classificationReason) } : {}),
       ...(sourcePath ? { sourcePath } : {}),
       selectedByDefault: typeof candidate.selectedByDefault === "boolean" ? candidate.selectedByDefault : true,
       confidence: clampConfidence(candidate.confidence),

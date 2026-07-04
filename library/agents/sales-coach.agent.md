@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.sales-coach
 title: "销售教练"
-scope: "software"
-status: draft
+scope: "sales"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.sales-coach"
 importSourcePath: "sales/sales-coach.md"

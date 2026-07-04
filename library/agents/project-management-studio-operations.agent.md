@@ -2,8 +2,8 @@
 schemaVersion: southstar.library.agent_definition_file.v1
 id: agent.project-management-studio-operations
 title: "工作室运营"
-scope: "software"
-status: draft
+scope: "project-management"
+status: approved
 importDraftId: "library-import-draft-86ae1e72-a54e-4dcd-bc3d-9b65469dce90"
 importCandidateKey: "agent.project-management-studio-operations"
 importSourcePath: "project-management/project-management-studio-operations.md"

@@ -381,6 +381,7 @@ const LIBRARY_DEFINITION_KINDS = new Set<LibraryDefinitionKind>([
   "agent_definition",
   "agent_profile",
   "skill_definition",
+  "domain_taxonomy",
   "mcp_tool_grant",
   "artifact_contract",
   "evaluator_profile",
@@ -421,11 +422,25 @@ const LIBRARY_EDGE_TYPES = new Set<LibraryEdgeType>([
   "part_of_template",
   "supersedes",
   "blocked_by",
+  "belongs_to_domain",
+  "has_capability",
+  "provides",
   "uses",
   "requires",
   "conflicts_with",
+  "precedes",
   "workflow_precedes",
+  "unblocks",
+  "validates",
+  "reviews",
+  "produces",
+  "consumes",
   "similar_to",
+  "substitutes",
+  "complements",
+  "incompatible_with",
+  "requires_approval",
+  "requires_secret",
 ]);
 
 function optionalLibraryKind(value: string | null): LibraryDefinitionKind | undefined {
@@ -511,6 +526,19 @@ function edgeTypeFromPrompt(text: string): LibraryEdgeType | undefined {
   const exact = text.match(/\b(?:edgeType|edge|relation|relationship)[:=\s]+([a-z_]+)\b/i)?.[1];
   if (exact && LIBRARY_EDGE_TYPES.has(exact as LibraryEdgeType)) return exact as LibraryEdgeType;
   if (/\bworkflow_precedes\b|先後|先后|順序|顺序/.test(text)) return "workflow_precedes";
+  if (/\bprecedes\b/.test(text)) return "precedes";
+  if (/\bunblocks\b|解鎖|解锁/.test(text)) return "unblocks";
+  if (/\bvalidates\b|驗證|验证/.test(text)) return "validates";
+  if (/\breviews\b|review|審查|审查/.test(text)) return "reviews";
+  if (/\bproduces\b|產出|产出/.test(text)) return "produces";
+  if (/\bconsumes\b|消耗|需要輸入|需要输入/.test(text)) return "consumes";
+  if (/\bsubstitutes\b|替代/.test(text)) return "substitutes";
+  if (/\bcomplements\b|互補|互补/.test(text)) return "complements";
+  if (/\bincompatible_with\b|不相容/.test(text)) return "incompatible_with";
+  if (/\brequires_approval\b|人工批准|人工核准/.test(text)) return "requires_approval";
+  if (/\brequires_secret\b|secret|credential|憑證|凭证/.test(text)) return "requires_secret";
+  if (/\bhas_capability\b|能力/.test(text)) return "has_capability";
+  if (/\bprovides\b|提供/.test(text)) return "provides";
   if (/\bsimilar_to\b|相似/.test(text)) return "similar_to";
   if (/\bconflicts_with\b|衝突|冲突/.test(text)) return "conflicts_with";
   if (/\brequires\b|依賴|依赖|required/.test(text)) return "requires";
