@@ -165,6 +165,7 @@ export async function findApprovedLibraryObjectsByKind(
   objectKind: LibraryDefinitionKind,
   scope?: string,
 ): Promise<LibraryObjectSummary[]> {
+  const normalizedScope = normalizeScopeInput(scope);
   const result = await db.query<LibraryObjectRow>(
     `select id, object_key, object_kind, status, head_version_id, state_json
        from southstar.library_objects
@@ -172,7 +173,7 @@ export async function findApprovedLibraryObjectsByKind(
         and status = 'approved'
         and ($2::text is null or state_json->>'scope' = $2 or state_json->'domainRefs' ? $2)
       order by object_key`,
-    [objectKind, scope ?? null],
+    [objectKind, normalizedScope ?? null],
   );
   return result.rows.map(mapObject);
 }
@@ -373,7 +374,7 @@ function resolveReadFilters(
   const mergedFilters = (typeof edgeTypeOrFilters === "string" ? filters : edgeTypeOrFilters) ?? {};
   return {
     edgeType,
-    scope: mergedFilters.scope ?? null,
+    scope: normalizeScopeInput(mergedFilters.scope) ?? null,
     status: mergedFilters.status ?? "active",
   };
 }

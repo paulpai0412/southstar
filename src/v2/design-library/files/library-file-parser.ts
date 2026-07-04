@@ -44,6 +44,12 @@ const FILE_FORMATS: Array<{
     schemaVersion: "southstar.library.mcp_grant_file.v1",
   },
   {
+    suffix: ".vault.yaml",
+    kind: "vault",
+    objectKind: "vault_lease_policy",
+    schemaVersion: "southstar.library.vault_lease_policy_file.v1",
+  },
+  {
     suffix: ".profile.yaml",
     kind: "generated_profile",
     objectKind: "agent_profile",

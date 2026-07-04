@@ -261,7 +261,7 @@ test("LibraryFileViewer renders graph-backed edge chart, usage, and merged prove
             headVersionId: "skill.react-ui@v1",
             state: { scope: "software", title: "React UI", sourcePath: "software/skills/react-ui.skill.md" },
           },
-          inboundEdges: [{ fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" }],
+          inboundEdges: [{ fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" }],
           outboundEdges: [{ fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.browser", scope: "software" }],
           usage: {
             inboundCount: 1,
@@ -286,7 +286,7 @@ test("LibraryFileViewer renders graph-backed edge chart, usage, and merged prove
             { objectKey: "tool.browser", objectKind: "tool_definition", status: "approved", title: "Browser Tool" },
           ],
           edges: [
-            { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", ontology: { confidence: 0.9 } },
+            { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", ontology: { confidence: 0.9 } },
             { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.browser", ontology: { confidence: 0.8 } },
           ],
         }}
@@ -392,6 +392,84 @@ test("LibraryChatWindow centers the workflow-style composer until the first prom
       });
     });
   }, { mockLibraryChat: false });
+});
+
+test("LibraryCandidateMessageBlock keeps candidate install controls in the message header and disables installed objects", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryCandidateMessageBlock } from "./web/components/library/LibraryCandidateMessageBlock";
+
+    const candidates = [
+      {
+        objectKey: "skill.beautiful-article",
+        kind: "skill",
+        title: "Beautiful Article",
+        scope: "design",
+        sourcePath: "skills/beautiful-article/SKILL.md",
+        selectedByDefault: true,
+        confidence: 0.96,
+      },
+      {
+        objectKey: "agent.article-editor",
+        kind: "agent",
+        title: "Article Editor",
+        scope: "design",
+        sourcePath: "agents/article-editor.agent.md",
+        selectedByDefault: true,
+        confidence: 0.91,
+      },
+    ];
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryCandidateMessageBlock
+        draftId="library-import-draft-ui"
+        candidates={candidates}
+        proposedEdges={[]}
+        status="draft"
+        installedObjectKeys={["skill.beautiful-article"]}
+        onInstall={(selectedCandidateIds) => {
+          window.__selectedCandidateIds = selectedCandidateIds;
+        }}
+      />
+    );
+  `, async (page) => {
+    const block = page.locator('[data-testid="library-import-candidates"]');
+    await block.waitFor();
+    await block.getByText("Beautiful Article").waitFor();
+    await block.getByText("Article Editor").waitFor();
+    assert.equal(await block.getAttribute("data-message-block"), "library-import-candidates");
+
+    const header = block.locator('[data-testid="library-import-candidates-toolbar"]');
+    const controls = header.locator('[data-testid="library-import-candidates-controls"]');
+    await header.getByRole("button", { name: "Select all candidates", exact: true }).waitFor();
+    await header.getByRole("button", { name: "Unselect all candidates", exact: true }).waitFor();
+    await header.getByRole("button", { name: "Install selected candidates", exact: true }).waitFor();
+    assert.equal(await controls.evaluate((node) => getComputedStyle(node).justifyContent), "flex-start");
+
+    assert.equal(await block.getByRole("checkbox", { name: /Beautiful Article/ }).isDisabled(), true);
+    assert.equal(await block.getByRole("checkbox", { name: /Beautiful Article/ }).isChecked(), false);
+    assert.equal(await block.getByRole("checkbox", { name: /Article Editor/ }).isChecked(), true);
+    await assertText(page, '[data-testid="library-import-candidates"]', "Already installed");
+
+    await header.getByRole("button", { name: "Unselect all candidates", exact: true }).click();
+    assert.equal(await block.getByRole("checkbox", { name: /Article Editor/ }).isChecked(), false);
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    assert.equal(await block.getByRole("checkbox", { name: /Article Editor/ }).isChecked(), false);
+    assert.equal(await header.getByRole("button", { name: "Install selected candidates", exact: true }).isDisabled(), true);
+    await header.getByRole("button", { name: "Select all candidates", exact: true }).click();
+    assert.equal(await block.getByRole("checkbox", { name: /Beautiful Article/ }).isChecked(), false);
+    assert.equal(await block.getByRole("checkbox", { name: /Article Editor/ }).isChecked(), true);
+
+    await header.getByRole("button", { name: "Hide candidates" }).click();
+    assert.equal(await block.getByText("Article Editor").count(), 0);
+    await header.getByRole("button", { name: "Show candidates" }).click();
+    await block.getByText("Article Editor").waitFor();
+
+    await block.getByRole("checkbox", { name: /Article Editor/ }).setChecked(true);
+    await header.getByRole("button", { name: "Install selected candidates", exact: true }).click();
+    assert.deepEqual(await page.evaluate(() => (window as any).__selectedCandidateIds), ["agent.article-editor"]);
+  });
 });
 
 test("LibraryChatWindow streams GitHub repo import prompts through the library chat SSE pipeline", async () => {
@@ -806,6 +884,7 @@ test("LibraryWorkspace opens object detail sidecar for graph objects without sou
 test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs selected import candidates", async () => {
   const requests: Array<{ method: string; path: string; body?: string; query?: string }> = [];
   let workspaceFetches = 0;
+  let graphFetches = 0;
 
   await withBrowserHarness(`
     import React from "react";
@@ -830,7 +909,7 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
     assert.equal(await page.getByText("Browser Verification").count() > 0, true);
     assert.equal(await page.getByText("skill.browser-verification").count() > 0, true);
     await page.getByRole("checkbox", { name: /Browser Tool/ }).setChecked(false);
-    await page.getByRole("button", { name: "Install selected" }).click();
+    await page.getByRole("button", { name: "Install selected candidates", exact: true }).click();
     await page.locator('[data-testid="library-object-row"]').filter({ hasText: "Browser Verification" }).waitFor();
     await page.locator('[data-testid="library-graph-chart"]').waitFor();
     await assertText(page, '[data-testid="library-chat-timeline"]', "uses 0.91");
@@ -925,6 +1004,31 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
       }
 
       if (url.pathname === "/api/library/graph" && request.method() === "GET") {
+        graphFetches += 1;
+        const nodes = graphFetches === 1
+          ? []
+          : [
+              {
+                objectKey: "agent.browser-reviewer",
+                objectKind: "agent_definition",
+                status: "approved",
+                title: "Browser Reviewer",
+              },
+              {
+                objectKey: "skill.browser-verification",
+                objectKind: "skill_spec",
+                status: "approved",
+                title: "Browser Verification",
+              },
+            ];
+        const edges = graphFetches === 1
+          ? []
+          : [{
+              fromObjectKey: "agent.browser-reviewer",
+              edgeType: "uses",
+              toObjectKey: "skill.browser-verification",
+              ontology: { confidence: 0.91, category: "usage" },
+            }];
         await route.fulfill({
           contentType: "application/json",
           body: JSON.stringify({
@@ -932,26 +1036,8 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
             result: {
               activeScope: "software",
               availableScopes: ["software"],
-              nodes: [
-                {
-                  objectKey: "agent.browser-reviewer",
-                  objectKind: "agent_definition",
-                  status: "approved",
-                  title: "Browser Reviewer",
-                },
-                {
-                  objectKey: "skill.browser-verification",
-                  objectKind: "skill_spec",
-                  status: "approved",
-                  title: "Browser Verification",
-                },
-              ],
-              edges: [{
-                fromObjectKey: "agent.browser-reviewer",
-                edgeType: "uses",
-                toObjectKey: "skill.browser-verification",
-                ontology: { confidence: 0.91, category: "usage" },
-              }],
+              nodes,
+              edges,
             },
           }),
         });

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createManagedContextAssembler } from "../../src/v2/context/managed-context-assembler.ts";
 import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import type { WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
+import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
 import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -13,6 +14,17 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
+    await upsertLibraryObject(db, {
+      objectKey: "agent.software-maker",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.software-maker@managed-context-test",
+      state: {
+        scope: "software",
+        title: "Software Maker",
+        body: "Use the graph-backed software maker AGENTS.md instructions.",
+      },
+    });
     await createWorkflowRunPg(db, {
       id: "run-managed-context",
       status: "running",
@@ -47,6 +59,11 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
     assert.equal(assembled.contextPacket.id, "ctx-run-managed-context-implement-feature-implement-feature-attempt-1");
     assert.equal(assembled.taskEnvelope.contextPacket.id, assembled.contextPacket.id);
     assert.equal(assembled.taskEnvelope.session.sessionId, "session-managed-context");
+    assert.match(
+      assembled.contextPacket.agentsMdBlocks.map((block) => block.text).join("\n"),
+      /graph-backed software maker AGENTS\.md instructions/,
+    );
+    assert.match(assembled.taskEnvelope.agentPrompt, /graph-backed software maker AGENTS\.md instructions/);
     assert.equal(assembled.trace.contextPacketId, assembled.contextPacket.id);
     assert.equal(assembled.trace.taskEnvelopeId, assembled.taskEnvelopeId);
     assert.equal(
@@ -262,7 +279,11 @@ function manifest() {
     domain: "software",
     intent: "implement_feature",
     roles: [makerRole],
-    agentProfiles: [makerProfile],
+    agentProfiles: [{
+      ...makerProfile,
+      agentRef: "agent.software-maker",
+      agentsMdRefs: ["agent.software-maker"],
+    }],
     tasks: [{
       id: "implement-feature",
       name: "Implement",

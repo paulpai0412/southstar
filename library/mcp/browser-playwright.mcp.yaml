@@ -1,0 +1,19 @@
+schemaVersion: southstar.library.mcp_grant_file.v1
+id: mcp.browser-playwright
+title: Browser Playwright MCP
+scope: engineering
+status: approved
+serverId: browser-playwright
+transport: stdio
+command: node
+args:
+  - /app/src/v2/mcp/browser-playwright-server.ts
+cwd: /workspace/repo
+allowedTools:
+  - navigate
+  - click
+  - fill
+  - screenshot
+  - inspect_console
+  - assert_visible
+

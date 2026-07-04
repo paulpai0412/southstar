@@ -74,6 +74,7 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
     contextPacket,
     skills: materializedLibrary.skills,
     mcpGrants: materializedLibrary.mcpGrants,
+    mcpRuntimeConfig: materializedLibrary.mcpRuntimeConfig,
     vaultLeases: materializedLibrary.vaultLeases,
     toolProxyPolicy: materializedLibrary.toolProxyPolicy,
     materializedLibraryRefs: {

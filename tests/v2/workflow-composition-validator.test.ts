@@ -7,7 +7,7 @@ import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/comp
 import { analyzeRequirementDeterministically } from "../../src/v2/orchestration/requirement-analyzer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
-test("validator accepts a composition that uses approved candidates", async () => {
+test("validator rejects legacy stored-profile compositions when graph metadata is active", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -16,8 +16,8 @@ test("validator accepts a composition that uses approved candidates", async () =
       scope: "software",
     });
     const validation = await validateWorkflowCompositionPlan(db, packet, validComposition());
-    assert.equal(validation.ok, true);
-    assert.deepEqual(validation.issues, []);
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((issue) => issue.code === "ref_not_in_candidate_packet"), true);
   } finally {
     await db.close();
   }
@@ -99,7 +99,7 @@ test("validator rejects selected artifacts not produced by selected agent", asyn
   }
 });
 
-test("validator allows simple bugfix compositions without optional review and summary groups", async () => {
+test("validator rejects legacy stored-profile bugfix compositions when graph metadata is active", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -110,14 +110,14 @@ test("validator allows simple bugfix compositions without optional review and su
     const plan = simpleBugfixComposition();
 
     const validation = await validateWorkflowCompositionPlan(db, packet, plan);
-    assert.equal(validation.ok, true);
-    assert.deepEqual(validation.issues, []);
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((item) => item.code === "ref_not_in_candidate_packet"), true);
   } finally {
     await db.close();
   }
 });
 
-test("validator treats code quality review ordering as skill guidance rather than a hard constraint", async () => {
+test("validator does not re-enable legacy stored profiles for code quality review ordering", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -129,8 +129,8 @@ test("validator treats code quality review ordering as skill guidance rather tha
     plan.tasks.find((task) => task.id === "summarize-completion")!.dependsOn = ["verify-feature"];
 
     const validation = await validateWorkflowCompositionPlan(db, packet, plan);
-    assert.equal(validation.ok, true);
-    assert.deepEqual(validation.issues, []);
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((item) => item.code === "ref_not_in_candidate_packet"), true);
   } finally {
     await db.close();
   }

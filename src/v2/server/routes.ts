@@ -905,8 +905,8 @@ function optionalOrchestrationMode(value: unknown): "deterministic" | "llm-const
 
 function optionalComposerMode(value: unknown): WorkflowComposerMode | undefined {
   if (value === undefined) return undefined;
-  if (value === "fixture" || value === "llm" || value === "llm-with-fixture-fallback") return value;
-  throw new Error("composerMode must be fixture, llm, or llm-with-fixture-fallback");
+  if (value === "llm") return value;
+  throw new Error("composerMode must be llm");
 }
 
 function resolvePlannerWorkflowComposer(

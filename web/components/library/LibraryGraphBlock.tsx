@@ -33,7 +33,7 @@ const EDGE_TYPE_OPTIONS = [
   "implements",
   "provides_capability",
   "requires_capability",
-  "supports_skill",
+  "uses",
   "requires_skill",
   "allows_tool",
   "requires_tool",

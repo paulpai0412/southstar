@@ -1,13 +1,12 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import {
   findApprovedLibraryObjectsByKind,
-  findLibraryEdgesFrom,
   findLibraryEdgesTo,
   findLibraryObjectByKey,
   listLibraryObjects,
 } from "../design-library/library-graph-store.ts";
 import { resolveGraphProfileCandidates } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
-import type { CandidatePacket, CandidateSummary, LibraryEdgeType, RequirementSpecV2 } from "../design-library/types.ts";
+import type { CandidatePacket, CandidateSummary, RequirementSpecV2 } from "../design-library/types.ts";
 import { buildGraphMetadataCandidatePacket } from "./graph-metadata-packet.ts";
 
 export type ResolveWorkflowCandidatesInput = {
@@ -16,9 +15,13 @@ export type ResolveWorkflowCandidatesInput = {
 };
 
 export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveWorkflowCandidatesInput): Promise<CandidatePacket> {
-  const workflowTemplateCandidates = (
+  const approvedWorkflowTemplateCandidates = (
     await findApprovedLibraryObjectsByKind(db, "workflow_template", input.scope)
   ).map((object) => summary(object.objectKey, object.headVersionId, object.objectKind, object.state, "approved workflow template"));
+  const workflowTemplateCandidates = [
+    graphDynamicWorkflowTemplateCandidate(input.scope),
+    ...approvedWorkflowTemplateCandidates.filter((candidate) => candidate.ref !== GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF),
+  ];
 
   const unavailableRequirements: CandidatePacket["unavailableRequirements"] = [];
   const agentCandidatesByCapability: Record<string, CandidateSummary[]> = {};
@@ -36,41 +39,11 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   }
 
   const profileCandidatesByAgent: Record<string, CandidateSummary[]> = {};
-  for (const agentCandidates of Object.values(agentCandidatesByCapability)) {
-    for (const agentCandidate of agentCandidates) {
-      const profileEdges = await findLibraryEdgesTo(db, agentCandidate.ref, "implements", { scope: input.scope });
-      profileCandidatesByAgent[agentCandidate.ref] = await summariesForRefs(
-        db,
-        profileEdges.map((edge) => edge.fromObjectKey),
-        `implements ${agentCandidate.ref}`,
-      );
-    }
-  }
-
   const skillCandidatesByProfile: Record<string, CandidateSummary[]> = {};
   const toolCandidatesByProfile: Record<string, CandidateSummary[]> = {};
   const mcpGrantCandidatesByProfile: Record<string, CandidateSummary[]> = {};
   const vaultLeaseCandidatesByProfile: Record<string, CandidateSummary[]> = {};
   const instructionCandidatesByProfile: Record<string, CandidateSummary[]> = {};
-  for (const profileCandidates of Object.values(profileCandidatesByAgent)) {
-    for (const profileCandidate of profileCandidates) {
-      skillCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(db, profileCandidate.ref, "supports_skill", input.scope);
-      toolCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(db, profileCandidate.ref, "allows_tool", input.scope);
-      mcpGrantCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(db, profileCandidate.ref, "allows_mcp_grant", input.scope);
-      vaultLeaseCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(
-        db,
-        profileCandidate.ref,
-        "requires_secret_group",
-        input.scope,
-      );
-      instructionCandidatesByProfile[profileCandidate.ref] = await linkedSummaries(
-        db,
-        profileCandidate.ref,
-        "uses_instruction",
-        input.scope,
-      );
-    }
-  }
 
   const artifactContractCandidates = await summariesForRefs(
     db,
@@ -79,7 +52,10 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   );
   const evaluatorCandidatesByArtifact: Record<string, CandidateSummary[]> = {};
   for (const artifact of artifactContractCandidates) {
-    const validatorEdges = await findLibraryEdgesTo(db, artifact.ref, "validates_artifact", { scope: input.scope });
+    const validatorEdges = [
+      ...(await findLibraryEdgesTo(db, artifact.ref, "validates_artifact", { scope: input.scope })),
+      ...(await findLibraryEdgesTo(db, artifact.ref, "validates", { scope: input.scope })),
+    ];
     evaluatorCandidatesByArtifact[artifact.ref] = await summariesForRefs(
       db,
       validatorEdges.map((edge) => edge.fromObjectKey),
@@ -102,6 +78,18 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     ).map((object) => object.objectKey).sort(),
   };
   const graphMetadataCandidates = await buildGraphMetadataCandidatePacket(db, { scope: input.scope });
+  if (!graphMetadataCandidates.nodes.some((node) => node.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)) {
+    graphMetadataCandidates.nodes.unshift({
+      ref: GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF,
+      kind: "workflow_template",
+      status: "approved",
+      versionRef: null,
+      scope: input.scope,
+      title: "Graph Dynamic Workflow",
+      description: "Graph-native workflow template for LLM-generated DAGs and generated agent profiles.",
+      aliases: ["dynamic workflow", "graph workflow", "generated agent profiles"],
+    });
+  }
 
   return {
     requirementSpec: input.requirementSpec,
@@ -122,14 +110,29 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   };
 }
 
-async function linkedSummaries(
-  db: SouthstarDb,
-  fromRef: string,
-  edgeType: LibraryEdgeType,
-  scope: string,
-): Promise<CandidateSummary[]> {
-  const edges = await findLibraryEdgesFrom(db, fromRef, edgeType, { scope });
-  return summariesForRefs(db, edges.map((edge) => edge.toObjectKey), `${edgeType} from ${fromRef}`);
+const GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF = "template.graph-dynamic-workflow";
+
+function graphDynamicWorkflowTemplateCandidate(scope: string): CandidateSummary {
+  return {
+    ref: GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF,
+    versionRef: null,
+    kind: "workflow_template",
+    displayName: "Graph Dynamic Workflow",
+    reason: "graph-native template for generated DAGs and generated agent profiles",
+    state: {
+      scope,
+      title: "Graph Dynamic Workflow",
+      templateType: "graph_dynamic",
+      description: "Use this template when composing a workflow directly from Postgres graph nodes/edges and generated agent profiles.",
+      compositionConstraints: {
+        schemaVersion: "southstar.composition_constraints.v1",
+        templateSlots: [],
+        requiredTaskGroups: [],
+        requiredGroupDependencies: [],
+        initialArtifactRefs: [],
+      },
+    },
+  };
 }
 
 async function summariesForRefs(db: SouthstarDb, refs: string[], reason: string): Promise<CandidateSummary[]> {

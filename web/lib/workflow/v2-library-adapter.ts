@@ -1,25 +1,4 @@
-import type { WorkflowDag, WorkflowLibrary } from "./types";
-
-type V2RoleDefinition = {
-  id: string;
-  defaultAgentProfileRef: string;
-  allowedAgentProfileRefs: string[];
-};
-
-type V2AgentProfile = {
-  id: string;
-  name: string;
-  provider: "pi" | "codex" | "claude-code" | "openai" | "anthropic" | "custom";
-  model?: string;
-  skillRefs: string[];
-  mcpGrantRefs: string[];
-};
-
-export type V2AgentLibraryReadModel = {
-  domain: string;
-  roles: V2RoleDefinition[];
-  agentProfiles: V2AgentProfile[];
-};
+import type { WorkflowDag } from "./types";
 
 export type V2PlannerDraftTaskSummary = {
   taskId: string;
@@ -44,11 +23,6 @@ type V2Envelope<T> = {
   result?: T;
 };
 
-function toTitleCase(value: string): string {
-  if (!value) return "Software";
-  return value.charAt(0).toUpperCase() + value.slice(1);
-}
-
 function toSlug(value: string): string {
   return value
     .replace(/^profile\./, "")
@@ -63,17 +37,6 @@ function agentSegmentFromProfile(profileRef: string): string {
   const trimmedProviderSuffix = withoutPrefix.replace(/-(pi|codex|claude-code|openai|anthropic|custom)$/i, "");
   const segment = toSlug(trimmedProviderSuffix);
   return segment || "agent";
-}
-
-function inferRole(profile: V2AgentProfile, roles: V2RoleDefinition[]): string {
-  const exact = roles.find((role) => role.defaultAgentProfileRef === profile.id);
-  if (exact) return exact.id;
-  const allowed = roles.find((role) => role.allowedAgentProfileRefs.includes(profile.id));
-  if (allowed) return allowed.id;
-  if (profile.id.includes("explorer")) return "explorer";
-  if (profile.id.includes("checker")) return "checker";
-  if (profile.id.includes("summarizer")) return "summarizer";
-  return "maker";
 }
 
 function providerFromProfileRef(profileRef: string): "pi" | "codex" {
@@ -104,55 +67,6 @@ export function unwrapV2Envelope<T>(payload: unknown): T {
   }
   return payload as T;
 }
-
-export function workflowLibraryFromAgentLibrary(input: V2AgentLibraryReadModel): WorkflowLibrary {
-  const domain = input.domain || "software";
-  const label = toTitleCase(domain);
-
-  const agents = input.agentProfiles.map((profile) => {
-    const role = inferRole(profile, input.roles);
-    const segment = agentSegmentFromProfile(profile.id);
-    return {
-      id: `agent.${segment}`,
-      domainId: domain,
-      label: segment,
-      role,
-      defaultProfileRef: profile.id,
-      profileResourcePath: `${domain}/agents/${segment}/profile.json`,
-      instructionResourcePath: `${domain}/agents/${segment}/instruction.md`,
-      skillResourcePaths: profile.skillRefs.map((skillRef) => `${domain}/agents/${segment}/skills/${toSlug(skillRef)}/SKILL.md`),
-      mcpResourcePaths: profile.mcpGrantRefs.map((mcpGrantRef) => `${domain}/agents/${segment}/mcp/${toSlug(mcpGrantRef)}.json`),
-      policyResourcePaths: [
-        `${domain}/agents/${segment}/policies/tools.json`,
-        `${domain}/agents/${segment}/policies/budget-default.json`,
-      ],
-    };
-  });
-
-  const stageRefs = input.roles.map((role) => role.id);
-  return {
-    domains: [
-      {
-        id: domain,
-        label,
-        workflowTemplates: [
-          {
-            id: `template.${domain}.v2`,
-            domainId: domain,
-            title: `${label} Planner Workflow`,
-            description: "Southstar v2 agent library mapped for workflow UI compatibility.",
-            agentRefs: agents.map((agent) => agent.id),
-            stageRefs,
-            status: "approved",
-          },
-        ],
-        agents,
-        resources: [],
-      },
-    ],
-  };
-}
-
 
 function dependencyLevels(tasks: V2PlannerDraftTaskSummary[]): Map<string, number> {
   const byId = new Map(tasks.map((task) => [task.taskId, task]));
@@ -211,7 +125,7 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
     draftId: input.draftId,
     draftStatus: input.status,
     mode: "draft",
-    templateId: "template.software.v2",
+    templateId: "template.graph-dynamic-workflow",
     templateTitle: input.workflowId || "Planner Draft",
     prompt: input.goalPrompt,
     expandedByDefault: true,

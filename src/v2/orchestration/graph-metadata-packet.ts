@@ -9,7 +9,6 @@ import type {
 
 const INCLUDED_KINDS: ReadonlySet<LibraryDefinitionKind> = new Set([
   "agent_definition",
-  "agent_profile",
   "skill_spec",
   "tool_definition",
   "mcp_tool_grant",
@@ -76,7 +75,6 @@ function compactRuntimeState(kind: LibraryDefinitionKind, state: Record<string, 
   if (kind === "mcp_tool_grant") return pickDefined(state, ["serverId", "allowedTools"]);
   if (kind === "skill_spec") return pickDefined(state, ["allowedTools", "requiredMounts", "mcpRequirements", "artifactContracts", "sourcePath", "assetBundlePath"]);
   if (kind === "agent_definition") return pickDefined(state, ["runtimeRole"]);
-  if (kind === "agent_profile") return pickDefined(state, ["runtimeProfile", "agentRef", "skillRefs", "toolGrantRefs", "mcpGrantRefs", "instructionRefs"]);
   return {};
 }
 

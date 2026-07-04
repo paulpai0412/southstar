@@ -19,17 +19,18 @@ test("builds compact approved graph metadata nodes and executable edges", async 
       "tool.workspace-write",
     ]);
     assert.deepEqual(packet.edges.map((edge) => `${edge.from}|${edge.type}|${edge.to}`), [
-      "agent.frontend-developer|supports_skill|skill.react-ui",
+      "agent.frontend-developer|uses|skill.react-ui",
       "skill.react-ui|allows_mcp_grant|mcp.filesystem-workspace",
       "skill.react-ui|requires_tool|tool.workspace-write",
     ]);
+    assert.equal(packet.nodes.some((node) => node.kind === "agent_profile"), false);
     assert.equal(packet.nodes.find((node) => node.ref === "skill.react-ui")?.bodyPreview?.includes("very long"), false);
   } finally {
     await db.close();
   }
 });
 
-test("workflow candidate resolver includes graph metadata without removing legacy fields", async () => {
+test("workflow candidate resolver exposes graph primitives without stored agent profiles", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedGraph(db);
@@ -63,13 +64,41 @@ test("workflow candidate resolver includes graph metadata without removing legac
     });
 
     assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "skill.react-ui"), true);
+    assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.kind === "agent_profile"), false);
     assert.equal(packet.profilePrimitiveCandidates?.skills.includes("skill.react-ui"), true);
+    assert.deepEqual(packet.profileCandidatesByAgent, {});
   } finally {
     await db.close();
   }
 });
 
 async function seedGraph(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
+  await upsertLibraryObject(db, {
+    objectKey: "profile.legacy-frontend",
+    objectKind: "agent_profile",
+    status: "approved",
+    headVersionId: "profile.legacy-frontend@1",
+    state: {
+      scope: "engineering",
+      title: "Legacy Frontend Profile",
+      runtimeProfile: {
+        id: "legacy-frontend",
+        name: "Legacy Frontend",
+        provider: "codex",
+        model: "gpt-5",
+        harnessRef: "codex",
+        agentsMdRefs: [],
+        promptTemplateRef: "react-review",
+        skillRefs: ["skill.react-ui"],
+        mcpGrantRefs: ["mcp.filesystem-workspace"],
+        memoryScopes: [],
+        contextPolicyRef: "context.legacy",
+        sessionPolicyRef: "session.legacy",
+        toolPolicy: { allowedTools: ["tool.workspace-write"], deniedTools: [], requiresApprovalFor: [] },
+        budgetPolicy: { maxInputTokens: 120000, maxOutputTokens: 8192 },
+      },
+    },
+  });
   await upsertLibraryObject(db, {
     objectKey: "agent.frontend-developer",
     objectKind: "agent_definition",
@@ -110,7 +139,7 @@ async function seedGraph(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
   });
   await upsertLibraryEdge(db, {
     fromObjectKey: "agent.frontend-developer",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.react-ui",
     scope: "engineering",
   });

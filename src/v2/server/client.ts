@@ -13,7 +13,7 @@ type RunGoalResult = {
 type PlannerRequestBody = {
   goalPrompt: string;
   orchestrationMode?: "deterministic" | "llm-constrained";
-  composerMode?: "fixture" | "llm" | "llm-with-fixture-fallback";
+  composerMode?: "llm";
   scope?: string;
 };
 

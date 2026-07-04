@@ -311,7 +311,7 @@ test("rejects reads through symlinked directories and files under the library ro
   }
 });
 
-test("syncs generated profile tool and mcp grant refs to graph edges", async () => {
+test("syncs generated profile tool and mcp grant refs but does not infer vault ontology edges", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
   const db = await createTestPostgresDb();
 
@@ -329,6 +329,8 @@ toolGrantRefs:
   - tool.workspace-write
 mcpGrantRefs:
   - mcp.filesystem-workspace
+vaultLeasePolicyRefs:
+  - vault.github-write-token
 `,
     });
 
@@ -351,6 +353,12 @@ mcpGrantRefs:
       mcpEdges.map((edge) => edge.toObjectKey),
       ["mcp.filesystem-workspace"],
     );
+
+    const vaultEdges = await findLibraryEdgesFrom(db, "profile.generated.todo.implement-ui", "requires_secret_group", {
+      scope: "software",
+      status: "active",
+    });
+    assert.deepEqual(vaultEdges.map((edge) => edge.toObjectKey), []);
   } finally {
     await db.close();
     await rm(root, { recursive: true, force: true });

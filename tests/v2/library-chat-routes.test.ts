@@ -456,7 +456,7 @@ test("serves library object detail with inbound and outbound graph edges", async
     await seedObject(db, "tool.browser", "tool_definition", "global", "Browser");
     await upsertLibraryEdge(db, {
       fromObjectKey: "agent.frontend-developer",
-      edgeType: "supports_skill",
+      edgeType: "uses",
       toObjectKey: "skill.react-ui",
       scope: "software",
     });
@@ -530,7 +530,7 @@ test("validates generated profile drafts through the library route", async () =>
     await seedObject(db, "tool.workspace-write", "tool_definition", "software", "Workspace Write");
     await upsertLibraryEdge(db, {
       fromObjectKey: "agent.frontend-developer",
-      edgeType: "supports_skill",
+      edgeType: "uses",
       toObjectKey: "skill.react-ui",
       scope: "software",
     });

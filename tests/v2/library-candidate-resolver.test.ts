@@ -14,7 +14,7 @@ test("software library seed smoke: expected maker and evaluator edges exist", as
     await seedSoftwareLibraryGraph(db);
 
     await assertHasDirectEdge(db, "profile.software-maker-pi", "implements", "agent.software-maker");
-    await assertHasDirectEdge(db, "profile.software-maker-pi", "supports_skill", "skill.software-implementation");
+    await assertHasDirectEdge(db, "profile.software-maker-pi", "uses", "skill.software-implementation");
     await assertHasDirectEdge(db, "profile.software-maker-pi", "allows_tool", "tool.workspace-write");
     await assertHasDirectEdge(db, "profile.software-spec-reviewer-codex", "implements", "agent.software-spec-reviewer");
     await assertHasDirectEdge(
@@ -34,7 +34,7 @@ test("software library seed smoke: expected maker and evaluator edges exist", as
   }
 });
 
-test("candidate resolver returns approved direct-edge candidates without recursive traversal", async () => {
+test("candidate resolver returns agents but disables legacy stored agent profiles", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
@@ -42,45 +42,29 @@ test("candidate resolver returns approved direct-edge candidates without recursi
     const packet = await resolveWorkflowCandidates(db, { requirementSpec: requirement, scope: "software" });
 
     assert.deepEqual(packet.unavailableRequirements, []);
-    assert.equal(packet.workflowTemplateCandidates[0]?.ref, "template.software-feature");
+    assert.equal(packet.workflowTemplateCandidates[0]?.ref, "template.graph-dynamic-workflow");
+    assert.equal(packet.workflowTemplateCandidates.some((candidate) => candidate.ref === "template.software-feature"), true);
     assert.equal(packet.agentCandidatesByCapability["capability.repo-write"]?.[0]?.ref, "agent.software-maker");
-    assert.equal(packet.profileCandidatesByAgent["agent.software-maker"]?.[0]?.ref, "profile.software-maker-pi");
-    assert.equal(
-      packet.skillCandidatesByProfile["profile.software-maker-pi"]?.some((candidate) =>
-        candidate.ref === "skill.software-implementation"
-      ),
-      true,
-    );
-    assert.equal(
-      packet.toolCandidatesByProfile["profile.software-maker-pi"]?.some((candidate) =>
-        candidate.ref === "tool.workspace-write"
-      ),
-      true,
-    );
+    assert.deepEqual(packet.profileCandidatesByAgent, {});
+    assert.deepEqual(packet.skillCandidatesByProfile, {});
+    assert.deepEqual(packet.toolCandidatesByProfile, {});
+    assert.equal(packet.profilePrimitiveCandidates?.agents.includes("agent.software-maker"), true);
+    assert.equal(packet.profilePrimitiveCandidates?.tools.includes("tool.workspace-write"), true);
   } finally {
     await db.close();
   }
 });
 
-test("candidate resolver exposes MCP and vault candidates from direct profile edges", async () => {
+test("candidate resolver exposes MCP primitives without direct profile edges", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
     const requirement = analyzeRequirementDeterministically("implement calc sum");
     const packet = await resolveWorkflowCandidates(db, { requirementSpec: requirement, scope: "software" });
 
-    assert.equal(
-      packet.mcpGrantCandidatesByProfile["profile.software-maker-pi"]?.some((candidate) =>
-        candidate.ref === "mcp.filesystem-workspace"
-      ),
-      true,
-    );
-    assert.equal(
-      packet.vaultLeaseCandidatesByProfile["profile.software-maker-pi"]?.some((candidate) =>
-        candidate.ref === "vault.github-write-token"
-      ),
-      true,
-    );
+    assert.deepEqual(packet.mcpGrantCandidatesByProfile, {});
+    assert.deepEqual(packet.vaultLeaseCandidatesByProfile, {});
+    assert.equal(packet.profilePrimitiveCandidates?.mcpGrants.includes("mcp.filesystem-workspace"), true);
   } finally {
     await db.close();
   }

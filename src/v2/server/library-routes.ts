@@ -151,11 +151,13 @@ export async function handleLibraryRoute(
     if (!draft) return errorJson(`planner draft not found: ${draftId}`, 404);
     const workflow = asRecord(asRecord(draft.payload).workflow);
     const scope = optionalString(body.scope) ?? "software";
+    const status = workflowTemplateSaveStatus(body.status);
     const result = await saveWorkflowTemplateDraft(context.db, {
       root: libraryRoot(context),
       scope,
       templateId: requiredString(body.templateId, "templateId"),
       title: requiredString(body.title, "title"),
+      status,
       ...await saveTemplateGraphFromWorkflow(context.db, workflow, scope),
     });
     return json("workflow-template-save", { draftId, ...result });
@@ -359,6 +361,12 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
+function workflowTemplateSaveStatus(value: unknown): "draft" | "approved" {
+  if (value === undefined || value === null || value === "") return "draft";
+  if (value === "draft" || value === "approved") return value;
+  throw new Error("status must be draft or approved");
+}
+
 function requiredQueryParam(url: URL, name: string): string {
   const value = url.searchParams.get(name);
   if (!value) throw new Error(`${name} is required`);
@@ -408,7 +416,7 @@ const LIBRARY_EDGE_TYPES = new Set<LibraryEdgeType>([
   "implements",
   "provides_capability",
   "requires_capability",
-  "supports_skill",
+  "uses",
   "requires_skill",
   "allows_tool",
   "requires_tool",
@@ -614,9 +622,14 @@ async function saveTemplateGraphFromWorkflow(
   const tasks = Array.isArray(workflow.tasks)
     ? workflow.tasks.filter((task): task is Record<string, unknown> => isRecord(task))
     : [];
-  const nodeIds = new Set(tasks.map((task) => requiredString(task.id, "workflow.tasks.id")));
+  const nodeIdByRawId = new Map(tasks.map((task) => {
+    const rawId = requiredString(task.id, "workflow.tasks.id");
+    return [rawId, pathSafeWorkflowNodeId(rawId)];
+  }));
+  const nodeIds = new Set(nodeIdByRawId.values());
   const nodes = await Promise.all(tasks.map(async (task) => {
-    const id = requiredString(task.id, "workflow.tasks.id");
+    const rawId = requiredString(task.id, "workflow.tasks.id");
+    const id = nodeIdByRawId.get(rawId) ?? pathSafeWorkflowNodeId(rawId);
     return {
       id,
       title: optionalString(task.name) ?? id,
@@ -629,11 +642,24 @@ async function saveTemplateGraphFromWorkflow(
   return {
     nodes,
     edges: tasks.flatMap((task) => {
-      const to = requiredString(task.id, "workflow.tasks.id");
-      return libraryRefs(task.dependsOn, "").filter((from) => nodeIds.has(from)).map((from) => ({ from, to }));
+      const rawTo = requiredString(task.id, "workflow.tasks.id");
+      const to = nodeIdByRawId.get(rawTo) ?? pathSafeWorkflowNodeId(rawTo);
+      return libraryRefs(task.dependsOn, "")
+        .map((from) => nodeIdByRawId.get(from) ?? pathSafeWorkflowNodeId(from))
+        .filter((from) => nodeIds.has(from))
+        .map((from) => ({ from, to }));
     }),
     libraryVersionRefs: await libraryVersionRefsForNodes(db, nodes),
   };
+}
+
+function pathSafeWorkflowNodeId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/^task[._-]+/, "")
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "") || "task";
 }
 
 async function buildLibraryObjectDetail(db: SouthstarDb, objectKey: string) {
@@ -706,6 +732,13 @@ async function agentRefForWorkflowTask(db: SouthstarDb, task: Record<string, unk
     if (agentRefs.length > 1) {
       throw new Error(`ambiguous agentRef for workflow task ${requiredString(task.id, "workflow.tasks.id")}: ${agentRefs.join(", ")}`);
     }
+  }
+
+  const roleRef = optionalString(task.roleRef);
+  if (roleRef) {
+    const agentRef = roleRef.startsWith("agent.") ? roleRef : `agent.${roleRef}`;
+    await requireAgentDefinition(db, agentRef);
+    return agentRef;
   }
 
   throw new Error(

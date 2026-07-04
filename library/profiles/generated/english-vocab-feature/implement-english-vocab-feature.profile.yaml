@@ -1,0 +1,18 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.english-vocab-feature.implement-english-vocab-feature"
+title: "實作簡易背英文單字功能"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-senior-developer"
+skillRefs:
+  - "skill.mattpocock.implement"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-write"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.english-vocab-feature"
+  nodeId: "implement-english-vocab-feature"

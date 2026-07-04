@@ -85,6 +85,28 @@ toolRefs:
   assert.deepEqual(parsed.file.definition.toolRefs, ["tool.github-read"]);
 });
 
+test("parses vault lease policy yaml file", () => {
+  const parsed = parseLibraryFileContent({
+    path: "library/vault/github-write-token.vault.yaml",
+    content: `schemaVersion: southstar.library.vault_lease_policy_file.v1
+id: vault.github-write-token
+title: GitHub Write Token Lease
+scope: engineering
+status: approved
+secretGroupRef: github.write
+leaseTtlSeconds: 900
+mountMode: env
+`,
+  });
+
+  assert.equal(parsed.ok, true);
+  if (!parsed.ok) throw new Error("expected parse success");
+  assert.equal(parsed.file.kind, "vault");
+  assert.equal(parsed.file.objectKind, "vault_lease_policy");
+  assert.equal(parsed.file.definition.secretGroupRef, "github.write");
+  assert.equal(parsed.file.definition.leaseTtlSeconds, 900);
+});
+
 test("parses generated profile yaml file", () => {
   const parsed = parseLibraryFileContent({
     path: "library/profiles/todo-implement-ui.profile.yaml",

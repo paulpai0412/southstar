@@ -16,6 +16,7 @@ import {
   analyzeLibraryImportOntologyWithLlm,
   buildLibraryImportAnalysisPrompt,
   buildLibraryImportCandidatePrompt,
+  type LibraryImportOntologyExistingGraphNode,
   type LibraryImportLlmProvider,
 } from "../../src/v2/design-library/importers/library-llm-import-analyzer.ts";
 import { CATALOG_CANONICAL_DOMAINS } from "../../src/v2/design-library/canonical-domains.ts";
@@ -406,6 +407,7 @@ test("analyzeLibraryImportOntologyWithLlm accepts full ontology edge vocabulary 
         { fromObjectKey: "skill.review", edgeType: "incompatible_with", toObjectKey: "tool.github", confidence: 0.52 },
         { fromObjectKey: "tool.github", edgeType: "requires_approval", toObjectKey: "skill.review", confidence: 0.66 },
         { fromObjectKey: "tool.github", edgeType: "requires_secret", toObjectKey: "skill.review", confidence: 0.67 },
+        { fromObjectKey: "tool.github", edgeType: "requires_secret_group", toObjectKey: "skill.review", confidence: 0.68 },
         { fromObjectKey: "skill.review", edgeType: "conflicts_with", toObjectKey: "tool.github", confidence: 0.7 },
         { fromObjectKey: "skill.review", edgeType: "workflow_precedes", toObjectKey: "skill.audit", confidence: 0.8 },
         { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.audit", confidence: 0.6 },
@@ -430,6 +432,7 @@ test("analyzeLibraryImportOntologyWithLlm accepts full ontology edge vocabulary 
   assert.match(prompts[0] ?? "", /workflow_precedes/);
   assert.match(prompts[0] ?? "", /produces/);
   assert.match(prompts[0] ?? "", /requires_secret/);
+  assert.match(prompts[0] ?? "", /requires_secret_group/);
   assert.match(prompts[0] ?? "", /similar_to/);
   assert.deepEqual(edges.map((edge) => ({
     fromObjectKey: edge.fromObjectKey,
@@ -449,9 +452,103 @@ test("analyzeLibraryImportOntologyWithLlm accepts full ontology edge vocabulary 
     { fromObjectKey: "skill.review", edgeType: "incompatible_with", toObjectKey: "tool.github" },
     { fromObjectKey: "tool.github", edgeType: "requires_approval", toObjectKey: "skill.review" },
     { fromObjectKey: "tool.github", edgeType: "requires_secret", toObjectKey: "skill.review" },
+    { fromObjectKey: "tool.github", edgeType: "requires_secret_group", toObjectKey: "skill.review" },
     { fromObjectKey: "skill.review", edgeType: "conflicts_with", toObjectKey: "tool.github" },
     { fromObjectKey: "skill.review", edgeType: "workflow_precedes", toObjectKey: "skill.audit" },
     { fromObjectKey: "skill.review", edgeType: "similar_to", toObjectKey: "skill.audit" },
+  ]);
+});
+
+test("analyzeLibraryImportOntologyWithLlm can link selected candidates to existing approved graph nodes", async () => {
+  const prompts: string[] = [];
+  const provider: LibraryImportLlmProvider = async (input) => {
+    prompts.push(input.prompt);
+    return {
+      candidates: [
+        {
+          objectKey: "skill.beautiful-article",
+          kind: "skill",
+          title: "Beautiful Article",
+          selectedByDefault: true,
+          confidence: 0.95,
+        },
+      ],
+      proposedEdges: [
+        {
+          fromObjectKey: "agent.article-editor",
+          edgeType: "uses",
+          toObjectKey: "skill.beautiful-article",
+          confidence: 0.91,
+          rationale: "Article editor agents can use the imported article skill.",
+        },
+        {
+          fromObjectKey: "agent.draft-only",
+          edgeType: "uses",
+          toObjectKey: "skill.beautiful-article",
+          confidence: 0.99,
+          rationale: "Draft-only existing nodes are not in the approved graph packet.",
+        },
+        {
+          fromObjectKey: "agent.article-editor",
+          edgeType: "similar_to",
+          toObjectKey: "agent.content-strategist",
+          confidence: 0.8,
+          rationale: "Both endpoints are existing nodes, so import linking should reject it.",
+        },
+      ],
+    };
+  };
+
+  const existingGraphNodes: LibraryImportOntologyExistingGraphNode[] = [
+    {
+      objectKey: "agent.article-editor",
+      objectKind: "agent_definition",
+      status: "approved",
+      title: "Article Editor",
+      scope: "design",
+      headVersionId: "agent.article-editor@1",
+    },
+    {
+      objectKey: "agent.content-strategist",
+      objectKind: "agent_definition",
+      status: "approved",
+      title: "Content Strategist",
+      scope: "design",
+      headVersionId: "agent.content-strategist@1",
+    },
+  ];
+
+  const edges = await analyzeLibraryImportOntologyWithLlm({
+    scope: "design",
+    candidates: [
+      {
+        objectKey: "skill.beautiful-article",
+        kind: "skill",
+        title: "Beautiful Article",
+        scope: "design",
+        selectedByDefault: true,
+      },
+    ],
+    existingGraph: {
+      nodes: existingGraphNodes,
+      edges: [],
+    },
+    llmProvider: provider,
+  });
+
+  assert.match(prompts[0] ?? "", /ExistingApprovedGraphNodes/);
+  assert.match(prompts[0] ?? "", /agent\.article-editor/);
+  assert.match(prompts[0] ?? "", /At least one endpoint must be one of the selected candidates/);
+  assert.deepEqual(edges.map((edge) => ({
+    fromObjectKey: edge.fromObjectKey,
+    edgeType: edge.edgeType,
+    toObjectKey: edge.toObjectKey,
+  })), [
+    {
+      fromObjectKey: "agent.article-editor",
+      edgeType: "uses",
+      toObjectKey: "skill.beautiful-article",
+    },
   ]);
 });
 
@@ -621,7 +718,7 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
           toObjectKey: "skill.review",
           confidence: 0.91,
           rationale: "Reviewer delegates review work to the review skill.",
-          source: "library-import-candidate",
+          source: "library-import-ontology",
           draftId: draft.draftId,
         },
         {
@@ -630,7 +727,7 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
           toObjectKey: "tool.github",
           confidence: 0.83,
           rationale: "Review skill needs GitHub access.",
-          source: "library-import-candidate",
+          source: "library-import-ontology",
           draftId: draft.draftId,
         },
       ],
@@ -665,7 +762,7 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
 
     const agentEdges = await findLibraryEdgesFrom(db, "agent.reviewer", "uses", { scope: "software" });
     assert.equal(agentEdges.length, 1);
-    assert.equal(agentEdges[0]?.metadata.source, "library-import-candidate");
+    assert.equal(agentEdges[0]?.metadata.source, "library-import-ontology");
     assert.equal(agentEdges[0]?.metadata.draftId, draft.draftId);
     assert.equal(agentEdges[0]?.metadata.confidence, 0.91);
     assert.equal(agentEdges[0]?.metadata.rationale, "Reviewer delegates review work to the review skill.");
@@ -686,6 +783,147 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
       "uses",
       "requires",
     ]);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("installLibraryImportCandidates links selected imports to existing approved graph nodes", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-existing-graph-"));
+  const prompts: string[] = [];
+  const progressEvents: Array<{ event: string; data: Record<string, unknown> }> = [];
+
+  const provider: LibraryImportLlmProvider = async (input) => {
+    prompts.push(input.prompt);
+    return {
+      candidates: [
+        {
+          objectKey: "skill.beautiful-article",
+          kind: "skill",
+          title: "Beautiful Article",
+          selectedByDefault: true,
+          confidence: 0.95,
+        },
+      ],
+      proposedEdges: [
+        {
+          fromObjectKey: "agent.article-editor",
+          edgeType: "uses",
+          toObjectKey: "skill.beautiful-article",
+          confidence: 0.92,
+          rationale: "Article editor agents can use Beautiful Article.",
+        },
+        {
+          fromObjectKey: "agent.draft-only",
+          edgeType: "uses",
+          toObjectKey: "skill.beautiful-article",
+          confidence: 0.99,
+          rationale: "Draft graph nodes must not be valid ontology endpoints.",
+        },
+        {
+          fromObjectKey: "agent.article-editor",
+          edgeType: "similar_to",
+          toObjectKey: "agent.content-strategist",
+          confidence: 0.75,
+          rationale: "Both endpoints are existing nodes, so import linking rejects it.",
+        },
+      ],
+    };
+  };
+
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "agent.article-editor",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.article-editor@1",
+      state: {
+        schemaVersion: "southstar.library.agent_definition.v1",
+        title: "Article Editor",
+        scope: "design",
+        summary: "Edits source material into clear long-form articles.",
+      },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "agent.content-strategist",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.content-strategist@1",
+      state: {
+        schemaVersion: "southstar.library.agent_definition.v1",
+        title: "Content Strategist",
+        scope: "design",
+        summary: "Plans editorial strategy.",
+      },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "agent.draft-only",
+      objectKind: "agent_definition",
+      status: "draft",
+      headVersionId: "agent.draft-only@1",
+      state: {
+        schemaVersion: "southstar.library.agent_definition.v1",
+        title: "Draft Only",
+        scope: "design",
+      },
+    });
+
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "beautiful article skill",
+        content: "beautiful article skill helps agents produce polished single-file HTML articles",
+      },
+      scope: "design",
+      llmProvider: provider,
+    });
+
+    const installed = await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: ["skill.beautiful-article"],
+      actor: "operator",
+      reason: "install beautiful article",
+      llmProvider: provider,
+      progress: (event) => progressEvents.push(event),
+    });
+
+    assert.deepEqual(installed.installedObjects.map((object) => object.objectKey), ["skill.beautiful-article"]);
+    assert.equal(installed.installedObjects[0]?.object.status, "approved");
+    assert.deepEqual(installed.installedEdges.map((edge) => ({
+      fromObjectKey: edge.fromObjectKey,
+      edgeType: edge.edgeType,
+      toObjectKey: edge.toObjectKey,
+      source: edge.metadata.source,
+      draftId: edge.metadata.draftId,
+      newObjectKeys: edge.metadata.newObjectKeys,
+      confidence: edge.metadata.confidence,
+    })), [
+      {
+        fromObjectKey: "agent.article-editor",
+        edgeType: "uses",
+        toObjectKey: "skill.beautiful-article",
+        source: "library-import-ontology",
+        draftId: draft.draftId,
+        newObjectKeys: ["skill.beautiful-article"],
+        confidence: 0.92,
+      },
+    ]);
+
+    assert.match(prompts.at(-1) ?? "", /ExistingApprovedGraphNodes/);
+    assert.match(prompts.at(-1) ?? "", /agent\.article-editor/);
+    assert.doesNotMatch(prompts.at(-1) ?? "", /agent\.draft-only/);
+    assert.ok(progressEvents.some((event) => event.event === "library.import.existing_graph.loaded"));
+    assert.equal(
+      progressEvents.find((event) => event.event === "library.import.ontology.completed")?.data.proposedEdgeCount,
+      1,
+    );
+
+    const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
+    assert.equal((resource?.payload as any).install.installedEdges[0].metadata.source, "library-import-ontology");
+    assert.deepEqual((resource?.payload as any).install.installedObjectKeys, ["skill.beautiful-article"]);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

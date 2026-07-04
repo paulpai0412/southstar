@@ -1,0 +1,9 @@
+schemaVersion: southstar.library.vault_lease_policy_file.v1
+id: vault.github-write-token
+title: GitHub Write Token Lease
+scope: engineering
+status: approved
+secretGroupRef: github.write
+leaseTtlSeconds: 900
+mountMode: env
+

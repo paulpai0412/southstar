@@ -4,6 +4,7 @@ import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
 import { withMaterializationMount } from "../executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
+import { materializeVaultRuntime } from "../executor/vault-materialization.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { validateWorkflowManifest } from "../manifests/validate.ts";
 import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
@@ -162,8 +163,12 @@ export function createTorkHandProvider(input: {
           runRoot: taskInput.runRoot ?? input.runRoot,
           envelopeBasePath,
         });
-        const workflow = withPiAgentRuntimeConfig(withWorkspaceMount(mounted.workflow, taskEnvelope));
         await materializeTaskEnvelope(taskEnvelope, { runRoot: mounted.runRoot });
+        const vaultRuntime = await materializeVaultRuntime(taskEnvelope, {
+          runRoot: mounted.runRoot,
+          envelopeBasePath: mounted.envelopeBasePath,
+        });
+        const workflow = withTaskRuntimeEnv(withPiAgentRuntimeConfig(withWorkspaceMount(mounted.workflow, taskEnvelope)), vaultRuntime.env);
         const submitted = await input.executorProvider.submit({
           runId: binding.runId,
           workflow,
@@ -228,6 +233,23 @@ export function createTorkHandProvider(input: {
         keepsCredentialsOutOfSandbox: true,
       };
     },
+  };
+}
+
+function withTaskRuntimeEnv(workflow: SouthstarWorkflowManifest, env: Record<string, string>): SouthstarWorkflowManifest {
+  if (Object.keys(env).length === 0) return workflow;
+  return {
+    ...workflow,
+    tasks: workflow.tasks.map((task) => ({
+      ...task,
+      execution: {
+        ...task.execution,
+        env: {
+          ...task.execution.env,
+          ...env,
+        },
+      },
+    })),
   };
 }
 

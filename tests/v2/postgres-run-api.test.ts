@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
+import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
-import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
 import { DeterministicFixtureComposer, ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import {
@@ -16,33 +16,11 @@ import {
   revisePostgresPlannerDraft,
   validatePostgresPlannerDraft,
 } from "../../src/v2/ui-api/postgres-run-api.ts";
-import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envelope.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { resolveTestPostgresAdminUrl } from "./postgres-test-utils.ts";
 
-test("Postgres run API creates draft, run, tasks, history, and Knowledge Card context packets", async () => {
+test("Postgres run API creates draft, run, tasks, and history without prebuilding task context", async () => {
   await withDb(async (db) => {
-    await createLearningNode(db, {
-      id: "card-run-api-self-check",
-      nodeType: "knowledge_card",
-      scope: "software",
-      status: "active",
-      payload: {
-        cardType: "failure_lesson",
-        topicKey: "run-api-self-check",
-        scope: "software",
-        title: "Run API self-check",
-        summary: "Implementation reports should include commandsRun and risks.",
-        appliesTo: { intents: ["implement_feature"], roles: ["maker"], artifactTypes: ["implementation-report"], agentProfiles: ["software-maker-pi"] },
-        claims: [{ text: "Self-check reduces repair loops.", evidenceNodeRefs: ["card-run-api-self-check"] }],
-        confidence: 0.9,
-        successScore: 0.8,
-        status: "active",
-        riskTier: "low",
-      },
-      summaryText: "Implementation reports should include commandsRun and risks.",
-    });
-
     const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
     assert.match(draft.draftId, /^draft-wf-gen-/);
     assert.equal(draft.status, "validated");
@@ -60,17 +38,11 @@ test("Postgres run API creates draft, run, tasks, history, and Knowledge Card co
     const history = await db.query<{ event_type: string }>("select event_type from southstar.workflow_history where run_id = $1 order by sequence", [run.runId]);
     assert.deepEqual(history.rows.map((row) => row.event_type), ["run.created", "task.created", "task.created", "task.created", "task.created"]);
 
-    const context = await db.one<{ payload_json: { selectedKnowledgeCards: Array<{ sourceRef: string }> } }>(
-      "select payload_json from southstar.runtime_resources where resource_type = 'context_packet' and run_id = $1 and task_id = 'implement-feature'",
+    const prebuiltContextCount = await db.one<{ count: string }>(
+      "select count(*)::text as count from southstar.runtime_resources where resource_type in ('context_packet', 'task_envelope', 'knowledge_card_injection_trace') and run_id = $1",
       [run.runId],
     );
-    assert.equal(context.payload_json.selectedKnowledgeCards[0]?.sourceRef, "card-run-api-self-check");
-
-    const trace = await db.one<{ payload_json: { selectedCardRefs: string[] } }>(
-      "select payload_json from southstar.runtime_resources where resource_type = 'knowledge_card_injection_trace' and run_id = $1 and task_id = 'implement-feature'",
-      [run.runId],
-    );
-    assert.deepEqual(trace.payload_json.selectedCardRefs, ["card-run-api-self-check"]);
+    assert.equal(prebuiltContextCount.count, "0");
   });
 });
 
@@ -145,7 +117,7 @@ test("Postgres planner draft validation gates run creation after profile overrid
   });
 });
 
-test("Postgres run from draft materializes task profile override into run execution context", async () => {
+test("Postgres run from draft materializes task profile override into run manifest and task snapshot", async () => {
   await withDb(async (db) => {
     const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
 
@@ -194,19 +166,11 @@ test("Postgres run from draft materializes task profile override into run execut
     assert.equal(taskRow.snapshot_json.agentProfileRef, "software-maker-pi__implement-feature__override");
     assert.equal(taskRow.snapshot_json.profileOverride.model, "gpt-5-codex");
 
-    const contextRow = await db.one<{ payload_json: { agentProfileRef: string; skillInstructions: Array<{ text: string }> } }>(
-      "select payload_json from southstar.runtime_resources where resource_type = 'context_packet' and run_id = $1 and task_id = 'implement-feature'",
+    const prebuiltContextCount = await db.one<{ count: string }>(
+      "select count(*)::text as count from southstar.runtime_resources where resource_type in ('context_packet', 'task_envelope') and run_id = $1 and task_id = 'implement-feature'",
       [run.runId],
     );
-    assert.equal(contextRow.payload_json.agentProfileRef, "software-maker-pi__implement-feature__override");
-    assert.match(contextRow.payload_json.skillInstructions.map((block) => block.text).join("\n"), /smallest verified patch/);
-
-    const envelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
-    assert.equal(envelope.agentProfile.id, "software-maker-pi__implement-feature__override");
-    assert.equal(envelope.agentProfile.model, "gpt-5-codex");
-    assert.match(envelope.agentPrompt, /smallest verified patch/);
-    assert.equal(envelope.materializedLibraryRefs?.skillRefs.includes("skill.software-verification"), true);
-    assert.equal(envelope.materializedLibraryRefs?.mcpGrantRefs.includes("mcp.filesystem-workspace"), true);
+    assert.equal(prebuiltContextCount.count, "0");
   });
 });
 
@@ -443,6 +407,71 @@ test("Postgres planner draft can use injected scripted LLM composer for non-fixt
       "review-code-quality",
       "summarize-completion",
     ]);
+  });
+});
+
+test("llm-constrained planner uses graph metadata even when legacy capability candidates are unavailable", async () => {
+  await withDb(async (db) => {
+    await seedGraphMetadataOnlyWorkflowPrimitives(db);
+    const composer = new ScriptedWorkflowComposer([graphMetadataOnlyPlan()]);
+
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "build a vocabulary learning feature",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
+      composer,
+    });
+
+    assert.equal(draft.status, "validated");
+    assert.deepEqual(draft.validationIssues, []);
+    assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), ["implement-vocab"]);
+
+    const draftResource = await db.one<{
+      payload_json: {
+        orchestrationSnapshot?: {
+          candidateSummary?: { agentDefinitionRefs?: string[] };
+          compiler?: { libraryVersionRefs?: string[] };
+          selectedCompositionPlan?: { tasks?: Array<{ agentProfileRef?: string }> };
+        };
+        workflow?: {
+          roles?: Array<{ id?: string; defaultAgentProfileRef?: string }>;
+          agentProfiles?: Array<{
+            id?: string;
+            provider?: string;
+            model?: string;
+            thinkingLevel?: string;
+            instruction?: string;
+            harnessRef?: string;
+            toolPolicy?: { allowedTools?: string[] };
+          }>;
+        };
+      };
+    }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [draft.draftId],
+    );
+    assert.deepEqual(draftResource.payload_json.orchestrationSnapshot?.candidateSummary?.agentDefinitionRefs, ["agent.frontend-developer"]);
+    assert.equal(
+      draftResource.payload_json.workflow?.roles?.[0]?.defaultAgentProfileRef,
+      "profile.generated.vocab.implement",
+    );
+    const generatedProfile = draftResource.payload_json.workflow?.agentProfiles?.find((profile) =>
+      profile.id === "profile.generated.vocab.implement"
+    );
+    assert.equal(generatedProfile?.provider, "codex");
+    assert.equal(generatedProfile?.model, "gpt-5");
+    assert.equal(generatedProfile?.thinkingLevel, "high");
+    assert.equal(generatedProfile?.harnessRef, "codex");
+    assert.match(generatedProfile?.instruction ?? "", /vocabulary learning feature/);
+    assert.deepEqual(generatedProfile?.toolPolicy?.allowedTools, ["tool.workspace-write"]);
+    assert.equal(
+      draftResource.payload_json.orchestrationSnapshot?.compiler?.libraryVersionRefs?.includes("agent.frontend-developer@1"),
+      true,
+    );
+    assert.equal(
+      draftResource.payload_json.orchestrationSnapshot?.selectedCompositionPlan?.tasks?.[0]?.agentProfileRef,
+      "profile.generated.vocab.implement",
+    );
   });
 });
 
@@ -885,6 +914,179 @@ function validInspectOnlyPlan(): WorkflowCompositionPlan {
     rejectedCandidates: [],
     generatedComponentProposals: [],
   };
+}
+
+function graphMetadataOnlyPlan(): WorkflowCompositionPlan {
+  return {
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Vocabulary Learning Feature",
+    selectedWorkflowTemplateRef: "template.dynamic-single-task",
+    rationale: "Use graph metadata primitives directly instead of legacy capability candidate maps.",
+    tasks: [{
+      id: "implement-vocab",
+      name: "Implement Vocabulary Feature",
+      responsibility: "Build a simple English vocabulary learning feature.",
+      dependsOn: [],
+      templateSlotRef: "implement",
+      agentDefinitionRef: "agent.frontend-developer",
+      agentProfileRef: "profile.generated.vocab.implement",
+      instructionRefs: ["instruction.react-review"],
+      skillRefs: ["skill.react-ui"],
+      toolGrantRefs: ["tool.workspace-write"],
+      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: [],
+      outputArtifactRefs: ["artifact.vocab_feature"],
+      evaluatorProfileRef: "evaluator.vocab-quality",
+      recoveryStrategyRefs: [],
+      rationale: "A frontend developer with UI skill and workspace access can implement the requested feature.",
+    }],
+    rejectedCandidates: [],
+    generatedComponentProposals: [{
+      id: "profile.generated.vocab.implement",
+      kind: "agent_profile",
+      risk: "medium",
+      reason: "Generated from approved Postgres graph primitives.",
+      validationStatus: "validated",
+      agentProfile: {
+        workerKind: "execution_worker",
+        provider: "codex",
+        model: "gpt-5",
+        thinkingLevel: "high",
+        harnessRef: "codex",
+        instruction: "Implement the vocabulary learning feature with the selected React UI skill, workspace write tool, filesystem MCP grant, and React review instruction. Produce artifact.vocab_feature.",
+        promptTemplateRef: "react-review",
+        contextPolicyRef: "context.generated",
+        sessionPolicyRef: "session.generated",
+        memoryScopes: [],
+        agentsMdRefs: [],
+        toolPolicy: {
+          allowedTools: ["tool.workspace-write"],
+          deniedTools: [],
+          requiresApprovalFor: [],
+        },
+        budgetPolicy: {
+          maxInputTokens: 120000,
+          maxOutputTokens: 8192,
+          maxWallTimeSeconds: 900,
+        },
+        execution: {
+          engine: "tork",
+          image: "southstar/pi-agent:local",
+          command: ["southstar-agent-runner"],
+          env: {},
+          mounts: [],
+          timeoutSeconds: 900,
+          infraRetry: { maxAttempts: 1 },
+        },
+      },
+    }],
+  };
+}
+
+async function seedGraphMetadataOnlyWorkflowPrimitives(db: SouthstarDb): Promise<void> {
+  await upsertLibraryObject(db, {
+    objectKey: "template.dynamic-single-task",
+    objectKind: "workflow_template",
+    status: "approved",
+    headVersionId: "template.dynamic-single-task@1",
+    state: { scope: "software", title: "Dynamic single task" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "capability.frontend-ui",
+    objectKind: "capability_spec",
+    status: "approved",
+    headVersionId: "capability.frontend-ui@1",
+    state: { scope: "software", title: "Frontend UI" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "agent.frontend-developer",
+    objectKind: "agent_definition",
+    status: "approved",
+    headVersionId: "agent.frontend-developer@1",
+    state: {
+      scope: "software",
+      title: "Frontend Developer",
+    },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "skill.react-ui",
+    objectKind: "skill_spec",
+    status: "approved",
+    headVersionId: "skill.react-ui@1",
+    state: { scope: "software", title: "React UI" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "tool.workspace-write",
+    objectKind: "tool_definition",
+    status: "approved",
+    headVersionId: "tool.workspace-write@1",
+    state: { scope: "global", title: "Workspace Write" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "mcp.filesystem-workspace",
+    objectKind: "mcp_tool_grant",
+    status: "approved",
+    headVersionId: "mcp.filesystem-workspace@1",
+    state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "instruction.react-review",
+    objectKind: "instruction_template",
+    status: "approved",
+    headVersionId: "instruction.react-review@1",
+    state: { scope: "software", title: "React Review" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "artifact.vocab_feature",
+    objectKind: "artifact_contract",
+    status: "approved",
+    headVersionId: "artifact.vocab_feature@1",
+    state: { scope: "software", title: "Vocabulary feature artifact" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "evaluator.vocab-quality",
+    objectKind: "evaluator_profile",
+    status: "approved",
+    headVersionId: "evaluator.vocab-quality@1",
+    state: { scope: "software", title: "Vocabulary quality evaluator" },
+  });
+  await upsertLibraryEdge(db, {
+    fromObjectKey: "agent.frontend-developer",
+    edgeType: "uses",
+    toObjectKey: "skill.react-ui",
+    scope: "software",
+  });
+  await upsertLibraryEdge(db, {
+    fromObjectKey: "agent.frontend-developer",
+    edgeType: "produces_artifact",
+    toObjectKey: "artifact.vocab_feature",
+    scope: "software",
+  });
+  await upsertLibraryEdge(db, {
+    fromObjectKey: "skill.react-ui",
+    edgeType: "requires_tool",
+    toObjectKey: "tool.workspace-write",
+    scope: "software",
+  });
+  await upsertLibraryEdge(db, {
+    fromObjectKey: "skill.react-ui",
+    edgeType: "allows_mcp_grant",
+    toObjectKey: "mcp.filesystem-workspace",
+    scope: "software",
+  });
+  await upsertLibraryEdge(db, {
+    fromObjectKey: "skill.react-ui",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.react-review",
+    scope: "software",
+  });
+  await upsertLibraryEdge(db, {
+    fromObjectKey: "evaluator.vocab-quality",
+    edgeType: "validates_artifact",
+    toObjectKey: "artifact.vocab_feature",
+    scope: "software",
+  });
 }
 
 function inspectPlanTasks(explorerProfileRef: string): WorkflowCompositionPlan["tasks"] {

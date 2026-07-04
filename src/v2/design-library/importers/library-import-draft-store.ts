@@ -27,6 +27,7 @@ import {
 import {
   analyzeLibraryImportWithLlm,
   analyzeLibraryImportOntologyWithLlm,
+  type LibraryImportOntologyExistingGraph,
   type LibraryImportLlmProvider,
 } from "./library-llm-import-analyzer.ts";
 import type {
@@ -35,8 +36,8 @@ import type {
   LibraryImportEdgeType,
   LibraryImportProposedEdge,
 } from "./library-candidate-extractor.ts";
-import { findLibraryObjectByKey, upsertLibraryEdge } from "../library-graph-store.ts";
-import type { LibraryEdgeRecord, LibraryObjectSummary } from "../types.ts";
+import { findLibraryObjectByKey, listLibraryEdges, listLibraryObjects, upsertLibraryEdge } from "../library-graph-store.ts";
+import type { LibraryDefinitionKind, LibraryEdgeRecord, LibraryObjectSummary } from "../types.ts";
 
 export const LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE = "library_import_draft";
 export const LIBRARY_IMPORT_DRAFT_SCHEMA_VERSION = "southstar.library.import_draft.v1";
@@ -325,6 +326,15 @@ export async function installLibraryImportCandidates(
   try {
     const draft = await loadLibraryImportCandidateDraft(db, input.draftId);
     const selectedCandidates = selectLibraryImportCandidates(draft.candidates, input.selectedCandidateIds);
+    const existingGraph = await loadLibraryImportOntologyExistingGraph(db, selectedCandidates);
+    input.progress?.({
+      event: "library.import.existing_graph.loaded",
+      data: {
+        draftId: input.draftId,
+        nodeCount: existingGraph.nodes.length,
+        edgeCount: existingGraph.edges.length,
+      },
+    });
     input.progress?.({
       event: "library.import.ontology.started",
       data: { draftId: input.draftId, selectedCandidateCount: selectedCandidates.length },
@@ -337,6 +347,7 @@ export async function installLibraryImportCandidates(
         requestPrompt: typeof draft.payload.requestPrompt === "string" ? draft.payload.requestPrompt : undefined,
         sourceRepoPath: typeof draft.payload.sourceRepoPath === "string" ? draft.payload.sourceRepoPath : undefined,
         documents: asImportSourceDocuments(draft.payload.documents),
+        existingGraph,
       })
       : draft.proposedEdges;
     input.progress?.({
@@ -356,6 +367,7 @@ export async function installLibraryImportCandidates(
     });
     const proposedEdges = selectLibraryImportCandidateEdges(generatedEdges, {
       selectedObjectKeys: new Set(selectedCandidates.map((candidate) => candidate.objectKey)),
+      existingObjectKeys: new Set(existingGraph.nodes.map((node) => node.objectKey)),
       selectedEdgeIds: input.selectedEdgeIds,
     });
 
@@ -399,19 +411,22 @@ export async function installLibraryImportCandidates(
         };
       });
 
+      const installGeneratedAt = new Date().toISOString();
       const installedEdges = [];
       for (const edge of proposedEdges) {
         installedEdges.push(await upsertLibraryEdge(tx, {
           fromObjectKey: edge.fromObjectKey,
           edgeType: edge.edgeType,
           toObjectKey: edge.toObjectKey,
-          scope: selectedCandidates.find((candidate) => candidate.objectKey === edge.fromObjectKey)?.scope ?? "global",
+          scope: scopeForImportedEdge(edge, selectedCandidates),
           status: "active",
           weight: edge.confidence,
           metadata: {
-            source: "library-import-candidate",
+            source: input.llmProvider ? "library-import-ontology" : "library-import-candidate",
             draftId: input.draftId,
+            newObjectKeys: installedObjects.map((object) => object.objectKey),
             confidence: edge.confidence,
+            generatedAt: installGeneratedAt,
             ...(edge.rationale ? { rationale: edge.rationale } : {}),
           },
         }));
@@ -420,10 +435,10 @@ export async function installLibraryImportCandidates(
       const install = {
         actor: input.actor ?? "operator",
         reason: input.reason,
-        installedAt: new Date().toISOString(),
+        installedAt: installGeneratedAt,
         selectedCandidateIds: input.selectedCandidateIds,
         ...(input.selectedEdgeIds ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
-        generatedOntologyAt: new Date().toISOString(),
+        generatedOntologyAt: installGeneratedAt,
         installedObjectKeys: installedObjects.map((object) => object.objectKey),
         installedObjects: installedObjects.map((object) => ({
           objectKey: object.objectKey,
@@ -678,10 +693,12 @@ function selectLibraryImportCandidates(
 
 function selectLibraryImportCandidateEdges(
   proposedEdges: LibraryImportProposedEdge[],
-  input: { selectedObjectKeys: Set<string>; selectedEdgeIds?: string[] },
+  input: { selectedObjectKeys: Set<string>; existingObjectKeys?: Set<string>; selectedEdgeIds?: string[] },
 ): LibraryImportProposedEdge[] {
   const selectedEdgeIds = input.selectedEdgeIds ? new Set(input.selectedEdgeIds) : null;
   const availableEdgeIds = new Set(proposedEdges.map(libraryImportEdgeId));
+  const existingObjectKeys = input.existingObjectKeys ?? new Set<string>();
+  const allowedObjectKeys = new Set([...input.selectedObjectKeys, ...existingObjectKeys]);
   if (selectedEdgeIds) {
     for (const edgeId of selectedEdgeIds) {
       if (!availableEdgeIds.has(edgeId)) throw new Error(`library import proposed edge not found: ${edgeId}`);
@@ -689,7 +706,10 @@ function selectLibraryImportCandidateEdges(
   }
 
   return proposedEdges.filter((edge) => {
-    if (!input.selectedObjectKeys.has(edge.fromObjectKey) || !input.selectedObjectKeys.has(edge.toObjectKey)) {
+    if (!allowedObjectKeys.has(edge.fromObjectKey) || !allowedObjectKeys.has(edge.toObjectKey)) {
+      return false;
+    }
+    if (!input.selectedObjectKeys.has(edge.fromObjectKey) && !input.selectedObjectKeys.has(edge.toObjectKey)) {
       return false;
     }
     return selectedEdgeIds ? selectedEdgeIds.has(libraryImportEdgeId(edge)) : true;
@@ -698,6 +718,59 @@ function selectLibraryImportCandidateEdges(
 
 function libraryImportEdgeId(edge: LibraryImportProposedEdge): string {
   return `${edge.fromObjectKey}|${edge.edgeType}|${edge.toObjectKey}`;
+}
+
+const ONTOLOGY_GRAPH_KINDS: ReadonlySet<LibraryDefinitionKind> = new Set([
+  "agent_definition",
+  "skill_spec",
+  "tool_definition",
+  "mcp_tool_grant",
+  "vault_lease_policy",
+  "domain_taxonomy",
+]);
+
+async function loadLibraryImportOntologyExistingGraph(
+  db: SouthstarDb,
+  selectedCandidates: LibraryImportCandidate[],
+): Promise<LibraryImportOntologyExistingGraph> {
+  const selectedObjectKeys = new Set(selectedCandidates.map((candidate) => candidate.objectKey));
+  const objects = (await listLibraryObjects(db, { status: "approved" }))
+    .filter((object) => ONTOLOGY_GRAPH_KINDS.has(object.objectKind))
+    .filter((object) => !selectedObjectKeys.has(object.objectKey));
+  const objectKeys = new Set(objects.map((object) => object.objectKey));
+  const edges = (await listLibraryEdges(db, { status: "active" }))
+    .filter((edge) => objectKeys.has(edge.fromObjectKey) && objectKeys.has(edge.toObjectKey));
+
+  return {
+    nodes: objects.map((object) => ({
+      objectKey: object.objectKey,
+      objectKind: object.objectKind,
+      status: object.status,
+      title: stringFromState(object.state, "title") ?? stringFromState(object.state, "name"),
+      scope: stringFromState(object.state, "scope"),
+      summary: stringFromState(object.state, "summary") ?? stringFromState(object.state, "description"),
+      headVersionId: object.headVersionId,
+    })),
+    edges: edges.map((edge) => ({
+      fromObjectKey: edge.fromObjectKey,
+      edgeType: edge.edgeType,
+      toObjectKey: edge.toObjectKey,
+      scope: edge.scope,
+      weight: edge.weight,
+    })),
+  };
+}
+
+function scopeForImportedEdge(edge: LibraryImportProposedEdge, selectedCandidates: LibraryImportCandidate[]): string {
+  return selectedCandidates.find((candidate) => candidate.objectKey === edge.fromObjectKey)?.scope
+    ?? selectedCandidates.find((candidate) => candidate.objectKey === edge.toObjectKey)?.scope
+    ?? selectedCandidates[0]?.scope
+    ?? "global";
+}
+
+function stringFromState(state: Record<string, unknown>, key: string): string | undefined {
+  const value = state[key];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function renderLibraryImportCandidate(
@@ -940,6 +1013,7 @@ function requiredImportEdgeType(value: unknown): LibraryImportEdgeType {
     value === "complements" ||
     value === "incompatible_with" ||
     value === "requires_approval" ||
+    value === "requires_secret_group" ||
     value === "requires_secret"
   ) {
     return value;

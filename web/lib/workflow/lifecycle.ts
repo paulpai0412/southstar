@@ -27,7 +27,7 @@ export function buildPlannerDraftRequest(dag: WorkflowDag, cwd?: string | null) 
     cwd: cwd ?? undefined,
     goalPrompt: dag.prompt,
     orchestrationMode: "llm-constrained" as const,
-    composerMode: "llm-with-fixture-fallback" as const,
+    composerMode: "llm" as const,
     domainPackId: dag.templateId.includes("software") ? "software" : undefined,
     ...(dag.compositionPlan ? { compositionPlan: dag.compositionPlan } : {}),
     libraryHints: {

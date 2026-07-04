@@ -8,6 +8,17 @@ import type {
   WorkflowCompositionValidationIssue,
   WorkflowCompositionValidationResult,
 } from "../design-library/types.ts";
+import {
+  GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
+  GENERATED_AGENT_PROFILE_HARNESSES,
+  GENERATED_AGENT_PROFILE_IMAGES,
+  GENERATED_AGENT_PROFILE_MODELS,
+  GENERATED_AGENT_PROFILE_PROVIDERS,
+  GENERATED_AGENT_PROFILE_THINKING_LEVELS,
+  GENERATED_AGENT_PROFILE_WORKER_KINDS,
+  isAllowedGeneratedAgentProfileValue,
+  runtimeBindingForGeneratedProfileImage,
+} from "./generated-agent-profile-policy.ts";
 
 export type ValidateWorkflowCompositionOptions = {
   scope?: string;
@@ -365,6 +376,9 @@ function validateCandidateMembership(
         ),
       );
     }
+    if (generatedProfileSelected && validatedGeneratedAgentProfileRefs.has(task.agentProfileRef)) {
+      validateSelectedGeneratedProfileSpec(plan, task.agentProfileRef, taskIndex, issues);
+    }
 
     const selectedRefs = generatedProfileSelected
       ? [
@@ -395,6 +409,175 @@ function validateCandidateMembership(
     }
     validateGraphMetadataConflictEdges(packet, task, taskIndex, issues);
   }
+}
+
+function validateSelectedGeneratedProfileSpec(
+  plan: WorkflowCompositionPlan,
+  profileRef: string,
+  taskIndex: number,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const proposalIndex = plan.generatedComponentProposals.findIndex((candidate) => candidate.id === profileRef);
+  const proposal = proposalIndex >= 0 ? plan.generatedComponentProposals[proposalIndex] : undefined;
+  const path = `generatedComponentProposals.${proposalIndex}.agentProfile`;
+  const profile = proposal?.agentProfile;
+  if (!profile) {
+    issues.push(issue("generated_profile_missing_agent_profile", path, `selected generated profile must include agentProfile: ${profileRef}`));
+    return;
+  }
+
+  const requiredStringFields = [
+    "workerKind",
+    "provider",
+    "model",
+    "thinkingLevel",
+    "harnessRef",
+    "instruction",
+    "promptTemplateRef",
+    "contextPolicyRef",
+    "sessionPolicyRef",
+  ] as const;
+  for (const field of requiredStringFields) {
+    if (typeof profile[field] !== "string" || profile[field].trim().length === 0) {
+      issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.${field}`, `selected generated profile is missing ${field}: ${profileRef}`));
+    }
+  }
+  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_WORKER_KINDS, profile.workerKind, `${path}.workerKind`, profileRef, issues);
+  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_PROVIDERS, profile.provider, `${path}.provider`, profileRef, issues);
+  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_MODELS, profile.model, `${path}.model`, profileRef, issues);
+  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_THINKING_LEVELS, profile.thinkingLevel, `${path}.thinkingLevel`, profileRef, issues);
+  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_HARNESSES, profile.harnessRef, `${path}.harnessRef`, profileRef, issues);
+
+  for (const field of ["memoryScopes", "agentsMdRefs", "vaultLeasePolicyRefs"] as const) {
+    if (!Array.isArray(profile[field])) {
+      issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.${field}`, `selected generated profile must include ${field}: ${profileRef}`));
+    }
+  }
+
+  const toolPolicy = profile.toolPolicy;
+  for (const field of ["allowedTools", "deniedTools", "requiresApprovalFor"] as const) {
+    if (!Array.isArray(toolPolicy?.[field])) {
+      issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.toolPolicy.${field}`, `selected generated profile toolPolicy must include ${field}: ${profileRef}`));
+    }
+  }
+
+  const budgetPolicy = profile.budgetPolicy;
+  for (const field of ["maxInputTokens", "maxOutputTokens", "maxWallTimeSeconds"] as const) {
+    if (typeof budgetPolicy?.[field] !== "number" || !Number.isFinite(budgetPolicy[field])) {
+      issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.budgetPolicy.${field}`, `selected generated profile budgetPolicy must include ${field}: ${profileRef}`));
+    }
+  }
+
+  const task = plan.tasks[taskIndex];
+  if (task && !task.toolGrantRefs.every((ref) => profile.toolPolicy?.allowedTools?.includes(ref))) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.toolPolicy.allowedTools`, `selected generated profile toolPolicy must allow the task toolGrantRefs: ${profileRef}`));
+  }
+  if (task && !task.vaultLeasePolicyRefs.every((ref) => profile.vaultLeasePolicyRefs?.includes(ref))) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.vaultLeasePolicyRefs`, `selected generated profile must include the task vaultLeasePolicyRefs: ${profileRef}`));
+  }
+
+  const execution = profile.execution;
+  if (!execution) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution`, `selected generated profile must include execution: ${profileRef}`));
+    return;
+  }
+  if (execution.engine !== "tork") {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.engine`, `selected generated profile execution.engine must be tork: ${profileRef}`));
+  }
+  requireAllowedGeneratedProfileValue(["tork"], execution.engine, `${path}.execution.engine`, profileRef, issues);
+  if (typeof execution.image !== "string" || execution.image.trim().length === 0) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.image`, `selected generated profile execution must include image: ${profileRef}`));
+  }
+  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_IMAGES, execution.image, `${path}.execution.image`, profileRef, issues);
+  const binding = runtimeBindingForGeneratedProfileImage(execution.image);
+  if (binding) {
+    if (profile.provider !== binding.provider) {
+      issues.push(issue(
+        "generated_profile_invalid_value",
+        `${path}.provider`,
+        `selected generated profile provider must be ${binding.provider} for ${execution.image}: ${profileRef}`,
+      ));
+    }
+    if (profile.model !== binding.model) {
+      issues.push(issue(
+        "generated_profile_invalid_value",
+        `${path}.model`,
+        `selected generated profile model must be ${binding.model} for ${execution.image}: ${profileRef}`,
+      ));
+    }
+    if (profile.harnessRef !== binding.harnessRef) {
+      issues.push(issue(
+        "generated_profile_invalid_value",
+        `${path}.harnessRef`,
+        `selected generated profile harnessRef must be ${binding.harnessRef} for ${execution.image}: ${profileRef}`,
+      ));
+    }
+  }
+  if (!Array.isArray(execution.command) || execution.command.length === 0) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.command`, `selected generated profile execution must include command: ${profileRef}`));
+  }
+  if (Array.isArray(execution.command) && execution.command[0] !== GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT) {
+    issues.push(issue(
+      "generated_profile_invalid_value",
+      `${path}.execution.command`,
+      `selected generated profile execution.command must start with ${GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT}: ${profileRef}`,
+    ));
+  }
+  if (!execution.env || typeof execution.env !== "object" || Array.isArray(execution.env)) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.env`, `selected generated profile execution must include env object: ${profileRef}`));
+  }
+  if (!Array.isArray(execution.mounts)) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.mounts`, `selected generated profile execution must include mounts array: ${profileRef}`));
+  }
+  if (Array.isArray(execution.mounts)) {
+    for (const [mountIndex, mount] of execution.mounts.entries()) {
+      if (!mount || typeof mount !== "object" || Array.isArray(mount)) {
+        issues.push(issue("generated_profile_invalid_value", `${path}.execution.mounts.${mountIndex}`, `selected generated profile execution mount must be an object: ${profileRef}`));
+        continue;
+      }
+      const source = (mount as { source?: unknown }).source;
+      const target = (mount as { target?: unknown }).target;
+      if (typeof source !== "string" || !isHostMountSource(source)) {
+        issues.push(issue(
+          "generated_profile_invalid_value",
+          `${path}.execution.mounts.${mountIndex}.source`,
+          `selected generated profile execution mount source must be an absolute host path; workspace mounts are injected by runtime: ${profileRef}`,
+        ));
+      }
+      if (typeof target !== "string" || !target.startsWith("/")) {
+        issues.push(issue(
+          "generated_profile_invalid_value",
+          `${path}.execution.mounts.${mountIndex}.target`,
+          `selected generated profile execution mount target must be an absolute container path: ${profileRef}`,
+        ));
+      }
+    }
+  }
+  if (typeof execution.timeoutSeconds !== "number" || !Number.isFinite(execution.timeoutSeconds)) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.timeoutSeconds`, `selected generated profile execution must include timeoutSeconds: ${profileRef}`));
+  }
+  if (typeof execution.infraRetry?.maxAttempts !== "number" || !Number.isFinite(execution.infraRetry.maxAttempts)) {
+    issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.infraRetry.maxAttempts`, `selected generated profile execution must include infraRetry.maxAttempts: ${profileRef}`));
+  }
+}
+
+function isHostMountSource(value: string): boolean {
+  return value.startsWith("/") && !value.startsWith("/workspace/");
+}
+
+function requireAllowedGeneratedProfileValue(
+  allowedValues: readonly string[],
+  value: unknown,
+  path: string,
+  profileRef: string,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  if (isAllowedGeneratedAgentProfileValue(allowedValues, value)) return;
+  issues.push(issue(
+    "generated_profile_invalid_value",
+    path,
+    `selected generated profile value must be one of ${allowedValues.join(", ")}: ${profileRef}`,
+  ));
 }
 
 function validateGeneratedProfilePrimitiveMembership(
@@ -526,10 +709,10 @@ async function validateEdgeConstraints(
         `tasks.${taskIndex}.agentProfileRef`,
       );
       for (const skillRef of task.skillRefs) {
-        await requireOutgoingEdge(
+        await requireAnyOutgoingEdge(
           db,
           task.agentProfileRef,
-          "supports_skill",
+          ["uses"],
           skillRef,
           scope,
           issues,
@@ -538,10 +721,10 @@ async function validateEdgeConstraints(
         );
       }
       for (const toolRef of task.toolGrantRefs) {
-        await requireOutgoingEdge(
+        await requireAnyOutgoingEdge(
           db,
           task.agentProfileRef,
-          "allows_tool",
+          ["allows_tool", "uses"],
           toolRef,
           scope,
           issues,
@@ -550,10 +733,10 @@ async function validateEdgeConstraints(
         );
       }
       for (const mcpRef of task.mcpGrantRefs) {
-        await requireOutgoingEdge(
+        await requireAnyOutgoingEdge(
           db,
           task.agentProfileRef,
-          "allows_mcp_grant",
+          ["allows_mcp_grant", "uses"],
           mcpRef,
           scope,
           issues,
@@ -574,10 +757,10 @@ async function validateEdgeConstraints(
         );
       }
       for (const instructionRef of task.instructionRefs) {
-        await requireOutgoingEdge(
+        await requireAnyOutgoingEdge(
           db,
           task.agentProfileRef,
-          "uses_instruction",
+          ["uses_instruction", "uses"],
           instructionRef,
           scope,
           issues,
@@ -587,20 +770,22 @@ async function validateEdgeConstraints(
       }
     }
     for (const artifactRef of task.outputArtifactRefs) {
-      await requireOutgoingEdge(
-        db,
-        task.agentDefinitionRef,
-        "produces_artifact",
-        artifactRef,
-        scope,
-        issues,
-        "agent_does_not_produce_artifact",
-        `tasks.${taskIndex}.outputArtifactRefs`,
-      );
-      await requireOutgoingEdge(
+      if (!generatedProfileRefs.has(task.agentProfileRef)) {
+        await requireAnyOutgoingEdge(
+          db,
+          task.agentDefinitionRef,
+          ["produces_artifact", "produces"],
+          artifactRef,
+          scope,
+          issues,
+          "agent_does_not_produce_artifact",
+          `tasks.${taskIndex}.outputArtifactRefs`,
+        );
+      }
+      await requireAnyOutgoingEdge(
         db,
         task.evaluatorProfileRef,
-        "validates_artifact",
+        ["validates_artifact", "validates"],
         artifactRef,
         scope,
         issues,
@@ -609,6 +794,23 @@ async function validateEdgeConstraints(
       );
     }
   }
+}
+
+async function requireAnyOutgoingEdge(
+  db: SouthstarDb,
+  fromRef: string,
+  edgeTypes: readonly LibraryEdgeType[],
+  toRef: string,
+  scope: string,
+  issues: WorkflowCompositionValidationIssue[],
+  code: WorkflowCompositionValidationIssue["code"],
+  path: string,
+): Promise<void> {
+  for (const edgeType of edgeTypes) {
+    const edges = await findLibraryEdgesFrom(db, fromRef, edgeType, { scope });
+    if (edges.some((edge) => edge.toObjectKey === toRef)) return;
+  }
+  issues.push(issue(code, path, `${fromRef} does not have ${edgeTypes.join(" or ")} edge to ${toRef}`));
 }
 
 async function requireOutgoingEdge(

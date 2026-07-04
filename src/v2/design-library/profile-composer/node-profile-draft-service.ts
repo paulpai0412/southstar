@@ -53,7 +53,7 @@ export async function composeNodeProfileDraft(
     scope: input.scope,
     title: titleFromNodeId(input.nodeId),
     agentRef: input.preferredAgentRef,
-    skillRefs: await approvedEdgeRefs(db, input.preferredAgentRef, "supports_skill", "skill_spec", input.scope),
+    skillRefs: await approvedEdgeRefs(db, input.preferredAgentRef, "uses", "skill_spec", input.scope),
     toolGrantRefs: [] as string[],
     mcpGrantRefs: [] as string[],
     instructionRefs: [] as string[],
@@ -123,7 +123,7 @@ async function approvedRefsRequiredBySkills(
 async function approvedEdgeRefs(
   db: SouthstarDb,
   fromObjectKey: string,
-  edgeType: "supports_skill" | "requires_tool" | "allows_mcp_grant" | "uses_instruction",
+  edgeType: "uses" | "requires_tool" | "allows_mcp_grant" | "uses_instruction",
   expectedKind: LibraryDefinitionKind,
   scope: string,
 ): Promise<string[]> {

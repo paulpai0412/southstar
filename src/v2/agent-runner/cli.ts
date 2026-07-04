@@ -1,4 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
+import { readdir, readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "../harness/types.ts";
 import { createPiSdkAgentHarness } from "../harness/pi-sdk-harness.ts";
 import { createBuiltinAgentHarness } from "../harness/builtin-agent-harness.ts";
@@ -15,6 +16,7 @@ export async function runAgentRunnerCli(
     const refreshedEnvelope = options.contextRefreshUrl
       ? await refreshEnvelopeContext(options.contextRefreshUrl, envelope)
       : envelope;
+    await loadVaultEnvFiles(options.vaultEnvDir);
     const stopHeartbeat = startHeartbeatLoop(options, refreshedEnvelope);
     const result = await (async () => {
       try {
@@ -67,6 +69,7 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
     materializationRoot: flagValue(argv, "--materialization-root") ?? env.SOUTHSTAR_MATERIALIZATION_ROOT,
     harnessTimeoutMs: numberFromEnv(flagValue(argv, "--harness-timeout-ms") ?? env.SOUTHSTAR_HARNESS_TIMEOUT_MS),
     contextRefreshUrl: flagValue(argv, "--context-refresh-url") ?? env.SOUTHSTAR_CONTEXT_REFRESH_URL,
+    vaultEnvDir: flagValue(argv, "--vault-env-dir") ?? env.SOUTHSTAR_VAULT_ENV_DIR,
     runtimeFault: parseRuntimeFault(flagValue(argv, "--runtime-fault") ?? env.SOUTHSTAR_AGENT_RUNNER_FAULT),
   };
 }
@@ -231,6 +234,19 @@ function numberFromEnv(value: string | undefined): number | undefined {
   if (!value) return undefined;
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : undefined;
+}
+
+async function loadVaultEnvFiles(vaultEnvDir: string | undefined): Promise<void> {
+  if (!vaultEnvDir) return;
+  const entries = await readdir(vaultEnvDir, { withFileTypes: true });
+  for (const entry of entries) {
+    if (!entry.isFile()) continue;
+    if (!/^[A-Z_][A-Z0-9_]*$/.test(entry.name)) {
+      throw new Error(`invalid vault env file name: ${entry.name}`);
+    }
+    const value = await readFile(join(vaultEnvDir, entry.name), "utf8");
+    process.env[entry.name] = value;
+  }
 }
 
 function parseRuntimeFault(value: string | undefined): TaskRunnerRuntimeFault | undefined {

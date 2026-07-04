@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import type {
   CandidatePacket,
+  GeneratedAgentProfile,
+  GeneratedComponentProposal,
   WorkflowCompositionPlan,
   WorkflowCompositionTask,
   WorkflowCompositionValidationResult,
@@ -17,6 +19,7 @@ export type CompileWorkflowCompositionInput = {
   candidatePacket: CandidatePacket;
   composition: WorkflowCompositionPlan;
   scope?: string;
+  manifestDomain?: string;
 };
 
 export type OrchestrationSnapshotV1 = {
@@ -53,8 +56,9 @@ export async function compileWorkflowComposition(
   db: SouthstarDb,
   input: CompileWorkflowCompositionInput,
 ): Promise<CompiledWorkflowComposition> {
-  const scope = input.scope ?? "software";
-  const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, { scope });
+  const libraryScope = input.scope ?? "software";
+  const manifestDomain = input.manifestDomain ?? (libraryScope === "all" ? "software" : libraryScope);
+  const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, { scope: libraryScope });
   if (!validation.ok) {
     throw new Error(`workflow composition failed validation: ${JSON.stringify(validation.issues)}`);
   }
@@ -68,13 +72,14 @@ export async function compileWorkflowComposition(
       profilesByRef.get(task.agentProfileRef),
       `missing resolved profile for ${task.agentProfileRef}`,
     );
+    const execution = executionForTask(task, input.composition);
     const promptTemplateRef = normalizeInstructionRef(
       task.instructionRefs[0] ?? `instruction.${profile.promptTemplateRef}`,
     );
     return {
       id: task.id,
       name: task.name,
-      domain: scope,
+      domain: manifestDomain,
       roleRef: role.id,
       agentProfileRef: profile.id,
       dependsOn: task.dependsOn,
@@ -87,13 +92,13 @@ export async function compileWorkflowComposition(
       evaluatorPipelineRef: normalizeEvaluatorRef(task.evaluatorProfileRef),
       recoveryStrategyRefs: task.recoveryStrategyRefs,
       execution: {
-        engine: "tork",
-        image: "southstar/pi-agent:local",
-        command: ["southstar-agent-runner"],
-        env: {},
-        mounts: [],
-        timeoutSeconds: 900,
-        infraRetry: { maxAttempts: 1 },
+        engine: execution.engine ?? "tork",
+        image: execution.image,
+        command: execution.command,
+        env: execution.env,
+        mounts: execution.mounts,
+        timeoutSeconds: execution.timeoutSeconds,
+        infraRetry: { maxAttempts: execution.infraRetry.maxAttempts },
       },
       rootSession: {
         validator: "schema-evaluator-v1",
@@ -120,7 +125,7 @@ export async function compileWorkflowComposition(
     workflowId: `wf-composed-${hash(input.runId).slice(0, 12)}`,
     title: input.composition.title,
     goalPrompt: input.goalPrompt,
-    domain: scope,
+    domain: manifestDomain,
     intent: input.candidatePacket.requirementSpec.workType === "bugfix" ? "fix_bug" : "implement_feature",
     workflowGeneration: {
       planId: `composition-${planHash.slice(0, 12)}`,
@@ -136,7 +141,7 @@ export async function compileWorkflowComposition(
         kind: "pi-agent",
         entrypoint: "southstar-agent-runner",
         image: "southstar/pi-agent:local",
-        capabilities: [scope],
+        capabilities: [manifestDomain],
         inputProtocol: "task-envelope-v2",
         eventProtocol: "southstar-events-v1",
         supportsCheckpoint: true,
@@ -148,7 +153,7 @@ export async function compileWorkflowComposition(
         kind: "codex",
         entrypoint: "southstar-agent-runner",
         image: "southstar/pi-agent:local",
-        capabilities: [scope],
+        capabilities: [manifestDomain],
         inputProtocol: "task-envelope-v2",
         eventProtocol: "southstar-events-v1",
         supportsCheckpoint: true,
@@ -194,15 +199,41 @@ export async function compileWorkflowComposition(
 
 function summarizeCandidates(packet: CandidatePacket): OrchestrationSnapshotV1["candidateSummary"] {
   return {
-    workflowTemplateRefs: packet.workflowTemplateCandidates.map((candidate) => candidate.ref).sort(),
-    agentDefinitionRefs: flattenCandidateRefs(packet.agentCandidatesByCapability),
-    agentProfileRefs: flattenCandidateRefs(packet.profileCandidatesByAgent),
-    skillRefs: flattenCandidateRefs(packet.skillCandidatesByProfile),
-    toolGrantRefs: flattenCandidateRefs(packet.toolCandidatesByProfile),
-    mcpGrantRefs: flattenCandidateRefs(packet.mcpGrantCandidatesByProfile),
-    artifactContractRefs: packet.artifactContractCandidates.map((candidate) => candidate.ref).sort(),
-    evaluatorProfileRefs: flattenCandidateRefs(packet.evaluatorCandidatesByArtifact),
-    policyRefs: packet.policyConstraints.map((candidate) => candidate.ref).sort(),
+    workflowTemplateRefs: uniqueSorted([
+      ...packet.workflowTemplateCandidates.map((candidate) => candidate.ref),
+      ...graphRefsByKind(packet, "workflow_template"),
+    ]),
+    agentDefinitionRefs: uniqueSorted([
+      ...flattenCandidateRefs(packet.agentCandidatesByCapability),
+      ...graphRefsByKind(packet, "agent_definition"),
+    ]),
+    agentProfileRefs: uniqueSorted([
+      ...flattenCandidateRefs(packet.profileCandidatesByAgent),
+    ]),
+    skillRefs: uniqueSorted([
+      ...flattenCandidateRefs(packet.skillCandidatesByProfile),
+      ...graphRefsByKind(packet, "skill_spec"),
+    ]),
+    toolGrantRefs: uniqueSorted([
+      ...flattenCandidateRefs(packet.toolCandidatesByProfile),
+      ...graphRefsByKind(packet, "tool_definition"),
+    ]),
+    mcpGrantRefs: uniqueSorted([
+      ...flattenCandidateRefs(packet.mcpGrantCandidatesByProfile),
+      ...graphRefsByKind(packet, "mcp_tool_grant"),
+    ]),
+    artifactContractRefs: uniqueSorted([
+      ...packet.artifactContractCandidates.map((candidate) => candidate.ref),
+      ...graphRefsByKind(packet, "artifact_contract"),
+    ]),
+    evaluatorProfileRefs: uniqueSorted([
+      ...flattenCandidateRefs(packet.evaluatorCandidatesByArtifact),
+      ...graphRefsByKind(packet, "evaluator_profile"),
+    ]),
+    policyRefs: uniqueSorted([
+      ...packet.policyConstraints.map((candidate) => candidate.ref),
+      ...graphRefsByKind(packet, "policy_bundle"),
+    ]),
   };
 }
 
@@ -223,6 +254,11 @@ function collectSelectedVersionRefs(packet: CandidatePacket, composition: Workfl
   ]) {
     if (candidate.versionRef) {
       versionRefsByRef.set(candidate.ref, candidate.versionRef);
+    }
+  }
+  for (const node of packet.graphMetadataCandidates?.nodes ?? []) {
+    if (node.versionRef) {
+      versionRefsByRef.set(node.ref, node.versionRef);
     }
   }
 
@@ -259,6 +295,12 @@ function flattenCandidateRefs(values: Record<string, Array<{ ref: string }>>): s
   return [...new Set(Object.values(values).flat().map((candidate) => candidate.ref))].sort();
 }
 
+function graphRefsByKind(packet: CandidatePacket, kind: string): string[] {
+  return (packet.graphMetadataCandidates?.nodes ?? [])
+    .filter((node) => node.kind === kind)
+    .map((node) => node.ref);
+}
+
 type ResolvedRuntimeRoles = {
   byAgentRef: Map<string, RoleDefinition>;
   byRoleId: Map<string, RoleDefinition>;
@@ -276,10 +318,12 @@ async function resolveRuntimeRoles(db: SouthstarDb, plan: WorkflowCompositionPla
     if (byAgentRef.has(task.agentDefinitionRef)) continue;
     const agent = await findLibraryObjectByKey(db, task.agentDefinitionRef);
     const agentState = required(agent?.state, `library object not found for ${task.agentDefinitionRef}`);
-    const runtimeRole = parseRuntimeRole(
-      agentState.runtimeRole,
-      `agent definition ${task.agentDefinitionRef} state.runtimeRole`,
-    );
+    const runtimeRole = agentState.runtimeRole === undefined
+      ? synthesizeRuntimeRoleFromTask(task)
+      : parseRuntimeRole(
+        agentState.runtimeRole,
+        `agent definition ${task.agentDefinitionRef} state.runtimeRole`,
+      );
     byAgentRef.set(task.agentDefinitionRef, runtimeRole);
     byRoleId.set(runtimeRole.id, runtimeRole);
   }
@@ -288,6 +332,7 @@ async function resolveRuntimeRoles(db: SouthstarDb, plan: WorkflowCompositionPla
 
 async function resolveRuntimeProfiles(db: SouthstarDb, plan: WorkflowCompositionPlan): Promise<ResolvedRuntimeProfiles> {
   const generatedProfileRefs = validatedGeneratedAgentProfiles(plan);
+  const generatedProfileProposals = validatedGeneratedAgentProfileProposals(plan);
   const byProfileRef = new Map<string, AgentProfile>();
   const byProfileId = new Map<string, AgentProfile>();
   for (const task of plan.tasks) {
@@ -302,6 +347,7 @@ async function resolveRuntimeProfiles(db: SouthstarDb, plan: WorkflowComposition
         ? synthesizeGeneratedRuntimeProfile(
           task.agentProfileRef,
           plan.tasks.filter((candidate) => candidate.agentProfileRef === task.agentProfileRef),
+          generatedProfileProposals.get(task.agentProfileRef)?.agentProfile,
         )
         : required<AgentProfile>(null, `library object not found for ${task.agentProfileRef}`);
     byProfileRef.set(task.agentProfileRef, runtimeProfile);
@@ -318,30 +364,87 @@ function validatedGeneratedAgentProfiles(plan: WorkflowCompositionPlan): Set<str
   );
 }
 
-function synthesizeGeneratedRuntimeProfile(profileRef: string, tasks: WorkflowCompositionTask[]): AgentProfile {
+function validatedGeneratedAgentProfileProposals(plan: WorkflowCompositionPlan): Map<string, GeneratedComponentProposal> {
+  return new Map(
+    plan.generatedComponentProposals
+      .filter((proposal) => proposal.kind === "agent_profile" && proposal.validationStatus === "validated")
+      .map((proposal) => [proposal.id, proposal]),
+  );
+}
+
+function synthesizeGeneratedRuntimeProfile(
+  profileRef: string,
+  tasks: WorkflowCompositionTask[],
+  agentProfile: GeneratedAgentProfile | undefined,
+): AgentProfile {
   const firstTask = required(tasks[0], `missing task for generated profile ${profileRef}`);
+  const provider = agentProfile?.provider ?? "codex";
+  const harnessRef = agentProfile?.harnessRef ?? (provider === "pi" ? "pi" : "codex");
+  const toolPolicy = agentProfile?.toolPolicy ?? {};
+  const budgetPolicy = agentProfile?.budgetPolicy ?? {};
   return {
     id: profileRef,
     name: titleFromRef(profileRef),
-    provider: "codex",
-    model: "gpt-5",
-    harnessRef: "codex",
-    agentsMdRefs: [],
-    promptTemplateRef: normalizeInstructionRef(firstTask.instructionRefs[0] ?? profileRef),
+    agentRef: firstTask.agentDefinitionRef,
+    provider,
+    model: agentProfile?.model ?? "gpt-5",
+    ...(agentProfile?.thinkingLevel ? { thinkingLevel: agentProfile.thinkingLevel } : {}),
+    ...(agentProfile?.instruction ? { instruction: agentProfile.instruction } : {}),
+    harnessRef,
+    agentsMdRefs: uniqueSorted([firstTask.agentDefinitionRef, ...(agentProfile?.agentsMdRefs ?? [])]),
+    promptTemplateRef: agentProfile?.promptTemplateRef ?? normalizeInstructionRef(firstTask.instructionRefs[0] ?? profileRef),
     skillRefs: uniqueSorted(tasks.flatMap((task) => task.skillRefs)),
     mcpGrantRefs: uniqueSorted(tasks.flatMap((task) => task.mcpGrantRefs)),
-    memoryScopes: [],
-    contextPolicyRef: firstTask.contextPolicyRef ?? "context.generated",
-    sessionPolicyRef: "session.generated",
+    vaultLeasePolicyRefs: uniqueSorted(tasks.flatMap((task) => task.vaultLeasePolicyRefs)),
+    memoryScopes: agentProfile?.memoryScopes ?? [],
+    contextPolicyRef: agentProfile?.contextPolicyRef ?? firstTask.contextPolicyRef ?? "context.generated",
+    sessionPolicyRef: agentProfile?.sessionPolicyRef ?? "session.generated",
     toolPolicy: {
-      allowedTools: uniqueSorted(tasks.flatMap((task) => task.toolGrantRefs)),
-      deniedTools: [],
-      requiresApprovalFor: [],
+      allowedTools: toolPolicy.allowedTools ?? uniqueSorted(tasks.flatMap((task) => task.toolGrantRefs)),
+      deniedTools: toolPolicy.deniedTools ?? [],
+      requiresApprovalFor: toolPolicy.requiresApprovalFor ?? [],
     },
     budgetPolicy: {
-      maxInputTokens: 120_000,
-      maxOutputTokens: 8_192,
+      maxInputTokens: budgetPolicy.maxInputTokens ?? 120_000,
+      maxOutputTokens: budgetPolicy.maxOutputTokens ?? 8_192,
+      ...(budgetPolicy.maxCostMicrosUsd !== undefined ? { maxCostMicrosUsd: budgetPolicy.maxCostMicrosUsd } : {}),
+      ...(budgetPolicy.maxWallTimeSeconds !== undefined ? { maxWallTimeSeconds: budgetPolicy.maxWallTimeSeconds } : {}),
     },
+  };
+}
+
+function executionForTask(task: WorkflowCompositionTask, plan: WorkflowCompositionPlan): Required<NonNullable<GeneratedAgentProfile["execution"]>> {
+  const proposal = plan.generatedComponentProposals.find((candidate) =>
+    candidate.id === task.agentProfileRef && candidate.kind === "agent_profile" && candidate.validationStatus === "validated"
+  );
+  const execution = proposal?.agentProfile?.execution;
+  if (!execution) {
+    throw new Error(`selected generated agent profile is missing validated execution profile: ${task.agentProfileRef}`);
+  }
+  return {
+    engine: execution.engine ?? "tork",
+    image: required(execution.image, `missing execution image for ${task.agentProfileRef}`),
+    command: required(execution.command, `missing execution command for ${task.agentProfileRef}`),
+    env: execution.env ?? {},
+    mounts: execution.mounts?.map((mount) => ({
+      source: required(mount.source, `missing execution mount source for ${task.agentProfileRef}`),
+      target: required(mount.target, `missing execution mount target for ${task.agentProfileRef}`),
+      readonly: mount.readonly ?? false,
+    })) ?? [],
+    timeoutSeconds: execution.timeoutSeconds ?? 900,
+    infraRetry: { maxAttempts: execution.infraRetry?.maxAttempts ?? 1 },
+  };
+}
+
+function synthesizeRuntimeRoleFromTask(task: WorkflowCompositionTask): RoleDefinition {
+  return {
+    id: roleIdFromAgentRef(task.agentDefinitionRef),
+    responsibility: task.responsibility,
+    defaultAgentProfileRef: task.agentProfileRef,
+    allowedAgentProfileRefs: [task.agentProfileRef],
+    artifactInputs: task.inputArtifactRefs.map(normalizeArtifactRef),
+    artifactOutputs: task.outputArtifactRefs.map(normalizeArtifactRef),
+    stopAuthority: "can-suggest",
   };
 }
 
@@ -371,8 +474,9 @@ function parseRuntimeProfile(value: unknown, path: string): AgentProfile {
   return {
     id: stringAt(record.id, `${path}.id`),
     name: stringAt(record.name, `${path}.name`),
+    ...(record.agentRef !== undefined ? { agentRef: stringAt(record.agentRef, `${path}.agentRef`) } : {}),
     provider,
-    model: stringAt(record.model, `${path}.model`),
+    ...(record.model !== undefined ? { model: stringAt(record.model, `${path}.model`) } : {}),
     harnessRef: stringAt(record.harnessRef, `${path}.harnessRef`),
     agentsMdRefs: stringArrayAt(record.agentsMdRefs, `${path}.agentsMdRefs`),
     promptTemplateRef: stringAt(record.promptTemplateRef, `${path}.promptTemplateRef`),
@@ -459,6 +563,10 @@ function normalizeArtifactRef(artifactRef: string): string {
 
 function normalizeEvaluatorRef(evaluatorRef: string): string {
   return evaluatorRef.replace(/^evaluator\./, "");
+}
+
+function roleIdFromAgentRef(agentRef: string): string {
+  return agentRef.replace(/^agent\./, "").replace(/[^a-zA-Z0-9_-]+/g, "-") || "generated-agent";
 }
 
 function titleFromRef(ref: string): string {

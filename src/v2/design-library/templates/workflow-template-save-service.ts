@@ -7,6 +7,7 @@ export type SaveWorkflowTemplateDraftInput = {
   scope: string;
   templateId: string;
   title: string;
+  status?: "draft" | "approved";
   nodes: Array<{
     id: string;
     title: string;
@@ -32,17 +33,18 @@ const REF_PATTERNS = {
 
 export async function saveWorkflowTemplateDraft(db: SouthstarDb, input: SaveWorkflowTemplateDraftInput) {
   validateInput(input);
+  const status = input.status ?? "draft";
   const templateSlug = input.templateId.replace(/^template\./, "");
   const profileDrafts = input.nodes.map((node) => {
     const profileId = `profile.generated.${templateSlug}.${node.id}`;
     const relativePath = `profiles/generated/${templateSlug}/${node.id}.profile.yaml`;
     return {
       relativePath,
-      content: profileYaml({ ...node, profileId, scope: input.scope, templateId: input.templateId }),
+      content: profileYaml({ ...node, profileId, scope: input.scope, status, templateId: input.templateId }),
     };
   });
   const templatePath = `templates/saved/${templateSlug}.workflow.yaml`;
-  const templateDraft = { relativePath: templatePath, content: templateYaml(input, templateSlug) };
+  const templateDraft = { relativePath: templatePath, content: templateYaml({ ...input, status }, templateSlug) };
   const drafts = [...profileDrafts, templateDraft];
   validateDrafts(drafts);
 
@@ -65,13 +67,13 @@ export async function saveWorkflowTemplateDraft(db: SouthstarDb, input: SaveWork
 }
 
 function profileYaml(
-  input: SaveWorkflowTemplateDraftInput["nodes"][number] & { profileId: string; scope: string; templateId: string },
+  input: SaveWorkflowTemplateDraftInput["nodes"][number] & { profileId: string; scope: string; status: "draft" | "approved"; templateId: string },
 ): string {
   return `schemaVersion: southstar.library.generated_agent_profile_file.v1
 id: ${yamlScalar(input.profileId)}
 title: ${yamlScalar(input.title)}
 scope: ${yamlScalar(input.scope)}
-status: draft
+status: ${input.status}
 agentRef: ${yamlScalar(input.agentRef)}
 skillRefs:
 ${yamlList(input.skillRefs)}
@@ -92,7 +94,7 @@ function templateYaml(input: SaveWorkflowTemplateDraftInput, templateSlug: strin
 id: ${yamlScalar(input.templateId)}
 title: ${yamlScalar(input.title)}
 scope: ${yamlScalar(input.scope)}
-status: draft
+status: ${input.status ?? "draft"}
 libraryVersionRefs:
 ${yamlList(input.libraryVersionRefs)}
 profileRefs:

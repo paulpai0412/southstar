@@ -1,0 +1,21 @@
+schemaVersion: southstar.library.mcp_grant_file.v1
+id: mcp.github
+title: GitHub MCP
+scope: engineering
+status: approved
+serverId: github
+transport: stdio
+command: node
+args:
+  - /app/src/v2/mcp/github-server.ts
+allowedTools:
+  - get_issue
+  - list_pull_requests
+  - create_pull_request
+  - comment_on_issue
+requiredVaultLeaseRefs:
+  - vault.github-write-token
+envFromVault:
+  - name: GITHUB_TOKEN
+    leaseRef: vault.github-write-token
+

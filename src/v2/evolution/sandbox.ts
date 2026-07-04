@@ -3,6 +3,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
+import { createManagedContextAssembler } from "../context/managed-context-assembler.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
 import { withMaterializationMount } from "../executor/materialization-mount.ts";
@@ -10,8 +11,6 @@ import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runt
 import { createExecutorBindingPg } from "../executor/postgres-bindings.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import { buildContextPacketWithKnowledgeCards } from "../context/postgres-builder.ts";
-import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
 import { createLearningEdge, createLearningNode } from "./learning-graph.ts";
 
 export type SandboxExperimentInput = {
@@ -153,23 +152,16 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
         rootSessionId: sessionId,
         snapshot: { roleRef: task.roleRef, agentProfileRef: task.agentProfileRef },
       });
-      await buildContextPacketWithKnowledgeCards(db, {
+      const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+      const assembly = await assembler.buildForTask({
         runId: sandboxRunId,
         taskId: task.id,
-        rootSessionId: sessionId,
-        goalPrompt: workflow.goalPrompt,
-        domainPack: softwareDomainPack,
-        roleRef: task.roleRef,
-        agentProfileRef: task.agentProfileRef,
-        artifactContractRefs: task.requiredArtifactRefs,
-        priorArtifactRefs: [],
-        intent: workflow.intent,
-        flowTemplateRef: "software.workflow.feature-implementation",
-        promptTemplateRef: task.promptTemplateRef,
-        skillRefs: task.skillRefs,
+        sessionId,
+        attemptId: `sandbox-${variant}-1`,
+        handExecutionId: `hand-execution:${sandboxRunId}:${task.id}:sandbox-${variant}-1`,
+        dependsOn: task.dependsOn,
       });
-      const envelope = await getPostgresTaskEnvelope(db, { runId: sandboxRunId, taskId: task.id });
-      await materializeTaskEnvelope(envelope, { runRoot });
+      await materializeTaskEnvelope(assembly.taskEnvelope, { runRoot });
     }
 
     await upsertRuntimeResourcePg(db, {

@@ -56,6 +56,7 @@ export function LibraryChatWindow({
   const [frames, setFrames] = useState<LibrarySseFrame[]>([]);
   const [running, setRunning] = useState(false);
   const [draftStatuses, setDraftStatuses] = useState<Record<string, "draft" | "approving" | "approved" | "installing" | "installed">>({});
+  const [installedObjectKeys, setInstalledObjectKeys] = useState<string[]>([]);
   const modelControls = useLibraryModelControls();
   const [toolPreset, setToolPreset] = useState<"none" | "default" | "full">("default");
   const [thinkingLevel, setThinkingLevel] = useState<LibraryThinkingLevel>("auto");
@@ -65,6 +66,18 @@ export function LibraryChatWindow({
   const handleModelChange = useCallback((provider: string, modelId: string) => {
     modelControls.setSelectedModel({ provider, modelId });
   }, [modelControls]);
+
+  const refreshInstalledObjectKeys = useCallback(async () => {
+    try {
+      const graph = await readLibraryGraph("all");
+      const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+      setInstalledObjectKeys(nodes
+        .map((node) => isRecord(node) ? stringField(node, "objectKey") : "")
+        .filter(isString));
+    } catch {
+      setInstalledObjectKeys([]);
+    }
+  }, []);
 
   const submitText = useCallback(async (prompt: string) => {
     const text = prompt.trim();
@@ -90,6 +103,7 @@ export function LibraryChatWindow({
           if (frame.event === "library.import.candidates" && draftId) {
             draftSessionIdsRef.current[draftId] = sessionId;
             setDraftStatuses((current) => ({ ...current, [draftId]: "draft" }));
+            void refreshInstalledObjectKeys();
             const candidateCount = Array.isArray(frame.data.candidates) ? frame.data.candidates.length : 0;
             onSessionActivity?.({
               id: sessionId,
@@ -207,6 +221,10 @@ export function LibraryChatWindow({
       }
       onLibraryChanged?.();
       const graph = await readLibraryGraph(scope);
+      const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+      setInstalledObjectKeys(nodes
+        .map((node) => isRecord(node) ? stringField(node, "objectKey") : "")
+        .filter(isString));
       setFrames((current) => [...current, {
         event: "library.ontology.graph",
         data: graph,
@@ -330,6 +348,7 @@ export function LibraryChatWindow({
                       candidates={toImportCandidates(frame.data.candidates)}
                       proposedEdges={toProposedEdges(frame.data.proposedEdges)}
                       status={candidateStatus(draftStatuses[frame.data.draftId] ?? "draft")}
+                      installedObjectKeys={installedObjectKeys}
                       onInstall={(selectedCandidateIds) => void installCandidates(frame.data.draftId as string, selectedCandidateIds)}
                     />
                   ) : frame.event === "library.proposal.created" && typeof frame.data.draftId === "string" ? (

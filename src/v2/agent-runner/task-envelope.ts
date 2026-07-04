@@ -21,6 +21,39 @@ export type McpGrantInput = {
   allowedTools: string[];
 };
 
+export type McpRuntimeConfig = {
+  schemaVersion: "southstar.mcp_runtime_config.v1";
+  runId: string;
+  taskId: string;
+  servers: McpRuntimeServerConfig[];
+  policy: {
+    failClosed: true;
+    secretsMaterializedByVault: true;
+    configContainsSecretValues: false;
+  };
+};
+
+export type McpRuntimeServerConfig = {
+  serverId: string;
+  transport: "stdio";
+  allowedTools: string[];
+  command: {
+    argv: string[];
+    cwd?: string;
+  };
+  env?: Record<string, string>;
+  envFromVault: Array<{
+    name: string;
+    leaseRef: string;
+    key?: string;
+  }>;
+  configFiles?: Array<{
+    path: string;
+    leaseRef?: string;
+    readonly?: boolean;
+  }>;
+};
+
 export type TaskEnvelopeInput = {
   runId: string;
   taskId: string;
@@ -80,6 +113,7 @@ export type TaskEnvelopeV2 = {
   agentPrompt: string;
   skills: ResolvedSkillSnapshot[];
   mcpGrants: McpGrantInput[];
+  mcpRuntimeConfig?: McpRuntimeConfig;
   vaultLeases: Array<Omit<VaultLeaseInput, "secretValue">>;
   toolProxyPolicy?: ToolProxyPolicyPayload;
   materializedLibraryRefs?: {
@@ -225,7 +259,7 @@ function formatRuntimeGrantContract(input: {
     "Runtime grants:",
     "The task bundle is mounted read-only under /southstar-runs/<runId>/<taskId> in the container.",
     "Use tools and MCP servers only when they are granted here. These entries are grant policy, not bundled tool or MCP server implementations.",
-    "Grant files can include: agent-profile/profile.json, context-packet.json, runtime-manifest.json, tools/tool-policy.json, mcp/grants.json, skills/<skillId>/SKILL.md.",
+    "Grant files can include: agent-profile/profile.json, context-packet.json, runtime-manifest.json, tools/tool-policy.json, mcp/grants.json, mcp/runtime-config.json, skills/<skillId>/SKILL.md.",
   ];
   if (input.toolProxyPolicy) {
     lines.push(`Allowed tools: ${input.toolProxyPolicy.allowedTools.length > 0 ? input.toolProxyPolicy.allowedTools.join(", ") : "none"}.`);

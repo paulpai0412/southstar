@@ -52,7 +52,6 @@ await import("./library-constrained-regression.test.ts");
 await import("./evolution-api.test.ts");
 await import("./evolution-assets.test.ts");
 await import("./evolution-cards.test.ts");
-await import("./evolution-context-builder-postgres.test.ts");
 await import("./evolution-context-cards.test.ts");
 await import("./evolution-deltas.test.ts");
 await import("./evolution-learning-graph.test.ts");

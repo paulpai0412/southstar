@@ -644,32 +644,32 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
   },
   {
     fromObjectKey: "profile.software-explorer-codex",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.software-repo-discovery",
   },
   {
     fromObjectKey: "profile.software-spec-reviewer-codex",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.software-spec-review",
   },
   {
     fromObjectKey: "profile.software-maker-pi",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.software-implementation",
   },
   {
     fromObjectKey: "profile.software-checker-codex",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.software-verification",
   },
   {
     fromObjectKey: "profile.software-code-quality-reviewer-codex",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.software-code-quality-review",
   },
   {
     fromObjectKey: "profile.software-summarizer-codex",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.software-summary",
   },
   { fromObjectKey: "profile.software-explorer-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },

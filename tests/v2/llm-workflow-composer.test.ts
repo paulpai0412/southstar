@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import type { CandidatePacket, CandidateSummary, WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
+import type { CandidatePacket, CandidateSummary, GeneratedAgentProfile, WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
 import {
   LlmComposerOutputError,
   LlmWorkflowComposer,
@@ -26,13 +26,20 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.equal(prompts.length, 1);
   assert.match(prompts[0] ?? "", /OutputJsonSchema:/);
   assert.match(prompts[0] ?? "", /Do not use alias fields/i);
-  assert.match(prompts[0] ?? "", /SkillGuidance:/);
-  assert.match(prompts[0] ?? "", /smallest sufficient DAG/i);
+  assert.doesNotMatch(prompts[0] ?? "", /SkillGuidance:/);
+  assert.match(prompts[0] ?? "", /DagAndAgentProfileSop:/);
+  assert.match(prompts[0] ?? "", /Choose task count and workerKind dynamically/i);
+  assert.match(prompts[0] ?? "", /Do not add fixed worker nodes/i);
+  assert.match(prompts[0] ?? "", /agentProfile\.execution must include all Docker\/Tork worker input/);
+  assert.match(prompts[0] ?? "", /provider=pi, harnessRef=pi, and model=pi-agent-default/i);
+  assert.match(prompts[0] ?? "", /Never pair provider=codex or harnessRef=codex with southstar\/pi-agent:local/i);
+  assert.doesNotMatch(prompts[0] ?? "", /agentSpec/);
   assert.match(prompts[0] ?? "", /GraphMetadataCandidates:/);
   assert.match(prompts[0] ?? "", /Use GraphMetadataCandidates as the direct source of selectable refs/);
   assert.match(prompts[0] ?? "", /agent\.frontend-developer/);
-  assert.match(prompts[0] ?? "", /supports_skill/);
-  assert.match(prompts[0] ?? "", /skill-map-candidate\.keep-0 profile=skill-map\.keep-key-0 role=explorer artifacts=artifact\.implementation_plan/);
+  assert.match(prompts[0] ?? "", /uses/);
+  assert.match(prompts[0] ?? "", /ProfilePrimitiveCandidates:/);
+  assert.match(prompts[0] ?? "", /"agents":\["agent\.frontend-developer"\]/);
   assert.match(prompts[0] ?? "", /CandidatePacket:/);
   assert.match(prompts[0] ?? "", /template.keep-19/);
   assert.doesNotMatch(prompts[0] ?? "", /template.drop-20/);
@@ -80,11 +87,8 @@ test("LLM composer parser accepts strict contract payload", () => {
   assert.equal(parsed.title, "Dynamic Mock Plan");
   assert.deepEqual(parsed.tasks.map((task) => task.id), [
     "understand-repo",
-    "review-spec",
     "implement-feature",
     "verify-feature",
-    "review-code-quality",
-    "summarize-completion",
   ]);
 });
 
@@ -142,6 +146,24 @@ test("LLM composer parser rejects alias-based payload instead of patching it", (
   );
 });
 
+test("LLM composer parser rejects Codex profiles on the Pi agent runtime image", () => {
+  const plan = validPlan();
+  const profile = plan.generatedComponentProposals[0]!.agentProfile!;
+  profile.provider = "codex";
+  profile.model = "gpt-5-codex";
+  profile.harnessRef = "codex";
+
+  assert.throws(
+    () => parseWorkflowCompositionPlanFromText(JSON.stringify(plan), 20_000),
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues.some((issue) =>
+        issue.code === "composer_output_schema_violation"
+        && issue.path === "generatedComponentProposals.0.agentProfile.harnessRef"
+      ),
+  );
+});
+
 test("LLM composer parser rejects unexpected properties in task", () => {
   const plan = validPlan();
   const task = { ...plan.tasks[0], aliasField: "nope" };
@@ -187,32 +209,21 @@ function validPlan(): WorkflowCompositionPlan {
       task(
         "understand-repo",
         [],
-        "agent.software-explorer",
-        "profile.software-explorer-codex",
-        ["skill.software-repo-discovery"],
+        "agent.frontend-developer",
+        "generated.profile.vocab-feature-executor",
+        ["skill.react-ui"],
         ["tool.workspace-read"],
         ["instruction.software-explorer"],
         ["artifact.implementation_plan"],
         "evaluator.software-plan-quality",
       ),
       task(
-        "review-spec",
-        ["understand-repo"],
-        "agent.software-spec-reviewer",
-        "profile.software-spec-reviewer-codex",
-        ["skill.software-spec-review"],
-        ["tool.workspace-read"],
-        ["instruction.software-spec-reviewer"],
-        ["artifact.implementation_plan"],
-        "evaluator.software-plan-quality",
-      ),
-      task(
         "implement-feature",
-        ["review-spec"],
-        "agent.software-maker",
-        "profile.software-maker-pi",
-        ["skill.software-implementation"],
-        ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
+        ["understand-repo"],
+        "agent.frontend-developer",
+        "generated.profile.vocab-feature-executor",
+        ["skill.react-ui"],
+        ["tool.workspace-write"],
         ["instruction.software-maker"],
         ["artifact.implementation_report"],
         "evaluator.software-feature-quality",
@@ -220,39 +231,73 @@ function validPlan(): WorkflowCompositionPlan {
       task(
         "verify-feature",
         ["implement-feature"],
-        "agent.software-checker",
-        "profile.software-checker-codex",
-        ["skill.software-verification"],
-        ["tool.workspace-read", "tool.shell-command"],
+        "agent.frontend-developer",
+        "generated.profile.vocab-feature-validator",
+        ["skill.react-ui"],
+        ["tool.workspace-read"],
         ["instruction.software-checker"],
         ["artifact.verification_report"],
         "evaluator.software-verification-quality",
       ),
-      task(
-        "review-code-quality",
-        ["implement-feature"],
-        "agent.software-code-quality-reviewer",
-        "profile.software-code-quality-reviewer-codex",
-        ["skill.software-code-quality-review"],
-        ["tool.workspace-read", "tool.shell-command"],
-        ["instruction.software-code-quality-reviewer"],
-        ["artifact.verification_report"],
-        "evaluator.software-verification-quality",
-      ),
-      task(
-        "summarize-completion",
-        ["verify-feature", "review-code-quality"],
-        "agent.software-summarizer",
-        "profile.software-summarizer-codex",
-        ["skill.software-summary"],
-        ["tool.workspace-read"],
-        ["instruction.software-summarizer"],
-        ["artifact.completion_report"],
-        "evaluator.software-completion-quality",
-      ),
     ],
     rejectedCandidates: [],
-    generatedComponentProposals: [],
+    generatedComponentProposals: [
+      generatedProfileProposal(
+        "generated.profile.vocab-feature-executor",
+        agentProfile("execution_worker", ["tool.workspace-read", "tool.workspace-write"]),
+      ),
+      generatedProfileProposal(
+        "generated.profile.vocab-feature-validator",
+        agentProfile("validation_worker", ["tool.workspace-read"]),
+      ),
+    ],
+  };
+}
+
+function generatedProfileProposal(id: string, spec: GeneratedAgentProfile) {
+  return {
+    id,
+    kind: "agent_profile" as const,
+    risk: "low" as const,
+    reason: `generated ${id}`,
+    validationStatus: "validated" as const,
+    agentProfile: spec,
+  };
+}
+
+function agentProfile(workerKind: GeneratedAgentProfile["workerKind"], allowedTools: string[]): GeneratedAgentProfile {
+  return {
+    workerKind,
+    provider: "pi",
+    model: "pi-agent-default",
+    thinkingLevel: workerKind === "validation_worker" ? "minimal" : "medium",
+    harnessRef: "pi",
+    instruction: `${workerKind} for the requested feature. Use selected graph-backed skills and tools only.`,
+    promptTemplateRef: "instruction.software-maker",
+    contextPolicyRef: "context.generated",
+    sessionPolicyRef: "session.generated",
+    memoryScopes: [],
+    agentsMdRefs: ["AGENTS.md"],
+    vaultLeasePolicyRefs: [],
+    toolPolicy: {
+      allowedTools,
+      deniedTools: [],
+      requiresApprovalFor: [],
+    },
+    budgetPolicy: {
+      maxInputTokens: 120000,
+      maxOutputTokens: 8192,
+      maxWallTimeSeconds: 3600,
+    },
+    execution: {
+      engine: "tork",
+      image: "southstar/pi-agent:local",
+      command: ["southstar-agent-runner"],
+      env: {},
+      mounts: [],
+      timeoutSeconds: 3600,
+      infraRetry: { maxAttempts: 1 },
+    },
   };
 }
 
@@ -306,12 +351,12 @@ function candidatePacket(): CandidatePacket {
       ...Array.from({ length: 3 }, (_value, index) => candidate(`template.drop-${20 + index}`, "workflow_template")),
     ],
     agentCandidatesByCapability: candidateMap("agent-map", "agent-map-candidate", "agent_definition"),
-    profileCandidatesByAgent: candidateMap("profile-map", "profile-map-candidate", "agent_profile"),
-    skillCandidatesByProfile: candidateMap("skill-map", "skill-map-candidate", "skill_definition"),
-    toolCandidatesByProfile: candidateMap("tool-map", "tool-map-candidate", "tool_definition"),
-    mcpGrantCandidatesByProfile: candidateMap("mcp-map", "mcp-map-candidate", "mcp_tool_grant"),
-    vaultLeaseCandidatesByProfile: candidateMap("vault-map", "vault-map-candidate", "vault_lease_policy"),
-    instructionCandidatesByProfile: candidateMap("instruction-map", "instruction-map-candidate", "instruction_template"),
+    profileCandidatesByAgent: {},
+    skillCandidatesByProfile: {},
+    toolCandidatesByProfile: {},
+    mcpGrantCandidatesByProfile: {},
+    vaultLeaseCandidatesByProfile: {},
+    instructionCandidatesByProfile: {},
     artifactContractCandidates: [
       ...Array.from({ length: 50 }, (_value, index) => candidate(`artifact.keep-${index}`, "artifact_contract")),
       ...Array.from({ length: 2 }, (_value, index) => candidate(`artifact.drop-${50 + index}`, "artifact_contract")),
@@ -327,12 +372,25 @@ function candidatePacket(): CandidatePacket {
       nodes: [
         { ref: "agent.frontend-developer", kind: "agent_definition", status: "approved", versionRef: "agent.frontend-developer@1", scope: "software", title: "Frontend Developer", aliases: [] },
         { ref: "skill.react-ui", kind: "skill_spec", status: "approved", versionRef: "skill.react-ui@1", scope: "software", title: "React UI", aliases: [] },
+        { ref: "tool.workspace-read", kind: "tool_definition", status: "approved", versionRef: "tool.workspace-read@1", scope: "global", title: "Workspace Read", aliases: [] },
         { ref: "tool.workspace-write", kind: "tool_definition", status: "approved", versionRef: "tool.workspace-write@1", scope: "global", title: "Workspace Write", aliases: [] },
+        { ref: "instruction.software-maker", kind: "instruction_template", status: "approved", versionRef: "instruction.software-maker@1", scope: "software", title: "Software Maker", aliases: [] },
+        { ref: "instruction.software-checker", kind: "instruction_template", status: "approved", versionRef: "instruction.software-checker@1", scope: "software", title: "Software Checker", aliases: [] },
       ],
       edges: [
-        { from: "agent.frontend-developer", type: "supports_skill", to: "skill.react-ui", scope: "software", weight: 1 },
+        { from: "agent.frontend-developer", type: "uses", to: "skill.react-ui", scope: "software", weight: 1 },
+        { from: "skill.react-ui", type: "requires_tool", to: "tool.workspace-read", scope: "software", weight: 1 },
         { from: "skill.react-ui", type: "requires_tool", to: "tool.workspace-write", scope: "software", weight: 1 },
+        { from: "skill.react-ui", type: "uses_instruction", to: "instruction.software-maker", scope: "software", weight: 1 },
+        { from: "skill.react-ui", type: "uses_instruction", to: "instruction.software-checker", scope: "software", weight: 1 },
       ],
+    },
+    profilePrimitiveCandidates: {
+      agents: ["agent.frontend-developer"],
+      skills: ["skill.react-ui"],
+      tools: ["tool.workspace-read", "tool.workspace-write"],
+      mcpGrants: [],
+      instructions: ["instruction.software-maker", "instruction.software-checker"],
     },
     unavailableRequirements: [],
   };

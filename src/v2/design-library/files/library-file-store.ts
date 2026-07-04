@@ -28,6 +28,7 @@ const SUPPORTED_LIBRARY_FILE_SUFFIXES = [
   ".skill.md",
   ".tool.yaml",
   ".mcp.yaml",
+  ".vault.yaml",
   ".profile.yaml",
   ".workflow.yaml",
 ];
@@ -37,6 +38,7 @@ const OBJECT_KIND_BY_FILE_KIND: Record<LibraryFileRecord["kind"], LibraryDefinit
   skill: "skill_spec",
   tool: "tool_definition",
   mcp: "mcp_tool_grant",
+  vault: "vault_lease_policy",
   generated_profile: "agent_profile",
   workflow_template: "workflow_template",
 };
@@ -50,7 +52,7 @@ const EDGE_REF_PROJECTIONS: Array<{ key: string; edgeType: LibraryEdgeType }> = 
   { key: "toolGrantRefs", edgeType: "allows_tool" },
   { key: "requiresMcpRefs", edgeType: "allows_mcp_grant" },
   { key: "mcpGrantRefs", edgeType: "allows_mcp_grant" },
-  { key: "skillRefs", edgeType: "supports_skill" },
+  { key: "skillRefs", edgeType: "uses" },
   { key: "instructionRefs", edgeType: "uses_instruction" },
 ];
 
@@ -325,6 +327,7 @@ function inferObjectKind(objectKey: string): LibraryDefinitionKind {
   if (objectKey.startsWith("skill.")) return "skill_spec";
   if (objectKey.startsWith("template.")) return "workflow_template";
   if (objectKey.startsWith("tool.")) return "tool_definition";
+  if (objectKey.startsWith("vault.")) return "vault_lease_policy";
   throw new Error(`unsupported referenced object key prefix: ${objectKey}`);
 }
 

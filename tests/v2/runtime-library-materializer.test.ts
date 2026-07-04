@@ -29,8 +29,70 @@ test("runtime library materializer resolves instruction, skill, tool, MCP, and v
     assert.deepEqual(materialized.toolProxyPolicy.allowedTools, ["shell", "workspace-read", "workspace-write"]);
     assert.equal(materialized.mcpGrants[0]?.serverId, "filesystem-workspace");
     assert.deepEqual(materialized.mcpGrants[0]?.allowedTools, ["read_file", "write_file", "list_files"]);
+    assert.equal(materialized.mcpRuntimeConfig.schemaVersion, "southstar.mcp_runtime_config.v1");
+    assert.equal(materialized.mcpRuntimeConfig.servers[0]?.serverId, "filesystem-workspace");
+    assert.equal(materialized.mcpRuntimeConfig.servers[0]?.transport, "stdio");
+    assert.deepEqual(materialized.mcpRuntimeConfig.servers[0]?.command, {
+      argv: ["node", "/app/src/v2/mcp/filesystem-workspace-server.ts"],
+      cwd: "/workspace/repo",
+    });
+    assert.deepEqual(materialized.mcpRuntimeConfig.servers[0]?.envFromVault, []);
     assert.equal(materialized.vaultLeases[0]?.leaseRef, "vault.github-write-token");
     assert.doesNotMatch(JSON.stringify(materialized), /plaintextSecret/i);
+    assert.doesNotMatch(JSON.stringify(materialized.mcpRuntimeConfig), /ghp_|postgres:\/\/|GITHUB_TOKEN=.*secret/i);
+  } finally {
+    await db.close();
+  }
+});
+
+test("runtime library materializer keeps MCP credentials as vault references", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "mcp.github",
+      objectKind: "mcp_tool_grant",
+      status: "approved",
+      headVersionId: "mcp.github@1",
+      state: {
+        serverId: "github",
+        allowedTools: ["get_issue", "create_pull_request"],
+        transport: "stdio",
+        command: "node",
+        args: ["/app/src/v2/mcp/github-server.ts"],
+        envFromVault: [{ name: "GITHUB_TOKEN", leaseRef: "vault.github-write-token" }],
+      },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "vault.github-write-token",
+      objectKind: "vault_lease_policy",
+      status: "approved",
+      headVersionId: "vault.github-write-token@1",
+      state: {
+        displayName: "GitHub Write Token",
+        secretGroupRef: "github.write",
+        leaseTtlSeconds: 900,
+        mountMode: "proxy-only",
+      },
+    });
+
+    const materialized = await materializeTaskLibraryRefs(db, {
+      runId: "run-materializer-github",
+      taskId: "task-github",
+      sessionId: "session-materializer-github",
+      instructionRefs: [],
+      skillRefs: [],
+      toolGrantRefs: [],
+      mcpGrantRefs: ["mcp.github"],
+      vaultLeasePolicyRefs: ["vault.github-write-token"],
+    });
+
+    assert.deepEqual(materialized.mcpRuntimeConfig.servers[0]?.envFromVault, [{
+      name: "GITHUB_TOKEN",
+      leaseRef: "vault.github-write-token",
+    }]);
+    assert.equal(materialized.mcpRuntimeConfig.policy.secretsMaterializedByVault, true);
+    assert.equal(materialized.vaultLeases[0]?.leaseRef, "vault.github-write-token");
+    assert.doesNotMatch(JSON.stringify(materialized), /"secretValue"\s*:|ghp_|github_pat_/i);
   } finally {
     await db.close();
   }

@@ -1,12 +1,23 @@
 import type {
   CandidatePacket,
-  CandidateSummary,
   LibraryDefinitionKind,
   WorkflowCompositionPlan,
   WorkflowCompositionTask,
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
+import {
+  GENERATED_AGENT_PROFILE_ALLOWED_VALUES,
+  GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
+  GENERATED_AGENT_PROFILE_HARNESSES,
+  GENERATED_AGENT_PROFILE_IMAGES,
+  GENERATED_AGENT_PROFILE_MODELS,
+  GENERATED_AGENT_PROFILE_PROVIDERS,
+  GENERATED_AGENT_PROFILE_THINKING_LEVELS,
+  GENERATED_AGENT_PROFILE_WORKER_KINDS,
+  isAllowedGeneratedAgentProfileValue,
+  runtimeBindingForGeneratedProfileImage,
+} from "./generated-agent-profile-policy.ts";
 
 export type LlmTextClient = {
   generateText(input: { model: string; prompt: string; temperature?: number }): Promise<string>;
@@ -142,6 +153,100 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         risk: { type: "string", enum: ["low", "medium", "high"] },
         reason: { type: "string", minLength: 1 },
         validationStatus: { type: "string", enum: ["validated", "unvalidated"] },
+        agentProfile: { $ref: "#/$defs/agentProfile" },
+      },
+    },
+    agentProfile: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "workerKind",
+        "provider",
+        "model",
+        "thinkingLevel",
+        "harnessRef",
+        "instruction",
+        "promptTemplateRef",
+        "contextPolicyRef",
+        "sessionPolicyRef",
+        "memoryScopes",
+        "agentsMdRefs",
+        "vaultLeasePolicyRefs",
+        "toolPolicy",
+        "budgetPolicy",
+        "execution",
+      ],
+      properties: {
+        workerKind: { type: "string", enum: [...GENERATED_AGENT_PROFILE_WORKER_KINDS] },
+        provider: { type: "string", enum: [...GENERATED_AGENT_PROFILE_PROVIDERS] },
+        model: { type: "string", enum: [...GENERATED_AGENT_PROFILE_MODELS] },
+        thinkingLevel: { type: "string", enum: [...GENERATED_AGENT_PROFILE_THINKING_LEVELS] },
+        harnessRef: { type: "string", enum: [...GENERATED_AGENT_PROFILE_HARNESSES] },
+        instruction: { type: "string", minLength: 1 },
+        promptTemplateRef: { type: "string", minLength: 1 },
+        contextPolicyRef: { type: "string", minLength: 1 },
+        sessionPolicyRef: { type: "string", minLength: 1 },
+        memoryScopes: { type: "array", items: { type: "string", minLength: 1 } },
+        agentsMdRefs: { type: "array", items: { type: "string", minLength: 1 } },
+        vaultLeasePolicyRefs: { type: "array", items: { type: "string", minLength: 1 } },
+        toolPolicy: {
+          type: "object",
+          additionalProperties: false,
+          required: ["allowedTools", "deniedTools", "requiresApprovalFor"],
+          properties: {
+            allowedTools: { type: "array", items: { type: "string", minLength: 1 } },
+            deniedTools: { type: "array", items: { type: "string", minLength: 1 } },
+            requiresApprovalFor: { type: "array", items: { type: "string", minLength: 1 } },
+          },
+        },
+        budgetPolicy: {
+          type: "object",
+          additionalProperties: false,
+          required: ["maxInputTokens", "maxOutputTokens", "maxWallTimeSeconds"],
+          properties: {
+            maxInputTokens: { type: "number" },
+            maxOutputTokens: { type: "number" },
+            maxCostMicrosUsd: { type: "number" },
+            maxWallTimeSeconds: { type: "number" },
+          },
+        },
+        execution: {
+          type: "object",
+          additionalProperties: false,
+          required: ["engine", "image", "command", "env", "mounts", "timeoutSeconds", "infraRetry"],
+          properties: {
+            engine: { type: "string", enum: ["tork"] },
+            image: { type: "string", enum: [...GENERATED_AGENT_PROFILE_IMAGES] },
+            command: {
+              type: "array",
+              minItems: 1,
+              prefixItems: [{ const: "southstar-agent-runner" }],
+              items: { type: "string", minLength: 1 },
+            },
+            env: { type: "object", additionalProperties: { type: "string" } },
+            mounts: {
+              type: "array",
+              items: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  source: { type: "string", minLength: 1 },
+                  target: { type: "string", minLength: 1 },
+                  readonly: { type: "boolean" },
+                },
+              },
+            },
+            timeoutSeconds: { type: "number" },
+            infraRetry: {
+              type: "object",
+              additionalProperties: false,
+              required: ["maxAttempts"],
+              properties: {
+                maxAttempts: { type: "number" },
+              },
+            },
+          },
+        },
       },
     },
   },
@@ -216,19 +321,30 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Do not return markdown, comments, prose, or multiple JSON objects.",
     "Do not use alias fields. Use exactly the property names defined in OutputJsonSchema.",
     "Select refs only from the candidate packet.",
-    "Do not output runtime manifests, secrets, credentials, tool grant definitions, MCP grant definitions, or vault lease values.",
+    "Do not output runtime manifests, secrets, credentials, tool grant definitions, MCP grant definitions, or vault lease values. Vault may appear only as vaultLeasePolicyRefs selected from graph nodes.",
     "Use GraphMetadataCandidates as the direct source of selectable refs for DAG tasks and generated profiles.",
-    "Every selected agentDefinitionRef, agentProfileRef, skillRef, toolGrantRef, mcpGrantRef, instructionRef, artifact ref, and evaluator ref must come from GraphMetadataCandidates.nodes when that packet is present.",
-    "Use GraphMetadataCandidates.edges to justify profile closure: agent supports skill, skill requires tools, skill allows MCP grants, and skill uses instructions.",
-    "You may propose a generated agent profile only by combining refs from profilePrimitiveCandidates.",
-    "When selecting a generated profile, include it in generatedComponentProposals with kind agent_profile and validationStatus validated.",
+    "When GraphMetadataCandidates is present, selected agentDefinitionRef, skillRef, toolGrantRef, mcpGrantRef, instructionRef, artifact ref, and evaluator ref must come from GraphMetadataCandidates.nodes.",
+    "Do not select stored agent_profile refs from the library. For every DAG task, create a generated agent profile id and include it in generatedComponentProposals as kind agent_profile with validationStatus validated.",
+    "Use GraphMetadataCandidates.edges to justify profile closure: agent uses skill, skill requires tools, skill allows MCP grants, and skill uses instructions.",
+    "You may propose a generated agent profile only by combining refs from profilePrimitiveCandidates and GraphMetadataCandidates.",
+    "When selecting a generated profile, include it in generatedComponentProposals with kind agent_profile, validationStatus validated, and agentProfile.",
+    "Each agentProfile must define the workerKind, provider, model, thinkingLevel/effort, harnessRef host adapter, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, toolPolicy, budgetPolicy, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, and execution.",
+    "agentProfile.execution must include all Docker/Tork worker input needed by the compiler: engine, image, command, env, mounts, timeoutSeconds, and infraRetry.",
+    "Use only values from GeneratedAgentProfileAllowedValues for workerKind, provider, model, thinkingLevel, harnessRef, execution.engine, execution.image, and execution.command[0].",
+    "Use harnessRef as the host adapter. For the current runtime image southstar/pi-agent:local, every generated profile must use provider=pi, harnessRef=pi, and model=pi-agent-default.",
+    "Never pair provider=codex or harnessRef=codex with southstar/pi-agent:local. Codex requires a different runtime image that is not currently in GeneratedAgentProfileAllowedValues.",
+    "Design for harness engineering: choose workerKind per task from execution_worker, validation_worker, repair_worker, or review_worker based on the goal, risk, and required artifacts.",
+    "For workflows that create or modify artifacts, include a positive validation path with validation_worker, review_worker, deterministic checks, or another graph-justified verifier. Do not add fixed worker nodes when the goal does not require them.",
+    "Validation-oriented agent profiles may use a lightweight/no-reasoning model profile when deterministic shell/test verification is sufficient, but must still include provider, harnessRef, instruction, toolPolicy, and budgetPolicy.",
+    "If validation can fail, encode a repair loop in the DAG: the validation task produces an error/report artifact, and a downstream repair/execution task consumes that artifact, fixes the issue, and is followed by another validation task. Keep the loop bounded by explicit tasks rather than cycles.",
+    "The generated profile instruction must explain the worker's exact responsibility, selected skills/tools/MCP grants, success criteria, and what artifact/error report it must produce.",
     "Generated component proposals are proposal-only unless they are validated agent_profile proposals selected as agentProfileRef.",
-    "Use SkillGuidance as workflow-shaping guidance. Prefer the smallest sufficient DAG; add review or summary nodes only when the skill guidance and task risk justify them.",
+    "Use DagAndAgentProfileSop as the mandatory generation procedure.",
     "",
     `Goal: ${goalPrompt}`,
     "",
-    "SkillGuidance:",
-    renderSkillGuidance(boundedPacket),
+    "DagAndAgentProfileSop:",
+    renderDagAndAgentProfileSop(),
     "",
     "ProfilePrimitiveCandidates:",
     JSON.stringify(boundedPacket.profilePrimitiveCandidates ?? {
@@ -247,6 +363,9 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
       edges: [],
     }),
     "",
+    "GeneratedAgentProfileAllowedValues:",
+    JSON.stringify(GENERATED_AGENT_PROFILE_ALLOWED_VALUES),
+    "",
     "OutputJsonSchema:",
     JSON.stringify(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA),
     "",
@@ -255,42 +374,24 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
   ].join("\n");
 }
 
-function renderSkillGuidance(packet: CandidatePacket): string {
-  const lines: string[] = [];
-  const seenRefs = new Set<string>();
-
-  for (const [profileRef, candidates] of Object.entries(packet.skillCandidatesByProfile)) {
-    for (const candidate of candidates) {
-      if (seenRefs.has(candidate.ref)) continue;
-      seenRefs.add(candidate.ref);
-      const guidance = skillGuidanceLine(profileRef, candidate);
-      if (guidance) lines.push(guidance);
-      if (lines.length >= 40) return lines.join("\n");
-    }
-  }
-
-  return lines.length > 0
-    ? lines.join("\n")
-    : "- No skill instructions were available; select the smallest valid workflow from approved candidate refs.";
-}
-
-function skillGuidanceLine(profileRef: string, candidate: CandidateSummary): string | null {
-  const instructions = typeof candidate.state.instructions === "string"
-    ? truncateForPrompt(candidate.state.instructions, 900)
-    : "";
-  const role = typeof candidate.state.role === "string" && candidate.state.role.length > 0
-    ? ` role=${candidate.state.role}`
-    : "";
-  const artifactContracts = Array.isArray(candidate.state.artifactContracts)
-    ? candidate.state.artifactContracts.filter((value): value is string => typeof value === "string" && value.length > 0).slice(0, 8)
-    : [];
-  const contracts = artifactContracts.length > 0 ? ` artifacts=${artifactContracts.join(",")}` : "";
-  if (!instructions && !role && !contracts) return null;
-  return `- ${candidate.ref} profile=${profileRef}${role}${contracts}: ${instructions}`;
-}
-
-function truncateForPrompt(value: string, maxLength: number): string {
-  return value.length <= maxLength ? value : `${value.slice(0, maxLength - 3)}...`;
+function renderDagAndAgentProfileSop(): string {
+  return [
+    "1. Interpret the user goal as the source of requirements, acceptance criteria, risk, and required deliverables.",
+    "2. Use GraphMetadataCandidates.nodes and GraphMetadataCandidates.edges as the only library candidate source. Build a task-specific candidate subgraph by semantic fit to the goal and by edge closure.",
+    "3. Do not select stored agent_profile refs. Every task must use a generated profile id, and that id must appear in generatedComponentProposals as kind agent_profile with validationStatus validated.",
+    "4. Design a DAG, not a manifest. Use explicit dependsOn edges. Choose task count and workerKind dynamically from the goal, graph evidence, risk, and deliverables.",
+    "5. Execution workers create or modify requested artifacts. Validation, review, or deterministic-check workers positively verify artifacts when the workflow creates or modifies them.",
+    "6. If validation can fail, add bounded repair flow using explicit nodes: validation produces an error/report artifact, a downstream repair/execution worker consumes that artifact, and a following validation worker verifies the repaired output. Never create cyclic dependencies.",
+    "7. For each task, choose agentDefinitionRef, skillRefs, toolGrantRefs, mcpGrantRefs, instructionRefs, evaluatorProfileRef, inputArtifactRefs, and outputArtifactRefs from the graph.",
+    "8. Verify graph closure before output: selected agent must support selected skills; selected skills must include required tools, MCP grants, and instructions through edges; evaluator must validate output artifacts; conflicting/incompatible edges must not be selected together.",
+    "9. For each generated profile, output a complete agentProfile that the compiler can materialize into Docker worker input agent-profile/profile.json and task execution.",
+    "10. Each agentProfile must include workerKind, provider, model, thinkingLevel, harnessRef, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, toolPolicy, budgetPolicy, and execution.",
+    "11. agentProfile.execution must include engine=tork, image, command, env, mounts, timeoutSeconds, and infraRetry.maxAttempts. Use an empty mounts array for workspace access; Southstar runtime injects the real host workspace mount from the task envelope. Never output source=\"workspace\" or container paths as mount sources.",
+    "11a. When agentProfile.execution.image is southstar/pi-agent:local, set provider=pi, harnessRef=pi, and model=pi-agent-default. Do not output codex provider or codex harness for this image.",
+    "12. The agentProfile.instruction must be worker-specific and must name the selected skills/tools/MCP grants, success criteria, produced artifact, and failure/error-report behavior.",
+    "13. toolPolicy.allowedTools must include every task.toolGrantRefs entry. agentProfile.vaultLeasePolicyRefs must include every task.vaultLeasePolicyRefs entry. budgetPolicy must include maxInputTokens, maxOutputTokens, and maxWallTimeSeconds.",
+    "14. Prefer the smallest DAG that satisfies execution, positive validation, and bounded repair. Add review or summary workers only when risk or graph evidence justifies them.",
+  ].join("\n");
 }
 
 function validateStrictWorkflowCompositionPlan(value: unknown): WorkflowCompositionValidationIssue[] {
@@ -428,7 +529,7 @@ function validateGeneratedComponentProposal(
   }
   validateObjectShape(
     value,
-    ["id", "kind", "risk", "reason", "validationStatus"],
+    ["id", "kind", "risk", "reason", "validationStatus", "agentProfile"],
     ["id", "kind", "risk", "reason", "validationStatus"],
     path,
     issues,
@@ -456,6 +557,200 @@ function validateGeneratedComponentProposal(
       ),
     );
   }
+  if (value.agentProfile !== undefined) {
+    validateAgentProfile(value.agentProfile, `${path}.agentProfile`, issues);
+  }
+}
+
+function validateAgentProfile(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  if (!isRecord(value) || Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "agentProfile must be an object"));
+    return;
+  }
+  validateObjectShape(
+    value,
+    [
+      "workerKind",
+      "provider",
+      "model",
+      "thinkingLevel",
+      "harnessRef",
+      "instruction",
+      "promptTemplateRef",
+      "contextPolicyRef",
+      "sessionPolicyRef",
+      "memoryScopes",
+      "agentsMdRefs",
+      "vaultLeasePolicyRefs",
+      "toolPolicy",
+      "budgetPolicy",
+      "execution",
+    ],
+    [
+      "workerKind",
+      "provider",
+      "model",
+      "thinkingLevel",
+      "harnessRef",
+      "instruction",
+      "promptTemplateRef",
+      "contextPolicyRef",
+      "sessionPolicyRef",
+      "memoryScopes",
+      "agentsMdRefs",
+      "vaultLeasePolicyRefs",
+      "toolPolicy",
+      "budgetPolicy",
+      "execution",
+    ],
+    path,
+    issues,
+  );
+  for (const field of ["workerKind", "provider", "model", "thinkingLevel", "harnessRef", "instruction", "promptTemplateRef", "contextPolicyRef", "sessionPolicyRef"]) {
+    if (value[field] !== undefined) requireString(value[field], `${path}.${field}`, issues);
+  }
+  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_WORKER_KINDS, value.workerKind, `${path}.workerKind`, issues);
+  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_PROVIDERS, value.provider, `${path}.provider`, issues);
+  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_MODELS, value.model, `${path}.model`, issues);
+  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_THINKING_LEVELS, value.thinkingLevel, `${path}.thinkingLevel`, issues);
+  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_HARNESSES, value.harnessRef, `${path}.harnessRef`, issues);
+  const image = isRecord(value.execution) ? value.execution.image : undefined;
+  const binding = runtimeBindingForGeneratedProfileImage(image);
+  if (binding) {
+    if (value.provider !== binding.provider) {
+      issues.push(issue("composer_output_schema_violation", `${path}.provider`, `must be ${binding.provider} for ${String(image)}`));
+    }
+    if (value.model !== binding.model) {
+      issues.push(issue("composer_output_schema_violation", `${path}.model`, `must be ${binding.model} for ${String(image)}`));
+    }
+    if (value.harnessRef !== binding.harnessRef) {
+      issues.push(issue("composer_output_schema_violation", `${path}.harnessRef`, `must be ${binding.harnessRef} for ${String(image)}`));
+    }
+  }
+  for (const field of ["memoryScopes", "agentsMdRefs", "vaultLeasePolicyRefs"]) {
+    if (value[field] !== undefined) requireStringArray(value[field], `${path}.${field}`, issues);
+  }
+  if (value.toolPolicy !== undefined) {
+    validatePolicyStringArrays(
+      value.toolPolicy,
+      `${path}.toolPolicy`,
+      ["allowedTools", "deniedTools", "requiresApprovalFor"],
+      ["allowedTools", "deniedTools", "requiresApprovalFor"],
+      issues,
+    );
+  }
+  if (value.budgetPolicy !== undefined) {
+    validateBudgetPolicy(value.budgetPolicy, `${path}.budgetPolicy`, issues, ["maxInputTokens", "maxOutputTokens", "maxWallTimeSeconds"]);
+  }
+  if (value.execution !== undefined) {
+    validateExecutionSpec(value.execution, `${path}.execution`, issues);
+  }
+}
+
+function validatePolicyStringArrays(
+  value: unknown,
+  path: string,
+  fields: string[],
+  requiredFields: string[],
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  if (!isRecord(value) || Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "must be an object"));
+    return;
+  }
+  validateObjectShape(value, fields, requiredFields, path, issues);
+  for (const field of fields) {
+    if (value[field] !== undefined) requireStringArray(value[field], `${path}.${field}`, issues);
+  }
+}
+
+function validateBudgetPolicy(
+  value: unknown,
+  path: string,
+  issues: WorkflowCompositionValidationIssue[],
+  requiredFields: string[] = [],
+): void {
+  if (!isRecord(value) || Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "must be an object"));
+    return;
+  }
+  const fields = ["maxInputTokens", "maxOutputTokens", "maxCostMicrosUsd", "maxWallTimeSeconds"];
+  validateObjectShape(value, fields, requiredFields, path, issues);
+  for (const field of fields) {
+    if (value[field] !== undefined && (typeof value[field] !== "number" || !Number.isFinite(value[field]))) {
+      issues.push(issue("composer_output_schema_violation", `${path}.${field}`, "must be a finite number"));
+    }
+  }
+}
+
+function validateExecutionSpec(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  if (!isRecord(value) || Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "must be an object"));
+    return;
+  }
+  validateObjectShape(
+    value,
+    ["engine", "image", "command", "env", "mounts", "timeoutSeconds", "infraRetry"],
+    ["engine", "image", "command", "env", "mounts", "timeoutSeconds", "infraRetry"],
+    path,
+    issues,
+  );
+  if (value.engine !== undefined && value.engine !== "tork") {
+    issues.push(issue("composer_output_schema_violation", `${path}.engine`, "must be tork"));
+  }
+  requireAllowedAgentProfileValue(["tork"], value.engine, `${path}.engine`, issues);
+  for (const field of ["image"] as const) {
+    if (value[field] !== undefined) requireString(value[field], `${path}.${field}`, issues);
+  }
+  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_IMAGES, value.image, `${path}.image`, issues);
+  if (value.command !== undefined) requireStringArray(value.command, `${path}.command`, issues);
+  if (Array.isArray(value.command) && value.command[0] !== GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT) {
+    issues.push(issue("composer_output_schema_violation", `${path}.command`, `must start with ${GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT}`));
+  }
+  if (value.env !== undefined && (!isRecord(value.env) || Object.values(value.env).some((item) => typeof item !== "string"))) {
+    issues.push(issue("composer_output_schema_violation", `${path}.env`, "must be an object with string values"));
+  }
+  if (value.mounts !== undefined && !Array.isArray(value.mounts)) {
+    issues.push(issue("composer_output_schema_violation", `${path}.mounts`, "must be an array"));
+  }
+  if (Array.isArray(value.mounts)) {
+    for (const [index, mount] of value.mounts.entries()) {
+      if (!isRecord(mount) || Array.isArray(mount)) {
+        issues.push(issue("composer_output_schema_violation", `${path}.mounts.${index}`, "must be an object"));
+        continue;
+      }
+      validateObjectShape(mount, ["source", "target", "readonly"], [], `${path}.mounts.${index}`, issues);
+      if (mount.source !== undefined) requireString(mount.source, `${path}.mounts.${index}.source`, issues);
+      if (mount.target !== undefined) requireString(mount.target, `${path}.mounts.${index}.target`, issues);
+      if (mount.readonly !== undefined && typeof mount.readonly !== "boolean") {
+        issues.push(issue("composer_output_schema_violation", `${path}.mounts.${index}.readonly`, "must be a boolean"));
+      }
+    }
+  }
+  if (value.timeoutSeconds !== undefined && (typeof value.timeoutSeconds !== "number" || !Number.isFinite(value.timeoutSeconds))) {
+    issues.push(issue("composer_output_schema_violation", `${path}.timeoutSeconds`, "must be a finite number"));
+  }
+  if (value.infraRetry !== undefined) {
+    if (!isRecord(value.infraRetry) || Array.isArray(value.infraRetry)) {
+      issues.push(issue("composer_output_schema_violation", `${path}.infraRetry`, "must be an object"));
+    } else {
+      validateObjectShape(value.infraRetry, ["maxAttempts"], ["maxAttempts"], `${path}.infraRetry`, issues);
+      if (value.infraRetry.maxAttempts !== undefined && (typeof value.infraRetry.maxAttempts !== "number" || !Number.isFinite(value.infraRetry.maxAttempts))) {
+        issues.push(issue("composer_output_schema_violation", `${path}.infraRetry.maxAttempts`, "must be a finite number"));
+      }
+    }
+  }
+}
+
+function requireAllowedAgentProfileValue(
+  allowedValues: readonly string[],
+  value: unknown,
+  path: string,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  if (value === undefined) return;
+  if (isAllowedGeneratedAgentProfileValue(allowedValues, value)) return;
+  issues.push(issue("composer_output_schema_violation", path, `must be one of: ${allowedValues.join(", ")}`));
 }
 
 function validateObjectShape(

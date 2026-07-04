@@ -91,7 +91,7 @@ test("workflow composition rejects generated profiles with invalid primitive gra
     const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
 
     assert.equal(validation.ok, false);
-    assert.equal(validation.issues.some((issue) => issue.code === "agent_does_not_support_skill"), true);
+    assert.equal(validation.issues.some((issue) => issue.code === "agent_does_not_use_skill"), true);
   } finally {
     await db.close();
   }
@@ -134,7 +134,7 @@ test("workflow composition rejects generated profile that ignores graph metadata
     });
     await upsertLibraryEdge(db, {
       fromObjectKey: "agent.frontend-developer",
-      edgeType: "supports_skill",
+      edgeType: "uses",
       toObjectKey: "skill.legacy-ui",
       scope: "software",
     });
@@ -155,6 +155,200 @@ test("workflow composition rejects generated profile that ignores graph metadata
 
     assert.equal(validation.ok, false);
     assert.equal(validation.issues.some((issue) => issue.code === "conflicting_refs"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow composition allows generated profiles to produce task artifacts without primitive agent artifact edge", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    await db.query(
+      `delete from southstar.library_edges
+       where from_object_key = $1 and edge_type = $2 and to_object_key = $3`,
+      ["agent.frontend-developer", "produces_artifact", "artifact.todo_app"],
+    );
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, generatedProfilePlan(), { scope: "software" });
+
+    assert.equal(validation.ok, true);
+    assert.deepEqual(validation.issues, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow composition accepts generated profile skill closure through ontology uses edge", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    await db.query(
+      `delete from southstar.library_edges
+       where from_object_key = $1 and edge_type = $2 and to_object_key = $3`,
+      ["agent.frontend-developer", "uses", "skill.react-ui"],
+    );
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "uses",
+      toObjectKey: "skill.react-ui",
+      scope: "software",
+    });
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, generatedProfilePlan(), { scope: "software" });
+
+    assert.equal(validation.ok, true);
+    assert.deepEqual(validation.issues, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow composition accepts current ontology validates artifact edge for generated profiles", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    await db.query(
+      `update southstar.library_edges
+       set edge_type = 'validates'
+       where from_object_key = $1 and edge_type = 'validates_artifact' and to_object_key = $2`,
+      ["evaluator.todo-quality", "artifact.todo_app"],
+    );
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, generatedProfilePlan(), { scope: "software" });
+
+    assert.equal(validation.ok, true);
+    assert.deepEqual(validation.issues, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow composition rejects generated agent profile values outside runtime allowlist", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+    const plan = generatedProfilePlan();
+    const profile = plan.generatedComponentProposals[0]!.agentProfile!;
+    profile.workerKind = "unknown_worker" as never;
+    profile.provider = "unknown-provider" as never;
+    profile.model = "unknown-model";
+    profile.thinkingLevel = "too-much-thinking";
+    profile.harnessRef = "unknown-harness" as never;
+    profile.execution!.image = "unknown/image:latest";
+    profile.execution!.command = ["node", "script.js"];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
+
+    assert.equal(validation.ok, false);
+    assert.equal(
+      validation.issues.some((issue) =>
+        issue.code === "generated_profile_invalid_value"
+        && issue.path === "generatedComponentProposals.0.agentProfile.execution.command"
+      ),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow composition rejects Codex generated profiles on the Pi agent runtime image", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+    const plan = generatedProfilePlan();
+    const profile = plan.generatedComponentProposals[0]!.agentProfile!;
+    profile.provider = "codex";
+    profile.model = "gpt-5-codex";
+    profile.harnessRef = "codex";
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
+
+    assert.equal(validation.ok, false);
+    assert.equal(
+      validation.issues.some((issue) =>
+        issue.code === "generated_profile_invalid_value"
+        && issue.path === "generatedComponentProposals.0.agentProfile.harnessRef"
+      ),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow composition rejects generated profile logical workspace mount sources", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+    const plan = generatedProfilePlan();
+    plan.generatedComponentProposals[0]!.agentProfile!.execution!.mounts = [{
+      source: "workspace",
+      target: "/workspace",
+      readonly: false,
+    }];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
+
+    assert.equal(validation.ok, false);
+    assert.equal(
+      validation.issues.some((issue) =>
+        issue.code === "generated_profile_invalid_value"
+        && issue.path === "generatedComponentProposals.0.agentProfile.execution.mounts.0.source"
+      ),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow composition rejects generated profile images unavailable in the local runtime", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+    const plan = generatedProfilePlan();
+    plan.generatedComponentProposals[0]!.agentProfile!.execution!.image = "southstar/codex-agent:local";
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
+
+    assert.equal(validation.ok, false);
+    assert.equal(
+      validation.issues.some((issue) =>
+        issue.code === "generated_profile_invalid_value"
+        && issue.path === "generatedComponentProposals.0.agentProfile.execution.image"
+      ),
+      true,
+    );
   } finally {
     await db.close();
   }
@@ -206,6 +400,39 @@ function generatedProfilePlan(): WorkflowCompositionPlan {
       risk: "medium",
       reason: "Generated from approved graph primitives.",
       validationStatus: "validated",
+      agentProfile: {
+        workerKind: "execution_worker",
+        provider: "pi",
+        model: "pi-agent-default",
+        thinkingLevel: "high",
+        harnessRef: "pi",
+        instruction: "Implement the todo web app using the approved React UI skill, workspace write tool, filesystem MCP grant, and React review instruction. Produce artifact.todo_app.",
+        promptTemplateRef: "react-review",
+        contextPolicyRef: "context.generated",
+        sessionPolicyRef: "session.generated",
+        memoryScopes: [],
+        agentsMdRefs: [],
+        vaultLeasePolicyRefs: [],
+        toolPolicy: {
+          allowedTools: ["tool.workspace-write"],
+          deniedTools: [],
+          requiresApprovalFor: [],
+        },
+        budgetPolicy: {
+          maxInputTokens: 120000,
+          maxOutputTokens: 8192,
+          maxWallTimeSeconds: 900,
+        },
+        execution: {
+          engine: "tork",
+          image: "southstar/pi-agent:local",
+          command: ["southstar-agent-runner"],
+          env: {},
+          mounts: [],
+          timeoutSeconds: 900,
+          infraRetry: { maxAttempts: 1 },
+        },
+      },
     }],
   };
 }
@@ -294,7 +521,7 @@ async function seedDynamicPrimitives(db: Awaited<ReturnType<typeof createTestPos
   });
   await upsertLibraryEdge(db, {
     fromObjectKey: "agent.frontend-developer",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.react-ui",
     scope: "software",
   });

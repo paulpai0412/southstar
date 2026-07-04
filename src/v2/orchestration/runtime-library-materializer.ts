@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
 import type { LibraryDefinitionKind, LibraryObjectSummary } from "../design-library/types.ts";
-import type { McpGrantInput, VaultLeaseInput } from "../agent-runner/task-envelope.ts";
+import type { McpGrantInput, McpRuntimeConfig, McpRuntimeServerConfig, VaultLeaseInput } from "../agent-runner/task-envelope.ts";
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import type { ToolProxyPolicyPayload } from "../tool-proxy/types.ts";
 
@@ -32,6 +32,7 @@ export type MaterializeTaskLibraryRefsResult = {
   skills: ResolvedSkillSnapshot[];
   toolProxyPolicy: ToolProxyPolicyPayload;
   mcpGrants: McpGrantInput[];
+  mcpRuntimeConfig: McpRuntimeConfig;
   vaultLeases: Array<Omit<VaultLeaseInput, "secretValue">>;
 };
 
@@ -104,12 +105,17 @@ export async function materializeTaskLibraryRefs(
   };
 
   const mcpGrants: McpGrantInput[] = [];
+  const mcpRuntimeServers: McpRuntimeServerConfig[] = [];
+  const selectedVaultRefs = new Set(unique(input.vaultLeasePolicyRefs));
   for (const mcpGrantRef of unique(input.mcpGrantRefs)) {
     const object = await approvedObject(db, mcpGrantRef, "mcp_tool_grant");
+    const serverId = stringField(object.state, "serverId");
+    const allowedTools = stringArray(object.state, "allowedTools");
     mcpGrants.push({
-      serverId: stringField(object.state, "serverId"),
-      allowedTools: stringArray(object.state, "allowedTools"),
+      serverId,
+      allowedTools,
     });
+    mcpRuntimeServers.push(mcpRuntimeServerConfig(object, { serverId, allowedTools, selectedVaultRefs }));
   }
 
   const vaultLeases: Array<Omit<VaultLeaseInput, "secretValue">> = [];
@@ -129,6 +135,17 @@ export async function materializeTaskLibraryRefs(
     skills,
     toolProxyPolicy,
     mcpGrants,
+    mcpRuntimeConfig: {
+      schemaVersion: "southstar.mcp_runtime_config.v1",
+      runId: input.runId,
+      taskId: input.taskId,
+      servers: mcpRuntimeServers,
+      policy: {
+        failClosed: true,
+        secretsMaterializedByVault: true,
+        configContainsSecretValues: false,
+      },
+    },
     vaultLeases,
   };
 }
@@ -183,6 +200,131 @@ function optionalStringArray(state: Record<string, unknown>, field: string): str
 function optionalStringField(state: Record<string, unknown>, field: string): string | undefined {
   const value = state[field];
   return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function mcpRuntimeServerConfig(
+  object: LibraryObjectSummary,
+  input: { serverId: string; allowedTools: string[]; selectedVaultRefs: Set<string> },
+): McpRuntimeServerConfig {
+  const transport = optionalStringField(object.state, "transport") ?? "stdio";
+  if (transport !== "stdio") {
+    throw new Error(`unsupported MCP transport for ${object.objectKey}: ${transport}`);
+  }
+  const command = mcpCommand(object.state, input.serverId);
+  const envFromVault = mcpEnvFromVault(object.state, object.objectKey);
+  for (const envBinding of envFromVault) {
+    if (!input.selectedVaultRefs.has(envBinding.leaseRef)) {
+      throw new Error(`MCP server ${input.serverId} requires vault lease ${envBinding.leaseRef}`);
+    }
+  }
+  const env = stringRecord(object.state, "env");
+  for (const key of Object.keys(env)) {
+    if (FORBIDDEN_DIRECT_ENV_KEYS.includes(key)) {
+      throw new Error(`MCP server ${input.serverId} cannot directly define secret env ${key}; use envFromVault`);
+    }
+  }
+  const configFiles = mcpConfigFiles(object.state, object.objectKey);
+  const config: McpRuntimeServerConfig = {
+    serverId: input.serverId,
+    transport,
+    allowedTools: input.allowedTools,
+    command,
+    envFromVault,
+  };
+  if (Object.keys(env).length > 0) config.env = env;
+  if (configFiles.length > 0) config.configFiles = configFiles;
+  return config;
+}
+
+function mcpCommand(state: Record<string, unknown>, serverId: string): McpRuntimeServerConfig["command"] {
+  const explicitCommand = optionalStringField(state, "command");
+  const defaults = explicitCommand ? { command: explicitCommand, args: [] } : defaultMcpCommand(serverId);
+  const command = explicitCommand ?? defaults.command;
+  const args = optionalStringArray(state, "args");
+  const cwd = optionalStringField(state, "cwd");
+  const result: McpRuntimeServerConfig["command"] = {
+    argv: [command, ...(args.length > 0 ? args : defaults.args)],
+  };
+  const resolvedCwd = cwd ?? defaults.cwd;
+  if (resolvedCwd) result.cwd = resolvedCwd;
+  return result;
+}
+
+function defaultMcpCommand(serverId: string): { command: string; args: string[]; cwd?: string } {
+  if (serverId === "filesystem-workspace") {
+    return {
+      command: "node",
+      args: ["/app/src/v2/mcp/filesystem-workspace-server.ts"],
+      cwd: "/workspace/repo",
+    };
+  }
+  throw new Error(`missing MCP command for ${serverId}`);
+}
+
+function mcpEnvFromVault(
+  state: Record<string, unknown>,
+  objectKey: string,
+): McpRuntimeServerConfig["envFromVault"] {
+  const value = state.envFromVault;
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`invalid envFromVault for ${objectKey}`);
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`invalid envFromVault.${index} for ${objectKey}`);
+    }
+    const record = item as Record<string, unknown>;
+    const name = requiredString(record, "name", `envFromVault.${index}.name`);
+    const leaseRef = requiredString(record, "leaseRef", `envFromVault.${index}.leaseRef`);
+    const key = optionalStringField(record, "key");
+    const binding: McpRuntimeServerConfig["envFromVault"][number] = { name, leaseRef };
+    if (key) binding.key = key;
+    return binding;
+  });
+}
+
+function mcpConfigFiles(
+  state: Record<string, unknown>,
+  objectKey: string,
+): NonNullable<McpRuntimeServerConfig["configFiles"]> {
+  const value = state.configFiles;
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) throw new Error(`invalid configFiles for ${objectKey}`);
+  return value.map((item, index) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`invalid configFiles.${index} for ${objectKey}`);
+    }
+    const record = item as Record<string, unknown>;
+    const path = requiredString(record, "path", `configFiles.${index}.path`);
+    const leaseRef = optionalStringField(record, "leaseRef");
+    const readonly = typeof record.readonly === "boolean" ? record.readonly : undefined;
+    return {
+      path,
+      ...(leaseRef ? { leaseRef } : {}),
+      ...(readonly !== undefined ? { readonly } : {}),
+    };
+  });
+}
+
+function stringRecord(state: Record<string, unknown>, field: string): Record<string, string> {
+  const value = state[field];
+  if (value === undefined) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`invalid ${field}`);
+  }
+  const result: Record<string, string> = {};
+  for (const [key, item] of Object.entries(value)) {
+    if (typeof item !== "string") throw new Error(`invalid ${field}.${key}`);
+    result[key] = item;
+  }
+  return result;
+}
+
+function requiredString(state: Record<string, unknown>, field: string, label = field): string {
+  const value = state[field];
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(`invalid ${label}`);
+  }
+  return value;
 }
 
 function skillInstructions(state: Record<string, unknown>): string {

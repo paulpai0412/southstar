@@ -1,9 +1,41 @@
 FROM node:24-bookworm-slim
 
 WORKDIR /app
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends \
+    bash \
+    ca-certificates \
+    curl \
+    wget \
+    git \
+    git-lfs \
+    gh \
+    openssh-client \
+    jq \
+    ripgrep \
+    python3 \
+    python3-pip \
+    python3-venv \
+    make \
+    gcc \
+    g++ \
+    pkg-config \
+    patch \
+    tar \
+    unzip \
+    zip \
+    rsync \
+  && git lfs install --system \
+  && npm install -g pnpm \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY package.json package-lock.json ./
 RUN npm ci --ignore-scripts
+RUN npx playwright install --with-deps chromium \
+  && chmod -R 755 /ms-playwright \
+  && rm -rf /var/lib/apt/lists/*
 
 COPY src ./src
 

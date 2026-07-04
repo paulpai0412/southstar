@@ -20,6 +20,7 @@ export type LibraryImportEdgeType =
   | "complements"
   | "incompatible_with"
   | "requires_approval"
+  | "requires_secret_group"
   | "requires_secret";
 
 export type LibraryImportCandidate = {

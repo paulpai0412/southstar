@@ -77,7 +77,7 @@ test("Southstar v2 production no longer carries SQLite/local API source", () => 
   assert.deepEqual(matches, []);
 
   const forbiddenNewCode = productionFiles
-    .filter((file) => /src\/v2\/(db|evolution|context\/postgres-builder|ui-api\/postgres|inspection\/postgres|read-models\/postgres|stores\/postgres)/.test(file))
+    .filter((file) => /src\/v2\/(db|evolution|ui-api\/postgres|inspection\/postgres|read-models\/postgres|stores\/postgres)/.test(file))
     .filter((file) => sqlitePattern.test(readFileSync(join(root, file), "utf8")));
   assert.deepEqual(forbiddenNewCode, []);
 });

@@ -6,7 +6,6 @@ import type {
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
-import type { DomainPack } from "../domain-packs/types.ts";
 import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
 import { materializeGenerationPlan } from "../workflow-generator/materialize.ts";
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
@@ -25,7 +24,6 @@ import {
   getResourceByKeyPg,
   upsertRuntimeResourcePg,
 } from "../stores/postgres-runtime-store.ts";
-import { buildContextPacketWithKnowledgeCards } from "../context/postgres-builder.ts";
 import {
   patchPlannerDraftTaskProfileOverridePg,
   type PatchPlannerDraftTaskProfileOverrideInput,
@@ -41,6 +39,8 @@ export type {
 const PLANNER_DRAFT_STATUS_VALIDATED = "validated";
 const PLANNER_DRAFT_STATUS_INVALID = "invalid";
 const PLANNER_DRAFT_STATUS_NEEDS_VALIDATION = "needs_validation";
+const WORKFLOW_LIBRARY_SCOPE = "all";
+const WORKFLOW_MANIFEST_DOMAIN = "software";
 
 export type PostgresPlannerDraftResult = {
   draftId: string;
@@ -394,7 +394,7 @@ function plannerRequestOrchestrationMode(value: unknown): PlannerDraftRequestCon
 }
 
 function plannerRequestComposerMode(value: unknown): WorkflowComposerMode | undefined {
-  return value === "fixture" || value === "llm" || value === "llm-with-fixture-fallback" ? value : undefined;
+  return value === "llm" ? value : undefined;
 }
 
 function stringArrayValue(value: unknown): string[] | undefined {
@@ -421,7 +421,7 @@ async function createPlannerDraftFromComposition(
   input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
   const candidatePacket = await resolveWorkflowCandidates(db, {
     requirementSpec,
-    scope: "software",
+    scope: WORKFLOW_LIBRARY_SCOPE,
   });
   input.onProgress?.({ stage: "candidate.resolved", message: "Workflow library candidates resolved." });
   input.onProgress?.({ stage: "composition.compiling", message: "Compiling existing workflow composition." });
@@ -430,6 +430,8 @@ async function createPlannerDraftFromComposition(
     goalPrompt: input.goalPrompt,
     candidatePacket,
     composition,
+    scope: WORKFLOW_LIBRARY_SCOPE,
+    manifestDomain: WORKFLOW_MANIFEST_DOMAIN,
   });
   input.onProgress?.({ stage: "composition.compiled", message: "Existing workflow composition compiled." });
 
@@ -550,13 +552,13 @@ async function createLibraryConstrainedPlannerDraft(
   input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
   const candidatePacket = await resolveWorkflowCandidates(db, {
     requirementSpec,
-    scope: "software",
+    scope: WORKFLOW_LIBRARY_SCOPE,
   });
   input.onProgress?.({ stage: "candidate.resolved", message: "Workflow library candidates resolved." });
   const workflowId = `wf-composed-${hash(draftRunId).slice(0, 12)}`;
   const draftId = `draft-${workflowId}`;
 
-  if (candidatePacket.unavailableRequirements.length > 0) {
+  if (candidatePacket.unavailableRequirements.length > 0 && !hasGraphMetadataCandidates(candidatePacket)) {
     const validationIssues = unavailableRequirementIssues(candidatePacket.unavailableRequirements);
     const status = "invalid";
     const taskSummaries: PlannerDraftTaskSummary[] = [];
@@ -597,13 +599,12 @@ async function createLibraryConstrainedPlannerDraft(
   const registry = createWorkflowComposerRegistry({ llmComposer: input.composer });
   const composerMode = input.composerMode ?? "llm";
   const composer = registry.resolve({ composerMode });
-  const fallbackImplicitlySelected = composerMode === "llm-with-fixture-fallback" && !input.composer;
   const repairResult = await runCompositionRepairLoop({
     db,
     goalPrompt: input.goalPrompt,
     candidatePacket,
     composer,
-    scope: "software",
+    scope: WORKFLOW_LIBRARY_SCOPE,
     maxRepairAttempts: 2,
     onProgress: input.onProgress,
     onLlmDelta: input.onLlmDelta,
@@ -656,6 +657,8 @@ async function createLibraryConstrainedPlannerDraft(
     goalPrompt: input.goalPrompt,
     candidatePacket,
     composition,
+    scope: WORKFLOW_LIBRARY_SCOPE,
+    manifestDomain: WORKFLOW_MANIFEST_DOMAIN,
   });
   input.onProgress?.({ stage: "composition.compiled", message: "Workflow composition compiled." });
   const bundle: PlanBundle & {
@@ -670,7 +673,7 @@ async function createLibraryConstrainedPlannerDraft(
       generatedAt: new Date().toISOString(),
       analyzerType: "deterministic",
       composerMode,
-      composerFallbackUsed: fallbackImplicitlySelected || didComposerUseFallback(composer),
+      composerFallbackUsed: false,
       validatorAttempts: repairResult.attempts.length,
       repairAttempts: Math.max(0, repairResult.attempts.length - 1),
       finalValidationOk: repairResult.validation.ok,
@@ -774,7 +777,6 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
       actorType: "orchestrator",
       payload: { taskKey: task.name ?? task.id, dependsOn: task.dependsOn },
     });
-    await buildContextForTask(db, workflow, task.id, runId, bundle.generationPlan?.templateRef ?? "software.workflow.feature-implementation");
     taskIds.push(task.id);
   }
 
@@ -1069,34 +1071,6 @@ function maybeWorkflowCompositionPlan(value: unknown): WorkflowCompositionPlan |
   return record as WorkflowCompositionPlan;
 }
 
-async function buildContextForTask(
-  db: SouthstarDb,
-  workflow: SouthstarWorkflowManifest,
-  taskId: string,
-  runId: string,
-  flowTemplateRef: string,
-): Promise<void> {
-  const task = workflow.tasks.find((candidate) => candidate.id === taskId);
-  if (!task) throw new Error(`unknown task: ${taskId}`);
-  const domainPack = domainPackForWorkflow(workflow);
-  await buildContextPacketWithKnowledgeCards(db, {
-    runId,
-    taskId: task.id,
-    rootSessionId: `root-${runId}-${task.id}`,
-    goalPrompt: workflow.goalPrompt,
-    domainPack,
-    roleRef: task.roleRef,
-    agentProfileRef: task.agentProfileRef,
-    artifactContractRefs: task.requiredArtifactRefs,
-    priorArtifactRefs: [],
-    intent: workflow.intent,
-    flowTemplateRef,
-    promptTemplateRef: task.promptTemplateRef,
-    skillRefs: task.skillRefs,
-    inlineInstruction: profileOverrideInstruction(task),
-  });
-}
-
 type WorkflowTaskWithProfileOverride = SouthstarWorkflowManifest["tasks"][number] & {
   profileOverride?: PlannerDraftTaskProfileOverride;
 };
@@ -1158,11 +1132,6 @@ function cloneAgentProfile(profile: AgentProfile): AgentProfile {
   };
 }
 
-function profileOverrideInstruction(task: SouthstarWorkflowManifest["tasks"][number]): string | undefined {
-  const profileOverride = (task as WorkflowTaskWithProfileOverride).profileOverride;
-  return profileOverride?.instruction;
-}
-
 async function allocateRunId(db: SouthstarDb, workflowId: string): Promise<string> {
   const base = `run-${workflowId}`;
   if (!await runExists(db, base)) return base;
@@ -1181,29 +1150,8 @@ function inferIntent(goalPrompt: string): "implement_feature" | "fix_bug" {
   return /fix|bug|failing|修正|錯誤/i.test(goalPrompt) ? "fix_bug" : "implement_feature";
 }
 
-function domainPackForWorkflow(workflow: SouthstarWorkflowManifest): DomainPack {
-  return {
-    ...softwareDomainPack,
-    id: workflow.domain ?? softwareDomainPack.id,
-    roles: workflow.roles ?? softwareDomainPack.roles,
-    agentProfiles: workflow.agentProfiles ?? softwareDomainPack.agentProfiles,
-    artifactContracts: workflow.artifactContracts ?? softwareDomainPack.artifactContracts,
-    evaluatorPipelines: workflow.evaluatorPipelines ?? softwareDomainPack.evaluatorPipelines,
-    contextPolicies: workflow.contextPolicies ?? softwareDomainPack.contextPolicies,
-    sessionPolicies: workflow.sessionPolicies ?? softwareDomainPack.sessionPolicies,
-    memoryPolicies: workflow.memoryPolicies ?? softwareDomainPack.memoryPolicies,
-    workspacePolicies: workflow.workspacePolicies ?? softwareDomainPack.workspacePolicies,
-    stopConditions: workflow.stopConditions ?? softwareDomainPack.stopConditions,
-  };
-}
-
 function hash(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function didComposerUseFallback(composer: WorkflowComposer): boolean {
-  const maybeFallbackAwareComposer = composer as WorkflowComposer & { wasFallbackUsed?: () => boolean };
-  return maybeFallbackAwareComposer.wasFallbackUsed?.() === true;
 }
 
 function summarizeWorkflowTasks(workflow: SouthstarWorkflowManifest): PlannerDraftTaskSummary[] {
@@ -1237,6 +1185,10 @@ function summarizeWorkflowTasksFromPayload(tasksValue: unknown): PlannerDraftTas
 function parseDependsOn(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function hasGraphMetadataCandidates(candidatePacket: CandidatePacket): boolean {
+  return Boolean(candidatePacket.graphMetadataCandidates?.nodes.length);
 }
 
 function unavailableRequirementIssues(
@@ -1312,6 +1264,6 @@ function inferDraftOrchestrationMode(summary: Record<string, unknown>): "determi
 function inferDraftComposerMode(payload: Record<string, unknown>): WorkflowComposerMode | undefined {
   const plannerTrace = asRecord(payload.plannerTrace);
   const composerMode = stringValue(plannerTrace.composerMode);
-  if (composerMode === "fixture" || composerMode === "llm" || composerMode === "llm-with-fixture-fallback") return composerMode;
+  if (composerMode === "llm") return composerMode;
   return undefined;
 }

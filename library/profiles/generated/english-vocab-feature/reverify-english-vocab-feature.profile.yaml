@@ -1,0 +1,18 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.english-vocab-feature.reverify-english-vocab-feature"
+title: "再次驗證修復後功能"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-code-reviewer"
+skillRefs:
+  - "skill.mattpocock.code-review"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-read"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.english-vocab-feature"
+  nodeId: "reverify-english-vocab-feature"

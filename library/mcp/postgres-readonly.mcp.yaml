@@ -1,0 +1,20 @@
+schemaVersion: southstar.library.mcp_grant_file.v1
+id: mcp.postgres-readonly
+title: Postgres Readonly MCP
+scope: engineering
+status: approved
+serverId: postgres-readonly
+transport: stdio
+command: node
+args:
+  - /app/src/v2/mcp/postgres-readonly-server.ts
+allowedTools:
+  - query
+  - explain
+  - schema
+requiredVaultLeaseRefs:
+  - vault.postgres-readonly-url
+envFromVault:
+  - name: DATABASE_URL
+    leaseRef: vault.postgres-readonly-url
+

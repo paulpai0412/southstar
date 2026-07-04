@@ -1,6 +1,4 @@
 import { NextRequest } from "next/server";
-import { buildWorkflowDagProposal } from "../../../../lib/workflow/dag";
-import { loadWorkflowLibrary } from "../../../../lib/workflow/library-store";
 import { buildWorkflowV2Url, workflowV2Capabilities } from "../../../../lib/workflow/v2-api";
 import { buildWorkflowDagFromPlannerDraft, unwrapV2Envelope, type V2PlannerDraftOrchestrationView } from "../../../../lib/workflow/v2-library-adapter";
 
@@ -21,49 +19,33 @@ export async function POST(request: NextRequest) {
         controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
       };
 
-      if (workflowV2Capabilities().v2Backend) {
-        try {
-          const plannerStreamResponse = await fetch(buildWorkflowV2Url("/api/v2/planner/drafts/stream"), {
-            method: "POST",
-            headers: {
-              accept: "text/event-stream",
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              goalPrompt: prompt,
-              ...(body.cwd ? { cwd: body.cwd } : {}),
-              orchestrationMode: "llm-constrained",
-              composerMode: "llm",
-            }),
-          });
-          if (!plannerStreamResponse.ok) {
-            throw new Error(`planner draft stream request failed: HTTP ${plannerStreamResponse.status}`);
-          }
-          if (!plannerStreamResponse.body) {
-            throw new Error("planner draft stream response is missing body");
-          }
-          await proxyPlannerDraftStream(plannerStreamResponse.body, send);
-        } catch (error) {
-          send("error", { error: error instanceof Error ? error.message : String(error) });
-        }
+      if (!workflowV2Capabilities().v2Backend) {
+        send("error", { error: "Southstar v2 workflow API is not configured" });
         controller.close();
         return;
       }
 
       try {
-        const library = await loadWorkflowLibrary({ cwd: body.cwd ?? null });
-        const domain = library.domains[0];
-        const template = domain?.workflowTemplates.find((item) => item.id === body.templateId) ?? domain?.workflowTemplates[0];
-        if (!domain || !template) {
-          send("error", { error: "No workflow template available" });
-          controller.close();
-          return;
+        const plannerStreamResponse = await fetch(buildWorkflowV2Url("/api/v2/planner/drafts/stream"), {
+          method: "POST",
+          headers: {
+            accept: "text/event-stream",
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            goalPrompt: prompt,
+            ...(body.cwd ? { cwd: body.cwd } : {}),
+            orchestrationMode: "llm-constrained",
+            composerMode: "llm",
+          }),
+        });
+        if (!plannerStreamResponse.ok) {
+          throw new Error(`planner draft stream request failed: HTTP ${plannerStreamResponse.status}`);
         }
-
-        const dag = buildWorkflowDagProposal({ prompt, template, agents: domain.agents });
-        send("message", { text: "Generated workflow DAG proposal." });
-        send("dag", { dag });
-        send("done", {});
+        if (!plannerStreamResponse.body) {
+          throw new Error("planner draft stream response is missing body");
+        }
+        await proxyPlannerDraftStream(plannerStreamResponse.body, send);
       } catch (error) {
         send("error", { error: error instanceof Error ? error.message : String(error) });
       }

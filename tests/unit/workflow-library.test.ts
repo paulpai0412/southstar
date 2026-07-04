@@ -7,8 +7,9 @@ import { NextRequest } from "next/server";
 import { POST as postWorkflowGenerate } from "../../web/app/api/workflow/generate/route";
 import { GET as getWorkflowLibrary } from "../../web/app/api/workflow/library/route";
 import { GET as getWorkflowResource, PUT as putWorkflowResource } from "../../web/app/api/workflow/resources/[...path]/route";
+import { groupSkillResourcePaths } from "../../web/lib/workflow/skill-resource-tree";
 import { loadWorkflowLibrary, readWorkflowResource, writeWorkflowResource } from "../../web/lib/workflow/library-store";
-import { buildWorkflowDagFromPlannerDraft, workflowLibraryFromAgentLibrary } from "../../web/lib/workflow/v2-library-adapter";
+import { buildWorkflowDagFromPlannerDraft } from "../../web/lib/workflow/v2-library-adapter";
 
 const originalFetch = global.fetch;
 const originalBase = process.env.SOUTHSTAR_V2_API_BASE_URL;
@@ -41,64 +42,6 @@ test.afterEach(() => {
   } else {
     process.env.SOUTHSTAR_V2_API_BASE_URL = originalBase;
   }
-});
-
-test("workflowLibraryFromAgentLibrary mapping keeps domain and profiles for workflow ui", () => {
-  const library = workflowLibraryFromAgentLibrary({
-    domain: "software",
-    roles: [
-      {
-        id: "maker",
-        responsibility: "Implement",
-        defaultAgentProfileRef: "profile.software-maker-pi",
-        allowedAgentProfileRefs: ["profile.software-maker-pi"],
-        artifactInputs: [],
-        artifactOutputs: [],
-        stopAuthority: "can-suggest",
-      },
-    ],
-    agentProfiles: [
-      {
-        id: "profile.software-maker-pi",
-        name: "software-maker",
-        provider: "pi",
-        model: "pi-agent-default",
-        harnessRef: "pi",
-        agentsMdRefs: [],
-        promptTemplateRef: "software-maker",
-        skillRefs: ["software-implementation"],
-        mcpGrantRefs: ["filesystem-workspace"],
-        memoryScopes: ["workspace", "run"],
-        contextPolicyRef: "context-default",
-        sessionPolicyRef: "session-default",
-        toolPolicy: {
-          allowedTools: ["workspace-read", "workspace-write"],
-          deniedTools: [],
-          requiresApprovalFor: [],
-        },
-        budgetPolicy: {
-          maxInputTokens: 20_000,
-          maxOutputTokens: 10_000,
-          maxWallTimeSeconds: 1_200,
-        },
-      },
-    ],
-    skills: [],
-    mcpServers: [],
-    tools: [],
-    artifactContracts: [],
-    evaluatorPipelines: [],
-    contextPolicies: [],
-    sessionPolicies: [],
-    memoryPolicies: [],
-    workspacePolicies: [],
-    vaultLeasePolicies: [],
-  });
-
-  assert.equal(library.domains[0]?.id, "software");
-  assert.equal(library.domains[0]?.workflowTemplates[0]?.id, "template.software.v2");
-  assert.equal(library.domains[0]?.agents[0]?.defaultProfileRef, "profile.software-maker-pi");
-  assert.equal(library.domains[0]?.agents[0]?.profileResourcePath, "software/agents/software-maker/profile.json");
 });
 
 test("buildWorkflowDagFromPlannerDraft mapping preserves dependencies and readiness", () => {
@@ -235,67 +178,258 @@ test("GET workflow resource route returns fixture resource", async () => {
   assert.equal(body.resource?.kind, "json");
 });
 
-test("library route prefers v2 agent-library when SOUTHSTAR_V2_API_BASE_URL is configured", async () => {
+test("groupSkillResourcePaths groups metadata and bundle files under one skill folder", () => {
+  const groups = groupSkillResourcePaths([
+    "library/skills/mattpocock.codebase-design.skill.md",
+    "library/skills/mattpocock.codebase-design/DEEPENING.md",
+    "library/skills/mattpocock.codebase-design/DESIGN-IT-TWICE.md",
+    "library/skills/mattpocock.codebase-design/SKILL.md",
+    "library/skills/mattpocock.implement.skill.md",
+    "library/skills/mattpocock.implement/SKILL.md",
+  ]);
+
+  assert.deepEqual(groups.map((group) => group.skillName), [
+    "mattpocock.codebase-design",
+    "mattpocock.implement",
+  ]);
+  assert.deepEqual(groups[0]?.files.map((file) => file.label), [
+    "mattpocock.codebase-design.skill.md",
+    "DEEPENING.md",
+    "DESIGN-IT-TWICE.md",
+    "SKILL.md",
+  ]);
+  assert.equal(groups.some((group) => group.skillName === "skills"), false);
+});
+
+test("GET workflow resource route renders graph agent definition as AGENTS.md", async () => {
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
+  global.fetch = (async (url) => {
+    const href = String(url);
+    if (href.endsWith("/api/v2/library/objects/agent.engineering-software-architect")) {
+      return Response.json({
+        ok: true,
+        kind: "library-object-detail",
+        result: {
+          object: {
+            objectKey: "agent.engineering-software-architect",
+            objectKind: "agent_definition",
+            status: "approved",
+            state: {
+              title: "Software Architect",
+              body: "Design implementation boundaries from the selected workflow context.",
+            },
+          },
+        },
+      });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  }) as typeof fetch;
+
+  const response = await getWorkflowResource(
+    resourceRequest("library/generated-agents/agent.engineering-software-architect/AGENTS.md"),
+    resourceRouteContext("library/generated-agents/agent.engineering-software-architect/AGENTS.md"),
+  );
+
+  assert.equal(response.status, 200);
+  const body = await response.json() as { resource?: { kind?: string; path?: string; content?: string; writable?: boolean } };
+  assert.equal(body.resource?.kind, "markdown");
+  assert.equal(body.resource?.path, "library/generated-agents/agent.engineering-software-architect/AGENTS.md");
+  assert.equal(body.resource?.writable, false);
+  assert.match(body.resource?.content ?? "", /# Software Architect/);
+  assert.match(body.resource?.content ?? "", /Design implementation boundaries/);
+});
+
+test("library route reads approved workflow templates from the Postgres graph API", async () => {
   process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
   const calls: string[] = [];
   global.fetch = (async (url) => {
-    calls.push(String(url));
-    return Response.json({
-      ok: true,
-      kind: "agent-library",
-      result: {
-        domain: "software",
-        roles: [
-          {
-            id: "maker",
-            responsibility: "Implement",
-            defaultAgentProfileRef: "profile.software-maker-pi",
-            allowedAgentProfileRefs: ["profile.software-maker-pi"],
-            artifactInputs: [],
-            artifactOutputs: [],
-            stopAuthority: "can-suggest",
+    const href = String(url);
+    calls.push(href);
+    if (href.endsWith("/api/v2/library/graph?scope=software&status=approved")) {
+      return Response.json({
+        ok: true,
+        kind: "library-graph",
+        result: {
+          nodes: [{
+            objectKey: "template.english-vocab-feature",
+            objectKind: "workflow_template",
+            status: "approved",
+            title: "English Vocabulary Feature Workflow",
+            scope: "software",
+          }],
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/library/objects/template.english-vocab-feature")) {
+      return Response.json({
+        ok: true,
+        kind: "library-object-detail",
+        result: {
+          object: {
+            objectKey: "template.english-vocab-feature",
+            objectKind: "workflow_template",
+            status: "approved",
+            state: {
+              scope: "software",
+              title: "English Vocabulary Feature Workflow",
+              profileRefs: [
+                "profile.generated.english-vocab-feature.plan-english-vocab-feature",
+                "profile.generated.english-vocab-feature.implement-english-vocab-feature",
+              ],
+              nodes: [
+                {
+                  id: "plan-english-vocab-feature",
+                  title: "規劃簡易背英文單字功能",
+                  profileRef: "profile.generated.english-vocab-feature.plan-english-vocab-feature",
+                },
+                {
+                  id: "implement-english-vocab-feature",
+                  title: "實作簡易背英文單字功能",
+                  profileRef: "profile.generated.english-vocab-feature.implement-english-vocab-feature",
+                },
+              ],
+            },
           },
-        ],
-        agentProfiles: [
-          {
-            id: "profile.software-maker-pi",
-            name: "software-maker",
-            provider: "pi",
-            model: "pi-agent-default",
-            harnessRef: "pi",
-            agentsMdRefs: [],
-            promptTemplateRef: "software-maker",
-            skillRefs: [],
-            mcpGrantRefs: [],
-            memoryScopes: [],
-            contextPolicyRef: "context-default",
-            sessionPolicyRef: "session-default",
-            toolPolicy: { allowedTools: [], deniedTools: [], requiresApprovalFor: [] },
-            budgetPolicy: { maxInputTokens: 1, maxOutputTokens: 1 },
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/library/objects/profile.generated.english-vocab-feature.plan-english-vocab-feature")) {
+      return Response.json({
+        ok: true,
+        kind: "library-object-detail",
+        result: {
+          object: {
+            objectKey: "profile.generated.english-vocab-feature.plan-english-vocab-feature",
+            objectKind: "agent_profile",
+            status: "approved",
+            state: {
+              sourcePath: "library/profiles/generated/english-vocab-feature/plan-english-vocab-feature.profile.yaml",
+              agentRef: "agent.engineering-software-architect",
+              skillRefs: ["skill.mattpocock.codebase-design"],
+              toolGrantRefs: ["tool.shell-command"],
+            },
           },
-        ],
-        skills: [],
-        mcpServers: [],
-        tools: [],
-        artifactContracts: [],
-        evaluatorPipelines: [],
-        contextPolicies: [],
-        sessionPolicies: [],
-        memoryPolicies: [],
-        workspacePolicies: [],
-        vaultLeasePolicies: [],
-      },
-    });
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/library/objects/profile.generated.english-vocab-feature.implement-english-vocab-feature")) {
+      return Response.json({
+        ok: true,
+        kind: "library-object-detail",
+        result: {
+          object: {
+            objectKey: "profile.generated.english-vocab-feature.implement-english-vocab-feature",
+            objectKind: "agent_profile",
+            status: "approved",
+            state: {
+              sourcePath: "library/profiles/generated/english-vocab-feature/implement-english-vocab-feature.profile.yaml",
+              skillRefs: ["skill.mattpocock.implement"],
+              toolGrantRefs: ["tool.workspace-write"],
+            },
+          },
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/library/objects/skill.mattpocock.codebase-design")) {
+      return Response.json({
+        ok: true,
+        kind: "library-object-detail",
+        result: {
+          object: {
+            objectKey: "skill.mattpocock.codebase-design",
+            objectKind: "skill_spec",
+            status: "approved",
+            state: {
+              sourcePath: "library/skills/mattpocock.codebase-design.skill.md",
+            },
+          },
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/library/objects/agent.engineering-software-architect")) {
+      return Response.json({
+        ok: true,
+        kind: "library-object-detail",
+        result: {
+          object: {
+            objectKey: "agent.engineering-software-architect",
+            objectKind: "agent_definition",
+            status: "approved",
+            state: {
+              title: "Software Architect",
+              body: "Design the implementation plan and architectural boundaries.",
+              sourcePath: "library/agents/engineering-software-architect.agent.md",
+            },
+          },
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/library/objects/skill.mattpocock.implement")) {
+      return Response.json({
+        ok: true,
+        kind: "library-object-detail",
+        result: {
+          object: {
+            objectKey: "skill.mattpocock.implement",
+            objectKind: "skill_spec",
+            status: "approved",
+            state: {
+              sourcePath: "library/skills/mattpocock.implement.skill.md",
+            },
+          },
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/library/objects/tool.shell-command") || href.endsWith("/api/v2/library/objects/tool.workspace-write")) {
+      return Response.json({
+        ok: true,
+        kind: "library-object-detail",
+        result: {
+          object: {
+            objectKey: href.split("/").at(-1),
+            objectKind: "tool_definition",
+            status: "approved",
+            state: {},
+          },
+        },
+      });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
   }) as typeof fetch;
 
   const response = await getWorkflowLibrary(new NextRequest("http://localhost/api/workflow/library?cwd=/tmp/demo&domain=software"));
   assert.equal(response.status, 200);
-  assert.equal(calls[0], "http://127.0.0.1:3000/api/v2/agent-library?domain=software");
-  const body = await response.json() as { library: { domains: Array<{ workflowTemplates: Array<{ id: string }> }> } };
-  assert.equal(body.library.domains[0]?.workflowTemplates[0]?.id, "template.software.v2");
+  assert.deepEqual(calls.slice(0, 4), [
+    "http://127.0.0.1:3000/api/v2/library/graph?scope=software&status=approved",
+    "http://127.0.0.1:3000/api/v2/library/objects/template.english-vocab-feature",
+    "http://127.0.0.1:3000/api/v2/library/objects/profile.generated.english-vocab-feature.plan-english-vocab-feature",
+    "http://127.0.0.1:3000/api/v2/library/objects/profile.generated.english-vocab-feature.implement-english-vocab-feature",
+  ]);
+  const body = await response.json() as { library: { domains: Array<{ workflowTemplates: Array<{ id: string; stageRefs: string[]; agentRefs: string[] }>; agents: Array<{ id: string; profileResourcePath: string; instructionResourcePath: string; skillResourcePaths: string[]; policyResourcePaths: string[] }> }> } };
+  const template = body.library.domains[0]?.workflowTemplates[0];
+  assert.equal(template?.id, "template.english-vocab-feature");
+  assert.deepEqual(template?.stageRefs, ["plan-english-vocab-feature", "implement-english-vocab-feature"]);
+  assert.deepEqual(template?.agentRefs, [
+    "agent.generated-english-vocab-feature-plan-english-vocab-feature",
+    "agent.generated-english-vocab-feature-implement-english-vocab-feature",
+  ]);
+  assert.deepEqual(body.library.domains[0]?.agents.map((agent) => agent.id), template?.agentRefs);
+  assert.equal(
+    body.library.domains[0]?.agents.some((agent) =>
+      agent.profileResourcePath === "library/profiles/generated/english-vocab-feature/plan-english-vocab-feature.profile.yaml"
+        && agent.instructionResourcePath === "library/generated-agents/agent.engineering-software-architect/AGENTS.md"
+    ),
+    true,
+  );
+  const planAgent = body.library.domains[0]?.agents[0];
+  assert.equal(planAgent?.instructionResourcePath, "library/generated-agents/agent.engineering-software-architect/AGENTS.md");
+  assert.equal(planAgent?.skillResourcePaths.includes("library/skills/mattpocock.codebase-design.skill.md"), true);
+  assert.equal(planAgent?.skillResourcePaths.includes("library/skills/mattpocock.codebase-design/SKILL.md"), true);
+  assert.equal(planAgent?.skillResourcePaths.includes("library/skills/mattpocock.codebase-design/DEEPENING.md"), true);
+  assert.equal(planAgent?.policyResourcePaths.includes("library/objects/tool.shell-command.json"), true);
 });
 
-test("library route falls back to fixture library when v2 backend is not configured", async () => {
+test("library route does not fall back to fixture templates when v2 backend is not configured", async () => {
   delete process.env.SOUTHSTAR_V2_API_BASE_URL;
   let called = false;
   global.fetch = (async () => {
@@ -304,10 +438,10 @@ test("library route falls back to fixture library when v2 backend is not configu
   }) as typeof fetch;
 
   const response = await getWorkflowLibrary(new NextRequest("http://localhost/api/workflow/library?cwd=/tmp/demo"));
-  assert.equal(response.status, 200);
+  assert.equal(response.status, 503);
   assert.equal(called, false);
-  const body = await response.json() as { library: { domains: Array<{ workflowTemplates: Array<{ id: string }> }> } };
-  assert.equal(body.library.domains[0]?.workflowTemplates[0]?.id, "template.software-feature");
+  const body = await response.json() as { error?: string };
+  assert.match(body.error ?? "", /not configured/);
 });
 
 test("generate route proxies backend planner draft stream and converts orchestration to a DAG", async () => {
@@ -359,7 +493,7 @@ test("generate route proxies backend planner draft stream and converts orchestra
   }]);
 });
 
-test("generate route fallback can produce a parallel workflow DAG from prompt intent", async () => {
+test("generate route requires the v2 runtime planner instead of using local fallback DAG generation", async () => {
   delete process.env.SOUTHSTAR_V2_API_BASE_URL;
   global.fetch = (async () => {
     throw new Error("fetch should not be called without v2 base");
@@ -376,22 +510,9 @@ test("generate route fallback can produce a parallel workflow DAG from prompt in
 
   assert.equal(response.status, 200);
   const events = readSse(await response.text());
-  const dagPayload = events.find((event) => event.event === "dag")?.data as {
-    dag?: {
-      nodes?: Array<{ id: string; level: number }>;
-      edges?: Array<{ from: string; to: string }>;
-    };
-  };
-  const nodes = dagPayload.dag?.nodes ?? [];
-  const edges = dagPayload.dag?.edges ?? [];
-  const parallelImplementNodes = nodes.filter((node) => node.level === 2);
-
-  assert.deepEqual(parallelImplementNodes.map((node) => node.id).sort(), ["implement-api", "implement-ui"]);
-  assert.ok(edges.some((edge) => edge.from === "plan" && edge.to === "implement-ui"));
-  assert.ok(edges.some((edge) => edge.from === "plan" && edge.to === "implement-api"));
-  assert.ok(edges.some((edge) => edge.from === "implement-ui" && edge.to === "verify"));
-  assert.ok(edges.some((edge) => edge.from === "implement-api" && edge.to === "verify"));
-  assert.equal(edges.some((edge) => edge.from === "implement-ui" && edge.to === "implement-api"), false);
+  assert.equal(events.some((event) => event.event === "dag"), false);
+  const error = events.find((event) => event.event === "error")?.data as { error?: string };
+  assert.match(error.error ?? "", /not configured/);
 });
 
 test("GET workflow resource route returns 404 for an unknown resource", async () => {

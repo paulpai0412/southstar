@@ -1,0 +1,9 @@
+schemaVersion: southstar.library.vault_lease_policy_file.v1
+id: vault.postgres-readonly-url
+title: Postgres Readonly URL Lease
+scope: engineering
+status: approved
+secretGroupRef: postgres.readonly
+leaseTtlSeconds: 900
+mountMode: env
+

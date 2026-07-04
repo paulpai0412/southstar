@@ -167,6 +167,51 @@ test("Pi SDK agent harness sends TaskEnvelopeV2 rendered agent prompt", async ()
   assert.doesNotMatch(prompts[0], /"schemaVersion":"southstar.task-envelope.v2"/);
 });
 
+test("Pi SDK agent harness configures model and thinking level from TaskEnvelopeV2 agent profile", async () => {
+  const sessionInputs: Array<{ cwd: string; model?: { provider: string; modelId: string }; thinkingLevel?: string }> = [];
+  const sentEvents: unknown[] = [];
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async (input) => {
+      sessionInputs.push(input);
+      return {
+        send: async (event: unknown) => {
+          sentEvents.push(event);
+        },
+        subscribe: (listener: (event: unknown) => void) => {
+          listeners.push(listener);
+          return () => undefined;
+        },
+        prompt: async () => {
+          listeners.forEach((listener) => listener({
+            type: "agent_end",
+            messages: [{
+              role: "assistant",
+              content: [{ type: "text", text: JSON.stringify({
+                artifact: { summary: "implemented", commandsRun: [], risks: [] },
+                progress: ["configured session"],
+              }) }],
+            }],
+          }));
+        },
+      };
+    },
+  });
+  const env = envelopeV2();
+  env.agentProfile.provider = "pi";
+  env.agentProfile.model = "pi-agent-default";
+  env.agentProfile.thinkingLevel = "high";
+
+  await harness.run({ envelope: env, attempt: 1 });
+
+  assert.deepEqual(sessionInputs[0]?.model, { provider: "pi", modelId: "pi-agent-default" });
+  assert.equal(sessionInputs[0]?.thinkingLevel, "high");
+  assert.deepEqual(sentEvents, [
+    { type: "set_model", provider: "pi", modelId: "pi-agent-default" },
+    { type: "set_thinking_level", thinkingLevel: "high" },
+  ]);
+});
+
 test("Pi SDK agent harness runs mounted workspace tasks from /workspace/repo", async () => {
   const prompts: string[] = [];
   const sessionInputs: Array<{ cwd: string }> = [];

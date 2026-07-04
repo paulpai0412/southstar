@@ -96,6 +96,7 @@ export type PlannerDraftTaskProfileOverride = {
 export type AgentProfile = {
   id: string;
   name: string;
+  agentRef?: string;
   provider: AgentProvider;
   model?: string;
   thinkingLevel?: string;
@@ -106,6 +107,7 @@ export type AgentProfile = {
   promptTemplateRef: string;
   skillRefs: string[];
   mcpGrantRefs: string[];
+  vaultLeasePolicyRefs?: string[];
   memoryScopes: string[];
   contextPolicyRef: string;
   sessionPolicyRef: string;

@@ -11,6 +11,7 @@ import {
   catalogDomainTitle,
   isCatalogCanonicalDomain,
 } from "../canonical-domains.ts";
+import type { LibraryDefinitionKind, LibraryDefinitionStatus, LibraryEdgeType } from "../types.ts";
 
 const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
   "belongs_to_domain",
@@ -31,6 +32,7 @@ const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
   "complements",
   "incompatible_with",
   "requires_approval",
+  "requires_secret_group",
   "requires_secret",
 ];
 const MAX_PROMPT_DOCUMENT_CHARS = 120_000;
@@ -43,6 +45,29 @@ export type LibraryImportLlmProvider = (input: {
   requestPrompt?: string;
   sourceRepoPath?: string;
 }) => Promise<unknown>;
+
+export type LibraryImportOntologyExistingGraphNode = {
+  objectKey: string;
+  objectKind: LibraryDefinitionKind;
+  status: LibraryDefinitionStatus;
+  title?: string;
+  scope?: string;
+  summary?: string;
+  headVersionId?: string | null;
+};
+
+export type LibraryImportOntologyExistingGraphEdge = {
+  fromObjectKey: string;
+  edgeType: LibraryEdgeType;
+  toObjectKey: string;
+  scope?: string;
+  weight?: number;
+};
+
+export type LibraryImportOntologyExistingGraph = {
+  nodes: LibraryImportOntologyExistingGraphNode[];
+  edges: LibraryImportOntologyExistingGraphEdge[];
+};
 
 export async function analyzeLibraryImportWithLlm(input: {
   documents: LibraryImportSourceDocument[];
@@ -89,6 +114,7 @@ export async function analyzeLibraryImportOntologyWithLlm(input: {
   requestPrompt?: string;
   sourceRepoPath?: string;
   documents?: LibraryImportSourceDocument[];
+  existingGraph?: LibraryImportOntologyExistingGraph;
 }): Promise<LibraryImportProposedEdge[]> {
   if (!input.llmProvider) {
     throw new Error("library import ontology analysis requires an LLM provider");
@@ -102,10 +128,17 @@ export async function analyzeLibraryImportOntologyWithLlm(input: {
     prompt: buildLibraryImportOntologyPrompt(input.candidates, input.scope, {
       requestPrompt: input.requestPrompt,
       sourceRepoPath: input.sourceRepoPath,
+      existingGraph: input.existingGraph,
     }),
   });
   const candidateKeys = new Set(input.candidates.map((candidate) => candidate.objectKey));
-  return normalizeEdges(edgeArrayFromRecord(isRecord(typeof raw === "string" ? safeJsonParse(raw) : raw) ? (typeof raw === "string" ? safeJsonParse(raw) : raw) as Record<string, unknown> : {}), candidateKeys);
+  return normalizeEdges(
+    edgeArrayFromRecord(isRecord(typeof raw === "string" ? safeJsonParse(raw) : raw)
+      ? (typeof raw === "string" ? safeJsonParse(raw) : raw) as Record<string, unknown>
+      : {}),
+    candidateKeys,
+    { existingObjectKeys: new Set((input.existingGraph?.nodes ?? []).map((node) => node.objectKey)) },
+  );
 }
 
 export function buildLibraryImportAnalysisPrompt(
@@ -163,7 +196,11 @@ export function buildLibraryImportCandidatePrompt(
 export function buildLibraryImportOntologyPrompt(
   candidates: LibraryImportCandidate[],
   scope: string,
-  options: { requestPrompt?: string; sourceRepoPath?: string } = {},
+  options: {
+    requestPrompt?: string;
+    sourceRepoPath?: string;
+    existingGraph?: LibraryImportOntologyExistingGraph;
+  } = {},
 ): string {
   const requestSection = options.requestPrompt
     ? ["UserImportRequest:", options.requestPrompt].join("\n")
@@ -176,12 +213,13 @@ export function buildLibraryImportOntologyPrompt(
     ].join("\n")
     : "";
   return [
-    "Generate ontology edges for the selected Southstar library candidates.",
+    "Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph.",
     "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
     "Use this shape: {\"proposedEdges\":[{\"fromObjectKey\":\"agent.example\",\"edgeType\":\"uses\",\"toObjectKey\":\"skill.example\",\"confidence\":0.8,\"rationale\":\"...\"}]}",
     `Allowed ontology edges: ${ALLOWED_ONTOLOGY_EDGE_TYPES.join(", ")}.`,
-    "Generate incremental ontology edges for the selected candidates. Relate new nodes to other selected nodes when evidence supports profile composition, workflow order, artifact flow, similarity, substitution, complementarity, risk, or conflict.",
-    "Only create edges between the selected candidates listed below. Omit uncertain edges.",
+    "Generate incremental ontology edges for the selected candidates. Relate new nodes to selected or existing approved nodes when evidence supports profile composition, workflow order, artifact flow, similarity, substitution, complementarity, risk, or conflict.",
+    "At least one endpoint must be one of the selected candidates. Do not create edges where both endpoints are existing graph nodes.",
+    "Only use endpoints from SelectedCandidates or ExistingApprovedGraphNodes. Omit uncertain edges.",
     `Scope: ${scope}`,
     requestSection,
     repoPathSection,
@@ -191,6 +229,23 @@ export function buildLibraryImportOntologyPrompt(
       kind: candidate.kind,
       title: candidate.title,
       sourcePath: candidate.sourcePath,
+    }))),
+    "ExistingApprovedGraphNodes:",
+    JSON.stringify((options.existingGraph?.nodes ?? []).map((node) => ({
+      objectKey: node.objectKey,
+      objectKind: node.objectKind,
+      title: node.title,
+      scope: node.scope,
+      summary: node.summary,
+      headVersionId: node.headVersionId,
+    }))),
+    "ExistingApprovedGraphEdges:",
+    JSON.stringify((options.existingGraph?.edges ?? []).map((edge) => ({
+      fromObjectKey: edge.fromObjectKey,
+      edgeType: edge.edgeType,
+      toObjectKey: edge.toObjectKey,
+      scope: edge.scope,
+      weight: edge.weight,
     }))),
   ].filter((line) => line.length > 0).join("\n");
 }
@@ -265,17 +320,24 @@ function normalizeCandidates(value: unknown, options: { scope: string; sourcePat
   return candidates;
 }
 
-function normalizeEdges(value: unknown, candidateKeys: Set<string>): LibraryImportProposedEdge[] {
+function normalizeEdges(
+  value: unknown,
+  candidateKeys: Set<string>,
+  options: { existingObjectKeys?: Set<string> } = {},
+): LibraryImportProposedEdge[] {
   if (!Array.isArray(value)) return [];
   const edges: LibraryImportProposedEdge[] = [];
   const seen = new Set<string>();
+  const existingObjectKeys = options.existingObjectKeys ?? new Set<string>();
+  const allowedObjectKeys = new Set([...candidateKeys, ...existingObjectKeys]);
   for (const edge of value) {
     if (!isRecord(edge)) continue;
     const edgeType = normalizeEdgeType(edge.edgeType);
     const fromObjectKey = optionalString(edge.fromObjectKey);
     const toObjectKey = optionalString(edge.toObjectKey);
     if (!edgeType || !fromObjectKey || !toObjectKey) continue;
-    if (!candidateKeys.has(fromObjectKey) || !candidateKeys.has(toObjectKey)) continue;
+    if (!allowedObjectKeys.has(fromObjectKey) || !allowedObjectKeys.has(toObjectKey)) continue;
+    if (!candidateKeys.has(fromObjectKey) && !candidateKeys.has(toObjectKey)) continue;
     const identity = `${fromObjectKey}:${edgeType}:${toObjectKey}`;
     if (seen.has(identity)) continue;
     seen.add(identity);

@@ -28,7 +28,6 @@ export type LibraryEdgeType =
   | "implements"
   | "provides_capability"
   | "requires_capability"
-  | "supports_skill"
   | "requires_skill"
   | "allows_tool"
   | "requires_tool"
@@ -105,7 +104,7 @@ export type WorkflowTemplateNode = {
   nodeType: "agent_task" | "validator_task" | "human_gate" | "decision" | "fan_in" | "artifact_transform" | "template_operation";
   name: string;
   roleRef?: string;
-  agentSpecRef?: string;
+  agentProfileRef?: string;
   executionProfileSelector?: { complexityBand: string; preferredProfileId?: string };
   contractRefs: string[];
   validatorRefs: string[];
@@ -132,7 +131,7 @@ export type WorkflowTemplatePatch = {
     | { op: "update-node"; nodeId: string; patch: Record<string, unknown> }
     | { op: "add-edge"; edge: WorkflowTemplateEdge }
     | { op: "remove-edge"; edgeId: string }
-    | { op: "replace-agent"; nodeId: string; agentSpecRef: string }
+    | { op: "replace-agent"; nodeId: string; agentProfileRef: string }
     | { op: "set-contracts"; nodeId: string; contractRefs: string[] }
     | { op: "set-validators"; nodeId: string; validatorRefs: string[] }
   >;
@@ -312,6 +311,48 @@ export type GeneratedComponentProposal = {
   risk: "low" | "medium" | "high";
   reason: string;
   validationStatus: "validated" | "unvalidated";
+  agentProfile?: GeneratedAgentProfile;
+};
+
+export type GeneratedAgentProfile = {
+  workerKind?: "execution_worker" | "validation_worker" | "repair_worker" | "review_worker";
+  provider?: "pi" | "codex" | "claude-code" | "openai" | "anthropic" | "custom";
+  model?: string;
+  thinkingLevel?: "auto" | "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | string;
+  harnessRef?: "pi" | "codex";
+  instruction?: string;
+  promptTemplateRef?: string;
+  contextPolicyRef?: string;
+  sessionPolicyRef?: string;
+  memoryScopes?: string[];
+  agentsMdRefs?: string[];
+  vaultLeasePolicyRefs?: string[];
+  toolPolicy?: {
+    allowedTools?: string[];
+    deniedTools?: string[];
+    requiresApprovalFor?: string[];
+  };
+  budgetPolicy?: {
+    maxInputTokens?: number;
+    maxOutputTokens?: number;
+    maxCostMicrosUsd?: number;
+    maxWallTimeSeconds?: number;
+  };
+  execution?: {
+    engine?: "tork";
+    image?: string;
+    command?: string[];
+    env?: Record<string, string>;
+    mounts?: Array<{
+      source?: string;
+      target?: string;
+      readonly?: boolean;
+    }>;
+    timeoutSeconds?: number;
+    infraRetry?: {
+      maxAttempts?: number;
+    };
+  };
 };
 
 export type WorkflowCompositionTask = {
@@ -384,7 +425,11 @@ export type WorkflowCompositionValidationIssueCode =
   | "policy_conflict"
   | "conflicting_refs"
   | "evaluator_does_not_validate_artifact"
-  | "generated_component_selected";
+  | "generated_component_selected"
+  | "agent_does_not_use_skill"
+  | "generated_profile_missing_agent_profile"
+  | "generated_profile_incomplete_agent_profile"
+  | "generated_profile_invalid_value";
 
 export type WorkflowCompositionValidationIssue = {
   code: WorkflowCompositionValidationIssueCode;

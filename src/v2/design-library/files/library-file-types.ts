@@ -1,6 +1,6 @@
 import type { LibraryDefinitionKind, LibraryDefinitionStatus, LibraryEdgeType } from "../types.ts";
 
-export type LibraryFileKind = "agent" | "skill" | "tool" | "mcp" | "generated_profile" | "workflow_template";
+export type LibraryFileKind = "agent" | "skill" | "tool" | "mcp" | "vault" | "generated_profile" | "workflow_template";
 
 export type LibraryFileStatus = Extract<LibraryDefinitionStatus, "draft" | "approved" | "deprecated" | "blocked"> | "invalid";
 

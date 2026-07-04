@@ -12,7 +12,7 @@ test("generated profile validator accepts agent skill tool MCP graph closure", a
     await seedPrimitive(db, "skill.react-ui", "skill_spec");
     await seedPrimitive(db, "tool.workspace-write", "tool_definition");
     await seedPrimitive(db, "mcp.filesystem-workspace", "mcp_tool_grant");
-    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.workspace-write", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
 
@@ -31,13 +31,71 @@ test("generated profile validator accepts agent skill tool MCP graph closure", a
   }
 });
 
+test("generated profile validator accepts current ontology edge types by target kind", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
+    await seedPrimitive(db, "skill.react-ui", "skill_spec");
+    await seedPrimitive(db, "skill.tdd", "skill_spec");
+    await seedPrimitive(db, "tool.workspace-write", "tool_definition");
+    await seedPrimitive(db, "mcp.filesystem-workspace", "mcp_tool_grant");
+    await seedPrimitive(db, "instruction.react-review", "instruction_template");
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses", toObjectKey: "skill.tdd", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses", toObjectKey: "tool.workspace-write", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses", toObjectKey: "instruction.react-review", scope: "software" });
+
+    const result = await validateGeneratedNodeProfile(db, {
+      scope: "software",
+      nodeId: "implement-ui",
+      agentRef: "agent.frontend-developer",
+      skillRefs: ["skill.react-ui"],
+      toolGrantRefs: ["tool.workspace-write"],
+      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      instructionRefs: ["instruction.react-review"],
+    });
+
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.issues, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("generated profile validator treats current ontology uses tool edges as required by target kind", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
+    await seedPrimitive(db, "skill.react-ui", "skill_spec");
+    await seedPrimitive(db, "tool.workspace-write", "tool_definition");
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses", toObjectKey: "tool.workspace-write", scope: "software" });
+
+    const result = await validateGeneratedNodeProfile(db, {
+      scope: "software",
+      nodeId: "implement-ui",
+      agentRef: "agent.frontend-developer",
+      skillRefs: ["skill.react-ui"],
+      toolGrantRefs: [],
+      mcpGrantRefs: [],
+      instructionRefs: [],
+    });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.issues[0]?.code, "missing_required_tool");
+  } finally {
+    await db.close();
+  }
+});
+
 test("generated profile validator rejects missing required tool", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
     await seedPrimitive(db, "skill.react-ui", "skill_spec");
     await seedPrimitive(db, "tool.workspace-write", "tool_definition");
-    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.workspace-write", scope: "software" });
 
     const result = await validateGeneratedNodeProfile(db, {
@@ -62,7 +120,7 @@ test("generated profile validator rejects missing required MCP grant", async () 
     await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
     await seedPrimitive(db, "skill.react-ui", "skill_spec");
     await seedPrimitive(db, "mcp.filesystem-workspace", "mcp_tool_grant");
-    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
 
     const result = await validateGeneratedNodeProfile(db, {
@@ -88,7 +146,7 @@ test("generated profile validator rejects missing required instruction refs", as
     await seedPrimitive(db, "agent.frontend-developer", "agent_definition");
     await seedPrimitive(db, "skill.react-ui", "skill_spec");
     await seedPrimitive(db, "instruction.react-review", "instruction_template");
-    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
+    await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
     await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses_instruction", toObjectKey: "instruction.react-review", scope: "software" });
 
     const result = await validateGeneratedNodeProfile(db, {
@@ -125,7 +183,7 @@ test("generated profile validator rejects skills not supported by the selected a
     });
 
     assert.equal(result.ok, false);
-    assert.equal(result.issues[0]?.code, "agent_does_not_support_skill");
+    assert.equal(result.issues[0]?.code, "agent_does_not_use_skill");
   } finally {
     await db.close();
   }

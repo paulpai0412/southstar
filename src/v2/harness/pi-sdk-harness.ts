@@ -2,13 +2,20 @@ import type { AnyTaskEnvelope } from "../agent-runner/task-envelope.ts";
 import type { AgentHarness, HarnessRunInput, HarnessRunResult } from "./types.ts";
 
 export type PiSdkHarnessSession = {
+  send?: (event: unknown) => Promise<void>;
   prompt(text: string): Promise<void>;
   subscribe?: (listener: (event: unknown) => void) => () => void;
   on?: (listener: (event: unknown) => void) => () => void;
 };
 
+type PiSdkHarnessSessionInput = {
+  cwd: string;
+  model?: { provider: string; modelId: string };
+  thinkingLevel?: string;
+};
+
 export type PiSdkAgentHarnessOptions = {
-  createSession?: (input: { cwd: string }) => Promise<PiSdkHarnessSession>;
+  createSession?: (input: PiSdkHarnessSessionInput) => Promise<PiSdkHarnessSession>;
   timeoutMs?: number;
 };
 
@@ -18,11 +25,13 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
     async run(input: HarnessRunInput): Promise<HarnessRunResult> {
       const timeoutMs = options.timeoutMs ?? 180_000;
       const cwd = harnessCwd(input.envelope);
+      const sessionInput = sessionInputFromEnvelope(input.envelope, cwd);
       const session = await createSessionWithTimeout(
         options.createSession ?? createDefaultPiSdkSession,
-        { cwd },
+        sessionInput,
         timeoutMs,
       );
+      await configurePiSdkSession(session, sessionInput);
       const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input, cwd), timeoutMs);
       return parseHarnessResult(raw, input.envelope);
     },
@@ -30,8 +39,8 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
 }
 
 async function createSessionWithTimeout(
-  createSession: (input: { cwd: string }) => Promise<PiSdkHarnessSession>,
-  input: { cwd: string },
+  createSession: (input: PiSdkHarnessSessionInput) => Promise<PiSdkHarnessSession>,
+  input: PiSdkHarnessSessionInput,
   timeoutMs: number,
 ): Promise<PiSdkHarnessSession> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -45,6 +54,31 @@ async function createSessionWithTimeout(
     return await Promise.race([createSession(input), timeout]);
   } finally {
     if (timer) clearTimeout(timer);
+  }
+}
+
+function sessionInputFromEnvelope(envelope: HarnessRunInput["envelope"], cwd: string): PiSdkHarnessSessionInput {
+  if (envelope.schemaVersion !== "southstar.task-envelope.v2") return { cwd };
+  const provider = envelope.agentProfile.provider?.trim();
+  const modelId = envelope.agentProfile.model?.trim();
+  const thinkingLevel = envelope.agentProfile.thinkingLevel?.trim();
+  return {
+    cwd,
+    ...(provider && modelId ? { model: { provider, modelId } } : {}),
+    ...(thinkingLevel ? { thinkingLevel } : {}),
+  };
+}
+
+async function configurePiSdkSession(
+  session: PiSdkHarnessSession,
+  input: PiSdkHarnessSessionInput,
+): Promise<void> {
+  if (!session.send) return;
+  if (input.model) {
+    await session.send({ type: "set_model", provider: input.model.provider, modelId: input.model.modelId });
+  }
+  if (input.thinkingLevel) {
+    await session.send({ type: "set_thinking_level", thinkingLevel: input.thinkingLevel });
   }
 }
 
@@ -111,7 +145,7 @@ function workspaceDirective(cwd: string): string[] {
   ];
 }
 
-async function createDefaultPiSdkSession(input: { cwd: string }): Promise<PiSdkHarnessSession> {
+async function createDefaultPiSdkSession(input: PiSdkHarnessSessionInput): Promise<PiSdkHarnessSession> {
   const pi = await import("@earendil-works/pi-coding-agent");
   const result = await pi.createAgentSession({
     cwd: input.cwd,
@@ -119,6 +153,8 @@ async function createDefaultPiSdkSession(input: { cwd: string }): Promise<PiSdkH
       mode: "sdk",
       source: "southstar-agent-runner",
       cwd: input.cwd,
+      model: input.model,
+      thinkingLevel: input.thinkingLevel,
     } as never,
   });
   return result.session as unknown as PiSdkHarnessSession;

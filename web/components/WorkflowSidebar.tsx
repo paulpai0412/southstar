@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SessionInfo } from "@/lib/types";
+import { groupSkillResourcePaths } from "@/lib/workflow/skill-resource-tree";
 import type { WorkflowAgentSummary, WorkflowLibrary, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import { getFileIcon, FolderIcon } from "./FileIcons";
 import { PiAgentTitle } from "./SessionSidebar";
@@ -689,25 +690,35 @@ function AgentTree({
   const skillsKey = `${baseKey}:skills`;
   const mcpKey = `${baseKey}:mcp`;
   const policiesKey = `${baseKey}:policies`;
+  const skillGroups = groupSkillResourcePaths(agent.skillResourcePaths);
 
   return (
     <div>
       <TreeFolderRow label={agent.label} depth={depth} open={isOpen(baseKey)} onToggle={() => onToggle(baseKey)} />
       {isOpen(baseKey) && (
         <>
-          <FileRow resourcePath={agent.profileResourcePath} label="profile.json" depth={depth + 1} onOpenResource={onOpenResource} />
-          <FileRow resourcePath={agent.instructionResourcePath} label="instruction.md" depth={depth + 1} onOpenResource={onOpenResource} />
+          {agent.profileResourcePath && (
+            <FileRow resourcePath={agent.profileResourcePath} label={agent.profileResourcePath.split("/").at(-1) ?? "profile"} depth={depth + 1} onOpenResource={onOpenResource} />
+          )}
+          {agent.instructionResourcePath && (
+            <FileRow resourcePath={agent.instructionResourcePath} label={agent.instructionResourcePath.split("/").at(-1) ?? "instruction"} depth={depth + 1} onOpenResource={onOpenResource} />
+          )}
 
           <TreeFolderRow label="skills" depth={depth + 1} open={isOpen(skillsKey)} onToggle={() => onToggle(skillsKey)} />
-          {isOpen(skillsKey) && agent.skillResourcePaths.map((resourcePath) => {
-            const parts = resourcePath.split("/");
-            const skillName = parts.at(-2) ?? "skill";
-            const label = parts.at(-1) ?? resourcePath;
-            const skillKey = `${skillsKey}:${skillName}`;
+          {isOpen(skillsKey) && skillGroups.map((group) => {
+            const skillKey = `${skillsKey}:${group.skillName}`;
             return (
-              <div key={resourcePath}>
-                <TreeFolderRow label={skillName} depth={depth + 2} open={isOpen(skillKey)} onToggle={() => onToggle(skillKey)} />
-                {isOpen(skillKey) && <FileRow resourcePath={resourcePath} label={label} depth={depth + 3} onOpenResource={onOpenResource} />}
+              <div key={group.skillName}>
+                <TreeFolderRow label={group.skillName} depth={depth + 2} open={isOpen(skillKey)} onToggle={() => onToggle(skillKey)} />
+                {isOpen(skillKey) && group.files.map((file) => (
+                  <FileRow
+                    key={file.resourcePath}
+                    resourcePath={file.resourcePath}
+                    label={file.label}
+                    depth={depth + 3}
+                    onOpenResource={onOpenResource}
+                  />
+                ))}
               </div>
             );
           })}

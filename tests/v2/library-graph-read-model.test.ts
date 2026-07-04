@@ -381,7 +381,7 @@ async function seedLibraryGraph(db: Awaited<ReturnType<typeof createTestPostgres
   });
   await upsertLibraryEdge(db, {
     fromObjectKey: "tool.browser",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "tool.global-helper",
     scope: "global",
   });

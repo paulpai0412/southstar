@@ -1,6 +1,7 @@
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { AnyTaskEnvelope } from "./task-envelope.ts";
+import type { ContextBlock } from "../context/types.ts";
 
 export type TaskMaterializerOptions = {
   runRoot?: string;
@@ -19,7 +20,17 @@ type RuntimeBundleManifest = {
   files: Array<{
     label: string;
     relativePath: string;
-    kind: "envelope" | "context" | "agent_profile" | "tool_policy" | "mcp_grants" | "skill_instruction" | "skill_metadata" | "skill_bundle";
+    kind:
+      | "envelope"
+      | "context"
+      | "agents_md"
+      | "agent_profile"
+      | "tool_policy"
+      | "mcp_grants"
+      | "mcp_runtime_config"
+      | "skill_instruction"
+      | "skill_metadata"
+      | "skill_bundle";
   }>;
   policy: {
     toolsAreGrantPolicyOnly: boolean;
@@ -45,6 +56,11 @@ export async function materializeTaskEnvelope(
     if (envelope.contextPacket) {
       await writeFile(join(taskDir, "context-packet.json"), JSON.stringify(envelope.contextPacket, null, 2));
       manifestFiles.push({ label: "Context packet", relativePath: "context-packet.json", kind: "context" });
+      const agentsMd = renderAgentsMd(envelope.contextPacket.agentsMdBlocks);
+      if (agentsMd) {
+        await writeFile(join(taskDir, "AGENTS.md"), agentsMd);
+        manifestFiles.push({ label: "Agent instructions", relativePath: "AGENTS.md", kind: "agents_md" });
+      }
     }
     if (envelope.agentProfile) {
       await mkdir(join(taskDir, "agent-profile"), { recursive: true });
@@ -60,6 +76,11 @@ export async function materializeTaskEnvelope(
       await mkdir(join(taskDir, "mcp"), { recursive: true });
       await writeFile(join(taskDir, "mcp", "grants.json"), JSON.stringify(envelope.mcpGrants, null, 2));
       manifestFiles.push({ label: "MCP grants", relativePath: "mcp/grants.json", kind: "mcp_grants" });
+    }
+    if (envelope.mcpRuntimeConfig) {
+      await mkdir(join(taskDir, "mcp"), { recursive: true });
+      await writeFile(join(taskDir, "mcp", "runtime-config.json"), JSON.stringify(envelope.mcpRuntimeConfig, null, 2));
+      manifestFiles.push({ label: "MCP runtime config", relativePath: "mcp/runtime-config.json", kind: "mcp_runtime_config" });
     }
   }
   const skillsRoot = join(taskDir, "skills");
@@ -100,6 +121,23 @@ export async function materializeTaskEnvelope(
 
 export async function cleanupTaskMaterialization(materialization: TaskMaterialization): Promise<void> {
   await rm(materialization.taskDir, { recursive: true, force: true });
+}
+
+function renderAgentsMd(blocks: ContextBlock[]): string {
+  if (!Array.isArray(blocks) || blocks.length === 0) return "";
+  return blocks
+    .map((block) => {
+      if (!block || typeof block !== "object") return "";
+      const title = typeof (block as { title?: unknown }).title === "string" && (block as { title: string }).title.length > 0
+        ? (block as { title: string }).title
+        : "Agent Instructions";
+      const text = typeof (block as { text?: unknown }).text === "string" ? (block as { text: string }).text.trim() : "";
+      if (!text) return "";
+      return [`# ${title}`, "", text].join("\n");
+    })
+    .filter((section) => section.length > 0)
+    .join("\n\n")
+    .concat("\n");
 }
 
 function resolveSkillDir(skillsRoot: string, skillId: string): string {

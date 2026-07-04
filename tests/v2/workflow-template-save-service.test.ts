@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { findLibraryEdgesFrom, findLibraryObjectByKey } from "../../src/v2/design-library/library-graph-store.ts";
 import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { saveWorkflowTemplateDraft } from "../../src/v2/design-library/templates/workflow-template-save-service.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -79,6 +80,54 @@ test("quotes YAML scalar-like titles before syncing", async () => {
     assert.match(await readFile(join(root, result.template.relativePath), "utf8"), /title: "true"/);
     assert.match(await readFile(join(root, result.profiles[0]!.relativePath), "utf8"), /title: "false"/);
     assert.equal((await findLibraryObjectByKey(db, "template.boolean-title"))?.status, "draft");
+  } finally {
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("approved saved workflow templates become workflow generation candidates", async () => {
+  const db = await createTestPostgresDb();
+  const root = await mkdtemp(join(tmpdir(), "southstar-template-save-approved-"));
+  try {
+    await saveWorkflowTemplateDraft(db, {
+      root,
+      scope: "software",
+      status: "approved",
+      templateId: "template.reusable-webapp",
+      title: "Reusable Webapp",
+      nodes: [{
+        id: "implement-ui",
+        title: "Implement UI",
+        agentRef: "agent.frontend-developer",
+        skillRefs: ["skill.react-ui"],
+        toolGrantRefs: ["tool.workspace-write"],
+        mcpGrantRefs: [],
+      }],
+      edges: [],
+      libraryVersionRefs: ["agent.frontend-developer@test", "skill.react-ui@test"],
+    });
+
+    assert.match(await readFile(join(root, "templates/saved/reusable-webapp.workflow.yaml"), "utf8"), /status: approved/);
+    assert.match(await readFile(join(root, "profiles/generated/reusable-webapp/implement-ui.profile.yaml"), "utf8"), /status: approved/);
+    assert.equal((await findLibraryObjectByKey(db, "template.reusable-webapp"))?.status, "approved");
+    assert.equal((await findLibraryObjectByKey(db, "profile.generated.reusable-webapp.implement-ui"))?.status, "approved");
+
+    const candidates = await resolveWorkflowCandidates(db, {
+      scope: "software",
+      requirementSpec: {
+        summary: "Build a reusable web app",
+        workType: "software_feature",
+        requiredCapabilities: [],
+        expectedArtifacts: [],
+        acceptanceCriteria: [],
+        nonGoals: [],
+        riskNotes: [],
+        workspaceAssumptions: [],
+        missingInputs: [],
+      },
+    });
+    assert.equal(candidates.workflowTemplateCandidates.some((candidate) => candidate.ref === "template.reusable-webapp"), true);
   } finally {
     await db.close();
     await rm(root, { recursive: true, force: true });
@@ -191,6 +240,59 @@ test("runtime save-template route writes workflow template drafts", async () => 
   }
 });
 
+test("runtime save-template route derives generated profile agent refs from role refs", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-template-route-generated-"));
+  try {
+    await seedSoftwareLibraryGraph(db);
+    await upsertRuntimeResourcePg(db, {
+      id: "draft-generated-route",
+      resourceType: "planner_draft",
+      resourceKey: "draft-generated-route",
+      scope: "planner",
+      status: "validated",
+      title: "Generated Route Draft",
+      payload: {
+        workflow: {
+          workflowId: "wf-generated-route",
+          title: "Generated Route Workflow",
+          tasks: [{
+            id: "task.implement-ui",
+            name: "Implement UI",
+            roleRef: "software-maker",
+            agentProfileRef: "generated.agent_profile.todo.implementer",
+            dependsOn: [],
+            skillRefs: ["skill.software-implementation"],
+            toolGrantRefs: ["tool.workspace-write"],
+            mcpGrantRefs: ["mcp.filesystem-workspace"],
+          }],
+        },
+      },
+      summary: {
+        goalPrompt: "implement ui",
+        workflowId: "wf-generated-route",
+      },
+    });
+
+    const response = await handleRuntimeRoute({ db, libraryRoot } as any, new Request("http://local/api/v2/workflow/drafts/draft-generated-route/save-template", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        scope: "software",
+        templateId: "template.generated-route-save",
+        title: "Generated Route Save",
+      }),
+    }));
+
+    assert.equal(response.status, 200);
+    const profile = await readFile(join(libraryRoot, "profiles/generated/generated-route-save/implement-ui.profile.yaml"), "utf8");
+    assert.match(profile, /agent\.software-maker/);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("runtime save-template route rejects workflow tasks without a graph-backed agent ref", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-template-route-unknown-agent-"));
@@ -232,7 +334,7 @@ test("runtime save-template route rejects workflow tasks without a graph-backed 
     }));
 
     assert.equal(response.status, 400);
-    assert.match(await response.text(), /cannot derive graph-backed agentRef/);
+    assert.match(await response.text(), /agentRef does not resolve to a graph-backed agent definition: agent\.maker/);
     assert.deepEqual(await readdir(libraryRoot), []);
   } finally {
     await db.close();

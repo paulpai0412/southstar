@@ -29,20 +29,35 @@ test("cleanup removes materialized task directory", async () => {
 test("materializes v2 task profile, tools, MCP grants, and skill bundle files for Docker mount", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-materializer-v2-"));
   const envelope = minimalEnvelopeV2();
+  envelope.contextPacket.agentsMdBlocks = [{
+    id: "agent.engineering-frontend-developer",
+    sourceType: "agents-md",
+    title: "Frontend Developer",
+    text: "Build polished React UI and preserve existing design conventions.",
+    sourceRef: "agent.engineering-frontend-developer",
+    tokenEstimate: 10,
+  }];
 
   const result = await materializeTaskEnvelope(envelope, { runRoot: root });
 
+  assert.equal(
+    await readFile(join(result.taskDir, "AGENTS.md"), "utf8"),
+    "# Frontend Developer\n\nBuild polished React UI and preserve existing design conventions.\n",
+  );
   assert.deepEqual(JSON.parse(await readFile(join(result.taskDir, "agent-profile", "profile.json"), "utf8")), envelope.agentProfile);
   assert.deepEqual(JSON.parse(await readFile(join(result.taskDir, "tools", "tool-policy.json"), "utf8")), envelope.toolProxyPolicy);
   assert.deepEqual(JSON.parse(await readFile(join(result.taskDir, "mcp", "grants.json"), "utf8")), envelope.mcpGrants);
+  assert.deepEqual(JSON.parse(await readFile(join(result.taskDir, "mcp", "runtime-config.json"), "utf8")), envelope.mcpRuntimeConfig);
   assert.equal(await readFile(join(result.taskDir, "skills", "skill.react-ui", "references", "patterns.md"), "utf8"), "Use controlled inputs.");
   const manifest = JSON.parse(await readFile(join(result.taskDir, "runtime-manifest.json"), "utf8"));
   assert.equal(manifest.schemaVersion, "southstar.runtime_bundle_manifest.v1");
   assert.equal(manifest.defaultContainerBasePath, "/southstar-runs/run-v2/task-v2");
   assert.equal(manifest.policy.toolsAreGrantPolicyOnly, true);
   assert.equal(manifest.policy.mcpEntriesAreGrantPolicyOnly, true);
+  assert.equal(manifest.files.some((file: { relativePath: string }) => file.relativePath === "AGENTS.md"), true);
   assert.equal(manifest.files.some((file: { relativePath: string }) => file.relativePath === "tools/tool-policy.json"), true);
   assert.equal(manifest.files.some((file: { relativePath: string }) => file.relativePath === "mcp/grants.json"), true);
+  assert.equal(manifest.files.some((file: { relativePath: string }) => file.relativePath === "mcp/runtime-config.json"), true);
   assert.equal(manifest.files.some((file: { relativePath: string }) => file.relativePath === "skills/skill.react-ui/references/patterns.md"), true);
 });
 
@@ -172,6 +187,26 @@ function minimalEnvelopeV2(): TaskEnvelopeV2 {
       }],
     }],
     mcpGrants: [{ serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] }],
+    mcpRuntimeConfig: {
+      schemaVersion: "southstar.mcp_runtime_config.v1",
+      runId: "run-v2",
+      taskId: "task-v2",
+      servers: [{
+        serverId: "filesystem-workspace",
+        transport: "stdio",
+        allowedTools: ["read_file", "write_file"],
+        command: {
+          argv: ["node", "/app/src/v2/mcp/filesystem-workspace-server.ts"],
+          cwd: "/workspace/repo",
+        },
+        envFromVault: [],
+      }],
+      policy: {
+        failClosed: true,
+        secretsMaterializedByVault: true,
+        configContainsSecretValues: false,
+      },
+    },
     vaultLeases: [],
     toolProxyPolicy: {
       schemaVersion: "southstar.tool_proxy_policy.v1",

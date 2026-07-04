@@ -1,5 +1,6 @@
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
 import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
@@ -98,6 +99,9 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
 
       const contextPacketId = `ctx-${input.runId}-${input.taskId}-${input.attemptId}`;
       const taskEnvelopeId = `task-envelope-${input.runId}-${input.taskId}-${input.attemptId}`;
+      const agentsMdBlocks = contextPolicy?.includeAgentsMd === false
+        ? []
+        : await buildAgentsMdBlocks(db, unique([agentProfile.agentRef, ...agentProfile.agentsMdRefs].filter((ref): ref is string => Boolean(ref))));
       const contextPacket: ContextPacket = {
         id: contextPacketId,
         runId: input.runId,
@@ -109,7 +113,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         taskGoal: workflow.goalPrompt,
         roleInstruction: role.responsibility,
         systemInstruction: agentProfile.systemPromptRef,
-        agentsMdBlocks: [],
+        agentsMdBlocks,
         artifactContracts: artifactContractBlocks(artifactContracts),
         selectedMemories: assembly.selected.filter((block) => block.sourceType === "memory"),
         selectedKnowledgeCards: assembly.selected.filter((block) => block.sourceType === "knowledge_card"),
@@ -140,6 +144,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         contextPacket,
         skills: materializedLibrary.skills,
         mcpGrants: materializedLibrary.mcpGrants,
+        mcpRuntimeConfig: materializedLibrary.mcpRuntimeConfig,
         vaultLeases: materializedLibrary.vaultLeases,
         toolProxyPolicy: materializedLibrary.toolProxyPolicy,
         materializedLibraryRefs: {
@@ -317,6 +322,34 @@ function inlineInstructionBlocks(instruction: string | undefined): ContextBlock[
   }];
 }
 
+async function buildAgentsMdBlocks(db: SouthstarDb, refs: string[]): Promise<ContextBlock[]> {
+  const blocks: ContextBlock[] = [];
+  for (const ref of refs) {
+    const object = ref.startsWith("agent.") ? await findLibraryObjectByKey(db, ref) : null;
+    const text = object?.objectKind === "agent_definition"
+      ? agentDefinitionMarkdown(object.state, ref)
+      : `Reference ${ref}.`;
+    const title = stringValue(object?.state.title) ?? stringValue(object?.state.name) ?? ref;
+    blocks.push({
+      id: `agents-md-${title}`.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase(),
+      sourceType: "agents-md",
+      title,
+      text,
+      sourceRef: ref,
+      tokenEstimate: estimateTokens(text),
+    });
+  }
+  return blocks;
+}
+
+function agentDefinitionMarkdown(state: Record<string, unknown>, ref: string): string {
+  const body = stringValue(state.body) ?? stringValue(state.content) ?? stringValue(state.markdown);
+  const title = stringValue(state.title) ?? stringValue(state.name) ?? ref;
+  if (body) return body;
+  const description = stringValue(state.description);
+  return [`# ${title}`, description ?? `Agent definition ${ref}.`].join("\n\n");
+}
+
 function skillBlocks(
   skills: Array<{ skillId: string; instructions: string }>,
 ): ContextBlock[] {
@@ -354,6 +387,10 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
 }
 
 function isHostMountPath(value: string): boolean {

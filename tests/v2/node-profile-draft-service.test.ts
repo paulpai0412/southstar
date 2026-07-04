@@ -52,7 +52,7 @@ test("does not compose unapproved primitive refs through graph edges", async () 
     });
     await upsertLibraryEdge(db, {
       fromObjectKey: "agent.frontend-developer",
-      edgeType: "supports_skill",
+      edgeType: "uses",
       toObjectKey: "skill.experimental-ui",
       scope: "software",
     });
@@ -99,7 +99,7 @@ test("saves a valid profile draft as a local file and syncs it to graph", async 
     const savedProfileId = "profile.generated.todo-webapp.implement-ui";
     assert.equal((await findLibraryObjectByKey(db, savedProfileId))?.status, "draft");
     assert.deepEqual(
-      (await findLibraryEdgesFrom(db, savedProfileId, "supports_skill", { scope: "software" }))
+      (await findLibraryEdgesFrom(db, savedProfileId, "uses", { scope: "software" }))
         .map((edge) => edge.toObjectKey),
       ["skill.react-ui"],
     );
@@ -312,7 +312,7 @@ async function seedProfilePrimitives(db: Awaited<ReturnType<typeof createTestPos
   });
   await upsertLibraryEdge(db, {
     fromObjectKey: "agent.frontend-developer",
-    edgeType: "supports_skill",
+    edgeType: "uses",
     toObjectKey: "skill.react-ui",
     scope: "software",
   });

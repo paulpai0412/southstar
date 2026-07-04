@@ -4,19 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { materializeTaskEnvelope } from "../../src/v2/agent-runner/materializer.ts";
-import { buildTaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
+import { createManagedContextAssembler } from "../../src/v2/context/managed-context-assembler.ts";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
-import { materializeTaskLibraryRefs } from "../../src/v2/orchestration/runtime-library-materializer.ts";
+import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
+import { createWorkflowRunPg, createWorkflowTaskPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("graph metadata composition refs materialize into Docker-visible task bundle", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-root-"));
   const runRoot = await mkdtemp(join(tmpdir(), "southstar-run-root-"));
+  const previousLibraryRoot = process.env.SOUTHSTAR_LIBRARY_ROOT;
+  process.env.SOUTHSTAR_LIBRARY_ROOT = libraryRoot;
   try {
     await seedExecutableGraph(db, libraryRoot);
     const candidatePacket = await resolveWorkflowCandidates(db, {
@@ -50,73 +53,56 @@ test("graph metadata composition refs materialize into Docker-visible task bundl
     const task = compiled.workflow.tasks[0]!;
     const profile = compiled.workflow.agentProfiles!.find((candidate) => candidate.id === task.agentProfileRef)!;
     const role = compiled.workflow.roles!.find((candidate) => candidate.id === task.roleRef)!;
-    const materialized = await materializeTaskLibraryRefs(db, {
+    assert.equal(profile.agentRef, "agent.frontend-developer");
+    assert.equal(profile.agentsMdRefs.includes("agent.frontend-developer"), true);
+    await createWorkflowRunPg(db, {
+      id: "run-chain",
+      status: "running",
+      domain: "software",
+      goalPrompt: "Build todo web app",
+      workflowManifestJson: JSON.stringify(compiled.workflow),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: task.id,
+      runId: "run-chain",
+      taskKey: task.name,
+      status: "claimed",
+      sortOrder: 0,
+      dependsOn: task.dependsOn,
+      rootSessionId: "session-chain",
+    });
+    const assembler = createManagedContextAssembler(db, {
+      domainPack: {
+        ...softwareDomainPack,
+        artifactContracts: [
+          ...softwareDomainPack.artifactContracts,
+          { id: "web_app", artifactType: "web-app", requiredFields: ["summary"], evidenceFields: ["summary"] },
+        ],
+        evaluatorPipelines: [
+          ...softwareDomainPack.evaluatorPipelines,
+          { id: "web-app", evaluators: [], onFailure: { defaultStrategy: "ask-human" } },
+        ],
+      },
+    });
+    const assembled = await assembler.buildForTask({
       runId: "run-chain",
       taskId: task.id,
       sessionId: "session-chain",
-      libraryRoot,
-      instructionRefs: task.instructionRefs,
-      skillRefs: task.skillRefs,
-      toolGrantRefs: task.toolGrantRefs,
-      mcpGrantRefs: task.mcpGrantRefs,
-      vaultLeasePolicyRefs: task.vaultLeasePolicyRefs,
+      attemptId: "implement-ui-attempt-1",
+      handExecutionId: "hand-execution:run-chain:implement-ui:implement-ui-attempt-1",
+      dependsOn: task.dependsOn,
     });
-    const envelope = buildTaskEnvelopeV2({
-      runId: "run-chain",
-      workflowId: compiled.workflow.workflowId,
-      taskId: task.id,
-      domain: "software",
-      intent: "implement_feature",
-      role,
-      agentProfile: profile,
-      harness: compiled.workflow.harnessDefinitions[0]!,
-      contextPacket: {
-        id: "ctx-chain",
-        runId: "run-chain",
-        taskId: task.id,
-        rootSessionId: "session-chain",
-        executionAttempt: 1,
-        roleRef: role.id,
-        agentProfileRef: profile.id,
-        taskGoal: "Build todo web app",
-        roleInstruction: role.responsibility,
-        systemInstruction: profile.promptTemplateRef,
-        agentsMdBlocks: [],
-        artifactContracts: [],
-        selectedMemories: [],
-        selectedKnowledgeCards: [],
-        priorArtifacts: [],
-        skillInstructions: [],
-        mcpGrantSummary: [],
-        forbiddenActions: [],
-        budget: profile.budgetPolicy,
-        tokenEstimate: { total: 0, bySourceType: {} },
-        excludedCandidates: [],
-        managedSourceRefs: {
-          rawEventRefs: [],
-          omittedEventRanges: [],
-          transformRefs: [],
-          checkpointRefs: [],
-        },
-      },
-      skills: materialized.skills,
-      mcpGrants: materialized.mcpGrants,
-      vaultLeases: materialized.vaultLeases,
-      toolProxyPolicy: materialized.toolProxyPolicy,
-      materializedLibraryRefs: {
-        instructionRefs: task.instructionRefs,
-        skillRefs: task.skillRefs,
-        toolGrantRefs: task.toolGrantRefs,
-        mcpGrantRefs: task.mcpGrantRefs,
-        vaultLeasePolicyRefs: task.vaultLeasePolicyRefs,
-      },
-      artifactContracts: [],
-      evaluatorPipeline: { id: "evaluator.generated", evaluators: [], onFailure: { defaultStrategy: "ask-human" } },
-      session: { sessionId: "session-chain", maxRepairAttempts: 1 },
-    });
+    assert.equal(assembled.taskEnvelope.role.id, role.id);
+    assert.equal(assembled.taskEnvelope.agentProfile.id, profile.id);
+    assert.match(assembled.contextPacket.agentsMdBlocks.map((block) => block.text).join("\n"), /frontend developer agent playbook/);
 
-    const taskMaterialization = await materializeTaskEnvelope(envelope, { runRoot });
+    const taskMaterialization = await materializeTaskEnvelope(assembled.taskEnvelope, { runRoot });
 
+    assert.match(await readFile(join(taskMaterialization.taskDir, "AGENTS.md"), "utf8"), /frontend developer agent playbook/);
     assert.match(await readFile(join(taskMaterialization.taskDir, "skills", "skill.react-ui", "SKILL.md"), "utf8"), /Build React UI/);
     assert.equal(await readFile(join(taskMaterialization.taskDir, "skills", "skill.react-ui", "references", "patterns.md"), "utf8"), "Use controlled inputs.");
     assert.equal(JSON.parse(await readFile(join(taskMaterialization.taskDir, "tools", "tool-policy.json"), "utf8")).allowedTools.includes("workspace-write"), true);
@@ -126,6 +112,8 @@ test("graph metadata composition refs materialize into Docker-visible task bundl
     assert.equal(runtimeManifest.policy.mcpEntriesAreGrantPolicyOnly, true);
     assert.equal(runtimeManifest.files.some((file: { relativePath: string }) => file.relativePath === "agent-profile/profile.json"), true);
   } finally {
+    if (previousLibraryRoot === undefined) delete process.env.SOUTHSTAR_LIBRARY_ROOT;
+    else process.env.SOUTHSTAR_LIBRARY_ROOT = previousLibraryRoot;
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
     await rm(runRoot, { recursive: true, force: true });
@@ -164,6 +152,38 @@ function generatedCompositionPlan(): WorkflowCompositionPlan {
       risk: "medium",
       reason: "Generated from graph metadata.",
       validationStatus: "validated",
+      agentProfile: {
+        workerKind: "execution_worker",
+        provider: "pi",
+        model: "pi-agent-default",
+        thinkingLevel: "high",
+        harnessRef: "pi",
+        instruction: "Implement the todo web app using the approved React UI skill, workspace write tool, filesystem MCP grant, and React review instruction. Produce artifact.web_app.",
+        promptTemplateRef: "react-review",
+        contextPolicyRef: "context.generated",
+        sessionPolicyRef: "session.generated",
+        memoryScopes: [],
+        agentsMdRefs: [],
+        toolPolicy: {
+          allowedTools: ["tool.workspace-write"],
+          deniedTools: [],
+          requiresApprovalFor: [],
+        },
+        budgetPolicy: {
+          maxInputTokens: 120000,
+          maxOutputTokens: 8192,
+          maxWallTimeSeconds: 900,
+        },
+        execution: {
+          engine: "tork",
+          image: "southstar/pi-agent:local",
+          command: ["southstar-agent-runner"],
+          env: {},
+          mounts: [],
+          timeoutSeconds: 900,
+          infraRetry: { maxAttempts: 1 },
+        },
+      },
     }],
   };
 }
@@ -193,6 +213,7 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
     state: {
       scope: "software",
       title: "Frontend Developer",
+      body: "Use the frontend developer agent playbook for implementation quality and UI consistency.",
       runtimeRole: {
         id: "frontend-developer",
         responsibility: "Build frontend UI",
@@ -256,7 +277,7 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
     state: { scope: "software", title: "Web App Evaluator" },
   });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "provides_capability", toObjectKey: "capability.frontend-ui", scope: "software" });
-  await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "supports_skill", toObjectKey: "skill.react-ui", scope: "software" });
+  await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "produces_artifact", toObjectKey: "artifact.web_app", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.workspace-write", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
