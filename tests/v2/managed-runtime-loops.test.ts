@@ -2,8 +2,17 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
-import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
+import {
+  contextPolicy,
+  implementationReportContract,
+  makerAgentProfile,
+  makerRole,
+  memoryPolicy,
+  sessionPolicy,
+  softwareFeatureQualityPipeline,
+  workspacePolicy,
+} from "./fixtures/runtime-manifest-primitives.ts";
 import {
   RECOVERY_DECISION_RESOURCE_TYPE,
   RECOVERY_DECISION_SCHEMA_VERSION,
@@ -317,11 +326,8 @@ async function sleep(ms: number): Promise<void> {
 }
 
 function managedLoopManifest(workflowId: string, taskId: string): unknown {
-  const makerRole = softwareDomainPack.roles.find((role) => role.id === "maker");
-  const makerProfile = softwareDomainPack.agentProfiles.find((profile) => profile.id === "software-maker-pi");
-  if (!makerRole || !makerProfile) {
-    throw new Error("softwareDomainPack missing maker role/profile for managed runtime loop test manifest");
-  }
+  const role = makerRole();
+  const profile = makerAgentProfile();
   return {
     schemaVersion: "southstar.v2",
     workflowId,
@@ -329,8 +335,8 @@ function managedLoopManifest(workflowId: string, taskId: string): unknown {
     goalPrompt: "managed loop",
     domain: "software",
     intent: "implement_feature",
-    roles: [makerRole],
-    agentProfiles: [makerProfile],
+    roles: [role],
+    agentProfiles: [profile],
     tasks: [{
       id: taskId,
       name: "Implement",
@@ -340,7 +346,7 @@ function managedLoopManifest(workflowId: string, taskId: string): unknown {
       agentProfileRef: "software-maker-pi",
       evaluatorPipelineRef: "software-feature-quality",
       requiredArtifactRefs: ["implementation_report"],
-      skillRefs: ["software.implementation"],
+      skillRefs: ["skill.software-implementation"],
       mcpGrantRefs: [],
       rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
       execution: {
@@ -374,6 +380,13 @@ function managedLoopManifest(workflowId: string, taskId: string): unknown {
     progressPolicy: { firstEventWithinSeconds: 30, minEventsPerLongTask: 1 },
     steeringPolicy: { enabled: true, acceptedSignals: [] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+    artifactContracts: [implementationReportContract()],
+    evaluatorPipelines: [softwareFeatureQualityPipeline()],
+    contextPolicies: [contextPolicy()],
+    sessionPolicies: [sessionPolicy()],
+    memoryPolicies: [memoryPolicy()],
+    workspacePolicies: [workspacePolicy()],
+    stopConditions: [],
     executionPolicy: { maxParallelTasks: 1 },
     effortPolicy: { maxParallelTasks: 1, complexity: "standard", maxToolCallsPerTask: 20 },
   };

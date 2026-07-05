@@ -8,6 +8,8 @@ import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
 import { writeCallbackMemoryPg } from "../memory/writeback-policy.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
+import type { WorkflowComposer } from "../orchestration/composer.ts";
+import { maybeApplyDynamicRepairRevisionPg, type DynamicRepairRevisionResult } from "../runtime-revision/dynamic-repair-revision.ts";
 import { assertNoRawCredentialPayloadPg } from "../tool-proxy/policy-enforcer.ts";
 import { getExecutorBindingPg, updateExecutorBindingStatusPg } from "./postgres-bindings.ts";
 import type { TaskRunCallbackResult } from "./tork-callback.ts";
@@ -22,9 +24,19 @@ export type PostgresCallbackIngestionResult = {
   artifactResourceId?: string;
   artifactRefId?: string;
   ignoredRunStatus?: string;
+  dynamicRepairRevision?: DynamicRepairRevisionResult;
 };
 
-export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTaskRunCallbackResult): Promise<PostgresCallbackIngestionResult> {
+export type PostgresCallbackIngestionOptions = {
+  workflowComposer?: WorkflowComposer;
+  maxDynamicRepairRounds?: number;
+};
+
+export async function ingestTaskRunResultPg(
+  db: SouthstarDb,
+  result: PostgresTaskRunCallbackResult,
+  options: PostgresCallbackIngestionOptions = {},
+): Promise<PostgresCallbackIngestionResult> {
   const attemptId = normalizedAttemptId(result);
   const handExecutionId = canonicalHandExecutionId(result.runId, result.taskId, attemptId);
   const receipt = callbackReceiptToken(result, handExecutionId);
@@ -255,6 +267,17 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
       [result.ok ? "completed" : "failed", result.runId, result.taskId],
     );
 
+    const dynamicRepairRevision = result.ok || !options.workflowComposer
+      ? undefined
+      : await maybeApplyDynamicRepairRevisionPg(tx, {
+        runId: result.runId,
+        failedTaskId: result.taskId,
+        failedArtifactRefId: artifactRef.artifactRefId,
+        failedArtifact: result.artifact,
+        workflowComposer: options.workflowComposer,
+        maxDynamicRepairRounds: options.maxDynamicRepairRounds,
+      });
+
     const allTasks = await tx.query<{ status: string }>("select status from southstar.workflow_tasks where run_id = $1", [result.runId]);
     if (allTasks.rows.length > 0 && allTasks.rows.every((row) => ["completed", "failed", "cancelled", "lost", "blocked"].includes(row.status))) {
       const gateResult = await evaluateRunCompletionGatePg(tx, { runId: result.runId });
@@ -267,7 +290,12 @@ export async function ingestTaskRunResultPg(db: SouthstarDb, result: PostgresTas
       }
     }
 
-    return { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId };
+    return {
+      accepted: result.ok,
+      artifactResourceId: artifactRef.resourceId,
+      artifactRefId: artifactRef.artifactRefId,
+      ...(dynamicRepairRevision ? { dynamicRepairRevision } : {}),
+    };
   });
 }
 

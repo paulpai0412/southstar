@@ -53,8 +53,8 @@ test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref run
     assert.equal(resource.payload_json.status, "accepted");
     assert.deepEqual(resource.payload_json.contractRefs, ["contract:a", "contract:z"]);
     assert.deepEqual(resource.payload_json.contentRef, {
-      kind: "inline_digest",
-      ref: contentHash,
+      kind: "artifact_blob",
+      ref: `${expectedArtifactRefId}:content`,
       sha256: contentHash,
     });
     assert.deepEqual(resource.summary_json, {
@@ -63,6 +63,13 @@ test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref run
       contractRefs: ["contract:a", "contract:z"],
       contentHash,
     });
+    const blob = await db.one<{ body: Buffer; sha256: string; content_type: string }>(
+      "select body, sha256, content_type from southstar.artifact_blobs where id = $1",
+      [`${expectedArtifactRefId}:content`],
+    );
+    assert.equal(blob.sha256, contentHash);
+    assert.equal(blob.content_type, "application/json");
+    assert.deepEqual(JSON.parse(blob.body.toString("utf8")), { a: 1, b: 2 });
 
     const history = await db.query<{ event_type: string; idempotency_key: string | null; payload_json: { artifactRefId?: string } }>(
       "select event_type, idempotency_key, payload_json from southstar.workflow_history where run_id = $1 order by sequence",

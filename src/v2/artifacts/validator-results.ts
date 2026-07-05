@@ -1,4 +1,4 @@
-import type { ArtifactContract } from "../domain-packs/types.ts";
+import type { ArtifactContract } from "../design-library/runtime-types.ts";
 import type { EvidencePacket, ValidatorResult } from "./types.ts";
 import { VALIDATOR_RESULT_SCHEMA_VERSION } from "./types.ts";
 

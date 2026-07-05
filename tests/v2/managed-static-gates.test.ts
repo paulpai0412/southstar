@@ -46,8 +46,7 @@ test("V2 is the only runtime source surface", () => {
 
 test("V2 source and real Postgres harness do not carry Northstar or SQLite runtime contracts", () => {
   const checkedFiles = [
-    "src/v2/domain-packs/software.ts",
-    "src/v2/domain-packs/types.ts",
+    "src/v2/design-library/runtime-types.ts",
     "tests/e2e-postgres/postgres-real-harness.ts",
   ];
 

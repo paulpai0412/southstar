@@ -1,4 +1,5 @@
-import type { BudgetPolicy } from "../domain-packs/types.ts";
+import type { BudgetPolicy } from "../design-library/runtime-types.ts";
+import type { WorkflowNodePromptSpec } from "../design-library/types.ts";
 
 export const CONTEXT_ASSEMBLY_TRACE_RESOURCE_TYPE = "context_assembly_trace";
 export const CONTEXT_ASSEMBLY_TRACE_SCHEMA_VERSION = "southstar.context_assembly_trace.v1";
@@ -13,6 +14,7 @@ export type ContextPacket = {
   agentProfileRef: string;
   taskGoal: string;
   roleInstruction: string;
+  nodePromptSpec?: WorkflowNodePromptSpec;
   systemInstruction?: string;
   agentsMdBlocks: ContextBlock[];
   artifactContracts: ContextBlock[];
@@ -37,6 +39,7 @@ export type ManagedContextSourceRefs = {
   transformRefs: Array<{ id: string; kind: "summary" | "filter" | "redaction"; sourceEventIds: string[] }>;
   checkpointRefs: string[];
   artifactRefs?: string[];
+  failureArtifactRefs?: string[];
   memoryRefs?: string[];
   rollbackMarkerRefs?: string[];
   resetMarkerRefs?: string[];

@@ -1,14 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTaskEnvelopeV2, refreshTaskEnvelopeV2Prompt } from "../../src/v2/agent-runner/task-envelope.ts";
-import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import type { ContextPacket } from "../../src/v2/context/types.ts";
+import { implementationReportContract, makerAgentProfile, makerRole, softwareFeatureQualityPipeline } from "./fixtures/runtime-manifest-primitives.ts";
 
 test("refreshTaskEnvelopeV2Prompt rebuilds agentPrompt after context mutations", () => {
-  const role = required(softwareDomainPack.roles.find((item) => item.id === "maker"));
-  const agentProfile = required(softwareDomainPack.agentProfiles.find((item) => item.id === "software-maker-pi"));
-  const evaluatorPipeline = required(softwareDomainPack.evaluatorPipelines.find((item) => item.id === "software-feature-quality"));
-  const artifactContracts = softwareDomainPack.artifactContracts.filter((item) => item.id === "implementation_report");
+  const role = makerRole();
+  const agentProfile = makerAgentProfile();
+  const evaluatorPipeline = softwareFeatureQualityPipeline();
+  const artifactContracts = [implementationReportContract()];
 
   const base = buildTaskEnvelopeV2({
     runId: "run-refresh",
@@ -84,9 +84,4 @@ function packet(budget: ContextPacket["budget"]): ContextPacket {
     tokenEstimate: { total: 10, bySourceType: {} },
     excludedCandidates: [],
   };
-}
-
-function required<T>(value: T | undefined): T {
-  if (!value) throw new Error("missing fixture value");
-  return value;
 }

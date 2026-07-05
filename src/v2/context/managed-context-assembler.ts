@@ -1,10 +1,9 @@
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
-import { softwareDomainPack } from "../domain-packs/software.ts";
-import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
+import type { WorkflowNodePromptSpec } from "../design-library/types.ts";
+import type { ArtifactContract } from "../design-library/runtime-types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
-import { normalizeLibraryRefs, type LibraryRefKind } from "../orchestration/library-ref-compat.ts";
 import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
 import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
@@ -19,9 +18,7 @@ import {
   type ContextPacket,
 } from "./types.ts";
 
-export type ManagedContextAssemblerOptions = {
-  domainPack?: DomainPack;
-};
+export type ManagedContextAssemblerOptions = Record<string, never>;
 
 export type BuildManagedTaskContextInput = {
   runId: string;
@@ -42,7 +39,7 @@ export type BuildManagedTaskContextResult = {
 };
 
 export function createManagedContextAssembler(db: SouthstarDb, options: ManagedContextAssemblerOptions = {}) {
-  const domainPack = options.domainPack ?? softwareDomainPack;
+  void options;
   return {
     async buildForTask(input: BuildManagedTaskContextInput): Promise<BuildManagedTaskContextResult> {
       const workflow = await readWorkflow(db, input.runId);
@@ -56,28 +53,38 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
       const role = required(workflowRoles.find((candidate) => candidate.id === roleRef), `missing role ${roleRef}`);
       const agentProfile = required(workflowProfiles.find((candidate) => candidate.id === agentProfileRef), `missing agent profile ${agentProfileRef}`);
       const harness = required(workflow.harnessDefinitions.find((candidate) => candidate.id === agentProfile.harnessRef), `missing harness ${agentProfile.harnessRef}`);
-      const evaluatorPipeline = required(domainPack.evaluatorPipelines.find((candidate) => candidate.id === evaluatorPipelineRef), `missing evaluator pipeline ${evaluatorPipelineRef}`);
-      const artifactContracts = artifactContractsForTask(domainPack, task);
-      const contextPolicy = domainPack.contextPolicies.find((policy) => policy.id === (task.contextPolicyRef ?? agentProfile.contextPolicyRef)) ?? domainPack.contextPolicies[0];
-      const memoryPolicy = domainPack.memoryPolicies.find((policy) => policy.id === contextPolicy?.memoryPolicyRef) ?? domainPack.memoryPolicies[0];
+      const evaluatorPipelines = required(workflow.evaluatorPipelines, `missing workflow evaluatorPipelines in manifest ${workflow.workflowId}`);
+      const contextPolicies = required(workflow.contextPolicies, `missing workflow contextPolicies in manifest ${workflow.workflowId}`);
+      const memoryPolicies = required(workflow.memoryPolicies, `missing workflow memoryPolicies in manifest ${workflow.workflowId}`);
+      const evaluatorPipeline = required(evaluatorPipelines.find((candidate) => candidate.id === evaluatorPipelineRef), `missing evaluator pipeline ${evaluatorPipelineRef}`);
+      const artifactContracts = artifactContractsForTask(workflow, task);
+      const contextPolicy = required(
+        contextPolicies.find((policy) => policy.id === (task.contextPolicyRef ?? agentProfile.contextPolicyRef)) ?? contextPolicies[0],
+        `missing context policy ${task.contextPolicyRef ?? agentProfile.contextPolicyRef ?? "(default)"}`,
+      );
+      const memoryPolicy = required(
+        memoryPolicies.find((policy) => policy.id === contextPolicy.memoryPolicyRef) ?? memoryPolicies[0],
+        `missing memory policy ${contextPolicy.memoryPolicyRef}`,
+      );
       const sources = await collectContextSourcesPg(db, {
         runId: input.runId,
         taskId: input.taskId,
         sessionId: input.sessionId,
         dependsOn: input.dependsOn,
         query: `${workflow.goalPrompt} ${task.name}`.trim(),
-        memoryScopes: task.memoryScopeRefs ?? agentProfile.memoryScopes ?? memoryPolicy?.scopes ?? [],
-        allowedMemoryKinds: memoryPolicy?.allowedKinds ?? [],
-        maxMemoryCandidates: memoryPolicy?.maxCandidates ?? workflow.memoryPolicy.retrievalLimit,
+        memoryScopes: task.memoryScopeRefs ?? agentProfile.memoryScopes ?? memoryPolicy.scopes,
+        allowedMemoryKinds: memoryPolicy.allowedKinds,
+        maxMemoryCandidates: memoryPolicy.maxCandidates,
         checkpointRefs: input.checkpointRefs ?? [],
+        failureArtifactRefIds: dynamicFailureArtifactRefIds(task.promptInputs),
       });
       const assembly = assembleContextBlocks({
         candidates: [
           ...sources.candidates,
           ...failureSummaryCandidates(input),
         ],
-        maxInputTokens: contextPolicy?.maxInputTokens ?? agentProfile.budgetPolicy.maxInputTokens,
-        maxMemoryTokens: memoryPolicy?.maxInjectedTokens ?? 1_500,
+        maxInputTokens: contextPolicy.maxInputTokens ?? agentProfile.budgetPolicy.maxInputTokens,
+        maxMemoryTokens: memoryPolicy.maxInjectedTokens,
         pendingMemoryRefs: sources.pendingMemoryRefs,
         invalidatedSourceRefs: sources.invalidatedSourceRefs,
         requiredSourceRefs: [],
@@ -89,17 +96,17 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         runId: input.runId,
         taskId: input.taskId,
         sessionId: input.sessionId,
-        instructionRefs: libraryRefs(task.instructionRefs, "instruction.", "instruction"),
-        skillRefs: libraryRefs(task.skillRefs, "skill.", "skill"),
-        toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
-        mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
-        vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+        instructionRefs: libraryRefs(task.instructionRefs),
+        skillRefs: libraryRefs(task.skillRefs),
+        toolGrantRefs: libraryRefs(task.toolGrantRefs),
+        mcpGrantRefs: libraryRefs(task.mcpGrantRefs),
+        vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs),
         libraryRoot: process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
       });
 
       const contextPacketId = `ctx-${input.runId}-${input.taskId}-${input.attemptId}`;
       const taskEnvelopeId = `task-envelope-${input.runId}-${input.taskId}-${input.attemptId}`;
-      const agentsMdBlocks = contextPolicy?.includeAgentsMd === false
+      const agentsMdBlocks = contextPolicy.includeAgentsMd === false
         ? []
         : await buildAgentsMdBlocks(db, unique([agentProfile.agentRef, ...agentProfile.agentsMdRefs].filter((ref): ref is string => Boolean(ref))));
       const contextPacket: ContextPacket = {
@@ -112,6 +119,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         agentProfileRef: agentProfile.id,
         taskGoal: workflow.goalPrompt,
         roleInstruction: role.responsibility,
+        nodePromptSpec: nodePromptSpecFromPromptInputs(task.promptInputs),
         systemInstruction: agentProfile.systemPromptRef,
         agentsMdBlocks,
         artifactContracts: artifactContractBlocks(artifactContracts),
@@ -136,7 +144,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         runId: input.runId,
         workflowId: workflow.workflowId,
         taskId: input.taskId,
-        domain: workflow.domain ?? domainPack.id,
+        domain: workflow.domain ?? "generated",
         intent: workflow.intent ?? "implement_feature",
         role,
         agentProfile,
@@ -148,11 +156,11 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         vaultLeases: materializedLibrary.vaultLeases,
         toolProxyPolicy: materializedLibrary.toolProxyPolicy,
         materializedLibraryRefs: {
-          instructionRefs: libraryRefs(task.instructionRefs, "instruction.", "instruction"),
-          skillRefs: libraryRefs(task.skillRefs, "skill.", "skill"),
-          toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
-          mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
-          vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+          instructionRefs: libraryRefs(task.instructionRefs),
+          skillRefs: libraryRefs(task.skillRefs),
+          toolGrantRefs: libraryRefs(task.toolGrantRefs),
+          mcpGrantRefs: libraryRefs(task.mcpGrantRefs),
+          vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs),
         },
         artifactContracts,
         evaluatorPipeline,
@@ -266,9 +274,10 @@ async function readWorkspaceHandle(db: SouthstarDb, runId: string): Promise<Task
   };
 }
 
-function artifactContractsForTask(domainPack: DomainPack, task: WorkflowTaskDefinition): ArtifactContract[] {
+function artifactContractsForTask(workflow: SouthstarWorkflowManifest, task: WorkflowTaskDefinition): ArtifactContract[] {
+  const artifactContracts = required(workflow.artifactContracts, `missing workflow artifactContracts in manifest ${workflow.workflowId}`);
   return (task.requiredArtifactRefs ?? [])
-    .map((artifactRef) => required(domainPack.artifactContracts.find((contract) => contract.id === artifactRef), `missing artifact contract ${artifactRef}`));
+    .map((artifactRef) => required(artifactContracts.find((contract) => contract.id === artifactRef), `missing artifact contract ${artifactRef}`));
 }
 
 function artifactContractBlocks(contracts: ArtifactContract[]): ContextBlock[] {
@@ -294,6 +303,122 @@ function failureSummaryCandidates(input: BuildManagedTaskContextInput): ContextB
     tokenEstimate: estimateTokens(text),
     score: 1,
   }];
+}
+
+function dynamicFailureArtifactRefIds(promptInputs: Record<string, unknown> | undefined): string[] {
+  const dynamicRepair = asRecord(promptInputs?.dynamicRepair);
+  const refs = [
+    stringValue(dynamicRepair.failedArtifactRefId),
+    ...stringArray(dynamicRepair.failedArtifactRefIds),
+  ];
+  return [...new Set(refs.filter((ref): ref is string => Boolean(ref)))];
+}
+
+function nodePromptSpecFromPromptInputs(promptInputs: Record<string, unknown> | undefined): WorkflowNodePromptSpec | undefined {
+  const value = asRecord(promptInputs?.nodePromptSpec);
+  if (!value) return undefined;
+  const nodeType = workflowNodePromptType(value.nodeType);
+  const goal = stringValue(value.goal);
+  const requirements = stringArray(value.requirements);
+  const expectedOutputs = stringArray(value.expectedOutputs);
+  const acceptanceCriteria = stringArray(value.acceptanceCriteria);
+  if (!nodeType || !goal || requirements.length === 0 || expectedOutputs.length === 0 || acceptanceCriteria.length === 0) {
+    return undefined;
+  }
+  return {
+    nodeType,
+    goal,
+    requirements,
+    boundaries: stringArray(value.boundaries),
+    nonGoals: stringArray(value.nonGoals),
+    deliverableDocuments: deliverableDocuments(value.deliverableDocuments),
+    expectedOutputs,
+    testCases: nodePromptTestCases(value.testCases),
+    acceptanceCriteria,
+    ...(stringValue(value.failureReportContract) ? { failureReportContract: stringValue(value.failureReportContract)! } : {}),
+    ...(stringArray(value.planningQuestions).length > 0 ? { planningQuestions: stringArray(value.planningQuestions) } : {}),
+    ...(stringArray(value.decisionCriteria).length > 0 ? { decisionCriteria: stringArray(value.decisionCriteria) } : {}),
+    ...(stringValue(value.planArtifactContract) ? { planArtifactContract: stringValue(value.planArtifactContract)! } : {}),
+    ...(stringArray(value.implementationScope).length > 0 ? { implementationScope: stringArray(value.implementationScope) } : {}),
+    ...(stringArray(value.filesLikelyToTouch).length > 0 ? { filesLikelyToTouch: stringArray(value.filesLikelyToTouch) } : {}),
+    ...(stringArray(value.verificationChecks).length > 0 ? { verificationChecks: stringArray(value.verificationChecks) } : {}),
+    ...(stringValue(value.failureArtifactContract) ? { failureArtifactContract: stringValue(value.failureArtifactContract)! } : {}),
+    ...(stringArray(value.repairInputs).length > 0 ? { repairInputs: stringArray(value.repairInputs) } : {}),
+    ...(stringArray(value.mustPreserve).length > 0 ? { mustPreserve: stringArray(value.mustPreserve) } : {}),
+    ...(stringArray(value.reverificationChecks).length > 0 ? { reverificationChecks: stringArray(value.reverificationChecks) } : {}),
+    ...(stringArray(value.reviewChecklist).length > 0 ? { reviewChecklist: stringArray(value.reviewChecklist) } : {}),
+    ...(stringArray(value.riskCriteria).length > 0 ? { riskCriteria: stringArray(value.riskCriteria) } : {}),
+    ...(stringArray(value.summarySections).length > 0 ? { summarySections: stringArray(value.summarySections) } : {}),
+    ...(stringArray(value.handoffCriteria).length > 0 ? { handoffCriteria: stringArray(value.handoffCriteria) } : {}),
+  };
+}
+
+function deliverableDocuments(value: unknown): WorkflowNodePromptSpec["deliverableDocuments"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    const kind = deliverableDocumentKind(record?.kind);
+    const title = stringValue(record?.title);
+    const required = typeof record?.required === "boolean" ? record.required : undefined;
+    const format = deliverableDocumentFormat(record?.format);
+    const description = stringValue(record?.description);
+    if (!kind || !title || required === undefined || !format || !description) return [];
+    return [{ kind, title, required, format, description }];
+  });
+}
+
+function deliverableDocumentKind(value: unknown): WorkflowNodePromptSpec["deliverableDocuments"][number]["kind"] | undefined {
+  if (
+    value === "design"
+    || value === "implementation"
+    || value === "test"
+    || value === "acceptance"
+    || value === "verification"
+    || value === "summary"
+    || value === "handoff"
+    || value === "other"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function deliverableDocumentFormat(value: unknown): WorkflowNodePromptSpec["deliverableDocuments"][number]["format"] | undefined {
+  if (value === "markdown" || value === "json" || value === "file" || value === "inline") return value;
+  return undefined;
+}
+
+function workflowNodePromptType(value: unknown): WorkflowNodePromptSpec["nodeType"] | undefined {
+  if (
+    value === "plan"
+    || value === "implement"
+    || value === "verify"
+    || value === "repair"
+    || value === "review"
+    || value === "summary"
+    || value === "general"
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function nodePromptTestCases(value: unknown): WorkflowNodePromptSpec["testCases"] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    const name = stringValue(record?.name);
+    const expected = stringValue(record?.expected);
+    if (!name || !expected) return [];
+    return [{
+      name,
+      expected,
+      ...(stringValue(record?.command) ? { command: stringValue(record?.command)! } : {}),
+      ...(stringValue(record?.given) ? { given: stringValue(record?.given)! } : {}),
+      ...(stringValue(record?.when) ? { when: stringValue(record?.when)! } : {}),
+      ...(stringValue(record?.then) ? { then: stringValue(record?.then)! } : {}),
+    }];
+  });
 }
 
 function instructionBlocks(
@@ -389,6 +514,10 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
 function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
@@ -406,6 +535,6 @@ function estimateTokens(text: string): number {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
-function libraryRefs(values: string[] | undefined, prefix: string, kind: LibraryRefKind): string[] {
-  return normalizeLibraryRefs({ values, prefix, kind });
+function libraryRefs(values: string[] | undefined): string[] {
+  return unique(values ?? []);
 }

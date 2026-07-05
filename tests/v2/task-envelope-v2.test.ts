@@ -1,14 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildTaskEnvelopeV2 } from "../../src/v2/agent-runner/task-envelope.ts";
-import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import type { ContextPacket } from "../../src/v2/context/types.ts";
+import { implementationReportContract, makerAgentProfile, makerRole, softwareFeatureQualityPipeline } from "./fixtures/runtime-manifest-primitives.ts";
 
 test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from ContextPacket", () => {
-  const role = required(softwareDomainPack.roles.find((item) => item.id === "maker"));
-  const agentProfile = required(softwareDomainPack.agentProfiles.find((item) => item.id === "software-maker-pi"));
-  const artifactContracts = softwareDomainPack.artifactContracts.filter((item) => item.id === "implementation_report");
-  const evaluatorPipeline = required(softwareDomainPack.evaluatorPipelines.find((item) => item.id === "software-feature-quality"));
+  const role = makerRole();
+  const agentProfile = makerAgentProfile();
+  const artifactContracts = [implementationReportContract()];
+  const evaluatorPipeline = softwareFeatureQualityPipeline();
   const envelope = buildTaskEnvelopeV2({
     runId: "run-env2",
     workflowId: "wf-env2",
@@ -104,9 +104,4 @@ function contextPacket(budget: ContextPacket["budget"]): ContextPacket {
     tokenEstimate: { total: 34, bySourceType: { prompt: 4, memory: 9 } },
     excludedCandidates: [{ sourceRef: "mem-unsupported", reason: "kind-mismatch", tokenEstimate: 5 }],
   };
-}
-
-function required<T>(value: T | undefined): T {
-  if (!value) throw new Error("missing fixture value");
-  return value;
 }

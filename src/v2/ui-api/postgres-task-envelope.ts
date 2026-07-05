@@ -1,10 +1,8 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import { softwareDomainPack } from "../domain-packs/software.ts";
-import type { ArtifactContract, DomainPack } from "../domain-packs/types.ts";
+import type { ArtifactContract } from "../design-library/runtime-types.ts";
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { ContextPacket } from "../context/types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
-import { normalizeLibraryRefs, type LibraryRefKind } from "../orchestration/library-ref-compat.ts";
 import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
 import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
 
@@ -42,31 +40,31 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
   );
   if (!taskRow) throw new Error(`unknown task: ${input.taskId}`);
   const contextPacket = await latestContextPacket(db, input);
-  const domainPack = domainPackForWorkflow(workflow);
   const workflowRoles = required(workflow.roles, `missing workflow roles in manifest ${workflow.workflowId}`);
   const workflowProfiles = required(workflow.agentProfiles, `missing workflow agentProfiles in manifest ${workflow.workflowId}`);
+  const evaluatorPipelines = required(workflow.evaluatorPipelines, `missing workflow evaluatorPipelines in manifest ${workflow.workflowId}`);
   const role = required(workflowRoles.find((candidate) => candidate.id === task.roleRef), `missing role ${task.roleRef}`);
   const agentProfile = required(workflowProfiles.find((candidate) => candidate.id === task.agentProfileRef), `missing agent profile ${task.agentProfileRef}`);
   const harness = required(workflow.harnessDefinitions.find((candidate) => candidate.id === agentProfile.harnessRef), `missing harness ${agentProfile.harnessRef}`);
-  const artifactContracts = artifactContractsForTask(domainPack, task);
-  const evaluatorPipeline = required(domainPack.evaluatorPipelines.find((candidate) => candidate.id === task.evaluatorPipelineRef), `missing evaluator pipeline ${task.evaluatorPipelineRef}`);
+  const artifactContracts = artifactContractsForTask(workflow, task);
+  const evaluatorPipeline = required(evaluatorPipelines.find((candidate) => candidate.id === task.evaluatorPipelineRef), `missing evaluator pipeline ${task.evaluatorPipelineRef}`);
   const rootSessionId = taskRow.root_session_id ?? `root-${input.runId}-${input.taskId}`;
   const materializedLibrary = await materializeTaskLibraryRefs(db, {
     runId: input.runId,
     taskId: input.taskId,
     sessionId: rootSessionId,
-    instructionRefs: libraryRefs(task.instructionRefs, "instruction.", "instruction"),
-    skillRefs: libraryRefs(task.skillRefs, "skill.", "skill"),
-    toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
-    mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
-    vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+    instructionRefs: libraryRefs(task.instructionRefs),
+    skillRefs: libraryRefs(task.skillRefs),
+    toolGrantRefs: libraryRefs(task.toolGrantRefs),
+    mcpGrantRefs: libraryRefs(task.mcpGrantRefs),
+    vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs),
     libraryRoot: process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
   });
   return buildTaskEnvelopeV2({
     runId: input.runId,
     workflowId: workflow.workflowId,
     taskId: input.taskId,
-    domain: workflow.domain ?? domainPack.id,
+    domain: workflow.domain ?? "generated",
     intent: workflow.intent ?? "implement_feature",
     role,
     agentProfile,
@@ -78,11 +76,11 @@ async function buildPostgresTaskEnvelopeFromLatestContext(db: SouthstarDb, input
     vaultLeases: materializedLibrary.vaultLeases,
     toolProxyPolicy: materializedLibrary.toolProxyPolicy,
     materializedLibraryRefs: {
-      instructionRefs: libraryRefs(task.instructionRefs, "instruction.", "instruction"),
-      skillRefs: libraryRefs(task.skillRefs, "skill.", "skill"),
-      toolGrantRefs: libraryRefs(task.toolGrantRefs, "tool.", "tool"),
-      mcpGrantRefs: libraryRefs(task.mcpGrantRefs, "mcp.", "mcp"),
-      vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs, "vault.", "vault"),
+      instructionRefs: libraryRefs(task.instructionRefs),
+      skillRefs: libraryRefs(task.skillRefs),
+      toolGrantRefs: libraryRefs(task.toolGrantRefs),
+      mcpGrantRefs: libraryRefs(task.mcpGrantRefs),
+      vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs),
     },
     artifactContracts,
     evaluatorPipeline,
@@ -131,25 +129,10 @@ async function latestContextPacket(db: SouthstarDb, input: { runId: string; task
   return row.payload_json;
 }
 
-function domainPackForWorkflow(workflow: SouthstarWorkflowManifest): DomainPack {
-  return {
-    ...softwareDomainPack,
-    id: workflow.domain ?? softwareDomainPack.id,
-    roles: workflow.roles ?? softwareDomainPack.roles,
-    agentProfiles: workflow.agentProfiles ?? softwareDomainPack.agentProfiles,
-    artifactContracts: workflow.artifactContracts ?? softwareDomainPack.artifactContracts,
-    evaluatorPipelines: workflow.evaluatorPipelines ?? softwareDomainPack.evaluatorPipelines,
-    contextPolicies: workflow.contextPolicies ?? softwareDomainPack.contextPolicies,
-    sessionPolicies: workflow.sessionPolicies ?? softwareDomainPack.sessionPolicies,
-    memoryPolicies: workflow.memoryPolicies ?? softwareDomainPack.memoryPolicies,
-    workspacePolicies: workflow.workspacePolicies ?? softwareDomainPack.workspacePolicies,
-    stopConditions: workflow.stopConditions ?? softwareDomainPack.stopConditions,
-  };
-}
-
-function artifactContractsForTask(domainPack: DomainPack, task: WorkflowTaskDefinition): ArtifactContract[] {
+function artifactContractsForTask(workflow: SouthstarWorkflowManifest, task: WorkflowTaskDefinition): ArtifactContract[] {
+  const artifactContracts = required(workflow.artifactContracts, `missing workflow artifactContracts in manifest ${workflow.workflowId}`);
   return (task.requiredArtifactRefs ?? [])
-    .map((artifactRef) => required(domainPack.artifactContracts.find((contract) => contract.id === artifactRef), `missing artifact contract ${artifactRef}`));
+    .map((artifactRef) => required(artifactContracts.find((contract) => contract.id === artifactRef), `missing artifact contract ${artifactRef}`));
 }
 
 function required<T>(value: T | undefined, message: string): T {
@@ -157,8 +140,8 @@ function required<T>(value: T | undefined, message: string): T {
   return value;
 }
 
-function libraryRefs(values: string[] | undefined, prefix: string, kind: LibraryRefKind): string[] {
-  return normalizeLibraryRefs({ values, prefix, kind });
+function libraryRefs(values: string[] | undefined): string[] {
+  return [...new Set(values ?? [])];
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

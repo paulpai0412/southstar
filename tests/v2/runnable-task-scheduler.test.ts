@@ -3,8 +3,17 @@ import assert from "node:assert/strict";
 import type { QueryResultRow } from "pg";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
-import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
+import {
+  contextPolicy,
+  implementationReportContract,
+  makerAgentProfile,
+  makerRole,
+  memoryPolicy,
+  sessionPolicy,
+  softwareFeatureQualityPipeline,
+  workspacePolicy,
+} from "./fixtures/runtime-manifest-primitives.ts";
 import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
 import type { ExecuteTaskInput, HandBinding, HandProvider } from "../../src/v2/hands/types.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
@@ -631,10 +640,8 @@ async function seedRun(
   },
 ): Promise<void> {
   await seedSoftwareLibraryGraph(db);
-  const role = softwareDomainPack.roles.find((candidate) => candidate.id === "maker");
-  const agentProfile = softwareDomainPack.agentProfiles.find((candidate) => candidate.id === "software-maker-pi");
-  if (!role) throw new Error("missing software maker role fixture");
-  if (!agentProfile) throw new Error("missing software maker profile fixture");
+  const role = makerRole();
+  const agentProfile = makerAgentProfile();
   await createWorkflowRunPg(db, {
     id: input.runId,
     status: "running",
@@ -658,7 +665,7 @@ async function seedRun(
         agentProfileRef: "software-maker-pi",
         evaluatorPipelineRef: "software-feature-quality",
         requiredArtifactRefs: ["implementation_report"],
-        skillRefs: ["software.implementation"],
+        skillRefs: ["skill.software-implementation"],
         mcpGrantRefs: [],
         execution: {
           engine: "tork",
@@ -692,6 +699,13 @@ async function seedRun(
       progressPolicy: { firstEventWithinSeconds: 30, minEventsPerLongTask: 1 },
       steeringPolicy: { enabled: true, acceptedSignals: [] },
       learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+      artifactContracts: [implementationReportContract()],
+      evaluatorPipelines: [softwareFeatureQualityPipeline()],
+      contextPolicies: [contextPolicy()],
+      sessionPolicies: [sessionPolicy()],
+      memoryPolicies: [memoryPolicy()],
+      workspacePolicies: [workspacePolicy()],
+      stopConditions: [],
       effortPolicy: {
         complexity: "standard",
         maxBrains: 1,

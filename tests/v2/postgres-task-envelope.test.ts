@@ -9,13 +9,25 @@ import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } fr
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envelope.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
-import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
+import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
+import {
+  contextPolicy,
+  implementationReportContract,
+  makerAgentProfile,
+  makerRole,
+  memoryPolicy,
+  sessionPolicy,
+  softwareFeatureQualityPipeline,
+  workspacePolicy,
+} from "./fixtures/runtime-manifest-primitives.ts";
 
 test("Postgres task envelope API builds TaskEnvelopeV2 from Postgres run, task, and context packet", async () => {
   await withDb(async (db) => {
     await seedKnowledgeCard(db);
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+    const draft = await createFixturePlannerDraft(db, "implement calc sum");
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    await seedContextPacket(db, run.runId, "implement-feature");
 
     const envelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
 
@@ -23,7 +35,7 @@ test("Postgres task envelope API builds TaskEnvelopeV2 from Postgres run, task, 
     assert.equal(envelope.runId, run.runId);
     assert.equal(envelope.taskId, "implement-feature");
     assert.equal(envelope.role.id, "maker");
-    assert.equal(envelope.agentProfile.id, "software-maker-pi");
+    assert.equal(envelope.agentProfile.id, "profile.generated.software-implement-feature");
     assert.equal(envelope.contextPacket.selectedKnowledgeCards[0]?.sourceRef, "card-envelope-self-check");
     assert.match(envelope.agentPrompt, /Knowledge Cards/);
     assert.match(envelope.agentPrompt, /commandsRun and risks/);
@@ -35,11 +47,11 @@ test("Postgres task envelope API builds TaskEnvelopeV2 from Postgres run, task, 
 test("Postgres task envelope maps host project root into mounted container workspace", async () => {
   await withDb(async (db) => {
     await seedKnowledgeCard(db);
-    const draft = await createPostgresPlannerDraft(db, {
-      goalPrompt: "implement todo app features",
+    const draft = await createFixturePlannerDraft(db, "implement todo app features", {
       cwd: "/home/timmypai/apps/customer-todo-web",
     });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    await seedContextPacket(db, run.runId, "implement-feature");
 
     const envelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
 
@@ -54,8 +66,7 @@ test("Postgres task envelope maps host project root into mounted container works
 test("Postgres run creation rejects mounting the Southstar project as workspace repo", async () => {
   await withDb(async (db) => {
     await seedKnowledgeCard(db);
-    const draft = await createPostgresPlannerDraft(db, {
-      goalPrompt: "implement todo app features",
+    const draft = await createFixturePlannerDraft(db, "implement todo app features", {
       cwd: process.cwd(),
     });
 
@@ -69,8 +80,9 @@ test("Postgres run creation rejects mounting the Southstar project as workspace 
 test("Postgres task envelope API returns the latest persisted task envelope before fallback building", async () => {
   await withDb(async (db) => {
     await seedKnowledgeCard(db);
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+    const draft = await createFixturePlannerDraft(db, "implement calc sum");
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    await seedContextPacket(db, run.runId, "implement-feature");
     const fallbackEnvelope = await getPostgresTaskEnvelope(db, { runId: run.runId, taskId: "implement-feature" });
     const persistedEnvelope = {
       ...fallbackEnvelope,
@@ -117,9 +129,11 @@ test("Postgres task envelope API returns the latest persisted task envelope befo
 test("Postgres server task envelope route uses new TaskEnvelope API", async () => {
   await withDb(async (db) => {
     await seedKnowledgeCard(db);
+    await seedSoftwareLibraryGraph(db);
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
     });
@@ -132,6 +146,7 @@ test("Postgres server task envelope route uses new TaskEnvelope API", async () =
         method: "POST",
         body: JSON.stringify({ draftId: draft.draftId }),
       });
+      await seedContextPacket(db, run.runId, "implement-feature");
       const envelope = await api<{ schemaVersion: string; taskId: string; contextPacket: { selectedKnowledgeCards: Array<{ sourceRef: string }> } }>(
         server.url,
         `/api/v2/runs/${encodeURIComponent(run.runId)}/tasks/implement-feature/envelope`,
@@ -145,15 +160,16 @@ test("Postgres server task envelope route uses new TaskEnvelope API", async () =
   });
 });
 
-test("Postgres task envelope fallback normalizes legacy library aliases through shared compatibility rules", async () => {
+test("Postgres task envelope fallback preserves canonical graph library refs", async () => {
   await withDb(async (db) => {
     await seedKnowledgeCard(db);
+    await seedSoftwareLibraryGraph(db);
     await createWorkflowRunPg(db, {
-      id: "run-envelope-legacy-refs",
+      id: "run-envelope-canonical-refs",
       status: "running",
       domain: "software",
-      goalPrompt: "legacy refs envelope test",
-      workflowManifestJson: JSON.stringify(legacyRefManifest()),
+      goalPrompt: "canonical refs envelope test",
+      workflowManifestJson: JSON.stringify(canonicalRefManifest()),
       executionProjectionJson: "{}",
       snapshotJson: "{}",
       runtimeContextJson: "{}",
@@ -161,30 +177,30 @@ test("Postgres task envelope fallback normalizes legacy library aliases through 
     });
     await createWorkflowTaskPg(db, {
       id: "implement-feature",
-      runId: "run-envelope-legacy-refs",
+      runId: "run-envelope-canonical-refs",
       taskKey: "implement-feature",
       status: "claimed",
       sortOrder: 0,
       dependsOn: [],
-      rootSessionId: "session-envelope-legacy-refs",
+      rootSessionId: "session-envelope-canonical-refs",
     });
     await upsertRuntimeResourcePg(db, {
       resourceType: "context_packet",
-      resourceKey: "ctx-envelope-legacy-refs",
-      runId: "run-envelope-legacy-refs",
+      resourceKey: "ctx-envelope-canonical-refs",
+      runId: "run-envelope-canonical-refs",
       taskId: "implement-feature",
-      sessionId: "session-envelope-legacy-refs",
+      sessionId: "session-envelope-canonical-refs",
       scope: "context",
       status: "created",
       payload: {
-        id: "ctx-envelope-legacy-refs",
-        runId: "run-envelope-legacy-refs",
+        id: "ctx-envelope-canonical-refs",
+        runId: "run-envelope-canonical-refs",
         taskId: "implement-feature",
-        rootSessionId: "session-envelope-legacy-refs",
+        rootSessionId: "session-envelope-canonical-refs",
         executionAttempt: 1,
         roleRef: "maker",
         agentProfileRef: "software-maker-pi",
-        taskGoal: "legacy refs envelope test",
+        taskGoal: "canonical refs envelope test",
         roleInstruction: "implement feature",
         systemInstruction: "prompt.software-maker",
         agentsMdBlocks: [],
@@ -209,19 +225,16 @@ test("Postgres task envelope fallback normalizes legacy library aliases through 
           resetMarkerRefs: [],
         },
       },
-      summary: { contextPacketId: "ctx-envelope-legacy-refs" },
+      summary: { contextPacketId: "ctx-envelope-canonical-refs" },
     });
 
-    const envelope = await getPostgresTaskEnvelope(db, { runId: "run-envelope-legacy-refs", taskId: "implement-feature" });
+    const envelope = await getPostgresTaskEnvelope(db, { runId: "run-envelope-canonical-refs", taskId: "implement-feature" });
 
-    assert.equal(envelope.materializedLibraryRefs?.instructionRefs.includes("instruction.software-maker"), true);
-    assert.equal(envelope.materializedLibraryRefs?.instructionRefs.includes("software.maker"), false);
-    assert.equal(envelope.materializedLibraryRefs?.skillRefs.includes("skill.software-implementation"), true);
-    assert.equal(envelope.materializedLibraryRefs?.skillRefs.includes("software.implementation"), false);
-    assert.equal(envelope.materializedLibraryRefs?.toolGrantRefs.includes("tool.workspace-write"), true);
-    assert.equal(envelope.materializedLibraryRefs?.toolGrantRefs.includes("software.workspace-write"), false);
-    assert.equal(envelope.materializedLibraryRefs?.mcpGrantRefs.includes("mcp.filesystem-workspace"), true);
-    assert.equal(envelope.materializedLibraryRefs?.mcpGrantRefs.includes("filesystem-workspace"), false);
+    assert.deepEqual(envelope.materializedLibraryRefs?.instructionRefs, ["instruction.software-maker"]);
+    assert.deepEqual(envelope.materializedLibraryRefs?.skillRefs, ["skill.software-implementation"]);
+    assert.deepEqual(envelope.materializedLibraryRefs?.toolGrantRefs, ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"]);
+    assert.deepEqual(envelope.materializedLibraryRefs?.mcpGrantRefs, ["mcp.filesystem-workspace"]);
+    assert.deepEqual(envelope.materializedLibraryRefs?.vaultLeasePolicyRefs, ["vault.github-write-token"]);
   });
 });
 
@@ -272,6 +285,62 @@ async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
   }
 }
 
+async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string, options: { cwd?: string } = {}) {
+  await seedSoftwareLibraryGraph(db);
+  return await createPostgresPlannerDraft(db, {
+    goalPrompt,
+    orchestrationMode: "llm-constrained",
+    composerMode: "llm",
+    composer: new DeterministicFixtureComposer(),
+    ...(options.cwd ? { cwd: options.cwd } : {}),
+  });
+}
+
+async function seedContextPacket(db: SouthstarDb, runId: string, taskId: string): Promise<void> {
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "context_packet",
+    resourceKey: `ctx-${runId}-${taskId}`,
+    runId,
+    taskId,
+    sessionId: `root-${runId}-${taskId}`,
+    scope: "context",
+    status: "created",
+    payload: {
+      id: `ctx-${runId}-${taskId}`,
+      runId,
+      taskId,
+      rootSessionId: `root-${runId}-${taskId}`,
+      executionAttempt: 1,
+      roleRef: "maker",
+      agentProfileRef: "profile.generated.software-implement-feature",
+      taskGoal: "Implement calc sum",
+      roleInstruction: "Implement the feature with tests and documentation.",
+      agentsMdBlocks: [],
+      artifactContracts: [{ id: "artifact", sourceType: "artifact", title: "implementation_report", text: "Return summary, commandsRun and risks.", tokenEstimate: 7 }],
+      selectedMemories: [],
+      selectedKnowledgeCards: [{ id: "card-envelope-self-check", sourceType: "knowledge_card", title: "self check", text: "Include commandsRun and risks.", sourceRef: "card-envelope-self-check", tokenEstimate: 7 }],
+      priorArtifacts: [],
+      skillInstructions: [],
+      mcpGrantSummary: [],
+      forbiddenActions: [],
+      budget: { maxInputTokens: 4000, maxOutputTokens: 2000 },
+      tokenEstimate: { total: 100, bySource: {}, truncated: false },
+      excludedCandidates: [],
+      managedSourceRefs: {
+        artifactRefs: [],
+        memoryItemRefs: [],
+        memoryDeltaRefs: [],
+        knowledgeCardRefs: ["card-envelope-self-check"],
+        checkpointRefs: [],
+        handExecutionRefs: [],
+        rollbackMarkerRefs: [],
+        resetMarkerRefs: [],
+      },
+    },
+    summary: { contextPacketId: `ctx-${runId}-${taskId}` },
+  });
+}
+
 async function createTestDatabase(): Promise<{ databaseUrl: string; drop(): Promise<void> }> {
   const adminUrl = process.env.SOUTHSTAR_TEST_ADMIN_DATABASE_URL;
   if (!adminUrl) throw new Error("SOUTHSTAR_TEST_ADMIN_DATABASE_URL is required for Postgres-backed tests");
@@ -302,19 +371,18 @@ function quoteIdent(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
-function legacyRefManifest() {
-  const makerRole = softwareDomainPack.roles.find((role) => role.id === "maker");
-  const makerProfile = softwareDomainPack.agentProfiles.find((profile) => profile.id === "software-maker-pi");
-  if (!makerRole || !makerProfile) throw new Error("softwareDomainPack missing maker role/profile");
+function canonicalRefManifest() {
+  const role = makerRole();
+  const profile = makerAgentProfile();
   return {
     schemaVersion: "southstar.v2",
-    workflowId: "wf-envelope-legacy-refs",
-    title: "Legacy Ref Envelope",
-    goalPrompt: "legacy refs envelope test",
+    workflowId: "wf-envelope-canonical-refs",
+    title: "Canonical Ref Envelope",
+    goalPrompt: "canonical refs envelope test",
     domain: "software",
     intent: "implement_feature",
-    roles: [makerRole],
-    agentProfiles: [makerProfile],
+    roles: [role],
+    agentProfiles: [profile],
     tasks: [{
       id: "implement-feature",
       name: "Implement Feature",
@@ -324,11 +392,11 @@ function legacyRefManifest() {
       agentProfileRef: "software-maker-pi",
       evaluatorPipelineRef: "software-feature-quality",
       requiredArtifactRefs: ["implementation_report"],
-      instructionRefs: ["software.maker"],
-      skillRefs: ["software.implementation"],
-      toolGrantRefs: ["software.workspace-read", "software.workspace-write", "software.shell-command"],
-      mcpGrantRefs: ["filesystem-workspace"],
-      vaultLeasePolicyRefs: ["software.github-write-token"],
+      instructionRefs: ["instruction.software-maker"],
+      skillRefs: ["skill.software-implementation"],
+      toolGrantRefs: ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
+      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      vaultLeasePolicyRefs: ["vault.github-write-token"],
       rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
       execution: {
         engine: "tork",
@@ -361,5 +429,12 @@ function legacyRefManifest() {
     progressPolicy: { firstEventWithinSeconds: 30, minEventsPerLongTask: 1 },
     steeringPolicy: { enabled: true, acceptedSignals: [] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+    artifactContracts: [implementationReportContract()],
+    evaluatorPipelines: [softwareFeatureQualityPipeline()],
+    contextPolicies: [contextPolicy()],
+    sessionPolicies: [sessionPolicy()],
+    memoryPolicies: [memoryPolicy()],
+    workspacePolicies: [workspacePolicy()],
+    stopConditions: [],
   };
 }

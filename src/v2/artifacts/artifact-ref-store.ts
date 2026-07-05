@@ -39,6 +39,7 @@ export async function acceptOrRejectArtifactRefPg(
 ): Promise<ArtifactRefWriteResult> {
   const contentHash = sha256Stable(input.content);
   const artifactRefId = `artifact_ref:${input.runId}:${input.taskId}:${input.attemptId}:${contentHash}`;
+  const artifactBlobId = `${artifactRefId}:content`;
   const sortedContractRefs = [...input.contractRefs].sort();
 
   const resource = await db.tx(async (tx) => {
@@ -47,6 +48,7 @@ export async function acceptOrRejectArtifactRefPg(
     const initialPayload = buildArtifactRefPayload(input, {
       artifactRefId,
       contentHash,
+      artifactBlobId,
       contractRefs: sortedContractRefs,
       producedAt: input.producedAt ?? new Date().toISOString(),
     });
@@ -58,6 +60,7 @@ export async function acceptOrRejectArtifactRefPg(
       summary,
     });
     if (inserted) {
+      await upsertArtifactBlob(tx, { input, artifactBlobId, resourceId: inserted.id, contentHash });
       await appendArtifactHistoryOnce(tx, {
         runId: input.runId,
         taskId: input.taskId,
@@ -71,11 +74,15 @@ export async function acceptOrRejectArtifactRefPg(
     }
 
     const existing = await selectArtifactRefResourceForUpdate(tx, artifactRefId);
-    if (existing.status === input.status) return { id: existing.id };
+    if (existing.status === input.status) {
+      await upsertArtifactBlob(tx, { input, artifactBlobId, resourceId: existing.id, contentHash });
+      return { id: existing.id };
+    }
 
     const transitionPayload = buildArtifactRefPayload(input, {
       artifactRefId,
       contentHash,
+      artifactBlobId,
       contractRefs: sortedContractRefs,
       producedAt: input.producedAt ?? existingProducedAt(existing.payload_json) ?? new Date().toISOString(),
     });
@@ -85,6 +92,7 @@ export async function acceptOrRejectArtifactRefPg(
       payload: transitionPayload,
       summary,
     });
+    await upsertArtifactBlob(tx, { input, artifactBlobId, resourceId: updated.id, contentHash });
 
     await appendArtifactHistoryOnce(tx, {
       runId: input.runId,
@@ -128,7 +136,7 @@ type ArtifactRefResourceRow = {
 
 function buildArtifactRefPayload(
   input: ArtifactRefWriteInput,
-  values: { artifactRefId: string; contentHash: string; contractRefs: string[]; producedAt: string },
+  values: { artifactRefId: string; contentHash: string; artifactBlobId: string; contractRefs: string[]; producedAt: string },
 ): ArtifactRefPayload {
   return {
     schemaVersion: ARTIFACT_EVIDENCE_SCHEMA_VERSION,
@@ -142,8 +150,8 @@ function buildArtifactRefPayload(
     artifactType: input.artifactType,
     status: input.status,
     contentRef: {
-      kind: "inline_digest",
-      ref: values.contentHash,
+      kind: "artifact_blob",
+      ref: values.artifactBlobId,
       sha256: values.contentHash,
     },
     contractRefs: values.contractRefs,
@@ -154,6 +162,43 @@ function buildArtifactRefPayload(
     sourceEventRefs: input.sourceEventRefs ?? [],
     producedAt: values.producedAt,
   };
+}
+
+async function upsertArtifactBlob(
+  db: SouthstarDb,
+  input: {
+    input: ArtifactRefWriteInput;
+    artifactBlobId: string;
+    resourceId: string;
+    contentHash: string;
+  },
+): Promise<void> {
+  const body = Buffer.from(stableJson(input.input.content), "utf8");
+  await db.query(
+    `insert into southstar.artifact_blobs (
+       id, resource_id, run_id, task_id, session_id, artifact_type,
+       content_type, size_bytes, sha256, body, metadata_json, created_at
+     ) values ($1, $2, $3, $4, $5, $6, 'application/json', $7, $8, $9, $10::jsonb, now())
+     on conflict (id) do update
+       set resource_id = excluded.resource_id,
+           metadata_json = excluded.metadata_json`,
+    [
+      input.artifactBlobId,
+      input.resourceId,
+      input.input.runId,
+      input.input.taskId,
+      input.input.sessionId,
+      input.input.artifactType,
+      body.byteLength,
+      input.contentHash,
+      body,
+      JSON.stringify({
+        artifactRefId: input.artifactBlobId.replace(/:content$/, ""),
+        attemptId: input.input.attemptId,
+        handExecutionId: input.input.handExecutionId,
+      }),
+    ],
+  );
 }
 
 function artifactRefSummary(

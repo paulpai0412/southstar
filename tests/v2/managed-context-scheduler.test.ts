@@ -1,8 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { BrainProvider } from "../../src/v2/brain/types.ts";
-import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
+import {
+  contextPolicy,
+  implementationReportContract,
+  makerAgentProfile,
+  makerRole,
+  memoryPolicy,
+  sessionPolicy,
+  softwareFeatureQualityPipeline,
+  workspacePolicy,
+} from "./fixtures/runtime-manifest-primitives.ts";
 import type { HandProvider } from "../../src/v2/hands/types.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
@@ -195,11 +204,8 @@ async function seedRun(
   input: { runId: string; taskId: string; legacyContextPacketId: string },
 ): Promise<void> {
   await seedSoftwareLibraryGraph(db);
-  const makerRole = softwareDomainPack.roles.find((role) => role.id === "maker");
-  const makerProfile = softwareDomainPack.agentProfiles.find((profile) => profile.id === "software-maker-pi");
-  if (!makerRole || !makerProfile) {
-    throw new Error("softwareDomainPack missing maker role/profile for scheduler managed-context test");
-  }
+  const role = makerRole();
+  const profile = makerAgentProfile();
   const manifest = {
     schemaVersion: "southstar.v2",
     workflowId: "wf-scheduler-managed-context",
@@ -207,8 +213,8 @@ async function seedRun(
     goalPrompt: "submit with managed context",
     domain: "software",
     intent: "implement_feature",
-    roles: [makerRole],
-    agentProfiles: [makerProfile],
+    roles: [role],
+    agentProfiles: [profile],
     tasks: [{
       id: input.taskId,
       name: "Implement",
@@ -218,7 +224,7 @@ async function seedRun(
       agentProfileRef: "software-maker-pi",
       evaluatorPipelineRef: "software-feature-quality",
       requiredArtifactRefs: ["implementation_report"],
-      skillRefs: ["software.implementation"],
+      skillRefs: ["skill.software-implementation"],
       mcpGrantRefs: [],
       rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
       execution: {
@@ -252,6 +258,13 @@ async function seedRun(
     progressPolicy: { firstEventWithinSeconds: 30, minEventsPerLongTask: 1 },
     steeringPolicy: { enabled: true, acceptedSignals: [] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+    artifactContracts: [implementationReportContract()],
+    evaluatorPipelines: [softwareFeatureQualityPipeline()],
+    contextPolicies: [contextPolicy()],
+    sessionPolicies: [sessionPolicy()],
+    memoryPolicies: [memoryPolicy()],
+    workspacePolicies: [workspacePolicy()],
+    stopConditions: [],
     executionPolicy: { maxParallelTasks: 1 },
   };
   await createWorkflowRunPg(db, {

@@ -21,7 +21,7 @@ export type ArtifactRefProducer = {
 };
 
 export type ArtifactContentRef = {
-  kind: "runtime_resource" | "secure_blob" | "external_url" | "inline_digest";
+  kind: "runtime_resource" | "artifact_blob" | "secure_blob" | "external_url" | "inline_digest";
   ref: string;
   sha256: string;
 };

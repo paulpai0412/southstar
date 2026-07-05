@@ -1,30 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createManagedContextAssembler } from "../../src/v2/context/managed-context-assembler.ts";
-import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
-import type { WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
-import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
-import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, and assembly trace", async () => {
   const db = await createTestPostgresDb();
   try {
-    await seedSoftwareLibraryGraph(db);
-    await upsertLibraryObject(db, {
-      objectKey: "agent.software-maker",
-      objectKind: "agent_definition",
-      status: "approved",
-      headVersionId: "agent.software-maker@managed-context-test",
-      state: {
-        scope: "software",
-        title: "Software Maker",
-        body: "Use the graph-backed software maker AGENTS.md instructions.",
-      },
-    });
+    await seedManagedContextLibrary(db);
     await createWorkflowRunPg(db, {
       id: "run-managed-context",
       status: "running",
@@ -46,7 +30,7 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
       rootSessionId: "session-managed-context",
     });
 
-    const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+    const assembler = createManagedContextAssembler(db);
     const assembled = await assembler.buildForTask({
       runId: "run-managed-context",
       taskId: "implement-feature",
@@ -63,6 +47,15 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
       assembled.contextPacket.agentsMdBlocks.map((block) => block.text).join("\n"),
       /graph-backed software maker AGENTS\.md instructions/,
     );
+    assert.equal(
+      (assembled.contextPacket as { nodePromptSpec?: { goal?: string } }).nodePromptSpec?.goal,
+      "Implement the feature end to end.",
+    );
+    assert.match(assembled.taskEnvelope.agentPrompt, /Node prompt spec:/);
+    assert.match(assembled.taskEnvelope.agentPrompt, /Deliverable documents:/);
+    assert.match(assembled.taskEnvelope.agentPrompt, /implementation: Implementation notes/);
+    assert.match(assembled.taskEnvelope.agentPrompt, /Acceptance criteria:/);
+    assert.match(assembled.taskEnvelope.agentPrompt, /The feature meets the requested behavior/);
     assert.match(assembled.taskEnvelope.agentPrompt, /graph-backed software maker AGENTS\.md instructions/);
     assert.equal(assembled.trace.contextPacketId, assembled.contextPacket.id);
     assert.equal(assembled.trace.taskEnvelopeId, assembled.taskEnvelopeId);
@@ -87,7 +80,7 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
 test("ManagedContextAssembler maps host project root into mounted container workspace", async () => {
   const db = await createTestPostgresDb();
   try {
-    await seedSoftwareLibraryGraph(db);
+    await seedManagedContextLibrary(db);
     await createWorkflowRunPg(db, {
       id: "run-managed-context-workspace",
       status: "running",
@@ -112,7 +105,7 @@ test("ManagedContextAssembler maps host project root into mounted container work
       rootSessionId: "session-managed-context-workspace",
     });
 
-    const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+    const assembler = createManagedContextAssembler(db);
     const assembled = await assembler.buildForTask({
       runId: "run-managed-context-workspace",
       taskId: "implement-feature",
@@ -135,7 +128,7 @@ test("ManagedContextAssembler maps host project root into mounted container work
 test("ManagedContextAssembler applies assembly policy to failure summaries", async () => {
   const db = await createTestPostgresDb();
   try {
-    await seedSoftwareLibraryGraph(db);
+    await seedManagedContextLibrary(db);
     await createWorkflowRunPg(db, {
       id: "run-managed-context-failure-policy",
       status: "running",
@@ -157,7 +150,7 @@ test("ManagedContextAssembler applies assembly policy to failure summaries", asy
       rootSessionId: "session-managed-context",
     });
 
-    const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+    const assembler = createManagedContextAssembler(db);
     const assembled = await assembler.buildForTask({
       runId: "run-managed-context-failure-policy",
       taskId: "implement-feature",
@@ -182,53 +175,10 @@ test("ManagedContextAssembler applies assembly policy to failure summaries", asy
   }
 });
 
-test("ManagedContextAssembler materializes implement-feature library refs for llm-constrained run", async () => {
-  const db = await createTestPostgresDb();
-  try {
-    await seedSoftwareLibraryGraph(db);
-    const draft = await createPostgresPlannerDraft(db, {
-      goalPrompt: "implement calc sum",
-      orchestrationMode: "llm-constrained",
-      composerMode: "llm",
-      composer: new ScriptedWorkflowComposer([singleTaskImplementPlan()]),
-    });
-    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
-
-    const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
-    const assembled = await assembler.buildForTask({
-      runId: run.runId,
-      taskId: "implement-feature",
-      sessionId: `root-${run.runId}-implement-feature`,
-      attemptId: "implement-feature-attempt-1",
-      handExecutionId: `hand-execution:${run.runId}:implement-feature:implement-feature-attempt-1`,
-      dependsOn: ["review-spec"],
-    });
-
-    const skillInstructionsText = assembled.contextPacket.skillInstructions.map((block) => block.text).join("\n");
-    assert.match(skillInstructionsText, /Implement/i);
-    assert.match(assembled.taskEnvelope.agentPrompt, /Implement/i);
-    assert.equal(assembled.taskEnvelope.toolProxyPolicy?.allowedTools.includes("workspace-write"), true);
-    assert.equal(
-      assembled.taskEnvelope.materializedLibraryRefs?.instructionRefs.includes("instruction.software-maker"),
-      true,
-    );
-    assert.equal(
-      assembled.taskEnvelope.materializedLibraryRefs?.skillRefs.includes("software.implementation"),
-      false,
-    );
-    assert.equal(
-      assembled.taskEnvelope.materializedLibraryRefs?.skillRefs.includes("skill.software-implementation"),
-      true,
-    );
-  } finally {
-    await db.close();
-  }
-});
-
 test("ManagedContextAssembler resolves runtime-only reviewer role/profile from workflow manifest", async () => {
   const db = await createTestPostgresDb();
   try {
-    await seedSoftwareLibraryGraph(db);
+    await seedManagedContextLibrary(db);
     await createWorkflowRunPg(db, {
       id: "run-managed-context-runtime-reviewer",
       status: "running",
@@ -250,7 +200,7 @@ test("ManagedContextAssembler resolves runtime-only reviewer role/profile from w
       rootSessionId: "session-runtime-reviewer",
     });
 
-    const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+    const assembler = createManagedContextAssembler(db);
     const assembled = await assembler.buildForTask({
       runId: "run-managed-context-runtime-reviewer",
       taskId: "review-spec",
@@ -268,9 +218,6 @@ test("ManagedContextAssembler resolves runtime-only reviewer role/profile from w
 });
 
 function manifest() {
-  const makerRole = softwareDomainPack.roles.find((role) => role.id === "maker");
-  const makerProfile = softwareDomainPack.agentProfiles.find((profile) => profile.id === "software-maker-pi");
-  if (!makerRole || !makerProfile) throw new Error("softwareDomainPack missing maker role/profile for test manifest");
   return {
     schemaVersion: "southstar.v2",
     workflowId: "wf-managed-context",
@@ -278,9 +225,9 @@ function manifest() {
     goalPrompt: "build managed context",
     domain: "software",
     intent: "implement_feature",
-    roles: [makerRole],
+    roles: [makerRole()],
     agentProfiles: [{
-      ...makerProfile,
+      ...makerProfile(),
       agentRef: "agent.software-maker",
       agentsMdRefs: ["agent.software-maker"],
     }],
@@ -292,12 +239,46 @@ function manifest() {
       roleRef: "maker",
       agentProfileRef: "software-maker-pi",
       evaluatorPipelineRef: "software-feature-quality",
+      promptInputs: {
+        nodePromptSpec: {
+          nodeType: "implement",
+          goal: "Implement the feature end to end.",
+          requirements: ["Use the existing project conventions.", "Preserve current tests."],
+          boundaries: ["Only edit files required by this task."],
+          nonGoals: ["Do not redesign unrelated UI."],
+          deliverableDocuments: [
+            {
+              kind: "implementation",
+              title: "Implementation notes",
+              required: true,
+              format: "markdown",
+              description: "Describe code changes and decisions for the next node.",
+            },
+            {
+              kind: "test",
+              title: "Test evidence",
+              required: true,
+              format: "markdown",
+              description: "Record commands and outcomes for verification.",
+            },
+          ],
+          expectedOutputs: ["implementation_report"],
+          implementationScope: ["Implement only the requested feature behavior."],
+          testCases: [{
+            name: "Focused verification",
+            command: "npm test",
+            expected: "Relevant tests pass.",
+          }],
+          acceptanceCriteria: ["The feature meets the requested behavior."],
+          failureReportContract: "Report blockers with evidence and proposed repair.",
+        },
+      },
       requiredArtifactRefs: ["implementation_report"],
       instructionRefs: ["instruction.software-maker"],
-      skillRefs: ["software.implementation"],
+      skillRefs: ["skill.software-implementation"],
       toolGrantRefs: ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
       mcpGrantRefs: ["mcp.filesystem-workspace"],
-      vaultLeasePolicyRefs: ["vault.github-write-token"],
+      vaultLeasePolicyRefs: [],
       rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
       execution: {
         engine: "tork",
@@ -322,6 +303,22 @@ function manifest() {
       supportsSteering: true,
       supportsProgress: true,
     }],
+    artifactContracts: [{
+      id: "implementation_report",
+      artifactType: "implementation-report",
+      requiredFields: ["summary"],
+      evidenceFields: ["summary"],
+    }],
+    evaluatorPipelines: [{
+      id: "software-feature-quality",
+      evaluators: [],
+      onFailure: { defaultStrategy: "ask-human" },
+    }],
+    contextPolicies: [contextPolicy()],
+    sessionPolicies: [sessionPolicy()],
+    memoryPolicies: [memoryPolicy()],
+    workspacePolicies: [workspacePolicy()],
+    stopConditions: [],
     evaluators: [],
     memoryPolicy: { retrievalLimit: 5, writeRequiresApproval: true },
     vaultPolicy: { leaseTtlSeconds: 60, mountMode: "env" },
@@ -360,6 +357,7 @@ function runtimeReviewerManifest() {
       promptTemplateRef: "software-spec-reviewer",
       skillRefs: ["software-spec-review"],
       mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
       memoryScopes: ["software", "project"],
       contextPolicyRef: "software-context-default",
       sessionPolicyRef: "software-session-default",
@@ -404,6 +402,22 @@ function runtimeReviewerManifest() {
       supportsSteering: true,
       supportsProgress: true,
     }],
+    artifactContracts: [{
+      id: "implementation_plan",
+      artifactType: "implementation-plan",
+      requiredFields: ["summary"],
+      evidenceFields: ["summary"],
+    }],
+    evaluatorPipelines: [{
+      id: "software-plan-quality",
+      evaluators: [],
+      onFailure: { defaultStrategy: "ask-human" },
+    }],
+    contextPolicies: [contextPolicy()],
+    sessionPolicies: [sessionPolicy()],
+    memoryPolicies: [memoryPolicy()],
+    workspacePolicies: [workspacePolicy()],
+    stopConditions: [],
     evaluators: [],
     memoryPolicy: { retrievalLimit: 5, writeRequiresApproval: true },
     vaultPolicy: { leaseTtlSeconds: 60, mountMode: "env" },
@@ -415,127 +429,173 @@ function runtimeReviewerManifest() {
   };
 }
 
-function singleTaskImplementPlan(): WorkflowCompositionPlan {
+function makerRole() {
   return {
-    schemaVersion: "southstar.workflow_composition_plan.v1",
-    title: "Scripted Implement Workflow",
-    selectedWorkflowTemplateRef: "template.software-feature",
-    rationale: "Scripted llm test plan with mandatory code quality review.",
-    tasks: [
-      task(
-        "understand-repo",
-        [],
-        "agent.software-explorer",
-        "profile.software-explorer-codex",
-        ["skill.software-repo-discovery"],
-        ["tool.workspace-read"],
-        ["instruction.software-explorer"],
-        [],
-        [],
-        ["artifact.implementation_plan"],
-        "evaluator.software-plan-quality",
-      ),
-      task(
-        "review-spec",
-        ["understand-repo"],
-        "agent.software-spec-reviewer",
-        "profile.software-spec-reviewer-codex",
-        ["skill.software-spec-review"],
-        ["tool.workspace-read"],
-        ["instruction.software-spec-reviewer"],
-        [],
-        [],
-        ["artifact.implementation_plan"],
-        "evaluator.software-plan-quality",
-      ),
-      task(
-        "implement-feature",
-        ["review-spec"],
-        "agent.software-maker",
-        "profile.software-maker-pi",
-        ["skill.software-implementation"],
-        ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
-        ["instruction.software-maker"],
-        ["mcp.filesystem-workspace"],
-        ["vault.github-write-token"],
-        ["artifact.implementation_report"],
-        "evaluator.software-feature-quality",
-      ),
-      task(
-        "verify-feature",
-        ["implement-feature"],
-        "agent.software-checker",
-        "profile.software-checker-codex",
-        ["skill.software-verification"],
-        ["tool.workspace-read", "tool.shell-command"],
-        ["instruction.software-checker"],
-        [],
-        [],
-        ["artifact.verification_report"],
-        "evaluator.software-verification-quality",
-      ),
-      task(
-        "review-code-quality",
-        ["implement-feature"],
-        "agent.software-code-quality-reviewer",
-        "profile.software-code-quality-reviewer-codex",
-        ["skill.software-code-quality-review"],
-        ["tool.workspace-read", "tool.shell-command"],
-        ["instruction.software-code-quality-reviewer"],
-        [],
-        [],
-        ["artifact.verification_report"],
-        "evaluator.software-verification-quality",
-      ),
-      task(
-        "summarize-completion",
-        ["verify-feature", "review-code-quality"],
-        "agent.software-summarizer",
-        "profile.software-summarizer-codex",
-        ["skill.software-summary"],
-        ["tool.workspace-read"],
-        ["instruction.software-summarizer"],
-        [],
-        [],
-        ["artifact.completion_report"],
-        "evaluator.software-completion-quality",
-      ),
-    ],
-    rejectedCandidates: [],
-    generatedComponentProposals: [],
+    id: "maker",
+    responsibility: "Implement the requested software change.",
+    defaultAgentProfileRef: "software-maker-pi",
+    allowedAgentProfileRefs: ["software-maker-pi"],
+    artifactInputs: [],
+    artifactOutputs: ["implementation_report"],
+    stopAuthority: "can-suggest",
   };
 }
 
-function task(
-  id: string,
-  dependsOn: string[],
-  agentDefinitionRef: string,
-  agentProfileRef: string,
-  skillRefs: string[],
-  toolGrantRefs: string[],
-  instructionRefs: string[],
-  mcpGrantRefs: string[],
-  vaultLeasePolicyRefs: string[],
-  outputArtifactRefs: string[],
-  evaluatorProfileRef: string,
-): WorkflowCompositionTask {
+function makerProfile() {
   return {
-    id,
-    name: id,
-    responsibility: id,
-    dependsOn,
-    templateSlotRef: id,
-    agentDefinitionRef,
-    agentProfileRef,
-    instructionRefs,
-    skillRefs,
-    toolGrantRefs,
-    mcpGrantRefs,
-    vaultLeasePolicyRefs,
-    inputArtifactRefs: [],
-    outputArtifactRefs,
-    evaluatorProfileRef,
-    recoveryStrategyRefs: ["retry-same-agent"],
-    rationale: id,
+    id: "software-maker-pi",
+    name: "Software Maker",
+    provider: "pi",
+    model: "pi-agent-default",
+    harnessRef: "pi",
+    agentsMdRefs: ["agent.software-maker"],
+    promptTemplateRef: "software-maker",
+    skillRefs: ["skill.software-implementation"],
+    mcpGrantRefs: ["mcp.filesystem-workspace"],
+    vaultLeasePolicyRefs: [],
+    memoryScopes: ["software", "project"],
+    contextPolicyRef: "software-context-default",
+    sessionPolicyRef: "software-session-default",
+    toolPolicy: {
+      allowedTools: ["workspace-read", "workspace-write", "shell-command"],
+      deniedTools: [],
+      requiresApprovalFor: [],
+    },
+    budgetPolicy: {
+      maxInputTokens: 12_000,
+      maxOutputTokens: 4_000,
+      maxWallTimeSeconds: 600,
+    },
   };
+}
+
+function contextPolicy() {
+  return {
+    id: "software-context-default",
+    maxInputTokens: 12_000,
+    memoryPolicyRef: "software-memory-default",
+    includeAgentsMd: true,
+    includeWorkspaceSummary: true,
+  };
+}
+
+function sessionPolicy() {
+  return {
+    id: "software-session-default",
+    checkpointOn: ["task-start", "artifact-accepted", "before-recovery"],
+    allowFork: true,
+    allowReset: true,
+    allowRollback: true,
+  };
+}
+
+function memoryPolicy() {
+  return {
+    id: "software-memory-default",
+    providerRef: "postgres",
+    scopes: ["software", "project"],
+    maxInjectedTokens: 1_500,
+    maxCandidates: 5,
+    requireWriteApproval: true,
+    allowedKinds: ["preference", "architecture_decision", "domain_pattern", "failure_lesson", "artifact_summary", "workflow_learning"],
+    ranking: {
+      relevanceWeight: 0.5,
+      recencyWeight: 0.2,
+      successWeight: 0.2,
+      confidenceWeight: 0.1,
+    },
+    compression: {
+      strategy: "none",
+      maxTokensPerMemory: 800,
+    },
+  };
+}
+
+function workspacePolicy() {
+  return {
+    id: "software-workspace-default",
+    provider: "git",
+    snapshotAtTaskStart: true,
+    snapshotAtAcceptedArtifact: true,
+    forkOnCheckerReject: true,
+    rollbackOnTestFailure: true,
+  };
+}
+
+async function seedManagedContextLibrary(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
+  await upsertLibraryObject(db, {
+    objectKey: "agent.software-maker",
+    objectKind: "agent_definition",
+    status: "approved",
+    headVersionId: "agent.software-maker@managed-context-test",
+    state: {
+      scope: "software",
+      title: "Software Maker",
+      body: "Use the graph-backed software maker AGENTS.md instructions.",
+    },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "instruction.software-maker",
+    objectKind: "instruction_template",
+    status: "approved",
+    headVersionId: "instruction.software-maker@managed-context-test",
+    state: { scope: "software", title: "Software Maker Instruction", content: "Implement and report clearly.", variables: [] },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "instruction.software-spec-reviewer",
+    objectKind: "instruction_template",
+    status: "approved",
+    headVersionId: "instruction.software-spec-reviewer@managed-context-test",
+    state: { scope: "software", title: "Spec Reviewer Instruction", content: "Review the implementation plan.", variables: [] },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "skill.software-implementation",
+    objectKind: "skill_spec",
+    status: "approved",
+    headVersionId: "skill.software-implementation@managed-context-test",
+    state: {
+      scope: "software",
+      title: "Software Implementation",
+      body: "# Software Implementation\n\nImplement the requested change.",
+      allowedTools: ["workspace-read", "workspace-write", "shell-command"],
+      requiredMounts: ["workspace"],
+      mcpRequirements: ["filesystem-workspace"],
+      artifactContracts: ["implementation_report"],
+    },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "skill.software-spec-review",
+    objectKind: "skill_spec",
+    status: "approved",
+    headVersionId: "skill.software-spec-review@managed-context-test",
+    state: {
+      scope: "software",
+      title: "Software Spec Review",
+      body: "# Software Spec Review\n\nReview quality and risk.",
+      allowedTools: ["workspace-read"],
+      requiredMounts: ["workspace"],
+      mcpRequirements: [],
+      artifactContracts: ["implementation_plan"],
+    },
+  });
+  for (const [objectKey, toolName] of [
+    ["tool.workspace-read", "workspace-read"],
+    ["tool.workspace-write", "workspace-write"],
+    ["tool.shell-command", "shell-command"],
+  ] as const) {
+    await upsertLibraryObject(db, {
+      objectKey,
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: `${objectKey}@managed-context-test`,
+      state: { scope: "global", title: toolName, toolName, proxyToolName: `${toolName}-proxy` },
+    });
+  }
+  await upsertLibraryObject(db, {
+    objectKey: "mcp.filesystem-workspace",
+    objectKind: "mcp_tool_grant",
+    status: "approved",
+    headVersionId: "mcp.filesystem-workspace@managed-context-test",
+    state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] },
+  });
 }

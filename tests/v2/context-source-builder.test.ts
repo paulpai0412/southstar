@@ -37,7 +37,14 @@ test("context source builder collects accepted artifacts, session events, checkp
       producer: { actorType: "hand", providerId: "tork" },
       artifactType: "implementation_report",
       status: "accepted",
-      content: { kind: "implementation_report", summary: "producer completed feature" },
+      content: {
+        kind: "implementation_report",
+        summary: "producer completed feature",
+        designDoc: "Design: introduce a compact vocabulary card model.",
+        implementationNotes: "Implementation: add card rendering and answer state.",
+        testPlan: "Test: verify card flip and answer persistence.",
+        acceptanceReport: "Acceptance: vocabulary flow can be completed.",
+      },
       contractRefs: ["implementation_report"],
       summary: "producer completed feature",
       evidenceRefs: [],
@@ -127,6 +134,9 @@ test("context source builder collects accepted artifacts, session events, checkp
     });
 
     assert.equal(hasSourceRef(sources.candidates, artifact.artifactRefId), true);
+    const artifactCandidate = sources.candidates.find((candidate) => candidate.sourceRef === artifact.artifactRefId);
+    assert.match(artifactCandidate?.text ?? "", /Design: introduce a compact vocabulary card model/);
+    assert.match(artifactCandidate?.text ?? "", /Test: verify card flip and answer persistence/);
     assert.equal(hasSourceRef(sources.candidates, checkpoint.id), true);
     assert.equal(hasSourceRef(sources.candidates, `memory_item:${runMemory.id}`), true);
     assert.equal(hasSourceRef(sources.candidates, `memory_item:${approved.memoryItemId}`), true);
@@ -137,6 +147,57 @@ test("context source builder collects accepted artifacts, session events, checkp
     assert.deepEqual(sources.pendingMemoryRefs, [`memory_delta:${pending.id}`]);
     assert.deepEqual(sources.invalidatedSourceRefs, [artifact.artifactRefId, `memory_item:${runMemory.id}`].sort());
     assert.deepEqual(sources.sourceRefs.rollbackMarkerRefs, ["rollback-marker:run-source-builder:consumer:2"]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("context source builder exposes explicit rejected artifact refs as failure candidates", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, minimalRun("run-source-builder-failure"));
+    await createWorkflowTaskPg(db, {
+      id: "verify",
+      runId: "run-source-builder-failure",
+      taskKey: "verify",
+      status: "failed",
+      sortOrder: 0,
+      dependsOn: [],
+    });
+    const rejected = await acceptOrRejectArtifactRefPg(db, {
+      runId: "run-source-builder-failure",
+      taskId: "verify",
+      sessionId: "session-verify",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-execution:run-source-builder-failure:verify:attempt-1",
+      producer: { actorType: "hand", providerId: "tork" },
+      artifactType: "verification_report",
+      status: "rejected",
+      content: { kind: "verification_report", summary: "npm test failed", findings: ["missing handler"] },
+      contractRefs: ["verification_report"],
+      summary: "npm test failed",
+      evidenceRefs: [],
+      evaluatorResultRefs: [],
+      sourceEventRefs: [],
+    });
+
+    const sources = await collectContextSourcesPg(db, {
+      runId: "run-source-builder-failure",
+      taskId: "repair",
+      sessionId: "session-repair",
+      dependsOn: [],
+      query: "repair verifier failure",
+      memoryScopes: ["software"],
+      allowedMemoryKinds: ["repair_hint"],
+      maxMemoryCandidates: 10,
+      checkpointRefs: [],
+      failureArtifactRefIds: [rejected.artifactRefId],
+    });
+
+    const failure = sources.candidates.find((candidate) => candidate.sourceRef === rejected.artifactRefId);
+    assert.equal(failure?.sourceType, "failure");
+    assert.match(failure?.text ?? "", /npm test failed/);
+    assert.equal(sources.sourceRefs.failureArtifactRefs?.includes(rejected.artifactRefId), true);
   } finally {
     await db.close();
   }

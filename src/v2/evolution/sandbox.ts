@@ -4,7 +4,6 @@ import { join } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import { createManagedContextAssembler } from "../context/managed-context-assembler.ts";
-import { softwareDomainPack } from "../domain-packs/software.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
 import { withMaterializationMount } from "../executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
@@ -152,7 +151,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
         rootSessionId: sessionId,
         snapshot: { roleRef: task.roleRef, agentProfileRef: task.agentProfileRef },
       });
-      const assembler = createManagedContextAssembler(db, { domainPack: softwareDomainPack });
+      const assembler = createManagedContextAssembler(db);
       const assembly = await assembler.buildForTask({
         runId: sandboxRunId,
         taskId: task.id,

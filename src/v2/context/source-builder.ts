@@ -13,6 +13,7 @@ export type CollectContextSourcesInput = {
   allowedMemoryKinds: string[];
   maxMemoryCandidates: number;
   checkpointRefs: string[];
+  failureArtifactRefIds?: string[];
 };
 
 export type CollectContextSourcesResult = {
@@ -49,6 +50,7 @@ export async function collectContextSourcesPg(
     artifactCandidates,
     rawEventRefs,
     checkpointCandidates,
+    failureArtifactCandidates,
     memoryCandidates,
     rollbackInvalidation,
     pendingMemoryRefs,
@@ -56,6 +58,7 @@ export async function collectContextSourcesPg(
     acceptedArtifactCandidates(db, input),
     sessionEventRefs(db, input),
     checkpointCandidatesForRefs(db, input),
+    failureArtifactCandidatesForRefs(db, input),
     memoryCandidatesForInput(db, input),
     rollbackInvalidatedSourceRefs(db, input.runId),
     pendingMemoryDeltaRefs(db, input.runId),
@@ -67,16 +70,53 @@ export async function collectContextSourcesPg(
     transformRefs: [],
     checkpointRefs: input.checkpointRefs,
     artifactRefs: sourceRefsFromCandidates(artifactCandidates),
+    failureArtifactRefs: sourceRefsFromCandidates(failureArtifactCandidates),
     memoryRefs: sourceRefsFromCandidates(memoryCandidates),
     rollbackMarkerRefs: rollbackInvalidation.markerRefs,
   });
 
   return {
-    candidates: [...artifactCandidates, ...checkpointCandidates, ...memoryCandidates],
+    candidates: [...artifactCandidates, ...failureArtifactCandidates, ...checkpointCandidates, ...memoryCandidates],
     sourceRefs,
     pendingMemoryRefs,
     invalidatedSourceRefs: rollbackInvalidation.invalidatedSourceRefs,
   };
+}
+
+async function failureArtifactCandidatesForRefs(
+  db: SouthstarDb,
+  input: CollectContextSourcesInput,
+): Promise<ContextBlockCandidate[]> {
+  const refs = [...new Set(input.failureArtifactRefIds ?? [])].filter((ref) => ref.length > 0);
+  if (refs.length === 0) return [];
+  const rows = await db.query<ResourceRow>(
+    `select resource_key, resource_type, status, task_id, session_id, payload_json, summary_json, created_at
+       from southstar.runtime_resources
+      where run_id = $1
+        and resource_type = 'artifact_ref'
+        and status = 'rejected'
+        and resource_key = any($2::text[])
+      order by created_at, resource_key`,
+    [input.runId, refs],
+  );
+  return await Promise.all(rows.rows.map(async (row) => {
+    const payload = asRecord(row.payload_json);
+    const summary = asRecord(row.summary_json);
+    const content = await artifactContentText(db, payload);
+    const text = [
+      stringValue(payload.summary) || stringValue(summary.summary) || `Rejected artifact ${row.resource_key}`,
+      content ? `Content: ${content}` : "",
+    ].filter(Boolean).join("\n");
+    const title = stringValue(payload.artifactType) || "Rejected artifact";
+    return candidate("failure", row.resource_key, title, text, row.resource_key, 1, {
+      runId: input.runId,
+      taskId: row.task_id ?? undefined,
+      sessionId: row.session_id ?? undefined,
+      attemptId: stringValue(payload.attemptId) || undefined,
+      handExecutionId: stringValue(payload.handExecutionId) || undefined,
+      artifactRefIds: [row.resource_key],
+    });
+  }));
 }
 
 async function acceptedArtifactCandidates(
@@ -94,10 +134,14 @@ async function acceptedArtifactCandidates(
       order by created_at, resource_key`,
     [input.runId, input.dependsOn],
   );
-  return rows.rows.map((row) => {
+  return await Promise.all(rows.rows.map(async (row) => {
     const payload = asRecord(row.payload_json);
     const summary = asRecord(row.summary_json);
-    const text = stringValue(payload.summary) || stringValue(summary.summary) || `Accepted artifact ${row.resource_key}`;
+    const content = await artifactContentText(db, payload);
+    const text = [
+      stringValue(payload.summary) || stringValue(summary.summary) || `Accepted artifact ${row.resource_key}`,
+      content ? `Content: ${content}` : "",
+    ].filter(Boolean).join("\n");
     const title = stringValue(payload.artifactType) || "Accepted artifact";
     return candidate("artifact", row.resource_key, title, text, row.resource_key, 1, {
       runId: input.runId,
@@ -107,7 +151,25 @@ async function acceptedArtifactCandidates(
       handExecutionId: stringValue(payload.handExecutionId) || undefined,
       artifactRefIds: [row.resource_key],
     });
-  });
+  }));
+}
+
+async function artifactContentText(db: SouthstarDb, artifactPayload: Record<string, unknown>): Promise<string | undefined> {
+  const contentRef = asRecord(artifactPayload.contentRef);
+  if (contentRef?.kind !== "artifact_blob") return undefined;
+  const blobId = stringValue(contentRef.ref);
+  if (!blobId) return undefined;
+  const row = await db.maybeOne<{ body: Buffer }>(
+    "select body from southstar.artifact_blobs where id = $1",
+    [blobId],
+  );
+  if (!row) return undefined;
+  return truncateForContext(row.body.toString("utf8"), 6_000);
+}
+
+function truncateForContext(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}... [truncated ${text.length - maxChars} chars]`;
 }
 
 async function checkpointCandidatesForRefs(

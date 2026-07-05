@@ -1,6 +1,6 @@
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import type { HarnessDefinition } from "../manifests/types.ts";
-import type { AgentProfile, ArtifactContract, EvaluatorPipelineDefinition, RoleDefinition } from "../domain-packs/types.ts";
+import type { AgentProfile, ArtifactContract, EvaluatorPipelineDefinition, RoleDefinition } from "../design-library/runtime-types.ts";
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import type { ContextPacket, ContextBlock } from "../context/types.ts";
 import type { ToolProxyPolicyPayload } from "../tool-proxy/types.ts";
@@ -223,6 +223,7 @@ function renderContextPacketPrompt(
     "",
     "Task goal:",
     packet.taskGoal,
+    formatNodePromptSpec(packet.nodePromptSpec),
     "",
     "Role instruction:",
     packet.roleInstruction,
@@ -242,6 +243,68 @@ function renderContextPacketPrompt(
     `Forbidden actions: ${packet.forbiddenActions.length > 0 ? packet.forbiddenActions.join(", ") : "none"}`,
     "Return exactly one JSON object with keys: artifact, progress, metrics.",
   ].filter((line) => line !== "").join("\n");
+}
+
+function formatNodePromptSpec(spec: ContextPacket["nodePromptSpec"]): string {
+  if (!spec) return "";
+  return [
+    "",
+    "Node prompt spec:",
+    `Node type: ${spec.nodeType}`,
+    `Goal: ${spec.goal}`,
+    formatList("Requirements", spec.requirements),
+    formatList("Boundaries", spec.boundaries),
+    formatList("Non-goals", spec.nonGoals),
+    formatDeliverableDocuments(spec.deliverableDocuments),
+    formatList("Expected outputs", spec.expectedOutputs),
+    formatTestCases(spec.testCases),
+    formatList("Acceptance criteria", spec.acceptanceCriteria),
+    spec.failureReportContract ? `Failure report contract: ${spec.failureReportContract}` : "",
+    formatList("Planning questions", spec.planningQuestions ?? []),
+    formatList("Decision criteria", spec.decisionCriteria ?? []),
+    spec.planArtifactContract ? `Plan artifact contract: ${spec.planArtifactContract}` : "",
+    formatList("Implementation scope", spec.implementationScope ?? []),
+    formatList("Files likely to touch", spec.filesLikelyToTouch ?? []),
+    formatList("Verification checks", spec.verificationChecks ?? []),
+    spec.failureArtifactContract ? `Failure artifact contract: ${spec.failureArtifactContract}` : "",
+    formatList("Repair inputs", spec.repairInputs ?? []),
+    formatList("Must preserve", spec.mustPreserve ?? []),
+    formatList("Reverification checks", spec.reverificationChecks ?? []),
+    formatList("Review checklist", spec.reviewChecklist ?? []),
+    formatList("Risk criteria", spec.riskCriteria ?? []),
+    formatList("Summary sections", spec.summarySections ?? []),
+    formatList("Handoff criteria", spec.handoffCriteria ?? []),
+  ].filter((line) => line !== "").join("\n");
+}
+
+function formatDeliverableDocuments(documents: NonNullable<ContextPacket["nodePromptSpec"]>["deliverableDocuments"]): string {
+  if (documents.length === 0) return "";
+  return [
+    "Deliverable documents:",
+    ...documents.map((document) =>
+      `- ${document.kind}: ${document.title} (${document.format}, ${document.required ? "required" : "optional"}) - ${document.description}`
+    ),
+  ].join("\n");
+}
+
+function formatList(title: string, values: string[]): string {
+  if (values.length === 0) return "";
+  return [`${title}:`, ...values.map((value) => `- ${value}`)].join("\n");
+}
+
+function formatTestCases(testCases: NonNullable<ContextPacket["nodePromptSpec"]>["testCases"]): string {
+  if (testCases.length === 0) return "";
+  return [
+    "Test cases:",
+    ...testCases.map((testCase) => [
+      `- ${testCase.name}`,
+      testCase.command ? `  Command: ${testCase.command}` : "",
+      testCase.given ? `  Given: ${testCase.given}` : "",
+      testCase.when ? `  When: ${testCase.when}` : "",
+      testCase.then ? `  Then: ${testCase.then}` : "",
+      `  Expected: ${testCase.expected}`,
+    ].filter((line) => line !== "").join("\n")),
+  ].join("\n");
 }
 
 function formatBlocks(title: string, blocks: ContextBlock[]): string {

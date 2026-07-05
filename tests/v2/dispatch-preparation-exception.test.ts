@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import { observeDispatchPreparationException } from "../../src/v2/scheduler/dispatch-preparation-exception.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
