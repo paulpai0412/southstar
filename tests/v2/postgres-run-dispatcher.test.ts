@@ -7,10 +7,15 @@ import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { dispatchPostgresRunExecutionPg } from "../../src/v2/executor/postgres-run-dispatcher.ts";
 import { listHistoryForRunPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 
 test("legacy Postgres whole-run dispatcher fails closed without executor submission", async () => {
   await withDb(async (db) => {
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement bounded CLI evidence" });
+    await seedDeterministicWorkflowGraph(db);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement bounded CLI evidence",
+      composer: new DeterministicFixtureComposer(),
+    });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     const submissions: unknown[] = [];
 

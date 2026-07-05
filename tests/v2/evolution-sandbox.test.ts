@@ -7,6 +7,7 @@ import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createSandboxExperiment, recordSandboxTrial, evaluateSandboxExperiment, startSandboxExecutionPg, recordSandboxEvaluatorOutputPg } from "../../src/v2/evolution/sandbox.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 
 test("sandbox experiment passes when candidate is no worse than baseline and fixes targeted replay", async () => {
   await withDb(async (db) => {
@@ -96,7 +97,11 @@ test("sandbox experiment fails when candidate introduces cost regression or fail
 test("sandbox execution materializes baseline and candidate runs with env markers and evaluator-driven decision", async () => {
   await withDb(async (db) => {
     await seedDelta(db, "delta-sandbox-execution");
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "sandbox replay implementation" });
+    await seedDeterministicWorkflowGraph(db);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "sandbox replay implementation",
+      composer: new DeterministicFixtureComposer(),
+    });
     const replayRun = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     const experiment = await createSandboxExperiment(db, {
       deltaProposalId: "delta-sandbox-execution",

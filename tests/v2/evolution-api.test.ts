@@ -10,6 +10,7 @@ import { createLearningEdge, createLearningNode } from "../../src/v2/evolution/l
 import { createAssetVersion } from "../../src/v2/evolution/assets.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { recordAssetRegressionObservation, runRegressionMonitor } from "../../src/v2/evolution/regression-monitor.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 
 test("Evolution HTTP API records signals, synthesizes cards, exposes wiki links, and creates deltas", async () => {
   await withDb(async (db) => {
@@ -246,7 +247,11 @@ test("Evolution sandbox start/evaluator routes honor callback/runRoot/harness ov
       summaryText: "Sandbox route contract delta",
     });
 
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "sandbox route contract replay run" });
+    await seedDeterministicWorkflowGraph(db);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "sandbox route contract replay run",
+      composer: new DeterministicFixtureComposer(),
+    });
     const replayRun = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
 
     const submissions: Array<{
