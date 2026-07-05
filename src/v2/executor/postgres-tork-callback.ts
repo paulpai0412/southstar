@@ -431,6 +431,7 @@ async function patchManagedHandExecutionTerminalPg(
   const existingPayload = asRecord(existing?.payload);
   const terminalAt = input.result.receivedAt ?? new Date().toISOString();
   const status = input.result.ok ? "completed" : "failed";
+  const bindingStatus = input.result.ok ? "succeeded" : "failed";
   await upsertRuntimeResourcePg(db, {
     id: existing?.id ?? input.handExecutionId,
     resourceType: "hand_execution",
@@ -465,6 +466,61 @@ async function patchManagedHandExecutionTerminalPg(
       ...asRecord(existing.metrics),
       ...input.result.metrics,
     },
+  });
+  await patchManagedBindingTerminalPg(db, {
+    resourceType: "brain_binding",
+    resourceKey: nonEmptyString(existingPayload.brainBindingId),
+    status: bindingStatus,
+    terminalAt,
+    runId: input.result.runId,
+    taskId: input.result.taskId,
+  });
+  await patchManagedBindingTerminalPg(db, {
+    resourceType: "hand_binding",
+    resourceKey: nonEmptyString(existingPayload.handBindingId),
+    status: bindingStatus,
+    terminalAt,
+    runId: input.result.runId,
+    taskId: input.result.taskId,
+  });
+}
+
+async function patchManagedBindingTerminalPg(
+  db: SouthstarDb,
+  input: {
+    resourceType: "brain_binding" | "hand_binding";
+    resourceKey?: string;
+    status: "succeeded" | "failed";
+    terminalAt: string;
+    runId: string;
+    taskId: string;
+  },
+): Promise<void> {
+  if (!input.resourceKey) return;
+  const existing = await getResourceByKeyPg(db, input.resourceType, input.resourceKey);
+  if (!existing) return;
+  if (["succeeded", "failed", "cancelled", "lost", "destroyed"].includes(existing.status)) return;
+  await upsertRuntimeResourcePg(db, {
+    id: existing.id,
+    resourceType: input.resourceType,
+    resourceKey: input.resourceKey,
+    runId: existing.runId ?? input.runId,
+    taskId: existing.taskId ?? input.taskId,
+    sessionId: existing.sessionId,
+    scope: existing.scope,
+    status: input.status,
+    title: existing.title,
+    payload: {
+      ...asRecord(existing.payload),
+      status: input.status,
+      terminalAt: input.terminalAt,
+    },
+    summary: {
+      ...asRecord(existing.summary),
+      terminalAt: input.terminalAt,
+    },
+    metrics: existing.metrics,
+    expiresAt: existing.expiresAt,
   });
 }
 

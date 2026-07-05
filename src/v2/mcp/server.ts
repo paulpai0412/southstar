@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { createRuntimeServerClient } from "../server/client.ts";
 import {
   createSouthstarMcpToolRegistry,
+  type SouthstarMcpStreamEvent,
   type SouthstarMcpToolRegistry,
 } from "./tool-registry.ts";
 
@@ -20,6 +21,16 @@ export type McpJsonRpcResponse = {
   error?: { code: number; message: string };
 };
 
+export type McpJsonRpcNotification = {
+  jsonrpc: "2.0";
+  method: string;
+  params?: unknown;
+};
+
+export type HandleSouthstarMcpMessageOptions = {
+  onNotification?: (notification: McpJsonRpcNotification) => void;
+};
+
 export function createSouthstarMcpRegistryFromEnv(): SouthstarMcpToolRegistry {
   const baseUrl = process.env.SOUTHSTAR_MCP_RUNTIME_URL
     ?? process.env.SOUTHSTAR_RUNTIME_URL
@@ -31,6 +42,7 @@ export function createSouthstarMcpRegistryFromEnv(): SouthstarMcpToolRegistry {
 export async function handleSouthstarMcpMessage(
   registry: SouthstarMcpToolRegistry,
   message: McpJsonRpcRequest,
+  options: HandleSouthstarMcpMessageOptions = {},
 ): Promise<McpJsonRpcResponse | null> {
   const id = message.id ?? null;
   try {
@@ -49,7 +61,16 @@ export async function handleSouthstarMcpMessage(
         return response(id, { tools: registry.listTools() });
       case "tools/call": {
         const params = asRecord(message.params);
-        return response(id, await registry.callTool(requiredString(params.name, "name"), params.arguments ?? {}));
+        const progressToken = progressTokenFromParams(params);
+        let progress = 0;
+        return response(id, await registry.callTool(requiredString(params.name, "name"), params.arguments ?? {}, {
+          onEvent(event) {
+            progress += 1;
+            if (progressToken) {
+              options.onNotification?.(progressNotification(progressToken, progress, event));
+            }
+          },
+        }));
       }
       default:
         return errorResponse(id, -32601, `method not found: ${message.method ?? ""}`);
@@ -70,7 +91,11 @@ export async function startSouthstarMcpServer(registry = createSouthstarMcpRegis
       process.stdout.write(`${JSON.stringify(errorResponse(null, -32700, error instanceof Error ? error.message : String(error)))}\n`);
       continue;
     }
-    const result = await handleSouthstarMcpMessage(registry, parsed);
+    const result = await handleSouthstarMcpMessage(registry, parsed, {
+      onNotification(notification) {
+        process.stdout.write(`${JSON.stringify(notification)}\n`);
+      },
+    });
     if (result) process.stdout.write(`${JSON.stringify(result)}\n`);
   }
 }
@@ -81,6 +106,37 @@ function response(id: string | number | null, result: unknown): McpJsonRpcRespon
 
 function errorResponse(id: string | number | null, code: number, message: string): McpJsonRpcResponse {
   return { jsonrpc: "2.0", id, error: { code, message } };
+}
+
+function progressNotification(progressToken: string | number, progress: number, event: SouthstarMcpStreamEvent): McpJsonRpcNotification {
+  return {
+    jsonrpc: "2.0",
+    method: "notifications/progress",
+    params: {
+      progressToken,
+      progress,
+      message: progressMessage(event),
+      data: event,
+    },
+  };
+}
+
+function progressMessage(event: SouthstarMcpStreamEvent): string {
+  const data = asRecord(event.data);
+  const message = typeof data.message === "string"
+    ? data.message
+    : typeof data.text === "string"
+      ? data.text
+      : typeof data.error === "string"
+        ? data.error
+        : "";
+  return message ? `${event.event}: ${message}` : event.event;
+}
+
+function progressTokenFromParams(params: Record<string, unknown>): string | number | undefined {
+  const meta = asRecord(params._meta);
+  const token = meta.progressToken;
+  return typeof token === "string" || typeof token === "number" ? token : undefined;
 }
 
 function requiredString(value: unknown, field: string): string {

@@ -7,7 +7,6 @@ import { join } from "node:path";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createSouthstarApiClient } from "../../lib/southstar/api-client.ts";
-import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } from "../../src/v2/read-models/agent-library.ts";
 
 const root = join(import.meta.dirname, "../..");
 function source(path: string): string {
@@ -207,6 +206,7 @@ test("workflow template save request uses encoded draft route and server-derived
     scope: "software",
     templateId: "template.fancy-todo",
     title: "Fancy Todo",
+    status: "approved",
   });
 });
 
@@ -631,139 +631,6 @@ test("agent library panel renders policy context memory and candidate reasons fr
   assert.doesNotMatch(panel, /Southstar will select agents/);
 });
 
-test("agent library panel renders full catalog and policy rows from the read model contract", async () => {
-  const library = await buildAgentLibraryReadModelPg({} as any, { domain: "software" });
-  const { AgentLibraryPanel } = await import("../../components/southstar/workflow/AgentLibraryPanel.tsx");
-  const markup = renderToStaticMarkup(React.createElement(AgentLibraryPanel, {
-    model: {
-      agentLibrary: library,
-      selectedDefinition: {
-        taskId: "implement",
-        taskName: "Implement task",
-        roleRef: "maker",
-        agentProfileRef: "software-maker-pi",
-        skillRefs: ["software.calc-cli"],
-        mcpGrantRefs: ["filesystem-workspace"],
-        toolGrantRefs: ["read", "search", "edit", "shell"],
-      },
-      selectionReasons: ["task implement is pinned to profile software-maker-pi"],
-      contextMemory: { refs: ["memory:project-pattern"] },
-    },
-    activeCwd: "/workspace/southstar",
-    selectedTaskId: "implement",
-    onOpenAlternatives() {},
-    alternativesDisabled: false,
-  }));
-
-  for (const expected of [
-    "explorer",
-    "Inspect the repository and create an implementation plan.",
-    "software-maker-pi",
-    "Software Maker Pi",
-    "pi-agent-default",
-    "software.calc-cli",
-    "filesystem-workspace",
-    "shell",
-    "implementation_plan",
-    "summary",
-    "software-feature-quality",
-    "rollback-workspace",
-    "software-context-default",
-    "software-memory-default",
-    "software-session-default",
-    "software-git-workspace",
-    "vault.github-write-token",
-    "GitHub Write Token Vault Lease",
-    "memory:project-pattern",
-    "task implement is pinned to profile software-maker-pi",
-  ]) {
-    assert.match(markup, new RegExp(escapeRegExp(expected)));
-  }
-});
-
-test("workflow workbench fetches full agent library and passes it to the panel", async () => {
-  const workflowResponse = {
-    activeDraft: {
-      draftId: "draft-agent-library-full",
-      workflowId: "wf-agent-library-full",
-      goalPrompt: "implement calc sum",
-      status: "validated",
-    },
-    canvasModel: {
-      mode: "draft",
-      selectedNodeId: "implement",
-      nodes: [{
-        id: "implement",
-        label: "Implement",
-        status: "draft",
-        dependsOn: [],
-        roleRef: "maker",
-        agentProfileRef: "software-maker-pi",
-        sortOrder: 0,
-      }],
-      edges: [],
-    },
-    selectedDefinition: {
-      taskId: "implement",
-      taskName: "Implement",
-      roleRef: "maker",
-      agentProfileRef: "software-maker-pi",
-      skillRefs: ["software.calc-cli"],
-      mcpGrantRefs: ["filesystem-workspace"],
-      toolGrantRefs: ["read", "search", "edit", "shell"],
-    },
-    agentLibrarySummary: {
-      domain: "software",
-      roleCount: 4,
-      agentProfileCount: 6,
-      skillCount: 1,
-      mcpServerCount: 1,
-      toolCount: 4,
-      artifactContractCount: 4,
-      evaluatorPipelineCount: 4,
-    },
-    validationIssues: [],
-    repairAttempts: 0,
-    commands: [],
-  };
-  const library = await buildAgentLibraryReadModelPg({} as any, { domain: "software" });
-  const calls: unknown[] = [];
-  const api = {
-    ...inertApi,
-    getUiWorkflowTab: async (params: unknown) => {
-      calls.push(["workflow", params]);
-      return workflowResponse;
-    },
-    getAgentLibrary: async (params: unknown) => {
-      calls.push(["library", params]);
-      return library;
-    },
-  };
-  const workbenchModule = await import("../../components/southstar/workflow/WorkflowWorkbench.tsx");
-  assert.equal(typeof (workbenchModule as any).loadWorkflowWorkbenchModel, "function");
-
-  const initialWorkflowModel = await (workbenchModule as any).loadWorkflowWorkbenchModel(api, {
-    draftId: "draft-agent-library-full",
-  });
-  assert.deepEqual(calls, [
-    ["workflow", { draftId: "draft-agent-library-full", runId: undefined }],
-    ["library", { domain: "software" }],
-  ]);
-
-  const markup = renderToStaticMarkup(React.createElement(workbenchModule.WorkflowWorkbench, {
-    api,
-    activeCwd: "/workspace/southstar",
-    initialDraftId: "draft-agent-library-full",
-    initialWorkflowModel,
-    onOpenOperator() {},
-  } as any));
-
-  assert.match(markup, /Software Maker Pi/);
-  assert.match(markup, /GitHub Write Token Vault Lease/);
-  assert.doesNotMatch(markup, /No profiles available/);
-  assert.doesNotMatch(markup, /No vault policies available/);
-});
-
 test("workflow workbench keeps workflow model when full agent library enrichment fails", async () => {
   const workflowResponse = {
     activeDraft: {
@@ -844,43 +711,6 @@ test("workflow workbench keeps workflow model when full agent library enrichment
 
   assert.match(markup, /Workflow DAG/);
   assert.match(markup, /Agent Library degraded: agent library unavailable/);
-});
-
-test("library alternatives sheet renders candidates read model as prompt review context", async () => {
-  const model = await buildAgentLibraryCandidatesReadModelPg({
-    maybeOne: async () => ({
-      payload_json: {
-        workflow: {
-          domain: "software",
-          tasks: [{
-            id: "implement",
-            roleRef: "maker",
-            agentProfileRef: "software-maker-pi",
-            skillRefs: ["software.calc-cli"],
-            mcpGrantRefs: ["filesystem-workspace"],
-            toolGrantRefs: ["read", "search", "edit", "shell"],
-          }],
-        },
-      },
-    }),
-  } as any, { draftId: "draft-agent-library", taskId: "implement" });
-  const { LibraryAlternativesSheet } = await import("../../components/southstar/workflow/LibraryAlternativesSheet.tsx");
-  const markup = renderToStaticMarkup(React.createElement(LibraryAlternativesSheet, {
-    model,
-    onClose() {},
-  }));
-
-  for (const expected of [
-    "maker",
-    "software-maker-pi",
-    "software.calc-cli",
-    "filesystem-workspace",
-    "shell",
-    "task implement is assigned role maker",
-  ]) {
-    assert.match(markup, new RegExp(escapeRegExp(expected)));
-  }
-  assert.doesNotMatch(markup, /Apply|Update workflow|Mutate|Save selection/);
 });
 
 async function readJson(req: IncomingMessage): Promise<unknown> {

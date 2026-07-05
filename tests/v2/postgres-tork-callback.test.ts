@@ -2,9 +2,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
-import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createExecutorBindingPg, getExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../../src/v2/artifacts/types.ts";
+import { persistBrainBindingPg, persistHandBindingPg } from "../../src/v2/meta-harness/postgres-bindings.ts";
 import { createRuntimeServerClient } from "../../src/v2/server/client.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -63,6 +64,16 @@ test("Postgres Tork callback route ingests task result, artifacts, binding statu
       const binding = await getExecutorBindingPg(db, "executor-run-callback-pg-task-1-attempt-1");
       assert.equal(binding?.status, "completed");
       assert.equal(binding?.payload.callbackReceivedAt, "2026-06-19T10:05:00.000Z");
+      const brainBindings = await listResourcesPg(db, { resourceType: "brain_binding" });
+      const handBindings = await listResourcesPg(db, { resourceType: "hand_binding" });
+      const brainBinding = brainBindings.find((resource) => resource.runId === "run-callback-pg" && resource.taskId === "task-1");
+      const handBinding = handBindings.find((resource) => resource.runId === "run-callback-pg" && resource.taskId === "task-1");
+      assert.equal(brainBinding?.status, "succeeded");
+      assert.equal((brainBinding?.payload as { status?: string; terminalAt?: string }).status, "succeeded");
+      assert.equal((brainBinding?.payload as { status?: string; terminalAt?: string }).terminalAt, "2026-06-19T10:05:00.000Z");
+      assert.equal(handBinding?.status, "succeeded");
+      assert.equal((handBinding?.payload as { status?: string; terminalAt?: string }).status, "succeeded");
+      assert.equal((handBinding?.payload as { status?: string; terminalAt?: string }).terminalAt, "2026-06-19T10:05:00.000Z");
 
       const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
       assert.equal(artifactRefs.length, 1);
@@ -362,6 +373,54 @@ async function seedRunTask(db: SouthstarDb, runId: string, taskId: string): Prom
     sortOrder: 0,
     dependsOn: [],
     rootSessionId: "session-1",
+  });
+  await persistBrainBindingPg(db, {
+    id: `brain-${runId}-${taskId}`,
+    providerId: "pi",
+    runId,
+    taskId,
+    sessionId: "session-1",
+    contextPacketId: `ctx-${runId}-${taskId}`,
+    status: "running",
+    createdAt: "2026-06-19T10:00:00.000Z",
+    payload: { recoveryKey: `task-dispatch:${runId}:${taskId}` },
+  });
+  await persistHandBindingPg(db, {
+    id: `hand-${runId}-${taskId}`,
+    providerId: "tork",
+    runId,
+    taskId,
+    handName: "workspace",
+    status: "running",
+    createdAt: "2026-06-19T10:00:00.000Z",
+    payload: { recoveryKey: `task-dispatch:${runId}:${taskId}` },
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: `hand-execution:${runId}:${taskId}:attempt-1`,
+    resourceType: "hand_execution",
+    resourceKey: `hand-execution:${runId}:${taskId}:attempt-1`,
+    runId,
+    taskId,
+    sessionId: "session-1",
+    scope: "hand",
+    status: "running",
+    title: `Hand execution ${taskId}`,
+    payload: {
+      schemaVersion: "southstar.runtime.hand_execution.v1",
+      handExecutionId: `hand-execution:${runId}:${taskId}:attempt-1`,
+      providerId: "tork",
+      runId,
+      taskId,
+      sessionId: "session-1",
+      attemptId: "attempt-1",
+      brainBindingId: `brain-${runId}-${taskId}`,
+      handBindingId: `hand-${runId}-${taskId}`,
+      status: "running",
+      queuedAt: "2026-06-19T10:00:00.000Z",
+      queueTimeoutSeconds: 60,
+      heartbeatTimeoutSeconds: 60,
+    },
+    summary: { providerId: "tork", attemptId: "attempt-1" },
   });
 }
 

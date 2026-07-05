@@ -120,6 +120,93 @@ test("dynamic repair revision appends repair and reverify tasks for failed valid
   }
 });
 
+test("dynamic repair revision reconnects pending downstream tasks after generated reverify", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    workflow.tasks.push(workflowTask("summarize-release", "Summarize Release", "implementer", "profile.impl", ["verify-feature"]));
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-downstream",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-downstream",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-downstream",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "summarize-release",
+      runId: "run-dynamic-repair-downstream",
+      taskKey: "Summarize Release",
+      status: "pending",
+      sortOrder: 2,
+      dependsOn: ["verify-feature"],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-downstream",
+      failedTaskId: "verify-feature",
+      failedArtifactRefId: "artifact-ref-verify-failed",
+      failedArtifact: { summary: "npm test failed in todo component", findings: ["button handler missing"] },
+      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.equal(result.status, "applied");
+    assert.deepEqual(result.newTaskIds, ["repair-verify-feature-attempt-1", "reverify-verify-feature-attempt-1"]);
+    const reconnectTargetId = "reverify-verify-feature-attempt-1";
+
+    const run = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
+      "select workflow_manifest_json from southstar.workflow_runs where id = $1",
+      ["run-dynamic-repair-downstream"],
+    );
+    const summaryTask = run.workflow_manifest_json.tasks.find((task) => task.id === "summarize-release");
+    assert.ok(summaryTask);
+    assert.deepEqual(summaryTask.dependsOn, [reconnectTargetId]);
+
+    const rows = await db.query<{ id: string; status: string; depends_on_json: string[] }>(
+      "select id, status, depends_on_json from southstar.workflow_tasks where run_id = $1 order by sort_order",
+      ["run-dynamic-repair-downstream"],
+    );
+    assert.deepEqual(rows.rows.map((row) => `${row.id}:${row.status}:${row.depends_on_json.join(",")}`), [
+      "implement-feature:completed:",
+      "verify-feature:failed:implement-feature",
+      `summarize-release:pending:${reconnectTargetId}`,
+      "repair-verify-feature-attempt-1:pending:implement-feature",
+      "reverify-verify-feature-attempt-1:pending:repair-verify-feature-attempt-1",
+    ]);
+
+    const resources = await listResourcesPg(db, { resourceType: "workflow_dynamic_repair_revision" });
+    assert.deepEqual((resources[0]?.summary as { downstreamDependencyChanges?: unknown }).downstreamDependencyChanges, [{
+      taskId: "summarize-release",
+      dependsOn: [reconnectTargetId],
+    }]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("failed validation callback applies dynamic repair revision before completion gate", async () => {
   const db = await createTestPostgresDb();
   try {

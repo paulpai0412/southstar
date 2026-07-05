@@ -35,6 +35,7 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "getRuntimeLoops",
     "tickRuntimeLoop",
     "wakeRuntime",
+    "createPlannerDraftStream",
     "getTaskActions",
     "retryTask",
     "resetTaskSession",
@@ -49,6 +50,25 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "getWorkflowTemplate",
     "instantiateWorkflowTemplate",
     "getArtifact",
+    "getLibraryWorkspace",
+    "getLibraryGraph",
+    "createLibraryImportDraft",
+    "installLibraryImportCandidates",
+    "installLibraryImportCandidatesStream",
+    "getLibraryObject",
+    "setLibraryObjectLifecycle",
+    "listLibraryFiles",
+    "getLibraryFile",
+    "updateLibraryFile",
+    "validateLibraryFile",
+    "syncLibraryFile",
+    "composeLibraryProfile",
+    "validateLibraryProfile",
+    "saveLibraryProfile",
+    "revisePlannerDraft",
+    "revisePlannerDraftStream",
+    "saveWorkflowTemplate",
+    "streamRunEvents",
   ] as const;
 
   for (const method of methods) {
@@ -299,6 +319,9 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       method: init?.method,
       body: init?.body ? JSON.parse(String(init.body)) : undefined,
     });
+    if (String(input).includes("/stream")) {
+      return new Response("event: done\ndata: {}\n\n", { headers: { "content-type": "text/event-stream" } });
+    }
     return new Response(JSON.stringify({ ok: true, kind: "test", result: {} }), { headers: { "content-type": "application/json" } });
   }) as typeof fetch;
   try {
@@ -309,6 +332,12 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       composerMode: "llm",
       scope: "research",
     });
+    await client.createPlannerDraftStream({
+      goalPrompt: "implement calc sum",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
+      scope: "research",
+    }, () => {});
     await client.runGoal({
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
@@ -348,6 +377,59 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       constraints: { mode: "strict" },
     });
     await client.getArtifact({ artifactRef: "artifact/ref" });
+    await client.getLibraryWorkspace({ scope: "software" });
+    await client.getLibraryGraph({ scope: "software", objectKey: "agent.frontend", depth: 1, kind: "agent_definition", status: "approved" });
+    await client.createLibraryImportDraft({
+      source: { kind: "github", url: "https://github.com/example/skills" },
+      scope: "software",
+      requestPrompt: "import skills",
+    });
+    await client.installLibraryImportCandidates({
+      draftId: "draft/lib",
+      selectedCandidateIds: ["candidate-a"],
+      selectedEdgeIds: ["edge-a"],
+      actor: "pi-agent",
+      reason: "install selected candidates",
+    });
+    await client.installLibraryImportCandidatesStream({
+      draftId: "draft/lib",
+      selectedCandidateIds: ["candidate-a"],
+      selectedEdgeIds: ["edge-a"],
+      actor: "pi-agent",
+      reason: "install selected candidates",
+    }, () => {});
+    await client.getLibraryObject("agent.frontend");
+    await client.setLibraryObjectLifecycle({
+      objectKey: "agent.frontend",
+      action: "approve",
+      actor: "pi-agent",
+      reason: "approve for workflow use",
+    });
+    await client.listLibraryFiles();
+    await client.getLibraryFile("agents/frontend.agent.md");
+    await client.updateLibraryFile({ relativePath: "agents/frontend.agent.md", content: "updated" });
+    await client.validateLibraryFile("agents/frontend.agent.md");
+    await client.syncLibraryFile("agents/frontend.agent.md");
+    await client.composeLibraryProfile({
+      scope: "software",
+      nodeId: "implement",
+      requirement: "Build UI",
+      preferredAgentRef: "agent.frontend",
+      templateId: "template.software",
+    });
+    await client.validateLibraryProfile({
+      profile: { scope: "software", nodeId: "implement", agentRef: "agent.frontend", skillRefs: [], toolGrantRefs: [], mcpGrantRefs: [], instructionRefs: [] },
+    });
+    await client.saveLibraryProfile({
+      draft: { profile: {}, validation: {} },
+      templateId: "template.software",
+      actor: "pi-agent",
+      reason: "save generated profile",
+    });
+    await client.revisePlannerDraft({ draftId: "draft/a", prompt: "add verification" });
+    await client.revisePlannerDraftStream({ draftId: "draft/a", prompt: "add verification" }, () => {});
+    await client.saveWorkflowTemplate({ draftId: "draft/a", templateId: "template.saved", title: "Saved Template", scope: "software", status: "approved" });
+    await client.streamRunEvents({ runId: "run/a", after: 1, taskId: "task/a", closeOnTerminal: true, pollMs: 10 }, () => {});
     await client.getExecutorJobActions({ runId: "run/a", jobId: "job/a" });
     await client.reconcileExecutorJob({ runId: "run/a", jobId: "job/a" });
     await client.cancelExecutorJob({
@@ -373,6 +455,11 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
     assert.deepEqual(calls, [
       {
         url: "http://127.0.0.1/api/v2/planner/drafts",
+        method: "POST",
+        body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "llm", scope: "research" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts/stream",
         method: "POST",
         body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "llm", scope: "research" },
       },
@@ -412,6 +499,65 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
         body: { templateRef: "template/software", goalPrompt: "build vocabulary app", constraints: { mode: "strict" } },
       },
       { url: "http://127.0.0.1/api/v2/artifacts/artifact%2Fref", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/library/workspace?scope=software", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/library/graph?scope=software&objectKey=agent.frontend&depth=1&kind=agent_definition&status=approved", method: undefined, body: undefined },
+      {
+        url: "http://127.0.0.1/api/v2/library/import-drafts",
+        method: "POST",
+        body: { source: { kind: "github", url: "https://github.com/example/skills" }, scope: "software", requestPrompt: "import skills" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/library/import-drafts/draft%2Flib/install",
+        method: "POST",
+        body: { selectedCandidateIds: ["candidate-a"], selectedEdgeIds: ["edge-a"], actor: "pi-agent", reason: "install selected candidates" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/library/import-drafts/draft%2Flib/install/stream",
+        method: "POST",
+        body: { selectedCandidateIds: ["candidate-a"], selectedEdgeIds: ["edge-a"], actor: "pi-agent", reason: "install selected candidates" },
+      },
+      { url: "http://127.0.0.1/api/v2/library/objects/agent.frontend", method: undefined, body: undefined },
+      {
+        url: "http://127.0.0.1/api/v2/library/objects/agent.frontend/approve",
+        method: "POST",
+        body: { actor: "pi-agent", reason: "approve for workflow use" },
+      },
+      { url: "http://127.0.0.1/api/v2/library/files", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/library/files/agents%2Ffrontend.agent.md", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/library/files/agents%2Ffrontend.agent.md", method: "PATCH", body: { content: "updated" } },
+      { url: "http://127.0.0.1/api/v2/library/files/agents%2Ffrontend.agent.md/validate", method: "POST", body: {} },
+      { url: "http://127.0.0.1/api/v2/library/files/agents%2Ffrontend.agent.md/sync", method: "POST", body: {} },
+      {
+        url: "http://127.0.0.1/api/v2/library/profile-drafts/compose",
+        method: "POST",
+        body: { scope: "software", nodeId: "implement", requirement: "Build UI", preferredAgentRef: "agent.frontend", templateId: "template.software" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/library/profile-drafts/validate",
+        method: "POST",
+        body: { profile: { scope: "software", nodeId: "implement", agentRef: "agent.frontend", skillRefs: [], toolGrantRefs: [], mcpGrantRefs: [], instructionRefs: [] } },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/library/profile-drafts/save",
+        method: "POST",
+        body: { draft: { profile: {}, validation: {} }, templateId: "template.software", actor: "pi-agent", reason: "save generated profile" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/revise",
+        method: "POST",
+        body: { prompt: "add verification" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/revise/stream",
+        method: "POST",
+        body: { prompt: "add verification" },
+      },
+      {
+        url: "http://127.0.0.1/api/v2/workflow/drafts/draft%2Fa/save-template",
+        method: "POST",
+        body: { templateId: "template.saved", title: "Saved Template", scope: "software", status: "approved" },
+      },
+      { url: "http://127.0.0.1/api/v2/runs/run%2Fa/events/stream?after=1&taskId=task%2Fa&closeOnTerminal=true&pollMs=10", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/actions", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/reconcile", method: "POST", body: {} },
       {

@@ -59,6 +59,77 @@ type InstantiateWorkflowTemplateRequest = {
     requireApproval?: boolean;
   };
 };
+type LibraryGraphRequest = {
+  scope?: string;
+  objectKey?: string;
+  depth?: number;
+  kind?: string;
+  status?: string;
+  edgeType?: string;
+};
+type LibraryImportDraftRequest = {
+  source: unknown;
+  scope?: string;
+  requestPrompt?: string;
+};
+type LibraryImportInstallRequest = {
+  draftId: string;
+  selectedCandidateIds: string[];
+  selectedEdgeIds?: string[];
+  actor?: string;
+  reason: string;
+};
+type LibraryObjectLifecycleRequest = {
+  objectKey: string;
+  action: "approve" | "deprecate" | "block";
+  actor?: string;
+  reason: string;
+};
+type LibraryProfileComposeRequest = {
+  scope?: string;
+  nodeId: string;
+  requirement: string;
+  preferredAgentRef: string;
+  templateId?: string;
+};
+type LibraryProfileValidateRequest = {
+  profile?: unknown;
+  draft?: unknown;
+};
+type LibraryProfileSaveRequest = {
+  draft: unknown;
+  templateId: string;
+  actor?: string;
+  reason: string;
+};
+type RevisePlannerDraftRequest = {
+  draftId: string;
+  prompt: string;
+  orchestrationMode?: "llm-constrained";
+  composerMode?: "llm";
+};
+type SaveWorkflowTemplateRequest = {
+  draftId: string;
+  templateId: string;
+  title: string;
+  scope?: string;
+  status?: "draft" | "approved";
+};
+type RuntimeSseEvent = {
+  event: string;
+  data: unknown;
+  id?: string;
+};
+type RuntimeSseListener = (event: RuntimeSseEvent) => void;
+type StreamRunEventsRequest = {
+  runId: string;
+  after?: number;
+  taskId?: string;
+  includeRunEvents?: boolean;
+  closeOnTerminal?: boolean;
+  pollMs?: number;
+  heartbeatMs?: number;
+};
 type RuntimeLoopId =
   | "executor-reconciler"
   | "runnable-task-scheduler"
@@ -74,6 +145,9 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     createPlannerDraft(body: PlannerRequestBody) {
       return post(`${baseUrl}/api/v2/planner/drafts`, body);
+    },
+    createPlannerDraftStream(body: PlannerRequestBody & { cwd?: string }, onEvent: RuntimeSseListener) {
+      return postSse(`${baseUrl}/api/v2/planner/drafts/stream`, body, onEvent);
     },
     createRun(body: { draftId: string }) {
       return post(`${baseUrl}/api/v2/runs`, body);
@@ -126,6 +200,97 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     getArtifact(body: { artifactRef: string }) {
       return get(`${baseUrl}/api/v2/artifacts/${encodeURIComponent(body.artifactRef)}`);
+    },
+    getLibraryWorkspace(body: { scope?: string } = {}) {
+      const query = new URLSearchParams();
+      setOptionalQueryString(query, "scope", body.scope);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return get(`${baseUrl}/api/v2/library/workspace${suffix}`);
+    },
+    getLibraryGraph(body: LibraryGraphRequest = {}) {
+      const query = new URLSearchParams();
+      setOptionalQueryString(query, "scope", body.scope);
+      setOptionalQueryString(query, "objectKey", body.objectKey);
+      setOptionalQueryNumber(query, "depth", body.depth);
+      setOptionalQueryString(query, "kind", body.kind);
+      setOptionalQueryString(query, "status", body.status);
+      setOptionalQueryString(query, "edgeType", body.edgeType);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return get(`${baseUrl}/api/v2/library/graph${suffix}`);
+    },
+    createLibraryImportDraft(body: LibraryImportDraftRequest) {
+      return post(`${baseUrl}/api/v2/library/import-drafts`, body);
+    },
+    installLibraryImportCandidates(body: LibraryImportInstallRequest) {
+      return post(`${baseUrl}/api/v2/library/import-drafts/${encodeURIComponent(body.draftId)}/install`, {
+        selectedCandidateIds: body.selectedCandidateIds,
+        ...(body.selectedEdgeIds !== undefined ? { selectedEdgeIds: body.selectedEdgeIds } : {}),
+        ...(body.actor !== undefined ? { actor: body.actor } : {}),
+        reason: body.reason,
+      });
+    },
+    installLibraryImportCandidatesStream(body: LibraryImportInstallRequest, onEvent: RuntimeSseListener) {
+      return postSse(`${baseUrl}/api/v2/library/import-drafts/${encodeURIComponent(body.draftId)}/install/stream`, {
+        selectedCandidateIds: body.selectedCandidateIds,
+        ...(body.selectedEdgeIds !== undefined ? { selectedEdgeIds: body.selectedEdgeIds } : {}),
+        ...(body.actor !== undefined ? { actor: body.actor } : {}),
+        reason: body.reason,
+      }, onEvent);
+    },
+    getLibraryObject(objectKey: string) {
+      return get(`${baseUrl}/api/v2/library/objects/${encodeURIComponent(objectKey)}`);
+    },
+    setLibraryObjectLifecycle(body: LibraryObjectLifecycleRequest) {
+      return post(`${baseUrl}/api/v2/library/objects/${encodeURIComponent(body.objectKey)}/${body.action}`, {
+        ...(body.actor !== undefined ? { actor: body.actor } : {}),
+        reason: body.reason,
+      });
+    },
+    listLibraryFiles() {
+      return get(`${baseUrl}/api/v2/library/files`);
+    },
+    getLibraryFile(relativePath: string) {
+      return get(`${baseUrl}/api/v2/library/files/${encodeURIComponent(relativePath)}`);
+    },
+    updateLibraryFile(body: { relativePath: string; content: string }) {
+      return patch(`${baseUrl}/api/v2/library/files/${encodeURIComponent(body.relativePath)}`, { content: body.content });
+    },
+    validateLibraryFile(relativePath: string) {
+      return post(`${baseUrl}/api/v2/library/files/${encodeURIComponent(relativePath)}/validate`, {});
+    },
+    syncLibraryFile(relativePath: string) {
+      return post(`${baseUrl}/api/v2/library/files/${encodeURIComponent(relativePath)}/sync`, {});
+    },
+    composeLibraryProfile(body: LibraryProfileComposeRequest) {
+      return post(`${baseUrl}/api/v2/library/profile-drafts/compose`, body);
+    },
+    validateLibraryProfile(body: LibraryProfileValidateRequest) {
+      return post(`${baseUrl}/api/v2/library/profile-drafts/validate`, body);
+    },
+    saveLibraryProfile(body: LibraryProfileSaveRequest) {
+      return post(`${baseUrl}/api/v2/library/profile-drafts/save`, body);
+    },
+    revisePlannerDraft(body: RevisePlannerDraftRequest) {
+      return post(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/revise`, {
+        prompt: body.prompt,
+        ...(body.orchestrationMode !== undefined ? { orchestrationMode: body.orchestrationMode } : {}),
+        ...(body.composerMode !== undefined ? { composerMode: body.composerMode } : {}),
+      });
+    },
+    revisePlannerDraftStream(body: RevisePlannerDraftRequest, onEvent: RuntimeSseListener) {
+      return postSse(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/revise/stream`, {
+        prompt: body.prompt,
+        ...(body.orchestrationMode !== undefined ? { orchestrationMode: body.orchestrationMode } : {}),
+        ...(body.composerMode !== undefined ? { composerMode: body.composerMode } : {}),
+      }, onEvent);
+    },
+    saveWorkflowTemplate(body: SaveWorkflowTemplateRequest) {
+      return post(`${baseUrl}/api/v2/workflow/drafts/${encodeURIComponent(body.draftId)}/save-template`, {
+        templateId: body.templateId,
+        title: body.title,
+        ...(body.scope !== undefined ? { scope: body.scope } : {}),
+        ...(body.status !== undefined ? { status: body.status } : {}),
+      });
     },
     getRun(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}`);
@@ -251,6 +416,17 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     steerRun(body: { runId: string; message: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/steering`, { message: body.message });
     },
+    streamRunEvents(body: StreamRunEventsRequest, onEvent: RuntimeSseListener) {
+      const query = new URLSearchParams();
+      setOptionalQueryNumber(query, "after", body.after);
+      setOptionalQueryString(query, "taskId", body.taskId);
+      if (body.includeRunEvents !== undefined) query.set("includeRunEvents", String(body.includeRunEvents));
+      if (body.closeOnTerminal !== undefined) query.set("closeOnTerminal", String(body.closeOnTerminal));
+      setOptionalQueryNumber(query, "pollMs", body.pollMs);
+      setOptionalQueryNumber(query, "heartbeatMs", body.heartbeatMs);
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return getSse(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/events/stream${suffix}`, onEvent);
+    },
     voiceCommand(body: { runId: string; transcript: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/voice-command`, { transcript: body.transcript });
     },
@@ -336,6 +512,89 @@ async function patch<T = unknown>(url: string, body: unknown): Promise<ApiEnvelo
 
 async function get<T = unknown>(url: string): Promise<ApiEnvelope<T>> {
   return readJson(await fetch(url));
+}
+
+async function postSse(url: string, body: unknown, onEvent: RuntimeSseListener): Promise<unknown> {
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  return readSse(response, onEvent);
+}
+
+async function getSse(url: string, onEvent: RuntimeSseListener): Promise<unknown> {
+  return readSse(await fetch(url), onEvent);
+}
+
+async function readSse(response: Response, onEvent: RuntimeSseListener): Promise<unknown> {
+  if (!response.ok) throw new Error(`request failed: ${response.status}`);
+  if (!response.body) return { events: [] };
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const events: RuntimeSseEvent[] = [];
+  let buffer = "";
+  while (true) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    buffer = drainSseFrames(buffer, (event) => {
+      events.push(event);
+      onEvent(event);
+    });
+  }
+  buffer += decoder.decode();
+  drainSseFrames(`${buffer}\n\n`, (event) => {
+    events.push(event);
+    onEvent(event);
+  });
+  return summarizeSseEvents(events);
+}
+
+function drainSseFrames(buffer: string, emit: (event: RuntimeSseEvent) => void): string {
+  let remaining = buffer;
+  while (true) {
+    const index = remaining.indexOf("\n\n");
+    if (index < 0) return remaining;
+    const frame = remaining.slice(0, index);
+    remaining = remaining.slice(index + 2);
+    const parsed = parseSseFrame(frame);
+    if (parsed) emit(parsed);
+  }
+}
+
+function parseSseFrame(frame: string): RuntimeSseEvent | null {
+  const lines = frame.split(/\r?\n/);
+  let event = "message";
+  let id: string | undefined;
+  const dataLines: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith("event:")) event = line.slice("event:".length).trim();
+    else if (line.startsWith("id:")) id = line.slice("id:".length).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice("data:".length).trimStart());
+  }
+  if (dataLines.length === 0 && !id) return null;
+  const dataText = dataLines.join("\n");
+  let data: unknown = dataText;
+  if (dataText.length > 0) {
+    try {
+      data = JSON.parse(dataText);
+    } catch {
+      data = dataText;
+    }
+  }
+  return { event, data, ...(id ? { id } : {}) };
+}
+
+function summarizeSseEvents(events: RuntimeSseEvent[]): Record<string, unknown> {
+  const result: Record<string, unknown> = { eventCount: events.length, events };
+  for (const event of events) {
+    if (event.event === "draft" && isRecord(event.data) && event.data.draft !== undefined) result.draft = event.data.draft;
+    if (event.event === "orchestration" && isRecord(event.data) && event.data.orchestration !== undefined) result.orchestration = event.data.orchestration;
+    if (event.event === "error") result.error = event.data;
+    if (event.event === "done") result.done = true;
+  }
+  return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 async function readJson<T>(response: Response): Promise<ApiEnvelope<T>> {

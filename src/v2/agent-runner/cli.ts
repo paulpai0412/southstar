@@ -38,6 +38,7 @@ export async function runAgentRunnerCli(
     }
     if (options.callbackUrl) {
       await postCallback(options.callbackUrl, result);
+      return 0;
     }
     return result.ok ? 0 : 2;
   } catch (error) {

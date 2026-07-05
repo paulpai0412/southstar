@@ -12,6 +12,7 @@ import { type RecoveryProviderActionInput, type RecoveryProviderActions } from "
 import { TorkClient } from "../executor/tork-client.ts";
 import { TorkExecutorProvider } from "../executor/tork-provider.ts";
 import { createTorkHandProvider } from "../hands/tork-hand-provider.ts";
+import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
 import { createHttpPiPlannerClient, createPiSdkPlannerClient } from "../planner/pi-planner.ts";
 import { createPostgresSessionStore } from "../session/postgres-session-store.ts";
 import { createSouthstarRuntimeServer, type SouthstarRuntimeServer } from "./http-server.ts";
@@ -293,11 +294,21 @@ async function createRuntime(
   const plannerClient = env.piPlannerEndpoint
     ? createHttpPiPlannerClient({ endpoint: env.piPlannerEndpoint })
     : createPiSdkPlannerClient({ timeoutMs: env.piPlannerTimeoutMs });
+  const workflowComposer = new LlmWorkflowComposer({
+    model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
+    client: {
+      generateText: (input) => plannerClient.generate(input.prompt),
+      generateTextStream: plannerClient.generateStream
+        ? (input, handlers) => plannerClient.generateStream!(input.prompt, { onDelta: handlers.onDelta })
+        : undefined,
+    },
+  });
   const server = await createSouthstarRuntimeServer({
     host,
     port,
     db,
     plannerClient,
+    workflowComposer,
     executorProvider,
     torkObservationClient: {
       capabilities: () => torkClient.capabilities(),

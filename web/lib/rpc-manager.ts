@@ -1,9 +1,11 @@
 import { createAgentSession, SessionManager } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "crypto";
+import { createSouthstarPiAgentToolsFromEnv } from "../../src/v2/mcp/pi-agent-tools.ts";
 import { cacheSessionPath } from "./session-reader";
 import type { SlashCommandInfo } from "@earendil-works/pi-coding-agent";
 import type { AgentSessionLike, ExtensionUiContextLike, ToolInfo } from "./pi-types";
 import type { ExtensionUiRequest, ExtensionUiResponse, ExtensionWidgetItem } from "./types";
+type CreateAgentSessionOptions = NonNullable<Parameters<typeof createAgentSession>[0]>;
 
 // ============================================================================
 // Types
@@ -572,11 +574,13 @@ export async function startRpcSession(
       // tools (and activate extension tools); we narrow the ACTIVE set below.
       toolsOption = toolNames.length === 0 ? [] : undefined;
     }
+    const customTools = createSouthstarPiAgentToolsFromEnv() as unknown as CreateAgentSessionOptions["customTools"];
 
     const { session: inner } = await createAgentSession({
       cwd,
       agentDir,
       sessionManager,
+      customTools,
       ...(toolsOption !== undefined ? { tools: toolsOption } : {}),
     });
 

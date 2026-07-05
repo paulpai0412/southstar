@@ -242,6 +242,67 @@ test("agent runner CLI runtime fault keeps harness execution but fails artifact 
   }
 });
 
+test("agent runner CLI exits zero after delivering failed callback", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-agent-runner-failed-callback-"));
+  const envelopePath = join(root, "envelope-failed-callback.json");
+  const resultPath = join(root, "result-failed-callback.json");
+  const faultyEnvelope = envelope();
+  faultyEnvelope.rootSession.maxRepairAttempts = 1;
+  faultyEnvelope.task.rootSession.maxRepairAttempts = 1;
+  await writeFile(envelopePath, JSON.stringify(faultyEnvelope), "utf8");
+  let callbackBody: { ok?: boolean; artifact?: Record<string, unknown> } | undefined;
+  const server = createServer(async (request, response) => {
+    const body = await readRequestBody(request);
+    response.setHeader("content-type", "application/json");
+    if (request.method === "POST" && request.url === "/harness") {
+      response.end(JSON.stringify({
+        artifact: { summary: "done", commandsRun: ["npm test"], risks: [] },
+        progress: ["harness completed before injected validation failure"],
+        metrics: { tokens: 20, costMicrosUsd: 20, toolCalls: 1 },
+      }));
+      return;
+    }
+    if (request.method === "POST" && request.url === "/callback") {
+      callbackBody = JSON.parse(body) as typeof callbackBody;
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    assert.equal(typeof address, "object");
+    const rootUrl = `http://127.0.0.1:${address?.port}`;
+
+    const exitCode = await runAgentRunnerCli([
+      "--envelope",
+      envelopePath,
+      "--result",
+      resultPath,
+      "--harness-endpoint",
+      `${rootUrl}/harness`,
+      "--callback-url",
+      `${rootUrl}/callback`,
+      "--runtime-fault",
+      JSON.stringify({
+        kind: "validation_missing_fields",
+        fields: ["summary"],
+        reason: "callback transport should not retry accepted task failure",
+      }),
+    ]);
+
+    assert.equal(exitCode, 0);
+    assert.equal(callbackBody?.ok, false);
+    assert.equal(callbackBody?.artifact?.summary, undefined);
+    const result = JSON.parse(await readFile(resultPath, "utf8"));
+    assert.equal(result.ok, false);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test("agent runner CLI args allow Pi SDK harness when HTTP endpoint is absent", () => {
   const parsed = parseAgentRunnerArgs(["--envelope", "/tmp/envelope.json"], {});
 

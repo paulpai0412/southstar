@@ -1,0 +1,19 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.draft-wf-composed-ce700b996684.plan-todo-webapp"
+title: "規劃 Todo Webapp 實作方案"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-software-architect"
+skillRefs:
+  - "skill.mattpocock.codebase-design"
+  - "skill.mattpocock.improve-codebase-architecture"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-write"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.draft-wf-composed-ce700b996684"
+  nodeId: "plan-todo-webapp"

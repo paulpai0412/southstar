@@ -12,6 +12,8 @@ import { TorkClient } from "../../src/v2/executor/tork-client.ts";
 import { TorkExecutorProvider } from "../../src/v2/executor/tork-provider.ts";
 import { createSouthstarRuntimeServer, type SouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { recordSandboxEvaluatorOutputPg } from "../../src/v2/evolution/sandbox.ts";
+import type { WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import { LlmWorkflowComposer } from "../../src/v2/orchestration/llm-composer.ts";
 
 export type RealPostgresInfra = {
   postgresAdminUrl: string;
@@ -295,14 +297,29 @@ export async function createInitializedRealPostgresE2E(): Promise<RealPostgresE2
   };
 }
 
-export async function createRealRuntimeServer(input: { db: SouthstarDb; infra: RealPostgresInfra }): Promise<SouthstarRuntimeServer> {
+export async function createRealRuntimeServer(input: {
+  db: SouthstarDb;
+  infra: RealPostgresInfra;
+  workflowComposer?: WorkflowComposer;
+}): Promise<SouthstarRuntimeServer> {
   const torkClient = new TorkClient({ baseUrl: input.infra.torkBaseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
+  const plannerClient = input.infra.piPlannerEndpoint
+    ? createHttpPiPlannerClient({ endpoint: input.infra.piPlannerEndpoint })
+    : createPiSdkPlannerClient();
+  const workflowComposer = input.workflowComposer ?? new LlmWorkflowComposer({
+    model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
+    client: {
+      generateText: (request) => plannerClient.generate(request.prompt),
+      generateTextStream: plannerClient.generateStream
+        ? (request, handlers) => plannerClient.generateStream!(request.prompt, { onDelta: handlers.onDelta })
+        : undefined,
+    },
+  });
   return await createSouthstarRuntimeServer({
     host: "0.0.0.0",
     db: input.db as never,
-    plannerClient: input.infra.piPlannerEndpoint
-      ? createHttpPiPlannerClient({ endpoint: input.infra.piPlannerEndpoint })
-      : createPiSdkPlannerClient(),
+    plannerClient,
+    workflowComposer,
     executorProvider: new TorkExecutorProvider({ torkClient }),
     torkObservationClient: {
       capabilities: () => torkClient.capabilities(),

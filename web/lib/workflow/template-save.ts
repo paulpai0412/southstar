@@ -6,6 +6,7 @@ export type WorkflowTemplateSaveRequest = {
     scope: string;
     templateId: string;
     title: string;
+    status: "approved";
   };
 };
 
@@ -20,6 +21,7 @@ export function buildWorkflowTemplateSaveRequest(input: {
       scope: input.scope ?? "software",
       templateId: `template.${toTemplateSlug(input.dag.id ?? input.draftId)}`,
       title: input.dag.templateTitle ?? "Saved Workflow Template",
+      status: "approved",
     },
   };
 }

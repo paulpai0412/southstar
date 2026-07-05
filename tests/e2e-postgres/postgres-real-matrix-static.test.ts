@@ -37,6 +37,7 @@ const implementedCases = [
   "27-runtime-api-completeness.test.ts",
   "28-llm-constrained-workflow-end-to-end.test.ts",
   "29-llm-dynamic-workflow-materialization.test.ts",
+  "30-runtime-dynamic-repair-node-generation.test.ts",
 ];
 
 test("canonical real E2E entrypoint is a static manifest and real cases run one at a time", () => {
@@ -47,7 +48,10 @@ test("canonical real E2E entrypoint is a static manifest and real cases run one 
 
   for (const caseFile of implementedCases) {
     const caseId = caseFile.slice(0, 2);
-    assert.equal(pkg.scripts[`test:e2e:postgres:${caseId}`], `tsx tests/e2e-postgres/cases/${caseFile}`);
+    const expectedScript = caseId === "30"
+      ? `node --test --test-force-exit --import tsx tests/e2e-postgres/cases/${caseFile}`
+      : `tsx tests/e2e-postgres/cases/${caseFile}`;
+    assert.equal(pkg.scripts[`test:e2e:postgres:${caseId}`], expectedScript);
   }
 });
 
@@ -97,6 +101,7 @@ test("managed context E2E cases use retrievable memory kinds and typed manifest 
   assert.match(source("tests/e2e-postgres/README.md"), /\| 27 runtime API completeness \| implemented \|/);
   assert.match(source("tests/e2e-postgres/README.md"), /\| 28 llm-constrained workflow end-to-end \| implemented \|/);
   assert.match(source("tests/e2e-postgres/README.md"), /\| 29 llm dynamic workflow materialization \| implemented \|/);
+  assert.match(source("tests/e2e-postgres/README.md"), /\| 30 runtime dynamic repair node generation \| implemented \|/);
 });
 
 test("legacy SQLite real E2E suite is removed from the runnable tree", () => {

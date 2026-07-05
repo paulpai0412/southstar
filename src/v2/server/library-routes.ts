@@ -362,7 +362,7 @@ function optionalString(value: unknown): string | undefined {
 }
 
 function workflowTemplateSaveStatus(value: unknown): "draft" | "approved" {
-  if (value === undefined || value === null || value === "") return "draft";
+  if (value === undefined || value === null || value === "") return "approved";
   if (value === "draft" || value === "approved") return value;
   throw new Error("status must be draft or approved");
 }

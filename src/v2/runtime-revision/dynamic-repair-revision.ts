@@ -113,12 +113,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       }),
       candidatePacket,
     });
-    const compositionForCompile = {
-      ...composition,
-      tasks: composition.tasks.map((task) => task.dependsOn.length === 0
-        ? { ...task, inputArtifactRefs: [] }
-        : task),
-    };
+    const compositionForCompile = prepareDynamicRepairCompositionForCompile(composition);
     const compiled = await compileWorkflowComposition(tx, {
       runId: `${input.runId}-dynamic-repair-${round}`,
       goalPrompt: run.goal_prompt,
@@ -133,6 +128,15 @@ export async function maybeApplyDynamicRepairRevisionPg(
       failedArtifactRefId: input.failedArtifactRefId,
       round,
     });
+    const reconnectTargetTaskId = dynamicRepairReconnectTargetTaskId(newTasks, compiled.workflow.agentProfiles);
+    const downstreamDependencyChanges = reconnectTargetTaskId
+      ? downstreamDependencyChangesFor({
+          workflowTasks: run.workflow_manifest_json.tasks,
+          taskRows: taskRows.rows,
+          failedTaskId: input.failedTaskId,
+          reconnectTargetTaskId,
+        })
+      : [];
     const revisionId = `dynamic-repair-${input.failedTaskId}-attempt-${round}`;
     const taskStates = Object.fromEntries(taskRows.rows.map((task) => [task.id, normalizeTaskStatus(task.status)]));
     const revision = applyWorkflowRevision(run.workflow_manifest_json, {
@@ -143,11 +147,20 @@ export async function maybeApplyDynamicRepairRevisionPg(
       reason: `Dynamic repair for failed validation task ${input.failedTaskId}`,
       addTasks: newTasks,
       removeTaskIds: [],
-      dependencyChanges: [],
+      dependencyChanges: downstreamDependencyChanges,
       idempotencyKey: resourceKey,
     }, taskStates);
     const mergedWorkflow = mergeRuntimeDefinitions(revision.workflow, compiled.workflow);
     await updateWorkflowManifestPg(tx, input.runId, JSON.stringify(mergedWorkflow));
+    for (const change of downstreamDependencyChanges) {
+      await tx.query(
+        `update southstar.workflow_tasks
+            set depends_on_json = $3::jsonb,
+                updated_at = now()
+          where run_id = $1 and id = $2`,
+        [input.runId, change.taskId, JSON.stringify(change.dependsOn)],
+      );
+    }
     const maxSortOrder = Math.max(-1, ...taskRows.rows.map((task) => task.sort_order));
     for (const [index, task] of newTasks.entries()) {
       await createWorkflowTaskPg(tx, {
@@ -185,10 +198,11 @@ export async function maybeApplyDynamicRepairRevisionPg(
         round,
         maxRounds,
         newTaskIds: revision.newTaskIds,
+        downstreamDependencyChanges,
         composition,
         compiledComposition: compositionForCompile,
       },
-      summary: { revisionId, newTaskIds: revision.newTaskIds, round },
+      summary: { revisionId, newTaskIds: revision.newTaskIds, downstreamDependencyChanges, round },
     });
     await appendHistoryEventPg(tx, {
       runId: input.runId,
@@ -201,6 +215,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
         failedArtifactRefId: input.failedArtifactRefId,
         round,
         newTaskIds: revision.newTaskIds,
+        downstreamDependencyChanges,
         manifestFingerprint: revision.manifestFingerprint,
       },
     });
@@ -247,6 +262,80 @@ function rewriteDynamicRepairTasks(
       })),
     };
   });
+}
+
+function prepareDynamicRepairCompositionForCompile(composition: WorkflowCompositionPlan): WorkflowCompositionPlan {
+  const taskIds = new Set(composition.tasks.map((task) => task.id));
+  let previousTaskId: string | undefined;
+  const tasksWithInternalDependencies = composition.tasks.map((task) => {
+    const internalDependsOn = unique(task.dependsOn.filter((dependency) => taskIds.has(dependency)));
+    const dependsOn = internalDependsOn.length > 0
+      ? internalDependsOn
+      : previousTaskId
+        ? [previousTaskId]
+        : [];
+    previousTaskId = task.id;
+    return { ...task, dependsOn };
+  });
+  return {
+    ...composition,
+    tasks: tasksWithInternalDependencies.map((task) => ({
+      ...task,
+      inputArtifactRefs: task.inputArtifactRefs.filter((artifactRef) =>
+        upstreamOutputArtifactRefs(tasksWithInternalDependencies, task.id).has(artifactRef)
+      ),
+    })),
+  };
+}
+
+function upstreamOutputArtifactRefs(tasks: WorkflowCompositionPlan["tasks"], taskId: string): Set<string> {
+  const byId = new Map(tasks.map((task) => [task.id, task]));
+  const seen = new Set<string>();
+  const artifacts = new Set<string>();
+  const visit = (dependencyId: string) => {
+    if (seen.has(dependencyId)) return;
+    seen.add(dependencyId);
+    const dependency = byId.get(dependencyId);
+    if (!dependency) return;
+    for (const artifactRef of dependency.outputArtifactRefs) artifacts.add(artifactRef);
+    for (const nextDependencyId of dependency.dependsOn) visit(nextDependencyId);
+  };
+  for (const dependencyId of byId.get(taskId)?.dependsOn ?? []) visit(dependencyId);
+  return artifacts;
+}
+
+function dynamicRepairReconnectTargetTaskId(
+  newTasks: WorkflowTaskDefinition[],
+  generatedProfiles: AgentProfile[] | undefined,
+): string | undefined {
+  const profileById = new Map((generatedProfiles ?? []).map((profile) => [profile.id, profile]));
+  const validationTask = [...newTasks]
+    .reverse()
+    .find((task) => profileById.get(task.agentProfileRef)?.workerKind === "validation_worker");
+  return validationTask?.id ?? newTasks.at(-1)?.id;
+}
+
+function downstreamDependencyChangesFor(input: {
+  workflowTasks: WorkflowTaskDefinition[];
+  taskRows: TaskRow[];
+  failedTaskId: string;
+  reconnectTargetTaskId: string;
+}): Array<{ taskId: string; dependsOn: string[] }> {
+  const rowsById = new Map(input.taskRows.map((row) => [row.id, row]));
+  const changes: Array<{ taskId: string; dependsOn: string[] }> = [];
+  for (const task of input.workflowTasks) {
+    if (task.id === input.failedTaskId || !task.dependsOn.includes(input.failedTaskId)) continue;
+    const row = rowsById.get(task.id);
+    if (!row) continue;
+    const status = normalizeTaskStatus(row.status);
+    if (status === "completed" || status === "running") continue;
+    const dependsOn = unique(task.dependsOn.map((dependency) =>
+      dependency === input.failedTaskId ? input.reconnectTargetTaskId : dependency
+    ));
+    if (sameStringArray(dependsOn, task.dependsOn)) continue;
+    changes.push({ taskId: task.id, dependsOn });
+  }
+  return changes;
 }
 
 function mergeRuntimeDefinitions(
@@ -302,6 +391,14 @@ function dynamicRevisionResourceKey(runId: string, failedTaskId: string, round: 
 
 function dependencyList(value: unknown): string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function normalizeTaskStatus(status: string) {

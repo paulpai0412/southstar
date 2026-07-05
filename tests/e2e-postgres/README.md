@@ -57,6 +57,7 @@ npm run test:e2e:postgres:26   # abnormal managed context/session/memory recover
 npm run test:e2e:postgres:27   # runtime API completeness across operator surfaces
 npm run test:e2e:postgres:28   # llm-constrained workflow from planner draft to completed run
 npm run test:e2e:postgres:29   # llm dynamic workflow materialization + envelope library refs
+npm run test:e2e:postgres:30   # runtime verifier failure appends LLM-generated repair nodes
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
@@ -95,6 +96,7 @@ npm run test:e2e:postgres:29   # llm dynamic workflow materialization + envelope
 | 27 runtime API completeness | implemented | Operator API covers lifecycle, stream, execution, session, and memory surfaces | run actions, pause command, run summary, execution projection, hand executions, session/run events, SSE stream, memory approval, runtime health/tick |
 | 28 llm-constrained workflow end-to-end | implemented | Planner draft uses llm-constrained orchestration, materializes reviewer tasks, and completes task callbacks through real Tork/Pi scheduling | planner draft snapshot, reviewer profiles, task order, per-task callback evidence, run.completed |
 | 29 llm dynamic workflow materialization | implemented | Planner draft/run from llm-constrained default llm path verifies pre-callback task envelope materialized refs, skills, and tool-proxy policy, then reaches passed without persisted plaintext secret markers | planner trace composerMode llm, reviewer profiles present, per-task `task_envelope` materialized refs before callback, run passed, persisted-surface `plaintextSecret` negative check |
+| 30 runtime dynamic repair node generation | implemented | Failed validation callback invokes the LLM workflow composer, appends bounded repair/reverify tasks, reconnects pending downstream tasks, and persists generated agent profiles into the live manifest | failed verifier hand, `workflow_dynamic_repair_revision`, new task rows, generated agent profiles, downstream dependency change, `workflow.dynamic_repair_revision_applied` |
 
 ## Adding a new case
 
@@ -113,3 +115,13 @@ npm run test:e2e:postgres:29
 ```
 
 Case 29 validates llm-constrained planner draft + run creation (`composerMode: llm` by default), reviewer-profile task materialization, task envelope materialized library refs/skills/tool-proxy policy presence before each callback completion, run terminal `passed`, and no persisted `plaintextSecret`.
+
+## Case 30
+
+Dynamic runtime repair node generation coverage command:
+
+```bash
+npm run test:e2e:postgres:30
+```
+
+Case 30 validates that a failed validation callback keeps the run active, calls the runtime LLM workflow composer, appends new repair/reverify tasks to the persisted run, reconnects pending downstream tasks to the generated reverify task, and verifies the appended tasks use validated generated agent profiles from the LLM composition output.
