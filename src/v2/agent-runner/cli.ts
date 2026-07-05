@@ -26,7 +26,7 @@ export async function runAgentRunnerCli(
           attemptId: options.attemptId,
         });
       } finally {
-        stopHeartbeat();
+        await stopHeartbeat();
       }
     })();
     result.materializationRoot = options.materializationRoot;
@@ -121,9 +121,9 @@ async function postCallback(callbackUrl: string, result: TaskRunResult): Promise
   }
 }
 
-function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope): () => void {
+function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope): () => Promise<void> {
   if (!options.heartbeatUrl) {
-    return () => undefined;
+    return async () => undefined;
   }
 
   let seq = 0;
@@ -136,6 +136,7 @@ function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, en
       await fetch(options.heartbeatUrl, {
         method: "POST",
         headers: { "content-type": "application/json" },
+        signal: AbortSignal.timeout(5_000),
         body: JSON.stringify({
           runId: envelope.runId,
           taskId: envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id,
@@ -161,11 +162,12 @@ function startHeartbeatLoop(options: ReturnType<typeof parseAgentRunnerArgs>, en
       void sendHeartbeat("subagent-running", "agent runner active");
     }
   }, options.heartbeatIntervalMs);
+  timer.unref?.();
 
-  return () => {
+  return async () => {
     stopped = true;
     clearInterval(timer);
-    void sendHeartbeat("shutdown", "agent runner shutting down");
+    await sendHeartbeat("shutdown", "agent runner shutting down");
   };
 }
 
@@ -279,5 +281,5 @@ function uniqueStringArray(value: unknown[], label: string): string[] {
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  process.exitCode = await runAgentRunnerCli();
+  process.exit(await runAgentRunnerCli());
 }

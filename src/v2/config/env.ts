@@ -7,6 +7,7 @@ export type SouthstarEnv = {
   containerCallbackBaseUrl?: string;
   dockerRequired: boolean;
   piPlannerEndpoint?: string;
+  piPlannerTimeoutMs: number;
   codexCliPath: string;
 };
 
@@ -21,8 +22,16 @@ export function loadSouthstarEnv(input: Record<string, string | undefined> = pro
     containerCallbackBaseUrl: input.SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL,
     dockerRequired: input.SOUTHSTAR_REQUIRE_DOCKER !== "0",
     piPlannerEndpoint: input.PI_PLANNER_ENDPOINT,
+    piPlannerTimeoutMs: positiveInteger(input.SOUTHSTAR_PI_PLANNER_TIMEOUT_MS) ?? 180_000,
     codexCliPath: input.CODEX_CLI_PATH ?? "codex",
   };
+}
+
+function positiveInteger(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim().length === 0) return undefined;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return undefined;
+  return Math.floor(parsed);
 }
 
 function adminDatabaseUrl(databaseUrl: string): string {

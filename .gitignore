@@ -10,6 +10,7 @@ npm-debug.log*
 .codex/
 .superpowers/
 .tools/
+.playwright-cli/
 .southstar/
 
 # nested web app workspaces and build artifacts

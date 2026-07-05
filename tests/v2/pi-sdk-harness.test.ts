@@ -68,6 +68,62 @@ test("Pi SDK agent harness canonicalizes bare assistant artifact JSON", async ()
   assert.deepEqual(result.progress, ["pi-agent returned artifact"]);
 });
 
+test("Pi SDK agent harness disposes SDK sessions after successful runs", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  let disposed = 0;
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        listeners.forEach((listener) => listener({
+          type: "agent_end",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: JSON.stringify({ artifact: { summary: "done" }, progress: ["ok"] }) }],
+          }],
+        }));
+      },
+      dispose: () => {
+        disposed += 1;
+      },
+    }),
+  });
+
+  await harness.run({ envelope: envelopeV2(), attempt: 1 });
+
+  assert.equal(disposed, 1);
+});
+
+test("Pi SDK agent harness aborts and disposes SDK sessions after failed runs", async () => {
+  let aborted = 0;
+  let disposed = 0;
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: () => () => undefined,
+      prompt: async () => {
+        throw new Error("prompt failed");
+      },
+      abort: () => {
+        aborted += 1;
+      },
+      dispose: () => {
+        disposed += 1;
+      },
+    }),
+  });
+
+  await assert.rejects(
+    () => harness.run({ envelope: envelopeV2(), attempt: 1 }),
+    /prompt failed/,
+  );
+
+  assert.equal(aborted, 1);
+  assert.equal(disposed, 1);
+});
+
 test("Pi SDK agent harness does not parse incidental JSON from prose as the artifact", async () => {
   const listeners: Array<(event: unknown) => void> = [];
   const harness = createPiSdkAgentHarness({

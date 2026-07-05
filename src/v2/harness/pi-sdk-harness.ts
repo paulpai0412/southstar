@@ -6,6 +6,8 @@ export type PiSdkHarnessSession = {
   prompt(text: string): Promise<void>;
   subscribe?: (listener: (event: unknown) => void) => () => void;
   on?: (listener: (event: unknown) => void) => () => void;
+  abort?: () => void | Promise<void>;
+  dispose?: () => void | Promise<void>;
 };
 
 type PiSdkHarnessSessionInput = {
@@ -26,16 +28,50 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
       const timeoutMs = options.timeoutMs ?? 180_000;
       const cwd = harnessCwd(input.envelope);
       const sessionInput = sessionInputFromEnvelope(input.envelope, cwd);
-      const session = await createSessionWithTimeout(
-        options.createSession ?? createDefaultPiSdkSession,
-        sessionInput,
-        timeoutMs,
-      );
-      await configurePiSdkSession(session, sessionInput);
-      const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input, cwd), timeoutMs);
-      return parseHarnessResult(raw, input.envelope);
+      let session: PiSdkHarnessSession | undefined;
+      let completed = false;
+      try {
+        session = await createSessionWithTimeout(
+          options.createSession ?? createDefaultPiSdkSession,
+          sessionInput,
+          timeoutMs,
+        );
+        await configurePiSdkSession(session, sessionInput);
+        const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input, cwd), timeoutMs);
+        completed = true;
+        return parseHarnessResult(raw, input.envelope);
+      } finally {
+        await cleanupPiSdkSession(session, { abort: !completed });
+      }
     },
   };
+}
+
+async function cleanupPiSdkSession(session: PiSdkHarnessSession | undefined, options: { abort: boolean }): Promise<void> {
+  if (!session) return;
+  if (options.abort && session.abort) {
+    await bestEffortCleanup(() => session.abort?.());
+  }
+  if (session.dispose) {
+    await bestEffortCleanup(() => session.dispose?.());
+  }
+}
+
+async function bestEffortCleanup(cleanup: () => void | Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.resolve().then(cleanup),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, 2_000);
+        timer.unref?.();
+      }),
+    ]);
+  } catch {
+    // Cleanup must not turn an otherwise valid task result into a failed task.
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function createSessionWithTimeout(

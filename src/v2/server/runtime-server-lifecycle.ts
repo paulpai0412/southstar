@@ -193,6 +193,7 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
       ...(options.env.containerCallbackBaseUrl ? [`export SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL=${quoteShellArg(options.env.containerCallbackBaseUrl)}`] : []),
       `export SOUTHSTAR_REQUIRE_DOCKER=${quoteShellArg(options.env.dockerRequired ? "1" : "0")}`,
       ...(options.env.piPlannerEndpoint ? [`export PI_PLANNER_ENDPOINT=${quoteShellArg(options.env.piPlannerEndpoint)}`] : []),
+      `export SOUTHSTAR_PI_PLANNER_TIMEOUT_MS=${quoteShellArg(String(options.env.piPlannerTimeoutMs))}`,
       shellCommand,
     ].join("; ");
     const launched = await runCommand("sh", ["-lc", envScript]);
@@ -291,7 +292,7 @@ async function createRuntime(
   });
   const plannerClient = env.piPlannerEndpoint
     ? createHttpPiPlannerClient({ endpoint: env.piPlannerEndpoint })
-    : createPiSdkPlannerClient();
+    : createPiSdkPlannerClient({ timeoutMs: env.piPlannerTimeoutMs });
   const server = await createSouthstarRuntimeServer({
     host,
     port,
@@ -308,7 +309,7 @@ async function createRuntime(
     libraryImportSourceFetcher: createGithubLibraryImportSourceFetcher(),
     libraryImportLlmProvider: async ({ prompt, sourceRepoPath }) => {
       if (!env.piPlannerEndpoint && sourceRepoPath) {
-        return createPiSdkPlannerClient({ cwd: sourceRepoPath, noTools: null, timeoutMs: 600_000 }).generate(prompt);
+        return createPiSdkPlannerClient({ cwd: sourceRepoPath, noTools: null, timeoutMs: env.piPlannerTimeoutMs }).generate(prompt);
       }
       return plannerClient.generate(prompt);
     },

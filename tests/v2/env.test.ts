@@ -12,6 +12,7 @@ test("loads v2 env defaults as Postgres-only runtime configuration", () => {
     containerCallbackBaseUrl: undefined,
     dockerRequired: true,
     piPlannerEndpoint: undefined,
+    piPlannerTimeoutMs: 180000,
     codexCliPath: "codex",
   });
 });
@@ -26,6 +27,7 @@ test("loads explicit v2 env values", () => {
     SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL: "http://172.17.0.1:3100",
     SOUTHSTAR_REQUIRE_DOCKER: "0",
     PI_PLANNER_ENDPOINT: "http://pi.local/plan",
+    SOUTHSTAR_PI_PLANNER_TIMEOUT_MS: "600000",
     CODEX_CLI_PATH: "/usr/bin/codex",
   }), {
     databaseUrl: "postgres://southstar:secret@db.local:5432/automation",
@@ -36,6 +38,7 @@ test("loads explicit v2 env values", () => {
     containerCallbackBaseUrl: "http://172.17.0.1:3100",
     dockerRequired: false,
     piPlannerEndpoint: "http://pi.local/plan",
+    piPlannerTimeoutMs: 600000,
     codexCliPath: "/usr/bin/codex",
   });
 });
