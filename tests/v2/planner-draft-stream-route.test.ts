@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DeterministicFixtureComposer } from "../../src/v2/orchestration/composer.ts";
+import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 

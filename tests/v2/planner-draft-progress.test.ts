@@ -1,17 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DeterministicFixtureComposer } from "../../src/v2/orchestration/composer.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createPostgresPlannerDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("planner draft creation emits real progress stages from the backend lifecycle", async () => {
   const db = await createTestPostgresDb();
   try {
+    await seedDeterministicWorkflowGraph(db);
     const stages: string[] = [];
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with browser QA",
       orchestrationMode: "llm-constrained",
-      composerMode: "fixture",
+      composerMode: "llm",
       composer: new DeterministicFixtureComposer(),
       onProgress(event) {
         stages.push(event.stage);
@@ -21,7 +22,6 @@ test("planner draft creation emits real progress stages from the backend lifecyc
     assert.equal(draft.status, "validated");
     assert.deepEqual(stages, [
       "request.normalized",
-      "library.seeded",
       "requirement.analyzed",
       "candidate.resolving",
       "candidate.resolved",

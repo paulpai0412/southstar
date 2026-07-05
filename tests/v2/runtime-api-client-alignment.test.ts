@@ -45,6 +45,10 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "approvePlannerDraftProposal",
     "rejectPlannerDraftProposal",
     "convertPlannerDraftProposalToLibraryDraft",
+    "searchWorkflowTemplates",
+    "getWorkflowTemplate",
+    "instantiateWorkflowTemplate",
+    "getArtifact",
   ] as const;
 
   for (const method of methods) {
@@ -302,12 +306,12 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
     await client.createPlannerDraft({
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
-      composerMode: "fixture",
+      composerMode: "llm",
       scope: "research",
     });
     await client.runGoal({
       goalPrompt: "implement calc sum",
-      orchestrationMode: "deterministic",
+      orchestrationMode: "llm-constrained",
       composerMode: "llm",
       scope: "software",
     });
@@ -336,6 +340,14 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       actorId: "operator-a",
       reason: "convert proposal",
     });
+    await client.searchWorkflowTemplates({ prompt: "standard workflow", domain: "software", limit: 3 });
+    await client.getWorkflowTemplate("template/software");
+    await client.instantiateWorkflowTemplate({
+      templateRef: "template/software",
+      goalPrompt: "build vocabulary app",
+      constraints: { mode: "strict" },
+    });
+    await client.getArtifact({ artifactRef: "artifact/ref" });
     await client.getExecutorJobActions({ runId: "run/a", jobId: "job/a" });
     await client.reconcileExecutorJob({ runId: "run/a", jobId: "job/a" });
     await client.cancelExecutorJob({
@@ -362,12 +374,12 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       {
         url: "http://127.0.0.1/api/v2/planner/drafts",
         method: "POST",
-        body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "fixture", scope: "research" },
+        body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "llm", scope: "research" },
       },
       {
         url: "http://127.0.0.1/api/v2/run-goal",
         method: "POST",
-        body: { goalPrompt: "implement calc sum", orchestrationMode: "deterministic", composerMode: "llm", scope: "software" },
+        body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "llm", scope: "software" },
       },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/orchestration", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/runs", method: "POST", body: {} },
@@ -392,6 +404,14 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
         method: "POST",
         body: { actorId: "operator-a", reason: "convert proposal" },
       },
+      { url: "http://127.0.0.1/api/v2/workflow/templates/search?prompt=standard+workflow&domain=software&limit=3", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/workflow/templates/template%2Fsoftware", method: undefined, body: undefined },
+      {
+        url: "http://127.0.0.1/api/v2/workflow/templates/instantiate",
+        method: "POST",
+        body: { templateRef: "template/software", goalPrompt: "build vocabulary app", constraints: { mode: "strict" } },
+      },
+      { url: "http://127.0.0.1/api/v2/artifacts/artifact%2Fref", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/actions", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/runs/run%2Fa/executor-jobs/job%2Fa/reconcile", method: "POST", body: {} },
       {

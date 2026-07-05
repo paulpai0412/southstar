@@ -38,6 +38,8 @@ import { handleRunLifecycleRoute } from "./run-lifecycle-routes.ts";
 import { handleMemoryRoute } from "./memory-routes.ts";
 import { handleChatRoute } from "./chat-routes.ts";
 import { handleLibraryRoute } from "./library-routes.ts";
+import { handleArtifactRoute } from "./artifact-routes.ts";
+import { handleWorkflowTemplateRoute } from "./workflow-template-routes.ts";
 import { handleSessionRoute } from "./session-routes.ts";
 import { handleTaskCommandRoute } from "./task-command-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
@@ -70,6 +72,10 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (chatResponse) return chatResponse;
     const libraryResponse = await handleLibraryRoute(context, request, url);
     if (libraryResponse) return libraryResponse;
+    const workflowTemplateResponse = await handleWorkflowTemplateRoute(context, request, url);
+    if (workflowTemplateResponse) return workflowTemplateResponse;
+    const artifactResponse = await handleArtifactRoute(context, request, url);
+    if (artifactResponse) return artifactResponse;
     const executionResponse = await handleExecutionRoute(context, request, url);
     if (executionResponse) return executionResponse;
     const taskCommandResponse = await handleTaskCommandRoute(context, request, url);
@@ -514,7 +520,9 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
 
     if (request.method === "POST" && url.pathname === "/api/v2/tork/callback") {
       const callback = validatedCallbackResultPg(await readJsonBody(request));
-      return json("callback", await ingestTaskRunResultPg(context.db, callback));
+      return json("callback", await ingestTaskRunResultPg(context.db, callback, {
+        ...(context.workflowComposer ? { workflowComposer: context.workflowComposer } : {}),
+      }));
     }
 
     return errorResponse("not found", 404);
@@ -818,7 +826,7 @@ function parsePlannerDraftRequest(body: {
   libraryHints?: unknown;
 }): {
   goalPrompt: string;
-  orchestrationMode?: "deterministic" | "llm-constrained";
+  orchestrationMode?: "llm-constrained";
   composerMode?: WorkflowComposerMode;
   domainPackId?: string;
   cwd?: string;
@@ -897,10 +905,10 @@ function requiredQueryParam(url: URL, name: string): string {
   return value;
 }
 
-function optionalOrchestrationMode(value: unknown): "deterministic" | "llm-constrained" | undefined {
+function optionalOrchestrationMode(value: unknown): "llm-constrained" | undefined {
   if (value === undefined) return undefined;
-  if (value === "deterministic" || value === "llm-constrained") return value;
-  throw new Error("orchestrationMode must be deterministic or llm-constrained");
+  if (value === "llm-constrained") return value;
+  throw new Error("orchestrationMode must be llm-constrained");
 }
 
 function optionalComposerMode(value: unknown): WorkflowComposerMode | undefined {

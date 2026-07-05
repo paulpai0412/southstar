@@ -5,7 +5,8 @@
   "type": "module",
   "bin": {
     "southstar": "src/v2/cli.ts",
-    "southstar-agent-runner": "src/v2/agent-runner/cli.ts"
+    "southstar-agent-runner": "src/v2/agent-runner/cli.ts",
+    "southstar-mcp": "src/v2/mcp/server.ts"
   },
   "engines": {
     "node": ">=22.22.2"

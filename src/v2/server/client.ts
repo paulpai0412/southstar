@@ -12,7 +12,7 @@ type RunGoalResult = {
 
 type PlannerRequestBody = {
   goalPrompt: string;
-  orchestrationMode?: "deterministic" | "llm-constrained";
+  orchestrationMode?: "llm-constrained";
   composerMode?: "llm";
   scope?: string;
 };
@@ -38,6 +38,26 @@ type SearchMemoryRequest = {
   scopes: string[];
   allowedKinds: string[];
   maxCandidates?: number;
+};
+type SearchWorkflowTemplatesRequest = {
+  prompt: string;
+  domain?: string;
+  limit?: number;
+};
+type InstantiateWorkflowTemplateRequest = {
+  templateRef: string;
+  goalPrompt: string;
+  cwd?: string;
+  repo?: {
+    path?: string;
+    url?: string;
+    branch?: string;
+  };
+  constraints?: {
+    mode?: "strict" | "adaptive";
+    maxNodes?: number;
+    requireApproval?: boolean;
+  };
 };
 type RuntimeLoopId =
   | "executor-reconciler"
@@ -90,6 +110,22 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
         `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/proposals/${encodeURIComponent(body.proposalId)}/convert-to-library-draft`,
         { ...(body.actorId !== undefined ? { actorId: body.actorId } : {}), ...(body.reason !== undefined ? { reason: body.reason } : {}) },
       );
+    },
+    searchWorkflowTemplates(body: SearchWorkflowTemplatesRequest) {
+      const query = new URLSearchParams();
+      query.set("prompt", body.prompt);
+      setOptionalQueryString(query, "domain", body.domain);
+      setOptionalQueryNumber(query, "limit", body.limit);
+      return get(`${baseUrl}/api/v2/workflow/templates/search?${query.toString()}`);
+    },
+    getWorkflowTemplate(templateRef: string) {
+      return get(`${baseUrl}/api/v2/workflow/templates/${encodeURIComponent(templateRef)}`);
+    },
+    instantiateWorkflowTemplate(body: InstantiateWorkflowTemplateRequest) {
+      return post(`${baseUrl}/api/v2/workflow/templates/instantiate`, body);
+    },
+    getArtifact(body: { artifactRef: string }) {
+      return get(`${baseUrl}/api/v2/artifacts/${encodeURIComponent(body.artifactRef)}`);
     },
     getRun(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}`);
