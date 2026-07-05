@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import { materializeTaskLibraryRefs } from "../../src/v2/orchestration/runtime-library-materializer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 

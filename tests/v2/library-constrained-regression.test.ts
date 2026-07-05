@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
-import { DeterministicFixtureComposer } from "../../src/v2/orchestration/composer.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createPostgresPlannerDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("llm-constrained path stores selected refs and validator proof in planner draft", async () => {
   const db = await createTestPostgresDb();
   try {
+    await seedDeterministicWorkflowGraph(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with tests and docs",
       orchestrationMode: "llm-constrained",
@@ -17,6 +18,9 @@ test("llm-constrained path stores selected refs and validator proof in planner d
       payload_json: {
         orchestrationSnapshot: {
           candidateSummary: { agentProfileRefs: string[] };
+          selectedCompositionPlan: {
+            generatedComponentProposals: Array<{ id: string }>;
+          };
           validation: { ok: boolean };
         };
       };
@@ -25,13 +29,14 @@ test("llm-constrained path stores selected refs and validator proof in planner d
       [draft.draftId],
     );
     assert.equal(resource.payload_json.orchestrationSnapshot.validation.ok, true);
-    assert.deepEqual(resource.payload_json.orchestrationSnapshot.candidateSummary.agentProfileRefs, [
-      "profile.software-checker-codex",
-      "profile.software-code-quality-reviewer-codex",
-      "profile.software-explorer-codex",
-      "profile.software-maker-pi",
-      "profile.software-spec-reviewer-codex",
-      "profile.software-summarizer-codex",
+    assert.deepEqual(resource.payload_json.orchestrationSnapshot.candidateSummary.agentProfileRefs, []);
+    assert.deepEqual(resource.payload_json.orchestrationSnapshot.selectedCompositionPlan.generatedComponentProposals.map((proposal) => proposal.id), [
+      "profile.generated.software-understand-repo",
+      "profile.generated.software-review-spec",
+      "profile.generated.software-implement-feature",
+      "profile.generated.software-verify-feature",
+      "profile.generated.software-review-code-quality",
+      "profile.generated.software-summarize-completion",
     ]);
   } finally {
     await db.close();

@@ -5,12 +5,9 @@ import type {
   WorkflowCompositionPlan,
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
-import { softwareDomainPack } from "../domain-packs/software.ts";
-import { generateConstrainedWorkflowPlan } from "../workflow-generator/constrained-generator.ts";
-import { materializeGenerationPlan } from "../workflow-generator/materialize.ts";
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { validateWorkflowManifest } from "../manifests/validate.ts";
-import type { AgentProfile, PlannerDraftTaskProfileOverride } from "../domain-packs/types.ts";
+import type { AgentProfile, PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
@@ -95,7 +92,7 @@ export type PlannerDraftLibraryHints = {
 
 export type PlannerDraftRequestContract = {
   goalPrompt: string;
-  orchestrationMode?: "deterministic" | "llm-constrained";
+  orchestrationMode?: "llm-constrained";
   composerMode?: WorkflowComposerMode;
   domainPackId?: string;
   cwd?: string;
@@ -122,7 +119,7 @@ export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
 export type RevisePostgresPlannerDraftInput = {
   draftId: string;
   prompt: string;
-  orchestrationMode?: "deterministic" | "llm-constrained";
+  orchestrationMode?: "llm-constrained";
   composerMode?: WorkflowComposerMode;
   composer?: WorkflowComposer;
   onProgress?: PlannerDraftProgressListener;
@@ -141,10 +138,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
   if (plannerRequest.compositionPlan) {
     return createPlannerDraftFromComposition(db, draftInput, plannerRequest.compositionPlan);
   }
-  if (plannerRequest.orchestrationMode === "llm-constrained") {
-    return createLibraryConstrainedPlannerDraft(db, draftInput);
-  }
-  return createDeterministicPlannerDraft(db, draftInput);
+  return createLibraryConstrainedPlannerDraft(db, draftInput);
 }
 
 export async function revisePostgresPlannerDraft(
@@ -390,7 +384,7 @@ function plannerToolPolicyHintsFromStored(value: unknown): PlannerDraftToolPolic
 }
 
 function plannerRequestOrchestrationMode(value: unknown): PlannerDraftRequestContract["orchestrationMode"] {
-  return value === "deterministic" || value === "llm-constrained" ? value : undefined;
+  return value === "llm-constrained" ? value : undefined;
 }
 
 function plannerRequestComposerMode(value: unknown): WorkflowComposerMode | undefined {
@@ -485,57 +479,6 @@ async function createPlannerDraftFromComposition(
     draftId,
     goalPrompt: input.goalPrompt,
     workflowId,
-    status,
-    validationIssues,
-    taskSummaries,
-  };
-}
-
-async function createDeterministicPlannerDraft(
-  db: SouthstarDb,
-  input: CreatePostgresPlannerDraftInput,
-): Promise<PostgresPlannerDraftResult> {
-  const draftRunId = `draft-software-${hash(input.goalPrompt).slice(0, 12)}`;
-  const plan = generateConstrainedWorkflowPlan({
-    runId: draftRunId,
-    goalPrompt: input.goalPrompt,
-    domainPack: softwareDomainPack,
-    intentId: inferIntent(input.goalPrompt),
-  });
-  const workflow = materializeGenerationPlan({ plan, domainPack: softwareDomainPack, goalPrompt: input.goalPrompt });
-  const bundle: PlanBundle & { generationPlan: typeof plan; plannerRequest: PlannerDraftRequestContract } = {
-    workflow,
-    plannerTrace: { model: "southstar-postgres-constrained-planner", promptHash: hash(input.goalPrompt), generatedAt: new Date().toISOString() },
-    generationPlan: plan,
-    plannerRequest: plannerRequestSnapshot(input),
-  };
-  const validationIssues: PlannerDraftValidationIssue[] = [];
-  const taskSummaries = summarizeWorkflowTasks(workflow);
-  const status = "validated";
-  const draftId = `draft-${workflow.workflowId}`;
-  await upsertRuntimeResourcePg(db, {
-    id: draftId,
-    resourceType: "planner_draft",
-    resourceKey: draftId,
-    scope: "planner",
-    status,
-    title: workflow.title,
-    payload: bundle,
-    summary: {
-      goalPrompt: input.goalPrompt,
-      workflowId: workflow.workflowId,
-      planner: "postgres-constrained",
-      status,
-      validationIssues,
-      taskSummaries,
-      plannerRequest: plannerRequestSnapshot(input),
-    },
-  });
-  input.onProgress?.({ stage: "draft.persisted", ok: true, issueCount: validationIssues.length, message: "Planner draft persisted." });
-  return {
-    draftId,
-    goalPrompt: input.goalPrompt,
-    workflowId: workflow.workflowId,
     status,
     validationIssues,
     taskSummaries,
@@ -1076,7 +1019,7 @@ type WorkflowTaskWithProfileOverride = SouthstarWorkflowManifest["tasks"][number
 };
 
 function materializeWorkflowTaskProfileOverrides(workflow: SouthstarWorkflowManifest): SouthstarWorkflowManifest {
-  const agentProfiles = (workflow.agentProfiles ?? softwareDomainPack.agentProfiles).map(cloneAgentProfile);
+  const agentProfiles = required(workflow.agentProfiles, `missing workflow agentProfiles in manifest ${workflow.workflowId}`).map(cloneAgentProfile);
   const tasks = workflow.tasks.map((task) => ({ ...task } as WorkflowTaskWithProfileOverride));
   const profileById = new Map(agentProfiles.map((profile) => [profile.id, profile]));
   const outputProfiles = [...agentProfiles];
@@ -1144,10 +1087,6 @@ async function allocateRunId(db: SouthstarDb, workflowId: string): Promise<strin
 
 async function runExists(db: SouthstarDb, runId: string): Promise<boolean> {
   return Boolean(await db.maybeOne("select 1 from southstar.workflow_runs where id = $1", [runId]));
-}
-
-function inferIntent(goalPrompt: string): "implement_feature" | "fix_bug" {
-  return /fix|bug|failing|修正|錯誤/i.test(goalPrompt) ? "fix_bug" : "implement_feature";
 }
 
 function hash(value: string): string {
@@ -1252,13 +1191,21 @@ function asRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
 
+function required<T>(value: T | undefined, message: string): T {
+  if (!value) throw new Error(message);
+  return value;
+}
+
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
-function inferDraftOrchestrationMode(summary: Record<string, unknown>): "deterministic" | "llm-constrained" {
+function inferDraftOrchestrationMode(summary: Record<string, unknown>): "llm-constrained" {
   const planner = stringValue(summary.planner);
-  return planner === "library-constrained-llm" ? "llm-constrained" : "deterministic";
+  if (planner && planner !== "library-constrained-llm" && planner !== "existing-composition-compiler") {
+    throw new Error(`planner draft uses retired planner mode: ${planner}`);
+  }
+  return "llm-constrained";
 }
 
 function inferDraftComposerMode(payload: Record<string, unknown>): WorkflowComposerMode | undefined {

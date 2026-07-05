@@ -3,6 +3,7 @@ import test from "node:test";
 import { buildAgentLibraryReadModelPg } from "../../src/v2/read-models/agent-library.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 
 async function loadChatCapabilitiesReadModel(): Promise<{
   buildChatCapabilitiesReadModelPg: (db: Awaited<ReturnType<typeof createTestPostgresDb>>, input: { domain?: string }) => Promise<any>;
@@ -17,6 +18,7 @@ async function loadChatCapabilitiesReadModel(): Promise<{
 test("chat capabilities are derived from agent library profiles skills and tool policy", async () => {
   const db = await createTestPostgresDb();
   try {
+    await seedSoftwareLibraryGraph(db);
     const { buildChatCapabilitiesReadModelPg } = await loadChatCapabilitiesReadModel();
     const library = await buildAgentLibraryReadModelPg(db, { domain: "software" });
     const model = await buildChatCapabilitiesReadModelPg(db, { domain: "software" });
@@ -40,6 +42,7 @@ test("chat capabilities are derived from agent library profiles skills and tool 
 test("chat capabilities route exposes the same read model contract", async () => {
   const db = await createTestPostgresDb();
   try {
+    await seedSoftwareLibraryGraph(db);
     const { buildChatCapabilitiesReadModelPg } = await loadChatCapabilitiesReadModel();
     const server = await createSouthstarRuntimeServer({
       db,

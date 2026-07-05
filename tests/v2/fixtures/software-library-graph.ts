@@ -1,11 +1,11 @@
-import type { SouthstarDb } from "../db/postgres.ts";
+import type { SouthstarDb } from "../../../src/v2/db/postgres.ts";
 import {
   upsertLibraryEdge,
   upsertLibraryObject,
   type UpsertLibraryEdgeInput,
   type UpsertLibraryObjectInput,
-} from "./library-graph-store.ts";
-import type { LibraryDefinitionKind, LibraryEdgeType } from "./types.ts";
+} from "../../../src/v2/design-library/library-graph-store.ts";
+import type { LibraryDefinitionKind, LibraryEdgeType } from "../../../src/v2/design-library/types.ts";
 
 const SOFTWARE_SCOPE = "software";
 const SEED_VERSION = "v1";
@@ -372,7 +372,7 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   },
   {
     objectKey: "skill.software-repo-discovery",
-    objectKind: "skill_definition",
+    objectKind: "skill_spec",
     state: {
       role: "explorer",
       instructions: [
@@ -387,7 +387,7 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   },
   {
     objectKey: "skill.software-spec-review",
-    objectKind: "skill_definition",
+    objectKind: "skill_spec",
     state: {
       role: "checker",
       instructions: "Review plan completeness against goals, acceptance criteria, and risk notes.",
@@ -399,7 +399,7 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   },
   {
     objectKey: "skill.software-implementation",
-    objectKind: "skill_definition",
+    objectKind: "skill_spec",
     state: {
       role: "maker",
       instructions: "Implement code changes, run relevant checks, and summarize implementation evidence.",
@@ -411,7 +411,7 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   },
   {
     objectKey: "skill.software-verification",
-    objectKind: "skill_definition",
+    objectKind: "skill_spec",
     state: {
       role: "checker",
       instructions: "Validate behavior with deterministic checks and produce a verification report.",
@@ -423,7 +423,7 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   },
   {
     objectKey: "skill.software-code-quality-review",
-    objectKind: "skill_definition",
+    objectKind: "skill_spec",
     state: {
       role: "checker",
       instructions: "Review maintainability, readability, and risk concentration of the code changes.",
@@ -435,7 +435,7 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
   },
   {
     objectKey: "skill.software-summary",
-    objectKind: "skill_definition",
+    objectKind: "skill_spec",
     state: {
       role: "summarizer",
       instructions: "Summarize delivered outcomes, verification evidence, and follow-up work.",
@@ -576,6 +576,56 @@ const SOFTWARE_OBJECTS: readonly SeedObject[] = [
     state: { workspacePolicy: "git-workspace", toolPolicy: "role-based" },
   },
   {
+    objectKey: "policy.software-context-default",
+    objectKind: "policy_bundle",
+    state: {
+      id: "software-context-default",
+      policyKind: "context",
+      maxInputTokens: 120000,
+      memoryPolicyRef: "software-memory-default",
+      includeAgentsMd: true,
+      includeWorkspaceSummary: true,
+    },
+  },
+  {
+    objectKey: "policy.software-session-default",
+    objectKind: "policy_bundle",
+    state: {
+      id: "software-session-default",
+      policyKind: "session",
+      checkpointOn: ["task-start", "artifact-accepted", "before-recovery"],
+      allowFork: true,
+      allowReset: true,
+      allowRollback: true,
+    },
+  },
+  {
+    objectKey: "policy.software-memory-default",
+    objectKind: "policy_bundle",
+    state: {
+      id: "software-memory-default",
+      policyKind: "memory",
+      providerRef: "postgres",
+      scopes: ["software", "project"],
+      maxInjectedTokens: 1500,
+      maxCandidates: 5,
+      requireWriteApproval: true,
+    },
+  },
+  {
+    objectKey: "policy.software-workspace-default",
+    objectKind: "policy_bundle",
+    state: {
+      id: "software-git-workspace",
+      policyKind: "workspace",
+      provider: "git",
+      snapshotAtTaskStart: true,
+      snapshotAtAcceptedArtifact: true,
+      forkOnCheckerReject: true,
+      rollbackOnTestFailure: true,
+    },
+  },
+  {
     objectKey: "capability.repo-read",
     objectKind: "capability_spec",
     state: { capabilityType: "tool_capability", grants: ["tool.workspace-read"] },
@@ -672,6 +722,36 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
     edgeType: "uses",
     toObjectKey: "skill.software-summary",
   },
+  {
+    fromObjectKey: "agent.software-explorer",
+    edgeType: "uses",
+    toObjectKey: "skill.software-repo-discovery",
+  },
+  {
+    fromObjectKey: "agent.software-spec-reviewer",
+    edgeType: "uses",
+    toObjectKey: "skill.software-spec-review",
+  },
+  {
+    fromObjectKey: "agent.software-maker",
+    edgeType: "uses",
+    toObjectKey: "skill.software-implementation",
+  },
+  {
+    fromObjectKey: "agent.software-checker",
+    edgeType: "uses",
+    toObjectKey: "skill.software-verification",
+  },
+  {
+    fromObjectKey: "agent.software-code-quality-reviewer",
+    edgeType: "uses",
+    toObjectKey: "skill.software-code-quality-review",
+  },
+  {
+    fromObjectKey: "agent.software-summarizer",
+    edgeType: "uses",
+    toObjectKey: "skill.software-summary",
+  },
   { fromObjectKey: "profile.software-explorer-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
   { fromObjectKey: "profile.software-spec-reviewer-codex", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
   { fromObjectKey: "profile.software-maker-pi", edgeType: "allows_tool", toObjectKey: "tool.workspace-read" },
@@ -715,6 +795,47 @@ const SOFTWARE_EDGES: readonly SeedEdge[] = [
   },
   {
     fromObjectKey: "profile.software-summarizer-codex",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.software-summarizer",
+  },
+  { fromObjectKey: "skill.software-repo-discovery", edgeType: "requires_tool", toObjectKey: "tool.workspace-read" },
+  { fromObjectKey: "skill.software-spec-review", edgeType: "requires_tool", toObjectKey: "tool.workspace-read" },
+  { fromObjectKey: "skill.software-implementation", edgeType: "requires_tool", toObjectKey: "tool.workspace-read" },
+  { fromObjectKey: "skill.software-implementation", edgeType: "requires_tool", toObjectKey: "tool.workspace-write" },
+  { fromObjectKey: "skill.software-implementation", edgeType: "requires_tool", toObjectKey: "tool.shell-command" },
+  { fromObjectKey: "skill.software-implementation", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace" },
+  { fromObjectKey: "skill.software-verification", edgeType: "requires_tool", toObjectKey: "tool.workspace-read" },
+  { fromObjectKey: "skill.software-verification", edgeType: "requires_tool", toObjectKey: "tool.shell-command" },
+  { fromObjectKey: "skill.software-code-quality-review", edgeType: "requires_tool", toObjectKey: "tool.workspace-read" },
+  { fromObjectKey: "skill.software-code-quality-review", edgeType: "requires_tool", toObjectKey: "tool.shell-command" },
+  { fromObjectKey: "skill.software-summary", edgeType: "requires_tool", toObjectKey: "tool.workspace-read" },
+  {
+    fromObjectKey: "skill.software-repo-discovery",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.software-explorer",
+  },
+  {
+    fromObjectKey: "skill.software-spec-review",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.software-spec-reviewer",
+  },
+  {
+    fromObjectKey: "skill.software-implementation",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.software-maker",
+  },
+  {
+    fromObjectKey: "skill.software-verification",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.software-checker",
+  },
+  {
+    fromObjectKey: "skill.software-code-quality-review",
+    edgeType: "uses_instruction",
+    toObjectKey: "instruction.software-code-quality-reviewer",
+  },
+  {
+    fromObjectKey: "skill.software-summary",
     edgeType: "uses_instruction",
     toObjectKey: "instruction.software-summarizer",
   },

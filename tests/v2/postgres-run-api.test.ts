@@ -6,7 +6,12 @@ import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
-import { DeterministicFixtureComposer, ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import {
+  DeterministicFixtureComposer,
+  deterministicFixtureComposition,
+  seedDeterministicWorkflowGraph,
+} from "./fixtures/deterministic-workflow-composer.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import {
   createPostgresPlannerDraft,
@@ -19,24 +24,33 @@ import {
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { resolveTestPostgresAdminUrl } from "./postgres-test-utils.ts";
 
+const FIXTURE_TASK_IDS = [
+  "understand-repo",
+  "review-spec",
+  "implement-feature",
+  "verify-feature",
+  "review-code-quality",
+  "summarize-completion",
+];
+
 test("Postgres run API creates draft, run, tasks, and history without prebuilding task context", async () => {
   await withDb(async (db) => {
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
-    assert.match(draft.draftId, /^draft-wf-gen-/);
+    const draft = await createFixturePlannerDraft(db, "implement calc sum");
+    assert.match(draft.draftId, /^draft-wf-composed-/);
     assert.equal(draft.status, "validated");
     assert.deepEqual(draft.validationIssues, []);
-    assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
+    assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), FIXTURE_TASK_IDS);
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
-    assert.match(run.runId, /^run-wf-gen-/);
+    assert.match(run.runId, /^run-wf-composed-/);
 
     const runRow = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = $1", [run.runId]);
     assert.equal(runRow.status, "created");
     const taskRows = await db.query<{ id: string }>("select id from southstar.workflow_tasks where run_id = $1 order by sort_order", [run.runId]);
-    assert.deepEqual(taskRows.rows.map((row) => row.id), ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
+    assert.deepEqual(taskRows.rows.map((row) => row.id), FIXTURE_TASK_IDS);
 
     const history = await db.query<{ event_type: string }>("select event_type from southstar.workflow_history where run_id = $1 order by sequence", [run.runId]);
-    assert.deepEqual(history.rows.map((row) => row.event_type), ["run.created", "task.created", "task.created", "task.created", "task.created"]);
+    assert.deepEqual(history.rows.map((row) => row.event_type), ["run.created", ...FIXTURE_TASK_IDS.map(() => "task.created")]);
 
     const prebuiltContextCount = await db.one<{ count: string }>(
       "select count(*)::text as count from southstar.runtime_resources where resource_type in ('context_packet', 'task_envelope', 'knowledge_card_injection_trace') and run_id = $1",
@@ -48,7 +62,7 @@ test("Postgres run API creates draft, run, tasks, and history without prebuildin
 
 test("Postgres planner draft task profile override updates one task without changing other tasks", async () => {
   await withDb(async (db) => {
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+    const draft = await createFixturePlannerDraft(db, "implement calc sum");
 
     const result = await patchPostgresPlannerDraftTaskProfileOverride(db, {
       draftId: draft.draftId,
@@ -89,7 +103,7 @@ test("Postgres planner draft task profile override updates one task without chan
 
 test("Postgres planner draft validation gates run creation after profile override", async () => {
   await withDb(async (db) => {
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+    const draft = await createFixturePlannerDraft(db, "implement calc sum");
 
     await patchPostgresPlannerDraftTaskProfileOverride(db, {
       draftId: draft.draftId,
@@ -113,13 +127,13 @@ test("Postgres planner draft validation gates run creation after profile overrid
     assert.deepEqual(validated.validationIssues, []);
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
-    assert.match(run.runId, /^run-wf-gen-/);
+    assert.match(run.runId, /^run-wf-composed-/);
   });
 });
 
 test("Postgres run from draft materializes task profile override into run manifest and task snapshot", async () => {
   await withDb(async (db) => {
-    const draft = await createPostgresPlannerDraft(db, { goalPrompt: "implement calc sum" });
+    const draft = await createFixturePlannerDraft(db, "implement calc sum");
 
     await patchPostgresPlannerDraftTaskProfileOverride(db, {
       draftId: draft.draftId,
@@ -145,13 +159,13 @@ test("Postgres run from draft materializes task profile override into run manife
       };
     }>("select workflow_manifest_json from southstar.workflow_runs where id = $1", [run.runId]);
     const implementTask = runRow.workflow_manifest_json.tasks.find((task) => task.id === "implement-feature");
-    assert.equal(implementTask?.agentProfileRef, "software-maker-pi__implement-feature__override");
+    assert.equal(implementTask?.agentProfileRef, "profile.generated.software-implement-feature__implement-feature__override");
     assert.deepEqual(implementTask?.skillRefs, ["software.calc-cli", "skill.software-verification"]);
     assert.deepEqual(implementTask?.mcpGrantRefs, ["filesystem-workspace"]);
     assert.equal(implementTask?.profileOverride?.model, "gpt-5-codex");
 
     const overriddenProfile = runRow.workflow_manifest_json.agentProfiles.find((profile) =>
-      profile.id === "software-maker-pi__implement-feature__override"
+      profile.id === "profile.generated.software-implement-feature__implement-feature__override"
     );
     assert.equal(overriddenProfile?.provider, "codex");
     assert.equal(overriddenProfile?.model, "gpt-5-codex");
@@ -163,7 +177,7 @@ test("Postgres run from draft materializes task profile override into run manife
       "select snapshot_json from southstar.workflow_tasks where run_id = $1 and id = 'implement-feature'",
       [run.runId],
     );
-    assert.equal(taskRow.snapshot_json.agentProfileRef, "software-maker-pi__implement-feature__override");
+    assert.equal(taskRow.snapshot_json.agentProfileRef, "profile.generated.software-implement-feature__implement-feature__override");
     assert.equal(taskRow.snapshot_json.profileOverride.model, "gpt-5-codex");
 
     const prebuiltContextCount = await db.one<{ count: string }>(
@@ -176,10 +190,11 @@ test("Postgres run from draft materializes task profile override into run manife
 
 test("Postgres planner draft revision preserves matching task profile overrides and requires validation", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with override preservation",
       orchestrationMode: "llm-constrained",
-      composerMode: "fixture",
+      composerMode: "llm",
       composer: new DeterministicFixtureComposer(),
     });
 
@@ -199,7 +214,7 @@ test("Postgres planner draft revision preserves matching task profile overrides 
     const revised = await revisePostgresPlannerDraft(db, {
       draftId: draft.draftId,
       prompt: "also verify empty input behavior",
-      composerMode: "fixture",
+      composerMode: "llm",
       composer: new DeterministicFixtureComposer(),
     });
 
@@ -226,6 +241,7 @@ test("Postgres planner draft revision preserves matching task profile overrides 
 
 test("Postgres run API supports llm-constrained planner drafts and preserves task creation order", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
@@ -279,14 +295,15 @@ test("llm-constrained planner drafts fail closed when llm composer is not config
 
 test("planner draft creates from an existing composition without calling an LLM composer", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "reuse visible DAG",
       orchestrationMode: "llm-constrained",
-      compositionPlan: validInspectOnlyPlan(),
+      compositionPlan: deterministicFixtureComposition(),
     });
 
     assert.equal(draft.status, "validated");
-    assert.equal(draft.taskSummaries[0]?.taskId, "inspect-only");
+    assert.equal(draft.taskSummaries[0]?.taskId, "understand-repo");
 
     const draftResource = await db.one<{
       summary_json: { planner?: string };
@@ -306,16 +323,18 @@ test("planner draft creates from an existing composition without calling an LLM 
     assert.equal(draftResource.summary_json.planner, "existing-composition-compiler");
     assert.equal(draftResource.payload_json.plannerTrace?.composerMode, "existing-composition");
     assert.equal(draftResource.payload_json.plannerTrace?.composerFallbackUsed, false);
-    assert.equal(draftResource.payload_json.orchestrationSnapshot?.selectedCompositionPlan?.title, "Valid Inspect Plan");
+    assert.equal(draftResource.payload_json.orchestrationSnapshot?.selectedCompositionPlan?.title, "Software Dynamic Feature Workflow");
   });
 });
 
-test("llm-constrained planner trace records analyzer/composer and validation audit metadata for fixture composer", async () => {
+test("llm-constrained planner trace records analyzer/composer and validation audit metadata", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
-      composerMode: "fixture",
+      composerMode: "llm",
+      composer: new DeterministicFixtureComposer(),
     });
     const draftResource = await db.one<{
       payload_json: {
@@ -340,7 +359,7 @@ test("llm-constrained planner trace records analyzer/composer and validation aud
     );
     const trace = draftResource.payload_json.plannerTrace;
     assert.equal(trace.analyzerType, "deterministic");
-    assert.equal(trace.composerMode, "fixture");
+    assert.equal(trace.composerMode, "llm");
     assert.equal(trace.composerFallbackUsed, false);
     assert.equal(trace.validatorAttempts, 1);
     assert.equal(trace.repairAttempts, 0);
@@ -352,38 +371,29 @@ test("llm-constrained planner trace records analyzer/composer and validation aud
   });
 });
 
-test("llm-with-fixture-fallback sets plannerTrace composerFallbackUsed when primary composer fails", async () => {
+test("llm-constrained planner does not fallback when primary composer fails", async () => {
   await withDb(async (db) => {
     const failingComposer = {
       async compose() {
         throw new Error("forced llm composer failure");
       },
     };
-    const draft = await createPostgresPlannerDraft(db, {
-      goalPrompt: "implement calc sum",
-      orchestrationMode: "llm-constrained",
-      composerMode: "llm-with-fixture-fallback",
-      composer: failingComposer,
-    });
-    const draftResource = await db.one<{
-      payload_json: {
-        plannerTrace: {
-          composerMode?: string;
-          composerFallbackUsed?: boolean;
-        };
-      };
-    }>(
-      "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
-      [draft.draftId],
+    await assert.rejects(
+      () => createPostgresPlannerDraft(db, {
+        goalPrompt: "implement calc sum",
+        orchestrationMode: "llm-constrained",
+        composerMode: "llm",
+        composer: failingComposer,
+      }),
+      /forced llm composer failure/,
     );
-    assert.equal(draftResource.payload_json.plannerTrace.composerMode, "llm-with-fixture-fallback");
-    assert.equal(draftResource.payload_json.plannerTrace.composerFallbackUsed, true);
   });
 });
 
 test("Postgres planner draft can use injected scripted LLM composer for non-fixture DAG shape", async () => {
   await withDb(async (db) => {
-    const composer = new ScriptedWorkflowComposer([invalidInspectOnlyPlan(), validInspectOnlyPlan()]);
+    await seedDeterministicWorkflowGraph(db);
+    const composer = new ScriptedWorkflowComposer([invalidInspectOnlyPlan(), deterministicFixtureComposition()]);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with a single exploration task",
       orchestrationMode: "llm-constrained",
@@ -400,7 +410,7 @@ test("Postgres planner draft can use injected scripted LLM composer for non-fixt
 
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     assert.deepEqual(run.taskIds, [
-      "inspect-only",
+      "understand-repo",
       "review-spec",
       "implement-feature",
       "verify-feature",
@@ -458,10 +468,10 @@ test("llm-constrained planner uses graph metadata even when legacy capability ca
     const generatedProfile = draftResource.payload_json.workflow?.agentProfiles?.find((profile) =>
       profile.id === "profile.generated.vocab.implement"
     );
-    assert.equal(generatedProfile?.provider, "codex");
-    assert.equal(generatedProfile?.model, "gpt-5");
+    assert.equal(generatedProfile?.provider, "pi");
+    assert.equal(generatedProfile?.model, "pi-agent-default");
     assert.equal(generatedProfile?.thinkingLevel, "high");
-    assert.equal(generatedProfile?.harnessRef, "codex");
+    assert.equal(generatedProfile?.harnessRef, "pi");
     assert.match(generatedProfile?.instruction ?? "", /vocabulary learning feature/);
     assert.deepEqual(generatedProfile?.toolPolicy?.allowedTools, ["tool.workspace-write"]);
     assert.equal(
@@ -511,6 +521,7 @@ test("Postgres planner draft is invalid when repair loop remains invalid after m
 
 test("Postgres planner draft orchestration inspection helper returns public summary and orchestration snapshot", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
@@ -547,6 +558,7 @@ test("Postgres run creation rejects invalid planner drafts", async () => {
 
 test("Postgres server routes create planner drafts and runs through new API", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by Postgres constrained planner"); } },
@@ -565,17 +577,17 @@ test("Postgres server routes create planner drafts and runs through new API", as
         method: "POST",
         body: JSON.stringify({ goalPrompt: "implement calc sum" }),
       });
-      assert.match(draft.draftId, /^draft-wf-gen-/);
+      assert.match(draft.draftId, /^draft-wf-composed-/);
       assert.equal(draft.status, "validated");
       assert.deepEqual(draft.validationIssues, []);
-      assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
+      assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), FIXTURE_TASK_IDS);
 
       const run = await api<{ runId: string; taskIds: string[] }>(server.url, "/api/v2/runs", {
         method: "POST",
         body: JSON.stringify({ draftId: draft.draftId }),
       });
-      assert.match(run.runId, /^run-wf-gen-/);
-      assert.deepEqual(run.taskIds, ["understand-repo", "implement-feature", "verify-feature", "summarize-completion"]);
+      assert.match(run.runId, /^run-wf-composed-/);
+      assert.deepEqual(run.taskIds, FIXTURE_TASK_IDS);
 
       const llmDraft = await api<{
         draftId: string;
@@ -631,6 +643,7 @@ test("Postgres server routes create planner drafts and runs through new API", as
 
 test("Postgres server planner draft route accepts and persists structured request hints", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by structured request contract test"); } },
@@ -641,8 +654,8 @@ test("Postgres server planner draft route accepts and persists structured reques
     try {
       const request = {
         goalPrompt: "implement calc sum",
-        orchestrationMode: "deterministic",
-        composerMode: "fixture",
+        orchestrationMode: "llm-constrained",
+        composerMode: "llm",
         domainPackId: "software",
         cwd: "/workspace/southstar",
         libraryHints: {
@@ -692,7 +705,7 @@ test("Postgres planner draft snapshots structured request before async orchestra
     const request = {
       goalPrompt: "implement calc sum with snapshot boundary",
       orchestrationMode: "llm-constrained" as const,
-      composerMode: "fixture" as const,
+      composerMode: "llm" as const,
       domainPackId: "software",
       cwd: "/workspace/original",
       libraryHints: {
@@ -740,7 +753,7 @@ test("Postgres planner draft revision preserves structured request hints with ex
     const baseRequest = {
       goalPrompt: "implement calc sum with structured revision context",
       orchestrationMode: "llm-constrained" as const,
-      composerMode: "fixture" as const,
+      composerMode: "llm" as const,
       domainPackId: "software",
       cwd: "/workspace/southstar",
       libraryHints: {
@@ -765,16 +778,16 @@ test("Postgres planner draft revision preserves structured request hints with ex
     const revised = await revisePostgresPlannerDraft(db, {
       draftId: draft.draftId,
       prompt: "add explicit edge-case validation for empty inputs",
-      orchestrationMode: "deterministic",
-      composerMode: "fixture",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
       composer: new DeterministicFixtureComposer(),
     });
 
     const expectedPlannerRequest = {
       ...baseRequest,
       goalPrompt: revised.goalPrompt,
-      orchestrationMode: "deterministic",
-      composerMode: "fixture",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
     };
     const revisedRow = await db.one<{
       summary_json: { plannerRequest?: unknown };
@@ -791,9 +804,10 @@ test("Postgres planner draft revision preserves structured request hints with ex
 
 test("Postgres server routes revise planner drafts via planner pipeline", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const server = await createSouthstarRuntimeServer({
       db: db as never,
-      plannerClient: { generate: async () => { throw new Error("planner client not used by deterministic planner"); } },
+      plannerClient: { generate: async () => { throw new Error("planner client not used by planner route test"); } },
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by planner routes"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -817,7 +831,7 @@ test("Postgres server routes revise planner drafts via planner pipeline", async 
         taskSummaries: Array<{ taskId: string }>;
       }>(server.url, `/api/v2/planner/drafts/${encodeURIComponent(draft.draftId)}/revise`, {
         method: "POST",
-        body: JSON.stringify({ prompt: "add explicit edge-case validation for empty inputs", orchestrationMode: "deterministic" }),
+        body: JSON.stringify({ prompt: "add explicit edge-case validation for empty inputs", orchestrationMode: "llm-constrained" }),
       });
 
       assert.notEqual(revised.draftId, draft.draftId);
@@ -861,6 +875,16 @@ async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
   } finally {
     await fixture.drop();
   }
+}
+
+async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string) {
+  await seedDeterministicWorkflowGraph(db);
+  return await createPostgresPlannerDraft(db, {
+    goalPrompt,
+    orchestrationMode: "llm-constrained",
+    composerMode: "llm",
+    composer: new DeterministicFixtureComposer(),
+  });
 }
 
 async function createTestDatabase(): Promise<{ databaseUrl: string; drop(): Promise<void> }> {
@@ -950,16 +974,17 @@ function graphMetadataOnlyPlan(): WorkflowCompositionPlan {
       validationStatus: "validated",
       agentProfile: {
         workerKind: "execution_worker",
-        provider: "codex",
-        model: "gpt-5",
+        provider: "pi",
+        model: "pi-agent-default",
         thinkingLevel: "high",
-        harnessRef: "codex",
+        harnessRef: "pi",
         instruction: "Implement the vocabulary learning feature with the selected React UI skill, workspace write tool, filesystem MCP grant, and React review instruction. Produce artifact.vocab_feature.",
         promptTemplateRef: "react-review",
         contextPolicyRef: "context.generated",
         sessionPolicyRef: "session.generated",
         memoryScopes: [],
         agentsMdRefs: [],
+        vaultLeasePolicyRefs: [],
         toolPolicy: {
           allowedTools: ["tool.workspace-write"],
           deniedTools: [],

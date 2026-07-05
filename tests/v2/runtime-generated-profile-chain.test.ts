@@ -7,7 +7,6 @@ import { materializeTaskEnvelope } from "../../src/v2/agent-runner/materializer.
 import { createManagedContextAssembler } from "../../src/v2/context/managed-context-assembler.ts";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
-import { softwareDomainPack } from "../../src/v2/domain-packs/software.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
@@ -75,19 +74,7 @@ test("graph metadata composition refs materialize into Docker-visible task bundl
       dependsOn: task.dependsOn,
       rootSessionId: "session-chain",
     });
-    const assembler = createManagedContextAssembler(db, {
-      domainPack: {
-        ...softwareDomainPack,
-        artifactContracts: [
-          ...softwareDomainPack.artifactContracts,
-          { id: "web_app", artifactType: "web-app", requiredFields: ["summary"], evidenceFields: ["summary"] },
-        ],
-        evaluatorPipelines: [
-          ...softwareDomainPack.evaluatorPipelines,
-          { id: "web-app", evaluators: [], onFailure: { defaultStrategy: "ask-human" } },
-        ],
-      },
-    });
+    const assembler = createManagedContextAssembler(db);
     const assembled = await assembler.buildForTask({
       runId: "run-chain",
       taskId: task.id,
@@ -164,6 +151,7 @@ function generatedCompositionPlan(): WorkflowCompositionPlan {
         sessionPolicyRef: "session.generated",
         memoryScopes: [],
         agentsMdRefs: [],
+        vaultLeasePolicyRefs: [],
         toolPolicy: {
           allowedTools: ["tool.workspace-write"],
           deniedTools: [],
@@ -267,14 +255,25 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
     objectKind: "artifact_contract",
     status: "approved",
     headVersionId: "artifact.web_app@1",
-    state: { scope: "software", title: "Web App" },
+    state: {
+      scope: "software",
+      title: "Web App",
+      artifactType: "web-app",
+      requiredFields: ["summary"],
+      evidenceFields: ["summary"],
+    },
   });
   await upsertLibraryObject(db, {
     objectKey: "evaluator.web-app",
     objectKind: "evaluator_profile",
     status: "approved",
     headVersionId: "evaluator.web-app@1",
-    state: { scope: "software", title: "Web App Evaluator" },
+    state: {
+      scope: "software",
+      title: "Web App Evaluator",
+      evaluators: [],
+      onFailure: { defaultStrategy: "ask-human" },
+    },
   });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "provides_capability", toObjectKey: "capability.frontend-ui", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });

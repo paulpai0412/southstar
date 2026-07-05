@@ -97,6 +97,7 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         "id",
         "name",
         "responsibility",
+        "nodePromptSpec",
         "dependsOn",
         "templateSlotRef",
         "agentDefinitionRef",
@@ -116,6 +117,7 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         id: { type: "string", minLength: 1 },
         name: { type: "string", minLength: 1 },
         responsibility: { type: "string", minLength: 1 },
+        nodePromptSpec: { $ref: "#/$defs/nodePromptSpec" },
         dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
         templateSlotRef: { type: "string", minLength: 1 },
         agentDefinitionRef: { type: "string", minLength: 1 },
@@ -132,6 +134,72 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         workspacePolicyRef: { type: "string", minLength: 1 },
         recoveryStrategyRefs: { type: "array", items: { type: "string", minLength: 1 } },
         rationale: { type: "string", minLength: 1 },
+      },
+    },
+    nodePromptSpec: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "nodeType",
+        "goal",
+        "requirements",
+        "boundaries",
+        "nonGoals",
+        "deliverableDocuments",
+        "expectedOutputs",
+        "testCases",
+        "acceptanceCriteria",
+      ],
+      properties: {
+        nodeType: { type: "string", enum: ["plan", "implement", "verify", "repair", "review", "summary", "general"] },
+        goal: { type: "string", minLength: 1 },
+        requirements: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        boundaries: { type: "array", items: { type: "string", minLength: 1 } },
+        nonGoals: { type: "array", items: { type: "string", minLength: 1 } },
+        deliverableDocuments: { type: "array", items: { $ref: "#/$defs/deliverableDocument" } },
+        expectedOutputs: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        testCases: { type: "array", items: { $ref: "#/$defs/nodePromptTestCase" } },
+        acceptanceCriteria: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } },
+        failureReportContract: { type: "string", minLength: 1 },
+        planningQuestions: { type: "array", items: { type: "string", minLength: 1 } },
+        decisionCriteria: { type: "array", items: { type: "string", minLength: 1 } },
+        planArtifactContract: { type: "string", minLength: 1 },
+        implementationScope: { type: "array", items: { type: "string", minLength: 1 } },
+        filesLikelyToTouch: { type: "array", items: { type: "string", minLength: 1 } },
+        verificationChecks: { type: "array", items: { type: "string", minLength: 1 } },
+        failureArtifactContract: { type: "string", minLength: 1 },
+        repairInputs: { type: "array", items: { type: "string", minLength: 1 } },
+        mustPreserve: { type: "array", items: { type: "string", minLength: 1 } },
+        reverificationChecks: { type: "array", items: { type: "string", minLength: 1 } },
+        reviewChecklist: { type: "array", items: { type: "string", minLength: 1 } },
+        riskCriteria: { type: "array", items: { type: "string", minLength: 1 } },
+        summarySections: { type: "array", items: { type: "string", minLength: 1 } },
+        handoffCriteria: { type: "array", items: { type: "string", minLength: 1 } },
+      },
+    },
+    deliverableDocument: {
+      type: "object",
+      additionalProperties: false,
+      required: ["kind", "title", "required", "format", "description"],
+      properties: {
+        kind: { type: "string", enum: ["design", "implementation", "test", "acceptance", "verification", "summary", "handoff", "other"] },
+        title: { type: "string", minLength: 1 },
+        required: { type: "boolean" },
+        format: { type: "string", enum: ["markdown", "json", "file", "inline"] },
+        description: { type: "string", minLength: 1 },
+      },
+    },
+    nodePromptTestCase: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name", "expected"],
+      properties: {
+        name: { type: "string", minLength: 1 },
+        command: { type: "string", minLength: 1 },
+        expected: { type: "string", minLength: 1 },
+        given: { type: "string", minLength: 1 },
+        when: { type: "string", minLength: 1 },
+        then: { type: "string", minLength: 1 },
       },
     },
     rejectedCandidate: {
@@ -337,6 +405,9 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "For workflows that create or modify artifacts, include a positive validation path with validation_worker, review_worker, deterministic checks, or another graph-justified verifier. Do not add fixed worker nodes when the goal does not require them.",
     "Validation-oriented agent profiles may use a lightweight/no-reasoning model profile when deterministic shell/test verification is sufficient, but must still include provider, harnessRef, instruction, toolPolicy, and budgetPolicy.",
     "If validation can fail, encode a repair loop in the DAG: the validation task produces an error/report artifact, and a downstream repair/execution task consumes that artifact, fixes the issue, and is followed by another validation task. Keep the loop bounded by explicit tasks rather than cycles.",
+    "Every task must include nodePromptSpec. Treat nodePromptSpec as the per-node prompt contract that the Docker worker will see: nodeType, goal, requirements, boundaries, nonGoals, deliverableDocuments, expectedOutputs, testCases, acceptanceCriteria, and optional failureReportContract.",
+    "nodePromptSpec.nodeType must be one of plan, implement, verify, repair, review, summary, or general. Choose it from the node's role in the DAG, not from the worker profile name alone.",
+    "nodePromptSpec must be specific to that node, not a copy of the global goal. Implementation nodes must include concrete boundaries and expected outputs. Validation/review nodes must include concrete testCases or verification checks and acceptanceCriteria.",
     "The generated profile instruction must explain the worker's exact responsibility, selected skills/tools/MCP grants, success criteria, and what artifact/error report it must produce.",
     "Generated component proposals are proposal-only unless they are validated agent_profile proposals selected as agentProfileRef.",
     "Use DagAndAgentProfileSop as the mandatory generation procedure.",
@@ -383,14 +454,16 @@ function renderDagAndAgentProfileSop(): string {
     "5. Execution workers create or modify requested artifacts. Validation, review, or deterministic-check workers positively verify artifacts when the workflow creates or modifies them.",
     "6. If validation can fail, add bounded repair flow using explicit nodes: validation produces an error/report artifact, a downstream repair/execution worker consumes that artifact, and a following validation worker verifies the repaired output. Never create cyclic dependencies.",
     "7. For each task, choose agentDefinitionRef, skillRefs, toolGrantRefs, mcpGrantRefs, instructionRefs, evaluatorProfileRef, inputArtifactRefs, and outputArtifactRefs from the graph.",
-    "8. Verify graph closure before output: selected agent must support selected skills; selected skills must include required tools, MCP grants, and instructions through edges; evaluator must validate output artifacts; conflicting/incompatible edges must not be selected together.",
-    "9. For each generated profile, output a complete agentProfile that the compiler can materialize into Docker worker input agent-profile/profile.json and task execution.",
-    "10. Each agentProfile must include workerKind, provider, model, thinkingLevel, harnessRef, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, toolPolicy, budgetPolicy, and execution.",
-    "11. agentProfile.execution must include engine=tork, image, command, env, mounts, timeoutSeconds, and infraRetry.maxAttempts. Use an empty mounts array for workspace access; Southstar runtime injects the real host workspace mount from the task envelope. Never output source=\"workspace\" or container paths as mount sources.",
-    "11a. When agentProfile.execution.image is southstar/pi-agent:local, set provider=pi, harnessRef=pi, and model=pi-agent-default. Do not output codex provider or codex harness for this image.",
-    "12. The agentProfile.instruction must be worker-specific and must name the selected skills/tools/MCP grants, success criteria, produced artifact, and failure/error-report behavior.",
-    "13. toolPolicy.allowedTools must include every task.toolGrantRefs entry. agentProfile.vaultLeasePolicyRefs must include every task.vaultLeasePolicyRefs entry. budgetPolicy must include maxInputTokens, maxOutputTokens, and maxWallTimeSeconds.",
-    "14. Prefer the smallest DAG that satisfies execution, positive validation, and bounded repair. Add review or summary workers only when risk or graph evidence justifies them.",
+    "8. For each task, write nodePromptSpec as the worker-facing prompt brief: nodeType, node-local goal, requirements, boundaries, nonGoals, deliverableDocuments, expectedOutputs, testCases, acceptanceCriteria, and failureReportContract when failure should feed repair.",
+    "8a. Type-specific nodePromptSpec fields: plan uses planningQuestions/decisionCriteria/planArtifactContract; implement uses implementationScope/filesLikelyToTouch/testCases; verify uses verificationChecks/testCases/failureArtifactContract; repair uses repairInputs/mustPreserve/reverificationChecks; review uses reviewChecklist/riskCriteria; summary uses summarySections/handoffCriteria.",
+    "9. Verify graph closure before output: selected agent must support selected skills; selected skills must include required tools, MCP grants, and instructions through edges; evaluator must validate output artifacts; conflicting/incompatible edges must not be selected together.",
+    "10. For each generated profile, output a complete agentProfile that the compiler can materialize into Docker worker input agent-profile/profile.json and task execution.",
+    "11. Each agentProfile must include workerKind, provider, model, thinkingLevel, harnessRef, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, toolPolicy, budgetPolicy, and execution.",
+    "12. agentProfile.execution must include engine=tork, image, command, env, mounts, timeoutSeconds, and infraRetry.maxAttempts. Use an empty mounts array for workspace access; Southstar runtime injects the real host workspace mount from the task envelope. Never output source=\"workspace\" or container paths as mount sources.",
+    "12a. When agentProfile.execution.image is southstar/pi-agent:local, set provider=pi, harnessRef=pi, and model=pi-agent-default. Do not output codex provider or codex harness for this image.",
+    "13. The agentProfile.instruction must be worker-specific and must name the selected skills/tools/MCP grants, success criteria, produced artifact, and failure/error-report behavior.",
+    "14. toolPolicy.allowedTools must include every task.toolGrantRefs entry. agentProfile.vaultLeasePolicyRefs must include every task.vaultLeasePolicyRefs entry. budgetPolicy must include maxInputTokens, maxOutputTokens, and maxWallTimeSeconds.",
+    "15. Prefer the smallest DAG that satisfies execution, positive validation, and bounded repair. Add review or summary workers only when risk or graph evidence justifies them.",
   ].join("\n");
 }
 
@@ -485,10 +558,11 @@ function validateTask(value: unknown, index: number, issues: WorkflowComposition
     [
       ...TASK_STRING_FIELDS,
       ...TASK_STRING_ARRAY_FIELDS,
+      "nodePromptSpec",
       "contextPolicyRef",
       "workspacePolicyRef",
     ],
-    [...TASK_STRING_FIELDS, ...TASK_STRING_ARRAY_FIELDS],
+    [...TASK_STRING_FIELDS, ...TASK_STRING_ARRAY_FIELDS, "nodePromptSpec"],
     path,
     issues,
   );
@@ -503,6 +577,155 @@ function validateTask(value: unknown, index: number, issues: WorkflowComposition
   }
   if (value.workspacePolicyRef !== undefined) {
     requireString(value.workspacePolicyRef, `${path}.workspacePolicyRef`, issues);
+  }
+  validateNodePromptSpec(value.nodePromptSpec, `${path}.nodePromptSpec`, issues);
+}
+
+function validateNodePromptSpec(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  if (!isRecord(value) || Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "nodePromptSpec must be an object"));
+    return;
+  }
+  validateObjectShape(
+    value,
+    [
+      "nodeType",
+      "goal",
+      "requirements",
+      "boundaries",
+      "nonGoals",
+      "deliverableDocuments",
+      "expectedOutputs",
+      "testCases",
+      "acceptanceCriteria",
+      "failureReportContract",
+      "planningQuestions",
+      "decisionCriteria",
+      "planArtifactContract",
+      "implementationScope",
+      "filesLikelyToTouch",
+      "verificationChecks",
+      "failureArtifactContract",
+      "repairInputs",
+      "mustPreserve",
+      "reverificationChecks",
+      "reviewChecklist",
+      "riskCriteria",
+      "summarySections",
+      "handoffCriteria",
+    ],
+    ["nodeType", "goal", "requirements", "boundaries", "nonGoals", "deliverableDocuments", "expectedOutputs", "testCases", "acceptanceCriteria"],
+    path,
+    issues,
+  );
+  const nodeType = typeof value.nodeType === "string" ? value.nodeType : "";
+  if (!["plan", "implement", "verify", "repair", "review", "summary", "general"].includes(nodeType)) {
+    issues.push(issue("composer_output_schema_violation", `${path}.nodeType`, "must be one of: plan, implement, verify, repair, review, summary, general"));
+  }
+  requireString(value.goal, `${path}.goal`, issues);
+  requireNonEmptyStringArray(value.requirements, `${path}.requirements`, issues);
+  requireStringArray(value.boundaries, `${path}.boundaries`, issues);
+  requireStringArray(value.nonGoals, `${path}.nonGoals`, issues);
+  validateDeliverableDocuments(value.deliverableDocuments, `${path}.deliverableDocuments`, issues);
+  requireNonEmptyStringArray(value.expectedOutputs, `${path}.expectedOutputs`, issues);
+  requireNonEmptyStringArray(value.acceptanceCriteria, `${path}.acceptanceCriteria`, issues);
+  if (value.failureReportContract !== undefined) {
+    requireString(value.failureReportContract, `${path}.failureReportContract`, issues);
+  }
+  for (const field of [
+    "planningQuestions",
+    "decisionCriteria",
+    "implementationScope",
+    "filesLikelyToTouch",
+    "verificationChecks",
+    "repairInputs",
+    "mustPreserve",
+    "reverificationChecks",
+    "reviewChecklist",
+    "riskCriteria",
+    "summarySections",
+    "handoffCriteria",
+  ]) {
+    if (value[field] !== undefined) requireStringArray(value[field], `${path}.${field}`, issues);
+  }
+  for (const field of ["planArtifactContract", "failureArtifactContract"]) {
+    if (value[field] !== undefined) requireString(value[field], `${path}.${field}`, issues);
+  }
+  if (!Array.isArray(value.testCases)) {
+    issues.push(issue("composer_output_schema_violation", `${path}.testCases`, "must be a test case[]"));
+    return;
+  }
+  for (const [index, testCase] of value.testCases.entries()) {
+    validateNodePromptTestCase(testCase, `${path}.testCases.${index}`, issues);
+  }
+  validateNodeTypeSpecificPromptSpec(value, nodeType, path, issues);
+}
+
+function validateDeliverableDocuments(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  if (!Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "must be a deliverable document[]"));
+    return;
+  }
+  for (const [index, document] of value.entries()) {
+    validateDeliverableDocument(document, `${path}.${index}`, issues);
+  }
+}
+
+function validateDeliverableDocument(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  if (!isRecord(value) || Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "deliverable document must be an object"));
+    return;
+  }
+  validateObjectShape(value, ["kind", "title", "required", "format", "description"], ["kind", "title", "required", "format", "description"], path, issues);
+  if (!["design", "implementation", "test", "acceptance", "verification", "summary", "handoff", "other"].includes(typeof value.kind === "string" ? value.kind : "")) {
+    issues.push(issue("composer_output_schema_violation", `${path}.kind`, "must be one of: design, implementation, test, acceptance, verification, summary, handoff, other"));
+  }
+  requireString(value.title, `${path}.title`, issues);
+  if (typeof value.required !== "boolean") {
+    issues.push(issue("composer_output_schema_violation", `${path}.required`, "must be a boolean"));
+  }
+  if (!["markdown", "json", "file", "inline"].includes(typeof value.format === "string" ? value.format : "")) {
+    issues.push(issue("composer_output_schema_violation", `${path}.format`, "must be one of: markdown, json, file, inline"));
+  }
+  requireString(value.description, `${path}.description`, issues);
+}
+
+function validateNodeTypeSpecificPromptSpec(
+  value: Record<string, unknown>,
+  nodeType: string,
+  path: string,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  if (nodeType === "plan" && stringArray(value.planningQuestions).length === 0 && stringArray(value.decisionCriteria).length === 0) {
+    issues.push(issue("composer_output_schema_violation", `${path}.planningQuestions`, "plan node must include planningQuestions or decisionCriteria"));
+  }
+  if (nodeType === "implement" && stringArray(value.implementationScope).length === 0) {
+    issues.push(issue("composer_output_schema_violation", `${path}.implementationScope`, "implement node must include implementationScope"));
+  }
+  if (nodeType === "verify" && stringArray(value.verificationChecks).length === 0 && Array.isArray(value.testCases) && value.testCases.length === 0) {
+    issues.push(issue("composer_output_schema_violation", `${path}.verificationChecks`, "verify node must include verificationChecks or testCases"));
+  }
+  if (nodeType === "repair" && stringArray(value.repairInputs).length === 0) {
+    issues.push(issue("composer_output_schema_violation", `${path}.repairInputs`, "repair node must include repairInputs"));
+  }
+  if (nodeType === "review" && stringArray(value.reviewChecklist).length === 0) {
+    issues.push(issue("composer_output_schema_violation", `${path}.reviewChecklist`, "review node must include reviewChecklist"));
+  }
+  if (nodeType === "summary" && stringArray(value.summarySections).length === 0) {
+    issues.push(issue("composer_output_schema_violation", `${path}.summarySections`, "summary node must include summarySections"));
+  }
+}
+
+function validateNodePromptTestCase(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  if (!isRecord(value) || Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "test case must be an object"));
+    return;
+  }
+  validateObjectShape(value, ["name", "command", "expected", "given", "when", "then"], ["name", "expected"], path, issues);
+  requireString(value.name, `${path}.name`, issues);
+  requireString(value.expected, `${path}.expected`, issues);
+  for (const field of ["command", "given", "when", "then"]) {
+    if (value[field] !== undefined) requireString(value[field], `${path}.${field}`, issues);
   }
 }
 
@@ -787,6 +1010,18 @@ function requireStringArray(value: unknown, path: string, issues: WorkflowCompos
   if (value.some((item) => typeof item !== "string" || item.length === 0)) {
     issues.push(issue("composer_output_schema_violation", path, "must be a string[] with non-empty values"));
   }
+}
+
+function requireNonEmptyStringArray(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  requireStringArray(value, path, issues);
+  if (Array.isArray(value) && value.length === 0) {
+    issues.push(issue("composer_output_schema_violation", path, "must contain at least 1 item"));
+  }
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
 function boundCandidatePacket(packet: CandidatePacket): CandidatePacket {

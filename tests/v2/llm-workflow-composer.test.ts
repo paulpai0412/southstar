@@ -49,7 +49,13 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.doesNotMatch(prompts[0] ?? "", /policy.drop-50/);
   assert.match(prompts[0] ?? "", /\"additionalProperties\":false/);
   assert.match(prompts[0] ?? "", /\"schemaVersion\":\{\"const\":\"southstar.workflow_composition_plan.v1\"\}/);
+  assert.match(prompts[0] ?? "", /nodePromptSpec/);
+  assert.match(prompts[0] ?? "", /acceptanceCriteria/);
   assert.equal(typeof WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.id.type, "string");
+  assert.equal(
+    WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("nodePromptSpec"),
+    true,
+  );
 });
 
 
@@ -199,6 +205,28 @@ test("LLM composer parser rejects invalid task field types", () => {
   );
 });
 
+test("LLM composer parser rejects tasks without node prompt specs", () => {
+  const plan = validPlan();
+  const { nodePromptSpec: _nodePromptSpec, ...taskWithoutPromptSpec } = plan.tasks[0] as Record<string, unknown>;
+
+  assert.throws(
+    () =>
+      parseWorkflowCompositionPlanFromText(
+        JSON.stringify({
+          ...plan,
+          tasks: [taskWithoutPromptSpec, ...plan.tasks.slice(1)],
+        }),
+        20_000,
+      ),
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues.some((issue) =>
+        issue.path === "tasks.0.nodePromptSpec"
+        && /missing required property/.test(issue.message)
+      ),
+  );
+});
+
 function validPlan(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
@@ -329,8 +357,33 @@ function task(
     outputArtifactRefs,
     evaluatorProfileRef,
     recoveryStrategyRefs: ["retry-same-agent"],
+    nodePromptSpec: {
+      nodeType: id.includes("verify") ? "verify" : id.includes("understand") ? "plan" : "implement",
+      goal: `Complete ${id} for the requested feature.`,
+      requirements: [`Satisfy the user goal for ${id}.`],
+      boundaries: ["Work only inside the mounted workspace.", "Do not modify Southstar runtime internals."],
+      nonGoals: ["Do not perform unrelated refactors."],
+      deliverableDocuments: [{
+        kind: id.includes("verify") ? "verification" : id.includes("understand") ? "design" : "implementation",
+        title: `${id} document`,
+        required: true,
+        format: "markdown",
+        description: `Document the ${id} result for downstream nodes.`,
+      }],
+      expectedOutputs: outputArtifactRefs,
+      testCases: [{
+        name: `${id} acceptance check`,
+        command: "npm test",
+        expected: "Relevant tests pass or a clear blocker report is produced.",
+      }],
+      acceptanceCriteria: [`${id} produces ${outputArtifactRefs.join(", ")}.`],
+      ...(id.includes("verify") ? { verificationChecks: ["Run the selected verification checks and inspect the result."] } : {}),
+      ...(id.includes("understand") ? { planningQuestions: ["What needs to change?"], decisionCriteria: ["Plan is scoped and testable."] } : {}),
+      ...(id.includes("implement") ? { implementationScope: ["Implement the requested feature behavior."] } : {}),
+      failureReportContract: "Return blocker, evidence, and next repair action when the task cannot be completed.",
+    },
     rationale: id,
-  };
+  } as unknown as WorkflowCompositionPlan["tasks"][number];
 }
 
 function candidatePacket(): CandidatePacket {

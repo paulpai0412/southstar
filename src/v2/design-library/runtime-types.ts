@@ -1,21 +1,3 @@
-export type DomainPack = {
-  id: string;
-  version: string;
-  displayName: string;
-  intents: IntentDefinition[];
-  roles: RoleDefinition[];
-  agentProfiles: AgentProfile[];
-  workflowTemplates: WorkflowTemplate[];
-  workflowGeneratorPolicies: WorkflowGeneratorPolicyDefinition[];
-  artifactContracts: ArtifactContract[];
-  evaluatorPipelines: EvaluatorPipelineDefinition[];
-  contextPolicies: ContextPolicyDefinition[];
-  sessionPolicies: SessionPolicyDefinition[];
-  memoryPolicies: MemoryPolicyDefinition[];
-  workspacePolicies: WorkspacePolicyDefinition[];
-  stopConditions: StopConditionDefinition[];
-};
-
 export type IntentDefinition = {
   id: string;
   description: string;
@@ -27,12 +9,6 @@ export type IntentDefinition = {
 };
 
 export type Intent = IntentDefinition;
-
-export type WorkflowTemplate = {
-  id: string;
-  intentRefs: string[];
-  stages: WorkflowStageTemplate[];
-};
 
 export type WorkflowStageTemplate = {
   id: string;
@@ -97,6 +73,7 @@ export type AgentProfile = {
   id: string;
   name: string;
   agentRef?: string;
+  workerKind?: "execution_worker" | "validation_worker" | "repair_worker" | "review_worker";
   provider: AgentProvider;
   model?: string;
   thinkingLevel?: string;

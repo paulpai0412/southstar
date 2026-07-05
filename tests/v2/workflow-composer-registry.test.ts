@@ -1,14 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CandidatePacket, WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
-import { DeterministicFixtureComposer, ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { createWorkflowComposerRegistry } from "../../src/v2/orchestration/composer-registry.ts";
-
-test("composer registry resolves fixture mode to deterministic fixture composer", () => {
-  const registry = createWorkflowComposerRegistry();
-  const composer = registry.resolve({ composerMode: "fixture" });
-  assert.equal(composer instanceof DeterministicFixtureComposer, true);
-});
 
 test("composer registry defaults to llm mode when composerMode is omitted", () => {
   const registry = createWorkflowComposerRegistry();
@@ -35,26 +29,21 @@ test("composer registry fails closed when llm mode has no configured composer", 
   );
 });
 
-test("composer registry uses fixture output when llm-with-fixture-fallback has no llm composer", async () => {
-  const registry = createWorkflowComposerRegistry();
-  const composer = registry.resolve({ composerMode: "llm-with-fixture-fallback" });
-  const composed = await composer.compose({ goalPrompt: "x", candidatePacket: candidatePacket() });
-  assert.equal(composed.selectedWorkflowTemplateRef, "template.software-feature");
-});
-
-test("composer registry uses fixture fallback in llm-with-fixture-fallback mode", async () => {
+test("composer registry does not hide primary llm composer failures", async () => {
   const failing = {
     async compose(): Promise<WorkflowCompositionPlan> {
       throw new Error("llm unavailable");
     },
   };
   const registry = createWorkflowComposerRegistry({ llmComposer: failing });
-  const composer = registry.resolve({ composerMode: "llm-with-fixture-fallback" });
-  const composed = await composer.compose({ goalPrompt: "x", candidatePacket: candidatePacket() });
-  assert.equal(composed.selectedWorkflowTemplateRef, "template.software-feature");
+  const composer = registry.resolve({ composerMode: "llm" });
+  await assert.rejects(
+    () => composer.compose({ goalPrompt: "x", candidatePacket: candidatePacket() }),
+    /llm unavailable/,
+  );
 });
 
-test("composer registry keeps primary result when llm-with-fixture-fallback primary succeeds", async () => {
+test("composer registry keeps primary result when llm composer succeeds", async () => {
   const primaryPlan: WorkflowCompositionPlan = {
     ...minimalPlan("primary-task"),
     title: "Primary Plan",
@@ -63,7 +52,7 @@ test("composer registry keeps primary result when llm-with-fixture-fallback prim
   const registry = createWorkflowComposerRegistry({
     llmComposer: new ScriptedWorkflowComposer([primaryPlan]),
   });
-  const composer = registry.resolve({ composerMode: "llm-with-fixture-fallback" });
+  const composer = registry.resolve({ composerMode: "llm" });
   const composed = await composer.compose({ goalPrompt: "x", candidatePacket: candidatePacket() });
   assert.equal(composed.selectedWorkflowTemplateRef, "template.primary-success");
   assert.deepEqual(composed.tasks.map((task) => task.id), ["primary-task"]);
@@ -72,7 +61,7 @@ test("composer registry keeps primary result when llm-with-fixture-fallback prim
 test("composer registry rejects unknown composer modes", () => {
   const registry = createWorkflowComposerRegistry();
   assert.throws(
-    () => registry.resolve({ composerMode: "unexpected" as unknown as "fixture" }),
+    () => registry.resolve({ composerMode: "unexpected" as unknown as "llm" }),
     /Unknown workflow composer mode: unexpected/,
   );
 });
@@ -107,16 +96,16 @@ function minimalPlan(taskId: string): WorkflowCompositionPlan {
         responsibility: "mock",
         dependsOn: [],
         templateSlotRef: "mock",
-        agentDefinitionRef: "agent.software-explorer",
-        agentProfileRef: "profile.software-explorer-codex",
-        instructionRefs: ["instruction.software-explorer"],
-        skillRefs: ["skill.software-repo-discovery"],
-        toolGrantRefs: ["tool.workspace-read"],
+        agentDefinitionRef: "agent.test-explorer",
+        agentProfileRef: "profile.generated.test-explorer",
+        instructionRefs: ["instruction.test-explorer"],
+        skillRefs: ["skill.test-discovery"],
+        toolGrantRefs: ["tool.test-read"],
         mcpGrantRefs: [],
         vaultLeasePolicyRefs: [],
         inputArtifactRefs: [],
-        outputArtifactRefs: ["artifact.implementation_plan"],
-        evaluatorProfileRef: "evaluator.software-plan-quality",
+        outputArtifactRefs: ["artifact.test-plan"],
+        evaluatorProfileRef: "evaluator.test-plan-quality",
         recoveryStrategyRefs: ["retry-same-agent"],
         rationale: "mock",
       },

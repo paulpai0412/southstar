@@ -8,7 +8,7 @@ import type {
   SessionPolicyDefinition,
   WorkspacePolicyDefinition,
   StopConditionDefinition,
-} from "../domain-packs/types.ts";
+} from "../design-library/runtime-types.ts";
 
 export type HarnessKind = "pi-agent" | "codex" | "claude-code" | "custom";
 
@@ -198,7 +198,7 @@ export type PlanBundle = {
     promptHash: string;
     generatedAt: string;
     analyzerType?: "deterministic" | string;
-    composerMode?: "fixture" | "llm" | "llm-with-fixture-fallback" | string;
+    composerMode?: "llm" | "existing-composition" | string;
     composerFallbackUsed?: boolean;
     validatorAttempts?: number;
     repairAttempts?: number;

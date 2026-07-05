@@ -3,6 +3,12 @@
 Date: 2026-06-24
 Status: design draft
 
+Current status note (2026-07-05): this is a historical transition design. The
+active runtime composer registry now supports `composerMode: "llm"` only.
+Production `fixture` and `llm-with-fixture-fallback` modes have been retired;
+deterministic composers belong in tests-only fixtures with explicit graph seed
+data.
+
 ## 1. Context
 
 Southstar P0 now has the library-constrained orchestration skeleton:
@@ -97,16 +103,15 @@ goalPrompt
   -> Southstar runtime / Tork / Pi-agent
 ```
 
-The deterministic fixture composer remains available:
+The deterministic fixture composer has been retired from production:
 
 ```text
 WorkflowComposerRegistry
-  mode=fixture -> DeterministicFixtureComposer
   mode=llm -> LlmWorkflowComposer
-  mode=llm-with-fixture-fallback -> LlmWorkflowComposer, then fixture only on configured fail-closed fallback
 ```
 
-Fallback must be explicit in config and visible in `plannerTrace`.
+Tests that need deterministic composition must inject tests-only composers from
+`tests/v2/fixtures/` and seed explicit graph primitives.
 
 ## 6. Components
 
@@ -144,9 +149,7 @@ The packet must stay bounded. It must include enough information for composition
 
 ```ts
 export type WorkflowComposerMode =
-  | "fixture"
-  | "llm"
-  | "llm-with-fixture-fallback";
+  | "llm";
 
 export interface WorkflowComposerRegistry {
   resolve(mode: WorkflowComposerMode): WorkflowComposer;
@@ -294,23 +297,22 @@ Secret values must never be stored in library objects, workflow manifests, orche
 
 ## 7. API Behavior
 
-Planner draft input must remain backward compatible:
+Planner draft input is graph-backed and fail-closed:
 
 ```ts
 type CreatePostgresPlannerDraftInput = {
   goalPrompt: string;
-  orchestrationMode?: "deterministic" | "llm-constrained";
-  composerMode?: "fixture" | "llm" | "llm-with-fixture-fallback";
+  orchestrationMode?: "llm-constrained";
+  composerMode?: "llm";
 };
 ```
 
 Behavior:
 
-- omitted `orchestrationMode` keeps current deterministic default.
-- `orchestrationMode: "llm-constrained"` defaults to configured composer mode.
-- test environments may explicitly select `composerMode: "fixture"`.
+- omitted `orchestrationMode` uses the library-constrained LLM path.
+- `orchestrationMode: "llm-constrained"` uses the configured LLM composer.
 - production LLM mode requires configured LLM provider.
-- missing LLM provider fails closed unless fallback mode is explicitly selected.
+- missing LLM provider fails closed.
 
 `plannerTrace` must record:
 

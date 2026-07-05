@@ -129,7 +129,7 @@ test("workflow ui read model exposes runtime DAG and selected definition", async
     assert.deepEqual((model.selectedDefinition?.materializedLibraryRefs as { skillRefs?: string[] } | undefined)?.skillRefs, ["southstar"]);
     assert.equal(model.activeDraft, null);
     assert.equal(model.agentLibrarySummary.domain, "software");
-    assert.ok(model.agentLibrarySummary.roleCount > 0);
+    assert.equal(model.agentLibrarySummary.roleCount, 0);
     assert.equal(model.validationIssues.length, 0);
     assert.equal(model.repairAttempts, 0);
     assert.ok(model.commands.some((command: { id: string; enabled: boolean }) => command.id === "open-agent-library" && command.enabled));
@@ -372,12 +372,12 @@ test("workflow ui draft read model exposes selected definition depth planner tra
       "repair repaired",
     ]);
     assert.equal(model.selectedDefinition?.taskId, "implement");
-    assert.equal((model.selectedDefinition as any).roleDefinition.responsibility, "Edit the workspace and produce implementation evidence.");
-    assert.equal((model.selectedDefinition as any).agentProfile.name, "Software Maker Pi");
-    assert.equal((model.selectedDefinition as any).vaultPolicy.displayName, "GitHub Write Token Vault Lease");
-    assert.equal((model.selectedDefinition as any).artifactContract.artifactType, "implementation-report");
-    assert.equal((model.selectedDefinition as any).evaluatorPipeline.onFailure.defaultStrategy, "rollback-workspace");
-    assert.equal((model.selectedDefinition as any).contextPolicy.memoryPolicyRef, "software-memory-default");
+    assert.equal((model.selectedDefinition as any).roleDefinition, undefined);
+    assert.equal((model.selectedDefinition as any).agentProfile, undefined);
+    assert.equal((model.selectedDefinition as any).vaultPolicy.id, "vault.github-write-token");
+    assert.equal((model.selectedDefinition as any).artifactContract, undefined);
+    assert.equal((model.selectedDefinition as any).evaluatorPipeline, undefined);
+    assert.equal((model.selectedDefinition as any).contextPolicy, undefined);
     assert.equal((model.plannerTrace as any).manifestRef, "planner.manifest_generated:123");
     assert.equal((model.plannerTrace as any).summaryRef, "summary.trace:1");
     assert.deepEqual(model.repairAttemptDetails, [{

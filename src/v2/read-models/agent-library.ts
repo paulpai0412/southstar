@@ -1,7 +1,7 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import { softwareVaultLeasePolicies } from "../design-library/software-library-seed.ts";
-import { softwareDomainPack } from "../domain-packs/software.ts";
-import type { AgentProfile, RoleDefinition } from "../domain-packs/types.ts";
+import { listLibraryEdges, listLibraryObjects } from "../design-library/library-graph-store.ts";
+import type { LibraryEdgeRecord, LibraryObjectSummary } from "../design-library/types.ts";
+import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
 
 type AgentLibraryInput = {
   domain?: string;
@@ -32,13 +32,13 @@ export type AgentLibraryReadModel = {
   skills: Array<{ id: string; profileRefs: string[] }>;
   mcpServers: Array<{ id: string; profileRefs: string[] }>;
   tools: Array<{ id: string; profileRefs: string[] }>;
-  artifactContracts: typeof softwareDomainPack.artifactContracts;
-  evaluatorPipelines: typeof softwareDomainPack.evaluatorPipelines;
-  contextPolicies: typeof softwareDomainPack.contextPolicies;
-  sessionPolicies: typeof softwareDomainPack.sessionPolicies;
-  memoryPolicies: typeof softwareDomainPack.memoryPolicies;
-  workspacePolicies: typeof softwareDomainPack.workspacePolicies;
-  vaultLeasePolicies: typeof softwareVaultLeasePolicies;
+  artifactContracts: unknown[];
+  evaluatorPipelines: unknown[];
+  contextPolicies: unknown[];
+  sessionPolicies: unknown[];
+  memoryPolicies: unknown[];
+  workspacePolicies: unknown[];
+  vaultLeasePolicies: unknown[];
 };
 
 export type AgentLibraryCandidatesReadModel = {
@@ -62,9 +62,9 @@ export type AgentLibraryCandidatesReadModel = {
   selectionReasons: string[];
 };
 
-export async function buildAgentLibraryReadModelPg(_db: SouthstarDb, input: AgentLibraryInput): Promise<AgentLibraryReadModel> {
+export async function buildAgentLibraryReadModelPg(db: SouthstarDb, input: AgentLibraryInput): Promise<AgentLibraryReadModel> {
   const domain = normalizeDomain(input.domain);
-  const library = buildDomainLibrary(domain);
+  const library = await buildDomainLibrary(db, domain);
   return {
     domain,
     roles: library.roles,
@@ -72,13 +72,13 @@ export async function buildAgentLibraryReadModelPg(_db: SouthstarDb, input: Agen
     skills: library.skills,
     mcpServers: library.mcpServers,
     tools: library.tools,
-    artifactContracts: softwareDomainPack.artifactContracts,
-    evaluatorPipelines: softwareDomainPack.evaluatorPipelines,
-    contextPolicies: softwareDomainPack.contextPolicies,
-    sessionPolicies: softwareDomainPack.sessionPolicies,
-    memoryPolicies: softwareDomainPack.memoryPolicies,
-    workspacePolicies: softwareDomainPack.workspacePolicies,
-    vaultLeasePolicies: softwareVaultLeasePolicies,
+    artifactContracts: library.artifactContracts,
+    evaluatorPipelines: library.evaluatorPipelines,
+    contextPolicies: library.contextPolicies,
+    sessionPolicies: library.sessionPolicies,
+    memoryPolicies: library.memoryPolicies,
+    workspacePolicies: library.workspacePolicies,
+    vaultLeasePolicies: library.vaultLeasePolicies,
   };
 }
 
@@ -104,7 +104,7 @@ export async function buildAgentLibraryCandidatesReadModelPg(
   if (!selectedTask) throw new Error(`planner draft task not found: ${selectedTaskId}`);
 
   const domain = normalizeDomain(stringValue(workflow.domain));
-  const library = buildDomainLibrary(domain);
+  const library = await buildDomainLibrary(db, domain);
   const selectedRole = selectedTask.roleRef ? library.roles.find((role) => role.id === selectedTask.roleRef) : undefined;
   const allowedAgentProfileRefs = selectedRole?.allowedAgentProfileRefs ?? library.agentProfiles.map((profile) => profile.id);
   const alternativeProfiles = library.agentProfiles.filter((profile) => allowedAgentProfileRefs.includes(profile.id));
@@ -133,23 +133,56 @@ export async function buildAgentLibraryCandidatesReadModelPg(
   };
 }
 
-function buildDomainLibrary(domain: string): {
+async function buildDomainLibrary(db: SouthstarDb, domain: string): Promise<{
   roles: RoleDefinition[];
   agentProfiles: AgentProfile[];
   skills: Array<{ id: string; profileRefs: string[] }>;
   mcpServers: Array<{ id: string; profileRefs: string[] }>;
   tools: Array<{ id: string; profileRefs: string[] }>;
-} {
-  if (domain !== "software") {
-    throw new Error(`unsupported domain pack for agent library: ${domain}`);
-  }
+  artifactContracts: unknown[];
+  evaluatorPipelines: unknown[];
+  contextPolicies: unknown[];
+  sessionPolicies: unknown[];
+  memoryPolicies: unknown[];
+  workspacePolicies: unknown[];
+  vaultLeasePolicies: unknown[];
+}> {
+  const objects = await listLibraryObjects(db, { scope: domain, status: "approved" });
+  const edges = await listLibraryEdges(db, { scope: domain, status: "active" });
+  const agentObjects = objects.filter((object) => object.objectKind === "agent_definition" || object.objectKind === "agent_spec");
+  const agentProfiles = objects
+    .filter((object) => object.objectKind === "agent_profile")
+    .map(agentProfileFromObject)
+    .filter((profile): profile is AgentProfile => Boolean(profile));
   return {
-    roles: softwareDomainPack.roles,
-    agentProfiles: softwareDomainPack.agentProfiles,
-    skills: uniqueRefRows(softwareDomainPack.agentProfiles, (profile) => profile.skillRefs),
-    mcpServers: uniqueRefRows(softwareDomainPack.agentProfiles, (profile) => profile.mcpGrantRefs),
-    tools: uniqueRefRows(softwareDomainPack.agentProfiles, (profile) => profile.toolPolicy.allowedTools),
+    roles: agentObjects.map(roleFromAgentObject).filter((role): role is RoleDefinition => Boolean(role)),
+    agentProfiles,
+    skills: objectRefRows(objects, edges, ["skill_spec", "skill_definition"], agentProfiles, (profile) => profile.skillRefs),
+    mcpServers: objectRefRows(objects, edges, ["mcp_tool_grant"], agentProfiles, (profile) => profile.mcpGrantRefs),
+    tools: objectRefRows(objects, edges, ["tool_definition"], agentProfiles, (profile) => profile.toolPolicy.allowedTools),
+    artifactContracts: statesByKind(objects, "artifact_contract"),
+    evaluatorPipelines: statesByKind(objects, "evaluator_profile"),
+    contextPolicies: statesByPolicyKind(objects, "context"),
+    sessionPolicies: statesByPolicyKind(objects, "session"),
+    memoryPolicies: statesByPolicyKind(objects, "memory"),
+    workspacePolicies: statesByPolicyKind(objects, "workspace"),
+    vaultLeasePolicies: statesByKind(objects, "vault_lease_policy"),
   };
+}
+
+function objectRefRows(
+  objects: LibraryObjectSummary[],
+  edges: LibraryEdgeRecord[],
+  kinds: LibraryObjectSummary["objectKind"][],
+  profiles: AgentProfile[],
+  selector: (profile: AgentProfile) => string[],
+): Array<{ id: string; profileRefs: string[] }> {
+  const objectKeys = new Set(objects.filter((object) => kinds.includes(object.objectKind)).map((object) => object.objectKey));
+  const rows = uniqueRefRows(profiles, selector);
+  for (const objectKey of objectKeys) {
+    if (!rows.some((row) => row.id === objectKey)) rows.push({ id: objectKey, profileRefs: graphSourceRefs(edges, objectKey) });
+  }
+  return rows.sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function uniqueRefRows(
@@ -168,6 +201,38 @@ function uniqueRefRows(
   return [...byId.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([id, profileRefs]) => ({ id, profileRefs: [...profileRefs].sort() }));
+}
+
+function graphSourceRefs(edges: LibraryEdgeRecord[], objectKey: string): string[] {
+  return [...new Set(edges.filter((edge) => edge.toObjectKey === objectKey).map((edge) => edge.fromObjectKey))].sort();
+}
+
+function statesByKind(objects: LibraryObjectSummary[], kind: LibraryObjectSummary["objectKind"]): unknown[] {
+  return objects.filter((object) => object.objectKind === kind).map((object) => ({ id: object.objectKey, ...object.state }));
+}
+
+function statesByPolicyKind(objects: LibraryObjectSummary[], policyKind: string): unknown[] {
+  return objects
+    .filter((object) => object.objectKind === "policy_bundle" && stringValue(object.state.policyKind) === policyKind)
+    .map((object) => ({ id: object.objectKey, ...object.state }));
+}
+
+function roleFromAgentObject(object: LibraryObjectSummary): RoleDefinition | null {
+  const runtimeRole = asRecord(object.state.runtimeRole);
+  if (Object.keys(runtimeRole).length === 0) return null;
+  return runtimeRole as RoleDefinition;
+}
+
+function agentProfileFromObject(object: LibraryObjectSummary): AgentProfile | null {
+  const profile = asRecord(object.state.agentProfile);
+  const runtimeProfile = asRecord(object.state.runtimeProfile);
+  const candidate = Object.keys(profile).length > 0
+    ? profile
+    : Object.keys(runtimeProfile).length > 0
+      ? runtimeProfile
+      : object.state;
+  if (!stringValue(candidate.id)) return null;
+  return candidate as AgentProfile;
 }
 
 function buildSelectionReasons(

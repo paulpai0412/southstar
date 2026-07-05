@@ -4,10 +4,12 @@ import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } 
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 
 test("agent library exposes roles profiles skills mcp tools contracts and evaluators", async () => {
   const db = await createTestPostgresDb();
   try {
+    await seedSoftwareLibraryGraph(db);
     const model = await buildAgentLibraryReadModelPg(db, { domain: "software" });
     assert.equal(model.domain, "software");
     assert.ok(model.roles.length > 0);
@@ -27,6 +29,7 @@ test("agent library exposes roles profiles skills mcp tools contracts and evalua
 test("agent library candidates exposes selected refs and alternatives for a task", async () => {
   const db = await createTestPostgresDb();
   try {
+    await seedSoftwareLibraryGraph(db);
     await upsertRuntimeResourcePg(db, {
       resourceType: "planner_draft",
       resourceKey: "draft-agent-library",
@@ -56,6 +59,7 @@ test("agent library candidates exposes selected refs and alternatives for a task
 test("agent library routes expose /api/v2/agent-library and /api/v2/agent-library/candidates", async () => {
   const db = await createTestPostgresDb();
   try {
+    await seedSoftwareLibraryGraph(db);
     const draftId = "draft-agent-library-routes";
     await upsertRuntimeResourcePg(db, {
       resourceType: "planner_draft",

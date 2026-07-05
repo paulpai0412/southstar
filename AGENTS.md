@@ -49,6 +49,9 @@ npm --prefix web run build
 - Southstar runtime server on `http://127.0.0.1:3100`.
 - Next.js web UI on `http://127.0.0.1:30141`.
 
+Long local Pi SDK workflow composition can be given more time with
+`SOUTHSTAR_PI_PLANNER_TIMEOUT_MS`, for example `600000` for ten minutes.
+
 The web lifecycle prefers `SOUTHSTAR_WEB_APP_DIR` when set, then `~/apps/southstar/web`, then `./web`. In this repo the intended app is `web/`.
 
 Do not run `test:e2e:*`, `test:live`, or host/GitHub/Tork live scripts as routine verification unless the task explicitly calls for real infrastructure and credentials.
@@ -69,7 +72,8 @@ Important directories:
 - `src/v2/manifests/` - `SouthstarWorkflowManifest` types, validation, and revision utilities.
 - `src/v2/orchestration/` - prompt-to-workflow orchestration and library-constrained workflow composition.
 - `src/v2/design-library/` - reusable workflow templates, recipes, validators, and library objects.
-- Library authoring uses local files under `library/` plus the Postgres design library graph. Do not add new active library content by hardcoding `software-library-seed.ts`; use the Library file/import/sync path. `software-library-seed.ts` remains only for migration/test/demo bootstrap.
+- Library authoring uses local files under `library/` plus the Postgres design library graph. Do not add active library content by hardcoding seed files; use the Library file/import/sync path. The old `software-library-seed.ts` and software domain pack runtime path have been removed from `src/v2`.
+- Production workflow composition uses `composerMode: "llm"` only. Do not add `fixture` or `llm-with-fixture-fallback` modes back into runtime routes or `src/v2/orchestration/`; deterministic composers belong in `tests/v2/fixtures/` and must seed explicit graph primitives.
 - `src/v2/executor/` - Tork provider, callbacks, bindings, reconciliation, and provider recovery actions.
 - `src/v2/hands/` - hand providers that materialize workflow tasks into Tork/Pi-agent executions.
 - `src/v2/session/` and `src/v2/session-recovery/` - durable session history, checkpoints, and recovery controller.
@@ -120,6 +124,7 @@ Workflow creation is library-constrained:
 - `ui-api/postgres-run-api.ts` persists planner drafts and creates runs.
 
 Generated manifests are not execution truth until validated and persisted.
+The active composer registry fails closed unless an LLM workflow composer is configured. There is no production fixture fallback; tests should inject test-only composers directly and should not depend on `software-library-seed.ts` as runtime planner behavior.
 
 ### 3.1 Library Authoring And Dynamic Profiles
 
@@ -135,6 +140,14 @@ workflow DAG save -> generated profiles/template -> version refs -> graph sync
 Agents and skills are Markdown files with YAML frontmatter. Tools, MCP grants, generated profiles, and saved workflow templates are YAML. The browser edits files through Library APIs; runtime planning and execution read the Postgres graph.
 
 Workflow generation can use approved independent primitives rather than requiring a hand-authored `agent_profile`. Candidate resolution exposes approved agent, skill, tool, MCP, and instruction primitives; the composer may propose generated node profiles; validators ensure selected primitives exist, are graph-backed, and satisfy skill/tool/MCP constraints before compilation.
+
+Each generated DAG task must carry a typed `nodePromptSpec`. This is the
+worker-facing per-node prompt contract and includes `nodeType` (`plan`,
+`implement`, `verify`, `repair`, `review`, `summary`, or `general`),
+requirements, boundaries, deliverable documents, expected outputs, test cases,
+acceptance criteria, and type-specific checks. The compiler writes it into task
+`promptInputs`; managed context renders it into the TaskEnvelope prompt and
+`context-packet.json`.
 
 `POST /api/v2/workflow/drafts/:draftId/save-template` writes generated profile files plus a workflow template file. Saved workflow templates must include `libraryVersionRefs` derived from selected graph objects' `headVersionId` values. Missing graph objects or missing version refs should fail before files are written.
 
@@ -188,6 +201,12 @@ scheduler
 ```
 
 Callbacks do not bypass persistence. They append history, update task/run snapshots, write resources/artifacts, and feed completion/recovery gates.
+
+Accepted task artifacts are stored as `artifact_ref` runtime resources backed by
+JSON bodies in `artifact_blobs`. Direct downstream tasks receive accepted
+upstream artifact content through managed context `priorArtifacts`, so verifier,
+repair, review, and summary nodes can inspect producer output instead of relying
+only on summaries.
 
 ### 7. Recovery And Operator Control
 

@@ -50,6 +50,7 @@ The runtime reads configuration from environment variables:
 - `SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL`
 - `SOUTHSTAR_REQUIRE_DOCKER`
 - `PI_PLANNER_ENDPOINT`
+- `SOUTHSTAR_PI_PLANNER_TIMEOUT_MS` for local Pi SDK planner/composer calls; default `180000`
 - `CODEX_CLI_PATH`
 - `SOUTHSTAR_WEB_APP_DIR` for the web app directory
 
@@ -122,13 +123,25 @@ goal prompt
   -> workflow run
 ```
 
+The active composer mode is `llm`. The runtime no longer exposes a production
+deterministic fixture composer or `llm-with-fixture-fallback` mode. Tests that
+need deterministic plans use tests-only fixtures under `tests/v2/fixtures/` and
+seed explicit graph primitives; production workflow generation must use the
+Postgres library graph and LLM-generated node agent profiles.
+
+Each composed DAG task carries a typed `nodePromptSpec`. This is the worker-facing
+prompt contract for that node: `nodeType` (`plan`, `implement`, `verify`,
+`repair`, `review`, `summary`, or `general`), requirements, boundaries,
+deliverable documents, expected outputs, test cases, acceptance criteria, and
+type-specific checks. The compiler stores it under task `promptInputs`, and
+managed context renders it into the TaskEnvelope prompt and `context-packet.json`.
+
 Relevant code:
 
 - `src/v2/orchestration/*`
 - `src/v2/design-library/*`
 - `src/v2/manifests/*`
 - `src/v2/ui-api/postgres-run-api.ts`
-- `src/v2/workflow-generator/*`
 
 ### Run And Task Execution
 
@@ -143,9 +156,16 @@ workflow_runs(status=created)
   -> Tork hand execution
   -> southstar-agent-runner
   -> heartbeat/callback
+  -> artifact_ref + artifact_blob
+  -> downstream node priorArtifacts
   -> history/resources/task snapshots
   -> completion or recovery gate
 ```
+
+Task callbacks persist artifact refs and JSON artifact bodies. Direct downstream
+tasks receive accepted upstream artifact content through managed context
+`priorArtifacts`, so verifier, repair, review, and summary nodes can inspect
+producer output rather than relying on summaries only.
 
 Relevant code:
 

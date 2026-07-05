@@ -3,7 +3,7 @@ import test from "node:test";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { findLibraryEdgesFrom } from "../../src/v2/design-library/library-graph-store.ts";
 import type { LibraryEdgeType } from "../../src/v2/design-library/types.ts";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import { analyzeRequirementDeterministically } from "../../src/v2/orchestration/requirement-analyzer.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";

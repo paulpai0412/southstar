@@ -5,6 +5,7 @@ import { buildOperatorOverviewReadModelPg } from "../../src/v2/read-models/opera
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 test("operator task debug route returns task detail, descending task history, resources, artifact refs, and actions", async () => {
@@ -138,9 +139,11 @@ test("operator task debug route returns task detail, descending task history, re
 test("run creation preserves planner draft cwd and operator overview exposes cwd and projectRoot", async () => {
   const db = await createTestPostgresDb();
   try {
+    await seedDeterministicWorkflowGraph(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with cwd",
       cwd: "/home/timmypai/apps/customer-todo-web",
+      composer: new DeterministicFixtureComposer(),
     });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     const row = await db.one<{ runtime_context_json: { cwd?: string; projectRoot?: string } }>(

@@ -1,7 +1,5 @@
 import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { softwareVaultLeasePolicies } from "../design-library/software-library-seed.ts";
-import { softwareDomainPack } from "../domain-packs/software.ts";
 
 type WorkflowUiInput = {
   draftId?: string;
@@ -211,10 +209,11 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
     domain,
     nodes,
     workflowTasks,
+    workflowManifest: run.workflow_manifest_json,
   });
   const runtimeContext = asRecord(run.runtime_context_json);
   const runtimeDraftId = stringValue(runtimeContext.draftId);
-  const librarySummary = agentLibrarySummary(domain);
+  const librarySummary = agentLibrarySummary(domain, run.workflow_manifest_json);
 
   return {
     activeDraft: null,
@@ -312,8 +311,8 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
       nodes,
       edges,
     },
-    selectedDefinition: selectedTask ? taskDefinitionSummary(selectedTask, domain) : null,
-    agentLibrarySummary: agentLibrarySummary(domain),
+    selectedDefinition: selectedTask ? taskDefinitionSummary(selectedTask, domain, workflow) : null,
+    agentLibrarySummary: agentLibrarySummary(domain, workflow),
     validationIssues: issues,
     repairAttempts: repairAttemptCount(payload.repairAttempts ?? summary.repairAttempts),
     repairAttemptDetails: repairDetails,
@@ -356,6 +355,7 @@ async function runtimeSelectedDefinition(
     domain: string;
     nodes: WorkflowCanvasNode[];
     workflowTasks: DraftTaskShape[];
+    workflowManifest: unknown;
   },
 ): Promise<WorkflowTaskDefinitionSummary | null> {
   if (!input.selectedTaskId) return null;
@@ -376,6 +376,7 @@ async function runtimeSelectedDefinition(
     evaluatorPipelineRef: workflowTask?.evaluatorPipelineRef,
     contextPolicyRef: workflowTask?.contextPolicyRef,
     vaultLeasePolicyRefs: workflowTask?.vaultLeasePolicyRefs ?? [],
+    workflowManifest: input.workflowManifest,
   });
 
   return {
@@ -563,28 +564,29 @@ function isReadyStatus(status: string | null | undefined): boolean {
   return ["ready", "queued", "pending"].includes((status ?? "").toLowerCase());
 }
 
-function agentLibrarySummary(domain: string): WorkflowUiReadModel["agentLibrarySummary"] {
+function agentLibrarySummary(domain: string, workflowManifest: unknown): WorkflowUiReadModel["agentLibrarySummary"] {
   const skillIds = new Set<string>();
   const mcpIds = new Set<string>();
   const toolIds = new Set<string>();
-  for (const profile of softwareDomainPack.agentProfiles) {
-    for (const ref of profile.skillRefs) skillIds.add(ref);
-    for (const ref of profile.mcpGrantRefs) mcpIds.add(ref);
-    for (const tool of profile.toolPolicy.allowedTools) toolIds.add(tool);
+  const profiles = workflowArray<Record<string, unknown>>(workflowManifest, "agentProfiles");
+  for (const profile of profiles) {
+    for (const ref of stringArray(profile.skillRefs)) skillIds.add(ref);
+    for (const ref of stringArray(profile.mcpGrantRefs)) mcpIds.add(ref);
+    for (const tool of stringArray(asRecord(profile.toolPolicy).allowedTools)) toolIds.add(tool);
   }
   return {
     domain,
-    roleCount: softwareDomainPack.roles.length,
-    agentProfileCount: softwareDomainPack.agentProfiles.length,
+    roleCount: workflowArray(workflowManifest, "roles").length,
+    agentProfileCount: profiles.length,
     skillCount: skillIds.size,
     mcpServerCount: mcpIds.size,
     toolCount: toolIds.size,
-    artifactContractCount: softwareDomainPack.artifactContracts.length,
-    evaluatorPipelineCount: softwareDomainPack.evaluatorPipelines.length,
+    artifactContractCount: workflowArray(workflowManifest, "artifactContracts").length,
+    evaluatorPipelineCount: workflowArray(workflowManifest, "evaluatorPipelines").length,
   };
 }
 
-function taskDefinitionSummary(task: DraftTaskShape, domain: string): WorkflowTaskDefinitionSummary {
+function taskDefinitionSummary(task: DraftTaskShape, domain: string, workflowManifest: unknown): WorkflowTaskDefinitionSummary {
   const libraryDetails = libraryDefinitionDetails({
     domain,
     roleRef: task.roleRef,
@@ -594,6 +596,7 @@ function taskDefinitionSummary(task: DraftTaskShape, domain: string): WorkflowTa
     evaluatorPipelineRef: task.evaluatorPipelineRef,
     contextPolicyRef: task.contextPolicyRef,
     vaultLeasePolicyRefs: task.vaultLeasePolicyRefs,
+    workflowManifest,
   });
   const effectiveProfile = effectiveProfileForDraftTask(task, libraryDetails.agentProfile);
   return {
@@ -629,30 +632,33 @@ function libraryDefinitionDetails(input: {
   evaluatorPipelineRef?: string | null;
   contextPolicyRef?: string | null;
   vaultLeasePolicyRefs: string[];
+  workflowManifest: unknown;
 }): Partial<WorkflowTaskDefinitionSummary> {
-  if (input.domain !== "software") return {};
-  const roleDefinition = input.roleRef ? softwareDomainPack.roles.find((role) => role.id === input.roleRef) : undefined;
+  const roles = workflowArray<Record<string, unknown>>(input.workflowManifest, "roles");
+  const profiles = workflowArray<Record<string, unknown>>(input.workflowManifest, "agentProfiles");
+  const artifactContracts = workflowArray<Record<string, unknown>>(input.workflowManifest, "artifactContracts");
+  const evaluatorPipelines = workflowArray<Record<string, unknown>>(input.workflowManifest, "evaluatorPipelines");
+  const contextPolicies = workflowArray<Record<string, unknown>>(input.workflowManifest, "contextPolicies");
+  const roleDefinition = input.roleRef ? roles.find((role) => stringValue(role.id) === input.roleRef) : undefined;
   const agentProfile = input.agentProfileRef
-    ? softwareDomainPack.agentProfiles.find((profile) => profile.id === input.agentProfileRef)
+    ? profiles.find((profile) => stringValue(profile.id) === input.agentProfileRef)
     : undefined;
   const artifactContractRef = input.artifactContractRef
-    ?? (input.artifactKind && softwareDomainPack.artifactContracts.some((contract) => contract.id === input.artifactKind)
+    ?? (input.artifactKind && artifactContracts.some((contract) => stringValue(contract.id) === input.artifactKind)
       ? input.artifactKind
       : undefined)
-    ?? roleDefinition?.artifactOutputs[0];
+    ?? stringArray(roleDefinition?.artifactOutputs)[0];
   const artifactContract = artifactContractRef
-    ? softwareDomainPack.artifactContracts.find((contract) => contract.id === artifactContractRef)
+    ? artifactContracts.find((contract) => stringValue(contract.id) === artifactContractRef)
     : undefined;
   const evaluatorPipeline = input.evaluatorPipelineRef
-    ? softwareDomainPack.evaluatorPipelines.find((pipeline) => pipeline.id === input.evaluatorPipelineRef)
-    : evaluatorPipelineForArtifact(artifactContractRef);
-  const contextPolicyRef = input.contextPolicyRef ?? agentProfile?.contextPolicyRef;
+    ? evaluatorPipelines.find((pipeline) => stringValue(pipeline.id) === input.evaluatorPipelineRef)
+    : evaluatorPipelineForArtifact(evaluatorPipelines, artifactContractRef);
+  const contextPolicyRef = input.contextPolicyRef ?? stringValue(agentProfile?.contextPolicyRef);
   const contextPolicy = contextPolicyRef
-    ? softwareDomainPack.contextPolicies.find((policy) => policy.id === contextPolicyRef)
+    ? contextPolicies.find((policy) => stringValue(policy.id) === contextPolicyRef)
     : undefined;
-  const vaultPolicies = input.vaultLeasePolicyRefs
-    .map((ref) => softwareVaultLeasePolicies.find((policy) => policy.id === ref))
-    .filter((policy): policy is NonNullable<typeof policy> => Boolean(policy));
+  const vaultPolicies = input.vaultLeasePolicyRefs.map((id) => ({ id }));
 
   return {
     ...(roleDefinition ? { roleDefinition } : {}),
@@ -665,10 +671,12 @@ function libraryDefinitionDetails(input: {
   };
 }
 
-function evaluatorPipelineForArtifact(artifactContractRef: string | undefined): unknown {
+function evaluatorPipelineForArtifact(evaluatorPipelines: Array<Record<string, unknown>>, artifactContractRef: string | undefined): unknown {
   if (!artifactContractRef) return undefined;
-  return softwareDomainPack.evaluatorPipelines.find((pipeline) => pipeline.evaluators.some((evaluator) => (
-    stringValue(evaluator.config.artifactRef) === artifactContractRef
+  return evaluatorPipelines.find((pipeline) => stringArray(pipeline.artifactContracts).includes(artifactContractRef)
+    || stringArray(pipeline.validatesArtifactRefs).includes(artifactContractRef)
+    || objectArray(pipeline.evaluators).some((evaluator) => (
+      stringValue(asRecord(evaluator.config).artifactRef) === artifactContractRef
   )));
 }
 
@@ -874,6 +882,16 @@ function stringValue(value: unknown): string | undefined {
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function objectArray(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.map(asRecord).filter((item) => Object.keys(item).length > 0);
+}
+
+function workflowArray<T>(workflowManifest: unknown, key: string): T[] {
+  const value = asRecord(workflowManifest)[key];
+  return Array.isArray(value) ? value as T[] : [];
 }
 
 function optionalStringArray(value: unknown): string[] | undefined {

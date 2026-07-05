@@ -1,5 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { AgentProvider, PlannerDraftTaskProfileOverride } from "../domain-packs/types.ts";
+import type { AgentProvider, PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 
 const allowedProviders = new Set<AgentProvider>(["pi", "codex", "claude-code", "openai", "anthropic", "custom"]);

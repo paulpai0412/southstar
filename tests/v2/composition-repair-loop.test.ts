@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
-import type { WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
+import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { runCompositionRepairLoop } from "../../src/v2/orchestration/composition-repair-loop.ts";
@@ -26,10 +26,10 @@ test("composition repair loop retries once and returns valid composition", async
       scope: "software",
       maxRepairAttempts: 1,
     });
-    assert.equal(result.validation.ok, true);
+    assert.equal(result.validation.ok, true, JSON.stringify(result.validation.issues, null, 2));
     assert.equal(result.attempts.length, 2);
     assert.equal(result.attempts[0]?.validation.ok, false);
-    assert.equal(result.composition.tasks[0]?.agentProfileRef, "profile.software-explorer-codex");
+    assert.equal(result.composition.tasks[0]?.agentProfileRef, "profile.generated.understand-repo");
   } finally {
     await db.close();
   }
@@ -61,7 +61,7 @@ test("composition repair loop retry prompt includes previous composition JSON an
     const retryPrompt = prompts[1] ?? "";
     const firstIssueCode = result.attempts[0]?.validation.issues[0]?.code ?? "";
 
-    assert.equal(result.validation.ok, true);
+    assert.equal(result.validation.ok, true, JSON.stringify(result.validation.issues, null, 2));
     assert.equal(prompts.length, 2);
     assert.match(retryPrompt, /Previous composition JSON:/);
     assert.match(retryPrompt, /Latest validation issues:/);
@@ -106,12 +106,12 @@ test("composition repair loop retries when composer output violates schema contr
       scope: "software",
       maxRepairAttempts: 1,
     });
-    assert.equal(result.validation.ok, true);
+    assert.equal(result.validation.ok, true, JSON.stringify(result.validation.issues, null, 2));
     assert.equal(result.attempts.length, 2);
     assert.equal(result.attempts[0]?.validation.ok, false);
     assert.equal(result.attempts[0]?.validation.issues[0]?.code, "composer_output_schema_violation");
     assert.equal(result.attempts[0]?.composition, undefined);
-    assert.equal(result.composition?.tasks[0]?.agentProfileRef, "profile.software-explorer-codex");
+    assert.equal(result.composition?.tasks[0]?.agentProfileRef, "profile.generated.understand-repo");
     assert.equal(prompts.length, 2);
     assert.match(prompts[1] ?? "", /Latest validation issues:/);
     assert.match(prompts[1] ?? "", /composer_output_schema_violation/);
@@ -127,7 +127,7 @@ function invalidPlan(): WorkflowCompositionPlan {
     title: "Invalid Plan",
     selectedWorkflowTemplateRef: "template.software-feature",
     rationale: "invalid explorer profile should trigger repair",
-    tasks: buildPlanTasks("profile.software-maker-pi"),
+    tasks: buildPlanTasks({ firstProfileRef: "profile.software-maker-pi", generatedProfiles: false }),
     rejectedCandidates: [],
     generatedComponentProposals: [],
   };
@@ -139,19 +139,19 @@ function validPlan(): WorkflowCompositionPlan {
     title: "Valid Plan",
     selectedWorkflowTemplateRef: "template.software-feature",
     rationale: "valid software feature workflow with code quality review",
-    tasks: buildPlanTasks("profile.software-explorer-codex"),
+    tasks: buildPlanTasks({ generatedProfiles: true }),
     rejectedCandidates: [],
-    generatedComponentProposals: [],
+    generatedComponentProposals: generatedProfileProposals(),
   };
 }
 
-function buildPlanTasks(explorerProfileRef: string): WorkflowCompositionTask[] {
+function buildPlanTasks(input: { firstProfileRef?: string; generatedProfiles: boolean }): WorkflowCompositionTask[] {
   return [
     task(
       "understand-repo",
       [],
       "agent.software-explorer",
-      explorerProfileRef,
+      input.firstProfileRef ?? profileRefForTask("understand-repo", input.generatedProfiles, "profile.software-explorer-codex"),
       ["skill.software-repo-discovery"],
       ["tool.workspace-read"],
       ["instruction.software-explorer"],
@@ -162,7 +162,7 @@ function buildPlanTasks(explorerProfileRef: string): WorkflowCompositionTask[] {
       "review-spec",
       ["understand-repo"],
       "agent.software-spec-reviewer",
-      "profile.software-spec-reviewer-codex",
+      profileRefForTask("review-spec", input.generatedProfiles, "profile.software-spec-reviewer-codex"),
       ["skill.software-spec-review"],
       ["tool.workspace-read"],
       ["instruction.software-spec-reviewer"],
@@ -173,7 +173,7 @@ function buildPlanTasks(explorerProfileRef: string): WorkflowCompositionTask[] {
       "implement-feature",
       ["review-spec"],
       "agent.software-maker",
-      "profile.software-maker-pi",
+      profileRefForTask("implement-feature", input.generatedProfiles, "profile.software-maker-pi"),
       ["skill.software-implementation"],
       ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
       ["instruction.software-maker"],
@@ -184,7 +184,7 @@ function buildPlanTasks(explorerProfileRef: string): WorkflowCompositionTask[] {
       "verify-feature",
       ["implement-feature"],
       "agent.software-checker",
-      "profile.software-checker-codex",
+      profileRefForTask("verify-feature", input.generatedProfiles, "profile.software-checker-codex"),
       ["skill.software-verification"],
       ["tool.workspace-read", "tool.shell-command"],
       ["instruction.software-checker"],
@@ -195,7 +195,7 @@ function buildPlanTasks(explorerProfileRef: string): WorkflowCompositionTask[] {
       "review-code-quality",
       ["implement-feature"],
       "agent.software-code-quality-reviewer",
-      "profile.software-code-quality-reviewer-codex",
+      profileRefForTask("review-code-quality", input.generatedProfiles, "profile.software-code-quality-reviewer-codex"),
       ["skill.software-code-quality-review"],
       ["tool.workspace-read", "tool.shell-command"],
       ["instruction.software-code-quality-reviewer"],
@@ -206,7 +206,7 @@ function buildPlanTasks(explorerProfileRef: string): WorkflowCompositionTask[] {
       "summarize-completion",
       ["verify-feature", "review-code-quality"],
       "agent.software-summarizer",
-      "profile.software-summarizer-codex",
+      profileRefForTask("summarize-completion", input.generatedProfiles, "profile.software-summarizer-codex"),
       ["skill.software-summary"],
       ["tool.workspace-read"],
       ["instruction.software-summarizer"],
@@ -214,6 +214,82 @@ function buildPlanTasks(explorerProfileRef: string): WorkflowCompositionTask[] {
       "evaluator.software-completion-quality",
     ),
   ];
+}
+
+function profileRefForTask(taskId: string, generatedProfiles: boolean, storedProfileRef: string): string {
+  return generatedProfiles ? `profile.generated.${taskId}` : storedProfileRef;
+}
+
+function generatedProfileProposals(): WorkflowCompositionPlan["generatedComponentProposals"] {
+  return [
+    generatedProfile("profile.generated.understand-repo", "Inspect the repository and produce a scoped implementation plan.", ["tool.workspace-read"]),
+    generatedProfile("profile.generated.review-spec", "Review the implementation plan for missing requirements and risk.", ["tool.workspace-read"]),
+    generatedProfile(
+      "profile.generated.implement-feature",
+      "Implement the requested feature using approved workspace tools and produce implementation evidence.",
+      ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"],
+      ["mcp.filesystem-workspace"],
+    ),
+    generatedProfile("profile.generated.verify-feature", "Verify the implementation behavior and test evidence.", ["tool.workspace-read", "tool.shell-command"]),
+    generatedProfile("profile.generated.review-code-quality", "Review maintainability, style, and regression risk.", ["tool.workspace-read", "tool.shell-command"]),
+    generatedProfile("profile.generated.summarize-completion", "Summarize completed work, verification, and follow-up notes.", ["tool.workspace-read"]),
+  ];
+}
+
+function generatedProfile(
+  id: string,
+  instruction: string,
+  allowedTools: string[],
+  mcpGrantRefs: string[] = [],
+): WorkflowCompositionPlan["generatedComponentProposals"][number] {
+  return {
+    id,
+    kind: "agent_profile",
+    risk: "medium",
+    reason: "Generated from graph-backed primitive candidates.",
+    validationStatus: "validated",
+    agentProfile: generatedAgentProfile(instruction, allowedTools, mcpGrantRefs),
+  };
+}
+
+function generatedAgentProfile(
+  instruction: string,
+  allowedTools: string[],
+  mcpGrantRefs: string[],
+): GeneratedAgentProfile {
+  return {
+    workerKind: "execution_worker",
+    provider: "pi",
+    model: "pi-agent-default",
+    thinkingLevel: "high",
+    harnessRef: "pi",
+    instruction,
+    promptTemplateRef: "graph-generated",
+    contextPolicyRef: "context.generated",
+    sessionPolicyRef: "session.generated",
+    memoryScopes: [],
+    agentsMdRefs: [],
+    vaultLeasePolicyRefs: [],
+    toolPolicy: {
+      allowedTools,
+      deniedTools: [],
+      requiresApprovalFor: [],
+    },
+    budgetPolicy: {
+      maxInputTokens: 120000,
+      maxOutputTokens: 8192,
+      maxWallTimeSeconds: 900,
+    },
+    execution: {
+      engine: "tork",
+      image: "southstar/pi-agent:local",
+      command: ["southstar-agent-runner"],
+      env: {},
+      mounts: [],
+      timeoutSeconds: 900,
+      infraRetry: { maxAttempts: 1 },
+    },
+  };
 }
 
 function task(
@@ -227,6 +303,7 @@ function task(
   outputArtifactRefs: string[],
   evaluatorProfileRef: string,
 ): WorkflowCompositionTask {
+  const mcpGrantRefs = id === "implement-feature" ? ["mcp.filesystem-workspace"] : [];
   return {
     id,
     name: id,
@@ -238,7 +315,7 @@ function task(
     instructionRefs,
     skillRefs,
     toolGrantRefs,
-    mcpGrantRefs: [],
+    mcpGrantRefs,
     vaultLeasePolicyRefs: [],
     inputArtifactRefs: [],
     outputArtifactRefs,

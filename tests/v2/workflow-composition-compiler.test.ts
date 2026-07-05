@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { seedSoftwareLibraryGraph } from "../../src/v2/design-library/software-library-seed.ts";
+import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
-import { DeterministicFixtureComposer } from "../../src/v2/orchestration/composer.ts";
+import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { analyzeRequirementDeterministically } from "../../src/v2/orchestration/requirement-analyzer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -39,13 +39,22 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
 
     const makerTask = compiled.workflow.tasks.find((task) => task.id === "implement-feature");
     assert.ok(makerTask, "implement-feature task should exist");
-    assert.equal(makerTask.agentProfileRef, "software-maker-pi");
-    assert.deepEqual(makerTask.instructionRefs, ["instruction.software-maker"]);
-    assert.deepEqual(makerTask.toolGrantRefs, ["tool.workspace-read", "tool.workspace-write", "tool.shell-command"]);
+    assert.equal(makerTask.agentProfileRef, "profile.generated.software-implement-feature");
+    assert.deepEqual(makerTask.instructionRefs, []);
+    assert.deepEqual(makerTask.toolGrantRefs, []);
+    assert.deepEqual((makerTask.promptInputs?.nodePromptSpec as { expectedOutputs?: string[] })?.expectedOutputs, [
+      "artifact.implementation_report",
+    ]);
+    assert.match(
+      JSON.stringify(makerTask.promptInputs?.nodePromptSpec),
+      /Implement Feature/,
+    );
 
     assert.equal(compiled.orchestrationSnapshot.validation.ok, true);
     assert.equal(
-      compiled.orchestrationSnapshot.candidateSummary.agentProfileRefs.includes("profile.software-maker-pi"),
+      compiled.orchestrationSnapshot.selectedCompositionPlan.generatedComponentProposals.some((proposal) =>
+        proposal.id === "profile.generated.software-implement-feature"
+      ),
       true,
     );
   } finally {
@@ -73,15 +82,17 @@ test("compiler resolves runtime role/profile definitions for deterministic fixtu
 
     const reviewSpec = compiled.workflow.tasks.find((task) => task.id === "review-spec");
     assert.ok(reviewSpec, "review-spec task should exist");
-    assert.equal(reviewSpec.agentProfileRef, "software-spec-reviewer-codex");
+    assert.equal(reviewSpec.agentProfileRef, "profile.generated.software-review-spec");
 
     const reviewCodeQuality = compiled.workflow.tasks.find((task) => task.id === "review-code-quality");
     assert.ok(reviewCodeQuality, "review-code-quality task should exist");
-    assert.equal(reviewCodeQuality.agentProfileRef, "software-code-quality-reviewer-codex");
+    assert.equal(reviewCodeQuality.agentProfileRef, "profile.generated.software-review-code-quality");
 
     assert.equal(compiled.workflow.roles?.some((role) => role.id === "spec-reviewer"), true);
     assert.equal(
-      compiled.workflow.agentProfiles?.some((profile) => profile.id === "software-spec-reviewer-codex"),
+      compiled.workflow.agentProfiles?.some((profile) =>
+        profile.id === "profile.generated.software-review-spec" && profile.model === "pi-agent-default"
+      ),
       true,
     );
   } finally {
@@ -100,10 +111,10 @@ test("compiler snapshot freezes only selected library version refs", async () =>
       candidatePacket,
     });
 
-    const explorerSkills = candidatePacket.skillCandidatesByProfile["profile.software-explorer-codex"] ?? [];
-    assert.ok(explorerSkills.length > 0, "expected explorer profile to have skill candidates");
-    const selectedExplorerSkillVersionRef = explorerSkills[0]?.versionRef;
-    assert.ok(selectedExplorerSkillVersionRef, "expected explorer skill candidate to include a versionRef");
+    const selectedAgentVersionRef = candidatePacket.graphMetadataCandidates?.nodes.find((node) =>
+      node.ref === "agent.software-explorer"
+    )?.versionRef;
+    assert.ok(selectedAgentVersionRef, "expected explorer agent candidate to include a versionRef");
 
     const inflatedPacket = {
       ...candidatePacket,
@@ -115,14 +126,18 @@ test("compiler snapshot freezes only selected library version refs", async () =>
           versionRef: "template.unused@v1",
         },
       ],
-      skillCandidatesByProfile: {
-        ...candidatePacket.skillCandidatesByProfile,
-        "profile.software-explorer-codex": [
-          ...explorerSkills,
+      graphMetadataCandidates: {
+        ...candidatePacket.graphMetadataCandidates!,
+        nodes: [
+          ...candidatePacket.graphMetadataCandidates!.nodes,
           {
-            ...explorerSkills[0],
-            ref: "skill.unused",
-            versionRef: "skill.unused@v1",
+            ref: "agent.unused",
+            kind: "agent_definition",
+            status: "approved",
+            versionRef: "agent.unused@v1",
+            scope: "software",
+            title: "Unused Agent",
+            aliases: [],
           },
         ],
       },
@@ -140,11 +155,11 @@ test("compiler snapshot freezes only selected library version refs", async () =>
       true,
     );
     assert.equal(
-      compiled.orchestrationSnapshot.compiler.libraryVersionRefs.includes(selectedExplorerSkillVersionRef),
+      compiled.orchestrationSnapshot.compiler.libraryVersionRefs.includes(selectedAgentVersionRef),
       true,
     );
     assert.equal(compiled.orchestrationSnapshot.compiler.libraryVersionRefs.includes("template.unused@v1"), false);
-    assert.equal(compiled.orchestrationSnapshot.compiler.libraryVersionRefs.includes("skill.unused@v1"), false);
+    assert.equal(compiled.orchestrationSnapshot.compiler.libraryVersionRefs.includes("agent.unused@v1"), false);
   } finally {
     await db.close();
   }

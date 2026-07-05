@@ -359,6 +359,7 @@ export type WorkflowCompositionTask = {
   id: string;
   name: string;
   responsibility: string;
+  nodePromptSpec?: WorkflowNodePromptSpec;
   dependsOn: string[];
   templateSlotRef: string;
   agentDefinitionRef: string;
@@ -375,6 +376,52 @@ export type WorkflowCompositionTask = {
   workspacePolicyRef?: string;
   recoveryStrategyRefs: string[];
   rationale: string;
+};
+
+export type WorkflowNodePromptSpec = {
+  nodeType: WorkflowNodePromptType;
+  goal: string;
+  requirements: string[];
+  boundaries: string[];
+  nonGoals: string[];
+  deliverableDocuments: WorkflowNodeDeliverableDocument[];
+  expectedOutputs: string[];
+  testCases: WorkflowNodePromptTestCase[];
+  acceptanceCriteria: string[];
+  failureReportContract?: string;
+  planningQuestions?: string[];
+  decisionCriteria?: string[];
+  planArtifactContract?: string;
+  implementationScope?: string[];
+  filesLikelyToTouch?: string[];
+  verificationChecks?: string[];
+  failureArtifactContract?: string;
+  repairInputs?: string[];
+  mustPreserve?: string[];
+  reverificationChecks?: string[];
+  reviewChecklist?: string[];
+  riskCriteria?: string[];
+  summarySections?: string[];
+  handoffCriteria?: string[];
+};
+
+export type WorkflowNodeDeliverableDocument = {
+  kind: "design" | "implementation" | "test" | "acceptance" | "verification" | "summary" | "handoff" | "other";
+  title: string;
+  required: boolean;
+  format: "markdown" | "json" | "file" | "inline";
+  description: string;
+};
+
+export type WorkflowNodePromptType = "plan" | "implement" | "verify" | "repair" | "review" | "summary" | "general";
+
+export type WorkflowNodePromptTestCase = {
+  name: string;
+  command?: string;
+  expected: string;
+  given?: string;
+  when?: string;
+  then?: string;
 };
 
 export type WorkflowCompositionPlan = {
