@@ -29,7 +29,7 @@ const KIND_OPTIONS = [
 ];
 
 const STATUS_OPTIONS = ["draft", "approved", "deprecated", "blocked"];
-const EDGE_TYPE_OPTIONS = [
+const EDGE_TYPE_OPTIONS = uniqueOptions([
   "implements",
   "provides_capability",
   "requires_capability",
@@ -66,7 +66,7 @@ const EDGE_TYPE_OPTIONS = [
   "incompatible_with",
   "requires_approval",
   "requires_secret",
-];
+]);
 
 export function LibraryGraphBlock({
   data,
@@ -222,4 +222,8 @@ function isGraphEdge(value: unknown): value is LibraryGraphChartEdge {
   if (!value || typeof value !== "object") return false;
   const edge = value as { fromObjectKey?: unknown; toObjectKey?: unknown };
   return typeof edge.fromObjectKey === "string" && typeof edge.toObjectKey === "string";
+}
+
+function uniqueOptions(values: string[]): string[] {
+  return Array.from(new Set(values));
 }

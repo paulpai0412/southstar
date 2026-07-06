@@ -133,6 +133,31 @@ test("LibraryGraphBlock renders an expanded collapsible message block with zoom 
   });
 });
 
+test("LibraryGraphBlock renders unique edge filter options", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryGraphBlock } from "./web/components/library/LibraryGraphBlock";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryGraphBlock
+        defaultScope="all"
+        data={{
+          activeScope: "all",
+          availableScopes: ["all"],
+          nodes: [],
+          edges: [],
+        }}
+      />
+    );
+  `, async (page) => {
+    const values = await page.locator('[data-testid="library-graph-edge-filter"] option').evaluateAll((options) => (
+      options.map((option) => (option as HTMLOptionElement).value)
+    ));
+    assert.deepEqual(values, Array.from(new Set(values)), "edge filter option values must be unique");
+  }, routeEmptyLibraryGraph);
+});
+
 test("LibraryGraphChart emits selected node events for file viewer integration", async () => {
   await withBrowserHarness(`
     import React from "react";
@@ -170,6 +195,23 @@ test("LibraryGraphChart emits selected node events for file viewer integration",
     assert.equal(await page.evaluate(() => (window as any).__selectedGraphNode), "agent.frontend-developer");
   });
 });
+
+async function routeEmptyLibraryGraph(page: Page): Promise<void> {
+  await page.route("**/api/library/graph**", async (route) => {
+    await route.fulfill({
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true,
+        result: {
+          activeScope: "all",
+          availableScopes: ["all"],
+          nodes: [],
+          edges: [],
+        },
+      }),
+    });
+  });
+}
 
 test("LibraryGraphChart lets users drag graph nodes and keeps them selectable", async () => {
   await withBrowserHarness(`

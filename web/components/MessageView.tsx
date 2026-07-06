@@ -3,6 +3,10 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { MarkdownBody } from "./MarkdownBody";
 import { WorkflowDagBlock } from "./WorkflowDagBlock";
+import { LibraryCandidateMessageBlock } from "./library/LibraryCandidateMessageBlock";
+import { LibraryGraphBlock } from "./library/LibraryGraphBlock";
+import { runLibraryCandidateInstallCommand } from "@/lib/library/chat-stream";
+import type { LibraryImportCandidate, LibraryImportProposedEdge } from "@/lib/library/types";
 import type {
   AgentMessage,
   UserMessage,
@@ -17,7 +21,8 @@ import type {
   WorkflowDagContent,
   WorkflowDagCustomDetails,
 } from "@/lib/types";
-import type { WorkflowDagNode } from "@/lib/workflow/types";
+import { buildWorkflowDagFromPlannerDraft, type V2PlannerDraftOrchestrationView } from "@/lib/workflow/v2-library-adapter";
+import type { WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
 
 interface Props {
   message: AgentMessage;
@@ -527,7 +532,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} />;
   }
   return null;
 }
@@ -588,9 +593,29 @@ function ThinkingBlock({ block, duration }: { block: ThinkingContent; duration?:
 }
 
 
-function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; result?: ToolResultMessage; duration?: number }) {
+function ToolCallBlock({
+  block,
+  result,
+  duration,
+  workflowCwd,
+  onWorkflowDagNodeSelect,
+}: {
+  block: ToolCallContent;
+  result?: ToolResultMessage;
+  duration?: number;
+  workflowCwd?: string | null;
+  onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const inputStr = JSON.stringify(block.input, null, 2);
+  const southstarBlock = result ? (
+    <SouthstarToolResultBlock
+      toolCall={block}
+      result={result}
+      workflowCwd={workflowCwd}
+      onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
+    />
+  ) : null;
 
   // Result display
   const resultText = result
@@ -641,6 +666,8 @@ function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; re
         </svg>
       </button>
 
+      {southstarBlock}
+
       {/* ── Expanded: input args ── */}
       {expanded && (
         <pre
@@ -670,6 +697,88 @@ function ToolCallBlock({ block, result, duration }: { block: ToolCallContent; re
         />
       )}
     </div>
+  );
+}
+
+function SouthstarToolResultBlock({
+  toolCall,
+  result,
+  workflowCwd,
+  onWorkflowDagNodeSelect,
+}: {
+  toolCall: ToolCallContent;
+  result: ToolResultMessage;
+  workflowCwd?: string | null;
+  onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+}) {
+  const details = readSouthstarToolDetails(result.details);
+  const mcpToolName = details?.mcpToolName;
+  const piToolName = details?.piToolName ?? result.toolName ?? toolCall.toolName;
+  const payload = unwrapStructuredContent(details?.structuredContent);
+
+  if (isLibraryGraphTool(mcpToolName, piToolName) && isLibraryGraphPayload(payload)) {
+    return (
+      <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
+        <LibraryGraphBlock data={payload} defaultScope={typeof payload.activeScope === "string" ? payload.activeScope : "all"} />
+      </div>
+    );
+  }
+
+  if (isLibraryImportTool(mcpToolName, piToolName) && isLibraryImportCandidatePayload(payload)) {
+    return (
+      <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
+        <ChatLibraryCandidateBlock data={payload} />
+      </div>
+    );
+  }
+
+  const workflowDag = workflowDagFromSouthstarToolResult(mcpToolName, piToolName, payload);
+  if (workflowDag) {
+    return (
+      <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
+        <WorkflowDagBlock dag={workflowDag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} />
+      </div>
+    );
+  }
+
+  return null;
+}
+
+function ChatLibraryCandidateBlock({ data }: { data: LibraryImportCandidatePayload }) {
+  const [status, setStatus] = useState<"draft" | "installing" | "installed">("draft");
+  const [installedObjectKeys, setInstalledObjectKeys] = useState<string[]>([]);
+
+  const installCandidates = async (selectedCandidateIds: string[]) => {
+    setStatus("installing");
+    try {
+      await runLibraryCandidateInstallCommand({
+        draftId: data.draftId,
+        selectedCandidateIds,
+        actor: "pi-agent",
+        reason: "Installed from Southstar chat tool result.",
+        onFrame(frame) {
+          if (frame.event === "library.command.completed" || frame.event === "library.db.synced") {
+            setStatus("installed");
+            setInstalledObjectKeys(selectedCandidateIds);
+          }
+        },
+      });
+      setStatus("installed");
+      setInstalledObjectKeys(selectedCandidateIds);
+    } catch {
+      setStatus("draft");
+    }
+  };
+
+  return (
+    <LibraryCandidateMessageBlock
+      draftId={data.draftId}
+      candidates={data.candidates}
+      proposedEdges={data.proposedEdges}
+      status={status}
+      installedObjectKeys={installedObjectKeys}
+      onInstall={(selectedCandidateIds) => void installCandidates(selectedCandidateIds)}
+    />
   );
 }
 
@@ -705,6 +814,159 @@ function PairedResult({ text, isEmpty, isError }: {
       </pre>
     </div>
   );
+}
+
+type SouthstarToolDetails = {
+  mcpToolName?: string;
+  piToolName?: string;
+  structuredContent?: unknown;
+};
+
+type LibraryGraphPayload = Record<string, unknown> & {
+  activeScope?: string;
+  nodes: unknown[];
+  edges: unknown[];
+};
+
+type LibraryImportCandidatePayload = {
+  draftId: string;
+  candidates: LibraryImportCandidate[];
+  proposedEdges?: LibraryImportProposedEdge[];
+};
+
+function readSouthstarToolDetails(value: unknown): SouthstarToolDetails | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const mcpToolName = typeof record.mcpToolName === "string" ? record.mcpToolName : undefined;
+  const piToolName = typeof record.piToolName === "string" ? record.piToolName : undefined;
+  if (!mcpToolName && !piToolName && record.structuredContent === undefined) return null;
+  return { mcpToolName, piToolName, structuredContent: record.structuredContent };
+}
+
+function unwrapStructuredContent(value: unknown): Record<string, unknown> | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  const result = asRecord(record.result);
+  return result ?? record;
+}
+
+function isLibraryGraphTool(mcpToolName: string | undefined, piToolName: string | undefined): boolean {
+  return mcpToolName === "southstar.library.get_graph" || piToolName === "southstar_library_get_graph";
+}
+
+function isLibraryImportTool(mcpToolName: string | undefined, piToolName: string | undefined): boolean {
+  return mcpToolName === "southstar.library.import_from_source" || piToolName === "southstar_library_import_from_source";
+}
+
+function isWorkflowTool(mcpToolName: string | undefined, piToolName: string | undefined): boolean {
+  return Boolean(
+    mcpToolName?.startsWith("southstar.workflow.")
+    || piToolName?.startsWith("southstar_workflow_"),
+  );
+}
+
+function isLibraryGraphPayload(value: Record<string, unknown> | null): value is LibraryGraphPayload {
+  return Boolean(value && Array.isArray(value.nodes) && Array.isArray(value.edges));
+}
+
+function isLibraryImportCandidatePayload(value: Record<string, unknown> | null): value is LibraryImportCandidatePayload {
+  if (!value || typeof value.draftId !== "string" || !Array.isArray(value.candidates)) return false;
+  const candidates = value.candidates.map(toLibraryImportCandidate);
+  if (candidates.some((candidate) => candidate === null)) return false;
+  value.candidates = candidates;
+  return value.proposedEdges === undefined || (Array.isArray(value.proposedEdges) && value.proposedEdges.every(isLibraryImportProposedEdge));
+}
+
+function toLibraryImportCandidate(value: unknown): LibraryImportCandidate | null {
+  const record = asRecord(value);
+  if (
+    !record
+    || typeof record.objectKey !== "string"
+    || (record.kind !== "agent" && record.kind !== "skill" && record.kind !== "mcp" && record.kind !== "tool")
+    || typeof record.title !== "string"
+    || typeof record.scope !== "string"
+  ) {
+    return null;
+  }
+  return {
+    objectKey: record.objectKey,
+    kind: record.kind,
+    title: record.title,
+    scope: record.scope,
+    ...(typeof record.domain === "string" ? { domain: record.domain } : {}),
+    ...(typeof record.displayDomain === "string" ? { displayDomain: record.displayDomain } : {}),
+    ...(typeof record.classificationReason === "string" ? { classificationReason: record.classificationReason } : {}),
+    ...(typeof record.sourcePath === "string" ? { sourcePath: record.sourcePath } : {}),
+    selectedByDefault: typeof record.selectedByDefault === "boolean" ? record.selectedByDefault : true,
+    ...(typeof record.confidence === "number" ? { confidence: record.confidence } : {}),
+  };
+}
+
+function isLibraryImportProposedEdge(value: unknown): value is LibraryImportProposedEdge {
+  const record = asRecord(value);
+  return Boolean(
+    record
+    && typeof record.fromObjectKey === "string"
+    && typeof record.edgeType === "string"
+    && typeof record.toObjectKey === "string"
+    && typeof record.confidence === "number"
+  );
+}
+
+function workflowDagFromSouthstarToolResult(
+  mcpToolName: string | undefined,
+  piToolName: string | undefined,
+  payload: Record<string, unknown> | null,
+): WorkflowDag | null {
+  if (!isWorkflowTool(mcpToolName, piToolName) || !payload) return null;
+  const draft = asPlannerDraft(payload) ?? asPlannerDraft(asRecord(payload.draft)) ?? asPlannerDraft(asRecord(payload.orchestration));
+  if (!draft) return null;
+  return buildWorkflowDagFromPlannerDraft(draft);
+}
+
+function asPlannerDraft(value: unknown): V2PlannerDraftOrchestrationView | null {
+  const record = asRecord(value);
+  if (!record) return null;
+  if (
+    typeof record.draftId !== "string"
+    || typeof record.goalPrompt !== "string"
+    || typeof record.workflowId !== "string"
+    || typeof record.status !== "string"
+    || !Array.isArray(record.validationIssues)
+    || !Array.isArray(record.taskSummaries)
+  ) {
+    return null;
+  }
+  const taskSummaries = record.taskSummaries.filter(isPlannerDraftTaskSummary);
+  if (taskSummaries.length === 0) return null;
+  return {
+    draftId: record.draftId,
+    goalPrompt: record.goalPrompt,
+    workflowId: record.workflowId,
+    status: record.status,
+    validationIssues: record.validationIssues.filter(isPlannerDraftValidationIssue),
+    taskSummaries,
+  };
+}
+
+function isPlannerDraftTaskSummary(value: unknown): value is V2PlannerDraftOrchestrationView["taskSummaries"][number] {
+  const record = asRecord(value);
+  return Boolean(
+    record
+    && typeof record.taskId === "string"
+    && typeof record.taskName === "string"
+    && Array.isArray(record.dependsOn)
+    && record.dependsOn.every((dependency) => typeof dependency === "string")
+  );
+}
+
+function isPlannerDraftValidationIssue(value: unknown): value is V2PlannerDraftOrchestrationView["validationIssues"][number] {
+  const record = asRecord(value);
+  return Boolean(record && typeof record.path === "string" && typeof record.message === "string");
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
 function CustomMessageView({ message, workflowCwd, onWorkflowDagNodeSelect }: { message: CustomMessage; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void }) {
