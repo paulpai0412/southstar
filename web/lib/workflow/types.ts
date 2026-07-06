@@ -17,9 +17,16 @@ export interface WorkflowTemplateSummary {
   domainId: string;
   title: string;
   description: string;
+  nodes: WorkflowTemplateNodeSummary[];
   agentRefs: string[];
   stageRefs: string[];
   status: "draft" | "approved";
+}
+
+export interface WorkflowTemplateNodeSummary {
+  id: string;
+  title: string;
+  profileRef?: string;
 }
 
 export interface WorkflowAgentSummary {

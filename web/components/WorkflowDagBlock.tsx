@@ -64,16 +64,19 @@ export function WorkflowDagBlock({
   async function saveTemplate() {
     const draftId = state.draft?.draftId ?? dag.draftId;
     if (!draftId) return;
+    const defaultTitle = dag.templateTitle?.trim() || "Saved Workflow Template";
+    const title = window.prompt("Workflow template name", defaultTitle)?.trim();
+    if (!title) return;
     setSaveTemplateStatus({ phase: "saving", message: "Saving..." });
     try {
-      const request = buildWorkflowTemplateSaveRequest({ draftId, dag });
+      const request = buildWorkflowTemplateSaveRequest({ draftId, dag, title });
       const response = await fetch(request.url, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(request.body),
       });
       if (!response.ok) throw new Error(await response.text());
-      setSaveTemplateStatus({ phase: "saved", message: "Template saved" });
+      setSaveTemplateStatus({ phase: "saved", message: `Template saved: ${title}` });
     } catch (error) {
       setSaveTemplateStatus({ phase: "error", message: error instanceof Error ? error.message : String(error) });
     }

@@ -204,6 +204,16 @@ export function AppShell() {
     chatInputRef.current?.insertText("`" + relativePath + "`");
   }, []);
 
+  const handleWorkflowTemplateMention = useCallback((template: WorkflowTemplateSummary) => {
+    setSelectedWorkflowTemplate(template);
+    setAppMode("workflow");
+    requestAnimationFrame(() => {
+      workflowChatInputRef.current?.insertText(
+        `@workflow-template ${template.title} (${template.id})\n請引用此 workflow template 生成新的 workflow DAG 及 Agent profile：`,
+      );
+    });
+  }, []);
+
   const handleAppModeChange = useCallback((mode: AppMode) => {
     setAppMode(mode);
     if (mode === "chat") setChatWorkspaceSurface("chat");
@@ -736,6 +746,7 @@ export function AppShell() {
           selectedTemplateId={selectedWorkflowTemplate?.id ?? null}
           onSessionSelect={handleSelectWorkflowSession}
           onTemplateSelect={setSelectedWorkflowTemplate}
+          onTemplateMention={handleWorkflowTemplateMention}
           onOpenResource={handleOpenWorkflowResource}
           onCwdChange={handleCwdChange}
           onNewSession={handleWorkflowSidebarNewSession}

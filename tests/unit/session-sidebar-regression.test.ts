@@ -34,3 +34,10 @@ test("chat session sidebar reuses cached chat sessions when remounted for the sa
   assert.match(sidebar, /setCachedSessions/);
   assert.match(sidebar, /kind=chat/);
 });
+
+test("sessions route defaults omitted kind requests to chat sessions", () => {
+  const route = source("web/app/api/sessions/route.ts");
+
+  assert.match(route, /function sessionKindFromQuery\(value: string \| null\): SessionKind/);
+  assert.match(route, /return value === "workflow" \? "workflow" : "chat";/);
+});

@@ -25,6 +25,6 @@ export async function GET(req: Request) {
   }
 }
 
-function sessionKindFromQuery(value: string | null): SessionKind | null {
-  return value === "chat" || value === "workflow" ? value : null;
+function sessionKindFromQuery(value: string | null): SessionKind {
+  return value === "workflow" ? "workflow" : "chat";
 }

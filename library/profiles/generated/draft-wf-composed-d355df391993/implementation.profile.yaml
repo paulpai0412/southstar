@@ -1,0 +1,18 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.draft-wf-composed-d355df391993.implementation"
+title: "Implementation"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-senior-developer"
+skillRefs:
+  - "skill.mattpocock.implement"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-write"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.draft-wf-composed-d355df391993"
+  nodeId: "implementation"

@@ -13,6 +13,7 @@ interface Props {
   selectedTemplateId: string | null;
   onSessionSelect: (session: SessionInfo) => void;
   onTemplateSelect: (template: WorkflowTemplateSummary) => void;
+  onTemplateMention?: (template: WorkflowTemplateSummary) => void;
   onOpenResource: (resourcePath: string, label: string) => void;
   onCwdChange?: (cwd: string | null) => void;
   onNewSession?: () => void;
@@ -25,6 +26,7 @@ export function WorkflowSidebar({
   selectedTemplateId,
   onSessionSelect,
   onTemplateSelect,
+  onTemplateMention,
   onOpenResource,
   onCwdChange,
   onNewSession,
@@ -412,6 +414,7 @@ export function WorkflowSidebar({
                           isOpen={isOpen}
                           onToggle={toggle}
                           onTemplateSelect={onTemplateSelect}
+                          onTemplateMention={onTemplateMention}
                           onOpenResource={onOpenResource}
                         />
                       ))}
@@ -609,6 +612,7 @@ function WorkflowTemplateTree({
   isOpen,
   onToggle,
   onTemplateSelect,
+  onTemplateMention,
   onOpenResource,
 }: {
   template: WorkflowTemplateSummary;
@@ -617,18 +621,22 @@ function WorkflowTemplateTree({
   isOpen: (key: string) => boolean;
   onToggle: (key: string) => void;
   onTemplateSelect: (template: WorkflowTemplateSummary) => void;
+  onTemplateMention?: (template: WorkflowTemplateSummary) => void;
   onOpenResource: (resourcePath: string, label: string) => void;
 }) {
+  const [mentionVisible, setMentionVisible] = useState(false);
   const templateKey = `template:${template.id}`;
+  const nodesKey = `${templateKey}:nodes`;
   const agentsKey = `${templateKey}:agents`;
   const templateAgents = agents.filter((agent) => template.agentRefs.includes(agent.id));
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => {
-          onTemplateSelect(template);
-          onToggle(templateKey);
+      <div
+        onMouseEnter={() => setMentionVisible(true)}
+        onMouseLeave={() => setMentionVisible(false)}
+        onFocus={() => setMentionVisible(true)}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMentionVisible(false);
         }}
         style={{
           width: "100%",
@@ -636,26 +644,76 @@ function WorkflowTemplateTree({
           display: "flex",
           alignItems: "center",
           gap: 6,
-          padding: "6px 7px 6px 36px",
-          border: "none",
+          padding: "0 7px 0 36px",
           borderRadius: 6,
           background: selected ? "var(--bg-selected)" : "transparent",
           color: "var(--text)",
-          textAlign: "left",
-          cursor: "pointer",
           fontSize: 12,
         }}
       >
-        <Chevron open={isOpen(templateKey)} />
-        <span style={{ width: 14, display: "flex", alignItems: "center", flexShrink: 0 }}>{getFileIcon("workflow.json", 14)}</span>
-        <span style={{ minWidth: 0, flex: 1 }}>
-          <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{template.title}</span>
-          <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{template.agentRefs.length} agents</span>
-        </span>
-        <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 11 }}>{template.status}</span>
-      </button>
+        <button
+          type="button"
+          onClick={() => {
+            onTemplateSelect(template);
+            onToggle(templateKey);
+          }}
+          style={{
+            minWidth: 0,
+            flex: 1,
+            minHeight: 38,
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            padding: "6px 0",
+            border: "none",
+            background: "transparent",
+            color: "inherit",
+            textAlign: "left",
+            cursor: "pointer",
+            fontSize: 12,
+          }}
+        >
+          <Chevron open={isOpen(templateKey)} />
+          <span style={{ width: 14, display: "flex", alignItems: "center", flexShrink: 0 }}>{getFileIcon("workflow.json", 14)}</span>
+          <span style={{ minWidth: 0, flex: 1 }}>
+            <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{template.title}</span>
+            <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{template.nodes.length || template.stageRefs.length} nodes</span>
+          </span>
+          <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 11 }}>{template.status}</span>
+        </button>
+        {onTemplateMention ? (
+          <button
+            type="button"
+            data-testid="workflow-template-mention-button"
+            title="Mention workflow template in chat"
+            aria-label={`Mention ${template.title}`}
+            onClick={() => onTemplateMention(template)}
+            tabIndex={mentionVisible ? 0 : -1}
+            style={{
+              width: 24,
+              height: 24,
+              flexShrink: 0,
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              background: "var(--bg-panel)",
+              color: "var(--accent)",
+              cursor: "pointer",
+              fontSize: 13,
+              fontWeight: 700,
+              lineHeight: 1,
+              visibility: mentionVisible ? "visible" : "hidden",
+            }}
+          >
+            @
+          </button>
+        ) : null}
+      </div>
       {isOpen(templateKey) && (
         <>
+          <TreeFolderRow label="nodes" depth={3} open={isOpen(nodesKey)} onToggle={() => onToggle(nodesKey)} />
+          {isOpen(nodesKey) && template.nodes.map((node) => (
+            <TemplateNodeRow key={`${template.id}:${node.id}`} node={node} depth={4} />
+          ))}
           <TreeFolderRow label="agents" depth={3} open={isOpen(agentsKey)} onToggle={() => onToggle(agentsKey)} />
           {isOpen(agentsKey) && templateAgents.map((agent, index) => (
             <AgentTree
@@ -669,6 +727,36 @@ function WorkflowTemplateTree({
           ))}
         </>
       )}
+    </div>
+  );
+}
+
+function TemplateNodeRow({
+  node,
+  depth,
+}: {
+  node: WorkflowTemplateSummary["nodes"][number];
+  depth: number;
+}) {
+  return (
+    <div
+      title={`${node.title} (${node.id})`}
+      style={{
+        minHeight: 24,
+        display: "flex",
+        alignItems: "center",
+        gap: 4,
+        paddingLeft: 8 + depth * 14,
+        paddingRight: 8,
+        color: "var(--text)",
+        fontSize: 12,
+      }}
+    >
+      <span style={{ width: 14, flexShrink: 0, color: "var(--text-dim)", fontFamily: "var(--font-mono)", fontSize: 10 }}>N</span>
+      <span style={{ minWidth: 0, flex: 1 }}>
+        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.title}</span>
+        <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--text-dim)", fontSize: 10 }}>{node.id}</span>
+      </span>
     </div>
   );
 }

@@ -14,13 +14,15 @@ export function buildWorkflowTemplateSaveRequest(input: {
   draftId: string;
   dag: WorkflowDag;
   scope?: string;
+  title?: string;
 }): WorkflowTemplateSaveRequest {
+  const title = input.title?.trim() || input.dag.templateTitle || "Saved Workflow Template";
   return {
     url: `/api/workflow/planner-drafts/${encodeURIComponent(input.draftId)}/save-template`,
     body: {
       scope: input.scope ?? "software",
       templateId: `template.${toTemplateSlug(input.dag.id ?? input.draftId)}`,
-      title: input.dag.templateTitle ?? "Saved Workflow Template",
+      title,
       status: "approved",
     },
   };

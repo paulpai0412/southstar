@@ -170,6 +170,7 @@ test("Workflow DAG block exposes Save Template action for draft DAGs", () => {
   const sourceText = source("web/components/WorkflowDagBlock.tsx");
   assert.match(sourceText, /Save Template/);
   assert.match(sourceText, /save-template/);
+  assert.match(sourceText, /window\.prompt\("Workflow template name"/);
 });
 
 test("workflow template save request uses encoded draft route and server-derived DAG payload", async () => {
@@ -210,6 +211,28 @@ test("workflow template save request uses encoded draft route and server-derived
   });
 });
 
+test("workflow template save request accepts user-entered template titles", async () => {
+  const { buildWorkflowTemplateSaveRequest } = await import("../../web/lib/workflow/template-save.ts");
+  const request = buildWorkflowTemplateSaveRequest({
+    draftId: "draft-1",
+    title: "Guess Number Webapp",
+    dag: {
+      id: "template.software",
+      draftId: "draft-1",
+      templateId: "template.software",
+      templateTitle: "Original Title",
+      prompt: "build game",
+      expandedByDefault: true,
+      readiness: "ready",
+      nodes: [],
+      edges: [],
+      createdAt: "2026-07-02T00:00:00.000Z",
+    },
+  });
+
+  assert.equal(request.body.title, "Guess Number Webapp");
+});
+
 test("Workflow DAG Save Template action surfaces progress and errors", () => {
   const sourceText = source("web/components/WorkflowDagBlock.tsx");
   assert.match(sourceText, /saveTemplateStatus/);
@@ -219,6 +242,14 @@ test("Workflow DAG Save Template action surfaces progress and errors", () => {
   assert.match(sourceText, /catch \(error\)/);
   assert.match(sourceText, /workflow-save-template-status/);
   assert.match(sourceText, /Saving\.\.\./);
+});
+
+test("workflow template mention button is only visible while hovering or focusing the template row", () => {
+  const sourceText = source("web/components/WorkflowSidebar.tsx");
+  assert.match(sourceText, /mentionVisible/);
+  assert.match(sourceText, /onMouseEnter=\{\(\) => setMentionVisible\(true\)\}/);
+  assert.match(sourceText, /onMouseLeave=\{\(\) => setMentionVisible\(false\)\}/);
+  assert.match(sourceText, /visibility:\s*mentionVisible \? "visible" : "hidden"/);
 });
 
 test("workflow lifecycle starts generated planner DAGs as backend drafts", () => {

@@ -55,6 +55,13 @@ const SOFTWARE_DOMAIN: WorkflowDomain = {
       domainId: SOFTWARE_DOMAIN_ID,
       title: "Software Feature Workflow",
       description: "Explorer, planner, maker, checker, and summarizer workflow for software changes.",
+      nodes: [
+        { id: "understand", title: "Understand software change" },
+        { id: "plan", title: "Plan software change" },
+        { id: "implement", title: "Implement software change" },
+        { id: "verify", title: "Verify software change" },
+        { id: "summarize", title: "Summarize software change" },
+      ],
       agentRefs: SOFTWARE_AGENTS.map((agentSummary) => agentSummary.id),
       stageRefs: ["understand", "plan", "implement", "verify", "summarize"],
       status: "approved",

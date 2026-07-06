@@ -1,0 +1,17 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.draft-wf-composed-f10b5f464eaf.frontend-build"
+title: "Frontend implementation"
+scope: "software"
+status: approved
+agentRef: "agent.frontend-developer"
+skillRefs:
+  - "skill.react-ui"
+toolGrantRefs:
+  - "tool.workspace-write"
+mcpGrantRefs:
+  - "mcp.filesystem-workspace"
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.draft-wf-composed-f10b5f464eaf"
+  nodeId: "frontend-build"

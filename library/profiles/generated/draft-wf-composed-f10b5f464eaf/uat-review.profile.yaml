@@ -1,0 +1,18 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.draft-wf-composed-f10b5f464eaf.uat-review"
+title: "UAT validation"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-code-reviewer"
+skillRefs:
+  - "skill.mattpocock.code-review"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-read"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.draft-wf-composed-f10b5f464eaf"
+  nodeId: "uat-review"

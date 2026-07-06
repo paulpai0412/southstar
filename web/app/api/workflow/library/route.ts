@@ -117,6 +117,17 @@ function workflowTemplateFromDetail(domain: string, detail: LibraryObjectDetail)
   if (!object?.objectKey || object.objectKind !== "workflow_template" || object.status !== "approved") return null;
   const state = object.state ?? {};
   const nodes = arrayOfRecords(state.nodes);
+  const templateNodes = nodes
+    .map((node) => {
+      const id = stringValue(node.id);
+      if (!id) return null;
+      return {
+        id,
+        title: stringValue(node.title) ?? id,
+        ...(stringValue(node.profileRef) ? { profileRef: stringValue(node.profileRef) } : {}),
+      };
+    })
+    .filter((node): node is { id: string; title: string; profileRef?: string } => Boolean(node));
   const profileRefs = stringArray(state.profileRefs);
   const stageRefs = nodes.length > 0
     ? nodes.map((node) => stringValue(node.id)).filter((value): value is string => Boolean(value))
@@ -130,6 +141,7 @@ function workflowTemplateFromDetail(domain: string, detail: LibraryObjectDetail)
     domainId: stringValue(state.scope) ?? domain,
     title: stringValue(state.title) ?? object.objectKey,
     description: stringValue(state.description) ?? `Graph-backed workflow template from ${object.objectKey}.`,
+    nodes: templateNodes,
     agentRefs,
     stageRefs,
     status: "approved",

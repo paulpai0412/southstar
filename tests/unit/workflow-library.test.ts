@@ -405,9 +405,13 @@ test("library route reads approved workflow templates from the Postgres graph AP
     "http://127.0.0.1:3000/api/v2/library/objects/profile.generated.english-vocab-feature.plan-english-vocab-feature",
     "http://127.0.0.1:3000/api/v2/library/objects/profile.generated.english-vocab-feature.implement-english-vocab-feature",
   ]);
-  const body = await response.json() as { library: { domains: Array<{ workflowTemplates: Array<{ id: string; stageRefs: string[]; agentRefs: string[] }>; agents: Array<{ id: string; profileResourcePath: string; instructionResourcePath: string; skillResourcePaths: string[]; policyResourcePaths: string[] }> }> } };
+  const body = await response.json() as { library: { domains: Array<{ workflowTemplates: Array<{ id: string; nodes: Array<{ id: string; title: string }>; stageRefs: string[]; agentRefs: string[] }>; agents: Array<{ id: string; profileResourcePath: string; instructionResourcePath: string; skillResourcePaths: string[]; policyResourcePaths: string[] }> }> } };
   const template = body.library.domains[0]?.workflowTemplates[0];
   assert.equal(template?.id, "template.english-vocab-feature");
+  assert.deepEqual(template?.nodes.map((node) => ({ id: node.id, title: node.title })), [
+    { id: "plan-english-vocab-feature", title: "規劃簡易背英文單字功能" },
+    { id: "implement-english-vocab-feature", title: "實作簡易背英文單字功能" },
+  ]);
   assert.deepEqual(template?.stageRefs, ["plan-english-vocab-feature", "implement-english-vocab-feature"]);
   assert.deepEqual(template?.agentRefs, [
     "agent.generated-english-vocab-feature-plan-english-vocab-feature",
