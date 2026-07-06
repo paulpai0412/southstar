@@ -290,11 +290,13 @@ test("Operator task debug clears stale model before fetching another task", () =
 
 test("Operator actions only treat successful POST responses as completed", () => {
   const panel = source("web/components/operator/OperatorActionsPanel.tsx");
-  assert.match(panel, /const method = command\.method \|\| "POST"/);
-  assert.match(panel, /if \(method !== "POST"\) throw new Error/);
-  assert.match(panel, /fetch\("\/api\/operator\/command"/);
-  assert.match(panel, /endpoint: command\.endpoint/);
-  assert.match(panel, /if \(!response\.ok\) throw new Error/);
+  const helper = source("web/lib/operator/invokeCommand.ts");
+  assert.match(panel, /invokeOperatorCommand/);
+  assert.match(helper, /const method = command\.method \|\| "POST"/);
+  assert.match(helper, /if \(method !== "POST"\) throw new Error/);
+  assert.match(helper, /fetch\("\/api\/operator\/command"/);
+  assert.match(helper, /endpoint: command\.endpoint/);
+  assert.match(helper, /if \(!response\.ok\) throw new Error/);
   assert.match(panel, /setActionError/);
   assert.doesNotMatch(panel, /disabled=\{!command\.enabled \|\| pendingCommandId === command\.id \|\| \(requiresReason/);
   assert.match(panel, /setActionError\(`Reason required before running \$\{command\.label\}`\)/);

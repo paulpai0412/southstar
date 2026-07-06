@@ -35,6 +35,7 @@ function readRun(input: unknown): OperatorRun | null {
   const cwd = stringValue(run.cwd);
   const projectRoot = stringValue(run.projectRoot);
   const updatedAt = stringValue(run.updatedAt);
+  const commands = coerceArray(run.commands).map(readCommand).filter((command): command is OperatorCommand => command !== null);
   return {
     runId,
     status: stringValue(run?.status) || "unknown",
@@ -43,6 +44,7 @@ function readRun(input: unknown): OperatorRun | null {
     ...(cwd ? { cwd } : {}),
     ...(projectRoot ? { projectRoot } : {}),
     ...(updatedAt ? { updatedAt } : {}),
+    ...(commands.length ? { commands } : {}),
   };
 }
 

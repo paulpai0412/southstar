@@ -96,6 +96,11 @@ test("Operator sidebar splits running and completed workflow runs", () => {
   assert.match(sidebar, /Completed Workflow Runs/);
   assert.match(sidebar, /emptyLabel="All projects"/);
   assert.match(sidebar, /operator-list-row-compact/);
+  assert.match(sidebar, /RunStatusIcon/);
+  assert.match(sidebar, /operator-run-command-row/);
+  assert.match(sidebar, /run\.pause/);
+  assert.match(sidebar, /run\.cancel/);
+  assert.match(sidebar, /invokeOperatorCommand/);
   assert.match(sidebar, /AlertTriangle/);
   assert.match(sidebar, /operator-run-meta-row/);
   assert.match(sidebar, /operator-run-attention-badge/);
@@ -121,7 +126,16 @@ test("operator actions require reason and show consequence preview", () => {
   const panel = source("web/components/operator/OperatorActionsPanel.tsx");
   assert.match(panel, /Consequence/);
   assert.match(panel, /operator-action-reason/);
+  assert.match(panel, /invokeOperatorCommand/);
   assert.match(panel, /const value = event\.currentTarget\.value/);
   assert.match(panel, /reason\.trim\(\)/);
   assert.match(panel, /Command result/);
+});
+
+test("operator run commands expose pause with active job cancellation", () => {
+  const readModel = source("src/v2/read-models/operator-overview.ts");
+  const normalizer = source("web/lib/operator/normalizers.ts");
+  assert.match(readModel, /commands: runCommands\(run\.id, run\.status\)/);
+  assert.match(readModel, /body: \{ payload: \{ cancelActiveJobs: true \} \}/);
+  assert.match(normalizer, /coerceArray\(run\.commands\)\.map\(readCommand\)/);
 });

@@ -6,6 +6,7 @@ export type OperatorRun = {
   cwd?: string;
   projectRoot?: string;
   updatedAt?: string;
+  commands?: OperatorCommand[];
 };
 
 export type OperatorAttentionItem = {

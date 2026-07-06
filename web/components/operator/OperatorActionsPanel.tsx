@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { invokeOperatorCommand } from "@/lib/operator/invokeCommand";
 import type { OperatorCommand, OperatorCommandResult } from "@/lib/operator/types";
 
 export function OperatorActionsPanel({
@@ -32,32 +33,12 @@ export function OperatorActionsPanel({
     setPendingCommandId(command.id);
     setActionError(null);
     try {
-      const method = command.method || "POST";
-      if (method !== "POST") throw new Error(`${command.label} uses unsupported method ${method}`);
-      const payload = {
-        ...(command.body || {}),
+      await invokeOperatorCommand({
+        command,
         runId,
         taskId,
-        commandId: `ui:${command.id}:${Date.now()}:${crypto.randomUUID()}`,
-        actor: { type: "user", id: "operator-ui" },
-        ...(normalizedReason ? { reason: normalizedReason } : {}),
-      };
-      const response = await fetch("/api/operator/command", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          endpoint: command.endpoint,
-          method,
-          payload,
-        }),
+        reason: normalizedReason,
       });
-      if (!response.ok) throw new Error(`${command.label} failed with ${response.status}`);
-      const result = await response.json() as { result?: { accepted?: unknown; message?: unknown }; accepted?: unknown; message?: unknown };
-      const accepted = typeof result.result?.accepted === "boolean" ? result.result.accepted : result.accepted;
-      if (accepted !== true) {
-        const message = typeof result.result?.message === "string" ? result.result.message : typeof result.message === "string" ? result.message : "command was not accepted";
-        throw new Error(message);
-      }
       onCommandComplete();
     } catch (caught) {
       setActionError(caught instanceof Error ? caught.message : String(caught));

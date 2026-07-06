@@ -68,6 +68,7 @@ type ActiveRun = {
   cwd?: string;
   projectRoot?: string;
   updatedAt: string;
+  commands: OperatorCommand[];
 };
 
 export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
@@ -112,6 +113,7 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
       ...(cwd ? { cwd } : {}),
       ...(projectRoot ? { projectRoot } : {}),
       updatedAt: run.updated_at.toISOString(),
+      commands: runCommands(run.id, run.status),
     };
   });
 
@@ -438,6 +440,7 @@ function runCommands(runId: string, status: string): OperatorCommand[] {
     command("run.pause", "Pause Run", `/api/v2/runs/${encodeURIComponent(runId)}/pause`, {
       enabled: canPause,
       disabledReason: canPause ? undefined : `run cannot pause from status ${status}`,
+      body: { payload: { cancelActiveJobs: true } },
     }),
     command("run.resume", "Resume Run", `/api/v2/runs/${encodeURIComponent(runId)}/resume`, {
       enabled: canResume,
