@@ -54,6 +54,147 @@ test("Chat MessageView renders Southstar library graph tool results as a graph b
   }, routeLibraryGraph);
 });
 
+test("Chat MessageView reports workspace surface intent from Southstar tool results", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { MessageView } from "./web/components/MessageView";
+
+    const surfaces = [];
+    window.__surfaces = surfaces;
+
+    function App() {
+      const libraryMessage = {
+        role: "assistant",
+        model: "gpt-5",
+        provider: "openai",
+        content: [{
+          type: "toolCall",
+          toolCallId: "tool-graph",
+          toolName: "southstar_library_get_graph",
+          input: { scope: "all" },
+        }],
+      };
+      const workflowMessage = {
+        role: "assistant",
+        model: "gpt-5",
+        provider: "openai",
+        content: [{
+          type: "toolCall",
+          toolCallId: "tool-workflow",
+          toolName: "southstar_workflow_create_draft_stream",
+          input: { goalPrompt: "build a vocabulary app" },
+        }],
+      };
+      const toolResults = new Map([
+        ["tool-graph", {
+          role: "toolResult",
+          toolCallId: "tool-graph",
+          toolName: "southstar_library_get_graph",
+          content: [{ type: "text", text: "{}" }],
+          details: {
+            mcpToolName: "southstar.library.get_graph",
+            piToolName: "southstar_library_get_graph",
+            structuredContent: { activeScope: "all", availableScopes: ["all"], nodes: [], edges: [] },
+            eventCount: 0,
+          },
+        }],
+        ["tool-workflow", {
+          role: "toolResult",
+          toolCallId: "tool-workflow",
+          toolName: "southstar_workflow_create_draft_stream",
+          content: [{ type: "text", text: "{}" }],
+          details: {
+            mcpToolName: "southstar.workflow.create_draft_stream",
+            piToolName: "southstar_workflow_create_draft_stream",
+            structuredContent: {
+              draft: {
+                draftId: "draft-wf-1",
+                goalPrompt: "build a vocabulary app",
+                workflowId: "generated-vocabulary-workflow",
+                status: "validated",
+                validationIssues: [],
+                taskSummaries: [{ taskId: "plan", taskName: "Plan", dependsOn: [] }],
+              },
+            },
+            eventCount: 0,
+          },
+        }],
+      ]);
+      return (
+        <>
+          <MessageView message={libraryMessage} toolResults={toolResults} onWorkspaceSurfaceChange={(surface) => surfaces.push(surface)} />
+          <MessageView message={workflowMessage} toolResults={toolResults} onWorkspaceSurfaceChange={(surface) => surfaces.push(surface)} />
+        </>
+      );
+    }
+
+    createRoot(document.getElementById("root")).render(<App />);
+  `, async (page) => {
+    await page.waitForFunction(() => window.__surfaces?.length === 2);
+    const surfaces = await page.evaluate(() => window.__surfaces);
+    assert.deepEqual(surfaces, ["library", "workflow"]);
+  }, routeLibraryGraph);
+});
+
+test("Chat MessageView reports selected library graph nodes for the sidecar", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { MessageView } from "./web/components/MessageView";
+
+    window.__selectedLibraryNodes = [];
+
+    const message = {
+      role: "assistant",
+      model: "gpt-5",
+      provider: "openai",
+      content: [{
+        type: "toolCall",
+        toolCallId: "tool-graph",
+        toolName: "southstar_library_get_graph",
+        input: { scope: "all" },
+      }],
+    };
+    const toolResults = new Map([["tool-graph", {
+      role: "toolResult",
+      toolCallId: "tool-graph",
+      toolName: "southstar_library_get_graph",
+      content: [{ type: "text", text: "{}" }],
+      details: {
+        mcpToolName: "southstar.library.get_graph",
+        piToolName: "southstar_library_get_graph",
+        structuredContent: {
+          activeScope: "all",
+          availableScopes: ["all", "software"],
+          nodes: [{
+            objectKey: "agent.frontend",
+            objectKind: "agent_definition",
+            status: "approved",
+            title: "Frontend Agent",
+            sourcePath: "library/agents/frontend.md",
+          }],
+          edges: [],
+        },
+        eventCount: 0,
+      },
+    }]]);
+
+    createRoot(document.getElementById("root")).render(
+      <MessageView
+        message={message}
+        toolResults={toolResults}
+        onLibraryGraphNodeSelect={(node) => window.__selectedLibraryNodes.push(node.objectKey)}
+      />
+    );
+  `, async (page) => {
+    await page.locator('[data-testid="library-graph-node"]').click();
+    await page.waitForFunction(() => window.__selectedLibraryNodes?.length === 1);
+    const selected = await page.evaluate(() => window.__selectedLibraryNodes);
+    assert.deepEqual(selected, ["agent.frontend"]);
+  }, routeLibraryGraph);
+});
+
 test("Chat MessageView renders Southstar import candidates tool results as an installable candidate block", async () => {
   const installRequests: unknown[] = [];
   await withBrowserHarness(`
@@ -175,6 +316,65 @@ test("Chat MessageView renders Southstar workflow draft tool results as a workfl
   `, async (page) => {
     await page.locator('[data-testid="workflow-dag-block"]').waitFor();
     await assertText(page, '[data-testid="workflow-dag-block"]', "generated-vocabulary-workflow");
+  });
+});
+
+test("Chat MessageView renders Southstar instantiated template tool results as a workflow DAG block", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { MessageView } from "./web/components/MessageView";
+
+    const message = {
+      role: "assistant",
+      model: "gpt-5",
+      provider: "openai",
+      content: [{
+        type: "toolCall",
+        toolCallId: "tool-template",
+        toolName: "southstar_workflow_instantiate_template",
+        input: { templateRef: "template.chat-e2e-software-harness" },
+      }],
+    };
+    const toolResults = new Map([["tool-template", {
+      role: "toolResult",
+      toolCallId: "tool-template",
+      toolName: "southstar_workflow_instantiate_template",
+      content: [{ type: "text", text: "{}" }],
+      details: {
+        mcpToolName: "southstar.workflow.instantiate_template",
+        piToolName: "southstar_workflow_instantiate_template",
+        structuredContent: {
+          templateRef: "template.chat-e2e-software-harness",
+          draftId: "draft-wf-template-1",
+          workflowId: "wf-template-1",
+          status: "validated",
+          validationIssues: [],
+          nodes: [
+            {
+              taskId: "plan-generic-software-harness-template",
+              nodeType: "plan",
+              nodePromptSpec: { nodeType: "plan", goal: "Plan todo alarm feature" },
+              agentProfileRef: "profile.generated.generic-software-harness.plan",
+            },
+            {
+              taskId: "verify-generic-software-harness-template",
+              nodeType: "verify",
+              nodePromptSpec: { nodeType: "verify", goal: "Verify todo alarm feature" },
+              agentProfileRef: "profile.generated.generic-software-harness.verify",
+            },
+          ],
+        },
+        eventCount: 0,
+      },
+    }]]);
+
+    createRoot(document.getElementById("root")).render(<MessageView message={message} toolResults={toolResults} />);
+  `, async (page) => {
+    await page.locator('[data-testid="workflow-dag-block"]').waitFor();
+    await assertText(page, '[data-testid="workflow-dag-block"]', "wf-template-1");
+    await assertText(page, '[data-testid="workflow-dag-block"]', "Plan Generic Software Harness Template");
+    await assertText(page, '[data-testid="workflow-dag-block"]', "Verify Generic Software Harness Template");
   });
 });
 

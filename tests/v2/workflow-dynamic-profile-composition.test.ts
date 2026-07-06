@@ -58,10 +58,9 @@ test("compiler preserves generated profile and primitive refs in the manifest", 
     assert.deepEqual(task.toolGrantRefs, ["tool.workspace-write"]);
     assert.deepEqual(task.mcpGrantRefs, ["mcp.filesystem-workspace"]);
     assert.deepEqual(task.instructionRefs, ["instruction.react-review"]);
-    assert.equal(
-      compiled.workflow.agentProfiles?.some((profile) => profile.id === "profile.generated.todo.implement-ui"),
-      true,
-    );
+    const generatedProfile = compiled.workflow.agentProfiles?.find((profile) => profile.id === "profile.generated.todo.implement-ui");
+    assert.ok(generatedProfile);
+    assert.equal(generatedProfile.workerKind, "execution_worker");
   } finally {
     await db.close();
   }

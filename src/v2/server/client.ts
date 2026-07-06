@@ -146,8 +146,8 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     createPlannerDraft(body: PlannerRequestBody) {
       return post(`${baseUrl}/api/v2/planner/drafts`, body);
     },
-    createPlannerDraftStream(body: PlannerRequestBody & { cwd?: string }, onEvent: RuntimeSseListener) {
-      return postSse(`${baseUrl}/api/v2/planner/drafts/stream`, body, onEvent);
+    createPlannerDraftStream(body: PlannerRequestBody & { cwd?: string }, onEvent: RuntimeSseListener, signal?: AbortSignal) {
+      return postSse(`${baseUrl}/api/v2/planner/drafts/stream`, body, onEvent, signal);
     },
     createRun(body: { draftId: string }) {
       return post(`${baseUrl}/api/v2/runs`, body);
@@ -229,13 +229,13 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
         reason: body.reason,
       });
     },
-    installLibraryImportCandidatesStream(body: LibraryImportInstallRequest, onEvent: RuntimeSseListener) {
+    installLibraryImportCandidatesStream(body: LibraryImportInstallRequest, onEvent: RuntimeSseListener, signal?: AbortSignal) {
       return postSse(`${baseUrl}/api/v2/library/import-drafts/${encodeURIComponent(body.draftId)}/install/stream`, {
         selectedCandidateIds: body.selectedCandidateIds,
         ...(body.selectedEdgeIds !== undefined ? { selectedEdgeIds: body.selectedEdgeIds } : {}),
         ...(body.actor !== undefined ? { actor: body.actor } : {}),
         reason: body.reason,
-      }, onEvent);
+      }, onEvent, signal);
     },
     getLibraryObject(objectKey: string) {
       return get(`${baseUrl}/api/v2/library/objects/${encodeURIComponent(objectKey)}`);
@@ -277,12 +277,12 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
         ...(body.composerMode !== undefined ? { composerMode: body.composerMode } : {}),
       });
     },
-    revisePlannerDraftStream(body: RevisePlannerDraftRequest, onEvent: RuntimeSseListener) {
+    revisePlannerDraftStream(body: RevisePlannerDraftRequest, onEvent: RuntimeSseListener, signal?: AbortSignal) {
       return postSse(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/revise/stream`, {
         prompt: body.prompt,
         ...(body.orchestrationMode !== undefined ? { orchestrationMode: body.orchestrationMode } : {}),
         ...(body.composerMode !== undefined ? { composerMode: body.composerMode } : {}),
-      }, onEvent);
+      }, onEvent, signal);
     },
     saveWorkflowTemplate(body: SaveWorkflowTemplateRequest) {
       return post(`${baseUrl}/api/v2/workflow/drafts/${encodeURIComponent(body.draftId)}/save-template`, {
@@ -416,7 +416,7 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     steerRun(body: { runId: string; message: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/steering`, { message: body.message });
     },
-    streamRunEvents(body: StreamRunEventsRequest, onEvent: RuntimeSseListener) {
+    streamRunEvents(body: StreamRunEventsRequest, onEvent: RuntimeSseListener, signal?: AbortSignal) {
       const query = new URLSearchParams();
       setOptionalQueryNumber(query, "after", body.after);
       setOptionalQueryString(query, "taskId", body.taskId);
@@ -425,7 +425,7 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
       setOptionalQueryNumber(query, "pollMs", body.pollMs);
       setOptionalQueryNumber(query, "heartbeatMs", body.heartbeatMs);
       const suffix = query.toString() ? `?${query.toString()}` : "";
-      return getSse(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/events/stream${suffix}`, onEvent);
+      return getSse(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/events/stream${suffix}`, onEvent, signal);
     },
     voiceCommand(body: { runId: string; transcript: string }) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/voice-command`, { transcript: body.transcript });
@@ -514,13 +514,13 @@ async function get<T = unknown>(url: string): Promise<ApiEnvelope<T>> {
   return readJson(await fetch(url));
 }
 
-async function postSse(url: string, body: unknown, onEvent: RuntimeSseListener): Promise<unknown> {
-  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+async function postSse(url: string, body: unknown, onEvent: RuntimeSseListener, signal?: AbortSignal): Promise<unknown> {
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
   return readSse(response, onEvent);
 }
 
-async function getSse(url: string, onEvent: RuntimeSseListener): Promise<unknown> {
-  return readSse(await fetch(url), onEvent);
+async function getSse(url: string, onEvent: RuntimeSseListener, signal?: AbortSignal): Promise<unknown> {
+  return readSse(await fetch(url, { signal }), onEvent);
 }
 
 async function readSse(response: Response, onEvent: RuntimeSseListener): Promise<unknown> {
@@ -529,6 +529,7 @@ async function readSse(response: Response, onEvent: RuntimeSseListener): Promise
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   const events: RuntimeSseEvent[] = [];
+  let streamError: unknown;
   let buffer = "";
   while (true) {
     const chunk = await reader.read();
@@ -536,14 +537,17 @@ async function readSse(response: Response, onEvent: RuntimeSseListener): Promise
     buffer += decoder.decode(chunk.value, { stream: true });
     buffer = drainSseFrames(buffer, (event) => {
       events.push(event);
+      if (event.event === "error") streamError = event.data;
       onEvent(event);
     });
   }
   buffer += decoder.decode();
   drainSseFrames(`${buffer}\n\n`, (event) => {
     events.push(event);
+    if (event.event === "error") streamError = event.data;
     onEvent(event);
   });
+  if (streamError !== undefined) throw new Error(errorMessageFromSseData(streamError));
   return summarizeSseEvents(events);
 }
 
@@ -583,7 +587,12 @@ function parseSseFrame(frame: string): RuntimeSseEvent | null {
 }
 
 function summarizeSseEvents(events: RuntimeSseEvent[]): Record<string, unknown> {
-  const result: Record<string, unknown> = { eventCount: events.length, events };
+  const sampledEvents = summarizeVisibleSseEvents(events);
+  const result: Record<string, unknown> = {
+    eventCount: events.length,
+    events: sampledEvents,
+    truncatedEvents: events.length > sampledEvents.length,
+  };
   for (const event of events) {
     if (event.event === "draft" && isRecord(event.data) && event.data.draft !== undefined) result.draft = event.data.draft;
     if (event.event === "orchestration" && isRecord(event.data) && event.data.orchestration !== undefined) result.orchestration = event.data.orchestration;
@@ -591,6 +600,42 @@ function summarizeSseEvents(events: RuntimeSseEvent[]): Record<string, unknown> 
     if (event.event === "done") result.done = true;
   }
   return result;
+}
+
+function summarizeVisibleSseEvents(events: RuntimeSseEvent[]): RuntimeSseEvent[] {
+  const nonDeltaEvents = events.filter((event) => event.event !== "message.delta");
+  const deltaText = events
+    .filter((event) => event.event === "message.delta" && isRecord(event.data) && typeof event.data.text === "string")
+    .map((event) => (event.data as { text: string }).text)
+    .join("");
+  const deltaPreview = deltaText.length > 0
+    ? [{
+        event: "message.delta.summary",
+        data: {
+          characterCount: deltaText.length,
+          preview: deltaText.slice(0, 2000),
+          truncated: deltaText.length > 2000,
+        },
+      } satisfies RuntimeSseEvent]
+    : [];
+  const visible = [...nonDeltaEvents, ...deltaPreview];
+  if (visible.length <= 200) return visible;
+  return [
+    ...visible.slice(0, 80),
+    {
+      event: "stream.events.truncated",
+      data: { omitted: visible.length - 120 },
+    },
+    ...visible.slice(-40),
+  ];
+}
+
+function errorMessageFromSseData(data: unknown): string {
+  if (isRecord(data)) {
+    if (typeof data.error === "string" && data.error.trim().length > 0) return data.error;
+    if (typeof data.message === "string" && data.message.trim().length > 0) return data.message;
+  }
+  return typeof data === "string" && data.trim().length > 0 ? data : "Southstar stream failed";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -191,6 +191,43 @@ test("Pi SDK agent harness completes implementation_report fallback fields for u
   });
 });
 
+test("Pi SDK agent harness marks unstructured verification_report as blocking failure", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        listeners.forEach((listener) => listener({
+          type: "agent_end",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: "Looks fine from a quick manual check." }],
+          }],
+        }));
+      },
+    }),
+  });
+
+  const result = await harness.run({ envelope: envelopeV2WithVerificationReport(), attempt: 1 });
+
+  assert.equal(result.artifact.summary, "Looks fine from a quick manual check.");
+  assert.equal(result.artifact.pass, false);
+  assert.equal(result.artifact.safeToSave, false);
+  assert.deepEqual(result.artifact.commandsRun, []);
+  assert.deepEqual(result.artifact.testResults, [{
+    checkId: "pi-sdk-structured-output",
+    command: "pi-sdk-harness",
+    status: "not-verified",
+    gating: "blocking",
+    summary: "Pi SDK response did not include a structured verification report.",
+  }]);
+  assert.deepEqual(result.artifact.risks, ["Pi SDK returned unstructured verification text; runtime must trigger repair before accepting this work."]);
+  assert.deepEqual(result.progress, ["pi-agent returned unstructured text"]);
+});
+
 test("Pi SDK agent harness sends TaskEnvelopeV2 rendered agent prompt", async () => {
   const prompts: string[] = [];
   const listeners: Array<(event: unknown) => void> = [];
@@ -491,6 +528,25 @@ function envelopeV2WithImplementationReport(): TaskEnvelopeV2 {
     artifactType: "implementation-report",
     requiredFields: ["summary", "filesChanged", "commandsRun", "testResults", "risks", "artifactEvidence"],
     evidenceFields: ["filesChanged", "commandsRun", "testResults", "artifactEvidence"],
+  }];
+  return env;
+}
+
+function envelopeV2WithVerificationReport(): TaskEnvelopeV2 {
+  const env = envelopeV2();
+  env.taskId = "verify-feature";
+  env.role = {
+    ...env.role,
+    id: "checker",
+    responsibility: "Verify feature",
+    artifactInputs: ["implementation_report"],
+    artifactOutputs: ["verification_report"],
+  };
+  env.artifactContracts = [{
+    id: "verification_report",
+    artifactType: "verification_report",
+    requiredFields: ["summary"],
+    evidenceFields: ["summary"],
   }];
   return env;
 }

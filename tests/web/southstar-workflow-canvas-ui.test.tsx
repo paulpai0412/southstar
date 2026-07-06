@@ -315,9 +315,22 @@ test("workflow DAG actions hide primary Draft once a backend draft exists", () =
   const block = source("web/components/WorkflowDagBlock.tsx");
   assert.match(block, /\{!draftReady && \(/);
   assert.match(block, /Draft validated/);
-  assert.match(block, /Run Workflow/);
+  assert.match(block, /Create Run/);
+  assert.match(block, /Execute/);
   assert.match(block, /Ready to run:/);
   assert.match(block, /needs validation/);
+});
+
+test("workflow Run and Execute are separate user actions", () => {
+  const hook = source("web/hooks/useWorkflowLifecycle.ts");
+  const block = source("web/components/WorkflowDagBlock.tsx");
+
+  assert.match(hook, /const executeRun = async \(\) =>/);
+  assert.match(hook, /return \{ state, createDraft, validateDraft, runDraft, executeRun, retryExecute \}/);
+  assert.match(block, /data-testid="workflow-action-run"/);
+  assert.match(block, /data-testid="workflow-action-execute"/);
+  assert.match(block, /onClick=\{handleExecute\}/);
+  assert.doesNotMatch(hook, /const runDraft = async \(\) => \{[\s\S]*?\/api\/workflow\/runs\/\$\{encodeURIComponent\(createdRun\.runId\)\}\/execute/);
 });
 
 test("workflow Draft action gives immediate API feedback without native confirm", () => {

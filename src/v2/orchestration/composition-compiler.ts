@@ -615,6 +615,7 @@ function synthesizeGeneratedRuntimeProfile(
     id: profileRef,
     name: titleFromRef(profileRef),
     agentRef: firstTask.agentDefinitionRef,
+    ...(agentProfile?.workerKind ? { workerKind: agentProfile.workerKind } : {}),
     provider,
     model: agentProfile?.model ?? "gpt-5",
     ...(agentProfile?.thinkingLevel ? { thinkingLevel: agentProfile.thinkingLevel } : {}),
@@ -704,6 +705,7 @@ function parseRuntimeProfile(value: unknown, path: string): AgentProfile {
     id: stringAt(record.id, `${path}.id`),
     name: stringAt(record.name, `${path}.name`),
     ...(record.agentRef !== undefined ? { agentRef: stringAt(record.agentRef, `${path}.agentRef`) } : {}),
+    ...(record.workerKind !== undefined ? { workerKind: workerKindAt(record.workerKind, `${path}.workerKind`) } : {}),
     provider,
     ...(record.model !== undefined ? { model: stringAt(record.model, `${path}.model`) } : {}),
     harnessRef: stringAt(record.harnessRef, `${path}.harnessRef`),
@@ -736,6 +738,14 @@ function parseBudgetPolicy(value: unknown, path: string): AgentProfile["budgetPo
     maxCostMicrosUsd: optionalNumberAt(record.maxCostMicrosUsd, `${path}.maxCostMicrosUsd`),
     maxWallTimeSeconds: optionalNumberAt(record.maxWallTimeSeconds, `${path}.maxWallTimeSeconds`),
   };
+}
+
+function workerKindAt(value: unknown, path: string): NonNullable<AgentProfile["workerKind"]> {
+  const workerKind = stringAt(value, path);
+  if (!["execution_worker", "validation_worker", "repair_worker", "review_worker"].includes(workerKind)) {
+    throw new Error(`invalid runtime profile workerKind at ${path}`);
+  }
+  return workerKind as NonNullable<AgentProfile["workerKind"]>;
 }
 
 function stringAt(value: unknown, path: string): string {

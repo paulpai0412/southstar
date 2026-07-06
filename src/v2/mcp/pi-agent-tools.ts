@@ -48,7 +48,7 @@ function toPiTool(
     promptSnippet: `${piToolName}: ${tool.description} (backs Southstar MCP tool ${tool.name}).`,
     promptGuidelines: [
       "Use Southstar tools for Southstar workflow, library, runtime, operator, memory, and template actions.",
-      "Prefer Southstar streaming tools for planner/library/runtime operations that can take noticeable time.",
+      "For workflow draft creation, prefer the non-streaming create_draft tool unless the user explicitly asks for backend progress streaming.",
     ],
     parameters: tool.inputSchema as ToolDefinition["parameters"],
     executionMode: "sequential",
@@ -57,6 +57,7 @@ function toPiTool(
       let eventCount = 0;
       let latestEvent: SouthstarMcpStreamEvent | undefined;
       const result = await registry.callTool(tool.name, params, {
+        signal,
         onEvent(event) {
           eventCount += 1;
           latestEvent = event;

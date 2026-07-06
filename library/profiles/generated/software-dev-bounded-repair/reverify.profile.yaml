@@ -1,0 +1,18 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.software-dev-bounded-repair.reverify"
+title: "Reverify repaired implementation"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-code-reviewer"
+skillRefs:
+  - "skill.mattpocock.code-review"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-read"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.software-dev-bounded-repair"
+  nodeId: "reverify"

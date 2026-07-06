@@ -168,94 +168,109 @@ export async function ingestTaskRunResultPg(
       });
     }
 
+    const effectiveResult = semanticCallbackResult(result);
+
     const artifactRef = await acceptOrRejectArtifactRefPg(tx, {
-      runId: result.runId,
-      taskId: result.taskId,
-      sessionId: result.rootSessionId,
+      runId: effectiveResult.runId,
+      taskId: effectiveResult.taskId,
+      sessionId: effectiveResult.rootSessionId,
       attemptId,
       handExecutionId,
       producer: { actorType: "hand", providerId: "tork" },
-      artifactType: artifactType(result.artifact),
-      status: result.ok ? "accepted" : "rejected",
-      content: result.artifact,
-      contractRefs: [`task:${result.taskId}:completion`],
-      summary: `Callback artifact ${result.taskId}`,
-      failedArtifactRefs: failedArtifactRefIds(result.artifact),
+      artifactType: artifactType(effectiveResult.artifact),
+      status: effectiveResult.ok ? "accepted" : "rejected",
+      content: effectiveResult.artifact,
+      contractRefs: [`task:${effectiveResult.taskId}:completion`],
+      summary: `Callback artifact ${effectiveResult.taskId}`,
+      failedArtifactRefs: failedArtifactRefIds(effectiveResult.artifact),
       evidenceRefs: [],
       evaluatorResultRefs: [],
       sourceEventRefs: [receipt.idempotencyKey],
     });
 
     await appendHistoryEventPg(tx, {
-      runId: result.runId,
-      taskId: result.taskId,
-      sessionId: result.rootSessionId,
+      runId: effectiveResult.runId,
+      taskId: effectiveResult.taskId,
+      sessionId: effectiveResult.rootSessionId,
       eventType: "artifact.created",
       actorType: "orchestrator",
       payload: {
         artifactResourceId: artifactRef.resourceId,
         artifactRefId: artifactRef.artifactRefId,
-        attempts: result.attempts,
-        accepted: result.ok,
+        attempts: effectiveResult.attempts,
+        accepted: effectiveResult.ok,
+        ...(effectiveResult.ok !== result.ok ? { semanticOutcome: "verification_failed" } : {}),
       },
     });
 
     await writeCallbackMemoryPg(tx, {
-      runId: result.runId,
-      taskId: result.taskId,
-      sessionId: result.rootSessionId,
-      ok: result.ok,
-      artifact: result.artifact,
+      runId: effectiveResult.runId,
+      taskId: effectiveResult.taskId,
+      sessionId: effectiveResult.rootSessionId,
+      ok: effectiveResult.ok,
+      artifact: effectiveResult.artifact,
       artifactRefId: artifactRef.artifactRefId,
       artifactResourceId: artifactRef.resourceId,
     });
     await recordCallbackArtifactRepairMarkersPg(tx, {
-      result,
+      result: effectiveResult,
       rejectedArtifactRefId: artifactRef.artifactRefId,
       rejectedArtifactResourceId: artifactRef.resourceId,
     });
 
-    if (result.attemptId) {
-      const bindingId = `executor-${result.runId}-${result.taskId}-${result.attemptId}`;
+    if (effectiveResult.attemptId) {
+      const bindingId = `executor-${effectiveResult.runId}-${effectiveResult.taskId}-${effectiveResult.attemptId}`;
       const binding = await getExecutorBindingPg(tx, bindingId);
       if (binding) {
         await updateExecutorBindingStatusPg(tx, {
           bindingId,
-          status: result.ok ? "completed" : "failed",
+          status: effectiveResult.ok ? "completed" : "failed",
           eventType: "executor.callback_completed",
           payloadPatch: {
-            callbackReceivedAt: result.receivedAt ?? new Date().toISOString(),
-            terminalObservedAt: result.receivedAt ?? new Date().toISOString(),
+            callbackReceivedAt: effectiveResult.receivedAt ?? new Date().toISOString(),
+            terminalObservedAt: effectiveResult.receivedAt ?? new Date().toISOString(),
           },
           eventPayload: {
-            accepted: result.ok,
+            accepted: effectiveResult.ok,
             artifactResourceId: artifactRef.resourceId,
             artifactRefId: artifactRef.artifactRefId,
+            ...(effectiveResult.ok !== result.ok ? { semanticOutcome: "verification_failed" } : {}),
           },
         });
       } else {
         await appendHistoryEventPg(tx, {
-          runId: result.runId,
-          taskId: result.taskId,
-          sessionId: result.rootSessionId,
+          runId: effectiveResult.runId,
+          taskId: effectiveResult.taskId,
+          sessionId: effectiveResult.rootSessionId,
           eventType: "executor.callback_completed",
           actorType: "orchestrator",
-          payload: { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId, legacyBindingMissing: true },
+          payload: {
+            accepted: effectiveResult.ok,
+            artifactResourceId: artifactRef.resourceId,
+            artifactRefId: artifactRef.artifactRefId,
+            legacyBindingMissing: true,
+            ...(effectiveResult.ok !== result.ok ? { semanticOutcome: "verification_failed" } : {}),
+          },
         });
       }
     } else {
       await appendHistoryEventPg(tx, {
-        runId: result.runId,
-        taskId: result.taskId,
-        sessionId: result.rootSessionId,
+        runId: effectiveResult.runId,
+        taskId: effectiveResult.taskId,
+        sessionId: effectiveResult.rootSessionId,
         eventType: "executor.callback_completed",
         actorType: "orchestrator",
-        payload: { accepted: result.ok, artifactResourceId: artifactRef.resourceId, artifactRefId: artifactRef.artifactRefId },
+        payload: {
+          accepted: effectiveResult.ok,
+          artifactResourceId: artifactRef.resourceId,
+          artifactRefId: artifactRef.artifactRefId,
+          ...(effectiveResult.ok !== result.ok ? { semanticOutcome: "verification_failed" } : {}),
+        },
       });
     }
 
     await patchManagedHandExecutionTerminalPg(tx, {
-      result,
+      result: effectiveResult,
       attemptId,
       handExecutionId,
       artifactRefId: artifactRef.artifactRefId,
@@ -264,26 +279,40 @@ export async function ingestTaskRunResultPg(
 
     await tx.query(
       "update southstar.workflow_tasks set status = $1, updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $2 and id = $3",
-      [result.ok ? "completed" : "failed", result.runId, result.taskId],
+      [effectiveResult.ok ? "completed" : "failed", effectiveResult.runId, effectiveResult.taskId],
     );
 
-    const dynamicRepairRevision = result.ok || !options.workflowComposer
+    const dynamicRepairRevision = effectiveResult.ok || !options.workflowComposer
       ? undefined
-      : await maybeApplyDynamicRepairRevisionPg(tx, {
-        runId: result.runId,
-        failedTaskId: result.taskId,
+      : await safeApplyDynamicRepairRevisionPg(tx, {
+        runId: effectiveResult.runId,
+        failedTaskId: effectiveResult.taskId,
         failedArtifactRefId: artifactRef.artifactRefId,
-        failedArtifact: result.artifact,
+        failedArtifact: effectiveResult.artifact,
         workflowComposer: options.workflowComposer,
         maxDynamicRepairRounds: options.maxDynamicRepairRounds,
       });
+    if (!effectiveResult.ok) {
+      await appendHistoryEventPg(tx, {
+        runId: effectiveResult.runId,
+        taskId: effectiveResult.taskId,
+        sessionId: effectiveResult.rootSessionId,
+        eventType: "workflow.dynamic_repair_revision_evaluated",
+        actorType: "orchestrator",
+        idempotencyKey: `${receipt.idempotencyKey}:dynamic-repair-evaluated`,
+        payload: {
+          ...(dynamicRepairRevision ?? { status: "skipped", reason: "workflow-composer-unavailable" }),
+          artifactRefId: artifactRef.artifactRefId,
+        },
+      });
+    }
 
-    const allTasks = await tx.query<{ status: string }>("select status from southstar.workflow_tasks where run_id = $1", [result.runId]);
+    const allTasks = await tx.query<{ status: string }>("select status from southstar.workflow_tasks where run_id = $1", [effectiveResult.runId]);
     if (allTasks.rows.length > 0 && allTasks.rows.every((row) => ["completed", "failed", "cancelled", "lost", "blocked"].includes(row.status))) {
-      const gateResult = await evaluateRunCompletionGatePg(tx, { runId: result.runId });
+      const gateResult = await evaluateRunCompletionGatePg(tx, { runId: effectiveResult.runId });
       if (gateResult.status !== "not_ready") {
         await triggerRunCompletedKnowledgeCardSynthesis(tx, {
-          runId: result.runId,
+          runId: effectiveResult.runId,
           actor: "southstar-evolution",
           reason: "workflow run completed",
         });
@@ -291,12 +320,26 @@ export async function ingestTaskRunResultPg(
     }
 
     return {
-      accepted: result.ok,
+      accepted: effectiveResult.ok,
       artifactResourceId: artifactRef.resourceId,
       artifactRefId: artifactRef.artifactRefId,
       ...(dynamicRepairRevision ? { dynamicRepairRevision } : {}),
     };
   });
+}
+
+async function safeApplyDynamicRepairRevisionPg(
+  db: SouthstarDb,
+  input: Parameters<typeof maybeApplyDynamicRepairRevisionPg>[1],
+): Promise<DynamicRepairRevisionResult> {
+  try {
+    return await maybeApplyDynamicRepairRevisionPg(db, input);
+  } catch (error) {
+    return {
+      status: "skipped",
+      reason: `dynamic-repair-revision-error:${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
 }
 
 async function recordCancelledRunCallbackAuditPg(
@@ -585,7 +628,52 @@ function artifactType(artifact: unknown): string {
   if (artifact && typeof artifact === "object" && typeof (artifact as { kind?: unknown }).kind === "string") {
     return (artifact as { kind: string }).kind;
   }
+  if (verificationReportPayload(artifact)) return "verification_report";
   return "callback_artifact";
+}
+
+function semanticCallbackResult(result: PostgresTaskRunCallbackResult): PostgresTaskRunCallbackResult {
+  if (!result.ok) return result;
+  if (!verificationReportIndicatesFailure(result.artifact)) return result;
+  return { ...result, ok: false };
+}
+
+function verificationReportIndicatesFailure(artifact: unknown): boolean {
+  const report = verificationReportPayload(artifact);
+  if (!report) return false;
+
+  if (report.pass === false || report.safeToSave === false) return true;
+
+  const verdict = nonEmptyString(report.verdict) ?? nonEmptyString(report.status) ?? nonEmptyString(report.outcome);
+  if (verdict && ["failed", "fail", "rejected", "blocked", "not-verified", "not_run", "not-run"].includes(verdict.toLowerCase())) {
+    return true;
+  }
+
+  return [...arrayOfRecords(report.testResults), ...arrayOfRecords(report.tests)].some((entry) => {
+    const status = nonEmptyString(entry.status)?.toLowerCase();
+    if (!status || !["failed", "fail", "blocked", "not-verified", "not_run", "not-run"].includes(status)) return false;
+    const gating = nonEmptyString(entry.gating) ?? nonEmptyString(entry.severity);
+    return !gating || ["blocking", "error", "fatal"].includes(gating.toLowerCase());
+  });
+}
+
+function verificationReportPayload(artifact: unknown): Record<string, unknown> | undefined {
+  const payload = asRecord(artifact);
+  if (payload.kind === "verification_report") return payload;
+  if (looksLikeVerificationReport(payload)) return payload;
+  const direct = asRecord(payload.verification_report);
+  if (Object.keys(direct).length > 0) return direct;
+  const nestedArtifact = asRecord(payload.artifact);
+  const nestedReport = asRecord(nestedArtifact.verification_report);
+  return Object.keys(nestedReport).length > 0 ? nestedReport : undefined;
+}
+
+function looksLikeVerificationReport(payload: Record<string, unknown>): boolean {
+  if (Object.keys(payload).length === 0) return false;
+  if (typeof payload.pass === "boolean" || typeof payload.safeToSave === "boolean") return true;
+  if (Array.isArray(payload.testResults) || Array.isArray(payload.blockingTests)) return true;
+  const verdict = nonEmptyString(payload.verdict) ?? nonEmptyString(payload.outcome);
+  return Boolean(verdict && ["passed", "pass", "failed", "fail", "rejected", "blocked", "not-verified"].includes(verdict.toLowerCase()));
 }
 
 async function duplicateCallbackOutcome(

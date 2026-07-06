@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode } from "@/lib/types";
+import type { AgentMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
 import { MessageView } from "./MessageView";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
@@ -10,6 +10,7 @@ import { useAudio } from "@/hooks/useAudio";
 import { useDragDrop } from "@/hooks/useDragDrop";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
+import type { LibraryGraphChartNode } from "./library/LibraryGraphChart";
 
 interface Props {
   session: SessionInfo | null;
@@ -28,6 +29,8 @@ interface Props {
   workflowTemplate?: WorkflowTemplateSummary | null;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
+  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }
 
 function phaseLabel(phase: AgentPhase): string {
@@ -102,7 +105,7 @@ function Typewriter({ phrases }: { phrases: string[] }) {
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
@@ -423,6 +426,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as import("@/lib/types").AgentMessage & { timestamp?: number }).timestamp : undefined}
                     workflowCwd={workflowCwd}
                     onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
+                    onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
+                    onWorkspaceSurfaceChange={onWorkspaceSurfaceChange}
                   />
                 );
                 if (!isVisible) return view;
@@ -438,7 +443,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             })()}
 
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
             )}
 
             {agentRunning && !streamState.streamingMessage && (

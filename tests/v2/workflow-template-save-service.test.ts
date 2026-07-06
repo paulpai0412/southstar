@@ -37,13 +37,18 @@ test("saves workflow template and generated profile files then syncs draft objec
       }],
       edges: [{ from: "implement-ui", to: "validate-ui" }],
       libraryVersionRefs: ["agent.frontend-developer@test", "skill.react-ui@test"],
+      compositionPlan: savedCompositionPlan() as any,
     });
 
     assert.equal(result.template.relativePath, "templates/saved/todo-webapp.workflow.yaml");
     assert.equal(result.profiles[0]?.relativePath, "profiles/generated/todo-webapp/implement-ui.profile.yaml");
-    assert.match(await readFile(join(root, result.template.relativePath), "utf8"), /profile.generated.todo-webapp.implement-ui/);
+    const templateYaml = await readFile(join(root, result.template.relativePath), "utf8");
+    assert.match(templateYaml, /profile.generated.todo-webapp.implement-ui/);
+    assert.match(templateYaml, /compositionPlanJsonBase64:/);
     assert.match(await readFile(join(root, result.profiles[0]!.relativePath), "utf8"), /agent\.frontend-developer/);
-    assert.equal((await findLibraryObjectByKey(db, "template.todo-webapp"))?.status, "draft");
+    const templateObject = await findLibraryObjectByKey(db, "template.todo-webapp");
+    assert.equal(templateObject?.status, "draft");
+    assert.equal(typeof templateObject?.state.compositionPlanJsonBase64, "string");
     assert.equal((await findLibraryObjectByKey(db, "profile.generated.todo-webapp.implement-ui"))?.status, "draft");
     const profileEdges = await findLibraryEdgesFrom(db, "template.todo-webapp", "part_of_template", { scope: "software" });
     assert.deepEqual(
@@ -55,6 +60,48 @@ test("saves workflow template and generated profile files then syncs draft objec
     await rm(root, { recursive: true, force: true });
   }
 });
+
+function savedCompositionPlan() {
+  return {
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Saved Todo Webapp",
+    selectedWorkflowTemplateRef: "template.todo-webapp",
+    rationale: "Saved reusable template composition.",
+    tasks: [{
+      id: "implement-ui",
+      name: "Implement UI",
+      responsibility: "Implement the UI.",
+      nodePromptSpec: {
+        nodeType: "implement",
+        goal: "Implement UI.",
+        requirements: ["Build UI."],
+        boundaries: [],
+        nonGoals: [],
+        deliverableDocuments: [],
+        expectedOutputs: ["artifact.implementation"],
+        testCases: [],
+        acceptanceCriteria: ["UI exists."],
+        implementationScope: ["UI code."],
+      },
+      dependsOn: [],
+      templateSlotRef: "implement-ui",
+      agentDefinitionRef: "agent.frontend-developer",
+      agentProfileRef: "profile.generated.todo-webapp.implement-ui",
+      instructionRefs: [],
+      skillRefs: ["skill.react-ui"],
+      toolGrantRefs: ["tool.workspace-write"],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: [],
+      outputArtifactRefs: ["artifact.implementation"],
+      evaluatorProfileRef: "evaluator.software-verification-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "Implement UI.",
+    }],
+    rejectedCandidates: [],
+    generatedComponentProposals: [],
+  };
+}
 
 test("quotes YAML scalar-like titles before syncing", async () => {
   const db = await createTestPostgresDb();

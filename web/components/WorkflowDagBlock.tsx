@@ -25,7 +25,7 @@ export function WorkflowDagBlock({
   const [expanded, setExpanded] = useState<boolean>(dag.expandedByDefault);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saveTemplateStatus, setSaveTemplateStatus] = useState<SaveTemplateStatus>({ phase: "idle" });
-  const { state, createDraft, validateDraft, runDraft, retryExecute } = useWorkflowLifecycle(dag, cwd);
+  const { state, createDraft, validateDraft, runDraft, executeRun } = useWorkflowLifecycle(dag, cwd);
   const busy = state.phase === "drafting" || state.phase === "validating" || state.phase === "running" || state.phase === "executing";
   const activeDraftId = state.draft?.draftId ?? dag.draftId;
   const activeRunId = state.run?.runId ?? dag.runId;
@@ -34,7 +34,8 @@ export function WorkflowDagBlock({
   const canRunActiveDraft = state.canRun || Boolean(dag.draftId && (dag.draftStatus === "validated" || dag.readiness === "ready"));
   const saveTemplateBusy = saveTemplateStatus.phase === "saving";
   const validateDisabled = busy || !canValidateActiveDag;
-  const runDisabled = busy || !draftReady || !canRunActiveDraft;
+  const runDisabled = busy || !draftReady || !canRunActiveDraft || Boolean(activeRunId);
+  const executeDisabled = busy || !activeRunId;
   const nodeById = useMemo(() => new Map(dag.nodes.map((node) => [node.id, node])), [dag.nodes]);
   const canvas = useMemo(() => workflowDagToCanvasModel(dag, selectedNodeId), [dag, selectedNodeId]);
 
@@ -47,10 +48,17 @@ export function WorkflowDagBlock({
   };
 
   const handleRun = () => {
-    if (!window.confirm("Validate this planner draft, create workflow run rows, and start execution?")) {
+    if (!window.confirm("Create workflow run rows from this validated planner draft?")) {
       return;
     }
     void runDraft();
+  };
+
+  const handleExecute = () => {
+    if (!window.confirm("Execute this workflow run now?")) {
+      return;
+    }
+    void executeRun();
   };
 
   async function saveTemplate() {
@@ -177,7 +185,16 @@ export function WorkflowDagBlock({
               disabled={runDisabled}
               style={actionButtonStyle(runDisabled)}
             >
-              {canRunActiveDraft ? "Run Workflow" : "Run"}
+              {state.phase === "running" ? "Creating..." : "Create Run"}
+            </button>
+            <button
+              type="button"
+              data-testid="workflow-action-execute"
+              onClick={handleExecute}
+              disabled={executeDisabled}
+              style={actionButtonStyle(executeDisabled)}
+            >
+              {state.phase === "executing" ? "Executing..." : "Execute"}
             </button>
             <button
               type="button"
@@ -215,19 +232,6 @@ export function WorkflowDagBlock({
             >
               {renderLifecycleNotice(state)}
             </div>
-            {state.phase === "run_created" && state.error && state.run?.runId && (
-              <button
-                type="button"
-                data-testid="workflow-execute-retry"
-                onClick={() => {
-                  void retryExecute();
-                }}
-                disabled={busy}
-                style={actionButtonStyle(busy)}
-              >
-                Retry Execute
-              </button>
-            )}
           </div>
           <div
             data-testid="workflow-dag-scroll"

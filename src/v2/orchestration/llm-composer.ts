@@ -388,7 +388,7 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1.",
     "Do not return markdown, comments, prose, or multiple JSON objects.",
     "Do not use alias fields. Use exactly the property names defined in OutputJsonSchema.",
-    "Select refs only from the candidate packet.",
+    "Select refs only from GraphMetadataCandidates and CandidatePacketSummary.",
     "Do not output runtime manifests, secrets, credentials, tool grant definitions, MCP grant definitions, or vault lease values. Vault may appear only as vaultLeasePolicyRefs selected from graph nodes.",
     "Use GraphMetadataCandidates as the direct source of selectable refs for DAG tasks and generated profiles.",
     "When GraphMetadataCandidates is present, selected agentDefinitionRef, skillRef, toolGrantRef, mcpGrantRef, instructionRef, artifact ref, and evaluator ref must come from GraphMetadataCandidates.nodes.",
@@ -402,9 +402,11 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Use harnessRef as the host adapter. For the current runtime image southstar/pi-agent:local, every generated profile must use provider=pi, harnessRef=pi, and model=pi-agent-default.",
     "Never pair provider=codex or harnessRef=codex with southstar/pi-agent:local. Codex requires a different runtime image that is not currently in GeneratedAgentProfileAllowedValues.",
     "Design for harness engineering: choose workerKind per task from execution_worker, validation_worker, repair_worker, or review_worker based on the goal, risk, and required artifacts.",
-    "For workflows that create or modify artifacts, include a positive validation path with validation_worker, review_worker, deterministic checks, or another graph-justified verifier. Do not add fixed worker nodes when the goal does not require them.",
+    "For workflows that create or modify artifacts, include a positive validation path with validation_worker, review_worker, deterministic checks, or another graph-justified verifier.",
+    "For ordinary initial workflow generation, do not pre-add repair/reverify nodes unless the user explicitly asks for a static bounded repair path in the initial DAG. Instead, make validation_worker nodePromptSpec produce repair-ready failure reports for Southstar runtime dynamic repair revision.",
+    "For Runtime dynamic repair request goals, generate only the additional bounded repair and reverify tasks needed to continue the existing run. The repair task must use workerKind=repair_worker and consume the failed verification report; the reverify task must use workerKind=validation_worker and depend on the repair task.",
     "Validation-oriented agent profiles may use a lightweight/no-reasoning model profile when deterministic shell/test verification is sufficient, but must still include provider, harnessRef, instruction, toolPolicy, and budgetPolicy.",
-    "If validation can fail, encode a repair loop in the DAG: the validation task produces an error/report artifact, and a downstream repair/execution task consumes that artifact, fixes the issue, and is followed by another validation task. Keep the loop bounded by explicit tasks rather than cycles.",
+    "Never create cyclic dependencies. Runtime dynamic repair is represented by appended repair/reverify nodes, not by back edges to earlier nodes.",
     "Every task must include nodePromptSpec. Treat nodePromptSpec as the per-node prompt contract that the Docker worker will see: nodeType, goal, requirements, boundaries, nonGoals, deliverableDocuments, expectedOutputs, testCases, acceptanceCriteria, and optional failureReportContract.",
     "nodePromptSpec.nodeType must be one of plan, implement, verify, repair, review, summary, or general. Choose it from the node's role in the DAG, not from the worker profile name alone.",
     "nodePromptSpec must be specific to that node, not a copy of the global goal. Implementation nodes must include concrete boundaries and expected outputs. Validation/review nodes must include concrete testCases or verification checks and acceptanceCriteria.",
@@ -440,8 +442,8 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "OutputJsonSchema:",
     JSON.stringify(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA),
     "",
-    "CandidatePacket:",
-    JSON.stringify(boundedPacket),
+    "CandidatePacketSummary:",
+    JSON.stringify(candidatePacketPromptSummary(boundedPacket)),
   ].join("\n");
 }
 
@@ -452,7 +454,9 @@ function renderDagAndAgentProfileSop(): string {
     "3. Do not select stored agent_profile refs. Every task must use a generated profile id, and that id must appear in generatedComponentProposals as kind agent_profile with validationStatus validated.",
     "4. Design a DAG, not a manifest. Use explicit dependsOn edges. Choose task count and workerKind dynamically from the goal, graph evidence, risk, and deliverables.",
     "5. Execution workers create or modify requested artifacts. Validation, review, or deterministic-check workers positively verify artifacts when the workflow creates or modifies them.",
-    "6. If validation can fail, add bounded repair flow using explicit nodes: validation produces an error/report artifact, a downstream repair/execution worker consumes that artifact, and a following validation worker verifies the repaired output. Never create cyclic dependencies.",
+    "6. Initial workflow rule: when validation can fail, do not automatically add repair/reverify nodes. Instead, make the validation node produce an explicit repair-ready failure artifact with pass, safeToSave, blockingTests, failed commands, affected files, and concrete repair instructions.",
+    "6a. Runtime dynamic repair rule: when the goal begins with a Runtime dynamic repair request, output a bounded appended flow: one repair node and one reverify node unless the failure evidence clearly requires more. The repair node consumes the failed verification artifact and prior implementation artifacts, preserves existing behavior, fixes only the reported failures, and outputs a repaired implementation artifact. The reverify node depends on the repair node, reruns the failed checks plus relevant regression checks, and outputs a verification_report with pass, safeToSave, blockingTests, evidence, and remaining failures.",
+    "6b. Repair/reverify node prompt requirements: repair nodePromptSpec must include repairInputs, mustPreserve, implementationScope, testCases, expectedOutputs, acceptanceCriteria, and failureReportContract. Reverify nodePromptSpec must include verificationChecks, testCases, failureArtifactContract, expectedOutputs, acceptanceCriteria, and a rule to set pass=false/safeToSave=false for any blocking failure.",
     "7. For each task, choose agentDefinitionRef, skillRefs, toolGrantRefs, mcpGrantRefs, instructionRefs, evaluatorProfileRef, inputArtifactRefs, and outputArtifactRefs from the graph.",
     "8. For each task, write nodePromptSpec as the worker-facing prompt brief: nodeType, node-local goal, requirements, boundaries, nonGoals, deliverableDocuments, expectedOutputs, testCases, acceptanceCriteria, and failureReportContract when failure should feed repair.",
     "8a. Type-specific nodePromptSpec fields: plan uses planningQuestions/decisionCriteria/planArtifactContract; implement uses implementationScope/filesLikelyToTouch/testCases; verify uses verificationChecks/testCases/failureArtifactContract; repair uses repairInputs/mustPreserve/reverificationChecks; review uses reviewChecklist/riskCriteria; summary uses summarySections/handoffCriteria.",
@@ -1054,6 +1058,33 @@ function boundCandidatePacket(packet: CandidatePacket): CandidatePacket {
         edges: packet.graphMetadataCandidates.edges.slice(0, 1_500),
       }
       : undefined,
+  };
+}
+
+function candidatePacketPromptSummary(packet: CandidatePacket): Record<string, unknown> {
+  return {
+    requirementSpec: packet.requirementSpec,
+    workflowTemplateCandidates: packet.workflowTemplateCandidates,
+    agentCandidatesByCapability: packet.agentCandidatesByCapability,
+    artifactContractCandidates: packet.artifactContractCandidates,
+    evaluatorCandidatesByArtifact: packet.evaluatorCandidatesByArtifact,
+    policyConstraints: packet.policyConstraints,
+    unavailableRequirements: packet.unavailableRequirements,
+    graphMetadataCandidateCounts: packet.graphMetadataCandidates
+      ? {
+        nodes: packet.graphMetadataCandidates.nodes.length,
+        edges: packet.graphMetadataCandidates.edges.length,
+      }
+      : { nodes: 0, edges: 0 },
+    profilePrimitiveCandidateCounts: packet.profilePrimitiveCandidates
+      ? {
+        agents: packet.profilePrimitiveCandidates.agents.length,
+        skills: packet.profilePrimitiveCandidates.skills.length,
+        tools: packet.profilePrimitiveCandidates.tools.length,
+        mcpGrants: packet.profilePrimitiveCandidates.mcpGrants.length,
+        instructions: packet.profilePrimitiveCandidates.instructions.length,
+      }
+      : { agents: 0, skills: 0, tools: 0, mcpGrants: 0, instructions: 0 },
   };
 }
 

@@ -285,10 +285,12 @@ function completeArtifactForEnvelope(
   envelope: AnyTaskEnvelope,
   reason: string,
 ): Record<string, unknown> {
-  const requiredFields = implementationReportRequiredFields(envelope);
+  const contract = primaryArtifactContract(envelope);
+  const requiredFields = contract?.requiredFields ?? [];
   if (requiredFields.length === 0) return artifact;
 
   const next = { ...artifact };
+  applyContractFallbackFields(next, contract?.id, reason);
   if (!hasValue(next.summary)) next.summary = "Pi SDK returned a structured artifact without a summary.";
   if (requiredFields.includes("filesChanged") && !hasValue(next.filesChanged)) next.filesChanged = [];
   if (requiredFields.includes("commandsRun") && !hasValue(next.commandsRun)) next.commandsRun = [];
@@ -313,14 +315,63 @@ function completeArtifactForEnvelope(
   return next;
 }
 
-function implementationReportRequiredFields(envelope: AnyTaskEnvelope): string[] {
+function primaryArtifactContract(envelope: AnyTaskEnvelope): { id: string; requiredFields: string[] } | undefined {
   if (envelope.schemaVersion === "southstar.task-envelope.v1") {
     const artifactTypes = new Set(envelope.artifactContract.artifactTypes);
-    if (!artifactTypes.has("implementation_report") && !artifactTypes.has("implementation-report")) return [];
-    return envelope.artifactContract.requiredFields;
+    if (artifactTypes.has("verification_report") || artifactTypes.has("verification-report")) {
+      return { id: "verification_report", requiredFields: envelope.artifactContract.requiredFields };
+    }
+    if (artifactTypes.has("completion_report") || artifactTypes.has("completion-report")) {
+      return { id: "completion_report", requiredFields: envelope.artifactContract.requiredFields };
+    }
+    if (artifactTypes.has("implementation_report") || artifactTypes.has("implementation-report")) {
+      return { id: "implementation_report", requiredFields: envelope.artifactContract.requiredFields };
+    }
+    return undefined;
   }
-  const contract = envelope.artifactContracts.find((item) => item.id === "implementation_report");
-  return contract?.requiredFields ?? [];
+  const contract = envelope.artifactContracts.find((item) =>
+    item.id === "verification_report" || item.id === "completion_report" || item.id === "implementation_report"
+  );
+  return contract ? { id: contract.id, requiredFields: contract.requiredFields } : undefined;
+}
+
+function applyContractFallbackFields(next: Record<string, unknown>, contractId: string | undefined, reason: string): void {
+  if (contractId === "verification_report") {
+    if (!hasValue(next.pass)) next.pass = false;
+    if (!hasValue(next.safeToSave)) next.safeToSave = false;
+    if (!hasValue(next.commandsRun)) next.commandsRun = [];
+    if (!hasValue(next.testResults)) {
+      next.testResults = [{
+        checkId: "pi-sdk-structured-output",
+        command: "pi-sdk-harness",
+        status: "not-verified",
+        gating: "blocking",
+        summary: "Pi SDK response did not include a structured verification report.",
+      }];
+    }
+    if (!hasValue(next.risks)) {
+      next.risks = ["Pi SDK returned unstructured verification text; runtime must trigger repair before accepting this work."];
+    }
+    if (!hasValue(next.artifactEvidence)) {
+      next.artifactEvidence = {
+        source: "pi-sdk-harness",
+        status: "synthesized",
+        reason,
+      };
+    }
+    return;
+  }
+  if (contractId === "completion_report") {
+    if (!hasValue(next.acceptedArtifacts)) next.acceptedArtifacts = [];
+    if (!hasValue(next.tests)) {
+      next.tests = [{
+        command: "pi-sdk-harness",
+        status: "not-verified",
+        gating: "non-gating",
+        summary: "Pi SDK response did not include structured completion test evidence.",
+      }];
+    }
+  }
 }
 
 function hasValue(value: unknown): boolean {

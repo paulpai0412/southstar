@@ -5,6 +5,7 @@ import { MarkdownBody } from "./MarkdownBody";
 import { WorkflowDagBlock } from "./WorkflowDagBlock";
 import { LibraryCandidateMessageBlock } from "./library/LibraryCandidateMessageBlock";
 import { LibraryGraphBlock } from "./library/LibraryGraphBlock";
+import type { LibraryGraphChartNode } from "./library/LibraryGraphChart";
 import { runLibraryCandidateInstallCommand } from "@/lib/library/chat-stream";
 import type { LibraryImportCandidate, LibraryImportProposedEdge } from "@/lib/library/types";
 import type {
@@ -20,6 +21,7 @@ import type {
   ThinkingContent,
   WorkflowDagContent,
   WorkflowDagCustomDetails,
+  WorkspaceSurface,
 } from "@/lib/types";
 import { buildWorkflowDagFromPlannerDraft, type V2PlannerDraftOrchestrationView } from "@/lib/workflow/v2-library-adapter";
 import type { WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
@@ -39,6 +41,8 @@ interface Props {
   prevTimestamp?: number;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
+  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }
 
 function formatTime(ts?: number): string | null {
@@ -73,12 +77,12 @@ function copyText(text: string): Promise<void> {
   }
 }
 
-export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect }: Props) {
+export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
@@ -297,6 +301,8 @@ function AssistantMessageView({
   prevTimestamp,
   workflowCwd,
   onWorkflowDagNodeSelect,
+  onLibraryGraphNodeSelect,
+  onWorkspaceSurfaceChange,
 }: {
   message: AssistantMessage;
   isStreaming?: boolean;
@@ -306,6 +312,8 @@ function AssistantMessageView({
   prevTimestamp?: number;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
+  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }) {
   const time = showTimestamp ? formatTime(message.timestamp) : null;
   const blocks = message.content ?? [];
@@ -465,7 +473,7 @@ function AssistantMessageView({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {blocks.map((block, i) => (
-          <BlockView key={i} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(i) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} />
+          <BlockView key={i} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(i) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
         ))}
       </div>
 
@@ -518,7 +526,7 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, workflowCwd, onWorkflowDagNodeSelect }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, workflowCwd, onWorkflowDagNodeSelect, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void; onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void; onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void }) {
   if (block.type === "text") {
     return <TextBlock block={block as TextContent} isStreaming={isStreaming} />;
   }
@@ -532,7 +540,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   return null;
 }
@@ -599,12 +607,16 @@ function ToolCallBlock({
   duration,
   workflowCwd,
   onWorkflowDagNodeSelect,
+  onLibraryGraphNodeSelect,
+  onWorkspaceSurfaceChange,
 }: {
   block: ToolCallContent;
   result?: ToolResultMessage;
   duration?: number;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
+  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }) {
   const [expanded, setExpanded] = useState(false);
   const inputStr = JSON.stringify(block.input, null, 2);
@@ -614,6 +626,8 @@ function ToolCallBlock({
       result={result}
       workflowCwd={workflowCwd}
       onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
+      onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
+      onWorkspaceSurfaceChange={onWorkspaceSurfaceChange}
     />
   ) : null;
 
@@ -705,21 +719,33 @@ function SouthstarToolResultBlock({
   result,
   workflowCwd,
   onWorkflowDagNodeSelect,
+  onLibraryGraphNodeSelect,
+  onWorkspaceSurfaceChange,
 }: {
   toolCall: ToolCallContent;
   result: ToolResultMessage;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
+  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }) {
   const details = readSouthstarToolDetails(result.details);
   const mcpToolName = details?.mcpToolName;
   const piToolName = details?.piToolName ?? result.toolName ?? toolCall.toolName;
   const payload = unwrapStructuredContent(details?.structuredContent);
+  const inferredSurface = inferSouthstarWorkspaceSurface(mcpToolName, piToolName);
+  const reportedSurfaceRef = useRef<WorkspaceSurface | null>(null);
+
+  useEffect(() => {
+    if (!inferredSurface || reportedSurfaceRef.current === inferredSurface) return;
+    reportedSurfaceRef.current = inferredSurface;
+    onWorkspaceSurfaceChange?.(inferredSurface);
+  }, [inferredSurface, onWorkspaceSurfaceChange]);
 
   if (isLibraryGraphTool(mcpToolName, piToolName) && isLibraryGraphPayload(payload)) {
     return (
       <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
-        <LibraryGraphBlock data={payload} defaultScope={typeof payload.activeScope === "string" ? payload.activeScope : "all"} />
+        <LibraryGraphBlock data={payload} defaultScope={typeof payload.activeScope === "string" ? payload.activeScope : "all"} onSelectNode={onLibraryGraphNodeSelect} />
       </div>
     );
   }
@@ -858,6 +884,17 @@ function isLibraryImportTool(mcpToolName: string | undefined, piToolName: string
   return mcpToolName === "southstar.library.import_from_source" || piToolName === "southstar_library_import_from_source";
 }
 
+function inferSouthstarWorkspaceSurface(mcpToolName: string | undefined, piToolName: string | undefined): WorkspaceSurface | null {
+  if (
+    mcpToolName?.startsWith("southstar.library.")
+    || piToolName?.startsWith("southstar_library_")
+  ) {
+    return "library";
+  }
+  if (isWorkflowTool(mcpToolName, piToolName)) return "workflow";
+  return null;
+}
+
 function isWorkflowTool(mcpToolName: string | undefined, piToolName: string | undefined): boolean {
   return Boolean(
     mcpToolName?.startsWith("southstar.workflow.")
@@ -920,8 +957,69 @@ function workflowDagFromSouthstarToolResult(
 ): WorkflowDag | null {
   if (!isWorkflowTool(mcpToolName, piToolName) || !payload) return null;
   const draft = asPlannerDraft(payload) ?? asPlannerDraft(asRecord(payload.draft)) ?? asPlannerDraft(asRecord(payload.orchestration));
-  if (!draft) return null;
-  return buildWorkflowDagFromPlannerDraft(draft);
+  if (draft) return buildWorkflowDagFromPlannerDraft(draft);
+  return asWorkflowDagFromNodePayload(payload);
+}
+
+function asWorkflowDagFromNodePayload(payload: Record<string, unknown>): WorkflowDag | null {
+  const draftId = typeof payload.draftId === "string" ? payload.draftId : null;
+  const workflowId = typeof payload.workflowId === "string" ? payload.workflowId : null;
+  const status = typeof payload.status === "string" ? payload.status : "validated";
+  const rawNodes = Array.isArray(payload.nodes) ? payload.nodes : null;
+  if (!draftId || !workflowId || !rawNodes?.length) return null;
+  const validationIssues = Array.isArray(payload.validationIssues)
+    ? payload.validationIssues.filter(isPlannerDraftValidationIssue)
+    : [];
+  const taskSummaries = rawNodes.map((node, index) => toTaskSummaryFromWorkflowNode(node, rawNodes[index - 1])).filter((node) => node !== null);
+  if (taskSummaries.length === 0) return null;
+  return buildWorkflowDagFromPlannerDraft({
+    draftId,
+    workflowId,
+    status,
+    validationIssues,
+    goalPrompt: goalPromptFromWorkflowNodes(rawNodes) ?? workflowId,
+    taskSummaries,
+  });
+}
+
+function toTaskSummaryFromWorkflowNode(value: unknown, previousValue: unknown): V2PlannerDraftOrchestrationView["taskSummaries"][number] | null {
+  const record = asRecord(value);
+  if (!record || typeof record.taskId !== "string") return null;
+  const previous = asRecord(previousValue);
+  const nodePromptSpec = asRecord(record.nodePromptSpec);
+  const taskName = typeof record.taskName === "string"
+    ? record.taskName
+    : typeof record.title === "string"
+      ? record.title
+      : titleFromTaskId(record.taskId);
+  const explicitDependsOn = Array.isArray(record.dependsOn)
+    ? record.dependsOn.filter((dependency) => typeof dependency === "string")
+    : null;
+  return {
+    taskId: record.taskId,
+    taskName,
+    dependsOn: explicitDependsOn ?? (typeof previous?.taskId === "string" ? [previous.taskId] : []),
+    roleRef: typeof nodePromptSpec?.nodeType === "string" ? nodePromptSpec.nodeType : typeof record.nodeType === "string" ? record.nodeType : undefined,
+    agentProfileRef: typeof record.agentProfileRef === "string" ? record.agentProfileRef : undefined,
+  };
+}
+
+function titleFromTaskId(taskId: string): string {
+  return taskId
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ") || taskId;
+}
+
+function goalPromptFromWorkflowNodes(nodes: unknown[]): string | null {
+  for (const node of nodes) {
+    const record = asRecord(node);
+    const nodePromptSpec = asRecord(record?.nodePromptSpec);
+    const goal = typeof nodePromptSpec?.goal === "string" ? nodePromptSpec.goal : null;
+    if (goal) return goal;
+  }
+  return null;
 }
 
 function asPlannerDraft(value: unknown): V2PlannerDraftOrchestrationView | null {

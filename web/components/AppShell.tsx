@@ -13,7 +13,8 @@ import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
 import { OperatorWorkspace } from "./operator/OperatorWorkspace";
-import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./library/LibraryWorkspace";
+import { LibraryFileSidecarPanel, LibraryGraphNodeSelectionBridge, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./library/LibraryWorkspace";
+import type { LibraryGraphChartNode } from "./library/LibraryGraphChart";
 import type { Tab } from "./TabBar";
 import { SidecarShell, type SidecarMode } from "./SidecarShell";
 import { ModelsConfig } from "./ModelsConfig";
@@ -23,7 +24,7 @@ import { BranchNavigator } from "./BranchNavigator";
 import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
 import { buildOperatorIncidents } from "@/lib/operator/incidents";
-import type { SessionInfo, SessionTreeNode } from "@/lib/types";
+import type { SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
 import type { WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -106,6 +107,8 @@ export function AppShell() {
   const [skillsConfigCwd, setSkillsConfigCwd] = useState<string | null>(null);
   const [mcpConfigOpen, setMcpConfigOpen] = useState(false);
   const [appMode, setAppMode] = useState<AppMode>("chat");
+  const [chatWorkspaceSurface, setChatWorkspaceSurface] = useState<WorkspaceSurface>("chat");
+  const [selectedLibraryGraphNode, setSelectedLibraryGraphNode] = useState<{ id: number; node: LibraryGraphChartNode } | null>(null);
   const [selectedWorkflowTemplate, setSelectedWorkflowTemplate] = useState<WorkflowTemplateSummary | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const chatInputRef = useRef<ChatInputHandle | null>(null);
@@ -199,6 +202,11 @@ export function AppShell() {
 
   const handleAtMention = useCallback((relativePath: string) => {
     chatInputRef.current?.insertText("`" + relativePath + "`");
+  }, []);
+
+  const handleAppModeChange = useCallback((mode: AppMode) => {
+    setAppMode(mode);
+    if (mode === "chat") setChatWorkspaceSurface("chat");
   }, []);
 
   const [initialSessionId] = useState<string | null>(() => searchParams.get("session"));
@@ -518,7 +526,17 @@ export function AppShell() {
     openSidecarTab({ id: `workflow:${resourcePath}`, label, filePath: resourcePath, kind: "workflowResource" });
   }, [openSidecarTab]);
 
+  const handleChatWorkspaceSurfaceChange = useCallback((surface: WorkspaceSurface) => {
+    setChatWorkspaceSurface((current) => current === surface ? current : surface);
+  }, []);
+
+  const handleLibraryGraphNodeSelect = useCallback((node: LibraryGraphChartNode) => {
+    setChatWorkspaceSurface("library");
+    setSelectedLibraryGraphNode((current) => ({ id: (current?.id ?? 0) + 1, node }));
+  }, []);
+
   const handleWorkflowDagNodeSelect = useCallback((node: WorkflowDagNode) => {
+    setChatWorkspaceSurface("workflow");
     const taskId = node.taskId ?? node.id;
     const mode = node.mode ?? (node.draftId ? "draft" : node.runId ? "runtime" : undefined);
     if (taskId && mode && (node.draftId || node.runId)) {
@@ -585,6 +603,7 @@ export function AppShell() {
   const sessionStats = appMode === "workflow" ? workflowSessionStats : appMode === "chat" ? chatSessionStats : null;
   const contextUsage = appMode === "workflow" ? workflowContextUsage : appMode === "chat" ? chatContextUsage : null;
   const activeSidecarTab = sidecarTabs.find((t) => t.id === activeSidecarTabId) ?? null;
+  const activeSidebarSurface: WorkspaceSurface = appMode === "chat" ? chatWorkspaceSurface : appMode;
 
   const renderSidecarContent = useCallback(() => {
     if (!activeSidecarTab?.filePath) {
@@ -688,7 +707,7 @@ export function AppShell() {
 
   const sidebarContent = (
     <>
-      <div data-testid="operator-sidebar-panel" style={sidebarPanelStyle(appMode === "operator")} aria-hidden={appMode !== "operator"}>
+      <div data-testid="operator-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "operator")} aria-hidden={activeSidebarSurface !== "operator"}>
         <OperatorSidebar
           cwd={activeCwd}
           runs={operator.model.runs}
@@ -710,7 +729,7 @@ export function AppShell() {
           onRefresh={operator.refresh}
         />
       </div>
-      <div data-testid="workflow-sidebar-panel" style={sidebarPanelStyle(appMode === "workflow")} aria-hidden={appMode !== "workflow"}>
+      <div data-testid="workflow-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "workflow")} aria-hidden={activeSidebarSurface !== "workflow"}>
         <WorkflowSidebar
           cwd={workflowCurrentCwd}
           selectedSessionId={workflowSelectedSession?.id ?? null}
@@ -723,10 +742,10 @@ export function AppShell() {
           onRefreshSessions={handleWorkflowSidebarRefresh}
         />
       </div>
-      <div data-testid="library-sidebar-panel" style={sidebarPanelStyle(appMode === "library")} aria-hidden={appMode !== "library"}>
+      <div data-testid="library-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "library")} aria-hidden={activeSidebarSurface !== "library"}>
         <LibrarySidebarPanel />
       </div>
-      <div data-testid="chat-sidebar-panel" style={sidebarPanelStyle(appMode === "chat")} aria-hidden={appMode !== "chat"}>
+      <div data-testid="chat-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "chat")} aria-hidden={activeSidebarSurface !== "chat"}>
         <SessionSidebar
           selectedSessionId={selectedSession?.id ?? null}
           onSelectSession={handleSelectSession}
@@ -928,6 +947,7 @@ export function AppShell() {
       }
     `}</style>
     <LibraryWorkspaceProvider onOpenFile={handleOpenLibraryFile}>
+    <LibraryGraphNodeSelectionBridge selection={selectedLibraryGraphNode} />
     <div className="pi-app-shell" style={{ display: "flex", height: "100dvh", overflow: "hidden", background: "var(--bg)" }}>
       {/* Mobile overlay backdrop */}
       <div
@@ -1091,7 +1111,7 @@ export function AppShell() {
               />
             </div>
           )}
-          <AppModeRail mode={appMode} onModeChange={setAppMode} orientation="horizontal" />
+          <AppModeRail mode={appMode} onModeChange={handleAppModeChange} orientation="horizontal" />
           {/* Session stats — right-aligned in top bar */}
           {showChat && (sessionStats || contextUsage) && (() => {
             const t = sessionStats?.tokens;
@@ -1398,6 +1418,8 @@ export function AppShell() {
                 workflowMode={false}
                 workflowCwd={chatCurrentCwd}
                 onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
+                onLibraryGraphNodeSelect={handleLibraryGraphNodeSelect}
+                onWorkspaceSurfaceChange={handleChatWorkspaceSurfaceChange}
               />
             ) : initialSessionRestored ? renderEmptyPlaceholder() : null}
           </div>

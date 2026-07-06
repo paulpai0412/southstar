@@ -7,8 +7,10 @@ import {
   readLibraryFile,
   removeLibraryFileIfContentMatches,
   syncNewLibraryFileRecordsToGraph,
+  syncLibraryFileRecordToGraph,
   syncLibraryFileToGraph,
   validateLibraryFileGraphReferences,
+  writeLibraryFile,
   writeNewLibraryFile,
 } from "../files/library-file-store.ts";
 import type { LibraryFileRecord } from "../files/library-file-types.ts";
@@ -91,11 +93,13 @@ type PreflightedLibraryImportFile = {
   relativePath: string;
   content: string;
   file: LibraryFileRecord;
+  existingFile?: boolean;
 };
 
 type SupportingLibraryImportFile = {
   relativePath: string;
   content: Buffer;
+  existingFile?: boolean;
 };
 
 export type LibraryImportProgressListener = (event: {
@@ -364,6 +368,7 @@ export async function installLibraryImportCandidates(
       candidates: selectedCandidates,
       documents: asImportSourceDocuments(draft.payload.documents),
       sourceRepoPath: typeof draft.payload.sourceRepoPath === "string" ? draft.payload.sourceRepoPath : undefined,
+      allowExistingCandidateFiles: true,
     });
     const proposedEdges = selectLibraryImportCandidateEdges(generatedEdges, {
       selectedObjectKeys: new Set(selectedCandidates.map((candidate) => candidate.objectKey)),
@@ -373,22 +378,26 @@ export async function installLibraryImportCandidates(
 
     for (const file of preflighted) {
       try {
-        await writeNewLibraryFile({
+        const write = file.existingFile ? writeLibraryFile : writeNewLibraryFile;
+        await write({
           root: input.root,
           relativePath: file.relativePath,
           content: file.content,
         });
-        createdFiles.push({ relativePath: file.relativePath, content: file.content });
+        if (!file.existingFile) createdFiles.push({ relativePath: file.relativePath, content: file.content });
         for (const supportingFile of file.supportingFiles) {
-          await writeNewSupportingImportFile({
+          await writeSupportingImportFile({
             root: input.root,
             relativePath: supportingFile.relativePath,
             content: supportingFile.content,
+            overwrite: supportingFile.existingFile === true,
           });
-          createdFiles.push({
-            relativePath: supportingFile.relativePath,
-            content: supportingFile.content,
-          });
+          if (!supportingFile.existingFile) {
+            createdFiles.push({
+              relativePath: supportingFile.relativePath,
+              content: supportingFile.content,
+            });
+          }
         }
       } catch (error: unknown) {
         if ((error as NodeJS.ErrnoException).code === "EEXIST") {
@@ -399,7 +408,10 @@ export async function installLibraryImportCandidates(
     }
 
     const result = await db.tx(async (tx) => {
-      const syncedFiles = await syncNewLibraryFileRecordsToGraph(tx, preflighted.map((file) => file.file));
+      const syncedFiles = [];
+      for (const file of preflighted) {
+        syncedFiles.push(await syncLibraryFileRecordToGraph(tx, file.file));
+      }
       const installedObjects = preflighted.map((file) => {
         const object = syncedFiles.find((synced) => synced.object.objectKey === file.file.objectKey)?.object;
         if (!object) throw new Error(`library object sync result missing: ${file.file.objectKey}`);
@@ -598,6 +610,7 @@ async function preflightLibraryImportCandidates(
     candidates: LibraryImportCandidate[];
     documents?: LibraryImportSourceDocument[];
     sourceRepoPath?: string;
+    allowExistingCandidateFiles?: boolean;
   },
 ): Promise<Array<PreflightedLibraryImportFile & {
   candidate: LibraryImportCandidate;
@@ -637,10 +650,12 @@ async function preflightLibraryImportCandidates(
     if (parsed.file.objectKey !== candidate.objectKey) {
       throw new Error(`library import candidate rendered unexpected object: ${parsed.file.objectKey}`);
     }
-    if (await libraryFileExists(input.root, rendered.relativePath)) {
+    const existingFile = await candidateFileExists(input.root, rendered.relativePath, candidate);
+    if (existingFile && !input.allowExistingCandidateFiles) {
       throw new Error(`library import file already exists: ${rendered.relativePath}`);
     }
-    if (await findLibraryObjectByKey(db, parsed.file.objectKey)) {
+    const existingObject = await findLibraryObjectByKey(db, parsed.file.objectKey);
+    if (existingObject && !input.allowExistingCandidateFiles) {
       throw new Error(`library import object already exists: ${parsed.file.objectKey}`);
     }
     const supportingFiles = await supportingFilesForCandidate(candidate, {
@@ -652,14 +667,17 @@ async function preflightLibraryImportCandidates(
         throw new Error(`library import candidates contain duplicate file: ${supportingFile.relativePath}`);
       }
       seenPaths.add(supportingFile.relativePath);
-      if (await libraryFileExists(input.root, supportingFile.relativePath)) {
+      const existingSupportingFile = await supportingFileExists(input.root, supportingFile.relativePath, candidate);
+      if (existingSupportingFile && !input.allowExistingCandidateFiles) {
         throw new Error(`library import file already exists: ${supportingFile.relativePath}`);
       }
+      supportingFile.existingFile = existingSupportingFile;
     }
     preflighted.push({
       relativePath: rendered.relativePath,
       content: rendered.content,
       file: parsed.file,
+      existingFile: existingFile === true,
       candidate,
       supportingFiles,
     });
@@ -1035,6 +1053,43 @@ async function libraryFileExists(root: string, relativePath: string): Promise<bo
   }
 }
 
+async function candidateFileExists(
+  root: string,
+  relativePath: string,
+  candidate: LibraryImportCandidate,
+): Promise<boolean> {
+  try {
+    const existing = await readLibraryFile({ root, relativePath });
+    if (!existing.parsed.ok) throw new Error(`library import file already exists: ${relativePath}`);
+    if (existing.parsed.file.objectKey !== candidate.objectKey) {
+      throw new Error(`library import file already exists for different object: ${relativePath}`);
+    }
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function supportingFileExists(
+  root: string,
+  relativePath: string,
+  candidate: LibraryImportCandidate,
+): Promise<boolean> {
+  try {
+    const absolutePath = resolveLibraryImportPath(root, relativePath);
+    await stat(absolutePath);
+    const expectedPrefix = `skills/${slugFromCandidate(candidate)}/`;
+    if (!relativePath.startsWith(expectedPrefix)) {
+      throw new Error(`library import file already exists outside candidate directory: ${relativePath}`);
+    }
+    return true;
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 async function cleanupCreatedImportFiles(
   root: string,
   files: Array<{ relativePath: string; content: string | Buffer }>,
@@ -1048,14 +1103,15 @@ async function cleanupCreatedImportFiles(
   }
 }
 
-async function writeNewSupportingImportFile(input: {
+async function writeSupportingImportFile(input: {
   root: string;
   relativePath: string;
   content: Buffer;
+  overwrite?: boolean;
 }): Promise<void> {
   const absolutePath = resolveLibraryImportPath(input.root, input.relativePath);
   await mkdir(path.dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, input.content, { flag: "wx" });
+  await writeFile(absolutePath, input.content, input.overwrite ? undefined : { flag: "wx" });
 }
 
 async function removeSupportingImportFileIfContentMatches(input: {

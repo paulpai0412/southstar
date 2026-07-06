@@ -20,7 +20,10 @@ export function asImportSource(value: unknown): LibraryImportSource {
   if (kind === "github") {
     return {
       kind,
-      repoUrl: requiredNonBlankString(legacyShape ? value.repoUrl ?? value.repository : value.repoUrl, "source.repoUrl"),
+      repoUrl: requiredNonBlankString(
+        legacyShape ? value.repoUrl ?? value.url ?? value.repository : value.repoUrl ?? value.url,
+        "source.repoUrl",
+      ),
       ...(optionalString(value.path) ? { path: optionalString(value.path) } : {}),
       ...(optionalString(value.content) ? { content: optionalString(value.content) } : {}),
     };

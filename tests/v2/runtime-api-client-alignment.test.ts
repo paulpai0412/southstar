@@ -586,6 +586,66 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
   }
 });
 
+test("runtime server client rejects SSE error events", async () => {
+  const originalFetch = globalThis.fetch;
+  const deliveredEvents: Array<{ event: string; data: unknown }> = [];
+  globalThis.fetch = (async () => new Response(
+    [
+      "event: planner.stage",
+      "data: {\"stage\":\"composer.started\"}",
+      "",
+      "event: error",
+      "data: {\"error\":\"Pi SDK planner timed out after 180000ms\"}",
+      "",
+    ].join("\n"),
+    { headers: { "content-type": "text/event-stream" } },
+  )) as typeof fetch;
+
+  try {
+    const client = createRuntimeServerClient({ baseUrl: "http://127.0.0.1/" });
+    await assert.rejects(
+      () => client.createPlannerDraftStream({ goalPrompt: "build app" }, (event) => deliveredEvents.push(event)),
+      /Pi SDK planner timed out after 180000ms/,
+    );
+    assert.deepEqual(deliveredEvents.map((event) => event.event), ["planner.stage", "error"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("runtime server client summarizes large SSE delta streams", async () => {
+  const originalFetch = globalThis.fetch;
+  const deltas = Array.from({ length: 250 }, (_, index) => [
+    "event: message.delta",
+    `data: {\"text\":\"chunk-${index};\"}`,
+    "",
+  ].join("\n")).join("\n");
+  globalThis.fetch = (async () => new Response(
+    [
+      "event: planner.stage",
+      "data: {\"stage\":\"composer.started\"}",
+      "",
+      deltas,
+      "event: done",
+      "data: {}",
+      "",
+    ].join("\n"),
+    { headers: { "content-type": "text/event-stream" } },
+  )) as typeof fetch;
+
+  try {
+    const client = createRuntimeServerClient({ baseUrl: "http://127.0.0.1/" });
+    const result = await client.createPlannerDraftStream({ goalPrompt: "build app" }, () => {}) as any;
+    assert.equal(result.eventCount, 252);
+    assert.equal(result.truncatedEvents, true);
+    assert.ok(result.events.length < 252);
+    assert.ok(result.events.some((event: any) => event.event === "message.delta.summary"));
+    assert.equal(result.events.find((event: any) => event.event === "message.delta.summary").data.truncated, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 async function call<T>(db: Parameters<typeof handleRuntimeRoute>[0]["db"], path: string, init?: RequestInit): Promise<{ ok: true; kind: string; result: T }> {
   const response = await handleRuntimeRoute({
     db,

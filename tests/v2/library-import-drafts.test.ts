@@ -1131,6 +1131,94 @@ test("installLibraryImportCandidates preflights all selected candidates before w
   }
 });
 
+test("installLibraryImportCandidates adopts same-object draft files and syncs ontology edges", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-adopt-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      { objectKey: "skill.beautiful-article", kind: "skill", title: "Beautiful Article", selectedByDefault: true, scope: "design" },
+    ],
+    proposedEdges: [
+      {
+        fromObjectKey: "agent.article-editor",
+        edgeType: "uses",
+        toObjectKey: "skill.beautiful-article",
+        confidence: 0.92,
+        rationale: "Article editor can use Beautiful Article for polished HTML article output.",
+      },
+    ],
+  });
+
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "agent.article-editor",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.article-editor@1",
+      state: {
+        schemaVersion: "southstar.library.agent_definition.v1",
+        title: "Article Editor",
+        scope: "design",
+      },
+    });
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(
+      join(libraryRoot, "skills/beautiful-article.skill.md"),
+      [
+        "---",
+        "schemaVersion: southstar.library.skill_spec_file.v1",
+        "id: skill.beautiful-article",
+        'title: "Beautiful Article"',
+        'scope: "design"',
+        "status: draft",
+        'importDraftId: "previous-draft"',
+        'importCandidateKey: "skill.beautiful-article"',
+        "---",
+        "",
+        "# Instructions",
+        "",
+        "Previous partial draft content.",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const draft = await createLibraryImportDraft(db, {
+      source: {
+        kind: "paste",
+        label: "beautiful article skill",
+        content: "beautiful article skill helps agents produce polished single-file HTML articles",
+      },
+      scope: "design",
+      llmProvider: provider,
+    });
+
+    const installed = await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: ["skill.beautiful-article"],
+      actor: "operator",
+      reason: "install same-object partial draft",
+      llmProvider: provider,
+    });
+
+    assert.deepEqual(installed.installedObjects.map((object) => object.objectKey), ["skill.beautiful-article"]);
+    assert.equal(installed.installedObjects[0]?.object.status, "approved");
+    assert.equal((await findLibraryObjectByKey(db, "skill.beautiful-article"))?.status, "approved");
+    assert.match(await readFile(join(libraryRoot, "skills/beautiful-article.skill.md"), "utf8"), /status: approved/);
+    const edges = await findLibraryEdgesFrom(db, "agent.article-editor", "uses", { scope: "design" });
+    assert.deepEqual(edges.map((edge) => edge.toObjectKey), ["skill.beautiful-article"]);
+    assert.equal(edges[0]?.metadata.source, "library-import-ontology");
+
+    const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
+    assert.equal(resource?.status, "installed");
+    assert.deepEqual((resource?.payload as any).install.installedObjectKeys, ["skill.beautiful-article"]);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("approveLibraryImportDraft writes proposed files and syncs them to the graph", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-approve-"));
@@ -1944,10 +2032,14 @@ test("approving an invalid or missing library import draft fails clearly", async
       () => asImportSource({ kind: "subversion", url: "https://example.com/project" }),
       /unsupported import source kind: subversion/,
     );
-    assert.throws(
-      () => asImportSource({ kind: "github", repository: "acme/library" }),
-      /source.repoUrl is required/,
+    assert.deepEqual(
+      asImportSource({ type: "github", url: "https://github.com/acme/library" }),
+      { kind: "github", repoUrl: "https://github.com/acme/library" },
     );
+    assert.deepEqual(asImportSource({ kind: "github", url: "https://github.com/acme/library" }), {
+      kind: "github",
+      repoUrl: "https://github.com/acme/library",
+    });
 
     await upsertRuntimeResourcePg(db, {
       resourceType: "library_import_draft",

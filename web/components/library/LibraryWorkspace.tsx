@@ -370,6 +370,22 @@ export function LibraryWorkspace() {
   return <LibraryWorkspaceContent />;
 }
 
+export function LibraryGraphNodeSelectionBridge({
+  selection,
+}: {
+  selection: { id: number; node: LibraryGraphChartNode } | null;
+}) {
+  const context = useLibraryWorkspaceContext();
+  const lastSelectionIdRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!selection) return;
+    if (lastSelectionIdRef.current === selection.id) return;
+    lastSelectionIdRef.current = selection.id;
+    context.handleSelectGraphNode(selection.node);
+  }, [context.handleSelectGraphNode, selection]);
+  return null;
+}
+
 function LibraryWorkspaceContent() {
   const context = useLibraryWorkspaceContext();
   return (

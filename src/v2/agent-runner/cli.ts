@@ -228,9 +228,18 @@ export function timeoutFromEnvelope(envelope: AnyTaskEnvelope): number {
 
 function requiredFieldsFromEnvelope(envelope: AnyTaskEnvelope): string[] {
   if (envelope.schemaVersion === "southstar.task-envelope.v2") {
-    return [...new Set(envelope.artifactContracts.flatMap((contract) => contract.requiredFields))];
+    return [...new Set(envelope.artifactContracts.flatMap((contract) => [
+      ...knownContractRequiredFields(contract.id),
+      ...contract.requiredFields,
+    ]))];
   }
   return envelope.artifactContract?.requiredFields ?? [];
+}
+
+function knownContractRequiredFields(contractId: string): string[] {
+  if (contractId === "verification_report") return ["summary", "pass", "safeToSave", "commandsRun", "testResults"];
+  if (contractId === "completion_report") return ["summary", "acceptedArtifacts", "tests"];
+  return [];
 }
 
 function numberFromEnv(value: string | undefined): number | undefined {

@@ -67,11 +67,11 @@ test("30 runtime dynamic repair node generation: failed validation callback appe
     assert.deepEqual(verifyDispatch.dispatchedTaskIds, [verifyTaskId]);
     const verifyHand = await latestHandExecutionForTask(env.db, { runId, taskId: verifyTaskId });
     assert.equal(verifyHand.attemptId, firstAttemptId(verifyTaskId));
-    await waitForTorkJob(infra.torkBaseUrl, verifyHand.externalJobId, undefined, ["failed"]);
+    await waitForTorkJob(infra.torkBaseUrl, verifyHand.externalJobId);
     assert.equal(await waitForHandExecutionStatus(env.db, verifyHand.resourceKey, ["completed", "failed"]), "failed");
 
-    const tasks = await env.db.query<{ id: string; status: string; depends_on_json: unknown }>(
-      "select id, status, depends_on_json from southstar.workflow_tasks where run_id = $1 order by sort_order",
+    const tasks = await env.db.query<{ id: string; status: string; depends_on_json: unknown; snapshot_json: Record<string, unknown> }>(
+      "select id, status, depends_on_json, snapshot_json from southstar.workflow_tasks where run_id = $1 order by sort_order",
       [runId],
     );
     assert.deepEqual(tasks.rows.slice(0, 2).map((task) => `${task.id}:${task.status}`), [
@@ -81,7 +81,10 @@ test("30 runtime dynamic repair node generation: failed validation callback appe
     const downstreamTask = tasks.rows.find((task) => task.id === downstreamTaskId);
     assert.ok(downstreamTask);
     assert.equal(downstreamTask.status, "pending");
-    const appendedTasks = tasks.rows.filter((task) => task.id.endsWith("-verify-feature-attempt-1"));
+    const appendedTasks = tasks.rows.filter((task) => {
+      const dynamicRepair = task.snapshot_json.dynamicRepair as { rootFailedTaskId?: unknown; failedTaskId?: unknown } | undefined;
+      return dynamicRepair?.rootFailedTaskId === verifyTaskId && dynamicRepair.failedTaskId === verifyTaskId;
+    });
     assert.equal(appendedTasks.length >= 2, true);
     assert.equal(appendedTasks.every((task) => task.status === "pending"), true);
     assert.deepEqual(appendedTasks[0]?.depends_on_json, ["implement-feature"]);
@@ -219,7 +222,7 @@ function workflowManifest(input: {
     ],
     harnessDefinitions: [{
       id: "pi",
-      kind: "pi-agent",
+      kind: "builtin",
       entrypoint: "southstar-agent-runner",
       image: "southstar/pi-agent:local",
       capabilities: ["software"],
@@ -263,8 +266,8 @@ function agentProfile(
     id,
     name,
     agentRef: "agent.frontend-developer",
-    provider: "pi",
-    model: "pi-agent-default",
+    provider: "builtin",
+    model: "builtin-default",
     workerKind,
     harnessRef: "pi",
     promptTemplateRef: id,

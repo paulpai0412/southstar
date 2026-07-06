@@ -673,11 +673,22 @@ function createPlannerDraftStreamResponse(
 ): Response {
   const plannerRequest = parsePlannerDraftRequest(body);
   const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: string, data: unknown) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
+          if (heartbeat) clearInterval(heartbeat);
+        }
       };
+      heartbeat = startPlannerSseHeartbeat(context, send, {
+        phase: "planner_draft_create",
+      });
       try {
         send("planner.stage", { stage: "request.accepted", message: "Accepted workflow generation request." });
         const composer = resolvePlannerWorkflowComposer(context, {
@@ -703,8 +714,21 @@ function createPlannerDraftStreamResponse(
       } catch (error) {
         send("error", { error: error instanceof Error ? error.message : String(error) });
       } finally {
-        controller.close();
+        const wasClosed = closed;
+        closed = true;
+        if (heartbeat) clearInterval(heartbeat);
+        if (!wasClosed) {
+          try {
+            controller.close();
+          } catch {
+            // The browser or CLI client may have cancelled the stream already.
+          }
+        }
       }
+    },
+    cancel() {
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
     },
   });
   return new Response(stream, {
@@ -726,11 +750,23 @@ function createPlannerDraftRevisionStreamResponse(
   },
 ): Response {
   const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const send = (event: string, data: unknown) => {
-        controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
+          if (heartbeat) clearInterval(heartbeat);
+        }
       };
+      heartbeat = startPlannerSseHeartbeat(context, send, {
+        phase: "planner_draft_revision",
+        draftId,
+      });
       try {
         send("planner.stage", { stage: "revision.requested", message: "Accepted workflow revision request." });
         const composer = resolvePlannerWorkflowComposer(context, {
@@ -759,8 +795,21 @@ function createPlannerDraftRevisionStreamResponse(
       } catch (error) {
         send("error", { error: error instanceof Error ? error.message : String(error) });
       } finally {
-        controller.close();
+        const wasClosed = closed;
+        closed = true;
+        if (heartbeat) clearInterval(heartbeat);
+        if (!wasClosed) {
+          try {
+            controller.close();
+          } catch {
+            // The browser or CLI client may have cancelled the stream already.
+          }
+        }
       }
+    },
+    cancel() {
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
     },
   });
   return new Response(stream, {
@@ -770,6 +819,20 @@ function createPlannerDraftRevisionStreamResponse(
       connection: "keep-alive",
     },
   });
+}
+
+function startPlannerSseHeartbeat(
+  context: RuntimeServerContext,
+  send: (event: string, data: unknown) => void,
+  data: Record<string, unknown>,
+): ReturnType<typeof setInterval> {
+  const intervalMs = Math.max(1, context.libraryChatHeartbeatMs ?? 15_000);
+  return setInterval(() => {
+    send("planner.progress.keepalive", {
+      ...data,
+      at: new Date().toISOString(),
+    });
+  }, intervalMs);
 }
 
 async function readJsonBody<T>(request: Request): Promise<T> {

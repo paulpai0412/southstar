@@ -289,6 +289,8 @@ export interface SessionInfo {
   };
 }
 
+export type WorkspaceSurface = "chat" | "library" | "workflow" | "operator";
+
 export interface SessionContext {
   messages: AgentMessage[];
   entryIds: string[]; // parallel to messages — the session entry id for each message

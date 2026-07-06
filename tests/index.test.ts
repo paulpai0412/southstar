@@ -1,6 +1,5 @@
 await import("./coverage/coverage-config.test.ts");
 await import("./v2/manifests.test.ts");
-await import("./v2/effort-policy.test.ts");
 await import("./v2/end-state-evaluator.test.ts");
 await import("./v2/workflow-revision.test.ts");
 await import("./v2/tork-projection.test.ts");

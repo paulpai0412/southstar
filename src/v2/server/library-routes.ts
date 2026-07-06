@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { LibraryDefinitionKind, LibraryDefinitionStatus, LibraryEdgeType } from "../design-library/types.ts";
+import type { LibraryDefinitionKind, LibraryDefinitionStatus, LibraryEdgeType, WorkflowCompositionPlan } from "../design-library/types.ts";
 import {
   applyLibraryObjectLifecycleAction,
   type LibraryObjectLifecycleAction,
@@ -149,15 +149,18 @@ export async function handleLibraryRoute(
     const draftId = decodeURIComponent(saveTemplateMatch[1]!);
     const draft = await getResourceByKeyPg(context.db, "planner_draft", draftId);
     if (!draft) return errorJson(`planner draft not found: ${draftId}`, 404);
-    const workflow = asRecord(asRecord(draft.payload).workflow);
+    const draftPayload = asRecord(draft.payload);
+    const workflow = asRecord(draftPayload.workflow);
     const scope = optionalString(body.scope) ?? "software";
     const status = workflowTemplateSaveStatus(body.status);
+    const compositionPlan = workflowCompositionPlanFromDraftPayload(draftPayload);
     const result = await saveWorkflowTemplateDraft(context.db, {
       root: libraryRoot(context),
       scope,
       templateId: requiredString(body.templateId, "templateId"),
       title: requiredString(body.title, "title"),
       status,
+      ...(compositionPlan ? { compositionPlan } : {}),
       ...await saveTemplateGraphFromWorkflow(context.db, workflow, scope),
     });
     return json("workflow-template-save", { draftId, ...result });
@@ -758,6 +761,13 @@ function profileObjectKey(value: string | undefined): string | undefined {
   const trimmed = value.trim();
   if (trimmed.length === 0) return undefined;
   return trimmed.startsWith("profile.") ? trimmed : `profile.${trimmed}`;
+}
+
+function workflowCompositionPlanFromDraftPayload(payload: Record<string, unknown>): WorkflowCompositionPlan | undefined {
+  const plan = asRecord(asRecord(payload.orchestrationSnapshot).selectedCompositionPlan);
+  if (plan.schemaVersion !== "southstar.workflow_composition_plan.v1") return undefined;
+  if (!Array.isArray(plan.tasks)) return undefined;
+  return plan as unknown as WorkflowCompositionPlan;
 }
 
 async function requireAgentDefinition(db: SouthstarDb, objectKey: string): Promise<void> {

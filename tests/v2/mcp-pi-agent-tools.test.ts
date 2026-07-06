@@ -4,7 +4,7 @@ import {
   createSouthstarPiAgentTools,
   southstarMcpToolNameToPiToolName,
 } from "../../src/v2/mcp/pi-agent-tools.ts";
-import type { SouthstarMcpToolRegistry } from "../../src/v2/mcp/tool-registry.ts";
+import type { SouthstarMcpToolCallContext, SouthstarMcpToolRegistry } from "../../src/v2/mcp/tool-registry.ts";
 
 test("Southstar MCP tool names are mapped to Pi-safe custom tool names", () => {
   assert.equal(
@@ -14,7 +14,8 @@ test("Southstar MCP tool names are mapped to Pi-safe custom tool names", () => {
 });
 
 test("createSouthstarPiAgentTools adapts registry tools into Pi custom tools", async () => {
-  const calls: Array<{ name: string; input: unknown }> = [];
+  const controller = new AbortController();
+  const calls: Array<{ name: string; input: unknown; context?: SouthstarMcpToolCallContext }> = [];
   const registry: SouthstarMcpToolRegistry = {
     listTools() {
       return [
@@ -33,7 +34,7 @@ test("createSouthstarPiAgentTools adapts registry tools into Pi custom tools", a
       ];
     },
     async callTool(name, input, context) {
-      calls.push({ name, input });
+      calls.push({ name, input, context });
       context?.onEvent?.({
         event: "planner.stage",
         data: { stage: "requirement.analyzed", message: "Requirement analysis completed." },
@@ -55,7 +56,7 @@ test("createSouthstarPiAgentTools adapts registry tools into Pi custom tools", a
   const result = await tools[0]!.execute(
     "tool-call-1",
     { goalPrompt: "build a todo app" },
-    undefined,
+    controller.signal,
     (update) => updates.push(update),
     {} as never,
   );
@@ -64,8 +65,10 @@ test("createSouthstarPiAgentTools adapts registry tools into Pi custom tools", a
     {
       name: "southstar.workflow.create_draft_stream",
       input: { goalPrompt: "build a todo app" },
+      context: calls[0]!.context,
     },
   ]);
+  assert.equal(calls[0]!.context?.signal, controller.signal);
   assert.deepEqual(result.content, [{ type: "text", text: "{\"draft\":{\"draftId\":\"draft-stream\"}}" }]);
   assert.deepEqual(result.details, {
     mcpToolName: "southstar.workflow.create_draft_stream",

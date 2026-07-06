@@ -125,7 +125,6 @@ export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
       return;
     }
     dispatch({ type: "running" });
-    let createdRun: WorkflowRunResult | null = null;
 
     try {
       const orchestrationResponse = await fetch(
@@ -143,31 +142,24 @@ export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm: true }),
       });
-      createdRun = await readJson<WorkflowRunResult>(response);
+      const createdRun = await readJson<WorkflowRunResult>(response);
       dispatch({ type: "run_created", run: createdRun });
-
-      dispatch({ type: "executing" });
-      const executeResponse = await fetch(`/api/workflow/runs/${encodeURIComponent(createdRun.runId)}/execute`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirm: true }),
-      });
-      dispatch({ type: "executed", execute: await readJson<WorkflowExecuteResult>(executeResponse) });
     } catch (error) {
       dispatch({
-        type: createdRun ? "execute_failed" : "blocked",
+        type: "blocked",
         error: error instanceof Error ? error.message : String(error),
       });
     }
   };
 
-  const retryExecute = async () => {
-    if (!state.run?.runId) {
+  const executeRun = async () => {
+    const runId = state.run?.runId ?? dag.runId;
+    if (!runId) {
       return;
     }
     dispatch({ type: "executing" });
     try {
-      const executeResponse = await fetch(`/api/workflow/runs/${encodeURIComponent(state.run.runId)}/execute`, {
+      const executeResponse = await fetch(`/api/workflow/runs/${encodeURIComponent(runId)}/execute`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirm: true }),
@@ -178,5 +170,7 @@ export function useWorkflowLifecycle(dag: WorkflowDag, cwd?: string | null) {
     }
   };
 
-  return { state, createDraft, validateDraft, runDraft, retryExecute };
+  const retryExecute = executeRun;
+
+  return { state, createDraft, validateDraft, runDraft, executeRun, retryExecute };
 }

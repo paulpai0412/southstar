@@ -207,6 +207,12 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
         now,
       });
       if (completedTaskPrecondition) return completedTaskPrecondition;
+      const dynamicRepairPrecondition = await applyDynamicRepairRevisionPreconditionPg(deps.db, {
+        decision: applyingDecision,
+        executionResourceKey: started.resourceKey,
+        now,
+      });
+      if (dynamicRepairPrecondition) return dynamicRepairPrecondition;
 
       if (applyingDecision.payload.path === "wake-new-brain") {
         const missingDeps = missingWakeNewBrainDeps(deps);
@@ -460,6 +466,44 @@ async function applyCompletedTaskPreconditionPg(
   return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
 }
 
+async function applyDynamicRepairRevisionPreconditionPg(
+  db: SouthstarDb,
+  input: { decision: RuntimeRecoveryDecisionRecord; executionResourceKey: string; now: string },
+): Promise<RecoveryDecisionApplyResult | null> {
+  if (!requeuesOriginalTask(input.decision.payload.path)) return null;
+  const taskId = input.decision.payload.taskId;
+  if (!taskId) return null;
+
+  const revision = await db.maybeOne<{ resource_key: string }>(
+    `select resource_key
+       from southstar.runtime_resources
+      where resource_type = 'workflow_dynamic_repair_revision'
+        and run_id = $1
+        and task_id = $2
+        and status = 'applied'
+      order by created_at desc, resource_key desc
+      limit 1
+      for update`,
+    [input.decision.payload.runId, taskId],
+  );
+  if (!revision) return null;
+
+  const reason = "dynamic repair revision already applied for failed validation task";
+  const terminalDecision = await supersedeDecision(db, {
+    decision: input.decision,
+    executionResourceKey: input.executionResourceKey,
+    now: input.now,
+    reason,
+  });
+  return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+}
+
+function requeuesOriginalTask(path: RuntimeRecoveryDecisionRecord["payload"]["path"]): boolean {
+  return path === "reprovision-hand"
+    || path === "wake-new-brain"
+    || path === "retry-same-task-new-attempt";
+}
+
 async function stageRequeueRecoveryEvidencePg(
   db: SouthstarDb,
   input: {
@@ -486,6 +530,12 @@ async function stageRequeueRecoveryEvidencePg(
       now,
     });
     if (completedTaskPrecondition) return completedTaskPrecondition;
+    const dynamicRepairPrecondition = await applyDynamicRepairRevisionPreconditionPg(tx, {
+      decision,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+    if (dynamicRepairPrecondition) return dynamicRepairPrecondition;
 
     const hand = mapRuntimeResourceRow(await tx.maybeOne<RuntimeResourceRow>(
       `select * from southstar.runtime_resources
@@ -656,6 +706,12 @@ async function applyRequeueMutation(
       now,
     });
     if (completedTaskPrecondition) return completedTaskPrecondition;
+    const dynamicRepairPrecondition = await applyDynamicRepairRevisionPreconditionPg(tx, {
+      decision,
+      executionResourceKey: input.executionResourceKey,
+      now,
+    });
+    if (dynamicRepairPrecondition) return dynamicRepairPrecondition;
 
     const hand = mapRuntimeResourceRow(await tx.maybeOne<RuntimeResourceRow>(
       `select * from southstar.runtime_resources

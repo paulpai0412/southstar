@@ -9,6 +9,7 @@ import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts"
 import { createExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
 import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
 import { maybeApplyDynamicRepairRevisionPg } from "../../src/v2/runtime-revision/dynamic-repair-revision.ts";
+import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -120,6 +121,72 @@ test("dynamic repair revision appends repair and reverify tasks for failed valid
   }
 });
 
+test("dynamic repair prompt seeds repair from implement profile and reverify from verifier profile", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-profile-hints",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-profile-hints",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-profile-hints",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+
+    const composer = new CapturingWorkflowComposer(repairCompositionPlan());
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-profile-hints",
+      failedTaskId: "verify-feature",
+      failedArtifactRefId: "artifact-ref-verify-failed",
+      failedArtifact: { summary: "npm test failed in todo component", findings: ["button handler missing"] },
+      workflowComposer: composer,
+    });
+
+    assert.equal(result.status, "applied");
+    assert.equal(composer.goalPrompts.length, 1);
+    const prompt = composer.goalPrompts[0] ?? "";
+    assert.match(prompt, /Profile reuse hints:/);
+    assert.match(prompt, /"repairProfileSeed"/);
+    assert.match(prompt, /"seedTaskId": "implement-feature"/);
+    assert.match(prompt, /"seedAgentProfileId": "profile.impl"/);
+    assert.match(prompt, /"seedPurpose": "repair_from_implementation"/);
+    assert.match(prompt, /"reverifyProfileSeed"/);
+    assert.match(prompt, /"seedTaskId": "verify-feature"/);
+    assert.match(prompt, /"seedAgentProfileId": "profile.verify"/);
+    assert.match(prompt, /"seedPurpose": "reverify_from_failed_validation"/);
+    assert.match(prompt, /Use repairProfileSeed as the preferred source/);
+    assert.match(prompt, /Use reverifyProfileSeed as the preferred source/);
+    assert.match(prompt, /Do not reuse the original profile ids directly/);
+    assert.match(prompt, /workerKind=repair_worker/);
+    assert.match(prompt, /workerKind=validation_worker/);
+  } finally {
+    await db.close();
+  }
+});
+
 test("dynamic repair revision reconnects pending downstream tasks after generated reverify", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -207,6 +274,134 @@ test("dynamic repair revision reconnects pending downstream tasks after generate
   }
 });
 
+test("dynamic repair limits consecutive reverify repair chain by root failed task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    workflow.tasks.push(workflowTask("summarize-release", "Summarize Release", "implementer", "profile.impl", ["verify-feature"]));
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-chain-limit",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-chain-limit",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-chain-limit",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "summarize-release",
+      runId: "run-dynamic-repair-chain-limit",
+      taskKey: "Summarize Release",
+      status: "pending",
+      sortOrder: 2,
+      dependsOn: ["verify-feature"],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+
+    const first = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-chain-limit",
+      failedTaskId: "verify-feature",
+      failedArtifactRefId: "artifact-ref-verify-failed",
+      failedArtifact: { summary: "first verification failed" },
+      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      maxDynamicRepairRounds: 2,
+    });
+
+    assert.equal(first.status, "applied");
+    const firstReverifyId = "reverify-verify-feature-attempt-1";
+    await removeManifestDynamicRepairLineage(db, "run-dynamic-repair-chain-limit", firstReverifyId);
+    await db.query(
+      "update southstar.workflow_tasks set status = 'failed', completed_at = now(), updated_at = now() where run_id = $1 and id = $2",
+      ["run-dynamic-repair-chain-limit", firstReverifyId],
+    );
+    const secondComposer = new CapturingWorkflowComposer(repairCompositionPlan());
+    const second = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-chain-limit",
+      failedTaskId: firstReverifyId,
+      failedArtifactRefId: "artifact-ref-reverify-failed",
+      failedArtifact: { summary: "reverify failed after first repair" },
+      workflowComposer: secondComposer,
+      maxDynamicRepairRounds: 2,
+    });
+
+    assert.equal(second.status, "applied");
+    assert.deepEqual(second.newTaskIds, [
+      "repair-reverify-verify-feature-attempt-1-attempt-2",
+      "reverify-reverify-verify-feature-attempt-1-attempt-2",
+    ]);
+    const secondPrompt = secondComposer.goalPrompts[0] ?? "";
+    assert.match(secondPrompt, /Root failed validation task: verify-feature/);
+    assert.match(secondPrompt, /"seedTaskId": "repair-verify-feature-attempt-1"/);
+    assert.match(secondPrompt, /"seedAgentProfileId": "profile.generated.dynamic-repair.repair"/);
+
+    const secondReverifyId = "reverify-reverify-verify-feature-attempt-1-attempt-2";
+    const rowsAfterSecond = await db.query<{ id: string; depends_on_json: string[]; snapshot_json: Record<string, unknown> }>(
+      "select id, depends_on_json, snapshot_json from southstar.workflow_tasks where run_id = $1 order by sort_order",
+      ["run-dynamic-repair-chain-limit"],
+    );
+    assert.deepEqual(
+      rowsAfterSecond.rows.find((row) => row.id === "summarize-release")?.depends_on_json,
+      [secondReverifyId],
+    );
+    const secondRepairSnapshot = rowsAfterSecond.rows.find((row) => row.id === "repair-reverify-verify-feature-attempt-1-attempt-2")?.snapshot_json.dynamicRepair as {
+      rootFailedTaskId?: string;
+      originalFailedTaskId?: string;
+      failedTaskId?: string;
+      round?: number;
+    };
+    assert.equal(secondRepairSnapshot.rootFailedTaskId, "verify-feature");
+    assert.equal(secondRepairSnapshot.originalFailedTaskId, "verify-feature");
+    assert.equal(secondRepairSnapshot.failedTaskId, firstReverifyId);
+    assert.equal(secondRepairSnapshot.round, 2);
+
+    await db.query(
+      "update southstar.workflow_tasks set status = 'failed', completed_at = now(), updated_at = now() where run_id = $1 and id = $2",
+      ["run-dynamic-repair-chain-limit", secondReverifyId],
+    );
+    const third = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-chain-limit",
+      failedTaskId: secondReverifyId,
+      failedArtifactRefId: "artifact-ref-reverify-2-failed",
+      failedArtifact: { summary: "reverify failed after second repair" },
+      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      maxDynamicRepairRounds: 2,
+    });
+    assert.deepEqual(third, { status: "skipped", reason: "dynamic-repair-round-limit" });
+
+    const resources = await listResourcesPg(db, { resourceType: "workflow_dynamic_repair_revision" });
+    const chainResources = resources.filter((resource) => resource.runId === "run-dynamic-repair-chain-limit");
+    assert.equal(chainResources.length, 2);
+    assert.deepEqual(chainResources.map((resource) => (resource.payload as { rootFailedTaskId?: string; round?: number }).rootFailedTaskId), [
+      "verify-feature",
+      "verify-feature",
+    ]);
+    assert.deepEqual(chainResources.map((resource) => (resource.payload as { round?: number }).round), [1, 2]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("failed validation callback applies dynamic repair revision before completion gate", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -282,6 +477,389 @@ test("failed validation callback applies dynamic repair revision before completi
       "repair-verify-feature-attempt-1:pending",
       "reverify-verify-feature-attempt-1:pending",
     ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("failing verification report semantics apply dynamic repair revision", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    await createWorkflowRunPg(db, {
+      id: "run-callback-semantic-verification-failure",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-callback-semantic-verification-failure",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-callback-semantic-verification-failure",
+      taskKey: "Verify Feature",
+      status: "running",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      rootSessionId: "session-verify",
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+    await createExecutorBindingPg(db, {
+      runId: "run-callback-semantic-verification-failure",
+      taskId: "verify-feature",
+      attemptId: "attempt-1",
+      torkJobId: "job-verify",
+      status: "running",
+      now: "2026-07-05T10:00:00.000Z",
+      queueTimeoutSeconds: 3600,
+      hardTimeoutSeconds: 600,
+    });
+
+    const result = await ingestTaskRunResultPg(db, {
+      runId: "run-callback-semantic-verification-failure",
+      taskId: "verify-feature",
+      rootSessionId: "session-verify",
+      ok: true,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: {
+        verification_report: {
+          pass: false,
+          safeToSave: false,
+          summary: "Verifier found blocking failures.",
+          testResults: [{ checkId: "ui-alarm", status: "failed", gating: "blocking" }],
+        },
+      },
+      metrics: { tokens: 20 },
+      receivedAt: "2026-07-05T10:05:00.000Z",
+      events: [],
+    }, {
+      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.equal(result.accepted, false);
+    assert.equal(result.dynamicRepairRevision?.status, "applied");
+    const tasks = await db.query<{ id: string; status: string }>(
+      "select id, status from southstar.workflow_tasks where run_id = $1 order by sort_order",
+      ["run-callback-semantic-verification-failure"],
+    );
+    assert.deepEqual(tasks.rows.map((task) => `${task.id}:${task.status}`), [
+      "implement-feature:completed",
+      "verify-feature:failed",
+      "repair-verify-feature-attempt-1:pending",
+      "reverify-verify-feature-attempt-1:pending",
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("direct verification report fields apply dynamic repair revision", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    await createWorkflowRunPg(db, {
+      id: "run-callback-direct-verification-failure",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-callback-direct-verification-failure",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-callback-direct-verification-failure",
+      taskKey: "Verify Feature",
+      status: "running",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      rootSessionId: "session-verify",
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+    await createExecutorBindingPg(db, {
+      runId: "run-callback-direct-verification-failure",
+      taskId: "verify-feature",
+      attemptId: "attempt-1",
+      torkJobId: "job-verify",
+      status: "running",
+      now: "2026-07-05T10:00:00.000Z",
+      queueTimeoutSeconds: 3600,
+      hardTimeoutSeconds: 600,
+    });
+
+    const result = await ingestTaskRunResultPg(db, {
+      runId: "run-callback-direct-verification-failure",
+      taskId: "verify-feature",
+      rootSessionId: "session-verify",
+      ok: true,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: {
+        summary: "Verifier did not produce structured evidence.",
+        pass: false,
+        safeToSave: false,
+        testResults: [{ checkId: "pi-sdk-structured-output", status: "not-verified", gating: "blocking" }],
+      },
+      metrics: { tokens: 20 },
+      receivedAt: "2026-07-05T10:05:00.000Z",
+      events: [],
+    }, {
+      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.equal(result.accepted, false);
+    assert.equal(result.dynamicRepairRevision?.status, "applied");
+    const tasks = await db.query<{ id: string; status: string }>(
+      "select id, status from southstar.workflow_tasks where run_id = $1 order by sort_order",
+      ["run-callback-direct-verification-failure"],
+    );
+    assert.deepEqual(tasks.rows.map((task) => `${task.id}:${task.status}`), [
+      "implement-feature:completed",
+      "verify-feature:failed",
+      "repair-verify-feature-attempt-1:pending",
+      "reverify-verify-feature-attempt-1:pending",
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("failed callback advances dynamic repair round when prior repair task exists", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    workflow.tasks.push(workflowTask("repair-verify-feature-attempt-1", "Existing Repair", "implementer", "profile.impl", ["implement-feature"]));
+    await createWorkflowRunPg(db, {
+      id: "run-callback-invalid-dynamic-repair",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-callback-invalid-dynamic-repair",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-callback-invalid-dynamic-repair",
+      taskKey: "Verify Feature",
+      status: "running",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      rootSessionId: "session-verify",
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "repair-verify-feature-attempt-1",
+      runId: "run-callback-invalid-dynamic-repair",
+      taskKey: "Existing Repair",
+      status: "pending",
+      sortOrder: 2,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createExecutorBindingPg(db, {
+      runId: "run-callback-invalid-dynamic-repair",
+      taskId: "verify-feature",
+      attemptId: "attempt-1",
+      torkJobId: "job-verify",
+      status: "running",
+      now: "2026-07-05T10:00:00.000Z",
+      queueTimeoutSeconds: 3600,
+      hardTimeoutSeconds: 600,
+    });
+
+    const result = await ingestTaskRunResultPg(db, {
+      runId: "run-callback-invalid-dynamic-repair",
+      taskId: "verify-feature",
+      rootSessionId: "session-verify",
+      ok: false,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: { kind: "verification_report", summary: "verification failed" },
+      metrics: { tokens: 20 },
+      receivedAt: "2026-07-05T10:05:00.000Z",
+      events: [],
+    }, {
+      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.equal(result.accepted, false);
+    assert.equal(result.dynamicRepairRevision?.status, "applied");
+    assert.deepEqual(result.dynamicRepairRevision?.newTaskIds, [
+      "repair-verify-feature-attempt-2",
+      "reverify-verify-feature-attempt-2",
+    ]);
+
+    const tasks = await db.query<{ id: string; status: string }>(
+      "select id, status from southstar.workflow_tasks where run_id = $1 order by sort_order",
+      ["run-callback-invalid-dynamic-repair"],
+    );
+    assert.deepEqual(tasks.rows.map((task) => `${task.id}:${task.status}`), [
+      "implement-feature:completed",
+      "verify-feature:failed",
+      "repair-verify-feature-attempt-1:pending",
+      "repair-verify-feature-attempt-2:pending",
+      "reverify-verify-feature-attempt-2:pending",
+    ]);
+    const history = await listHistoryForRunPg(db, "run-callback-invalid-dynamic-repair");
+    const evaluated = history.find((event) => event.eventType === "workflow.dynamic_repair_revision_evaluated");
+    assert.equal((evaluated?.payload as { status?: string } | undefined)?.status, "applied");
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair round advances when prior repair task exists without revision resource", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    workflow.tasks.push(workflowTask("repair-verify-feature-attempt-1", "Existing Repair", "implementer", "profile.impl", ["implement-feature"]));
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-existing-task-no-resource",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-existing-task-no-resource",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-existing-task-no-resource",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "repair-verify-feature-attempt-1",
+      runId: "run-dynamic-repair-existing-task-no-resource",
+      taskKey: "Existing Repair",
+      status: "pending",
+      sortOrder: 2,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-existing-task-no-resource",
+      failedTaskId: "verify-feature",
+      failedArtifactRefId: "artifact-ref-verify-failed",
+      failedArtifact: { summary: "verification failed" },
+      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.equal(result.status, "applied");
+    assert.deepEqual(result.newTaskIds, [
+      "repair-verify-feature-attempt-2",
+      "reverify-verify-feature-attempt-2",
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair revision retries invalid LLM composition before appending tasks", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-composition-retry",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-composition-retry",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-composition-retry",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+
+    const invalid = repairCompositionPlan();
+    invalid.tasks[0]!.agentDefinitionRef = "capability.frontend-ui";
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-composition-retry",
+      failedTaskId: "verify-feature",
+      failedArtifactRefId: "artifact-ref-verify-failed",
+      failedArtifact: { summary: "npm test failed in todo component", findings: ["button handler missing"] },
+      workflowComposer: new ScriptedWorkflowComposer([invalid, repairCompositionPlan()]),
+    });
+
+    assert.equal(result.status, "applied");
+    assert.deepEqual(result.newTaskIds, ["repair-verify-feature-attempt-1", "reverify-verify-feature-attempt-1"]);
+    const resources = await listResourcesPg(db, { resourceType: "workflow_dynamic_repair_revision" });
+    const dynamicResource = resources.find((resource) => resource.runId === "run-dynamic-repair-composition-retry");
+    assert.equal((dynamicResource?.payload as { repairLoopAttempts?: unknown[] } | undefined)?.repairLoopAttempts?.length, 2);
   } finally {
     await db.close();
   }
@@ -412,6 +990,25 @@ function workflowTask(id: string, name: string, roleRef: string, agentProfileRef
   };
 }
 
+async function removeManifestDynamicRepairLineage(db: SouthstarDb, runId: string, taskId: string) {
+  const run = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
+    "select workflow_manifest_json from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  const workflow = {
+    ...run.workflow_manifest_json,
+    tasks: run.workflow_manifest_json.tasks.map((task) => {
+      if (task.id !== taskId || !task.promptInputs?.dynamicRepair) return task;
+      const { dynamicRepair: _dynamicRepair, ...promptInputs } = task.promptInputs;
+      return { ...task, promptInputs };
+    }),
+  };
+  await db.query(
+    "update southstar.workflow_runs set workflow_manifest_json = $2::jsonb, updated_at = now() where id = $1",
+    [runId, JSON.stringify(workflow)],
+  );
+}
+
 function repairCompositionPlan(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
@@ -501,6 +1098,17 @@ function generatedProfile(id: string, workerKind: "repair_worker" | "validation_
       },
     },
   };
+}
+
+class CapturingWorkflowComposer implements WorkflowComposer {
+  readonly goalPrompts: string[] = [];
+
+  constructor(private readonly plan: WorkflowCompositionPlan) {}
+
+  async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    this.goalPrompts.push(input.goalPrompt);
+    return structuredClone(this.plan);
+  }
 }
 
 async function seedDynamicRepairPrimitives(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {

@@ -19,7 +19,7 @@ export type SouthstarMcpRuntimeClient = {
   getLibraryGraph(body?: { scope?: string; objectKey?: string; depth?: number; kind?: string; status?: string; edgeType?: string }): Promise<ApiEnvelope<unknown>>;
   createLibraryImportDraft(body: { source: unknown; scope?: string; requestPrompt?: string }): Promise<ApiEnvelope<unknown>>;
   installLibraryImportCandidates(body: { draftId: string; selectedCandidateIds: string[]; selectedEdgeIds?: string[]; actor?: string; reason: string }): Promise<ApiEnvelope<unknown>>;
-  installLibraryImportCandidatesStream(body: { draftId: string; selectedCandidateIds: string[]; selectedEdgeIds?: string[]; actor?: string; reason: string }, onEvent: (event: SouthstarMcpStreamEvent) => void): Promise<unknown>;
+  installLibraryImportCandidatesStream(body: { draftId: string; selectedCandidateIds: string[]; selectedEdgeIds?: string[]; actor?: string; reason: string }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
   getLibraryObject(objectKey: string): Promise<ApiEnvelope<unknown>>;
   setLibraryObjectLifecycle(body: { objectKey: string; action: "approve" | "deprecate" | "block"; actor?: string; reason: string }): Promise<ApiEnvelope<unknown>>;
   listLibraryFiles(): Promise<ApiEnvelope<unknown>>;
@@ -32,9 +32,9 @@ export type SouthstarMcpRuntimeClient = {
   saveLibraryProfile(body: { draft: unknown; templateId: string; actor?: string; reason: string }): Promise<ApiEnvelope<unknown>>;
 
   createPlannerDraft(body: { goalPrompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm"; scope?: string }): Promise<ApiEnvelope<unknown>>;
-  createPlannerDraftStream(body: { goalPrompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm"; scope?: string; cwd?: string }, onEvent: (event: SouthstarMcpStreamEvent) => void): Promise<unknown>;
+  createPlannerDraftStream(body: { goalPrompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm"; scope?: string; cwd?: string }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
   revisePlannerDraft(body: { draftId: string; prompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm" }): Promise<ApiEnvelope<unknown>>;
-  revisePlannerDraftStream(body: { draftId: string; prompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm" }, onEvent: (event: SouthstarMcpStreamEvent) => void): Promise<unknown>;
+  revisePlannerDraftStream(body: { draftId: string; prompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm" }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
   searchWorkflowTemplates(body: { prompt: string; domain?: string; limit?: number }): Promise<ApiEnvelope<unknown>>;
   getWorkflowTemplate(templateRef: string): Promise<ApiEnvelope<unknown>>;
   instantiateWorkflowTemplate(body: {
@@ -86,7 +86,7 @@ export type SouthstarMcpRuntimeClient = {
   approveRecoveryDecision(body: { runId: string; decisionId: string; decision: "approved" | "rejected"; reason: string }): Promise<ApiEnvelope<unknown>>;
   applyRecoveryDecision(body: { runId: string; decisionId: string }): Promise<ApiEnvelope<unknown>>;
   steerRun(body: { runId: string; message: string }): Promise<ApiEnvelope<unknown>>;
-  streamRunEvents(body: { runId: string; after?: number; taskId?: string; includeRunEvents?: boolean; closeOnTerminal?: boolean; pollMs?: number; heartbeatMs?: number }, onEvent: (event: SouthstarMcpStreamEvent) => void): Promise<unknown>;
+  streamRunEvents(body: { runId: string; after?: number; taskId?: string; includeRunEvents?: boolean; closeOnTerminal?: boolean; pollMs?: number; heartbeatMs?: number }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
 };
 
 export type SouthstarMcpTool = {
@@ -108,6 +108,7 @@ export type SouthstarMcpStreamEvent = {
 
 export type SouthstarMcpToolCallContext = {
   onEvent?: (event: SouthstarMcpStreamEvent) => void;
+  signal?: AbortSignal;
 };
 
 export type SouthstarMcpToolRegistry = {
@@ -149,7 +150,7 @@ export function createSouthstarMcpToolRegistry(input: { client: SouthstarMcpRunt
         ...(Array.isArray(body.selectedEdgeIds) ? { selectedEdgeIds: stringArray(body.selectedEdgeIds, "selectedEdgeIds") } : {}),
         ...(optionalString(body.actor) ? { actor: optionalString(body.actor) } : {}),
         reason: requiredString(body.reason, "reason"),
-      }, context.onEvent ?? noopEvent);
+      }, context.onEvent ?? noopEvent, context.signal);
     }),
     tool("southstar.library.get_object", "Read a Library object.", { objectKey: stringSchema("Library object key.") }, ["objectKey"], async (value) => unwrap(await c.getLibraryObject(requiredString(asRecord(value).objectKey, "objectKey")))),
     tool("southstar.library.set_object_lifecycle", "Approve, deprecate, or block a Library object.", { objectKey: stringSchema("Object key."), action: stringSchema("approve, deprecate, or block."), actor: optionalStringSchema("Actor."), reason: stringSchema("Reason.") }, ["objectKey", "action", "reason"], async (value) => {
@@ -186,7 +187,7 @@ export function createSouthstarMcpToolRegistry(input: { client: SouthstarMcpRunt
     }),
 
     tool("southstar.workflow.create_draft", "Create a planner draft from a prompt.", plannerDraftSchema(), ["goalPrompt"], async (value) => unwrap(await c.createPlannerDraft(plannerDraftBody(asRecord(value))))),
-    tool("southstar.workflow.create_draft_stream", "Create a planner draft from a prompt and stream backend progress.", plannerDraftSchema(), ["goalPrompt"], async (value, context) => await c.createPlannerDraftStream(plannerDraftBody(asRecord(value)), context.onEvent ?? noopEvent)),
+    tool("southstar.workflow.create_draft_stream", "Create a planner draft from a prompt and stream backend progress.", plannerDraftSchema(), ["goalPrompt"], async (value, context) => await c.createPlannerDraftStream(plannerDraftBody(asRecord(value)), context.onEvent ?? noopEvent, context.signal)),
     tool("southstar.workflow.search_templates", "Search approved workflow templates.", { prompt: stringSchema("Prompt."), domain: optionalStringSchema("Domain."), limit: optionalNumberSchema("Limit.") }, ["prompt"], async (value) => {
       const body = asRecord(value);
       return unwrap(await c.searchWorkflowTemplates({ prompt: requiredString(body.prompt, "prompt"), ...(optionalString(body.domain) ? { domain: optionalString(body.domain) } : {}), ...(optionalNumber(body.limit) !== undefined ? { limit: optionalNumber(body.limit) } : {}) }));
@@ -194,7 +195,7 @@ export function createSouthstarMcpToolRegistry(input: { client: SouthstarMcpRunt
     tool("southstar.workflow.get_template", "Read a workflow template.", { templateRef: stringSchema("Template ref.") }, ["templateRef"], async (value) => unwrap(await c.getWorkflowTemplate(requiredString(asRecord(value).templateRef, "templateRef")))),
     tool("southstar.workflow.instantiate_template", "Instantiate a workflow template.", { templateRef: stringSchema("Template ref."), goalPrompt: stringSchema("Goal prompt."), cwd: optionalStringSchema("Workspace path."), repo: optionalObjectSchema("Repo."), constraints: optionalObjectSchema("Constraints.") }, ["templateRef", "goalPrompt"], async (value) => unwrap(await c.instantiateWorkflowTemplate(instantiateTemplateBody(asRecord(value))))),
     tool("southstar.workflow.revise_draft", "Revise a planner draft.", { draftId: stringSchema("Draft id."), prompt: stringSchema("Revision prompt."), orchestrationMode: optionalStringSchema("Mode."), composerMode: optionalStringSchema("Composer mode.") }, ["draftId", "prompt"], async (value) => unwrap(await c.revisePlannerDraft(reviseDraftBody(asRecord(value))))),
-    tool("southstar.workflow.revise_draft_stream", "Revise a planner draft and stream backend progress.", { draftId: stringSchema("Draft id."), prompt: stringSchema("Revision prompt."), orchestrationMode: optionalStringSchema("Mode."), composerMode: optionalStringSchema("Composer mode.") }, ["draftId", "prompt"], async (value, context) => await c.revisePlannerDraftStream(reviseDraftBody(asRecord(value)), context.onEvent ?? noopEvent)),
+    tool("southstar.workflow.revise_draft_stream", "Revise a planner draft and stream backend progress.", { draftId: stringSchema("Draft id."), prompt: stringSchema("Revision prompt."), orchestrationMode: optionalStringSchema("Mode."), composerMode: optionalStringSchema("Composer mode.") }, ["draftId", "prompt"], async (value, context) => await c.revisePlannerDraftStream(reviseDraftBody(asRecord(value)), context.onEvent ?? noopEvent, context.signal)),
     tool("southstar.workflow.get_draft", "Read planner draft orchestration.", { draftId: stringSchema("Draft id.") }, ["draftId"], async (value) => unwrap(await c.getPlannerDraftOrchestration(requiredString(asRecord(value).draftId, "draftId")))),
     tool("southstar.workflow.list_proposals", "List planner draft proposals.", { draftId: stringSchema("Draft id.") }, ["draftId"], async (value) => unwrap(await c.listPlannerDraftProposals(requiredString(asRecord(value).draftId, "draftId")))),
     tool("southstar.workflow.approve_proposal", "Approve a planner draft proposal.", proposalDecisionSchema(), ["draftId", "proposalId"], async (value) => unwrap(await c.approvePlannerDraftProposal(proposalDecisionBody(asRecord(value))))),
@@ -229,7 +230,7 @@ export function createSouthstarMcpToolRegistry(input: { client: SouthstarMcpRunt
     tool("southstar.runtime.approve_recovery_decision", "Approve or reject a recovery decision.", { runId: stringSchema("Run id."), decisionId: stringSchema("Decision id."), decision: stringSchema("approved or rejected."), reason: stringSchema("Reason.") }, ["runId", "decisionId", "decision", "reason"], async (value) => unwrap(await c.approveRecoveryDecision(recoveryDecisionBody(asRecord(value))))),
     tool("southstar.runtime.apply_recovery_decision", "Apply an approved recovery decision.", { runId: stringSchema("Run id."), decisionId: stringSchema("Decision id.") }, ["runId", "decisionId"], async (value) => unwrap(await c.applyRecoveryDecision({ runId: requiredString(asRecord(value).runId, "runId"), decisionId: requiredString(asRecord(value).decisionId, "decisionId") }))),
     tool("southstar.runtime.steer_run", "Send steering text to a run.", { runId: stringSchema("Run id."), message: stringSchema("Steering message.") }, ["runId", "message"], async (value) => unwrap(await c.steerRun({ runId: requiredString(asRecord(value).runId, "runId"), message: requiredString(asRecord(value).message, "message") }))),
-    tool("southstar.runtime.stream_run_events", "Stream durable runtime events for a run.", { runId: stringSchema("Run id."), after: optionalNumberSchema("After sequence."), taskId: optionalStringSchema("Task id."), includeRunEvents: { type: "boolean" }, closeOnTerminal: { type: "boolean" }, pollMs: optionalNumberSchema("Poll ms."), heartbeatMs: optionalNumberSchema("Heartbeat ms.") }, ["runId"], async (value, context) => await c.streamRunEvents(streamRunEventsBody(asRecord(value)), context.onEvent ?? noopEvent)),
+    tool("southstar.runtime.stream_run_events", "Stream durable runtime events for a run.", { runId: stringSchema("Run id."), after: optionalNumberSchema("After sequence."), taskId: optionalStringSchema("Task id."), includeRunEvents: { type: "boolean" }, closeOnTerminal: { type: "boolean" }, pollMs: optionalNumberSchema("Poll ms."), heartbeatMs: optionalNumberSchema("Heartbeat ms.") }, ["runId"], async (value, context) => await c.streamRunEvents(streamRunEventsBody(asRecord(value)), context.onEvent ?? noopEvent, context.signal)),
   ];
 
   return {

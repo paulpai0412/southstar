@@ -1,4 +1,5 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { Buffer } from "node:buffer";
 import type { WorkflowCompositionPlan } from "../design-library/types.ts";
 import {
   findApprovedLibraryObjectsByKind,
@@ -125,8 +126,11 @@ export async function instantiateWorkflowTemplatePg(
 ): Promise<InstantiateWorkflowTemplateResult> {
   const template = await requireApprovedWorkflowTemplate(db, input.templateRef);
   const state = template.state;
-  const compositionPlan = workflowCompositionPlanValue(state.compositionPlan)
-    ?? await composeSkeletonTemplate(db, input, template);
+  const savedCompositionPlan = workflowCompositionPlanValue(state.compositionPlan)
+    ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64)
+  const compositionPlan = savedCompositionPlan
+    ? instantiateSavedCompositionPlan(savedCompositionPlan, input)
+    : await composeSkeletonTemplate(db, input, template);
 
   input.onProgress?.({
     stage: "template.loaded",
@@ -214,6 +218,39 @@ function renderTemplateInstantiationGoal(
   ].join("\n");
 }
 
+function instantiateSavedCompositionPlan(
+  plan: WorkflowCompositionPlan,
+  input: InstantiateWorkflowTemplateInput,
+): WorkflowCompositionPlan {
+  const goalRequirement = `Instantiation goal: ${input.goalPrompt}`;
+  return {
+    ...plan,
+    title: `${plan.title} - instantiated`,
+    rationale: `${plan.rationale}\n\nInstantiated for: ${input.goalPrompt}`,
+    tasks: plan.tasks.map((task) => ({
+      ...task,
+      nodePromptSpec: {
+        ...task.nodePromptSpec,
+        goal: `${task.nodePromptSpec.goal}\n\nInstantiation goal: ${input.goalPrompt}`,
+        requirements: uniqueStrings([goalRequirement, ...task.nodePromptSpec.requirements]),
+        acceptanceCriteria: uniqueStrings([
+          `Satisfy the instantiation goal: ${input.goalPrompt}`,
+          ...task.nodePromptSpec.acceptanceCriteria,
+        ]),
+      },
+    })),
+    generatedComponentProposals: plan.generatedComponentProposals.map((proposal) => proposal.agentProfile
+      ? {
+        ...proposal,
+        agentProfile: {
+          ...proposal.agentProfile,
+          instruction: `${proposal.agentProfile.instruction}\n\nInstantiation goal: ${input.goalPrompt}`,
+        },
+      }
+      : proposal),
+  };
+}
+
 function requireApprovedWorkflowTemplate(db: SouthstarDb, templateRef: string): Promise<LibraryObjectSummary> {
   return findLibraryObjectByKey(db, templateRef).then((template) => {
     if (!template) throw new Error(`workflow template not found: ${templateRef}`);
@@ -255,6 +292,7 @@ function templateValidationIssues(
 ): PlannerDraftValidationIssue[] {
   if (detail.nodes.length > 0) return [];
   if (workflowCompositionPlanValue(state.compositionPlan)) return [];
+  if (workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64)) return [];
   return [{
     path: "state.nodes",
     code: "workflow_template_empty",
@@ -328,6 +366,15 @@ function workflowCompositionPlanValue(value: unknown): WorkflowCompositionPlan |
   return record as WorkflowCompositionPlan;
 }
 
+function workflowCompositionPlanBase64Value(value: unknown): WorkflowCompositionPlan | undefined {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  try {
+    return workflowCompositionPlanValue(JSON.parse(Buffer.from(value, "base64").toString("utf8")));
+  } catch {
+    return undefined;
+  }
+}
+
 function asWorkflowTask(value: unknown): WorkflowTaskDefinition {
   return asRecord(value) as unknown as WorkflowTaskDefinition;
 }
@@ -350,4 +397,8 @@ function tokenize(value: string): Set<string> {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter((value) => value.length > 0))];
 }

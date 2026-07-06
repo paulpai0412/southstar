@@ -129,6 +129,67 @@ test("reprovision-hand marks old hand lost, creates replacement hand, checkpoint
   }
 });
 
+test("reprovision-hand is superseded when dynamic repair already owns failed validation task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const fixture = await createReprovisionDecisionFixture(db, { runId: "run-apply-reprovision-dynamic-repair-owned" });
+    await upsertRuntimeResourcePg(db, {
+      id: `workflow-dynamic-repair-${fixture.runId}-${fixture.taskId}-1`,
+      resourceType: "workflow_dynamic_repair_revision",
+      resourceKey: `workflow-dynamic-repair:${fixture.runId}:${fixture.taskId}:attempt-1`,
+      runId: fixture.runId,
+      taskId: fixture.taskId,
+      scope: "workflow",
+      status: "applied",
+      title: "Dynamic repair workflow revision",
+      payload: {
+        originalFailedTaskId: fixture.taskId,
+        failedTaskId: fixture.taskId,
+        round: 1,
+        newTaskIds: [`repair-${fixture.taskId}-attempt-1`, `reverify-${fixture.taskId}-attempt-1`],
+      },
+      summary: { newTaskIds: [`repair-${fixture.taskId}-attempt-1`, `reverify-${fixture.taskId}-attempt-1`] },
+    });
+    const now = "2026-06-21T14:03:00.000Z";
+
+    const result = await createRecoveryDecisionApplier({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain" }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand" }),
+    }).applyDecision({ decisionResourceKey: fixture.decision.resourceKey, now });
+
+    assert.equal(result.status, "superseded");
+    assert.match(result.reason ?? "", /dynamic repair revision already applied/);
+    assert.equal((await getResourceByKeyPg(db, "recovery_decision", fixture.decision.resourceKey))?.status, "superseded");
+    assert.equal((await getResourceByKeyPg(db, "runtime_exception", fixture.exception.resourceKey))?.status, "observed");
+    assert.equal((await getResourceByKeyPg(db, "hand_execution", fixture.handExecutionId))?.status, "running");
+
+    const task = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_tasks where run_id = $1 and id = $2",
+      [fixture.runId, fixture.taskId],
+    );
+    assert.equal(task.status, "failed");
+    assert.ok(task.completed_at);
+
+    const runtimeExecutions = (await listResourcesPg(db, { resourceType: "recovery_execution" })).filter(
+      (resource) => resource.runId === fixture.runId,
+    );
+    assert.equal(runtimeExecutions.length, 1);
+    assert.equal(runtimeExecutions[0]?.status, "superseded");
+    const executionPayload = runtimeExecutions[0]?.payload as {
+      stateChanges: Array<{ resourceType: string; toStatus?: string; reason: string }>;
+      providerActions?: unknown[];
+    };
+    assert.deepEqual(executionPayload.stateChanges.map((change) => [change.resourceType, change.toStatus, change.reason]), [
+      ["recovery_decision", "superseded", "dynamic repair revision already applied for failed validation task"],
+    ]);
+    assert.deepEqual(executionPayload.providerActions, []);
+  } finally {
+    await db.close();
+  }
+});
+
 test("applyNext skips managed recovery decisions left after reprovision-hand", async () => {
   const db = await createTestPostgresDb();
   try {

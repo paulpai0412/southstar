@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
@@ -59,6 +60,29 @@ test("instantiateWorkflowTemplatePg creates planner draft from strict template c
     assert.match(result.draftId, /^draft-wf-composed-/);
     assert.equal(result.status, "validated");
     assert.equal(result.nodes.every((node) => node.nodePromptSpec), true);
+    assert.match(JSON.stringify(result.nodes[0]?.nodePromptSpec), /build vocabulary app/);
+  } finally {
+    await db.close();
+  }
+});
+
+test("instantiateWorkflowTemplatePg reuses saved base64 template composition without composer", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedWorkflowTemplate(db, undefined, {
+      compositionPlanJsonBase64: Buffer.from(JSON.stringify(compositionPlan()), "utf8").toString("base64"),
+    });
+
+    const result = await instantiateWorkflowTemplatePg(db, {
+      templateRef: "template.software-dev-standard",
+      goalPrompt: "build vocabulary app from saved template",
+      constraints: { mode: "strict" },
+    });
+
+    assert.equal(result.status, "validated");
+    assert.equal(result.nodes.every((node) => node.nodePromptSpec), true);
+    assert.match(JSON.stringify(result.nodes[0]?.nodePromptSpec), /build vocabulary app from saved template/);
   } finally {
     await db.close();
   }
@@ -88,7 +112,11 @@ test("instantiateWorkflowTemplatePg asks composer to bind a skeleton-only templa
   }
 });
 
-async function seedWorkflowTemplate(db: Awaited<ReturnType<typeof createTestPostgresDb>>, compositionPlan?: WorkflowCompositionPlan) {
+async function seedWorkflowTemplate(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  compositionPlan?: WorkflowCompositionPlan,
+  extraState: Record<string, unknown> = {},
+) {
   await upsertLibraryObject(db, {
     objectKey: "template.software-dev-standard",
     objectKind: "workflow_template",
@@ -104,6 +132,7 @@ async function seedWorkflowTemplate(db: Awaited<ReturnType<typeof createTestPost
       ],
       edges: [{ from: "plan", to: "implement" }],
       ...(compositionPlan ? { compositionPlan } : {}),
+      ...extraState,
     },
   });
 }

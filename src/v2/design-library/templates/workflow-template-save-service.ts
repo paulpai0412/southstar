@@ -1,4 +1,5 @@
 import type { SouthstarDb } from "../../db/postgres.ts";
+import type { WorkflowCompositionPlan } from "../types.ts";
 import { parseLibraryFileContent } from "../files/library-file-parser.ts";
 import { syncLibraryFileToGraph, writeLibraryFile } from "../files/library-file-store.ts";
 
@@ -18,6 +19,7 @@ export type SaveWorkflowTemplateDraftInput = {
   }>;
   edges: Array<{ from: string; to: string }>;
   libraryVersionRefs: string[];
+  compositionPlan?: WorkflowCompositionPlan;
 };
 
 type LibraryDraftFile = { relativePath: string; content: string };
@@ -99,6 +101,7 @@ libraryVersionRefs:
 ${yamlList(input.libraryVersionRefs)}
 profileRefs:
 ${yamlList(input.nodes.map((node) => `profile.generated.${templateSlug}.${node.id}`))}
+${input.compositionPlan ? `compositionPlanJsonBase64: ${yamlScalar(Buffer.from(JSON.stringify(input.compositionPlan), "utf8").toString("base64"))}\n` : ""}\
 nodes:
 ${input.nodes.map((node) => `  - id: ${yamlScalar(node.id)}\n    title: ${yamlScalar(node.title)}\n    profileRef: ${yamlScalar(`profile.generated.${templateSlug}.${node.id}`)}`).join("\n")}
 edges:

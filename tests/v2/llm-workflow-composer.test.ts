@@ -29,7 +29,10 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.doesNotMatch(prompts[0] ?? "", /SkillGuidance:/);
   assert.match(prompts[0] ?? "", /DagAndAgentProfileSop:/);
   assert.match(prompts[0] ?? "", /Choose task count and workerKind dynamically/i);
-  assert.match(prompts[0] ?? "", /Do not add fixed worker nodes/i);
+  assert.match(prompts[0] ?? "", /do not pre-add repair\/reverify nodes/i);
+  assert.match(prompts[0] ?? "", /Runtime dynamic repair request goals, generate only the additional bounded repair and reverify tasks/i);
+  assert.match(prompts[0] ?? "", /repair task must use workerKind=repair_worker/i);
+  assert.match(prompts[0] ?? "", /reverify task must use workerKind=validation_worker/i);
   assert.match(prompts[0] ?? "", /agentProfile\.execution must include all Docker\/Tork worker input/);
   assert.match(prompts[0] ?? "", /provider=pi, harnessRef=pi, and model=pi-agent-default/i);
   assert.match(prompts[0] ?? "", /Never pair provider=codex or harnessRef=codex with southstar\/pi-agent:local/i);
@@ -40,13 +43,15 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /uses/);
   assert.match(prompts[0] ?? "", /ProfilePrimitiveCandidates:/);
   assert.match(prompts[0] ?? "", /"agents":\["agent\.frontend-developer"\]/);
-  assert.match(prompts[0] ?? "", /CandidatePacket:/);
+  assert.match(prompts[0] ?? "", /CandidatePacketSummary:/);
   assert.match(prompts[0] ?? "", /template.keep-19/);
   assert.doesNotMatch(prompts[0] ?? "", /template.drop-20/);
   assert.match(prompts[0] ?? "", /artifact.keep-49/);
   assert.doesNotMatch(prompts[0] ?? "", /artifact.drop-50/);
   assert.match(prompts[0] ?? "", /policy.keep-49/);
   assert.doesNotMatch(prompts[0] ?? "", /policy.drop-50/);
+  assert.doesNotMatch(prompts[0] ?? "", /CandidatePacketSummary:[\s\S]*graphMetadataCandidates/);
+  assert.match(prompts[0] ?? "", /"graphMetadataCandidateCounts":\{"nodes":6,"edges":5\}/);
   assert.match(prompts[0] ?? "", /\"additionalProperties\":false/);
   assert.match(prompts[0] ?? "", /\"schemaVersion\":\{\"const\":\"southstar.workflow_composition_plan.v1\"\}/);
   assert.match(prompts[0] ?? "", /nodePromptSpec/);
