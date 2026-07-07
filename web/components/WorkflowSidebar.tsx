@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { groupSkillResourcePaths } from "@/lib/workflow/skill-resource-tree";
 import type { WorkflowAgentSummary, WorkflowLibrary, WorkflowTemplateSummary } from "@/lib/workflow/types";
@@ -48,7 +48,8 @@ export function WorkflowSidebar({
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
   const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
-  const [refreshDone, setRefreshDone] = useState(false);
+  const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
+  const [libraryRefreshDone, setLibraryRefreshDone] = useState(false);
 
   useEffect(() => {
     fetch("/api/home")
@@ -112,13 +113,31 @@ export function WorkflowSidebar({
 
   const isOpen = useCallback((key: string) => openMap[key] ?? true, [openMap]);
 
-  const handleRefresh = useCallback(() => {
-    setLibraryRefreshKey((value) => value + 1);
+  const markSessionRefreshDone = useCallback(() => {
+    setSessionRefreshDone(true);
+    window.setTimeout(() => setSessionRefreshDone(false), 1800);
+  }, []);
+
+  const markLibraryRefreshDone = useCallback(() => {
+    setLibraryRefreshDone(true);
+    window.setTimeout(() => setLibraryRefreshDone(false), 1800);
+  }, []);
+
+  const handleSessionRefresh = useCallback(() => {
     setSessionRefreshKey((value) => value + 1);
     onRefreshSessions?.();
-    setRefreshDone(true);
-    window.setTimeout(() => setRefreshDone(false), 1800);
-  }, [onRefreshSessions]);
+    markSessionRefreshDone();
+  }, [markSessionRefreshDone, onRefreshSessions]);
+
+  const handleLibraryRefresh = useCallback(() => {
+    setLibraryRefreshKey((value) => value + 1);
+    markLibraryRefreshDone();
+  }, [markLibraryRefreshDone]);
+
+  const handleRefresh = useCallback(() => {
+    handleSessionRefresh();
+    handleLibraryRefresh();
+  }, [handleLibraryRefresh, handleSessionRefresh]);
 
   const commitCustomPath = useCallback(async () => {
     const nextCwd = customPathValue.trim();
@@ -189,9 +208,9 @@ export function WorkflowSidebar({
               title="Refresh"
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
-                background: refreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
-                border: `1px solid ${refreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
-                color: refreshDone ? "#4ade80" : "var(--text-muted)",
+                background: sessionRefreshDone || libraryRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
+                border: `1px solid ${sessionRefreshDone || libraryRefreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
+                color: sessionRefreshDone || libraryRefreshDone ? "#4ade80" : "var(--text-muted)",
                 cursor: "pointer",
                 width: 32, height: 32,
                 borderRadius: 7,
@@ -200,7 +219,7 @@ export function WorkflowSidebar({
                 transition: "background 0.3s, color 0.3s, border-color 0.3s",
               }}
             >
-              {refreshDone ? (
+              {sessionRefreshDone || libraryRefreshDone ? (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
@@ -367,6 +386,7 @@ export function WorkflowSidebar({
           title="Workflow Sessions"
           open={sessionsOpen}
           onToggle={() => setSessionsOpen((value) => !value)}
+          action={<SectionRefreshButton done={sessionRefreshDone} label="Refresh workflow sessions" onClick={handleSessionRefresh} />}
           testId="workflow-session-section-toggle"
         />
         {sessionsOpen && (
@@ -392,6 +412,7 @@ export function WorkflowSidebar({
           title="Workflow Library"
           open={templatesOpen}
           onToggle={() => setTemplatesOpen((value) => !value)}
+          action={<SectionRefreshButton done={libraryRefreshDone} label="Refresh workflow library" onClick={handleLibraryRefresh} />}
           testId="workflow-template-section-toggle"
         />
         {templatesOpen && (
@@ -457,34 +478,87 @@ function SectionHeader({
   title,
   open,
   onToggle,
+  action,
   testId,
 }: {
   title: string;
   open: boolean;
   onToggle: () => void;
+  action?: ReactNode;
   testId?: string;
 }) {
   return (
-    <button
-      data-testid={testId}
-      onClick={onToggle}
+    <div
       style={{
         width: "100%",
         display: "flex",
         alignItems: "center",
-        gap: 6,
-        padding: "7px 10px",
-        border: "none",
+        justifyContent: "space-between",
+        padding: "0 6px 0 0",
         background: "transparent",
-        color: "var(--text-muted)",
-        cursor: "pointer",
-        fontSize: 11,
-        fontWeight: 650,
-        textTransform: "uppercase",
       }}
     >
-      <Chevron open={open} />
-      {title}
+      <button
+        data-testid={testId}
+        onClick={onToggle}
+        style={{
+          minWidth: 0,
+          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "7px 10px",
+          border: "none",
+          background: "transparent",
+          color: "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: 11,
+          fontWeight: 650,
+          textTransform: "uppercase",
+          textAlign: "left",
+        }}
+      >
+        <Chevron open={open} />
+        {title}
+      </button>
+      {action}
+    </div>
+  );
+}
+
+function SectionRefreshButton({ done, label, onClick }: { done: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 26,
+        height: 26,
+        padding: 0,
+        border: "none",
+        borderRadius: 5,
+        background: done ? "rgba(74,222,128,0.18)" : "none",
+        color: done ? "#4ade80" : "var(--text-dim)",
+        cursor: "pointer",
+        flexShrink: 0,
+        transition: "color 0.3s, background 0.3s",
+      }}
+    >
+      {done ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+      )}
     </button>
   );
 }
@@ -690,21 +764,23 @@ function WorkflowTemplateTree({
             onClick={() => onTemplateMention(template)}
             tabIndex={mentionVisible ? 0 : -1}
             style={{
-              width: 24,
-              height: 24,
+              width: "auto",
+              height: 20,
               flexShrink: 0,
               border: "1px solid var(--border)",
-              borderRadius: 6,
+              borderRadius: 4,
               background: "var(--bg-panel)",
               color: "var(--accent)",
               cursor: "pointer",
-              fontSize: 13,
-              fontWeight: 700,
-              lineHeight: 1,
+              fontSize: 11,
+              fontWeight: 600,
+              lineHeight: "18px",
+              whiteSpace: "nowrap",
+              padding: "0 8px",
               visibility: mentionVisible ? "visible" : "hidden",
             }}
           >
-            @
+            @ memtion
           </button>
         ) : null}
       </div>

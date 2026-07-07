@@ -35,7 +35,7 @@ export async function POST(req: Request) {
     const tempKey = `__new__${Date.now()}`;
     const { session, realSessionId } = await startRpcSession(tempKey, "", normalizedCwd, toolNames);
     session.inner.sessionManager.appendCustomEntry(SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, {
-      kind: sessionKind === "workflow" ? "workflow" : "chat",
+      kind: sessionKind === "workflow" || sessionKind === "library" ? sessionKind : "chat",
     });
 
     // Keep the files-route allowed-roots cache (see app/api/files/[...path]/route.ts)

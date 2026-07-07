@@ -16,6 +16,9 @@ test("session kind uses explicit custom metadata when present", () => {
     customKindEntry("workflow"),
   ]), "workflow");
   assert.equal(classifySessionKindFromEntries([
+    customKindEntry("library"),
+  ]), "library");
+  assert.equal(classifySessionKindFromEntries([
     customKindEntry("workflow"),
     customKindEntry("chat"),
   ]), "chat");
@@ -66,18 +69,20 @@ test("session kind recognizes API workflow composer prompt sessions", () => {
   ]), "workflow");
 });
 
-test("filterSessionsByKind separates chat and workflow sessions", () => {
+test("filterSessionsByKind separates chat, workflow, and library sessions", () => {
   const sessions = [
     { id: "chat-1", kind: "chat" as const },
     { id: "workflow-1", kind: "workflow" as const },
+    { id: "library-1", kind: "library" as const },
   ];
 
   assert.deepEqual(filterSessionsByKind(sessions, "chat").map((session) => session.id), ["chat-1"]);
   assert.deepEqual(filterSessionsByKind(sessions, "workflow").map((session) => session.id), ["workflow-1"]);
-  assert.deepEqual(filterSessionsByKind(sessions, null).map((session) => session.id), ["chat-1", "workflow-1"]);
+  assert.deepEqual(filterSessionsByKind(sessions, "library").map((session) => session.id), ["library-1"]);
+  assert.deepEqual(filterSessionsByKind(sessions, null).map((session) => session.id), ["chat-1", "workflow-1", "library-1"]);
 });
 
-function customKindEntry(kind: "chat" | "workflow"): SessionEntry {
+function customKindEntry(kind: "chat" | "workflow" | "library"): SessionEntry {
   return {
     type: "custom",
     id: `kind-${kind}`,

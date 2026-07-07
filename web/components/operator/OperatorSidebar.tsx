@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle, CheckCircle2, CircleDot, PauseCircle, PlayCircle, XCircle } from "lucide-react";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { ProjectScopePicker } from "../ProjectScopePicker";
 import { invokeOperatorCommand } from "@/lib/operator/invokeCommand";
 import type { OperatorCommand, OperatorIncident, OperatorRun } from "@/lib/operator/types";
@@ -33,9 +33,30 @@ export function OperatorSidebar({
 }) {
   const [pendingCommandId, setPendingCommandId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [overviewRefreshDone, setOverviewRefreshDone] = useState(false);
+  const [runningRefreshDone, setRunningRefreshDone] = useState(false);
+  const [completedRefreshDone, setCompletedRefreshDone] = useState(false);
   const sortedRuns = [...runs].sort(compareRunUpdatedAt);
   const runningRuns = sortedRuns.filter((run) => !isCompletedRun(run));
   const completedRuns = sortedRuns.filter(isCompletedRun);
+
+  function refreshOperatorOverview() {
+    onRefresh();
+    setOverviewRefreshDone(true);
+    window.setTimeout(() => setOverviewRefreshDone(false), 1800);
+  }
+
+  function refreshRunningRuns() {
+    onRefresh();
+    setRunningRefreshDone(true);
+    window.setTimeout(() => setRunningRefreshDone(false), 1800);
+  }
+
+  function refreshCompletedRuns() {
+    onRefresh();
+    setCompletedRefreshDone(true);
+    window.setTimeout(() => setCompletedRefreshDone(false), 1800);
+  }
 
   async function invokeRunCommand(run: OperatorRun, command: OperatorCommand) {
     const reason = window.prompt(`Reason for ${command.label}`, command.id === "run.pause" ? "Pause workflow from Operator" : "");
@@ -58,7 +79,10 @@ export function OperatorSidebar({
     <div data-testid="operator-sidebar" style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <ProjectScopePicker selectedCwd={cwd} onCwdChange={onCwdChange} label="Project Scope" emptyLabel="All projects" />
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
-        <OperatorSectionHeader title="Operator Focus" actionLabel="Refresh" onAction={onRefresh} />
+        <OperatorSectionHeader
+          title="Operator Focus"
+          action={<SectionRefreshButton done={overviewRefreshDone} label="Refresh operator overview" onClick={refreshOperatorOverview} />}
+        />
         {error ? <p className="operator-muted operator-danger">Operator overview error: {error}</p> : null}
         {actionError ? <p className="operator-muted operator-danger">{actionError}</p> : null}
         <RunSection
@@ -73,6 +97,7 @@ export function OperatorSidebar({
           incidents={incidents}
           selectedIncidentId={selectedIncidentId}
           onSelectIncident={onSelectIncident}
+          action={<SectionRefreshButton done={runningRefreshDone} label="Refresh running workflow runs" onClick={refreshRunningRuns} />}
         />
       </section>
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
@@ -88,6 +113,7 @@ export function OperatorSidebar({
           incidents={incidents}
           selectedIncidentId={selectedIncidentId}
           onSelectIncident={onSelectIncident}
+          action={<SectionRefreshButton done={completedRefreshDone} label="Refresh completed workflow runs" onClick={refreshCompletedRuns} />}
         />
       </section>
     </div>
@@ -106,6 +132,7 @@ function RunSection({
   onRunCommand,
   pendingCommandId,
   onSelectIncident,
+  action,
 }: {
   title: string;
   empty: string;
@@ -118,10 +145,14 @@ function RunSection({
   onRunCommand: (run: OperatorRun, command: OperatorCommand) => void;
   pendingCommandId: string | null;
   onSelectIncident: (incident: OperatorIncident) => void;
+  action?: ReactNode;
 }) {
   return (
     <div style={{ padding: "0 6px 8px" }}>
-      <div className="operator-section-label">{title}</div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="operator-section-label">{title}</div>
+        {action}
+      </div>
       {runs.length === 0 ? (
         <p className="operator-muted">{empty}</p>
       ) : runs.map((run) => {
@@ -213,18 +244,53 @@ function formatRunAge(updatedAt: string | undefined): string {
 
 function OperatorSectionHeader({
   title,
-  actionLabel,
-  onAction,
+  action,
 }: {
   title: string;
-  actionLabel: string;
-  onAction: () => void;
+  action: ReactNode;
 }) {
   return (
     <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px" }}>
       <span style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 650, textTransform: "uppercase" }}>{title}</span>
-      <button type="button" onClick={onAction}>{actionLabel}</button>
+      {action}
     </header>
+  );
+}
+
+function SectionRefreshButton({ done, label, onClick }: { done: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 26,
+        height: 26,
+        padding: 0,
+        border: "none",
+        borderRadius: 5,
+        background: done ? "rgba(74,222,128,0.18)" : "none",
+        color: done ? "#4ade80" : "var(--text-dim)",
+        cursor: "pointer",
+        flexShrink: 0,
+        transition: "color 0.3s, background 0.3s",
+      }}
+    >
+      {done ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+      )}
+    </button>
   );
 }
 

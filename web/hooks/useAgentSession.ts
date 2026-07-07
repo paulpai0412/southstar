@@ -935,6 +935,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               cwd: newSessionCwd,
               type: "ensure_session",
               toolNames,
+              sessionKind: opts.workflowMode ? "workflow" : "chat",
               ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
               ...(thinkingLevel !== "auto" ? { thinkingLevel } : {}),
             }),

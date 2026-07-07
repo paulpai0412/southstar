@@ -39,5 +39,6 @@ test("sessions route defaults omitted kind requests to chat sessions", () => {
   const route = source("web/app/api/sessions/route.ts");
 
   assert.match(route, /function sessionKindFromQuery\(value: string \| null\): SessionKind/);
-  assert.match(route, /return value === "workflow" \? "workflow" : "chat";/);
+  assert.match(route, /value === "workflow" \|\| value === "library"/);
+  assert.match(route, /return "chat";/);
 });

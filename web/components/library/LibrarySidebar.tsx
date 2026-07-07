@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import type { LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject, LibraryWorkspaceObjectGroup } from "@/lib/library/types";
 import { FolderIcon } from "../FileIcons";
 import { PiAgentTitle } from "../SessionSidebar";
@@ -65,7 +65,8 @@ export function LibrarySidebar({
   const [sessionsOpen, setSessionsOpen] = useState(true);
   const [treeOpen, setTreeOpen] = useState(true);
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
-  const [refreshDone, setRefreshDone] = useState(false);
+  const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
+  const [treeRefreshDone, setTreeRefreshDone] = useState(false);
   const normalizedDomainFilter = domainFilter.trim().toLowerCase();
   const treeNodes = buildLibraryTreeNodes(domains, {
     domainFilter: normalizedDomainFilter,
@@ -73,10 +74,26 @@ export function LibrarySidebar({
   });
   const isOpen = (key: string) => openMap[key] ?? true;
   const toggle = (key: string) => setOpenMap((current) => ({ ...current, [key]: !(current[key] ?? true) }));
+  const markSessionRefreshDone = () => {
+    setSessionRefreshDone(true);
+    window.setTimeout(() => setSessionRefreshDone(false), 1800);
+  };
+  const markTreeRefreshDone = () => {
+    setTreeRefreshDone(true);
+    window.setTimeout(() => setTreeRefreshDone(false), 1800);
+  };
+  const handleSessionRefresh = () => {
+    onRefresh?.();
+    markSessionRefreshDone();
+  };
+  const handleTreeRefresh = () => {
+    onRefresh?.();
+    markTreeRefreshDone();
+  };
   const handleRefresh = () => {
     onRefresh?.();
-    setRefreshDone(true);
-    window.setTimeout(() => setRefreshDone(false), 1800);
+    markSessionRefreshDone();
+    markTreeRefreshDone();
   };
 
   return (
@@ -130,9 +147,9 @@ export function LibrarySidebar({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                background: refreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
-                border: `1px solid ${refreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
-                color: refreshDone ? "#4ade80" : "var(--text-muted)",
+                background: sessionRefreshDone || treeRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
+                border: `1px solid ${sessionRefreshDone || treeRefreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
+                color: sessionRefreshDone || treeRefreshDone ? "#4ade80" : "var(--text-muted)",
                 cursor: "pointer",
                 width: 32,
                 height: 32,
@@ -142,7 +159,7 @@ export function LibrarySidebar({
                 transition: "background 0.3s, color 0.3s, border-color 0.3s",
               }}
             >
-              {refreshDone ? (
+              {sessionRefreshDone || treeRefreshDone ? (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
@@ -174,7 +191,12 @@ export function LibrarySidebar({
       </div>
 
       <section style={{ flex: "0 0 28%", minHeight: 112, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
-        <SectionHeader title="Library LLM Sessions" open={sessionsOpen} onToggle={() => setSessionsOpen((value) => !value)} />
+        <SectionHeader
+          title="Library LLM Sessions"
+          open={sessionsOpen}
+          onToggle={() => setSessionsOpen((value) => !value)}
+          action={<SectionRefreshButton done={sessionRefreshDone} label="Refresh Library LLM sessions" onClick={handleSessionRefresh} />}
+        />
         {sessionsOpen && (
           <div data-testid="library-session-list" style={{ padding: "0 6px 8px" }}>
             {sessions.length === 0 ? (
@@ -194,7 +216,12 @@ export function LibrarySidebar({
       </section>
 
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
-        <SectionHeader title="Library Domain Tree" open={treeOpen} onToggle={() => setTreeOpen((value) => !value)} />
+        <SectionHeader
+          title="Library Domain Tree"
+          open={treeOpen}
+          onToggle={() => setTreeOpen((value) => !value)}
+          action={<SectionRefreshButton done={treeRefreshDone} label="Refresh Library Domain Tree" onClick={handleTreeRefresh} />}
+        />
         {treeOpen && (
           <div
             data-testid="library-domain-tree"
@@ -294,32 +321,85 @@ function SectionHeader({
   title,
   open,
   onToggle,
+  action,
 }: {
   title: string;
   open: boolean;
   onToggle: () => void;
+  action?: ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
+    <div
       style={{
         width: "100%",
         display: "flex",
         alignItems: "center",
-        gap: 6,
-        padding: "7px 10px",
-        border: "none",
+        justifyContent: "space-between",
+        padding: "0 6px 0 0",
         background: "transparent",
-        color: "var(--text-muted)",
-        cursor: "pointer",
-        fontSize: 11,
-        fontWeight: 650,
-        textTransform: "uppercase",
       }}
     >
-      <Chevron open={open} />
-      {title}
+      <button
+        type="button"
+        onClick={onToggle}
+        style={{
+          minWidth: 0,
+          flex: 1,
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          padding: "7px 10px",
+          border: "none",
+          background: "transparent",
+          color: "var(--text-muted)",
+          cursor: "pointer",
+          fontSize: 11,
+          fontWeight: 650,
+          textTransform: "uppercase",
+          textAlign: "left",
+        }}
+      >
+        <Chevron open={open} />
+        {title}
+      </button>
+      {action}
+    </div>
+  );
+}
+
+function SectionRefreshButton({ done, label, onClick }: { done: boolean; label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 26,
+        height: 26,
+        padding: 0,
+        border: "none",
+        borderRadius: 5,
+        background: done ? "rgba(74,222,128,0.18)" : "none",
+        color: done ? "#4ade80" : "var(--text-dim)",
+        cursor: "pointer",
+        flexShrink: 0,
+        transition: "color 0.3s, background 0.3s",
+      }}
+    >
+      {done ? (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="20 6 9 17 4 12" />
+        </svg>
+      ) : (
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+          <path d="M3 3v5h5" />
+        </svg>
+      )}
     </button>
   );
 }
