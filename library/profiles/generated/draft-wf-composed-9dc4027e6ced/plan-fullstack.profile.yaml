@@ -1,0 +1,19 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.draft-wf-composed-9dc4027e6ced.plan-fullstack"
+title: "前後台實施計畫"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-software-architect"
+skillRefs:
+  - "skill.mattpocock.improve-codebase-architecture"
+  - "skill.mattpocock.codebase-design"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-write"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.draft-wf-composed-9dc4027e6ced"
+  nodeId: "plan-fullstack"

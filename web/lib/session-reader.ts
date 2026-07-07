@@ -1,8 +1,19 @@
 import { SessionManager, buildSessionContext as piBuildSessionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import type { AgentMessage, SessionEntry, SessionInfo, SessionContext, SessionTreeNode, AssistantMessage } from "./types";
+import { readdir, readFile, stat } from "fs/promises";
+import { join } from "path";
+import type {
+  AgentMessage,
+  FileEntry,
+  SessionEntry,
+  SessionHeader,
+  SessionInfo,
+  SessionContext,
+  SessionTreeNode,
+  AssistantMessage,
+} from "./types";
 import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } from "@earendil-works/pi-coding-agent";
 import { normalizeToolCalls } from "./normalize";
-import { classifySessionKindFromEntries } from "./session-kind";
+import { classifySessionKindFromEntries, type SessionKind } from "./session-kind";
 import { buildWorkflowCompositionPlanDisplay } from "./workflow/composition-plan-dag";
 export { filterSessionsByKind, SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, type SessionKind } from "./session-kind";
 
@@ -50,6 +61,122 @@ export async function listAllSessions(): Promise<SessionInfo[]> {
 
 export async function listSessionsForCwd(cwd: string): Promise<SessionInfo[]> {
   return toSessionInfo(await SessionManager.list(cwd));
+}
+
+export async function listRecentSessionsByKind(kind: SessionKind, limit: number): Promise<SessionInfo[]> {
+  const candidates = await listSessionFileCandidates(getSessionsDir());
+  candidates.sort((a, b) => b.modifiedMs - a.modifiedMs);
+
+  const sessions: SessionInfo[] = [];
+  const cache = getPathCache();
+  for (const candidate of candidates) {
+    const session = await readSessionInfoCandidate(candidate.path, candidate.modifiedMs);
+    if (!session || (session.kind ?? "chat") !== kind) continue;
+    cache.set(session.id, session.path);
+    sessions.push(session);
+    if (sessions.length >= limit) break;
+  }
+
+  return sessions;
+}
+
+async function listSessionFileCandidates(dir: string): Promise<Array<{ path: string; modifiedMs: number }>> {
+  const candidates: Array<{ path: string; modifiedMs: number }> = [];
+  await collectSessionFileCandidates(dir, candidates);
+  return candidates;
+}
+
+async function collectSessionFileCandidates(dir: string, candidates: Array<{ path: string; modifiedMs: number }>): Promise<void> {
+  let dirents;
+  try {
+    dirents = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+
+  await Promise.all(dirents.map(async (dirent) => {
+    const absolutePath = join(dir, dirent.name);
+    if (dirent.isDirectory()) {
+      await collectSessionFileCandidates(absolutePath, candidates);
+      return;
+    }
+    if (!dirent.isFile() || !dirent.name.endsWith(".jsonl")) return;
+    try {
+      const stats = await stat(absolutePath);
+      candidates.push({ path: absolutePath, modifiedMs: stats.mtimeMs });
+    } catch {
+      // Ignore files that disappear while the session directory is being read.
+    }
+  }));
+}
+
+async function readSessionInfoCandidate(filePath: string, modifiedMs: number): Promise<SessionInfo | null> {
+  let raw: string;
+  try {
+    raw = await readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
+
+  const fileEntries: FileEntry[] = [];
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      fileEntries.push(JSON.parse(line) as FileEntry);
+    } catch {
+      return null;
+    }
+  }
+
+  const header = fileEntries.find(isSessionHeader);
+  if (!header) return null;
+  const entries = fileEntries.filter(isSessionEntry);
+  const messages = entries.filter((entry) => entry.type === "message");
+  const firstMessage = messages.map(messageSummaryText).find(Boolean) ?? "(no messages)";
+  const name = [...entries].reverse().find(isSessionInfoEntry)?.name;
+  const lastEntry = entries[entries.length - 1];
+
+  return {
+    path: filePath,
+    id: header.id,
+    cwd: header.cwd,
+    kind: classifySessionKindFromEntries(entries),
+    name,
+    created: header.timestamp,
+    modified: lastEntry?.timestamp ?? new Date(modifiedMs).toISOString(),
+    messageCount: messages.length,
+    firstMessage,
+  };
+}
+
+function isSessionHeader(entry: FileEntry): entry is SessionHeader {
+  return entry.type === "session";
+}
+
+function isSessionEntry(entry: FileEntry): entry is SessionEntry {
+  return entry.type !== "session";
+}
+
+function isSessionInfoEntry(entry: SessionEntry): entry is SessionEntry & { type: "session_info"; name?: string } {
+  return entry.type === "session_info";
+}
+
+function messageSummaryText(entry: SessionEntry): string {
+  if (entry.type !== "message") return "";
+  const message = entry.message;
+  if (message.role !== "user" && message.role !== "assistant" && message.role !== "custom") return "";
+  return contentSummaryText(message.content);
+}
+
+function contentSummaryText(content: AgentMessage["content"]): string {
+  if (typeof content === "string") return content;
+  const textBlocks: string[] = [];
+  for (const block of content) {
+    if (block.type === "text" && "text" in block && typeof block.text === "string") {
+      textBlocks.push(block.text);
+    }
+  }
+  return textBlocks.join("\n");
 }
 
 // ============================================================================

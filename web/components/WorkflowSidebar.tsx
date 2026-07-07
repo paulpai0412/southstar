@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { groupSkillResourcePaths } from "@/lib/workflow/skill-resource-tree";
 import type { WorkflowAgentSummary, WorkflowLibrary, WorkflowTemplateSummary } from "@/lib/workflow/types";
@@ -18,6 +18,7 @@ interface Props {
   onCwdChange?: (cwd: string | null) => void;
   onNewSession?: () => void;
   onRefreshSessions?: () => void;
+  onSessionDeleted?: (sessionId: string) => void;
 }
 
 export function WorkflowSidebar({
@@ -31,6 +32,7 @@ export function WorkflowSidebar({
   onCwdChange,
   onNewSession,
   onRefreshSessions,
+  onSessionDeleted,
 }: Props) {
   const projectMenuRef = useRef<HTMLDivElement>(null);
   const [library, setLibrary] = useState<WorkflowLibrary | null>(null);
@@ -43,7 +45,6 @@ export function WorkflowSidebar({
   const [customPathValue, setCustomPathValue] = useState("");
   const [customPathError, setCustomPathError] = useState<string | null>(null);
   const [customPathValidating, setCustomPathValidating] = useState(false);
-  const [sessionsOpen, setSessionsOpen] = useState(true);
   const [templatesOpen, setTemplatesOpen] = useState(true);
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
@@ -81,12 +82,10 @@ export function WorkflowSidebar({
   }, [cwd, libraryRefreshKey]);
 
   useEffect(() => {
-    if (!cwd) {
-      setSessions([]);
-      setSessionError(null);
-      return;
-    }
-    fetch(`/api/sessions?kind=workflow&cwd=${encodeURIComponent(cwd)}`, { cache: "no-store" })
+    const url = cwd
+      ? `/api/sessions?kind=workflow&cwd=${encodeURIComponent(cwd)}`
+      : "/api/sessions?scope=all&kind=workflow&limit=50&compact=1";
+    fetch(url, { cache: "no-store" })
       .then((res) => res.json())
       .then((data: { sessions?: SessionInfo[]; error?: string }) => {
         if (data.error) throw new Error(data.error);
@@ -136,8 +135,29 @@ export function WorkflowSidebar({
 
   const handleRefresh = useCallback(() => {
     handleSessionRefresh();
-    handleLibraryRefresh();
-  }, [handleLibraryRefresh, handleSessionRefresh]);
+  }, [handleSessionRefresh]);
+
+  const renameSession = useCallback(async (session: SessionInfo) => {
+    const title = session.name || session.firstMessage || "Untitled workflow";
+    const name = window.prompt("Rename workflow session", session.name ?? title)?.trim();
+    if (name === undefined || name === (session.name ?? "")) return;
+    await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    setSessions((current) => current.map((item) => item.id === session.id ? { ...item, name } : item));
+    onRefreshSessions?.();
+  }, [onRefreshSessions]);
+
+  const deleteSession = useCallback(async (session: SessionInfo) => {
+    const title = session.name || session.firstMessage || "Untitled workflow";
+    if (!window.confirm(`Delete "${title}"?`)) return;
+    await fetch(`/api/sessions/${encodeURIComponent(session.id)}`, { method: "DELETE" });
+    setSessions((current) => current.filter((item) => item.id !== session.id));
+    onSessionDeleted?.(session.id);
+    onRefreshSessions?.();
+  }, [onRefreshSessions, onSessionDeleted]);
 
   const commitCustomPath = useCallback(async () => {
     const nextCwd = customPathValue.trim();
@@ -208,9 +228,9 @@ export function WorkflowSidebar({
               title="Refresh"
               style={{
                 display: "flex", alignItems: "center", justifyContent: "center",
-                background: sessionRefreshDone || libraryRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
-                border: `1px solid ${sessionRefreshDone || libraryRefreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
-                color: sessionRefreshDone || libraryRefreshDone ? "#4ade80" : "var(--text-muted)",
+                background: sessionRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
+                border: `1px solid ${sessionRefreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
+                color: sessionRefreshDone ? "#4ade80" : "var(--text-muted)",
                 cursor: "pointer",
                 width: 32, height: 32,
                 borderRadius: 7,
@@ -219,7 +239,7 @@ export function WorkflowSidebar({
                 transition: "background 0.3s, color 0.3s, border-color 0.3s",
               }}
             >
-              {sessionRefreshDone || libraryRefreshDone ? (
+              {sessionRefreshDone ? (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
@@ -382,29 +402,23 @@ export function WorkflowSidebar({
       {sessionError && <div style={{ padding: 10, color: "#f87171", fontSize: 12 }}>{sessionError}</div>}
 
       <section style={{ flex: "0 0 28%", minHeight: 112, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
-        <SectionHeader
-          title="Workflow Sessions"
-          open={sessionsOpen}
-          onToggle={() => setSessionsOpen((value) => !value)}
-          action={<SectionRefreshButton done={sessionRefreshDone} label="Refresh workflow sessions" onClick={handleSessionRefresh} />}
-          testId="workflow-session-section-toggle"
-        />
-        {sessionsOpen && (
-          <div data-testid="workflow-session-list" style={{ padding: "0 6px 8px" }}>
-            {sessions.length === 0 ? (
-              <div style={{ padding: "8px 8px 6px", color: "var(--text-dim)", fontSize: 12 }}>
-                {cwd ? "No workflow sessions" : "Select project..."}
-              </div>
-            ) : sessions.map((session) => (
-              <WorkflowSessionRow
-                key={session.id}
-                session={session}
-                selected={session.id === selectedSessionId}
-                onSelect={onSessionSelect}
-              />
-            ))}
-          </div>
-        )}
+        <div style={sessionListTitleStyle}>Workflow Sessions</div>
+        <div data-testid="workflow-session-list" style={{ padding: "0 6px 8px" }}>
+          {sessions.length === 0 ? (
+            <div style={{ padding: "8px 8px 6px", color: "var(--text-dim)", fontSize: 12 }}>
+              No workflow sessions
+            </div>
+          ) : sessions.map((session) => (
+            <WorkflowSessionRow
+              key={session.id}
+              session={session}
+              selected={session.id === selectedSessionId}
+              onSelect={onSessionSelect}
+              onRename={renameSession}
+              onDelete={deleteSession}
+            />
+          ))}
+        </div>
       </section>
 
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
@@ -464,6 +478,14 @@ const projectMenuItemStyle = {
   cursor: "pointer",
   textAlign: "left",
   fontSize: 11,
+} as const;
+
+const sessionListTitleStyle = {
+  padding: "7px 10px",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  fontWeight: 650,
+  textTransform: "uppercase",
 } as const;
 
 function shortenCwd(cwd: string, homeDir?: string): string {
@@ -641,15 +663,18 @@ function WorkflowSessionRow({
   session,
   selected,
   onSelect,
+  onRename,
+  onDelete,
 }: {
   session: SessionInfo;
   selected: boolean;
   onSelect: (session: SessionInfo) => void;
+  onRename: (session: SessionInfo) => void;
+  onDelete: (session: SessionInfo) => void;
 }) {
   const title = session.name || session.firstMessage || "Untitled workflow";
   return (
-    <button
-      type="button"
+    <div
       data-testid={`workflow-session-${session.id}`}
       onClick={() => onSelect(session)}
       style={{
@@ -668,13 +693,53 @@ function WorkflowSessionRow({
         textAlign: "left",
       }}
     >
-      <span style={{ fontSize: 12, fontWeight: 560, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {title}
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ minWidth: 0, flex: 1, fontSize: 12, fontWeight: 560, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {title}
+        </span>
+        <SessionIconButton title="Rename" onClick={(event) => { event.stopPropagation(); onRename(session); }}>
+          <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+        </SessionIconButton>
+        <SessionIconButton title="Delete" onClick={(event) => { event.stopPropagation(); onDelete(session); }}>
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          <path d="M10 11v6M14 11v6" />
+          <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+        </SessionIconButton>
       </span>
       <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, color: "var(--text-dim)", fontSize: 11 }}>
         <span>{formatRelativeTime(session.modified)}</span>
         <span>{session.messageCount} messages</span>
       </span>
+    </div>
+  );
+}
+
+function SessionIconButton({ title, onClick, children }: { title: string; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      style={{
+        width: 24,
+        height: 24,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 0,
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        background: "var(--bg-hover)",
+        color: "var(--text-muted)",
+        cursor: "pointer",
+        flexShrink: 0,
+      }}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {children}
+      </svg>
     </button>
   );
 }

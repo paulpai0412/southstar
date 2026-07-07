@@ -28,7 +28,7 @@ import {
   syncLibraryFileToGraph,
   writeLibraryFile,
 } from "../design-library/files/library-file-store.ts";
-import type { LibraryChatAction } from "../read-models/library-chat.ts";
+import { listLibraryChatSessionSummariesPg, type LibraryChatAction } from "../read-models/library-chat.ts";
 import { buildLibraryGraphReadModel } from "../read-models/library-graph.ts";
 import { buildLibraryWorkspaceReadModel } from "../read-models/library-workspace.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
@@ -75,6 +75,14 @@ export async function handleLibraryRoute(
         edgeType: optionalLibraryEdgeType(url.searchParams.get("edgeType")),
       }),
     );
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/v2/library/chat/sessions") {
+    return json("library-chat-sessions", {
+      sessions: await listLibraryChatSessionSummariesPg(context.db, {
+        limit: optionalNumber(url.searchParams.get("limit")) ?? 50,
+      }),
+    });
   }
 
   if (request.method === "GET" && url.pathname === "/api/v2/library/files") {

@@ -72,7 +72,7 @@ export async function buildWorkflowFlowLayout(input: {
         status: normalizeWorkflowStatus(node.status),
         selected: input.selectedTaskId === node.id,
       },
-      draggable: false,
+      draggable: true,
       selectable: true,
     };
   });

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref-store.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { evaluateRunCompletionGatePg } from "../../src/v2/evaluators/completion-gate.ts";
+import { recordRuntimeExceptionPg } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
@@ -186,6 +187,59 @@ test("completion gate treats non-completed terminal tasks as findings", async ()
     });
     const run = await runStatus(db, "run-gate-terminal-finding");
     assert.equal(run.status, "failed");
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion gate ignores a failed verifier superseded by accepted dynamic repair", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-gate-dynamic-repair-superseded";
+    await seedRun(db, runId);
+    await seedTask(db, runId, "task-plan", "completed", 0);
+    await seedTask(db, runId, "task-implement", "completed", 1);
+    await seedTask(db, runId, "task-verify", "failed", 2);
+    await seedTask(db, runId, "repair-task-verify-attempt-1", "completed", 3);
+    await seedTask(db, runId, "reverify-task-verify-attempt-1", "completed", 4);
+    await seedTask(db, runId, "task-review", "completed", 5);
+    await acceptArtifactRef(db, runId, "task-plan");
+    await acceptArtifactRef(db, runId, "task-implement");
+    await acceptArtifactRef(db, runId, "repair-task-verify-attempt-1");
+    await acceptArtifactRef(db, runId, "reverify-task-verify-attempt-1");
+    await acceptArtifactRef(db, runId, "task-review");
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "workflow_dynamic_repair_revision",
+      resourceKey: "workflow-dynamic-repair:run-gate-dynamic-repair-superseded:task-verify:attempt-1",
+      runId,
+      scope: "workflow",
+      status: "applied",
+      title: "Dynamic repair workflow revision",
+      payload: {
+        rootFailedTaskId: "task-verify",
+        originalFailedTaskId: "task-verify",
+        failedTaskId: "task-verify",
+        newTaskIds: ["repair-task-verify-attempt-1", "reverify-task-verify-attempt-1"],
+      },
+    });
+    await recordRuntimeExceptionPg(db, {
+      runId,
+      taskId: "task-verify",
+      sessionId: "session-task-verify",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-task-verify",
+      source: "tork-observer",
+      kind: "tork_running_hang",
+      severity: "recoverable",
+      status: "observed",
+      observedAt: "2026-06-21T10:00:00.000Z",
+      evidenceRefs: ["hand-task-verify"],
+      providerEvidence: { externalJobId: "job-task-verify" },
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.deepEqual(result, { runId, status: "passed", findings: [] });
   } finally {
     await db.close();
   }

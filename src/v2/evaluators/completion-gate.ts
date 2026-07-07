@@ -55,9 +55,11 @@ export async function evaluateRunCompletionGatePg(
       [input.runId, ARTIFACT_REF_RESOURCE_TYPE],
     )).rows;
     const acceptedArtifactRefs = new Set(acceptedArtifactRefRows.map((row) => row.task_id));
+    const supersededTaskIds = await supersededDynamicRepairTaskIdsPg(tx, input.runId, acceptedArtifactRefs);
 
     const findings: string[] = [];
     for (const task of tasks) {
+      if (supersededTaskIds.has(task.id)) continue;
       if (task.status === "completed") {
         if (!acceptedArtifactRefs.has(task.id)) findings.push(`missing accepted artifact_ref for task ${task.id}`);
       } else {
@@ -80,6 +82,7 @@ export async function evaluateRunCompletionGatePg(
 
     const unresolvedRuntimeExceptions = await listUnresolvedRuntimeExceptionsPg(tx, { runId: input.runId });
     for (const exception of unresolvedRuntimeExceptions) {
+      if (exception.taskId && supersededTaskIds.has(exception.taskId)) continue;
       findings.push(`unresolved runtime exception ${exception.resourceKey}: ${exception.payload.kind}`);
     }
 
@@ -120,6 +123,7 @@ export async function evaluateRunCompletionGatePg(
     const evaluationFingerprint = shortHash(stableStringify({
       tasks,
       acceptedArtifactRefs: acceptedArtifactRefRows,
+      supersededTaskIds: Array.from(supersededTaskIds).sort(),
       blockingViolations,
       unresolvedRuntimeExceptions,
       unappliedRecoveryDecisions,
@@ -162,6 +166,32 @@ export async function evaluateRunCompletionGatePg(
   });
 }
 
+async function supersededDynamicRepairTaskIdsPg(
+  db: SouthstarDb,
+  runId: string,
+  acceptedArtifactRefs: Set<string>,
+): Promise<Set<string>> {
+  const rows = (await db.query<{ payload_json: unknown }>(
+    `select payload_json
+       from southstar.runtime_resources
+      where run_id = $1
+        and resource_type = 'workflow_dynamic_repair_revision'
+        and status = 'applied'
+      order by created_at, resource_key`,
+    [runId],
+  )).rows;
+  const superseded = new Set<string>();
+  for (const row of rows) {
+    const payload = asRecord(row.payload_json);
+    const rootFailedTaskId = stringValue(payload?.rootFailedTaskId) ?? stringValue(payload?.originalFailedTaskId);
+    const reconnectTargetTaskId = lastStringValue(payload?.newTaskIds);
+    if (rootFailedTaskId && reconnectTargetTaskId && acceptedArtifactRefs.has(reconnectTargetTaskId)) {
+      superseded.add(rootFailedTaskId);
+    }
+  }
+  return superseded;
+}
+
 async function appendHistoryEventOncePg(
   db: SouthstarDb,
   input: {
@@ -202,4 +232,8 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function lastStringValue(value: unknown): string | undefined {
+  return Array.isArray(value) ? stringValue(value.at(-1)) : undefined;
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertTriangle, CheckCircle2, CircleDot, PauseCircle, PlayCircle, XCircle } from "lucide-react";
-import { useState, type ReactNode } from "react";
+import { useState } from "react";
 import { ProjectScopePicker } from "../ProjectScopePicker";
 import { invokeOperatorCommand } from "@/lib/operator/invokeCommand";
 import type { OperatorCommand, OperatorIncident, OperatorRun } from "@/lib/operator/types";
@@ -34,28 +34,14 @@ export function OperatorSidebar({
   const [pendingCommandId, setPendingCommandId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [overviewRefreshDone, setOverviewRefreshDone] = useState(false);
-  const [runningRefreshDone, setRunningRefreshDone] = useState(false);
-  const [completedRefreshDone, setCompletedRefreshDone] = useState(false);
   const sortedRuns = [...runs].sort(compareRunUpdatedAt);
   const runningRuns = sortedRuns.filter((run) => !isCompletedRun(run));
   const completedRuns = sortedRuns.filter(isCompletedRun);
 
-  function refreshOperatorOverview() {
+  function refreshWorkflowRuns() {
     onRefresh();
     setOverviewRefreshDone(true);
     window.setTimeout(() => setOverviewRefreshDone(false), 1800);
-  }
-
-  function refreshRunningRuns() {
-    onRefresh();
-    setRunningRefreshDone(true);
-    window.setTimeout(() => setRunningRefreshDone(false), 1800);
-  }
-
-  function refreshCompletedRuns() {
-    onRefresh();
-    setCompletedRefreshDone(true);
-    window.setTimeout(() => setCompletedRefreshDone(false), 1800);
   }
 
   async function invokeRunCommand(run: OperatorRun, command: OperatorCommand) {
@@ -77,12 +63,47 @@ export function OperatorSidebar({
 
   return (
     <div data-testid="operator-sidebar" style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <ProjectScopePicker selectedCwd={cwd} onCwdChange={onCwdChange} label="Project Scope" emptyLabel="All projects" />
+      <ProjectScopePicker
+        selectedCwd={cwd}
+        onCwdChange={onCwdChange}
+        label="Project Scope"
+        emptyLabel="All projects"
+        actions={
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              type="button"
+              disabled
+              title="New workflow run is started from Workflow"
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 5,
+                background: "var(--bg-hover)",
+                border: "1px solid var(--border)",
+                color: "var(--text-dim)",
+                cursor: "not-allowed",
+                height: 32,
+                paddingLeft: 10,
+                paddingRight: 12,
+                borderRadius: 7,
+                fontSize: 12,
+                fontWeight: 500,
+                letterSpacing: 0,
+                flexShrink: 0,
+              }}
+            >
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+                <line x1="6" y1="1" x2="6" y2="11" />
+                <line x1="1" y1="6" x2="11" y2="6" />
+              </svg>
+              New
+            </button>
+            <SectionRefreshButton done={overviewRefreshDone} label="Refresh workflow runs" onClick={refreshWorkflowRuns} />
+          </div>
+        }
+      />
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
-        <OperatorSectionHeader
-          title="Operator Focus"
-          action={<SectionRefreshButton done={overviewRefreshDone} label="Refresh operator overview" onClick={refreshOperatorOverview} />}
-        />
         {error ? <p className="operator-muted operator-danger">Operator overview error: {error}</p> : null}
         {actionError ? <p className="operator-muted operator-danger">{actionError}</p> : null}
         <RunSection
@@ -97,7 +118,6 @@ export function OperatorSidebar({
           incidents={incidents}
           selectedIncidentId={selectedIncidentId}
           onSelectIncident={onSelectIncident}
-          action={<SectionRefreshButton done={runningRefreshDone} label="Refresh running workflow runs" onClick={refreshRunningRuns} />}
         />
       </section>
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
@@ -113,7 +133,6 @@ export function OperatorSidebar({
           incidents={incidents}
           selectedIncidentId={selectedIncidentId}
           onSelectIncident={onSelectIncident}
-          action={<SectionRefreshButton done={completedRefreshDone} label="Refresh completed workflow runs" onClick={refreshCompletedRuns} />}
         />
       </section>
     </div>
@@ -132,7 +151,6 @@ function RunSection({
   onRunCommand,
   pendingCommandId,
   onSelectIncident,
-  action,
 }: {
   title: string;
   empty: string;
@@ -145,14 +163,10 @@ function RunSection({
   onRunCommand: (run: OperatorRun, command: OperatorCommand) => void;
   pendingCommandId: string | null;
   onSelectIncident: (incident: OperatorIncident) => void;
-  action?: ReactNode;
 }) {
   return (
     <div style={{ padding: "0 6px 8px" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div className="operator-section-label">{title}</div>
-        {action}
-      </div>
+      <div className="operator-section-label">{title}</div>
       {runs.length === 0 ? (
         <p className="operator-muted">{empty}</p>
       ) : runs.map((run) => {
@@ -240,21 +254,6 @@ function formatRunAge(updatedAt: string | undefined): string {
   const hours = Math.round(minutes / 60);
   if (hours < 48) return `${hours}h ago`;
   return `${Math.round(hours / 24)}d ago`;
-}
-
-function OperatorSectionHeader({
-  title,
-  action,
-}: {
-  title: string;
-  action: ReactNode;
-}) {
-  return (
-    <header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 10px" }}>
-      <span style={{ color: "var(--text-muted)", fontSize: 11, fontWeight: 650, textTransform: "uppercase" }}>{title}</span>
-      {action}
-    </header>
-  );
 }
 
 function SectionRefreshButton({ done, label, onClick }: { done: boolean; label: string; onClick: () => void }) {

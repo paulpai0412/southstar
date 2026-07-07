@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { PiAgentTitle } from "./SessionSidebar";
 
@@ -9,11 +9,13 @@ export function ProjectScopePicker({
   onCwdChange,
   label = "Project Scope",
   emptyLabel = "Select project...",
+  actions,
 }: {
   selectedCwd: string | null;
   onCwdChange: (cwd: string | null) => void;
   label?: string;
   emptyLabel?: string;
+  actions?: ReactNode;
 }) {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [homeDir, setHomeDir] = useState("");
@@ -85,9 +87,11 @@ export function ProjectScopePicker({
     <div data-testid="project-scope-picker" style={{ padding: "12px 10px 10px", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10, gap: 8 }}>
         <PiAgentTitle />
-        <span style={{ color: "var(--text-dim)", fontSize: 11, fontWeight: 650, textTransform: "uppercase", whiteSpace: "nowrap" }}>
-          {label}
-        </span>
+        {actions ?? (
+          <span style={{ color: "var(--text-dim)", fontSize: 11, fontWeight: 650, textTransform: "uppercase", whiteSpace: "nowrap" }}>
+            {label}
+          </span>
+        )}
       </div>
       <div ref={ref} style={{ position: "relative" }}>
         <button type="button" onClick={() => setOpen((value) => !value)} className="project-scope-button" title={selectedCwd || ""}>

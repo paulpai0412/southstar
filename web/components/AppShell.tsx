@@ -467,6 +467,21 @@ export function AppShell() {
     }
   }, [selectedSession, router]);
 
+  const handleWorkflowSessionDeleted = useCallback((sessionId: string) => {
+    setRefreshKey((k) => k + 1);
+    if (workflowSelectedSession?.id === sessionId) {
+      const cwd = workflowSelectedSession.cwd;
+      setWorkflowSelectedSession(null);
+      setWorkflowNewSessionCwd(cwd ?? null);
+      setWorkflowSessionKey((k) => k + 1);
+      setBranchTree([]);
+      setBranchActiveLeafId(null);
+      setSystemPrompt(null);
+      setActiveTopPanel(null);
+      router.replace("/", { scroll: false });
+    }
+  }, [workflowSelectedSession, router]);
+
   const openSidecarTab = useCallback((tab: Tab) => {
     setSidecarTabs((prev) => {
       if (prev.find((item) => item.id === tab.id)) return prev;
@@ -751,6 +766,7 @@ export function AppShell() {
           onCwdChange={handleCwdChange}
           onNewSession={handleWorkflowSidebarNewSession}
           onRefreshSessions={handleWorkflowSidebarRefresh}
+          onSessionDeleted={handleWorkflowSessionDeleted}
         />
       </div>
       <div data-testid="library-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "library")} aria-hidden={activeSidebarSurface !== "library"}>
@@ -1405,6 +1421,7 @@ export function AppShell() {
                 setOperatorSelectedTaskId(null);
                 setOperatorSelectedIncidentId(null);
               }}
+              onRefresh={operator.refresh}
             />
           </div>
           <div data-testid="library-mode-panel" style={modePanelStyle(appMode === "library")} aria-hidden={appMode !== "library"}>

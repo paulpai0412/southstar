@@ -3,7 +3,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { bucketForRunStatus, operatorStateBuckets } from "@/lib/operator/progress";
 import { workflowCanvasFromUiModel } from "@/lib/operator/taskDag";
-import type { OperatorAttentionItem, OperatorIncident, OperatorOverview, OperatorRun } from "@/lib/operator/types";
+import { invokeOperatorCommand } from "@/lib/operator/invokeCommand";
+import type { OperatorAttentionItem, OperatorCommand, OperatorIncident, OperatorOverview, OperatorRun } from "@/lib/operator/types";
 import { OperatorWorkflowProgress } from "./OperatorWorkflowProgress";
 
 const DEFAULT_DAG_HEIGHT_PERCENT = 40;
@@ -21,6 +22,7 @@ export function OperatorWorkspace({
   onSelectRun,
   onSelectTask,
   onClearRun,
+  onRefresh,
 }: {
   overview: OperatorOverview;
   selectedRunId: string | null;
@@ -31,9 +33,12 @@ export function OperatorWorkspace({
   onSelectRun: (runId: string) => void;
   onSelectTask: (input: { runId: string; taskId: string; attention?: OperatorAttentionItem }) => void;
   onClearRun: () => void;
+  onRefresh: () => void;
 }) {
   const [workflowModel, setWorkflowModel] = useState<unknown>(null);
   const [dagHeightPercent, setDagHeightPercent] = useState(DEFAULT_DAG_HEIGHT_PERCENT);
+  const [pendingCommandId, setPendingCommandId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const workspaceRef = useRef<HTMLElement | null>(null);
   const selectedRun = selectedRunId ? overview.runs.find((run) => run.runId === selectedRunId) || null : null;
   const effectiveRunId = selectedRun?.runId || null;
@@ -92,6 +97,23 @@ export function OperatorWorkspace({
   const attentionForRun = overview.attentionItems.filter((item) => item.runId === effectiveRunId);
   const selectedIncident = incidents.find((incident) => incident.id === selectedIncidentId) || null;
 
+  const invokeRunCommand = useCallback(async (run: OperatorRun, command: OperatorCommand) => {
+    const reason = window.prompt(`Reason for ${command.label}`, command.id === "run.pause" ? "Pause workflow from Operator" : "");
+    if (reason === null) return;
+    const normalizedReason = reason.trim() || command.label;
+    if (command.requiresConfirmation && !window.confirm(`Run ${command.label} with reason "${normalizedReason}"?`)) return;
+    setPendingCommandId(`${run.runId}:${command.id}`);
+    setActionError(null);
+    try {
+      await invokeOperatorCommand({ command, runId: run.runId, reason: normalizedReason });
+      onRefresh();
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setPendingCommandId(null);
+    }
+  }, [onRefresh]);
+
   return (
     <main ref={workspaceRef} data-testid="operator-workspace" className="operator-workspace">
       <OperatorStateDashboard
@@ -100,8 +122,11 @@ export function OperatorWorkspace({
         selectedIncident={selectedIncident}
         incidents={incidents}
         error={error}
+        actionError={actionError}
         onSelectRun={onSelectRun}
         onClearRun={onClearRun}
+        onRunCommand={(run, command) => void invokeRunCommand(run, command)}
+        pendingCommandId={pendingCommandId}
       />
       {selectedRun ? (
         <>
@@ -134,16 +159,22 @@ function OperatorStateDashboard({
   selectedIncident,
   incidents,
   error,
+  actionError,
   onSelectRun,
   onClearRun,
+  onRunCommand,
+  pendingCommandId,
 }: {
   overview: OperatorOverview;
   selectedRunId: string | null;
   selectedIncident: OperatorIncident | null;
   incidents: OperatorIncident[];
   error: string | null;
+  actionError: string | null;
   onSelectRun: (runId: string) => void;
   onClearRun: () => void;
+  onRunCommand: (run: OperatorRun, command: OperatorCommand) => void;
+  pendingCommandId: string | null;
 }) {
   const sortedRuns = [...overview.runs].sort(compareRunUpdatedAt);
   const problemCount = overview.attentionItems.length + incidents.length;
@@ -167,6 +198,7 @@ function OperatorStateDashboard({
         </div>
       </header>
       {error ? <p className="operator-muted operator-danger">Operator overview error: {error}</p> : null}
+      {actionError ? <p className="operator-muted operator-danger">{actionError}</p> : null}
       <div className="operator-workflow-state-grid" aria-label="Workflow state dashboard">
         {operatorStateBuckets.map((bucket) => {
           const bucketRuns = sortedRuns.filter((run) => bucketForRunStatus(run.status) === bucket);
@@ -187,6 +219,8 @@ function OperatorStateDashboard({
                     incidents={incidents.filter((incident) => incident.runId === run.runId)}
                     selected={selectedRunId === run.runId}
                     onSelectRun={onSelectRun}
+                    onRunCommand={onRunCommand}
+                    pendingCommandId={pendingCommandId}
                   />
                 ))}
               </div>
@@ -211,23 +245,35 @@ function WorkflowStateCard({
   incidents,
   selected,
   onSelectRun,
+  onRunCommand,
+  pendingCommandId,
 }: {
   run: OperatorRun;
   attentionItems: OperatorAttentionItem[];
   incidents: OperatorIncident[];
   selected: boolean;
   onSelectRun: (runId: string) => void;
+  onRunCommand: (run: OperatorRun, command: OperatorCommand) => void;
+  pendingCommandId: string | null;
 }) {
   const attentionCount = attentionItems.length + incidents.length;
   const highestIncident = incidents[0] || null;
   const projectLabel = formatProjectLabel(run);
+  const rowCommands = (run.commands ?? []).filter((command) => command.id === "run.pause" || command.id === "run.cancel");
+  const selectRun = () => onSelectRun(run.runId);
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       className="operator-workflow-state-card"
       aria-pressed={selected}
-      onClick={() => onSelectRun(run.runId)}
+      onClick={selectRun}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== " ") return;
+        event.preventDefault();
+        selectRun();
+      }}
     >
       <span className="operator-workflow-state-card-status">{run.status}</span>
       <strong>{run.title}</strong>
@@ -241,7 +287,25 @@ function WorkflowStateCard({
           {attentionCount} attention{highestIncident ? ` · ${highestIncident.nextAction}` : ""}
         </span>
       ) : null}
-    </button>
+      {rowCommands.length > 0 ? (
+        <span className="operator-run-command-row" aria-label="Workflow run actions">
+          {rowCommands.map((command) => (
+            <button
+              key={command.id}
+              type="button"
+              disabled={!command.enabled || pendingCommandId === `${run.runId}:${command.id}`}
+              title={command.disabledReason || command.label}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRunCommand(run, command);
+              }}
+            >
+              {pendingCommandId === `${run.runId}:${command.id}` ? "..." : command.label.replace(" Run", "")}
+            </button>
+          ))}
+        </span>
+      ) : null}
+    </div>
   );
 }
 

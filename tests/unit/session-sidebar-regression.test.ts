@@ -42,3 +42,42 @@ test("sessions route defaults omitted kind requests to chat sessions", () => {
   assert.match(route, /value === "workflow" \|\| value === "library"/);
   assert.match(route, /return "chat";/);
 });
+
+test("workflow generation materializes a workflow-kind session before streaming", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+
+  assert.match(hook, /if \(opts\.workflowMode && !images\?\.length && !isSlashCommandPrompt\) \{[\s\S]*const workflowSessionId = sessionIdRef\.current \?\? await ensureNewSession\(\);[\s\S]*generateWorkflowDagStream/);
+  assert.match(hook, /if \(workflowSessionId\) promoteNewSession\(1, trimmedMessage\);/);
+});
+
+test("library sidebar sessions stay on the library workspace session model", () => {
+  const librarySidebar = source("web/components/library/LibrarySidebar.tsx");
+
+  assert.doesNotMatch(librarySidebar, /api\/sessions/);
+  assert.match(librarySidebar, /data-testid="library-session-list"/);
+});
+
+test("workflow sidebar lists workflow sessions even before a project is selected", () => {
+  const workflowSidebar = source("web/components/WorkflowSidebar.tsx");
+  const route = source("web/app/api/sessions/route.ts");
+
+  assert.match(workflowSidebar, /scope=all&kind=workflow&limit=50&compact=1/);
+  assert.doesNotMatch(workflowSidebar, /if \(!cwd\) \{\s*setSessions\(\[\]\);/);
+  assert.match(route, /compactSession/);
+  assert.match(route, /searchParams\.get\("limit"\)/);
+  assert.match(route, /listRecentSessionsByKind/);
+  assert.doesNotMatch(route, /scope === "all" \? await listAllSessions\(\) : await listSessionsForCwd\(cwd\)/);
+});
+
+test("library session summaries persist across refresh", () => {
+  const workspace = source("web/components/library/LibraryWorkspace.tsx");
+  const runtimeRoute = source("src/v2/server/library-routes.ts");
+  const readModel = source("src/v2/read-models/library-chat.ts");
+
+  assert.match(workspace, /LIBRARY_SESSIONS_STORAGE_KEY/);
+  assert.match(workspace, /window\.localStorage\.getItem\(LIBRARY_SESSIONS_STORAGE_KEY\)/);
+  assert.match(workspace, /window\.localStorage\.setItem\(LIBRARY_SESSIONS_STORAGE_KEY/);
+  assert.match(workspace, /fetch\("\/api\/library\/chat\/sessions/);
+  assert.match(runtimeRoute, /\/api\/v2\/library\/chat\/sessions/);
+  assert.match(readModel, /library_chat_action/);
+});

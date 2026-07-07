@@ -29,6 +29,8 @@ type LibraryWorkspaceContextValue = {
   handleSelectScope: (scope: string) => void;
   handleSelectObject: (object: LibraryWorkspaceObject) => void;
   handleSelectSession: (session: LibrarySessionSummary) => void;
+  handleRenameSession: (sessionId: string, title: string) => void;
+  handleDeleteSession: (sessionId: string) => void;
   handleSelectGraphNode: (node: LibraryGraphChartNode) => void;
   handleSessionActivity: (session: LibrarySessionSummary) => void;
   setStatusFilter: (status: string) => void;
@@ -41,6 +43,7 @@ type SelectableLibraryObject = Pick<LibraryWorkspaceObject, "objectKey" | "title
 };
 
 const LibraryWorkspaceContext = createContext<LibraryWorkspaceContextValue | null>(null);
+const LIBRARY_SESSIONS_STORAGE_KEY = "southstar:library-sessions";
 
 export function LibraryWorkspaceProvider({
   children,
@@ -64,6 +67,7 @@ export function LibraryWorkspaceProvider({
   const [librarySessions, setLibrarySessions] = useState<LibrarySessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(undefined);
   const [librarySessionKey, setLibrarySessionKey] = useState(0);
+  const librarySessionsLoadedRef = useRef(false);
   const selectedFilePathRef = useRef<string | undefined>(undefined);
   const dirtyFileContentRef = useRef("");
   const loadRequestRef = useRef(0);
@@ -96,6 +100,33 @@ export function LibraryWorkspaceProvider({
 
   useEffect(() => loadWorkspaceWithCleanup(), [loadWorkspaceWithCleanup]);
 
+  useEffect(() => {
+    try {
+      setLibrarySessions(readStoredLibrarySessions(window.localStorage.getItem(LIBRARY_SESSIONS_STORAGE_KEY)));
+    } finally {
+      librarySessionsLoadedRef.current = true;
+    }
+
+    let cancelled = false;
+    fetch("/api/library/chat/sessions?limit=50", { cache: "no-store" })
+      .then((response) => response.json())
+      .then((payload) => {
+        if (cancelled) return;
+        const runtimeSessions = readRuntimeLibrarySessions(payload);
+        if (runtimeSessions.length === 0) return;
+        setLibrarySessions((current) => mergeLibrarySessions(current, runtimeSessions));
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!librarySessionsLoadedRef.current) return;
+    window.localStorage.setItem(LIBRARY_SESSIONS_STORAGE_KEY, JSON.stringify(librarySessions.slice(0, 50)));
+  }, [librarySessions]);
+
   const handleSessionActivity = useCallback((session: LibrarySessionSummary) => {
     setSelectedSessionId(session.id);
     setLibrarySessions((current) => {
@@ -109,6 +140,15 @@ export function LibraryWorkspaceProvider({
 
   const handleSelectSession = useCallback((session: LibrarySessionSummary) => {
     setSelectedSessionId(session.id);
+  }, []);
+
+  const handleRenameSession = useCallback((sessionId: string, title: string) => {
+    setLibrarySessions((current) => current.map((session) => session.id === sessionId ? { ...session, title } : session));
+  }, []);
+
+  const handleDeleteSession = useCallback((sessionId: string) => {
+    setLibrarySessions((current) => current.filter((session) => session.id !== sessionId));
+    setSelectedSessionId((current) => current === sessionId ? undefined : current);
   }, []);
 
   const handleNewSession = useCallback(() => {
@@ -301,6 +341,8 @@ export function LibraryWorkspaceProvider({
     handleSelectScope,
     handleSelectObject,
     handleSelectSession,
+    handleRenameSession,
+    handleDeleteSession,
     handleSelectGraphNode,
     handleSessionActivity,
     setStatusFilter,
@@ -316,6 +358,8 @@ export function LibraryWorkspaceProvider({
     handleSelectObject,
     handleSelectScope,
     handleSelectSession,
+    handleRenameSession,
+    handleDeleteSession,
     handleSessionActivity,
     librarySessions,
     librarySessionKey,
@@ -350,6 +394,8 @@ export function LibrarySidebarPanel() {
         onSelectScope={context.handleSelectScope}
         onStatusFilterChange={context.setStatusFilter}
         onSelectSession={context.handleSelectSession}
+        onRenameSession={context.handleRenameSession}
+        onDeleteSession={context.handleDeleteSession}
         onNewSession={context.handleNewSession}
         onRefresh={context.loadWorkspace}
         onSelectObject={context.handleSelectObject}
@@ -465,4 +511,43 @@ function findWorkspaceObjectByKey(model: LibraryWorkspaceModel | null, objectKey
 function sourcePathFromObjectDetail(detail: LibraryObjectDetail): string | undefined {
   const sourcePath = detail.object.state?.sourcePath;
   return typeof sourcePath === "string" && sourcePath.length > 0 ? sourcePath : undefined;
+}
+
+function readStoredLibrarySessions(raw: string | null): LibrarySessionSummary[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(isLibrarySessionSummary).slice(0, 50);
+  } catch {
+    return [];
+  }
+}
+
+function isLibrarySessionSummary(value: unknown): value is LibrarySessionSummary {
+  if (!value || typeof value !== "object") return false;
+  const session = value as LibrarySessionSummary;
+  return typeof session.id === "string" && typeof session.title === "string" && typeof session.status === "string";
+}
+
+function readRuntimeLibrarySessions(payload: unknown): LibrarySessionSummary[] {
+  const root = isRecord(payload) ? payload : {};
+  const result = isRecord(root.result) ? root.result : root;
+  const sessions = Array.isArray(result.sessions) ? result.sessions : [];
+  return sessions.filter(isLibrarySessionSummary).slice(0, 50);
+}
+
+function mergeLibrarySessions(current: LibrarySessionSummary[], incoming: LibrarySessionSummary[]): LibrarySessionSummary[] {
+  const byId = new Map<string, LibrarySessionSummary>();
+  for (const session of [...current, ...incoming]) {
+    const existing = byId.get(session.id);
+    byId.set(session.id, existing ? { ...existing, ...session, title: existing.title || session.title } : session);
+  }
+  return [...byId.values()]
+    .sort((left, right) => Date.parse(right.modified ?? "") - Date.parse(left.modified ?? ""))
+    .slice(0, 50);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }

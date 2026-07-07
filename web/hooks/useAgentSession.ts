@@ -838,6 +838,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       };
 
       try {
+        const workflowSessionId = sessionIdRef.current ?? await ensureNewSession();
+        if (workflowSessionId) promoteNewSession(1, trimmedMessage);
         await generateWorkflowDagStream({
           prompt: trimmedMessage,
           draftId: revisionDraftId,
@@ -972,7 +974,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, promoteNewSession, waitForPromptSettlement, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
+  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
 
   const handleAbort = useCallback(async () => {
     if (workflowAbortControllerRef.current) {

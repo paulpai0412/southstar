@@ -1,14 +1,16 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlow,
+  applyNodeChanges,
   type Edge,
   type Node,
+  type NodeChange,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { statusColorFor } from "./colors";
@@ -33,6 +35,7 @@ export function SouthstarWorkflowCanvas(props: {
   const [nodes, setNodes] = useState<Array<Node<WorkflowTaskNodeData>>>([]);
   const [edges, setEdges] = useState<Array<Edge<WorkflowDependencyEdgeData>>>([]);
   const [layoutError, setLayoutError] = useState<string | null>(null);
+  const positionsByGraphRef = useRef<Record<string, Record<string, { x: number; y: number }>>>({});
 
   useEffect(() => {
     let cancelled = false;
@@ -44,8 +47,9 @@ export function SouthstarWorkflowCanvas(props: {
           direction: props.direction,
         });
         if (cancelled) return;
+        const savedPositions = positionsByGraphRef.current[props.canvas.graphId] ?? {};
         setLayoutError(null);
-        setNodes(next.nodes);
+        setNodes(next.nodes.map((node) => savedPositions[node.id] ? { ...node, position: savedPositions[node.id] } : node));
         setEdges(next.edges);
       } catch (caught) {
         if (cancelled) return;
@@ -57,6 +61,18 @@ export function SouthstarWorkflowCanvas(props: {
       cancelled = true;
     };
   }, [props.canvas, props.selectedTaskId, props.direction]);
+
+  const handleNodesChange = useCallback((changes: NodeChange<Node<WorkflowTaskNodeData>>[]) => {
+    setNodes((current) => applyNodeChanges(changes, current));
+    const savedPositions = positionsByGraphRef.current[props.canvas.graphId] ?? {};
+    let changed = false;
+    for (const change of changes) {
+      if (change.type !== "position" || !change.position) continue;
+      savedPositions[change.id] = change.position;
+      changed = true;
+    }
+    if (changed) positionsByGraphRef.current[props.canvas.graphId] = savedPositions;
+  }, [props.canvas.graphId]);
 
   const minimapColor = useMemo(
     () => (node: Node<WorkflowTaskNodeData>) => statusColorFor(node.data.status).edge,
@@ -83,9 +99,10 @@ export function SouthstarWorkflowCanvas(props: {
           zoomOnScroll
           zoomOnPinch
           zoomOnDoubleClick
-          nodesDraggable={false}
+          nodesDraggable
           nodesConnectable={false}
           edgesFocusable={false}
+          onNodesChange={handleNodesChange}
           onNodeClick={(_, node) => props.onSelectTask(node.id)}
         >
           <MiniMap nodeColor={minimapColor} maskColor="rgba(15, 98, 254, 0.08)" />

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject, LibraryWorkspaceObjectGroup } from "@/lib/library/types";
 import { FolderIcon } from "../FileIcons";
 import { PiAgentTitle } from "../SessionSidebar";
@@ -43,6 +43,8 @@ export function LibrarySidebar({
   statusFilter,
   onSelectScope,
   onSelectSession,
+  onRenameSession,
+  onDeleteSession,
   onNewSession,
   onRefresh,
   onSelectObject,
@@ -56,13 +58,14 @@ export function LibrarySidebar({
   onSelectScope: (scope: string) => void;
   onStatusFilterChange: (status: string) => void;
   onSelectSession?: (session: LibrarySessionSummary) => void;
+  onRenameSession?: (sessionId: string, title: string) => void;
+  onDeleteSession?: (sessionId: string) => void;
   onNewSession?: () => void;
   onRefresh?: () => void;
   onSelectObject: (object: LibraryWorkspaceObject) => void;
 }) {
   const domains = model?.domains ?? [];
   const [domainFilter, setDomainFilter] = useState("");
-  const [sessionsOpen, setSessionsOpen] = useState(true);
   const [treeOpen, setTreeOpen] = useState(true);
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
@@ -91,9 +94,7 @@ export function LibrarySidebar({
     markTreeRefreshDone();
   };
   const handleRefresh = () => {
-    onRefresh?.();
-    markSessionRefreshDone();
-    markTreeRefreshDone();
+    handleSessionRefresh();
   };
 
   return (
@@ -147,9 +148,9 @@ export function LibrarySidebar({
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
-                background: sessionRefreshDone || treeRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
-                border: `1px solid ${sessionRefreshDone || treeRefreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
-                color: sessionRefreshDone || treeRefreshDone ? "#4ade80" : "var(--text-muted)",
+                background: sessionRefreshDone ? "rgba(74,222,128,0.18)" : "var(--bg-hover)",
+                border: `1px solid ${sessionRefreshDone ? "rgba(74,222,128,0.4)" : "var(--border)"}`,
+                color: sessionRefreshDone ? "#4ade80" : "var(--text-muted)",
                 cursor: "pointer",
                 width: 32,
                 height: 32,
@@ -159,7 +160,7 @@ export function LibrarySidebar({
                 transition: "background 0.3s, color 0.3s, border-color 0.3s",
               }}
             >
-              {sessionRefreshDone || treeRefreshDone ? (
+              {sessionRefreshDone ? (
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4ade80" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                   <polyline points="20 6 9 17 4 12" />
                 </svg>
@@ -191,28 +192,23 @@ export function LibrarySidebar({
       </div>
 
       <section style={{ flex: "0 0 28%", minHeight: 112, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
-        <SectionHeader
-          title="Library LLM Sessions"
-          open={sessionsOpen}
-          onToggle={() => setSessionsOpen((value) => !value)}
-          action={<SectionRefreshButton done={sessionRefreshDone} label="Refresh Library LLM sessions" onClick={handleSessionRefresh} />}
-        />
-        {sessionsOpen && (
-          <div data-testid="library-session-list" style={{ padding: "0 6px 8px" }}>
-            {sessions.length === 0 ? (
-              <div style={{ padding: "8px 8px 6px", color: "var(--text-dim)", fontSize: 12 }}>
-                No Library LLM sessions
-              </div>
-            ) : sessions.map((session) => (
-              <LibrarySessionRow
-                key={session.id}
-                session={session}
-                selected={session.id === selectedSessionId}
-                onSelect={onSelectSession}
-              />
-            ))}
-          </div>
-        )}
+        <div style={sessionListTitleStyle}>Library LLM Sessions</div>
+        <div data-testid="library-session-list" style={{ padding: "0 6px 8px" }}>
+          {sessions.length === 0 ? (
+            <div style={{ padding: "8px 8px 6px", color: "var(--text-dim)", fontSize: 12 }}>
+              No Library LLM sessions
+            </div>
+          ) : sessions.map((session) => (
+            <LibrarySessionRow
+              key={session.id}
+              session={session}
+              selected={session.id === selectedSessionId}
+              onSelect={onSelectSession}
+              onRename={onRenameSession}
+              onDelete={onDeleteSession}
+            />
+          ))}
+        </div>
       </section>
 
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto" }}>
@@ -404,18 +400,40 @@ function SectionRefreshButton({ done, label, onClick }: { done: boolean; label: 
   );
 }
 
+const sessionListTitleStyle = {
+  padding: "7px 10px",
+  color: "var(--text-muted)",
+  fontSize: 11,
+  fontWeight: 650,
+  textTransform: "uppercase",
+} as const;
+
 function LibrarySessionRow({
   session,
   selected,
   onSelect,
+  onRename,
+  onDelete,
 }: {
   session: LibrarySessionSummary;
   selected: boolean;
   onSelect?: (session: LibrarySessionSummary) => void;
+  onRename?: (sessionId: string, title: string) => void;
+  onDelete?: (sessionId: string) => void;
 }) {
+  const title = session.title || "Untitled Library session";
+  const rename = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    const next = window.prompt("Rename Library session", title)?.trim();
+    if (next && next !== title) onRename?.(session.id, next);
+  };
+  const remove = (event: ReactMouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    if (window.confirm(`Delete "${title}"?`)) onDelete?.(session.id);
+  };
+
   return (
-    <button
-      type="button"
+    <div
       data-testid="library-session-row"
       aria-pressed={selected}
       onClick={() => onSelect?.(session)}
@@ -435,13 +453,53 @@ function LibrarySessionRow({
         textAlign: "left",
       }}
     >
-      <span style={{ fontSize: 12, fontWeight: 560, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {session.title || "Untitled Library session"}
+      <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span style={{ minWidth: 0, flex: 1, fontSize: 12, fontWeight: 560, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {title}
+        </span>
+        <SessionIconButton title="Rename" onClick={rename}>
+          <path d="M17 3a2.828 2.828 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z" />
+        </SessionIconButton>
+        <SessionIconButton title="Delete" onClick={remove}>
+          <polyline points="3 6 5 6 21 6" />
+          <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+          <path d="M10 11v6M14 11v6" />
+          <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+        </SessionIconButton>
       </span>
       <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, color: "var(--text-dim)", fontSize: 11 }}>
         <span>{session.status}</span>
         <span>{session.detail ?? (typeof session.itemCount === "number" ? `${session.itemCount} items` : formatRelativeTime(session.modified))}</span>
       </span>
+    </div>
+  );
+}
+
+function SessionIconButton({ title, onClick, children }: { title: string; onClick: (event: ReactMouseEvent<HTMLButtonElement>) => void; children: ReactNode }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      style={{
+        width: 24,
+        height: 24,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 0,
+        border: "1px solid var(--border)",
+        borderRadius: 6,
+        background: "var(--bg-hover)",
+        color: "var(--text-muted)",
+        cursor: "pointer",
+        flexShrink: 0,
+      }}
+    >
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        {children}
+      </svg>
     </button>
   );
 }
