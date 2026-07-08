@@ -21,6 +21,7 @@ export async function runLibraryChatCommand(input: {
   prompt: string;
   scope: string;
   onFrame: (frame: LibrarySseFrame) => void;
+  onAccepted?: (sessionId: string, actionId: string) => void;
   signal?: AbortSignal;
 }): Promise<void> {
   const accepted = await fetch("/api/library/chat/messages", {
@@ -34,6 +35,7 @@ export async function runLibraryChatCommand(input: {
   const sessionId = body.result?.sessionId;
   const actionId = body.result?.actionId;
   if (!sessionId || !actionId) throw new Error("library chat accepted response missing sessionId/actionId");
+  input.onAccepted?.(sessionId, actionId);
 
   const response = await fetch(`/api/library/chat/events?sessionId=${encodeURIComponent(sessionId)}&actionId=${encodeURIComponent(actionId)}`, {
     signal: input.signal,

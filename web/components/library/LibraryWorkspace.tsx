@@ -3,7 +3,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readLibraryFile, readLibraryGraphNeighborhood, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
 import type { LibraryFileEnvelope, LibraryGraphReadModel, LibraryObjectDetail, LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
-import { LibraryChatWindow } from "./LibraryChatWindow";
+import type { SessionInfo, WorkspaceSurface } from "@/lib/types";
+import { ChatWindow } from "../ChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
 import type { LibraryGraphChartNode } from "./LibraryGraphChart";
 import { LibrarySidebar } from "./LibrarySidebar";
@@ -25,7 +26,10 @@ type LibraryWorkspaceContextValue = {
   selectedSessionId?: string;
   librarySessionKey: number;
   selectedCwd: string | null;
+  modelsRefreshKey?: number;
+  onAgentEnd?: () => void;
   onCwdChange?: (cwd: string | null) => void;
+  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
   loadWorkspace: () => void;
   refreshWorkspace: () => void;
   handleNewSession: () => void;
@@ -36,6 +40,7 @@ type LibraryWorkspaceContextValue = {
   handleDeleteSession: (sessionId: string) => void;
   handleSelectGraphNode: (node: LibraryGraphChartNode) => void;
   handleSessionActivity: (session: LibrarySessionSummary) => void;
+  handleSharedSessionCreated: (session: SessionInfo) => void;
   setStatusFilter: (status: string) => void;
   updateDirtyFileContent: (content: string) => void;
   handleSaveAndSyncFile: () => void;
@@ -51,12 +56,18 @@ export function LibraryWorkspaceProvider({
   children,
   onOpenFile,
   defaultCwd,
+  modelsRefreshKey,
+  onAgentEnd,
   onCwdChange,
+  onWorkspaceSurfaceChange,
 }: {
   children: ReactNode;
   onOpenFile?: (file: { objectKey: string; title: string; sourcePath?: string }) => void;
   defaultCwd?: string | null;
+  modelsRefreshKey?: number;
+  onAgentEnd?: () => void;
   onCwdChange?: (cwd: string | null) => void;
+  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }) {
   const [model, setModel] = useState<LibraryWorkspaceModel | null>(null);
   const [selectedScope, setSelectedScope] = useState("all");
@@ -156,6 +167,18 @@ export function LibraryWorkspaceProvider({
     setSelectedSessionId(undefined);
     setLibrarySessionKey((value) => value + 1);
   }, []);
+
+  const handleSharedSessionCreated = useCallback((session: SessionInfo) => {
+    setSelectedSessionId(session.id);
+    setLibrarySessions((current) => mergeLibrarySessions(current, [{
+      id: session.id,
+      title: session.firstMessage || session.name || session.id,
+      status: "running",
+      modified: session.modified,
+      detail: selectedScope,
+      itemCount: session.messageCount,
+    }]));
+  }, [selectedScope]);
 
   const updateDirtyFileContent = useCallback((content: string) => {
     dirtyFileContentRef.current = content;
@@ -338,7 +361,10 @@ export function LibraryWorkspaceProvider({
     selectedSessionId,
     librarySessionKey,
     selectedCwd: defaultCwd ?? null,
+    modelsRefreshKey,
+    onAgentEnd,
     onCwdChange,
+    onWorkspaceSurfaceChange,
     loadWorkspace,
     refreshWorkspace,
     handleNewSession,
@@ -349,6 +375,7 @@ export function LibraryWorkspaceProvider({
     handleDeleteSession,
     handleSelectGraphNode,
     handleSessionActivity,
+    handleSharedSessionCreated,
     setStatusFilter,
     updateDirtyFileContent,
     handleSaveAndSyncFile,
@@ -365,12 +392,16 @@ export function LibraryWorkspaceProvider({
     handleRenameSession,
     handleDeleteSession,
     handleSessionActivity,
+    handleSharedSessionCreated,
     librarySessions,
     librarySessionKey,
     loadWorkspace,
     model,
+    modelsRefreshKey,
     objectDetail,
+    onAgentEnd,
     onCwdChange,
+    onWorkspaceSurfaceChange,
     refreshWorkspace,
     edgeGraph,
     saving,
@@ -458,14 +489,19 @@ function LibraryWorkspaceContent() {
     >
       <main data-testid="library-chat-workspace" style={{ minWidth: 0, overflow: "hidden" }}>
         {canRenderLibraryChat ? (
-          <LibraryChatWindow
+          <ChatWindow
             key={context.librarySessionKey}
-            scope={context.selectedScope}
-            pendingPrompt=""
-            onPromptConsumed={() => undefined}
-            onLibraryChanged={context.refreshWorkspace}
-            onSelectGraphNode={context.handleSelectGraphNode}
-            onSessionActivity={context.handleSessionActivity}
+            session={null}
+            newSessionCwd={context.selectedCwd}
+            sessionKind="library"
+            libraryScope={context.selectedScope}
+            onAgentEnd={context.onAgentEnd}
+            onSessionCreated={context.handleSharedSessionCreated}
+            modelsRefreshKey={context.modelsRefreshKey}
+            workflowMode={false}
+            workflowCwd={context.selectedCwd}
+            onLibraryGraphNodeSelect={context.handleSelectGraphNode}
+            onWorkspaceSurfaceChange={context.onWorkspaceSurfaceChange}
           />
         ) : (
           <div data-testid="library-chat-empty-new" style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>

@@ -48,12 +48,25 @@ export interface WorkflowDagContent {
   dag: import("@/lib/workflow/types").WorkflowDag;
 }
 
+export interface LibraryGraphContent {
+  type: "libraryGraph";
+  data: Record<string, unknown>;
+  defaultScope?: string;
+}
+
+export interface LibraryImportCandidatesContent {
+  type: "libraryImportCandidates";
+  draftId: string;
+  candidates: import("@/lib/library/types").LibraryImportCandidate[];
+  proposedEdges?: import("@/lib/library/types").LibraryImportProposedEdge[];
+}
+
 export interface WorkflowDagCustomDetails {
   kind: "workflowDag";
   dag: import("@/lib/workflow/types").WorkflowDag;
 }
 
-export type AssistantContentBlock = TextContent | ImageContent | ThinkingContent | ToolCallContent | WorkflowDagContent;
+export type AssistantContentBlock = TextContent | ImageContent | ThinkingContent | ToolCallContent | WorkflowDagContent | LibraryGraphContent | LibraryImportCandidatesContent;
 
 export interface UserMessage {
   role: "user";

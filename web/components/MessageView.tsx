@@ -20,6 +20,8 @@ import type {
   ToolCallContent,
   ThinkingContent,
   WorkflowDagContent,
+  LibraryGraphContent,
+  LibraryImportCandidatesContent,
   WorkflowDagCustomDetails,
   WorkspaceSurface,
 } from "@/lib/types";
@@ -532,6 +534,14 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
   }
   if (block.type === "workflowDag") {
     return <WorkflowDagBlock dag={(block as WorkflowDagContent).dag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} />;
+  }
+  if (block.type === "libraryGraph") {
+    const libraryGraph = block as LibraryGraphContent;
+    return <LibraryGraphBlock data={libraryGraph.data} defaultScope={libraryGraph.defaultScope ?? "all"} onSelectNode={onLibraryGraphNodeSelect} />;
+  }
+  if (block.type === "libraryImportCandidates") {
+    const candidates = block as LibraryImportCandidatesContent;
+    return <ChatLibraryCandidateBlock data={{ draftId: candidates.draftId, candidates: candidates.candidates, proposedEdges: candidates.proposedEdges }} />;
   }
   if (block.type === "thinking") {
     return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} />;

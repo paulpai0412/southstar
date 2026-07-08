@@ -57,11 +57,13 @@ test("Library workspace follows AppShell sidebar plus center chat and file viewe
   assert.match(workspace, /const canRenderLibraryChat = Boolean\(context\.selectedCwd\)/);
   assert.match(workspace, /canRenderLibraryChat \? \(/);
   assert.doesNotMatch(workspace, /\/api\/default-cwd/);
-  assert.match(workspace, /LibraryChatWindow/);
+  assert.match(workspace, /ChatWindow/);
+  assert.match(workspace, /sessionKind="library"/);
+  assert.match(workspace, /libraryScope=\{context\.selectedScope\}/);
   assert.match(workspace, /\/api\/library\/chat\/sessions\?limit=50/);
   assert.match(workspace, /data-testid="library-chat-empty-new"/);
   assert.doesNotMatch(workspace, /selectedChatSession/);
-  assert.doesNotMatch(workspace, /sessionKind="library"/);
+  assert.doesNotMatch(workspace, /LibraryChatWindow/);
   assert.doesNotMatch(workspace, /\/api\/sessions\?scope=all&kind=library/);
   assert.match(workspace, /LibraryFileViewer/);
   assert.match(workspace, /gridTemplateColumns:\s*"minmax\(0, 1fr\)"/);
@@ -78,6 +80,8 @@ test("Library workspace follows AppShell sidebar plus center chat and file viewe
   assert.match(source("web/components/library/LibrarySidebar.tsx"), /title="Refresh"/);
   assert.match(source("web/lib/library/chat-stream.ts"), /\/api\/library\/chat\/messages/);
   assert.match(source("web/lib/library/chat-stream.ts"), /\/api\/library\/chat\/events/);
+  assert.match(source("web/hooks/useAgentSession.ts"), /sessionKind === "library"/);
+  assert.match(source("web/hooks/useAgentSession.ts"), /runLibraryChatCommand/);
   assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /LibraryGraphChart/);
   assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /library-graph-domain-filter/);
   assert.match(source("web/components/library/LibraryGraphBlock.tsx"), /new URLSearchParams\(\{ scope: selectedScope \}\)/);

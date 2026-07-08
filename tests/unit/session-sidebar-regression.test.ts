@@ -71,14 +71,18 @@ test("workflow sidebar lists workflow sessions even before a project is selected
 
 test("library workspace uses dedicated library chat sessions", () => {
   const workspace = source("web/components/library/LibraryWorkspace.tsx");
+  const hook = source("web/hooks/useAgentSession.ts");
 
   assert.match(workspace, /fetch\("\/api\/library\/chat\/sessions\?limit=50"/);
   assert.match(workspace, /readRuntimeLibrarySessions/);
   assert.match(workspace, /isLibrarySessionSummary/);
-  assert.match(workspace, /LibraryChatWindow/);
-  assert.match(workspace, /onLibraryChanged=\{context\.refreshWorkspace\}/);
+  assert.match(workspace, /ChatWindow/);
+  assert.match(workspace, /sessionKind="library"/);
+  assert.match(workspace, /libraryScope=\{context\.selectedScope\}/);
+  assert.match(hook, /runLibraryChatCommand/);
+  assert.match(hook, /sessionKind === "library"/);
   assert.doesNotMatch(workspace, /\/api\/sessions\?scope=all&kind=library/);
-  assert.doesNotMatch(workspace, /sessionKind="library"/);
+  assert.doesNotMatch(workspace, /LibraryChatWindow/);
   assert.doesNotMatch(workspace, /selectedChatSession/);
   assert.doesNotMatch(workspace, /LIBRARY_SESSIONS_STORAGE_KEY/);
 });

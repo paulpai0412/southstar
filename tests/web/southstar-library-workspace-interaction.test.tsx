@@ -890,7 +890,7 @@ test("LibraryWorkspace opens object detail sidecar for graph objects without sou
   });
 });
 
-test("LibraryWorkspace records LibraryChatWindow session activity in the sidebar", async () => {
+test("LibraryWorkspace records shared ChatWindow library session activity in the sidebar", async () => {
   const requests: Array<{ method: string; path: string; body?: string; query?: string }> = [];
   let workspaceFetches = 0;
 
@@ -912,7 +912,7 @@ test("LibraryWorkspace records LibraryChatWindow session activity in the sidebar
     await page.locator('[data-testid="library-chat-mock"] textarea').fill("create a browser verification skill");
     await page.keyboard.press("Enter");
     await page.locator('[data-testid="library-session-row"]').filter({ hasText: "create a browser verification skill" }).waitFor();
-    assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "ready" }).count(), 1);
+    assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "running" }).count(), 1);
     assert.equal(workspaceFetches, 1);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
@@ -1467,7 +1467,7 @@ function libraryChatMockPlugin() {
   return {
     name: "library-chat-window-mock",
     setup(buildApi: any) {
-      buildApi.onResolve({ filter: /^\.\/LibraryChatWindow$/ }, (args: any) => {
+      buildApi.onResolve({ filter: /^\.\.\/ChatWindow$/ }, (args: any) => {
         if (!args.importer.endsWith("LibraryWorkspace.tsx")) return undefined;
         return { path: "library-chat-window-mock", namespace: "southstar-test" };
       });
@@ -1475,17 +1475,21 @@ function libraryChatMockPlugin() {
         loader: "js",
         contents: `
           import React, { useState } from "react";
-          export function LibraryChatWindow(props) {
+          export function ChatWindow(props) {
             const [value, setValue] = useState("");
             const submit = () => {
               if (!value.trim()) return;
-              props.onSessionActivity?.({
+              if (props.sessionKind !== "library") throw new Error("expected library sessionKind");
+              if (props.libraryScope !== "all") throw new Error("expected library scope");
+              props.onSessionCreated?.({
                 id: "library-session-1",
-                title: value,
-                status: "ready",
+                path: "",
+                cwd: props.newSessionCwd,
+                kind: "library",
+                created: "2026-07-07T00:00:00.000Z",
                 modified: "2026-07-07T00:00:01.000Z",
-                detail: "software",
-                itemCount: 1,
+                messageCount: 1,
+                firstMessage: value,
               });
             };
             return React.createElement(
@@ -1505,7 +1509,7 @@ function libraryChatMockPlugin() {
                 "button",
                 {
                   type: "button",
-                  onClick: () => props.onSelectGraphNode?.({
+                  onClick: () => props.onLibraryGraphNodeSelect?.({
                     objectKey: "agent.frontend-developer",
                     title: "Frontend Developer",
                   }),

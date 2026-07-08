@@ -13,9 +13,12 @@ import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
 import { appendWorkflowStreamText, normalizeWorkflowStreamText } from "@/lib/workflow/stream-text";
+import { runLibraryChatCommand } from "@/lib/library/chat-stream";
 import type { ToolEntry } from "@/components/ToolPanel";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { WorkflowDag } from "@/lib/workflow/types";
+import type { LibraryImportCandidate, LibraryImportProposedEdge, LibrarySseFrame } from "@/lib/library/types";
+import type { SessionKind } from "@/lib/session-kind";
 
 export interface SessionData {
   sessionId: string;
@@ -28,6 +31,56 @@ export interface SessionData {
     thinkingLevel: string;
     model: { provider: string; modelId: string } | null;
   };
+}
+
+function libraryTextFromFrame(frame: LibrarySseFrame): string | null {
+  const message = typeof frame.data.message === "string" ? frame.data.message : undefined;
+  if (message) return `[${frame.event}] ${message}`;
+  if (frame.event === "library.intent.completed" && typeof frame.data.intent === "string") return `[intent] ${frame.data.intent}`;
+  if (frame.event === "library.command.completed") {
+    const status = typeof frame.data.status === "string" ? frame.data.status : "completed";
+    return `[done] ${status}`;
+  }
+  if (frame.event === "library.error") {
+    const error = typeof frame.data.message === "string" ? frame.data.message : "Library command failed";
+    return `[error] ${error}`;
+  }
+  return null;
+}
+
+function libraryCandidateBlock(input: {
+  draftId: string;
+  candidates: LibraryImportCandidate[];
+  proposedEdges?: LibraryImportProposedEdge[];
+}) {
+  return {
+    type: "libraryImportCandidates" as const,
+    draftId: input.draftId,
+    candidates: input.candidates,
+    proposedEdges: input.proposedEdges,
+  };
+}
+
+function toLibraryImportCandidates(value: unknown): LibraryImportCandidate[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((candidate): candidate is LibraryImportCandidate => (
+    Boolean(candidate)
+    && typeof candidate === "object"
+    && typeof (candidate as { objectKey?: unknown }).objectKey === "string"
+    && typeof (candidate as { kind?: unknown }).kind === "string"
+    && typeof (candidate as { title?: unknown }).title === "string"
+  ));
+}
+
+function toLibraryImportProposedEdges(value: unknown): LibraryImportProposedEdge[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((edge): edge is LibraryImportProposedEdge => (
+    Boolean(edge)
+    && typeof edge === "object"
+    && typeof (edge as { fromObjectKey?: unknown }).fromObjectKey === "string"
+    && typeof (edge as { edgeType?: unknown }).edgeType === "string"
+    && typeof (edge as { toObjectKey?: unknown }).toObjectKey === "string"
+  ));
 }
 
 interface StreamingState {
@@ -141,6 +194,8 @@ export interface UseAgentSessionOptions {
   onSystemPromptChange?: (prompt: string | null) => void;
   onSessionStatsPanelOpen?: () => void;
   workflowMode?: boolean;
+  sessionKind?: SessionKind;
+  libraryScope?: string;
   workflowTemplate?: unknown;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: import("@/lib/workflow/types").WorkflowDagNode) => void;
@@ -282,6 +337,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
   } = opts;
+  const sessionKind = opts.sessionKind ?? (opts.workflowMode ? "workflow" : "chat");
 
   const isNew = session === null && newSessionCwd !== null;
 
@@ -459,9 +515,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       modified: new Date().toISOString(),
       messageCount,
       firstMessage,
-      kind: opts.workflowMode ? "workflow" : "chat",
+      kind: sessionKind,
     });
-  }, [isNew, newSessionCwd, onSessionCreated, opts.workflowMode]);
+  }, [isNew, newSessionCwd, onSessionCreated, sessionKind]);
 
   const ensureNewSession = useCallback(async () => {
     if (sessionIdRef.current) return sessionIdRef.current;
@@ -480,7 +536,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           cwd: newSessionCwd,
           type: "ensure_session",
           toolNames,
-          sessionKind: opts.workflowMode ? "workflow" : "chat",
+          sessionKind,
           ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
           ...(thinkingLevel !== "auto" ? { thinkingLevel } : {}),
         }),
@@ -498,7 +554,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       ensuringNewSessionRef.current = null;
     }
-  }, [isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, opts.workflowMode]);
+  }, [isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, sessionKind]);
 
   const loadSlashCommands = useCallback(async () => {
     const sid = sessionIdRef.current ?? await ensureNewSession();
@@ -807,6 +863,101 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     pendingScrollToUserRef.current = true;
     completionScrollAllowedRef.current = true;
 
+    if (sessionKind === "library" && !images?.length) {
+      let rawStreamedText = "";
+      let libraryGraph: Record<string, unknown> | null = null;
+      let libraryCandidates: { draftId: string; candidates: LibraryImportCandidate[]; proposedEdges?: LibraryImportProposedEdge[] } | null = null;
+      const libraryAbortController = new AbortController();
+      workflowAbortControllerRef.current?.abort();
+      workflowAbortControllerRef.current = libraryAbortController;
+      const updateStreamingMessage = () => {
+        dispatch({
+          type: "update",
+          message: {
+            role: "assistant",
+            content: [
+              ...(rawStreamedText ? [{ type: "text" as const, text: rawStreamedText.trimEnd() }] : []),
+              ...(libraryGraph ? [{ type: "libraryGraph" as const, data: libraryGraph, defaultScope: opts.libraryScope ?? "all" }] : []),
+              ...(libraryCandidates ? [libraryCandidateBlock(libraryCandidates)] : []),
+            ],
+            model: "library-chat",
+            provider: "southstar",
+            timestamp: Date.now(),
+          },
+        });
+      };
+      const appendLibraryText = (text: string) => {
+        if (!text) return;
+        rawStreamedText = rawStreamedText ? `${rawStreamedText}\n${text}` : text;
+        updateStreamingMessage();
+      };
+
+      try {
+        await runLibraryChatCommand({
+          prompt: trimmedMessage,
+          scope: opts.libraryScope ?? "software",
+          signal: libraryAbortController.signal,
+          onAccepted(sessionId) {
+            sessionIdRef.current = sessionId;
+            promoteNewSession(1, trimmedMessage);
+          },
+          onFrame(frame) {
+            const text = libraryTextFromFrame(frame);
+            if (text) appendLibraryText(text);
+            if (frame.event === "library.graph.snapshot" || frame.event === "library.ontology.graph") {
+              libraryGraph = frame.data;
+              updateStreamingMessage();
+            }
+            if (frame.event === "library.import.candidates" && typeof frame.data.draftId === "string") {
+              libraryCandidates = {
+                draftId: frame.data.draftId,
+                candidates: toLibraryImportCandidates(frame.data.candidates),
+                proposedEdges: toLibraryImportProposedEdges(frame.data.proposedEdges),
+              };
+              updateStreamingMessage();
+            }
+          },
+        });
+
+        const assistantMsg: AgentMessage = {
+          role: "assistant",
+          content: [
+            ...(rawStreamedText ? [{ type: "text" as const, text: rawStreamedText.trimEnd() }] : []),
+            ...(libraryGraph ? [{ type: "libraryGraph" as const, data: libraryGraph, defaultScope: opts.libraryScope ?? "all" }] : []),
+            ...(libraryCandidates ? [libraryCandidateBlock(libraryCandidates)] : []),
+          ],
+          model: "library-chat",
+          provider: "southstar",
+          timestamp: Date.now(),
+        };
+        setMessages((prev) => [...prev, assistantMsg]);
+      } catch (e) {
+        if (libraryAbortController.signal.aborted) {
+          addNotice({ type: "info", message: "Library command stopped" });
+          return;
+        }
+        const message = e instanceof Error ? e.message : String(e);
+        addNotice({ type: "error", message });
+        setMessages((prev) => [...prev, {
+          role: "assistant",
+          content: [{ type: "text", text: `Library command failed: ${message}` }],
+          model: "library-chat",
+          provider: "southstar",
+          errorMessage: message,
+          timestamp: Date.now(),
+        } as AgentMessage]);
+      } finally {
+        if (workflowAbortControllerRef.current === libraryAbortController) {
+          workflowAbortControllerRef.current = null;
+        }
+        agentRunningRef.current = false;
+        setAgentRunning(false);
+        setAgentPhase(null);
+        dispatch({ type: "end" });
+      }
+      return;
+    }
+
     if (opts.workflowMode && !images?.length && !isSlashCommandPrompt) {
       let rawStreamedText = "";
       let generatedDag: WorkflowDag | null = null;
@@ -937,7 +1088,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               cwd: newSessionCwd,
               type: "ensure_session",
               toolNames,
-              sessionKind: opts.workflowMode ? "workflow" : "chat",
+              sessionKind,
               ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
               ...(thinkingLevel !== "auto" ? { thinkingLevel } : {}),
             }),
@@ -974,7 +1125,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
+  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, addNotice]);
 
   const handleAbort = useCallback(async () => {
     if (workflowAbortControllerRef.current) {
