@@ -34,7 +34,7 @@ test("fetchLibraryImportSourceDocuments delegates github sources without inline 
   assert.deepEqual(docs.map((doc) => doc.path), ["agents/reviewer.md", "skills/review.md"]);
 });
 
-test("createGithubLibraryImportSourceFetcher clones the repository and returns the local repo path", async () => {
+test("createGithubLibraryImportSourceFetcher clones the repository and returns supported documents from the local repo path", async () => {
   const cloned: Array<{ repoUrl: string; targetPath: string }> = [];
   const importRoot = await mkdtemp(join(tmpdir(), "southstar-library-github-clone-"));
   const fetcher = createGithubLibraryImportSourceFetcher({
@@ -42,6 +42,11 @@ test("createGithubLibraryImportSourceFetcher clones the repository and returns t
     cloneRepository: async (input) => {
       cloned.push(input);
       await mkdir(input.targetPath, { recursive: true });
+      await mkdir(join(input.targetPath, "skills/brainstorming"), { recursive: true });
+      await mkdir(join(input.targetPath, "node_modules/ignored"), { recursive: true });
+      await writeFile(join(input.targetPath, "README.md"), "# Superpowers", "utf8");
+      await writeFile(join(input.targetPath, "skills/brainstorming/SKILL.md"), "# Brainstorming", "utf8");
+      await writeFile(join(input.targetPath, "node_modules/ignored/SKILL.md"), "# Ignored", "utf8");
     },
   });
 
@@ -50,7 +55,10 @@ test("createGithubLibraryImportSourceFetcher clones the repository and returns t
 
     assert.deepEqual(cloned.map((item) => item.repoUrl), ["https://github.com/jnMetaCode/agency-agents-zh"]);
     assert.equal(Array.isArray(snapshot), false);
-    assert.deepEqual(Array.isArray(snapshot) ? snapshot : snapshot.documents, []);
+    assert.deepEqual(
+      Array.isArray(snapshot) ? snapshot : snapshot.documents.map((doc) => doc.path),
+      ["README.md", "skills/brainstorming/SKILL.md"],
+    );
     assert.match(Array.isArray(snapshot) ? "" : snapshot.repoPath ?? "", /jnMetaCode-agency-agents-zh-/);
     assert.equal(Array.isArray(snapshot) ? "" : snapshot.repoPath?.startsWith(importRoot), true);
   } finally {

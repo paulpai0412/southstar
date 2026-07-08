@@ -91,7 +91,7 @@ export function createGithubLibraryImportSourceFetcher(options: {
     await mkdir(importRoot, { recursive: true });
     const targetPath = path.join(importRoot, `${repo.owner}-${repo.name}-${randomUUID()}`);
     await (options.cloneRepository ?? cloneGithubRepository)({ repoUrl: source.repoUrl, targetPath });
-    return { documents: [], repoPath: targetPath };
+    return { documents: await readLocalDocuments(targetPath, targetPath), repoPath: targetPath };
   };
 }
 

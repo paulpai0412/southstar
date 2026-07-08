@@ -55,7 +55,7 @@ export function extractLibraryCandidatesFromDocuments(input: {
     return [{
       objectKey: `${kind}.${slug}`,
       kind,
-      title: document.label || titleFromSlug(slug),
+      title: isGenericDefinitionLabel(document.label, kind) ? titleFromSlug(slug) : (document.label || titleFromSlug(slug)),
       scope: input.scope,
       sourcePath: document.path,
       selectedByDefault: true,
@@ -112,21 +112,35 @@ function proposeSimpleEdges(candidates: LibraryImportCandidate[]): LibraryImport
 
 function kindFromDocumentPath(documentPath: string): LibraryImportCandidateKind | null {
   const normalized = documentPath.toLowerCase();
-  if (normalized.includes("/agents/") || normalized.includes(".agent.")) return "agent";
-  if (normalized.includes("/skills/") || normalized.includes(".skill.")) return "skill";
-  if (normalized.includes("/mcp/") || normalized.includes(".mcp.")) return "mcp";
-  if (normalized.includes("/tools/") || normalized.includes(".tool.")) return "tool";
+  const segments = normalized.split("/").filter(Boolean);
+  if (segments.includes("agents") || normalized.includes(".agent.")) return "agent";
+  if (segments.includes("skills") || normalized.includes(".skill.")) return "skill";
+  if (segments.includes("mcp") || normalized.includes(".mcp.")) return "mcp";
+  if (segments.includes("tools") || normalized.includes(".tool.")) return "tool";
   return null;
 }
 
 function slugFromDocumentPath(documentPath: string, kind: LibraryImportCandidateKind): string {
-  const basename = documentPath.split("/").at(-1) ?? documentPath;
-  return basename
+  const segments = documentPath.split("/").filter(Boolean);
+  const basename = segments.at(-1) ?? documentPath;
+  const stem = basename.replace(/\.(mdx?|ya?ml|json)$/i, "");
+  const canonicalDefinitionNames = new Set([kind, kind.toUpperCase(), `${kind}s`, `${kind.toUpperCase()}S`]);
+  const folderName = kind === "mcp" ? "mcp" : `${kind}s`;
+  const folderIndex = segments.findLastIndex((segment) => segment.toLowerCase() === folderName);
+  const slugSource = canonicalDefinitionNames.has(stem) && folderIndex >= 0 && segments[folderIndex + 1]
+    ? segments[folderIndex + 1]
+    : stem;
+  return slugSource
     .replace(/\.(mdx?|ya?ml|json)$/i, "")
     .replace(new RegExp(`\\.${kind}$`, "i"), "")
     .replaceAll(/[^A-Za-z0-9._-]+/g, "-")
     .replaceAll(/^-+|-+$/g, "")
     .toLowerCase();
+}
+
+function isGenericDefinitionLabel(value: string | undefined, kind: LibraryImportCandidateKind): boolean {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === kind || normalized === `${kind}s`;
 }
 
 function titleFromSlug(slug: string): string {

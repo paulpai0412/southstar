@@ -172,6 +172,8 @@ test("library import candidate prompt constrains LLM domain classification to ca
   assert.match(prompt, /"security"/);
   assert.match(prompt, /domain.*canonical domain key/i);
   assert.match(prompt, /classificationReason/);
+  assert.match(prompt, /skills\/<slug>\/SKILL\.md/);
+  assert.match(prompt, /skill\.<slug>/);
   assert.equal(CATALOG_CANONICAL_DOMAINS.length, 19);
 });
 
@@ -217,6 +219,33 @@ test("extractLibraryCandidatesFromDocuments deterministically classifies obvious
       toObjectKey: "tool.github",
       confidence: 0.6,
       rationale: "Detected skill and imported tool documents.",
+    },
+  ]);
+});
+
+test("extractLibraryCandidatesFromDocuments derives skill slugs from parent folders for SKILL.md files", () => {
+  const result = extractLibraryCandidatesFromDocuments({
+    scope: "software",
+    documents: [
+      { path: "skills/brainstorming/SKILL.md", label: "SKILL", content: "# Brainstorming" },
+      { path: "skills/verification-before-completion/SKILL.md", label: "SKILL", content: "# Verification Before Completion" },
+    ],
+  });
+
+  assert.deepEqual(result.candidates.map((candidate) => ({
+    objectKey: candidate.objectKey,
+    title: candidate.title,
+    sourcePath: candidate.sourcePath,
+  })), [
+    {
+      objectKey: "skill.brainstorming",
+      title: "Brainstorming",
+      sourcePath: "skills/brainstorming/SKILL.md",
+    },
+    {
+      objectKey: "skill.verification-before-completion",
+      title: "Verification Before Completion",
+      sourcePath: "skills/verification-before-completion/SKILL.md",
     },
   ]);
 });
@@ -326,6 +355,51 @@ test("analyzeLibraryImportWithLlm canonicalizes folder-prefixed object keys from
     "agent.supply-chain-route-optimizer",
     "agent.engineering-frontend-developer",
     "agent.blender-addon-engineer",
+  ]);
+});
+
+test("analyzeLibraryImportWithLlm canonicalizes SKILL.md candidates from parent folders", async () => {
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [
+      {
+        objectKey: "skill.skill",
+        kind: "skill",
+        title: "SKILL",
+        sourcePath: "skills/brainstorming/SKILL.md",
+      },
+      {
+        objectKey: "skill.skill",
+        kind: "skill",
+        title: "SKILL",
+        sourcePath: "skills/verification-before-completion/SKILL.md",
+      },
+    ],
+  });
+
+  const result = await analyzeLibraryImportWithLlm({
+    scope: "software",
+    documents: [
+      { path: "skills/brainstorming/SKILL.md", label: "SKILL", content: "# Brainstorming" },
+      { path: "skills/verification-before-completion/SKILL.md", label: "SKILL", content: "# Verification Before Completion" },
+    ],
+    llmProvider: provider,
+  });
+
+  assert.deepEqual(result.candidates.map((candidate) => ({
+    objectKey: candidate.objectKey,
+    title: candidate.title,
+    sourcePath: candidate.sourcePath,
+  })), [
+    {
+      objectKey: "skill.brainstorming",
+      title: "Brainstorming",
+      sourcePath: "skills/brainstorming/SKILL.md",
+    },
+    {
+      objectKey: "skill.verification-before-completion",
+      title: "Verification Before Completion",
+      sourcePath: "skills/verification-before-completion/SKILL.md",
+    },
   ]);
 });
 

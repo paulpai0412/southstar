@@ -174,6 +174,7 @@ export function buildLibraryImportCandidatePrompt(
     "domain must be one canonical domain key from CanonicalDomainTaxonomy. Do not invent domains and do not use software unless it appears in the taxonomy.",
     "If source paths clearly map to a canonical domain prefix, use that domain even when the item is broadly useful.",
     "If the user asks to import agents from a repo catalog, inspect the repo and return one agent candidate per real agent definition. Do not collapse many agents into a summary candidate.",
+    "If the source is a skill repository, return one skill candidate per real skills/<slug>/SKILL.md definition using objectKey skill.<slug> and that SKILL.md as sourcePath. Do not collapse many skills into a summary candidate.",
     "For large repositories, first inspect repository catalog/index/list documents when present, then inspect representative linked definitions as needed before returning JSON.",
     "Treat LocalRepositoryPath as read-only for this analysis. Do not create, edit, delete, or install files while analyzing candidates.",
     `Scope: ${scope}`,
@@ -304,11 +305,12 @@ function normalizeCandidates(value: unknown, options: { scope: string; sourcePat
     if (!pathDomain && invalidExplicitDomain) continue;
     const domain = pathDomain?.key ?? (isCatalogCanonicalDomain(llmDomain) ? llmDomain : undefined);
     const scope = domain ?? options.scope;
+    const title = optionalString(candidate.title);
     seen.add(objectKey);
     candidates.push({
       objectKey,
       kind,
-      title: optionalString(candidate.title) ?? titleFromObjectKey(objectKey),
+      title: title && !isGenericDefinitionTitle(title, kind) ? title : titleFromObjectKey(objectKey),
       scope,
       ...(domain ? { domain, displayDomain: catalogDomainTitle(domain) } : {}),
       ...(optionalString(candidate.classificationReason) ? { classificationReason: optionalString(candidate.classificationReason) } : {}),
@@ -397,10 +399,24 @@ function canonicalizeObjectKeyFromSourcePath(
   const fileName = segments.at(-1);
   if (!fileName) return objectKey;
   const stem = fileName.replace(/\.[^.]+$/, "");
-  if (!objectKey.startsWith(`${kind}.`)) return `${kind}.${stem}`;
+  const canonicalSlug = slugFromCanonicalDefinitionPath(kind, segments, stem);
+  if (!objectKey.startsWith(`${kind}.`)) return `${kind}.${canonicalSlug}`;
   const slugSegments = objectKey.slice(`${kind}.`.length).split(".").filter(Boolean);
-  if (slugSegments.length > 1 && slugSegments.at(-1) === stem) return `${kind}.${stem}`;
+  if (isGenericDefinitionTitle(slugSegments.join("."), kind)) return `${kind}.${canonicalSlug}`;
+  if (slugSegments.length > 1 && slugSegments.at(-1) === stem) return `${kind}.${canonicalSlug}`;
   return objectKey;
+}
+
+function slugFromCanonicalDefinitionPath(kind: LibraryImportCandidateKind, segments: string[], stem: string): string {
+  if (!isGenericDefinitionTitle(stem, kind)) return stem;
+  const folderName = kind === "mcp" ? "mcp" : `${kind}s`;
+  const folderIndex = segments.findLastIndex((segment) => segment.toLowerCase() === folderName);
+  return folderIndex >= 0 && segments[folderIndex + 1] ? segments[folderIndex + 1] : stem;
+}
+
+function isGenericDefinitionTitle(value: string, kind: LibraryImportCandidateKind): boolean {
+  const normalized = value.trim().toLowerCase();
+  return normalized === kind || normalized === `${kind}s`;
 }
 
 function titleFromObjectKey(objectKey: string): string {
