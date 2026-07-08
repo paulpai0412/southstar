@@ -9,7 +9,6 @@ import type {
   SessionInfo,
   SessionTreeNode,
 } from "@/lib/types";
-import type { SessionKind } from "@/lib/session-kind";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
 import { generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
@@ -142,7 +141,6 @@ export interface UseAgentSessionOptions {
   onSystemPromptChange?: (prompt: string | null) => void;
   onSessionStatsPanelOpen?: () => void;
   workflowMode?: boolean;
-  sessionKind?: SessionKind;
   workflowTemplate?: unknown;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: import("@/lib/workflow/types").WorkflowDagNode) => void;
@@ -284,7 +282,6 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
   } = opts;
-  const sessionKind = opts.sessionKind ?? (opts.workflowMode ? "workflow" : "chat");
 
   const isNew = session === null && newSessionCwd !== null;
 
@@ -462,9 +459,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       modified: new Date().toISOString(),
       messageCount,
       firstMessage,
-      kind: sessionKind,
+      kind: opts.workflowMode ? "workflow" : "chat",
     });
-  }, [isNew, newSessionCwd, onSessionCreated, sessionKind]);
+  }, [isNew, newSessionCwd, onSessionCreated, opts.workflowMode]);
 
   const ensureNewSession = useCallback(async () => {
     if (sessionIdRef.current) return sessionIdRef.current;
@@ -483,7 +480,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           cwd: newSessionCwd,
           type: "ensure_session",
           toolNames,
-          sessionKind,
+          sessionKind: opts.workflowMode ? "workflow" : "chat",
           ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
           ...(thinkingLevel !== "auto" ? { thinkingLevel } : {}),
         }),
@@ -501,7 +498,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       ensuringNewSessionRef.current = null;
     }
-  }, [isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, sessionKind]);
+  }, [isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, opts.workflowMode]);
 
   const loadSlashCommands = useCallback(async () => {
     const sid = sessionIdRef.current ?? await ensureNewSession();
@@ -940,7 +937,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               cwd: newSessionCwd,
               type: "ensure_session",
               toolNames,
-              sessionKind,
+              sessionKind: opts.workflowMode ? "workflow" : "chat",
               ...(selectedModel ? { provider: selectedModel.provider, modelId: selectedModel.modelId } : {}),
               ...(thinkingLevel !== "auto" ? { thinkingLevel } : {}),
             }),
@@ -977,7 +974,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
+  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, addNotice]);
 
   const handleAbort = useCallback(async () => {
     if (workflowAbortControllerRef.current) {

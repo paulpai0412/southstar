@@ -3,8 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readLibraryFile, readLibraryGraphNeighborhood, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
 import type { LibraryFileEnvelope, LibraryGraphReadModel, LibraryObjectDetail, LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
-import type { SessionInfo, WorkspaceSurface } from "@/lib/types";
-import { ChatWindow } from "../ChatWindow";
+import { LibraryChatWindow } from "./LibraryChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
 import type { LibraryGraphChartNode } from "./LibraryGraphChart";
 import { LibrarySidebar } from "./LibrarySidebar";
@@ -23,15 +22,10 @@ type LibraryWorkspaceContextValue = {
   syncing: boolean;
   fileStatusMessage?: string;
   librarySessions: LibrarySessionSummary[];
-  selectedChatSession: SessionInfo | null;
   selectedSessionId?: string;
   librarySessionKey: number;
-  libraryNewSessionCwd: string | null;
   selectedCwd: string | null;
-  modelsRefreshKey?: number;
-  onAgentEnd?: () => void;
   onCwdChange?: (cwd: string | null) => void;
-  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
   loadWorkspace: () => void;
   refreshWorkspace: () => void;
   handleNewSession: () => void;
@@ -42,7 +36,6 @@ type LibraryWorkspaceContextValue = {
   handleDeleteSession: (sessionId: string) => void;
   handleSelectGraphNode: (node: LibraryGraphChartNode) => void;
   handleSessionActivity: (session: LibrarySessionSummary) => void;
-  handleSharedSessionCreated: (session: SessionInfo) => void;
   setStatusFilter: (status: string) => void;
   updateDirtyFileContent: (content: string) => void;
   handleSaveAndSyncFile: () => void;
@@ -58,18 +51,12 @@ export function LibraryWorkspaceProvider({
   children,
   onOpenFile,
   defaultCwd,
-  modelsRefreshKey,
-  onAgentEnd,
   onCwdChange,
-  onWorkspaceSurfaceChange,
 }: {
   children: ReactNode;
   onOpenFile?: (file: { objectKey: string; title: string; sourcePath?: string }) => void;
   defaultCwd?: string | null;
-  modelsRefreshKey?: number;
-  onAgentEnd?: () => void;
   onCwdChange?: (cwd: string | null) => void;
-  onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }) {
   const [model, setModel] = useState<LibraryWorkspaceModel | null>(null);
   const [selectedScope, setSelectedScope] = useState("all");
@@ -84,10 +71,7 @@ export function LibraryWorkspaceProvider({
   const [syncing, setSyncing] = useState(false);
   const [fileStatusMessage, setFileStatusMessage] = useState<string | undefined>(undefined);
   const [librarySessions, setLibrarySessions] = useState<LibrarySessionSummary[]>([]);
-  const [libraryChatSessions, setLibraryChatSessions] = useState<SessionInfo[]>([]);
-  const [selectedChatSession, setSelectedChatSession] = useState<SessionInfo | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(undefined);
-  const [libraryNewSessionCwd, setLibraryNewSessionCwd] = useState<string | null>(defaultCwd ?? null);
   const [librarySessionKey, setLibrarySessionKey] = useState(0);
   const selectedFilePathRef = useRef<string | undefined>(undefined);
   const dirtyFileContentRef = useRef("");
@@ -117,31 +101,19 @@ export function LibraryWorkspaceProvider({
 
   const loadLibrarySessions = useCallback(() => {
     let cancelled = false;
-    const sessionsUrl = defaultCwd
-      ? `/api/sessions?kind=library&cwd=${encodeURIComponent(defaultCwd)}`
-      : "/api/sessions?scope=all&kind=library&limit=50&compact=1";
-    fetch(sessionsUrl, { cache: "no-store" })
+    fetch("/api/library/chat/sessions?limit=50", { cache: "no-store" })
       .then((response) => response.json())
       .then((payload) => {
         if (cancelled) return;
-        const sessions = readSharedLibrarySessions(payload);
-        setLibraryChatSessions(sessions);
-        setLibrarySessions(sessions.map(sessionSummaryFromSharedSession));
-        setSelectedChatSession((current) => {
-          if (!current) return current;
-          return sessions.find((session) => session.id === current.id) ?? current;
-        });
+        setLibrarySessions(readRuntimeLibrarySessions(payload));
       })
       .catch(() => {
-        if (!cancelled) {
-          setLibraryChatSessions([]);
-          setLibrarySessions([]);
-        }
+        if (!cancelled) setLibrarySessions([]);
       });
     return () => {
       cancelled = true;
     };
-  }, [defaultCwd]);
+  }, []);
 
   useEffect(() => {
     selectedFilePathRef.current = selectedFilePath;
@@ -150,18 +122,6 @@ export function LibraryWorkspaceProvider({
   useEffect(() => loadWorkspaceWithCleanup(), [loadWorkspaceWithCleanup]);
 
   useEffect(() => loadLibrarySessions(), [loadLibrarySessions]);
-
-  useEffect(() => {
-    if (selectedChatSession && defaultCwd && selectedChatSession.cwd !== defaultCwd) {
-      setSelectedChatSession(null);
-      setSelectedSessionId(undefined);
-      setLibraryNewSessionCwd(defaultCwd);
-      return;
-    }
-    if (selectedChatSession) return;
-    const nextCwd = defaultCwd ?? null;
-    setLibraryNewSessionCwd((current) => current === nextCwd ? current : nextCwd);
-  }, [defaultCwd, selectedChatSession]);
 
   const refreshWorkspace = useCallback(() => {
     loadWorkspace();
@@ -180,13 +140,8 @@ export function LibraryWorkspaceProvider({
   }, []);
 
   const handleSelectSession = useCallback((session: LibrarySessionSummary) => {
-    const chatSession = libraryChatSessions.find((item) => item.id === session.id);
-    if (chatSession) {
-      setSelectedChatSession(chatSession);
-      setLibraryNewSessionCwd(null);
-    }
     setSelectedSessionId(session.id);
-  }, [libraryChatSessions]);
+  }, []);
 
   const handleRenameSession = useCallback((sessionId: string, title: string) => {
     setLibrarySessions((current) => current.map((session) => session.id === sessionId ? { ...session, title } : session));
@@ -194,25 +149,12 @@ export function LibraryWorkspaceProvider({
 
   const handleDeleteSession = useCallback((sessionId: string) => {
     setLibrarySessions((current) => current.filter((session) => session.id !== sessionId));
-    setLibraryChatSessions((current) => current.filter((session) => session.id !== sessionId));
     setSelectedSessionId((current) => current === sessionId ? undefined : current);
-    setSelectedChatSession((current) => current?.id === sessionId ? null : current);
   }, []);
 
   const handleNewSession = useCallback(() => {
     setSelectedSessionId(undefined);
-    setSelectedChatSession(null);
-    setLibraryNewSessionCwd(defaultCwd ?? null);
     setLibrarySessionKey((value) => value + 1);
-  }, [defaultCwd]);
-
-  const handleSharedSessionCreated = useCallback((session: SessionInfo) => {
-    const librarySession = { ...session, kind: "library" as const };
-    setSelectedChatSession(librarySession);
-    setSelectedSessionId(librarySession.id);
-    setLibraryNewSessionCwd(null);
-    setLibraryChatSessions((current) => mergeSharedSessions(current, [librarySession]));
-    setLibrarySessions((current) => mergeLibrarySessions(current, [sessionSummaryFromSharedSession(librarySession)]));
   }, []);
 
   const updateDirtyFileContent = useCallback((content: string) => {
@@ -393,15 +335,10 @@ export function LibraryWorkspaceProvider({
     syncing,
     fileStatusMessage,
     librarySessions,
-    selectedChatSession,
     selectedSessionId,
     librarySessionKey,
-    libraryNewSessionCwd,
     selectedCwd: defaultCwd ?? null,
-    modelsRefreshKey,
-    onAgentEnd,
     onCwdChange,
-    onWorkspaceSurfaceChange,
     loadWorkspace,
     refreshWorkspace,
     handleNewSession,
@@ -412,7 +349,6 @@ export function LibraryWorkspaceProvider({
     handleDeleteSession,
     handleSelectGraphNode,
     handleSessionActivity,
-    handleSharedSessionCreated,
     setStatusFilter,
     updateDirtyFileContent,
     handleSaveAndSyncFile,
@@ -429,21 +365,15 @@ export function LibraryWorkspaceProvider({
     handleRenameSession,
     handleDeleteSession,
     handleSessionActivity,
-    handleSharedSessionCreated,
     librarySessions,
     librarySessionKey,
-    libraryNewSessionCwd,
     loadWorkspace,
     model,
-    modelsRefreshKey,
     objectDetail,
-    onAgentEnd,
     onCwdChange,
-    onWorkspaceSurfaceChange,
     refreshWorkspace,
     edgeGraph,
     saving,
-    selectedChatSession,
     selectedFilePath,
     selectedObjectKey,
     selectedScope,
@@ -513,7 +443,7 @@ export function LibraryGraphNodeSelectionBridge({
 
 function LibraryWorkspaceContent() {
   const context = useLibraryWorkspaceContext();
-  const canRenderLibraryChat = context.selectedChatSession || context.libraryNewSessionCwd;
+  const canRenderLibraryChat = Boolean(context.selectedCwd);
   return (
     <div
       data-testid="library-workspace"
@@ -528,18 +458,14 @@ function LibraryWorkspaceContent() {
     >
       <main data-testid="library-chat-workspace" style={{ minWidth: 0, overflow: "hidden" }}>
         {canRenderLibraryChat ? (
-          <ChatWindow
-            key={`library:${context.librarySessionKey}:${context.selectedSessionId ?? "new"}`}
-            session={context.selectedChatSession}
-            newSessionCwd={context.libraryNewSessionCwd}
-            sessionKind="library"
-            onAgentEnd={context.onAgentEnd}
-            onSessionCreated={context.handleSharedSessionCreated}
-            modelsRefreshKey={context.modelsRefreshKey}
-            workflowMode={false}
-            workflowCwd={context.selectedChatSession?.cwd ?? context.libraryNewSessionCwd}
-            onLibraryGraphNodeSelect={context.handleSelectGraphNode}
-            onWorkspaceSurfaceChange={context.onWorkspaceSurfaceChange}
+          <LibraryChatWindow
+            key={context.librarySessionKey}
+            scope={context.selectedScope}
+            pendingPrompt=""
+            onPromptConsumed={() => undefined}
+            onLibraryChanged={context.refreshWorkspace}
+            onSelectGraphNode={context.handleSelectGraphNode}
+            onSessionActivity={context.handleSessionActivity}
           />
         ) : (
           <div data-testid="library-chat-empty-new" style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
@@ -603,33 +529,17 @@ function sourcePathFromObjectDetail(detail: LibraryObjectDetail): string | undef
   return typeof sourcePath === "string" && sourcePath.length > 0 ? sourcePath : undefined;
 }
 
-function readSharedLibrarySessions(payload: unknown): SessionInfo[] {
+function readRuntimeLibrarySessions(payload: unknown): LibrarySessionSummary[] {
   const root = isRecord(payload) ? payload : {};
-  const sessions = Array.isArray(root.sessions) ? root.sessions : [];
-  return sessions.filter(isSessionInfo).slice(0, 50);
+  const result = isRecord(root.result) ? root.result : root;
+  const sessions = Array.isArray(result.sessions) ? result.sessions : [];
+  return sessions.filter(isLibrarySessionSummary).slice(0, 50);
 }
 
-function isSessionInfo(value: unknown): value is SessionInfo {
+function isLibrarySessionSummary(value: unknown): value is LibrarySessionSummary {
   if (!value || typeof value !== "object") return false;
-  const session = value as SessionInfo;
-  return typeof session.id === "string"
-    && typeof session.path === "string"
-    && typeof session.cwd === "string"
-    && typeof session.created === "string"
-    && typeof session.modified === "string"
-    && typeof session.messageCount === "number"
-    && typeof session.firstMessage === "string";
-}
-
-function sessionSummaryFromSharedSession(session: SessionInfo): LibrarySessionSummary {
-  return {
-    id: session.id,
-    title: session.name || session.firstMessage || session.id,
-    status: session.agentState?.running || session.agentState?.isStreaming ? "running" : "ready",
-    modified: session.modified,
-    detail: session.cwd,
-    itemCount: session.messageCount,
-  };
+  const session = value as LibrarySessionSummary;
+  return typeof session.id === "string" && typeof session.title === "string" && typeof session.status === "string";
 }
 
 function mergeLibrarySessions(current: LibrarySessionSummary[], incoming: LibrarySessionSummary[]): LibrarySessionSummary[] {
@@ -640,16 +550,6 @@ function mergeLibrarySessions(current: LibrarySessionSummary[], incoming: Librar
   }
   return [...byId.values()]
     .sort((left, right) => Date.parse(right.modified ?? "") - Date.parse(left.modified ?? ""))
-    .slice(0, 50);
-}
-
-function mergeSharedSessions(current: SessionInfo[], incoming: SessionInfo[]): SessionInfo[] {
-  const byId = new Map<string, SessionInfo>();
-  for (const session of [...current, ...incoming]) {
-    byId.set(session.id, { ...byId.get(session.id), ...session });
-  }
-  return [...byId.values()]
-    .sort((left, right) => Date.parse(right.modified) - Date.parse(left.modified))
     .slice(0, 50);
 }
 

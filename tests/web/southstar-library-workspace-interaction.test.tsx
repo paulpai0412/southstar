@@ -649,14 +649,20 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
       page.locator('[data-testid="library-file-save-sync"]').click(),
     ]);
 
-    assert.deepEqual(requests.map((request) => [request.method, request.path]), [
+    assert.deepEqual(
+      requests
+        .filter((request) => request.path !== "/api/library/chat/sessions")
+        .map((request) => [request.method, request.path]),
+      [
       ["GET", "/api/library/workspace"],
       ["GET", "/api/library/objects/agent.planner"],
       ["GET", "/api/library/graph"],
       ["GET", "/api/library/files/software/agents/planner.agent.md"],
       ["PATCH", "/api/library/files/software/agents/planner.agent.md"],
       ["POST", "/api/library/files/software/agents/planner.agent.md/sync"],
-    ]);
+      ],
+    );
+    assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/chat/sessions"), true);
     assert.equal(
       requests.find((request) => request.method === "PATCH")?.body,
       JSON.stringify({ content: updatedContent }),
@@ -751,9 +757,10 @@ test("LibraryWorkspace defaults to all domains so imported catalog agents are vi
     await page.locator('[data-testid="library-domain-tree"]').getByRole("button", { name: "marketing", exact: true }).waitFor();
     await page.getByText("SEO Agent").waitFor();
 
-    assert.deepEqual(requests, [
+    assert.deepEqual(requests.filter((request) => request.path !== "/api/library/chat/sessions"), [
       { path: "/api/library/workspace", query: "scope=all" },
     ]);
+    assert.equal(requests.some((request) => request.path === "/api/library/chat/sessions" && request.query === "limit=50"), true);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
@@ -883,7 +890,7 @@ test("LibraryWorkspace opens object detail sidecar for graph objects without sou
   });
 });
 
-test("LibraryWorkspace records shared ChatWindow library sessions in the sidebar", async () => {
+test("LibraryWorkspace records LibraryChatWindow session activity in the sidebar", async () => {
   const requests: Array<{ method: string; path: string; body?: string; query?: string }> = [];
   let workspaceFetches = 0;
 
@@ -1458,29 +1465,27 @@ function webAliasPlugin() {
 
 function libraryChatMockPlugin() {
   return {
-    name: "chat-window-mock",
+    name: "library-chat-window-mock",
     setup(buildApi: any) {
-      buildApi.onResolve({ filter: /^\.\.\/ChatWindow$/ }, (args: any) => {
+      buildApi.onResolve({ filter: /^\.\/LibraryChatWindow$/ }, (args: any) => {
         if (!args.importer.endsWith("LibraryWorkspace.tsx")) return undefined;
-        return { path: "chat-window-mock", namespace: "southstar-test" };
+        return { path: "library-chat-window-mock", namespace: "southstar-test" };
       });
       buildApi.onLoad({ filter: /.*/, namespace: "southstar-test" }, () => ({
         loader: "js",
         contents: `
           import React, { useState } from "react";
-          export function ChatWindow(props) {
+          export function LibraryChatWindow(props) {
             const [value, setValue] = useState("");
             const submit = () => {
               if (!value.trim()) return;
-              props.onSessionCreated?.({
+              props.onSessionActivity?.({
                 id: "library-session-1",
-                path: "/tmp/library-session-1.jsonl",
-                cwd: "/workspace",
-                kind: "library",
-                created: "2026-07-07T00:00:00.000Z",
+                title: value,
+                status: "ready",
                 modified: "2026-07-07T00:00:01.000Z",
-                messageCount: 1,
-                firstMessage: value,
+                detail: "software",
+                itemCount: 1,
               });
             };
             return React.createElement(
@@ -1500,7 +1505,7 @@ function libraryChatMockPlugin() {
                 "button",
                 {
                   type: "button",
-                  onClick: () => props.onLibraryGraphNodeSelect?.({
+                  onClick: () => props.onSelectGraphNode?.({
                     objectKey: "agent.frontend-developer",
                     title: "Frontend Developer",
                   }),

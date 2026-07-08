@@ -69,17 +69,16 @@ test("workflow sidebar lists workflow sessions even before a project is selected
   assert.doesNotMatch(route, /scope === "all" \? await listAllSessions\(\) : await listSessionsForCwd\(cwd\)/);
 });
 
-test("library session summaries use shared library ChatWindow sessions", () => {
+test("library workspace uses dedicated library chat sessions", () => {
   const workspace = source("web/components/library/LibraryWorkspace.tsx");
 
-  assert.match(workspace, /kind=library&cwd=\$\{encodeURIComponent\(defaultCwd\)\}/);
-  assert.match(workspace, /\/api\/sessions\?scope=all&kind=library&limit=50&compact=1/);
-  assert.match(workspace, /readSharedLibrarySessions/);
-  assert.match(workspace, /sessionSummaryFromSharedSession/);
-  assert.match(workspace, /selectedChatSession/);
-  assert.match(workspace, /sessionKind="library"/);
-  assert.match(workspace, /handleSharedSessionCreated/);
+  assert.match(workspace, /fetch\("\/api\/library\/chat\/sessions\?limit=50"/);
+  assert.match(workspace, /readRuntimeLibrarySessions/);
+  assert.match(workspace, /isLibrarySessionSummary/);
+  assert.match(workspace, /LibraryChatWindow/);
+  assert.match(workspace, /onLibraryChanged=\{context\.refreshWorkspace\}/);
+  assert.doesNotMatch(workspace, /\/api\/sessions\?scope=all&kind=library/);
+  assert.doesNotMatch(workspace, /sessionKind="library"/);
+  assert.doesNotMatch(workspace, /selectedChatSession/);
   assert.doesNotMatch(workspace, /LIBRARY_SESSIONS_STORAGE_KEY/);
-  assert.doesNotMatch(workspace, /\/api\/library\/chat\/sessions/);
-  assert.doesNotMatch(workspace, /LibraryChatWindow/);
 });

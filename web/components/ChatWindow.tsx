@@ -11,7 +11,6 @@ import { useDragDrop } from "@/hooks/useDragDrop";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { LibraryGraphChartNode } from "./library/LibraryGraphChart";
-import type { SessionKind } from "@/lib/session-kind";
 
 interface Props {
   session: SessionInfo | null;
@@ -26,7 +25,6 @@ interface Props {
   onSessionStatsChange?: (stats: SessionStatsInfo | null) => void;
   onSessionStatsPanelOpen?: () => void;
   onContextUsageChange?: (usage: { percent: number | null; contextWindow: number; tokens: number | null } | null) => void;
-  sessionKind?: SessionKind;
   workflowMode?: boolean;
   workflowTemplate?: WorkflowTemplateSummary | null;
   workflowCwd?: string | null;
@@ -107,7 +105,7 @@ function Typewriter({ phrases }: { phrases: string[] }) {
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
@@ -127,7 +125,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
   } = useAgentSession({
     session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
-    sessionKind, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect,
+    workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect,
   });
 
   const { soundEnabled, onSoundToggle, playDoneSound } = useAudio();
