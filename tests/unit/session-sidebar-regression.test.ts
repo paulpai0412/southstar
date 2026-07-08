@@ -69,15 +69,17 @@ test("workflow sidebar lists workflow sessions even before a project is selected
   assert.doesNotMatch(route, /scope === "all" \? await listAllSessions\(\) : await listSessionsForCwd\(cwd\)/);
 });
 
-test("library session summaries persist across refresh", () => {
+test("library session summaries use shared library ChatWindow sessions", () => {
   const workspace = source("web/components/library/LibraryWorkspace.tsx");
-  const runtimeRoute = source("src/v2/server/library-routes.ts");
-  const readModel = source("src/v2/read-models/library-chat.ts");
 
-  assert.match(workspace, /LIBRARY_SESSIONS_STORAGE_KEY/);
-  assert.match(workspace, /window\.localStorage\.getItem\(LIBRARY_SESSIONS_STORAGE_KEY\)/);
-  assert.match(workspace, /window\.localStorage\.setItem\(LIBRARY_SESSIONS_STORAGE_KEY/);
-  assert.match(workspace, /fetch\("\/api\/library\/chat\/sessions/);
-  assert.match(runtimeRoute, /\/api\/v2\/library\/chat\/sessions/);
-  assert.match(readModel, /library_chat_action/);
+  assert.match(workspace, /kind=library&cwd=\$\{encodeURIComponent\(defaultCwd\)\}/);
+  assert.match(workspace, /\/api\/sessions\?scope=all&kind=library&limit=50&compact=1/);
+  assert.match(workspace, /readSharedLibrarySessions/);
+  assert.match(workspace, /sessionSummaryFromSharedSession/);
+  assert.match(workspace, /selectedChatSession/);
+  assert.match(workspace, /sessionKind="library"/);
+  assert.match(workspace, /handleSharedSessionCreated/);
+  assert.doesNotMatch(workspace, /LIBRARY_SESSIONS_STORAGE_KEY/);
+  assert.doesNotMatch(workspace, /\/api\/library\/chat\/sessions/);
+  assert.doesNotMatch(workspace, /LibraryChatWindow/);
 });

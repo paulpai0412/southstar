@@ -3,7 +3,7 @@
 import { useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject, LibraryWorkspaceObjectGroup } from "@/lib/library/types";
 import { FolderIcon } from "../FileIcons";
-import { PiAgentTitle } from "../SessionSidebar";
+import { ProjectScopePicker } from "../ProjectScopePicker";
 
 const domainTreeFolders = [
   { label: "agents", objectKinds: ["agent_definition", "agent_spec"] },
@@ -40,7 +40,9 @@ export function LibrarySidebar({
   selectedSessionId,
   selectedScope,
   selectedObjectKey,
+  selectedCwd,
   statusFilter,
+  onCwdChange,
   onSelectScope,
   onSelectSession,
   onRenameSession,
@@ -54,7 +56,9 @@ export function LibrarySidebar({
   selectedSessionId?: string;
   selectedScope: string;
   selectedObjectKey?: string;
+  selectedCwd: string | null;
   statusFilter: string;
+  onCwdChange?: (cwd: string | null) => void;
   onSelectScope: (scope: string) => void;
   onStatusFilterChange: (status: string) => void;
   onSelectSession?: (session: LibrarySessionSummary) => void;
@@ -65,14 +69,12 @@ export function LibrarySidebar({
   onSelectObject: (object: LibraryWorkspaceObject) => void;
 }) {
   const domains = model?.domains ?? [];
-  const [domainFilter, setDomainFilter] = useState("");
   const [treeOpen, setTreeOpen] = useState(true);
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
   const [treeRefreshDone, setTreeRefreshDone] = useState(false);
-  const normalizedDomainFilter = domainFilter.trim().toLowerCase();
   const treeNodes = buildLibraryTreeNodes(domains, {
-    domainFilter: normalizedDomainFilter,
+    domainFilter: "",
     statusFilter,
   });
   const isOpen = (key: string) => openMap[key] ?? true;
@@ -99,20 +101,16 @@ export function LibrarySidebar({
 
   return (
     <div data-testid="library-sidebar-content" style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div
-        style={{
-          padding: "12px 10px 10px",
-          borderBottom: "1px solid var(--border)",
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <PiAgentTitle />
-          <div style={{ display: "flex", gap: 6 }}>
+      <ProjectScopePicker
+        selectedCwd={selectedCwd}
+        onCwdChange={onCwdChange ?? (() => {})}
+        emptyLabel="Select project..."
+        actions={(
+          <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
             <button
               type="button"
               onClick={onNewSession}
-              disabled={!onNewSession}
+              disabled={!onNewSession || !selectedCwd}
               title="New Library session"
               style={{
                 display: "flex",
@@ -121,8 +119,8 @@ export function LibrarySidebar({
                 gap: 5,
                 background: "var(--bg-hover)",
                 border: "1px solid var(--border)",
-                color: onNewSession ? "var(--text-muted)" : "var(--text-dim)",
-                cursor: onNewSession ? "pointer" : "not-allowed",
+                color: onNewSession && selectedCwd ? "var(--text-muted)" : "var(--text-dim)",
+                cursor: onNewSession && selectedCwd ? "pointer" : "not-allowed",
                 height: 32,
                 paddingLeft: 10,
                 paddingRight: 12,
@@ -172,24 +170,8 @@ export function LibrarySidebar({
               )}
             </button>
           </div>
-        </div>
-        <input
-          data-testid="library-domain-filter"
-          value={domainFilter}
-          onChange={(event) => setDomainFilter(event.currentTarget.value)}
-          placeholder="Filter Library Domain Tree..."
-          style={{
-            width: "100%",
-            height: 28,
-            fontSize: 12,
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            background: "var(--bg)",
-            color: "var(--text)",
-            padding: "0 8px",
-          }}
-        />
-      </div>
+        )}
+      />
 
       <section style={{ flex: "0 0 28%", minHeight: 112, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
         <div style={sessionListTitleStyle}>Library LLM Sessions</div>

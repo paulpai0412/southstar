@@ -973,7 +973,14 @@ export function AppShell() {
         }
       }
     `}</style>
-    <LibraryWorkspaceProvider onOpenFile={handleOpenLibraryFile}>
+    <LibraryWorkspaceProvider
+      onOpenFile={handleOpenLibraryFile}
+      defaultCwd={activeCwd}
+      onCwdChange={handleCwdChange}
+      modelsRefreshKey={modelsRefreshKey}
+      onAgentEnd={handleAgentEnd}
+      onWorkspaceSurfaceChange={handleChatWorkspaceSurfaceChange}
+    >
     <LibraryGraphNodeSelectionBridge selection={selectedLibraryGraphNode} />
     <div className="pi-app-shell" style={{ display: "flex", height: "100dvh", overflow: "hidden", background: "var(--bg)" }}>
       {/* Mobile overlay backdrop */}

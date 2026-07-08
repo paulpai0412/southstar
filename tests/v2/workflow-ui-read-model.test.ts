@@ -138,6 +138,64 @@ test("workflow ui read model exposes runtime DAG and selected definition", async
   }
 });
 
+test("workflow ui renders dynamic repair as caused by failed verifier without changing runtime dependencies", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-workflow-ui-dynamic-repair";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "repair failed verification",
+      workflowManifestJson: JSON.stringify({
+        workflowId: "wf-dynamic-repair-ui",
+        tasks: [
+          { id: "task-plan", name: "Plan", dependsOn: [] },
+          { id: "task-implement", name: "Implement", dependsOn: ["task-plan"] },
+          { id: "task-verify", name: "Verify", dependsOn: ["task-implement"] },
+          { id: "task-review", name: "Review", dependsOn: ["reverify-task-verify-attempt-1"] },
+          { id: "repair-task-verify-attempt-1", name: "Repair", dependsOn: ["task-implement"] },
+          { id: "reverify-task-verify-attempt-1", name: "Reverify", dependsOn: ["repair-task-verify-attempt-1"] },
+        ],
+      }),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, { id: "task-plan", runId, taskKey: "Plan", status: "completed", sortOrder: 0, dependsOn: [] });
+    await createWorkflowTaskPg(db, { id: "task-implement", runId, taskKey: "Implement", status: "completed", sortOrder: 1, dependsOn: ["task-plan"] });
+    await createWorkflowTaskPg(db, { id: "task-verify", runId, taskKey: "Verify", status: "failed", sortOrder: 2, dependsOn: ["task-implement"] });
+    await createWorkflowTaskPg(db, { id: "task-review", runId, taskKey: "Review", status: "completed", sortOrder: 3, dependsOn: ["reverify-task-verify-attempt-1"] });
+    await createWorkflowTaskPg(db, {
+      id: "repair-task-verify-attempt-1",
+      runId,
+      taskKey: "Repair",
+      status: "completed",
+      sortOrder: 4,
+      dependsOn: ["task-implement"],
+      snapshot: { dynamicRepair: { failedTaskId: "task-verify", rootFailedTaskId: "task-verify", round: 1 } },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "reverify-task-verify-attempt-1",
+      runId,
+      taskKey: "Reverify",
+      status: "completed",
+      sortOrder: 5,
+      dependsOn: ["repair-task-verify-attempt-1"],
+      snapshot: { dynamicRepair: { failedTaskId: "task-verify", rootFailedTaskId: "task-verify", round: 1 } },
+    });
+
+    const model = await buildWorkflowUiReadModelPg(db, { runId });
+    const repairNode = model.canvasModel.nodes.find((node: { id: string }) => node.id === "repair-task-verify-attempt-1");
+    assert.deepEqual(repairNode?.dependsOn, ["task-implement"]);
+    assert.ok(model.canvasModel.edges.some((edge) => edge.source === "task-verify" && edge.target === "repair-task-verify-attempt-1"));
+    assert.ok(!model.canvasModel.edges.some((edge) => edge.source === "task-implement" && edge.target === "repair-task-verify-attempt-1"));
+  } finally {
+    await db.close();
+  }
+});
+
 test("workflow ui runtime selected definition prefers materialized task envelope details over software library fallback", async () => {
   const db = await createTestPostgresDb();
   try {

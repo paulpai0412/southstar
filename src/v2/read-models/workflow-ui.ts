@@ -190,18 +190,32 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
       ...(attention ? { attention } : {}),
     };
   });
+  const dynamicRepairCauseByTask = new Map<string, string>();
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  for (const task of tasks) {
+    if (!task.id.startsWith("repair-")) continue;
+    const dynamicRepair = asRecord(asRecord(task.snapshot_json).dynamicRepair);
+    const failedTaskId = stringValue(dynamicRepair.rootFailedTaskId) ?? stringValue(dynamicRepair.failedTaskId);
+    if (failedTaskId && nodeIds.has(failedTaskId)) dynamicRepairCauseByTask.set(task.id, failedTaskId);
+  }
 
-  const edges: WorkflowCanvasEdge[] = nodes.flatMap((node) => node.dependsOn.map((source) => ({
-    id: `${source}->${node.id}`,
-    source,
-    target: node.id,
-    status: runtimeEdgeStatus({
+  const edges: WorkflowCanvasEdge[] = nodes.flatMap((node) => {
+    const dynamicRepairCause = dynamicRepairCauseByTask.get(node.id);
+    const sources = dynamicRepairCause ? [dynamicRepairCause] : node.dependsOn;
+    return sources.map((source) => ({
+      id: `${source}->${node.id}`,
       source,
-      target: node,
-      nodes,
-      acceptedArtifactTaskIds,
-    }),
-  })));
+      target: node.id,
+      status: dynamicRepairCause
+        ? dynamicRepairEdgeStatus(node)
+        : runtimeEdgeStatus({
+            source,
+            target: node,
+            nodes,
+            acceptedArtifactTaskIds,
+          }),
+    }));
+  });
 
   const selectedDefinition = await runtimeSelectedDefinition(db, {
     runId,
@@ -549,6 +563,13 @@ function runtimeEdgeStatus(input: {
   if (!input.acceptedArtifactTaskIds.has(input.source)) return "pending";
   if (isActiveStatus(input.target.status)) return "active";
   if (isReadyStatus(input.target.status)) return "ready";
+  return "satisfied";
+}
+
+function dynamicRepairEdgeStatus(target: WorkflowCanvasNode): WorkflowCanvasEdge["status"] {
+  if (isBlockingStatus(target.status)) return "blocked";
+  if (isActiveStatus(target.status)) return "active";
+  if (isReadyStatus(target.status)) return "ready";
   return "satisfied";
 }
 

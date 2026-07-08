@@ -72,7 +72,9 @@ test("LibrarySidebar renders the domain tree and calls onSelectObject when a row
           selectedSessionId="library-session-1"
           selectedScope="software"
           selectedObjectKey={selectedObjectKey}
+          selectedCwd="/workspace"
           statusFilter="all"
+          onCwdChange={() => {}}
           onSelectScope={() => {}}
           onStatusFilterChange={() => {}}
           onSelectObject={(object) => {
@@ -622,7 +624,7 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
     import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
     createRoot(document.getElementById("root")).render(
-      <LibraryWorkspaceProvider>
+      <LibraryWorkspaceProvider defaultCwd="/workspace">
         <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
           <LibrarySidebarPanel />
           <LibraryWorkspace />
@@ -741,7 +743,7 @@ test("LibraryWorkspace defaults to all domains so imported catalog agents are vi
     import { LibrarySidebarPanel, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
     createRoot(document.getElementById("root")).render(
-      <LibraryWorkspaceProvider>
+      <LibraryWorkspaceProvider defaultCwd="/workspace">
         <LibrarySidebarPanel />
       </LibraryWorkspaceProvider>
     );
@@ -881,10 +883,9 @@ test("LibraryWorkspace opens object detail sidecar for graph objects without sou
   });
 });
 
-test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs selected import candidates", async () => {
+test("LibraryWorkspace records shared ChatWindow library sessions in the sidebar", async () => {
   const requests: Array<{ method: string; path: string; body?: string; query?: string }> = [];
   let workspaceFetches = 0;
-  let graphFetches = 0;
 
   await withBrowserHarness(`
     import React from "react";
@@ -892,7 +893,7 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
     import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
     createRoot(document.getElementById("root")).render(
-      <LibraryWorkspaceProvider>
+      <LibraryWorkspaceProvider defaultCwd="/workspace">
         <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
           <LibrarySidebarPanel />
           <LibraryWorkspace />
@@ -901,29 +902,11 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
       </LibraryWorkspaceProvider>
     );
   `, async (page) => {
-    await page.locator('[data-testid="library-chat-window"] textarea').fill("create a browser verification skill");
+    await page.locator('[data-testid="library-chat-mock"] textarea').fill("create a browser verification skill");
     await page.keyboard.press("Enter");
-    await page.getByText("Import candidates").waitFor();
     await page.locator('[data-testid="library-session-row"]').filter({ hasText: "create a browser verification skill" }).waitFor();
-    assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "ready_for_review" }).count(), 1);
-    assert.equal(await page.getByText("Browser Verification").count() > 0, true);
-    assert.equal(await page.getByText("skill.browser-verification").count() > 0, true);
-    await page.getByRole("checkbox", { name: /Browser Tool/ }).setChecked(false);
-    await page.getByRole("button", { name: "Install selected candidates", exact: true }).click();
-    await page.locator('[data-testid="library-object-row"]').filter({ hasText: "Browser Verification" }).waitFor();
-    await page.locator('[data-testid="library-graph-chart"]').waitFor();
-    await assertText(page, '[data-testid="library-chat-timeline"]', "uses 0.91");
-
-    assert.equal(workspaceFetches, 2);
-    assert.equal(await page.locator('[data-testid="library-object-row"]').filter({ hasText: "skill.browser-verification" }).count(), 1);
-    const installRequest = requests.find((request) => request.path === "/api/library/import-drafts/library-import-draft-1/install/stream");
-    assert.equal(installRequest?.method, "POST");
-    assert.deepEqual(JSON.parse(installRequest?.body ?? "{}"), {
-      selectedCandidateIds: ["agent.browser-reviewer", "skill.browser-verification"],
-      actor: "operator",
-      reason: "installed from library chat",
-    });
-    assert.equal(requests.some((request) => request.path === "/api/library/graph" && request.query?.includes("scope=software")), true);
+    assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "ready" }).count(), 1);
+    assert.equal(workspaceFetches, 1);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
@@ -953,100 +936,9 @@ test("LibraryWorkspace refreshes sidebar after LibraryChatWindow installs select
         return;
       }
 
-      if (url.pathname === "/api/library/chat/messages" && request.method() === "POST") {
-        await route.fulfill({
-          contentType: "application/json",
-          body: JSON.stringify({ ok: true, result: { sessionId: "library-session-1", actionId: "action-1" } }),
-        });
-        return;
-      }
-
-      if (url.pathname === "/api/library/chat/events" && request.method() === "GET") {
-        await route.fulfill({
-          contentType: "text/event-stream",
-          body: [
-            "event: library.import.source.completed",
-            'data: {"sourceKind":"paste","documentCount":1}',
-            "",
-            "event: library.import.candidates.started",
-            'data: {"sourceKind":"paste"}',
-            "",
-            "event: library.import.candidates",
-            'data: {"draftId":"library-import-draft-1","status":"draft","title":"Import candidates","candidates":[{"objectKey":"agent.browser-reviewer","kind":"agent","title":"Browser Reviewer","scope":"software","sourcePath":"agents/browser-reviewer.agent.md","selectedByDefault":true,"confidence":0.88},{"objectKey":"skill.browser-verification","kind":"skill","title":"Browser Verification","scope":"software","sourcePath":"skills/browser-verification.skill.md","selectedByDefault":true,"confidence":0.94},{"objectKey":"tool.browser","kind":"tool","title":"Browser Tool","scope":"software","sourcePath":"tools/browser.tool.yml","selectedByDefault":true,"confidence":0.81}],"proposedEdges":[]}',
-            "",
-            "event: library.command.completed",
-            'data: {"draftId":"library-import-draft-1","status":"ready_for_review"}',
-            "",
-          ].join("\n"),
-        });
-        return;
-      }
-
-      if (url.pathname === "/api/library/import-drafts/library-import-draft-1/install/stream" && request.method() === "POST") {
-        await route.fulfill({
-          contentType: "text/event-stream",
-          body: [
-            "event: library.import.ontology.started",
-            'data: {"draftId":"library-import-draft-1","selectedCandidateCount":2}',
-            "",
-            "event: library.import.ontology.completed",
-            'data: {"draftId":"library-import-draft-1","proposedEdgeCount":1}',
-            "",
-            "event: library.db.synced",
-            'data: {"draftId":"library-import-draft-1","objectKeys":["skill.browser-verification"],"edgeIds":["edge-uses-browser-verification"]}',
-            "",
-            "event: library.command.completed",
-            'data: {"draftId":"library-import-draft-1","status":"installed"}',
-            "",
-          ].join("\n"),
-        });
-        return;
-      }
-
-      if (url.pathname === "/api/library/graph" && request.method() === "GET") {
-        graphFetches += 1;
-        const nodes = graphFetches === 1
-          ? []
-          : [
-              {
-                objectKey: "agent.browser-reviewer",
-                objectKind: "agent_definition",
-                status: "approved",
-                title: "Browser Reviewer",
-              },
-              {
-                objectKey: "skill.browser-verification",
-                objectKind: "skill_spec",
-                status: "approved",
-                title: "Browser Verification",
-              },
-            ];
-        const edges = graphFetches === 1
-          ? []
-          : [{
-              fromObjectKey: "agent.browser-reviewer",
-              edgeType: "uses",
-              toObjectKey: "skill.browser-verification",
-              ontology: { confidence: 0.91, category: "usage" },
-            }];
-        await route.fulfill({
-          contentType: "application/json",
-          body: JSON.stringify({
-            ok: true,
-            result: {
-              activeScope: "software",
-              availableScopes: ["software"],
-              nodes,
-              edges,
-            },
-          }),
-        });
-        return;
-      }
-
       await route.abort();
     });
-  }, { mockLibraryChat: false });
+  });
 });
 
 test("LibraryWorkspace opens the right file viewer when a chat graph node is selected", async () => {
@@ -1058,7 +950,7 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
     import { LibraryFileSidecarPanel, LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
     createRoot(document.getElementById("root")).render(
-      <LibraryWorkspaceProvider>
+      <LibraryWorkspaceProvider defaultCwd="/workspace">
         <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr) 360px", height: "100vh" }}>
           <LibrarySidebarPanel />
           <LibraryWorkspace />
@@ -1067,10 +959,7 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
       </LibraryWorkspaceProvider>
     );
   `, async (page) => {
-    await page.locator('[data-testid="library-chat-window"] textarea').fill("show the current library graph");
-    await page.keyboard.press("Enter");
-
-    await page.locator('[data-testid="library-graph-block"]').getByRole("button", { name: "Frontend Developer" }).click();
+    await page.locator('[data-testid="library-chat-mock"]').getByRole("button", { name: "Frontend Developer" }).click();
     await page.getByRole("button", { name: "Edit" }).click();
     await page.waitForFunction(() => {
       const editor = document.querySelector('[data-testid="library-file-editor"]') as HTMLTextAreaElement | null;
@@ -1079,15 +968,10 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
 
     assert.equal(await page.getByText("software/agents/frontend-developer.agent.md").count(), 1);
     assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), "title: Frontend Developer");
-    assert.deepEqual(requests.map((request) => [request.method, request.path]), [
-      ["GET", "/api/library/workspace"],
-      ["POST", "/api/library/chat/messages"],
-      ["GET", "/api/library/chat/events"],
-      ["GET", "/api/library/graph"],
-      ["GET", "/api/library/objects/agent.frontend-developer"],
-      ["GET", "/api/library/graph"],
-      ["GET", "/api/library/files/software/agents/frontend-developer.agent.md"],
-    ]);
+    assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/workspace"), true);
+    assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/objects/agent.frontend-developer"), true);
+    assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/graph"), true);
+    assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/files/software/agents/frontend-developer.agent.md"), true);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
@@ -1161,7 +1045,7 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
 
       await route.abort();
     });
-  }, { mockLibraryChat: false });
+  });
 });
 
 test("LibraryWorkspace ignores stale file load results after selecting a different object", async () => {
@@ -1574,18 +1458,56 @@ function webAliasPlugin() {
 
 function libraryChatMockPlugin() {
   return {
-    name: "library-chat-mock",
+    name: "chat-window-mock",
     setup(buildApi: any) {
-      buildApi.onResolve({ filter: /^\.\/LibraryChatWindow$/ }, (args: any) => {
+      buildApi.onResolve({ filter: /^\.\.\/ChatWindow$/ }, (args: any) => {
         if (!args.importer.endsWith("LibraryWorkspace.tsx")) return undefined;
-        return { path: "library-chat-window-mock", namespace: "southstar-test" };
+        return { path: "chat-window-mock", namespace: "southstar-test" };
       });
       buildApi.onLoad({ filter: /.*/, namespace: "southstar-test" }, () => ({
         loader: "js",
         contents: `
-          import React from "react";
-          export function LibraryChatWindow() {
-            return React.createElement("div", { "data-testid": "library-chat-mock" });
+          import React, { useState } from "react";
+          export function ChatWindow(props) {
+            const [value, setValue] = useState("");
+            const submit = () => {
+              if (!value.trim()) return;
+              props.onSessionCreated?.({
+                id: "library-session-1",
+                path: "/tmp/library-session-1.jsonl",
+                cwd: "/workspace",
+                kind: "library",
+                created: "2026-07-07T00:00:00.000Z",
+                modified: "2026-07-07T00:00:01.000Z",
+                messageCount: 1,
+                firstMessage: value,
+              });
+            };
+            return React.createElement(
+              "div",
+              { "data-testid": "library-chat-mock" },
+              React.createElement("textarea", {
+                value,
+                onChange: (event) => setValue(event.currentTarget.value),
+                onKeyDown: (event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    submit();
+                  }
+                },
+              }),
+              React.createElement(
+                "button",
+                {
+                  type: "button",
+                  onClick: () => props.onLibraryGraphNodeSelect?.({
+                    objectKey: "agent.frontend-developer",
+                    title: "Frontend Developer",
+                  }),
+                },
+                "Frontend Developer",
+              ),
+            );
           }
         `,
       }));

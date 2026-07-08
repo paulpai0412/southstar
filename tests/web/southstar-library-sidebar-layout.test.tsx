@@ -12,7 +12,7 @@ const root = join(import.meta.dirname, "../..");
 const require = createRequire(import.meta.url);
 (globalThis as unknown as { React: typeof React }).React = React;
 
-test("LibrarySidebar renders sessions above a filtered domain tree and selects sessions and objects", async () => {
+test("LibrarySidebar renders project scope, sessions, and domain tree selections", async () => {
   await withBrowserHarness(`
     import React, { useState } from "react";
     import { createRoot } from "react-dom/client";
@@ -142,7 +142,9 @@ test("LibrarySidebar renders sessions above a filtered domain tree and selects s
           selectedSessionId={selectedSessionId}
           selectedScope="software"
           selectedObjectKey={selectedObjectKey}
+          selectedCwd="/workspace"
           statusFilter="all"
+          onCwdChange={(cwd) => { window.__selectedCwd = cwd; }}
           onSelectScope={() => {}}
           onStatusFilterChange={() => {}}
           onSelectSession={(session) => {
@@ -167,22 +169,21 @@ test("LibrarySidebar renders sessions above a filtered domain tree and selects s
   `, async (page) => {
     await page.getByText("Southstar").waitFor();
     await page.getByRole("button", { name: "New" }).click();
-    await page.getByRole("button", { name: "Refresh" }).click();
+    await page.locator('[data-testid="project-scope-picker"]').getByRole("button", { name: "Refresh" }).click();
     assert.equal(await page.evaluate(() => (window as any).__newLibrarySession), true);
     assert.equal(await page.evaluate(() => (window as any).__libraryRefreshed), true);
 
-    await page.locator('[data-testid="library-domain-filter"]').fill("soft");
-
     await page.getByText("Library LLM Sessions").waitFor();
     await page.getByText("Library Domain Tree").waitFor();
+    await page.locator('[data-testid="project-scope-picker"]').waitFor();
     assert.equal(await page.getByText("Research import run").isVisible(), true);
 
     await page.getByRole("button", { name: "software", exact: true }).waitFor();
     const domainTree = page.locator('[data-testid="library-domain-tree"]');
-    assert.equal(await domainTree.getByRole("button", { name: "research", exact: true }).count(), 0);
+    assert.equal(await domainTree.getByRole("button", { name: "research", exact: true }).count(), 1);
 
     for (const folder of ["agents", "skills", "mcp", "tools"]) {
-      await page.getByText(folder, { exact: true }).waitFor();
+      assert.equal(await domainTree.getByRole("button", { name: new RegExp(`^${folder} \\d+$`) }).count() > 0, true);
     }
     assert.equal(await page.locator('[data-testid="library-tree-connector"]').count() > 0, true);
     assert.equal(await page.locator('[data-testid="library-tree-branch"]').count() > 0, true);
@@ -191,13 +192,13 @@ test("LibrarySidebar renders sessions above a filtered domain tree and selects s
     for (const title of ["Frontend Agent", "Agent Spec", "React Skill", "Skill Definition", "GitHub MCP", "Browser Tool"]) {
       assert.equal(await page.getByText(title).isVisible(), true);
     }
-    assert.equal(await domainTree.getByText("research", { exact: true }).count(), 0);
-    assert.equal(await page.getByText("Literature Review").count(), 0);
+    assert.equal(await domainTree.getByText("research", { exact: true }).count(), 1);
+    assert.equal(await page.getByText("Literature Review").count(), 1);
 
     await page.getByRole("button", { name: "React Skill skill.react approved" }).click();
     assert.equal(await page.evaluate(() => (window as any).__selectedObjectKey), "skill.react");
 
-    await page.getByRole("button", { name: /Research import run/ }).click();
+    await page.locator('[data-testid="library-session-row"]').filter({ hasText: "Research import run" }).click();
     assert.equal(await page.evaluate(() => (window as any).__selectedSessionId), "library-session-1");
   });
 });
@@ -243,7 +244,9 @@ test("LibrarySidebar renders the library domains as an accessible nested tree wi
         model={model}
         sessions={[]}
         selectedScope="all"
+        selectedCwd="/workspace"
         statusFilter="all"
+        onCwdChange={(cwd) => { window.__selectedCwd = cwd; }}
         onSelectScope={(scope) => { window.__selectedScope = scope; }}
         onStatusFilterChange={() => {}}
         onSelectObject={(object) => { window.__selectedObjectKey = object.objectKey; }}
@@ -271,9 +274,8 @@ test("LibrarySidebar renders the library domains as an accessible nested tree wi
     assert.equal(await tree.getByRole("treeitem", { name: "marketing Agent 42 agent.marketing.42 approved" }).getAttribute("aria-level"), "3");
 
     assert.equal(await tree.getByRole("treeitem").count(), 87);
-    await page.locator('[data-testid="library-domain-filter"]').fill("engineer");
     await tree.getByRole("treeitem", { name: "engineering 41" }).waitFor();
-    assert.equal(await tree.getByRole("treeitem", { name: "marketing 42" }).count(), 0);
+    assert.equal(await tree.getByRole("treeitem", { name: "marketing 42" }).count(), 1);
 
     await tree.getByRole("treeitem", { name: "engineering Agent 7 agent.engineering.7 approved" }).click();
     assert.equal(await page.evaluate(() => (window as any).__selectedObjectKey), "agent.engineering.7");
