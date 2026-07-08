@@ -86,3 +86,22 @@ test("library workspace uses dedicated library chat sessions", () => {
   assert.doesNotMatch(workspace, /selectedChatSession/);
   assert.doesNotMatch(workspace, /LIBRARY_SESSIONS_STORAGE_KEY/);
 });
+
+test("library session selections are loaded by the shared chat window", () => {
+  const workspace = source("web/components/library/LibraryWorkspace.tsx");
+
+  assert.match(workspace, /selectedLibrarySession/);
+  assert.match(workspace, /session=\{context\.selectedLibrarySession\}/);
+  assert.match(workspace, /newSessionCwd=\{context\.selectedLibrarySession \? null : context\.selectedCwd\}/);
+  assert.match(workspace, /setLibrarySessionKey\(\(value\) => value \+ 1\);/);
+  assert.doesNotMatch(workspace, /session=\{null\}/);
+});
+
+test("workflow session selections suppress the duplicate cwd remount", () => {
+  const appShell = source("web/components/AppShell.tsx");
+  const selectWorkflowSession = appShell.match(/const handleSelectWorkflowSession = useCallback\(\(session: SessionInfo\) => \{[\s\S]*?\n  \}, \[router\]\);/);
+
+  assert.ok(selectWorkflowSession);
+  assert.match(selectWorkflowSession[0], /suppressCwdBumpRef\.current = true;/);
+  assert.match(selectWorkflowSession[0], /setWorkflowSessionKey\(\(k\) => k \+ 1\);/);
+});

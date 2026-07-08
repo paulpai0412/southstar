@@ -396,7 +396,10 @@ export function AppShell() {
     setWorkflowNewSessionCwd(null);
     setWorkflowSelectedSession(session);
     setActiveCwd(session.cwd || null);
-    if (session.cwd) window.localStorage.setItem(LAST_CWD_STORAGE_KEY, session.cwd);
+    if (session.cwd) {
+      window.localStorage.setItem(LAST_CWD_STORAGE_KEY, session.cwd);
+      suppressCwdBumpRef.current = true;
+    }
     setWorkflowSessionKey((k) => k + 1);
     setSystemPrompt(null);
     setInitialSessionRestored(true);

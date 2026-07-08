@@ -24,6 +24,7 @@ type LibraryWorkspaceContextValue = {
   fileStatusMessage?: string;
   librarySessions: LibrarySessionSummary[];
   selectedSessionId?: string;
+  selectedLibrarySession: SessionInfo | null;
   librarySessionKey: number;
   selectedCwd: string | null;
   modelsRefreshKey?: number;
@@ -139,6 +140,23 @@ export function LibraryWorkspaceProvider({
     loadLibrarySessions();
   }, [loadLibrarySessions, loadWorkspace]);
 
+  const selectedLibrarySession = useMemo<SessionInfo | null>(() => {
+    const session = librarySessions.find((item) => item.id === selectedSessionId);
+    if (!session) return null;
+    const modified = session.modified ?? new Date(0).toISOString();
+    return {
+      path: "",
+      id: session.id,
+      cwd: defaultCwd ?? "",
+      kind: "library",
+      name: session.title,
+      created: modified,
+      modified,
+      messageCount: session.itemCount ?? 0,
+      firstMessage: session.title || session.detail || session.id,
+    };
+  }, [defaultCwd, librarySessions, selectedSessionId]);
+
   const handleSessionActivity = useCallback((session: LibrarySessionSummary) => {
     setSelectedSessionId(session.id);
     setLibrarySessions((current) => {
@@ -152,6 +170,7 @@ export function LibraryWorkspaceProvider({
 
   const handleSelectSession = useCallback((session: LibrarySessionSummary) => {
     setSelectedSessionId(session.id);
+    setLibrarySessionKey((value) => value + 1);
   }, []);
 
   const handleRenameSession = useCallback((sessionId: string, title: string) => {
@@ -359,6 +378,7 @@ export function LibraryWorkspaceProvider({
     fileStatusMessage,
     librarySessions,
     selectedSessionId,
+    selectedLibrarySession,
     librarySessionKey,
     selectedCwd: defaultCwd ?? null,
     modelsRefreshKey,
@@ -408,6 +428,7 @@ export function LibraryWorkspaceProvider({
     selectedFilePath,
     selectedObjectKey,
     selectedScope,
+    selectedLibrarySession,
     defaultCwd,
     selectedSessionId,
     statusFilter,
@@ -491,8 +512,8 @@ function LibraryWorkspaceContent() {
         {canRenderLibraryChat ? (
           <ChatWindow
             key={context.librarySessionKey}
-            session={null}
-            newSessionCwd={context.selectedCwd}
+            session={context.selectedLibrarySession}
+            newSessionCwd={context.selectedLibrarySession ? null : context.selectedCwd}
             sessionKind="library"
             libraryScope={context.selectedScope}
             onAgentEnd={context.onAgentEnd}
