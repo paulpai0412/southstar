@@ -52,7 +52,8 @@ export function LibraryCandidateMessageBlock({
     .map((candidate) => candidate.objectKey)
     .filter((objectKey) => selected.has(objectKey) && !installedKeys.has(objectKey));
   const allSelected = selectedIds.length === selectableCandidates.length && selectableCandidates.length > 0;
-  const installDisabled = status !== "draft" || selectedIds.length === 0;
+  const isInstalling = status === "installing";
+  const installDisabled = isInstalling || selectedIds.length === 0;
 
   return (
     <div
@@ -85,7 +86,7 @@ export function LibraryCandidateMessageBlock({
           <IconButton
             label="Select all candidates"
             title="Select all"
-            disabled={status !== "draft" || selectableCandidates.length === 0 || allSelected}
+            disabled={isInstalling || selectableCandidates.length === 0 || allSelected}
             onClick={() => setSelected(new Set(selectableCandidateKeys))}
           >
             <CheckCheck size={15} strokeWidth={2} />
@@ -93,14 +94,14 @@ export function LibraryCandidateMessageBlock({
           <IconButton
             label="Unselect all candidates"
             title="Unselect all"
-            disabled={status !== "draft" || selectedIds.length === 0}
+            disabled={isInstalling || selectedIds.length === 0}
             onClick={() => setSelected(new Set())}
           >
             <Square size={14} strokeWidth={2} />
           </IconButton>
           <IconButton
             label="Install selected candidates"
-            title={status === "installed" ? "Installed" : status === "installing" ? "Installing" : "Install selected"}
+            title={isInstalling ? "Installing" : selectableCandidates.length === 0 && status === "installed" ? "Installed" : "Install selected"}
             disabled={installDisabled}
             onClick={() => onInstall(selectedIds)}
           >
@@ -119,26 +120,26 @@ export function LibraryCandidateMessageBlock({
         </div>
       </div>
       {expanded ? (
-      <div data-testid="library-import-candidates-list" style={{ display: "grid", gap: 6 }}>
-        {candidates.map((candidate) => (
-          <CandidateRow
-            key={candidate.objectKey}
-            candidate={candidate}
-            checked={selected.has(candidate.objectKey) && !installedKeys.has(candidate.objectKey)}
-            disabled={status !== "draft" || installedKeys.has(candidate.objectKey)}
-            installed={installedKeys.has(candidate.objectKey)}
-            onCheckedChange={(checked) => {
-              const next = new Set(selected);
-              if (checked) {
-                next.add(candidate.objectKey);
-              } else {
-                next.delete(candidate.objectKey);
-              }
-              setSelected(next);
-            }}
-          />
-        ))}
-      </div>
+        <div data-testid="library-import-candidates-list" style={{ display: "grid", gap: 6 }}>
+          {candidates.map((candidate) => (
+            <CandidateRow
+              key={candidate.objectKey}
+              candidate={candidate}
+              checked={selected.has(candidate.objectKey) && !installedKeys.has(candidate.objectKey)}
+              disabled={isInstalling || installedKeys.has(candidate.objectKey)}
+              installed={installedKeys.has(candidate.objectKey)}
+              onCheckedChange={(checked) => {
+                const next = new Set(selected);
+                if (checked) {
+                  next.add(candidate.objectKey);
+                } else {
+                  next.delete(candidate.objectKey);
+                }
+                setSelected(next);
+              }}
+            />
+          ))}
+        </div>
       ) : null}
       {expanded && proposedEdges && proposedEdges.length > 0 ? (
         <div style={{ display: "grid", gap: 4, fontSize: 12 }}>

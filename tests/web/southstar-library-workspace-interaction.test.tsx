@@ -474,6 +474,70 @@ test("LibraryCandidateMessageBlock keeps candidate install controls in the messa
   });
 });
 
+test("LibraryCandidateMessageBlock keeps uninstalled candidates selectable after a partial install", async () => {
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibraryCandidateMessageBlock } from "./web/components/library/LibraryCandidateMessageBlock";
+
+    const candidates = [
+      {
+        objectKey: "skill.brainstorming",
+        kind: "skill",
+        title: "Brainstorming",
+        scope: "software",
+        sourcePath: "skills/brainstorming/SKILL.md",
+        selectedByDefault: true,
+        confidence: 0.96,
+      },
+      {
+        objectKey: "skill.using-superpowers",
+        kind: "skill",
+        title: "Using Superpowers",
+        scope: "software",
+        sourcePath: "skills/using-superpowers/SKILL.md",
+        selectedByDefault: true,
+        confidence: 0.95,
+      },
+    ];
+
+    function Harness() {
+      const [installedObjectKeys, setInstalledObjectKeys] = useState([]);
+      const [status, setStatus] = useState("draft");
+      return (
+        <LibraryCandidateMessageBlock
+          draftId="library-import-draft-partial"
+          candidates={candidates}
+          proposedEdges={[]}
+          status={status}
+          installedObjectKeys={installedObjectKeys}
+          onInstall={(selectedCandidateIds) => {
+            window.__selectedCandidateIds = selectedCandidateIds;
+            setInstalledObjectKeys((current) => [...new Set([...current, ...selectedCandidateIds])]);
+            setStatus("installed");
+          }}
+        />
+      );
+    }
+
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    const block = page.locator('[data-testid="library-import-candidates"]');
+    const header = block.locator('[data-testid="library-import-candidates-toolbar"]');
+    const brainstorming = block.getByRole("checkbox", { name: /Brainstorming/ });
+    const usingSuperpowers = block.getByRole("checkbox", { name: /Using Superpowers/ });
+
+    await block.waitFor();
+    await usingSuperpowers.setChecked(false);
+    await header.getByRole("button", { name: "Install selected candidates", exact: true }).click();
+
+    assert.equal(await brainstorming.isDisabled(), true);
+    assert.equal(await usingSuperpowers.isDisabled(), false);
+    await usingSuperpowers.setChecked(true);
+    assert.equal(await usingSuperpowers.isChecked(), true);
+  });
+});
+
 test("LibraryChatWindow streams GitHub repo import prompts through the library chat SSE pipeline", async () => {
   let chatMessageBody: any;
 
