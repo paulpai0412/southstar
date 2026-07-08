@@ -1,21 +1,4 @@
 ---
-schemaVersion: southstar.library.skill_spec_file.v1
-id: skill.superpowers.brainstorming
-title: "Brainstorming Ideas Into Designs"
-scope: "engineering"
-status: approved
-importDraftId: "library-import-draft-e11348d6-81bf-4fea-b3f3-9af3071b7b9d"
-importCandidateKey: "skill.superpowers.brainstorming"
-importSourcePath: "skills/brainstorming/SKILL.md"
----
-
-# Instructions
-
-Imported skill candidate from library import draft library-import-draft-e11348d6-81bf-4fea-b3f3-9af3071b7b9d.
-
-## Source Definition
-
----
 name: brainstorming
 description: "You MUST use this before any creative work - creating features, building components, adding functionality, or modifying behavior. Explores user intent, requirements and design before implementation."
 ---

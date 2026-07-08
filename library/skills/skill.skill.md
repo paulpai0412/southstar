@@ -1,17 +1,17 @@
 ---
 schemaVersion: southstar.library.skill_spec_file.v1
-id: skill.superpowers.brainstorming
-title: "Brainstorming Ideas Into Designs"
+id: skill.SKILL
+title: "Brainstorming"
 scope: "engineering"
 status: approved
-importDraftId: "library-import-draft-e11348d6-81bf-4fea-b3f3-9af3071b7b9d"
-importCandidateKey: "skill.superpowers.brainstorming"
+importDraftId: "library-import-draft-4aad0c00-e135-4555-8afd-f0853711fc57"
+importCandidateKey: "skill.SKILL"
 importSourcePath: "skills/brainstorming/SKILL.md"
 ---
 
 # Instructions
 
-Imported skill candidate from library import draft library-import-draft-e11348d6-81bf-4fea-b3f3-9af3071b7b9d.
+Imported skill candidate from library import draft library-import-draft-4aad0c00-e135-4555-8afd-f0853711fc57.
 
 ## Source Definition
 

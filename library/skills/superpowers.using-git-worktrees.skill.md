@@ -4,14 +4,14 @@ id: skill.superpowers.using-git-worktrees
 title: "Using Git Worktrees"
 scope: "engineering"
 status: approved
-importDraftId: "library-import-draft-74a11076-6411-4a0d-b756-9fdbd48837e9"
+importDraftId: "library-import-draft-e11348d6-81bf-4fea-b3f3-9af3071b7b9d"
 importCandidateKey: "skill.superpowers.using-git-worktrees"
 importSourcePath: "skills/using-git-worktrees/SKILL.md"
 ---
 
 # Instructions
 
-Imported skill candidate from library import draft library-import-draft-74a11076-6411-4a0d-b756-9fdbd48837e9.
+Imported skill candidate from library import draft library-import-draft-e11348d6-81bf-4fea-b3f3-9af3071b7b9d.
 
 ## Source Definition
 
