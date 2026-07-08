@@ -62,11 +62,19 @@ test("workflow sidebar lists workflow sessions even before a project is selected
   const route = source("web/app/api/sessions/route.ts");
 
   assert.match(workflowSidebar, /scope=all&kind=workflow&limit=50&compact=1/);
+  assert.doesNotMatch(workflowSidebar, /kind=workflow&cwd=/);
   assert.doesNotMatch(workflowSidebar, /if \(!cwd\) \{\s*setSessions\(\[\]\);/);
   assert.match(route, /compactSession/);
   assert.match(route, /searchParams\.get\("limit"\)/);
   assert.match(route, /listRecentSessionsByKind/);
   assert.doesNotMatch(route, /scope === "all" \? await listAllSessions\(\) : await listSessionsForCwd\(cwd\)/);
+});
+
+test("library import candidate checkboxes update from current selection state", () => {
+  const block = source("web/components/library/LibraryCandidateMessageBlock.tsx");
+
+  assert.match(block, /setSelected\(\(current\) => \{/);
+  assert.doesNotMatch(block, /const next = new Set\(selected\);/);
 });
 
 test("library workspace uses dedicated library chat sessions", () => {
@@ -104,4 +112,18 @@ test("workflow session selections suppress the duplicate cwd remount", () => {
   assert.ok(selectWorkflowSession);
   assert.match(selectWorkflowSession[0], /suppressCwdBumpRef\.current = true;/);
   assert.match(selectWorkflowSession[0], /setWorkflowSessionKey\(\(k\) => k \+ 1\);/);
+});
+
+test("library and workflow session row actions are hidden until hover or focus", () => {
+  const librarySidebar = source("web/components/library/LibrarySidebar.tsx");
+  const workflowSidebar = source("web/components/WorkflowSidebar.tsx");
+  const css = source("web/app/globals.css");
+
+  assert.match(librarySidebar, /className="southstar-session-row"/);
+  assert.match(librarySidebar, /className="southstar-session-row-actions"/);
+  assert.match(workflowSidebar, /className="southstar-session-row"/);
+  assert.match(workflowSidebar, /className="southstar-session-row-actions"/);
+  assert.match(css, /\.southstar-session-row-actions\s*\{[\s\S]*opacity: 0;/);
+  assert.match(css, /\.southstar-session-row:hover \.southstar-session-row-actions/);
+  assert.match(css, /\.southstar-session-row:focus-within \.southstar-session-row-actions/);
 });

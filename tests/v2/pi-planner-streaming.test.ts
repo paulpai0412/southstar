@@ -144,3 +144,36 @@ test("Pi SDK planner client marks sessions as workflow", async () => {
     data: { kind: "workflow" },
   }]);
 });
+
+test("Pi SDK planner client can mark library-owned sessions", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const customEntries: Array<{ customType: string; data?: unknown }> = [];
+  const session: PiSdkPlannerSession = {
+    sessionManager: {
+      appendCustomEntry(customType: string, data?: unknown) {
+        customEntries.push({ customType, data });
+        return "entry-kind";
+      },
+    },
+    async prompt() {
+      for (const listener of listeners) listener({ message: { role: "assistant", content: "ok" } });
+      for (const listener of listeners) listener({ type: "agent_end" });
+    },
+    subscribe(listener: (event: unknown) => void) {
+      listeners.push(listener);
+      return () => undefined;
+    },
+  };
+
+  const client = createPiSdkPlannerClient({
+    createSession: async () => session,
+    sessionKind: "library",
+    timeoutMs: 1_000,
+  });
+
+  assert.equal(await client.generate("import ontology candidates"), "ok");
+  assert.deepEqual(customEntries, [{
+    customType: "southstar.session.kind",
+    data: { kind: "library" },
+  }]);
+});

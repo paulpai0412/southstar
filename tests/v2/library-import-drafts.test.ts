@@ -1959,21 +1959,25 @@ test("POST /api/v2/library/import-drafts forwards configured import analysis pro
 test("POST /api/v2/library/import-drafts/:draftId/install installs selected candidates", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-install-"));
-  const libraryImportLlmProvider: LibraryImportLlmProvider = async () => ({
-    candidates: [
-      { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", selectedByDefault: true },
-      { objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true },
-    ],
-    proposedEdges: [
-      {
-        fromObjectKey: "agent.reviewer",
-        edgeType: "uses",
-        toObjectKey: "skill.review",
-        confidence: 0.86,
-        rationale: "Reviewer uses review skill.",
-      },
-    ],
-  });
+  const libraryImportLlmProvider: LibraryImportLlmProvider = async ({ prompt }) => {
+    const ontology = prompt.includes("Generate ontology edges");
+    return {
+      sessionId: ontology ? "pi-agent-ontology-session-1" : "pi-agent-candidate-session-1",
+      candidates: [
+        { objectKey: "agent.reviewer", kind: "agent", title: "Reviewer", selectedByDefault: true },
+        { objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true },
+      ],
+      proposedEdges: [
+        {
+          fromObjectKey: "agent.reviewer",
+          edgeType: "uses",
+          toObjectKey: "skill.review",
+          confidence: 0.86,
+          rationale: "Reviewer uses review skill.",
+        },
+      ],
+    };
+  };
 
   try {
     const context = { db, libraryRoot, libraryImportLlmProvider } as any;
@@ -2002,6 +2006,7 @@ test("POST /api/v2/library/import-drafts/:draftId/install installs selected cand
     assert.equal(installEnvelope.ok, true);
     assert.equal(installEnvelope.kind, "library-import-candidate-install");
     assert.equal(installEnvelope.result.status, "installed");
+    assert.equal(installEnvelope.result.piSessionId, "pi-agent-ontology-session-1");
     assert.deepEqual(
       installEnvelope.result.installedObjects.map((object: any) => object.relativePath),
       ["agents/reviewer.agent.md", "skills/review.skill.md"],
@@ -2018,7 +2023,19 @@ test("POST /api/v2/library/import-drafts/:draftId/install installs selected cand
 
     const resource = await getResourceByKeyPg(db, "library_import_draft", draftEnvelope.result.draftId);
     assert.equal(resource?.status, "installed");
+    assert.equal((resource?.payload as any).piSessionId, "pi-agent-candidate-session-1");
+    assert.equal((resource?.payload as any).install.piSessionId, "pi-agent-ontology-session-1");
+    assert.equal((resource?.payload as any).ontologyPiSessionId, "pi-agent-ontology-session-1");
+    assert.equal((resource?.summary as any).ontologyPiSessionId, "pi-agent-ontology-session-1");
     assert.equal((resource?.payload as any).install.reason, "install reviewed candidates");
+
+    const sessionsResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/chat/sessions?limit=5"));
+    assert.equal(sessionsResponse.status, 200);
+    const sessionsEnvelope = await sessionsResponse.json() as any;
+    assert.deepEqual(
+      sessionsEnvelope.result.sessions.map((session: any) => session.id),
+      ["pi-agent-ontology-session-1", "pi-agent-candidate-session-1"],
+    );
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

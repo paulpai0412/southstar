@@ -255,6 +255,7 @@ export async function handleLibraryRoute(
         schemaVersion: "southstar.library.chat_action.v1",
         actionId: action.actionId,
         sessionId: action.sessionId,
+        actionSessionId: action.sessionId,
         prompt: action.prompt,
         selectedScope: action.scope,
       },
@@ -265,6 +266,14 @@ export async function handleLibraryRoute(
       sessionId: action.sessionId,
       actionId: action.actionId,
       status: "accepted",
+    });
+  }
+
+  if (request.method === "GET" && url.pathname === "/api/v2/library/chat/sessions") {
+    return json("library-chat-sessions", {
+      sessions: await listLibraryChatSessionSummariesPg(context.db, {
+        limit: optionalNumber(url.searchParams.get("limit")),
+      }),
     });
   }
 
@@ -799,13 +808,14 @@ async function requireLibraryChatAction(
 ): Promise<LibraryChatAction> {
   const action = await getResourceByKeyPg(context.db, "library_chat_action", input.actionId);
   if (!action) throw new Error(`library chat action ${input.actionId} was not found`);
-  if (action.sessionId !== input.sessionId) {
+  const payload = asRecord(action.payload);
+  const actionSessionId = optionalString(payload.actionSessionId) ?? optionalString(payload.sessionId);
+  if (action.sessionId !== input.sessionId && actionSessionId !== input.sessionId) {
     throw new Error(`library chat action ${input.actionId} does not belong to session ${input.sessionId}`);
   }
-  const payload = asRecord(action.payload);
   return {
     actionId: input.actionId,
-    sessionId: input.sessionId,
+    sessionId: actionSessionId ?? input.sessionId,
     prompt: requiredNonBlankString(payload.prompt, "library_chat_action.prompt"),
     scope: optionalString(payload.selectedScope) ?? "software",
   };
@@ -860,7 +870,12 @@ function libraryChatEventStream(
               filePaths: draft.proposal.files.map((file) => file.relativePath),
             });
           }
-          const result = { draftId: draft.draftId, status: "ready_for_review", candidateCount };
+          const result = {
+            draftId: draft.draftId,
+            status: "ready_for_review",
+            candidateCount,
+            ...(draft.piSessionId ? { piSessionId: draft.piSessionId } : {}),
+          };
           await updateLibraryChatAction(context, input, "completed", {
             completedAt: new Date().toISOString(),
             ...result,
@@ -1048,6 +1063,7 @@ async function replayCompletedLibraryChatAction(
     draftId,
     status: optionalString(result.status) ?? "ready_for_review",
     candidateCount: typeof result.candidateCount === "number" ? result.candidateCount : candidates.length,
+    ...(optionalString(result.piSessionId) ? { piSessionId: optionalString(result.piSessionId) } : {}),
     cached: true,
   });
   return true;
@@ -1062,24 +1078,29 @@ async function updateLibraryChatAction(
   const existing = await getResourceByKeyPg(context.db, "library_chat_action", input.actionId);
   const payload = asRecord(existing?.payload);
   const summary = asRecord(existing?.summary);
+  const nextResult = {
+    ...asRecord(payload.result),
+    ...result,
+  };
+  const actionSessionId = optionalString(payload.actionSessionId) ?? optionalString(payload.sessionId) ?? input.sessionId;
+  const piSessionId = optionalString(nextResult.piSessionId);
   await upsertRuntimeResourcePg(context.db, {
     resourceType: "library_chat_action",
     resourceKey: input.actionId,
-    sessionId: input.sessionId,
+    sessionId: piSessionId ?? existing?.sessionId ?? input.sessionId,
     scope: "library",
     status,
     title: existing?.title ?? `Library action: ${optionalString(payload.prompt) ?? input.actionId}`,
     payload: {
       ...payload,
-      result: {
-        ...asRecord(payload.result),
-        ...result,
-      },
+      actionSessionId,
+      result: nextResult,
     },
     summary: {
       ...summary,
       status,
-      result,
+      ...(piSessionId ? { piSessionId } : {}),
+      result: nextResult,
     },
   });
 }

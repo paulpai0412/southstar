@@ -10,6 +10,7 @@ import type {
 import type { PiPlannerClient, PiPlannerStreamHandlers, PlannerContext } from "./types.ts";
 
 const SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE = "southstar.session.kind";
+type SouthstarSessionKind = "chat" | "workflow" | "library";
 
 export type { PiPlannerClient, PiPlannerStreamHandlers, PlannerContext };
 
@@ -101,13 +102,17 @@ function buildPlannerRepairPrompt(context: PlannerContext, previousRaw: string, 
   ].join("\n");
 }
 
-export function createHttpPiPlannerClient(options: { endpoint: string; model?: string }): PiPlannerClient {
+export function createHttpPiPlannerClient(options: {
+  endpoint: string;
+  model?: string;
+  sessionKind?: SouthstarSessionKind;
+}): PiPlannerClient {
   return {
     async generate(prompt: string): Promise<string> {
       const response = await fetch(options.endpoint, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ prompt, model: options.model }),
+        body: JSON.stringify({ prompt, model: options.model, sessionKind: options.sessionKind ?? "workflow" }),
       });
       const text = await response.text();
       if (!response.ok) {
@@ -137,6 +142,7 @@ export type PiSdkPlannerClientOptions = {
   cwd?: string;
   model?: { provider: string; modelId: string };
   noTools?: "all" | null;
+  sessionKind?: SouthstarSessionKind;
   timeoutMs?: number;
 };
 
@@ -144,13 +150,13 @@ export function createPiSdkPlannerClient(options: PiSdkPlannerClientOptions = {}
   return {
     async generate(prompt: string): Promise<string> {
       const session = await (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options));
-      markPiSdkPlannerSessionAsWorkflow(session);
+      markPiSdkPlannerSessionKind(session, options.sessionKind ?? "workflow");
       await configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv());
       return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000);
     },
     async generateStream(prompt: string, handlers: PiPlannerStreamHandlers = {}): Promise<string> {
       const session = await (options.createSession ?? createDefaultPiSdkSession)(plannerSessionOptions(options));
-      markPiSdkPlannerSessionAsWorkflow(session);
+      markPiSdkPlannerSessionKind(session, options.sessionKind ?? "workflow");
       await configurePiSdkPlannerSession(session, options.model ?? plannerModelFromEnv());
       return runPromptAndCollectAssistantText(session, prompt, options.timeoutMs ?? 180_000, handlers);
     },
@@ -479,8 +485,8 @@ async function configurePiSdkPlannerSession(
   await session.send({ type: "set_model", provider: model.provider, modelId: model.modelId });
 }
 
-function markPiSdkPlannerSessionAsWorkflow(session: PiSdkPlannerSession): void {
-  session.sessionManager?.appendCustomEntry(SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, { kind: "workflow" });
+function markPiSdkPlannerSessionKind(session: PiSdkPlannerSession, kind: SouthstarSessionKind): void {
+  session.sessionManager?.appendCustomEntry(SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, { kind });
 }
 
 function plannerModelFromEnv(): { provider: string; modelId: string } | undefined {

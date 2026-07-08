@@ -1682,6 +1682,21 @@ span.linenumber {
   border-bottom: 1px solid var(--border);
 }
 
+.southstar-session-row-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.southstar-session-row:hover .southstar-session-row-actions,
+.southstar-session-row:focus-within .southstar-session-row-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 @media (max-width: 720px) {
   .operator-health-strip,
   .operator-priority-grid,

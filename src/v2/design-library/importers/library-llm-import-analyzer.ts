@@ -46,6 +46,17 @@ export type LibraryImportLlmProvider = (input: {
   sourceRepoPath?: string;
 }) => Promise<unknown>;
 
+export type LibraryImportLlmAnalysisResult = {
+  candidates: LibraryImportCandidate[];
+  proposedEdges: LibraryImportProposedEdge[];
+  piSessionId?: string;
+};
+
+export type LibraryImportOntologyAnalysisResult = {
+  proposedEdges: LibraryImportProposedEdge[];
+  piSessionId?: string;
+};
+
 export type LibraryImportOntologyExistingGraphNode = {
   objectKey: string;
   objectKind: LibraryDefinitionKind;
@@ -75,9 +86,9 @@ export async function analyzeLibraryImportWithLlm(input: {
   llmProvider?: LibraryImportLlmProvider;
   requestPrompt?: string;
   sourceRepoPath?: string;
-}): Promise<{ candidates: LibraryImportCandidate[]; proposedEdges: LibraryImportProposedEdge[] }> {
-  const candidates = await analyzeLibraryImportCandidatesWithLlm(input);
-  return { candidates, proposedEdges: [] };
+}): Promise<LibraryImportLlmAnalysisResult> {
+  const result = await analyzeLibraryImportCandidateResultWithLlm(input);
+  return { candidates: result.candidates, proposedEdges: [], ...(result.piSessionId ? { piSessionId: result.piSessionId } : {}) };
 }
 
 export async function analyzeLibraryImportCandidatesWithLlm(input: {
@@ -87,6 +98,16 @@ export async function analyzeLibraryImportCandidatesWithLlm(input: {
   requestPrompt?: string;
   sourceRepoPath?: string;
 }): Promise<LibraryImportCandidate[]> {
+  return (await analyzeLibraryImportCandidateResultWithLlm(input)).candidates;
+}
+
+export async function analyzeLibraryImportCandidateResultWithLlm(input: {
+  documents: LibraryImportSourceDocument[];
+  scope: string;
+  llmProvider?: LibraryImportLlmProvider;
+  requestPrompt?: string;
+  sourceRepoPath?: string;
+}): Promise<{ candidates: LibraryImportCandidate[]; piSessionId?: string }> {
   if (!input.llmProvider) {
     throw new Error("library import analysis requires an LLM provider");
   }
@@ -101,10 +122,15 @@ export async function analyzeLibraryImportCandidatesWithLlm(input: {
       sourceRepoPath: input.sourceRepoPath,
     }),
   });
-  return normalizeLlmImportAnalysis(raw, {
+  const unwrapped = unwrapLibraryImportLlmOutput(raw);
+  const analysis = normalizeLlmImportAnalysis(unwrapped.output, {
     scope: input.scope,
     sourcePaths: new Set(input.documents.map((document) => document.path)),
-  }).candidates;
+  });
+  return {
+    candidates: analysis.candidates,
+    ...(unwrapped.piSessionId ? { piSessionId: unwrapped.piSessionId } : {}),
+  };
 }
 
 export async function analyzeLibraryImportOntologyWithLlm(input: {
@@ -116,6 +142,18 @@ export async function analyzeLibraryImportOntologyWithLlm(input: {
   documents?: LibraryImportSourceDocument[];
   existingGraph?: LibraryImportOntologyExistingGraph;
 }): Promise<LibraryImportProposedEdge[]> {
+  return (await analyzeLibraryImportOntologyResultWithLlm(input)).proposedEdges;
+}
+
+export async function analyzeLibraryImportOntologyResultWithLlm(input: {
+  candidates: LibraryImportCandidate[];
+  scope: string;
+  llmProvider?: LibraryImportLlmProvider;
+  requestPrompt?: string;
+  sourceRepoPath?: string;
+  documents?: LibraryImportSourceDocument[];
+  existingGraph?: LibraryImportOntologyExistingGraph;
+}): Promise<LibraryImportOntologyAnalysisResult> {
   if (!input.llmProvider) {
     throw new Error("library import ontology analysis requires an LLM provider");
   }
@@ -131,14 +169,20 @@ export async function analyzeLibraryImportOntologyWithLlm(input: {
       existingGraph: input.existingGraph,
     }),
   });
+  const unwrapped = unwrapLibraryImportLlmOutput(raw);
   const candidateKeys = new Set(input.candidates.map((candidate) => candidate.objectKey));
-  return normalizeEdges(
-    edgeArrayFromRecord(isRecord(typeof raw === "string" ? safeJsonParse(raw) : raw)
-      ? (typeof raw === "string" ? safeJsonParse(raw) : raw) as Record<string, unknown>
+  const value = typeof unwrapped.output === "string" ? safeJsonParse(unwrapped.output) : unwrapped.output;
+  const proposedEdges = normalizeEdges(
+    edgeArrayFromRecord(isRecord(value)
+      ? value as Record<string, unknown>
       : {}),
     candidateKeys,
     { existingObjectKeys: new Set((input.existingGraph?.nodes ?? []).map((node) => node.objectKey)) },
   );
+  return {
+    proposedEdges,
+    ...(unwrapped.piSessionId ? { piSessionId: unwrapped.piSessionId } : {}),
+  };
 }
 
 export function buildLibraryImportAnalysisPrompt(
@@ -281,6 +325,20 @@ function normalizeLlmImportAnalysis(
   const candidateKeys = new Set(candidates.map((candidate) => candidate.objectKey));
   const proposedEdges = normalizeEdges(edgeArrayFromRecord(record), candidateKeys);
   return { candidates, proposedEdges };
+}
+
+function unwrapLibraryImportLlmOutput(raw: unknown): { output: unknown; piSessionId?: string } {
+  if (!isRecord(raw)) return { output: raw };
+  const piSessionId = optionalString(raw.piSessionId)
+    ?? optionalString(raw.pi_session_id)
+    ?? optionalString(raw.sessionId)
+    ?? optionalString(raw.session_id);
+  if (typeof raw.text === "string") return { output: raw.text, ...(piSessionId ? { piSessionId } : {}) };
+  if (typeof raw.output === "string") return { output: raw.output, ...(piSessionId ? { piSessionId } : {}) };
+  if (raw.planBundle !== undefined) {
+    return { output: JSON.stringify(raw.planBundle), ...(piSessionId ? { piSessionId } : {}) };
+  }
+  return { output: raw, ...(piSessionId ? { piSessionId } : {}) };
 }
 
 function normalizeCandidates(value: unknown, options: { scope: string; sourcePaths: Set<string> }): LibraryImportCandidate[] {

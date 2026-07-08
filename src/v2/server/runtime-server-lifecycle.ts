@@ -294,6 +294,9 @@ async function createRuntime(
   const plannerClient = env.piPlannerEndpoint
     ? createHttpPiPlannerClient({ endpoint: env.piPlannerEndpoint })
     : createPiSdkPlannerClient({ timeoutMs: env.piPlannerTimeoutMs });
+  const libraryPlannerClient = env.piPlannerEndpoint
+    ? createHttpPiPlannerClient({ endpoint: env.piPlannerEndpoint, sessionKind: "library" })
+    : createPiSdkPlannerClient({ timeoutMs: env.piPlannerTimeoutMs, sessionKind: "library" });
   const workflowComposer = new LlmWorkflowComposer({
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
     client: {
@@ -320,9 +323,14 @@ async function createRuntime(
     libraryImportSourceFetcher: createGithubLibraryImportSourceFetcher(),
     libraryImportLlmProvider: async ({ prompt, sourceRepoPath }) => {
       if (!env.piPlannerEndpoint && sourceRepoPath) {
-        return createPiSdkPlannerClient({ cwd: sourceRepoPath, noTools: null, timeoutMs: env.piPlannerTimeoutMs }).generate(prompt);
+        return createPiSdkPlannerClient({
+          cwd: sourceRepoPath,
+          noTools: null,
+          sessionKind: "library",
+          timeoutMs: env.piPlannerTimeoutMs,
+        }).generate(prompt);
       }
-      return plannerClient.generate(prompt);
+      return libraryPlannerClient.generate(prompt);
     },
     runtimeLoopRegistry: createRuntimeLoopRegistry(),
     managedRuntime: {

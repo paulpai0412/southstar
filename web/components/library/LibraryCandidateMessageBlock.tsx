@@ -129,13 +129,15 @@ export function LibraryCandidateMessageBlock({
               disabled={isInstalling || installedKeys.has(candidate.objectKey)}
               installed={installedKeys.has(candidate.objectKey)}
               onCheckedChange={(checked) => {
-                const next = new Set(selected);
-                if (checked) {
-                  next.add(candidate.objectKey);
-                } else {
-                  next.delete(candidate.objectKey);
-                }
-                setSelected(next);
+                setSelected((current) => {
+                  const next = new Set(current);
+                  if (checked) {
+                    next.add(candidate.objectKey);
+                  } else {
+                    next.delete(candidate.objectKey);
+                  }
+                  return next;
+                });
               }}
             />
           ))}

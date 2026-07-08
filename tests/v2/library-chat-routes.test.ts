@@ -245,6 +245,7 @@ test("library chat import streams keepalive progress, candidates, and completes 
         providerCalls.push({ sourceRepoPath: input.sourceRepoPath, prompt: input.prompt });
         await new Promise((resolve) => setTimeout(resolve, 25));
         return {
+          sessionId: "pi-agent-import-session-1",
           candidates: [
             {
               objectKey: "agent.academic-anthropologist",
@@ -309,8 +310,18 @@ test("library chat import streams keepalive progress, candidates, and completes 
 
     const actionResource = await getResourceByKeyPg(db, "library_chat_action", message.result.actionId);
     assert.equal(actionResource?.status, "completed");
+    assert.equal(actionResource?.sessionId, "pi-agent-import-session-1");
     assert.equal((actionResource?.payload as any).result.draftId, candidates?.data.draftId);
     assert.equal((actionResource?.payload as any).result.candidateCount, 2);
+    assert.equal((actionResource?.payload as any).result.piSessionId, "pi-agent-import-session-1");
+
+    const sessionsResponse = await handleRuntimeRoute(
+      context,
+      new Request("http://local/api/v2/library/chat/sessions?limit=5"),
+    );
+    assert.equal(sessionsResponse.status, 200);
+    const sessionsEnvelope = await readEnvelope(sessionsResponse);
+    assert.equal(sessionsEnvelope.result.sessions[0].id, "pi-agent-import-session-1");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

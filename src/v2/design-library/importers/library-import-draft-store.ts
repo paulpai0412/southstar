@@ -28,7 +28,7 @@ import {
 } from "./library-source-fetcher.ts";
 import {
   analyzeLibraryImportWithLlm,
-  analyzeLibraryImportOntologyWithLlm,
+  analyzeLibraryImportOntologyResultWithLlm,
   type LibraryImportOntologyExistingGraph,
   type LibraryImportLlmProvider,
 } from "./library-llm-import-analyzer.ts";
@@ -52,6 +52,7 @@ export type LibraryImportDraftResult = {
   documents?: LibraryImportSourceDocument[];
   candidates?: LibraryImportCandidate[];
   proposedEdges?: LibraryImportProposedEdge[];
+  piSessionId?: string;
 };
 
 export type LibraryImportDraftApprovalResult = {
@@ -76,6 +77,7 @@ export type LibraryImportCandidateInstallResult = {
     objectKeys: string[];
     edgeIds: string[];
   };
+  piSessionId?: string;
 };
 
 type LibraryImportDraftApplyReservation = {
@@ -187,6 +189,7 @@ export async function createLibraryImportDraft(
       documents,
       candidates: analysis.candidates,
       proposedEdges: analysis.proposedEdges,
+      ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
     },
     summary: {
       scope: input.scope,
@@ -194,6 +197,7 @@ export async function createLibraryImportDraft(
       filePaths: proposal.files.map((file) => file.relativePath),
       candidateKeys: analysis.candidates.map((candidate) => candidate.objectKey),
       proposedEdgeCount: analysis.proposedEdges.length,
+      ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
       ...(sourceSnapshot.repoPath ? { sourceRepoPath: sourceSnapshot.repoPath } : {}),
     },
   });
@@ -204,6 +208,7 @@ export async function createLibraryImportDraft(
     documents,
     candidates: analysis.candidates,
     proposedEdges: analysis.proposedEdges,
+    ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
   };
 }
 
@@ -343,8 +348,8 @@ export async function installLibraryImportCandidates(
       event: "library.import.ontology.started",
       data: { draftId: input.draftId, selectedCandidateCount: selectedCandidates.length },
     });
-    const generatedEdges = input.llmProvider
-      ? await analyzeLibraryImportOntologyWithLlm({
+    const ontologyAnalysis = input.llmProvider
+      ? await analyzeLibraryImportOntologyResultWithLlm({
         candidates: selectedCandidates,
         scope: selectedCandidates[0]?.scope ?? "software",
         llmProvider: input.llmProvider,
@@ -353,10 +358,15 @@ export async function installLibraryImportCandidates(
         documents: asImportSourceDocuments(draft.payload.documents),
         existingGraph,
       })
-      : draft.proposedEdges;
+      : { proposedEdges: draft.proposedEdges };
+    const generatedEdges = ontologyAnalysis.proposedEdges;
     input.progress?.({
       event: "library.import.ontology.completed",
-      data: { draftId: input.draftId, proposedEdgeCount: generatedEdges.length },
+      data: {
+        draftId: input.draftId,
+        proposedEdgeCount: generatedEdges.length,
+        ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
+      },
     });
     input.progress?.({
       event: "library.import.install.started",
@@ -451,6 +461,7 @@ export async function installLibraryImportCandidates(
         selectedCandidateIds: input.selectedCandidateIds,
         ...(input.selectedEdgeIds ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
         generatedOntologyAt: installGeneratedAt,
+        ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
         installedObjectKeys: installedObjects.map((object) => object.objectKey),
         installedObjects: installedObjects.map((object) => ({
           objectKey: object.objectKey,
@@ -484,6 +495,7 @@ export async function installLibraryImportCandidates(
             status: "installed",
             proposedEdges,
             install,
+            ...(ontologyAnalysis.piSessionId ? { ontologyPiSessionId: ontologyAnalysis.piSessionId } : {}),
           }),
           JSON.stringify({
             ...draft.summary,
@@ -491,6 +503,7 @@ export async function installLibraryImportCandidates(
             installedBy: install.actor,
             installedObjectKeys: install.installedObjectKeys,
             installedEdgeCount: installedEdges.length,
+            ...(ontologyAnalysis.piSessionId ? { ontologyPiSessionId: ontologyAnalysis.piSessionId } : {}),
           }),
         ],
       );
@@ -507,6 +520,7 @@ export async function installLibraryImportCandidates(
           objectKeys: installedObjects.map((object) => object.objectKey),
           edgeIds: installedEdges.map((edge) => edge.id),
         },
+        ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
       };
     });
 

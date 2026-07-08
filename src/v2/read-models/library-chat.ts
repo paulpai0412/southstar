@@ -30,6 +30,7 @@ export type LibraryChatSessionSummary = {
 };
 
 type LibraryChatActionRow = {
+  resource_type: string;
   resource_key: string;
   session_id: string | null;
   status: string;
@@ -46,9 +47,9 @@ export async function listLibraryChatSessionSummariesPg(
 ): Promise<LibraryChatSessionSummary[]> {
   const limit = Math.max(1, Math.min(input.limit ?? 50, 100));
   const rows = await db.query<LibraryChatActionRow>(
-    `select resource_key, session_id, status, title, payload_json, summary_json, created_at, updated_at
+    `select resource_type, resource_key, session_id, status, title, payload_json, summary_json, created_at, updated_at
        from southstar.runtime_resources
-      where resource_type = 'library_chat_action'
+      where resource_type in ('library_chat_action', 'library_import_draft')
       order by updated_at desc, created_at desc, resource_key
       limit $1`,
     [limit * 3],
@@ -56,27 +57,49 @@ export async function listLibraryChatSessionSummariesPg(
 
   const sessions = new Map<string, LibraryChatSessionSummary>();
   for (const row of rows.rows) {
-    const id = row.session_id ?? row.resource_key;
-    if (sessions.has(id)) continue;
     const payload = asRecord(row.payload_json);
     const summary = asRecord(row.summary_json);
-    const result = asRecord(asRecord(payload.result));
+    const result = asRecord(payload.result);
+    const install = asRecord(payload.install);
     const prompt = optionalString(payload.prompt) ?? optionalString(summary.prompt);
     const status = optionalString(summary.status) ?? row.status;
-    const candidateCount = numberValue(result.candidateCount);
+    const candidateCount = numberValue(result.candidateCount) ?? arrayLength(payload.candidates);
     const selectedScope = optionalString(payload.selectedScope) ?? optionalString(summary.selectedScope);
-    sessions.set(id, {
-      id,
-      title: titleFromPrompt(prompt) ?? row.title ?? id,
-      status,
-      modified: toIsoString(row.updated_at ?? row.created_at),
-      detail: candidateCount !== undefined ? `${candidateCount} ${candidateCount === 1 ? "item" : "items"}` : selectedScope,
-      ...(candidateCount !== undefined ? { itemCount: candidateCount } : {}),
-    });
+    for (const id of piSessionIdsFromResource({ payload, summary, result, install })) {
+      if (sessions.has(id)) continue;
+      sessions.set(id, {
+        id,
+        title: titleFromPrompt(prompt)
+          ?? titleFromPrompt(optionalString(payload.requestPrompt))
+          ?? row.title
+          ?? id,
+        status,
+        modified: toIsoString(row.updated_at ?? row.created_at),
+        detail: candidateCount !== undefined ? `${candidateCount} ${candidateCount === 1 ? "item" : "items"}` : selectedScope,
+        ...(candidateCount !== undefined ? { itemCount: candidateCount } : {}),
+      });
+      if (sessions.size >= limit) break;
+    }
     if (sessions.size >= limit) break;
   }
 
   return [...sessions.values()];
+}
+
+function piSessionIdsFromResource(input: {
+  payload: Record<string, unknown>;
+  summary: Record<string, unknown>;
+  result: Record<string, unknown>;
+  install: Record<string, unknown>;
+}): string[] {
+  return uniqueStrings([
+    optionalString(input.summary.ontologyPiSessionId),
+    optionalString(input.payload.ontologyPiSessionId),
+    optionalString(input.install.piSessionId),
+    optionalString(input.summary.piSessionId),
+    optionalString(input.result.piSessionId),
+    optionalString(input.payload.piSessionId),
+  ]);
 }
 
 function titleFromPrompt(prompt: string | undefined): string | undefined {
@@ -96,6 +119,14 @@ function optionalString(value: unknown): string | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function arrayLength(value: unknown): number | undefined {
+  return Array.isArray(value) ? value.length : undefined;
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => typeof value === "string" && value.length > 0))];
 }
 
 function toIsoString(value: Date | string): string {
