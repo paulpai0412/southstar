@@ -30,6 +30,34 @@ test("workflow node profile editor leads with summary and recommendations", () =
   assert.match(recommendations, /selectionReasons|candidateReasons/);
 });
 
+test("workflow node profile editor exposes ontology-backed candidate controls", () => {
+  const editor = readFileSync(join(root, "web/components/WorkflowNodeProfileEditor.tsx"), "utf8");
+  const form = readFileSync(join(root, "web/lib/workflow/node-profile.ts"), "utf8");
+
+  assert.match(editor, /data-testid="workflow-profile-candidate-profile"/);
+  assert.match(editor, /data-testid="workflow-profile-host-adapter"/);
+  assert.match(editor, /data-testid="workflow-profile-provider"/);
+  assert.match(editor, /data-testid="workflow-profile-model"/);
+  assert.match(editor, /data-testid="workflow-profile-thinking-mode"/);
+  assert.match(editor, /data-testid="workflow-profile-prompt"/);
+  assert.match(editor, /toolGrantRefs/);
+  assert.match(editor, /vaultLeasePolicyRefs/);
+  assert.match(form, /nodePromptSpec/);
+});
+
+test("workflow node profile editor filters refs and uses pi model registry options", () => {
+  const editor = readFileSync(join(root, "web/components/WorkflowNodeProfileEditor.tsx"), "utf8");
+
+  assert.match(editor, /data-testid=\{`workflow-profile-filter-\$\{props\.field\}`\}/);
+  assert.match(editor, /field="skillRefs"/);
+  assert.match(editor, /field="mcpGrantRefs"/);
+  assert.match(editor, /field="toolGrantRefs"/);
+  assert.match(editor, /field="vaultLeasePolicyRefs"/);
+  assert.match(editor, /\/api\/models\?/);
+  assert.match(editor, /piModelOptions/);
+  assert.match(editor, /thinkingLevels/);
+});
+
 test("workflow node click opens a usable static profile before planner draft exists", () => {
   const appShell = readFileSync(join(root, "web/components/AppShell.tsx"), "utf8");
   const tabBar = readFileSync(join(root, "web/components/TabBar.tsx"), "utf8");

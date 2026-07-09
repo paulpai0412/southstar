@@ -983,12 +983,16 @@ function profileOverridesByTaskId(tasksValue: unknown): Map<string, PlannerDraft
 
 function cloneProfileOverride(input: PlannerDraftTaskProfileOverride): PlannerDraftTaskProfileOverride {
   return {
+    ...(input.harnessRef !== undefined ? { harnessRef: input.harnessRef } : {}),
     ...(input.provider !== undefined ? { provider: input.provider } : {}),
     ...(input.model !== undefined ? { model: input.model } : {}),
     ...(input.thinkingLevel !== undefined ? { thinkingLevel: input.thinkingLevel } : {}),
     ...(input.instruction !== undefined ? { instruction: input.instruction } : {}),
     ...(input.skillRefs !== undefined ? { skillRefs: [...input.skillRefs] } : {}),
     ...(input.mcpGrantRefs !== undefined ? { mcpGrantRefs: [...input.mcpGrantRefs] } : {}),
+    ...(input.toolGrantRefs !== undefined ? { toolGrantRefs: [...input.toolGrantRefs] } : {}),
+    ...(input.vaultLeasePolicyRefs !== undefined ? { vaultLeasePolicyRefs: [...input.vaultLeasePolicyRefs] } : {}),
+    ...(input.nodePromptSpec !== undefined ? { nodePromptSpec: { ...input.nodePromptSpec } } : {}),
   };
 }
 
@@ -1033,12 +1037,17 @@ function materializeWorkflowTaskProfileOverrides(workflow: SouthstarWorkflowMani
       ...cloneAgentProfile(baseProfile),
       id: overrideProfileId,
       name: `${baseProfile.name} (${task.name || task.id})`,
+      ...(override.harnessRef !== undefined ? { harnessRef: override.harnessRef } : {}),
       ...(override.provider !== undefined ? { provider: override.provider } : {}),
       ...(override.model !== undefined ? { model: override.model } : {}),
       ...(override.thinkingLevel !== undefined ? { thinkingLevel: override.thinkingLevel } : {}),
       ...(override.instruction !== undefined ? { instruction: override.instruction } : {}),
       ...(override.skillRefs !== undefined ? { skillRefs: [...override.skillRefs] } : {}),
       ...(override.mcpGrantRefs !== undefined ? { mcpGrantRefs: [...override.mcpGrantRefs] } : {}),
+      ...(override.vaultLeasePolicyRefs !== undefined ? { vaultLeasePolicyRefs: [...override.vaultLeasePolicyRefs] } : {}),
+      ...(override.toolGrantRefs !== undefined
+        ? { toolPolicy: { ...baseProfile.toolPolicy, allowedTools: [...override.toolGrantRefs] } }
+        : {}),
     };
 
     outputProfiles.push(overrideProfile);
@@ -1046,6 +1055,11 @@ function materializeWorkflowTaskProfileOverrides(workflow: SouthstarWorkflowMani
     task.agentProfileRef = overrideProfile.id;
     if (override.skillRefs !== undefined) task.skillRefs = [...override.skillRefs];
     if (override.mcpGrantRefs !== undefined) task.mcpGrantRefs = [...override.mcpGrantRefs];
+    if (override.toolGrantRefs !== undefined) task.toolGrantRefs = [...override.toolGrantRefs];
+    if (override.vaultLeasePolicyRefs !== undefined) task.vaultLeasePolicyRefs = [...override.vaultLeasePolicyRefs];
+    if (override.nodePromptSpec !== undefined) {
+      task.promptInputs = { ...task.promptInputs, nodePromptSpec: { ...override.nodePromptSpec } };
+    }
   }
 
   return {
@@ -1061,6 +1075,7 @@ function cloneAgentProfile(profile: AgentProfile): AgentProfile {
     agentsMdRefs: [...profile.agentsMdRefs],
     skillRefs: [...profile.skillRefs],
     mcpGrantRefs: [...profile.mcpGrantRefs],
+    ...(profile.vaultLeasePolicyRefs !== undefined ? { vaultLeasePolicyRefs: [...profile.vaultLeasePolicyRefs] } : {}),
     memoryScopes: [...profile.memoryScopes],
     toolPolicy: {
       allowedTools: [...profile.toolPolicy.allowedTools],

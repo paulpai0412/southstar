@@ -23,11 +23,13 @@ export function WorkflowNodeProfileSummary({
   const roleRef = stringValue(selected?.roleRef) || "role:auto";
   const profileRef = stringValue(selected?.agentProfileRef ?? agentProfile?.id) || "profile:auto";
   const host = [
+    form.harnessRef || stringValue(agentProfile?.harnessRef) || "host:auto",
     form.provider || stringValue(agentProfile?.provider) || "provider:auto",
     form.model || stringValue(agentProfile?.model) || "model:auto",
     form.thinkingLevel ? `thinking:${form.thinkingLevel}` : "",
   ].filter(Boolean).join(" / ");
-  const capabilityCount = form.skillRefs.length + form.mcpGrantRefs.length;
+  const capabilityCount = form.skillRefs.length + form.mcpGrantRefs.length + form.toolGrantRefs.length + form.vaultLeasePolicyRefs.length;
+  const promptState = form.nodePromptSpec.trim() ? "editable nodePromptSpec" : "no nodePromptSpec";
   const stateLabel = editable
     ? dirty ? "Draft edited. Save will mark the DAG as needing validation." : "Draft editable. No unsaved changes."
     : mode === "runtime" ? "Runtime profile is locked to the launched run." : "Profile is read-only for this selection.";
@@ -44,6 +46,7 @@ export function WorkflowNodeProfileSummary({
         <dt style={termStyle}>Profile</dt><dd style={valueStyle}>{profileRef}</dd>
         <dt style={termStyle}>Host</dt><dd style={valueStyle}>{host}</dd>
         <dt style={termStyle}>Capability refs</dt><dd style={valueStyle}>{capabilityCount} refs</dd>
+        <dt style={termStyle}>Prompt</dt><dd style={valueStyle}>{promptState}</dd>
         <dt style={termStyle}>State</dt><dd style={valueStyle}>{stateLabel}</dd>
       </dl>
     </section>

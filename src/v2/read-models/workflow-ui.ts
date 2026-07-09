@@ -31,14 +31,20 @@ type WorkflowTaskDefinitionSummary = {
   skillRefs: string[];
   mcpGrantRefs: string[];
   toolGrantRefs: string[];
+  vaultLeasePolicyRefs: string[];
+  nodePromptSpec?: unknown;
   profileOverride?: unknown;
   effectiveProfile?: {
+    harnessRef?: string;
     provider?: string;
     model?: string;
     thinkingLevel?: string;
     instruction?: string;
     skillRefs: string[];
     mcpGrantRefs: string[];
+    toolGrantRefs: string[];
+    vaultLeasePolicyRefs: string[];
+    nodePromptSpec?: unknown;
   };
   editable: boolean;
   roleDefinition?: unknown;
@@ -306,6 +312,8 @@ async function runtimeSelectedDefinition(
   const skillRefs = envelopeStringArray(envelopeRefs, "skillRefs", stringArray(workflowTask?.skillRefs));
   const mcpGrantRefs = envelopeStringArray(envelopeRefs, "mcpGrantRefs", stringArray(workflowTask?.mcpGrantRefs));
   const toolGrantRefs = envelopeStringArray(envelopeRefs, "toolGrantRefs", stringArray(workflowTask?.toolGrantRefs));
+  const vaultLeasePolicyRefs = envelopeStringArray(envelopeRefs, "vaultLeasePolicyRefs", stringArray(workflowTask?.vaultLeasePolicyRefs));
+  const nodePromptSpec = asRecord(workflowTask?.promptInputs).nodePromptSpec;
   const libraryDetails = libraryDefinitionDetails({
     domain: input.domain,
     roleRef: node.roleRef,
@@ -314,7 +322,7 @@ async function runtimeSelectedDefinition(
     artifactKind: workflowTask?.artifactKind,
     evaluatorPipelineRef: workflowTask?.evaluatorPipelineRef,
     contextPolicyRef: workflowTask?.contextPolicyRef,
-    vaultLeasePolicyRefs: workflowTask?.vaultLeasePolicyRefs ?? [],
+    vaultLeasePolicyRefs,
     workflowManifest: input.workflowManifest,
   });
 
@@ -326,11 +334,16 @@ async function runtimeSelectedDefinition(
     skillRefs,
     mcpGrantRefs,
     toolGrantRefs,
+    vaultLeasePolicyRefs,
+    ...(nodePromptSpec !== undefined ? { nodePromptSpec } : {}),
     editable: false,
     effectiveProfile: effectiveProfileFromSources({
       agentProfile: envelope.agentProfile ?? libraryDetails.agentProfile,
       skillRefs,
       mcpGrantRefs,
+      toolGrantRefs,
+      vaultLeasePolicyRefs,
+      ...(nodePromptSpec !== undefined ? { nodePromptSpec } : {}),
     }),
     ...libraryDetails,
     ...(envelope.roleDefinition !== undefined ? { roleDefinition: envelope.roleDefinition } : {}),
@@ -437,7 +450,9 @@ function taskDefinitionSummary(task: DraftTaskShape, domain: string, workflowMan
     ...(task.agentProfileRef ? { agentProfileRef: task.agentProfileRef } : {}),
     skillRefs: effectiveProfile.skillRefs,
     mcpGrantRefs: effectiveProfile.mcpGrantRefs,
-    toolGrantRefs: task.toolGrantRefs,
+    toolGrantRefs: effectiveProfile.toolGrantRefs,
+    vaultLeasePolicyRefs: effectiveProfile.vaultLeasePolicyRefs,
+    ...(effectiveProfile.nodePromptSpec !== undefined ? { nodePromptSpec: effectiveProfile.nodePromptSpec } : {}),
     ...(task.profileOverride !== undefined ? { profileOverride: task.profileOverride } : {}),
     effectiveProfile,
     editable: true,
@@ -445,8 +460,8 @@ function taskDefinitionSummary(task: DraftTaskShape, domain: string, workflowMan
     materializedLibraryRefs: {
       skillRefs: effectiveProfile.skillRefs,
       mcpGrantRefs: effectiveProfile.mcpGrantRefs,
-      toolGrantRefs: task.toolGrantRefs,
-      ...(task.vaultLeasePolicyRefs.length > 0 ? { vaultLeasePolicyRefs: task.vaultLeasePolicyRefs } : {}),
+      toolGrantRefs: effectiveProfile.toolGrantRefs,
+      ...(effectiveProfile.vaultLeasePolicyRefs.length > 0 ? { vaultLeasePolicyRefs: effectiveProfile.vaultLeasePolicyRefs } : {}),
       ...(task.artifactContractRef ? { artifactContractRef: task.artifactContractRef } : {}),
       ...(task.evaluatorPipelineRef ? { evaluatorPipelineRef: task.evaluatorPipelineRef } : {}),
       ...(task.contextPolicyRef ? { contextPolicyRef: task.contextPolicyRef } : {}),
@@ -549,34 +564,47 @@ function effectiveProfileForDraftTask(
 ): NonNullable<WorkflowTaskDefinitionSummary["effectiveProfile"]> {
   const profile = asRecord(agentProfile);
   const override = asRecord(task.profileOverride);
+  const nodePromptSpec = override.nodePromptSpec ?? asRecord(task.promptInputs).nodePromptSpec;
   return effectiveProfileFromSources({
     agentProfile,
+    harnessRef: stringValue(override.harnessRef) ?? stringValue(profile.harnessRef),
     provider: stringValue(override.provider) ?? stringValue(profile.provider),
     model: stringValue(override.model) ?? stringValue(profile.model),
     thinkingLevel: stringValue(override.thinkingLevel),
     instruction: stringValue(override.instruction),
     skillRefs: optionalStringArray(override.skillRefs) ?? task.skillRefs,
     mcpGrantRefs: optionalStringArray(override.mcpGrantRefs) ?? task.mcpGrantRefs,
+    toolGrantRefs: optionalStringArray(override.toolGrantRefs) ?? task.toolGrantRefs,
+    vaultLeasePolicyRefs: optionalStringArray(override.vaultLeasePolicyRefs) ?? task.vaultLeasePolicyRefs,
+    ...(nodePromptSpec !== undefined ? { nodePromptSpec } : {}),
   });
 }
 
 function effectiveProfileFromSources(input: {
   agentProfile?: unknown;
+  harnessRef?: string;
   provider?: string;
   model?: string;
   thinkingLevel?: string;
   instruction?: string;
   skillRefs: string[];
   mcpGrantRefs: string[];
+  toolGrantRefs: string[];
+  vaultLeasePolicyRefs: string[];
+  nodePromptSpec?: unknown;
 }): NonNullable<WorkflowTaskDefinitionSummary["effectiveProfile"]> {
   const profile = asRecord(input.agentProfile);
   return {
+    ...(input.harnessRef ?? stringValue(profile.harnessRef) ? { harnessRef: input.harnessRef ?? stringValue(profile.harnessRef) } : {}),
     ...(input.provider ?? stringValue(profile.provider) ? { provider: input.provider ?? stringValue(profile.provider) } : {}),
     ...(input.model ?? stringValue(profile.model) ? { model: input.model ?? stringValue(profile.model) } : {}),
     ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
     ...(input.instruction ? { instruction: input.instruction } : {}),
     skillRefs: input.skillRefs,
     mcpGrantRefs: input.mcpGrantRefs,
+    toolGrantRefs: input.toolGrantRefs,
+    vaultLeasePolicyRefs: input.vaultLeasePolicyRefs,
+    ...(input.nodePromptSpec !== undefined ? { nodePromptSpec: input.nodePromptSpec } : {}),
   };
 }
 

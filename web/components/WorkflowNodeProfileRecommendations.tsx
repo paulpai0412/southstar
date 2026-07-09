@@ -15,6 +15,8 @@ export function WorkflowNodeProfileRecommendations({
   const profileCount = recordArray(alternatives?.agentProfiles).length;
   const skillCount = recordArray(alternatives?.skills).length;
   const mcpCount = recordArray(alternatives?.mcpServers).length;
+  const toolCount = recordArray(alternatives?.tools).length;
+  const vaultCount = recordArray(alternatives?.vaultLeasePolicies).length;
   const selectionReasons = stringArray(
     candidateRecord?.selectionReasons
     ?? candidateRecord?.candidateReasons
@@ -26,7 +28,9 @@ export function WorkflowNodeProfileRecommendations({
   const guidance = [
     editable ? "Changes remain in the planner draft until you save and revalidate." : "Runtime nodes are inspect-only; revise the Workflow draft to change future runs.",
     profileCount > 0 ? `${profileCount} alternative profiles are available for comparison.` : "No alternative profiles returned for this task.",
-    skillCount + mcpCount > 0 ? `${skillCount} skill candidates and ${mcpCount} MCP grant candidates are available.` : "No capability candidates returned yet.",
+    skillCount + mcpCount + toolCount + vaultCount > 0
+      ? `${skillCount} skill, ${mcpCount} MCP, ${toolCount} tool, and ${vaultCount} vault candidates are available.`
+      : "No capability candidates returned yet.",
   ];
 
   return (

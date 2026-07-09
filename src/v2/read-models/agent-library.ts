@@ -23,6 +23,7 @@ type DraftTaskShape = {
   skillRefs: string[];
   mcpGrantRefs: string[];
   toolGrantRefs: string[];
+  vaultLeasePolicyRefs: string[];
 };
 
 export type AgentLibraryReadModel = {
@@ -51,6 +52,7 @@ export type AgentLibraryCandidatesReadModel = {
     skillRefs: string[];
     mcpGrantRefs: string[];
     toolGrantRefs: string[];
+    vaultLeasePolicyRefs: string[];
   };
   alternatives: {
     roles: RoleDefinition[];
@@ -58,6 +60,7 @@ export type AgentLibraryCandidatesReadModel = {
     skills: Array<{ id: string; profileRefs: string[] }>;
     mcpServers: Array<{ id: string; profileRefs: string[] }>;
     tools: Array<{ id: string; profileRefs: string[] }>;
+    vaultLeasePolicies: unknown[];
   };
   selectionReasons: string[];
 };
@@ -121,6 +124,7 @@ export async function buildAgentLibraryCandidatesReadModelPg(
       skillRefs: selectedTask.skillRefs,
       mcpGrantRefs: selectedTask.mcpGrantRefs,
       toolGrantRefs: selectedTask.toolGrantRefs,
+      vaultLeasePolicyRefs: selectedTask.vaultLeasePolicyRefs,
     },
     alternatives: {
       roles: library.roles,
@@ -128,6 +132,7 @@ export async function buildAgentLibraryCandidatesReadModelPg(
       skills: library.skills,
       mcpServers: library.mcpServers,
       tools: library.tools,
+      vaultLeasePolicies: library.vaultLeasePolicies,
     },
     selectionReasons,
   };
@@ -271,6 +276,7 @@ function workflowTasksFromUnknown(value: unknown): DraftTaskShape[] {
       skillRefs: stringArray(task.skillRefs),
       mcpGrantRefs: stringArray(task.mcpGrantRefs),
       toolGrantRefs: stringArray(task.toolGrantRefs),
+      vaultLeasePolicyRefs: stringArray(task.vaultLeasePolicyRefs),
     });
   }
   return tasks;

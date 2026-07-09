@@ -61,12 +61,16 @@ export type RoleDefinition = {
 export type AgentProvider = "pi" | "codex" | "claude-code" | "openai" | "anthropic" | "custom";
 
 export type PlannerDraftTaskProfileOverride = {
+  harnessRef?: string;
   provider?: AgentProvider;
   model?: string;
   thinkingLevel?: string;
   instruction?: string;
   skillRefs?: string[];
   mcpGrantRefs?: string[];
+  toolGrantRefs?: string[];
+  vaultLeasePolicyRefs?: string[];
+  nodePromptSpec?: Record<string, unknown>;
 };
 
 export type AgentProfile = {

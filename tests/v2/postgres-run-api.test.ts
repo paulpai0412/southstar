@@ -68,12 +68,26 @@ test("Postgres planner draft task profile override updates one task without chan
       draftId: draft.draftId,
       taskId: "implement-feature",
       profileOverride: {
+        harnessRef: "codex",
         provider: "codex",
         model: "gpt-5-codex",
         thinkingLevel: "high",
         instruction: "Use the smallest patch and include test evidence.",
         skillRefs: ["software.calc-cli", "software.test-evidence"],
         mcpGrantRefs: ["filesystem-workspace"],
+        toolGrantRefs: ["tool.workspace-write", "tool.shell-read"],
+        vaultLeasePolicyRefs: ["vault.github-write-token"],
+        nodePromptSpec: {
+          nodeType: "implement",
+          goal: "Implement calc sum with tests",
+          requirements: ["Update the implementation"],
+          boundaries: ["No unrelated refactors"],
+          nonGoals: [],
+          deliverableDocuments: [],
+          expectedOutputs: ["Passing test evidence"],
+          testCases: [],
+          acceptanceCriteria: ["The calc sum behavior works"],
+        },
       },
     });
 
@@ -97,6 +111,9 @@ test("Postgres planner draft task profile override updates one task without chan
     assert.equal(implement?.profileOverride.model, "gpt-5-codex");
     assert.deepEqual(implement?.skillRefs, ["software.calc-cli", "software.test-evidence"]);
     assert.deepEqual(implement?.mcpGrantRefs, ["filesystem-workspace"]);
+    assert.deepEqual(implement?.toolGrantRefs, ["tool.workspace-write", "tool.shell-read"]);
+    assert.deepEqual(implement?.vaultLeasePolicyRefs, ["vault.github-write-token"]);
+    assert.equal(implement?.promptInputs?.nodePromptSpec?.goal, "Implement calc sum with tests");
     assert.equal(verify?.profileOverride, undefined);
   });
 });
@@ -139,12 +156,26 @@ test("Postgres run from draft materializes task profile override into run manife
       draftId: draft.draftId,
       taskId: "implement-feature",
       profileOverride: {
+        harnessRef: "codex",
         provider: "codex",
         model: "gpt-5-codex",
         thinkingLevel: "high",
         instruction: "Prefer the smallest verified patch and cite command evidence.",
         skillRefs: ["software.calc-cli", "skill.software-verification"],
         mcpGrantRefs: ["filesystem-workspace"],
+        toolGrantRefs: ["tool.workspace-write"],
+        vaultLeasePolicyRefs: ["vault.github-write-token"],
+        nodePromptSpec: {
+          nodeType: "implement",
+          goal: "Implement calc sum with command evidence",
+          requirements: ["Keep the patch small"],
+          boundaries: ["No unrelated files"],
+          nonGoals: [],
+          deliverableDocuments: [],
+          expectedOutputs: ["Test command output"],
+          testCases: [],
+          acceptanceCriteria: ["Evidence is cited"],
+        },
       },
     });
 
@@ -162,16 +193,22 @@ test("Postgres run from draft materializes task profile override into run manife
     assert.equal(implementTask?.agentProfileRef, "profile.generated.software-implement-feature__implement-feature__override");
     assert.deepEqual(implementTask?.skillRefs, ["software.calc-cli", "skill.software-verification"]);
     assert.deepEqual(implementTask?.mcpGrantRefs, ["filesystem-workspace"]);
+    assert.deepEqual(implementTask?.toolGrantRefs, ["tool.workspace-write"]);
+    assert.deepEqual(implementTask?.vaultLeasePolicyRefs, ["vault.github-write-token"]);
+    assert.equal(implementTask?.promptInputs?.nodePromptSpec?.goal, "Implement calc sum with command evidence");
     assert.equal(implementTask?.profileOverride?.model, "gpt-5-codex");
 
     const overriddenProfile = runRow.workflow_manifest_json.agentProfiles.find((profile) =>
       profile.id === "profile.generated.software-implement-feature__implement-feature__override"
     );
+    assert.equal(overriddenProfile?.harnessRef, "codex");
     assert.equal(overriddenProfile?.provider, "codex");
     assert.equal(overriddenProfile?.model, "gpt-5-codex");
     assert.equal(overriddenProfile?.thinkingLevel, "high");
     assert.deepEqual(overriddenProfile?.skillRefs, ["software.calc-cli", "skill.software-verification"]);
     assert.deepEqual(overriddenProfile?.mcpGrantRefs, ["filesystem-workspace"]);
+    assert.deepEqual(overriddenProfile?.toolPolicy.allowedTools, ["tool.workspace-write"]);
+    assert.deepEqual(overriddenProfile?.vaultLeasePolicyRefs, ["vault.github-write-token"]);
 
     const taskRow = await db.one<{ snapshot_json: Record<string, any> }>(
       "select snapshot_json from southstar.workflow_tasks where run_id = $1 and id = 'implement-feature'",

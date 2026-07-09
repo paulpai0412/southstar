@@ -49,6 +49,7 @@ export type DraftTaskShape = {
   artifactContractRef?: string;
   evaluatorPipelineRef?: string;
   contextPolicyRef?: string;
+  promptInputs?: Record<string, unknown>;
   vaultLeasePolicyRefs: string[];
   dependsOn: string[];
   skillRefs: string[];
@@ -138,6 +139,7 @@ export function workflowTasksFromUnknown(value: unknown): DraftTaskShape[] {
       ...(stringValue(task.artifactContractRef) ? { artifactContractRef: stringValue(task.artifactContractRef) } : {}),
       ...(stringValue(task.evaluatorPipelineRef) ? { evaluatorPipelineRef: stringValue(task.evaluatorPipelineRef) } : {}),
       ...(stringValue(task.contextPolicyRef) ? { contextPolicyRef: stringValue(task.contextPolicyRef) } : {}),
+      ...(isRecord(task.promptInputs) ? { promptInputs: asRecord(task.promptInputs) } : {}),
       vaultLeasePolicyRefs: stringArray(task.vaultLeasePolicyRefs),
       dependsOn: stringArray(task.dependsOn),
       skillRefs: stringArray(task.skillRefs),

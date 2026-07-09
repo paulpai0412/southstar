@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import {
   buildNodeProfilePatchPayload,
   formEquals,
@@ -10,18 +11,42 @@ import {
 import { WorkflowNodeProfileRecommendations } from "./WorkflowNodeProfileRecommendations";
 import { WorkflowNodeProfileSummary } from "./WorkflowNodeProfileSummary";
 
-type ProfileOption = {
+type RefField = "skillRefs" | "mcpGrantRefs" | "toolGrantRefs" | "vaultLeasePolicyRefs";
+
+type CandidateOption = {
   id: string;
   model?: string;
+  profileRefs?: string[];
+};
+
+type AgentProfileOption = CandidateOption & {
+  harnessRef: string;
+  provider: string;
+  thinkingLevel: string;
+  instruction: string;
+  skillRefs: string[];
+  mcpGrantRefs: string[];
+  toolGrantRefs: string[];
+  vaultLeasePolicyRefs: string[];
+};
+
+type PiModelOption = {
+  id: string;
+  name: string;
+  provider: string;
 };
 
 const emptyForm: WorkflowNodeProfileForm = {
+  harnessRef: "",
   provider: "",
   model: "",
   thinkingLevel: "",
   instruction: "",
   skillRefs: [],
   mcpGrantRefs: [],
+  toolGrantRefs: [],
+  vaultLeasePolicyRefs: [],
+  nodePromptSpec: "",
 };
 
 export function WorkflowNodeProfileEditor({
@@ -39,8 +64,13 @@ export function WorkflowNodeProfileEditor({
   const [serverForm, setServerForm] = useState<WorkflowNodeProfileForm>(emptyForm);
   const [selectedDefinition, setSelectedDefinition] = useState<unknown>(null);
   const [candidates, setCandidates] = useState<unknown>(null);
-  const [skillInput, setSkillInput] = useState("");
-  const [mcpInput, setMcpInput] = useState("");
+  const [piModels, setPiModels] = useState<unknown>(null);
+  const [refInputs, setRefInputs] = useState<Record<RefField, string>>({
+    skillRefs: "",
+    mcpGrantRefs: "",
+    toolGrantRefs: "",
+    vaultLeasePolicyRefs: "",
+  });
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -48,6 +78,12 @@ export function WorkflowNodeProfileEditor({
 
   const selectedDefinitionRecord = recordValue(selectedDefinition);
   const candidateAlternatives = recordValue(recordValue(candidates)?.alternatives);
+  const piModelRecord = recordValue(piModels);
+  const piModelOptions = Array.isArray(piModelRecord?.modelList)
+    ? piModelRecord.modelList.map(readPiModelOption).filter((model): model is PiModelOption => model !== null)
+    : [];
+  const piThinkingLevels = recordValue(piModelRecord?.thinkingLevels);
+  const isPiHost = form.harnessRef === "pi";
   const editable = mode === "draft" && Boolean(draftId) && selectedDefinitionRecord?.editable !== false;
   const dirty = !formEquals(form, serverForm);
 
@@ -90,10 +126,46 @@ export function WorkflowNodeProfileEditor({
     void load();
   }, [load]);
 
+  useEffect(() => {
+    if (!isPiHost || piModels) return;
+    void fetch("/api/models?")
+      .then((response) => response.ok ? response.json() : null)
+      .then((payload) => setPiModels(payload))
+      .catch(() => setPiModels({ modelList: [], thinkingLevels: {} }));
+  }, [isPiHost, piModels]);
+
   const profileOptions = useMemo(() => {
     const list = candidateAlternatives?.agentProfiles;
-    return Array.isArray(list) ? list.map(readProfileOption).filter((profile): profile is ProfileOption => profile !== null) : [];
+    return Array.isArray(list) ? list.map(readAgentProfileOption).filter((profile): profile is AgentProfileOption => profile !== null) : [];
   }, [candidateAlternatives]);
+
+  const harnessOptions = useMemo(() => uniqueOptionIds([
+    form.harnessRef,
+    ...profileOptions.map((profile) => profile.harnessRef),
+    "pi",
+    "codex",
+  ]), [form.harnessRef, profileOptions]);
+
+  const modelOptions = useMemo(() => uniqueOptionIds([
+    form.model,
+    ...profileOptions.map((profile) => profile.model ?? ""),
+  ]), [form.model, profileOptions]);
+
+  const providerOptions = useMemo(() => {
+    if (!isPiHost) return ["pi", "codex", "claude-code", "openai", "anthropic", "custom"];
+    return uniqueOptionIds([form.provider, ...piModelOptions.map((model) => model.provider)]);
+  }, [form.provider, isPiHost, piModelOptions]);
+
+  const selectedProviderPiModels = useMemo(() => {
+    if (!isPiHost || !form.provider) return piModelOptions;
+    return piModelOptions.filter((model) => model.provider === form.provider);
+  }, [form.provider, isPiHost, piModelOptions]);
+
+  const thinkingOptions = useMemo(() => {
+    if (!isPiHost) return uniqueOptionIds([form.thinkingLevel, "none", "minimal", "low", "medium", "high", "xhigh"]);
+    const key = `${form.provider}:${form.model}`;
+    return uniqueOptionIds([form.thinkingLevel, ...stringArray(piThinkingLevels?.[key])]);
+  }, [form.model, form.provider, form.thinkingLevel, isPiHost, piThinkingLevels]);
 
   const save = async () => {
     if (!draftId || !editable) return;
@@ -116,7 +188,7 @@ export function WorkflowNodeProfileEditor({
           status: stringValue(result?.status) || stringValue(payloadRecord?.status) || "needs_validation",
         },
       }));
-      setNotice("Saved");
+      setNotice("Saved. Revalidate this draft before creating a run.");
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -129,15 +201,40 @@ export function WorkflowNodeProfileEditor({
     setForm((current) => ({ ...current, ...patch }));
   };
 
-  const addRef = (field: "skillRefs" | "mcpGrantRefs", value: string) => {
+  const applyProfileCandidate = (profileId: string) => {
+    const profile = profileOptions.find((candidate) => candidate.id === profileId);
+    if (!profile) return;
+    update({
+      harnessRef: profile.harnessRef,
+      provider: profile.provider,
+      model: profile.model ?? "",
+      thinkingLevel: profile.thinkingLevel,
+      instruction: profile.instruction,
+      skillRefs: profile.skillRefs,
+      mcpGrantRefs: profile.mcpGrantRefs,
+      toolGrantRefs: profile.toolGrantRefs,
+      vaultLeasePolicyRefs: profile.vaultLeasePolicyRefs,
+    });
+  };
+
+  const addRef = (field: RefField, value: string) => {
     const ref = value.trim();
     if (!ref) return;
     setForm((current) => ({ ...current, [field]: [...new Set([...current[field], ref])] }));
-    if (field === "skillRefs") setSkillInput("");
-    else setMcpInput("");
+    setRefInputs((current) => ({ ...current, [field]: "" }));
   };
 
-  const removeRef = (field: "skillRefs" | "mcpGrantRefs", value: string) => {
+  const toggleRef = (field: RefField, value: string) => {
+    setForm((current) => {
+      const exists = current[field].includes(value);
+      return {
+        ...current,
+        [field]: exists ? current[field].filter((item) => item !== value) : [...current[field], value],
+      };
+    });
+  };
+
+  const removeRef = (field: RefField, value: string) => {
     setForm((current) => ({ ...current, [field]: current[field].filter((item) => item !== value) }));
   };
 
@@ -147,30 +244,32 @@ export function WorkflowNodeProfileEditor({
 
   return (
     <div data-testid="workflow-node-profile-editor" style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderBottom: "1px solid var(--border)", background: "var(--bg-panel)" }}>
+      <div style={toolbarStyle}>
         <div style={{ minWidth: 0 }}>
-          <div style={{ fontSize: 12, fontWeight: 650, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          <div style={taskTitleStyle}>
             {stringValue(selectedDefinitionRecord?.taskName) || taskId}
           </div>
-          <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>
+          <div style={taskMetaStyle}>
             {mode} / {taskId}
           </div>
         </div>
         <button data-testid="workflow-node-profile-reset" onClick={() => setForm(serverForm)} disabled={!dirty || saving} style={buttonStyle(!dirty || saving)}>
           Reset
         </button>
-        <button data-testid="workflow-node-profile-save" onClick={() => void save()} disabled={!dirty || !editable || saving} style={buttonStyle(!dirty || !editable || saving)}>
+        <button data-testid="workflow-node-profile-save" onClick={() => void save()} disabled={!dirty || !editable || saving} style={primaryButtonStyle(!dirty || !editable || saving)}>
           {saving ? "Saving..." : "Save"}
         </button>
       </div>
-      <div style={{ flex: 1, overflow: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 14 }}>
+
+      <div style={bodyStyle}>
         {!editable && (
-          <div style={{ border: "1px solid var(--border)", borderRadius: 6, padding: 10, color: "var(--text-muted)", fontSize: 12, background: "var(--bg-panel)" }}>
+          <div style={noticeStyle}>
             Runtime profile is locked to the launched run. Edit the Workflow draft before creating a future run.
           </div>
         )}
-        {error && <div style={{ color: "#ef4444", fontSize: 12 }}>{error}</div>}
-        {notice && <div style={{ color: "var(--accent)", fontSize: 12 }}>{notice}</div>}
+        {error && <div style={errorStyle}>{error}</div>}
+        {notice && <div style={successStyle}>{notice}</div>}
+
         <WorkflowNodeProfileSummary
           taskId={taskId}
           mode={mode}
@@ -179,80 +278,233 @@ export function WorkflowNodeProfileEditor({
           editable={editable}
           dirty={dirty}
         />
+
+        <section style={sectionStyle}>
+          <div style={sectionHeaderStyle}>
+            <h2 style={sectionTitleStyle}>Candidate profile</h2>
+            <span style={sectionMetaStyle}>{profileOptions.length} profiles</span>
+          </div>
+          <select
+            data-testid="workflow-profile-candidate-profile"
+            value=""
+            disabled={!editable || profileOptions.length === 0}
+            onChange={(event) => applyProfileCandidate(event.currentTarget.value)}
+            style={inputStyle}
+          >
+            <option value="">Apply profile candidate...</option>
+            {profileOptions.map((profile) => (
+              <option key={profile.id} value={profile.id}>
+                {profile.id}{profile.model ? ` / ${profile.model}` : ""}
+              </option>
+            ))}
+          </select>
+        </section>
+
+        <section style={sectionStyle}>
+          <div style={sectionHeaderStyle}>
+            <h2 style={sectionTitleStyle}>Host and model</h2>
+            <span style={sectionMetaStyle}>adapter / provider / thinking</span>
+          </div>
+          <div style={twoColumnGridStyle}>
+            <Field label="Host adapter">
+              <select
+                data-testid="workflow-profile-host-adapter"
+                value={form.harnessRef}
+                disabled={!editable}
+                onChange={(event) => update({ harnessRef: event.currentTarget.value })}
+                style={inputStyle}
+              >
+                <option value="">Default</option>
+                {harnessOptions.map((harness) => <option key={harness} value={harness}>{harness}</option>)}
+              </select>
+            </Field>
+            <Field label="Provider">
+              <select
+                data-testid="workflow-profile-provider"
+                value={form.provider}
+                disabled={!editable}
+                onChange={(event) => update({ provider: event.currentTarget.value, model: "", thinkingLevel: "" })}
+                style={inputStyle}
+              >
+                <option value="">Default</option>
+                {providerOptions.map((provider) => (
+                  <option key={provider} value={provider}>{provider}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Model">
+              {isPiHost ? (
+                <select
+                  data-testid="workflow-profile-model"
+                  value={form.model}
+                  disabled={!editable}
+                  onChange={(event) => update({ model: event.currentTarget.value, thinkingLevel: "" })}
+                  style={inputStyle}
+                >
+                  <option value="">Default</option>
+                  {selectedProviderPiModels.map((model) => (
+                    <option key={`${model.provider}:${model.id}`} value={model.id}>
+                      {model.name || model.id}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <>
+                  <input
+                    data-testid="workflow-profile-model"
+                    value={form.model}
+                    disabled={!editable}
+                    onChange={(event) => update({ model: event.currentTarget.value })}
+                    list="workflow-profile-model-options"
+                    style={inputStyle}
+                  />
+                  <datalist id="workflow-profile-model-options">
+                    {modelOptions.map((model) => <option key={model} value={model} />)}
+                  </datalist>
+                </>
+              )}
+            </Field>
+            <Field label="Thinking mode">
+              <select
+                data-testid="workflow-profile-thinking-mode"
+                value={form.thinkingLevel}
+                disabled={!editable}
+                onChange={(event) => update({ thinkingLevel: event.currentTarget.value })}
+                style={inputStyle}
+              >
+                <option value="">Default</option>
+                {thinkingOptions.map((level) => (
+                  <option key={level} value={level}>{level}</option>
+                ))}
+              </select>
+            </Field>
+          </div>
+        </section>
+
+        <RefEditor
+          title="Skills"
+          field="skillRefs"
+          refs={form.skillRefs}
+          disabled={!editable}
+          input={refInputs.skillRefs}
+          suggestions={candidateAlternatives?.skills}
+          onInputChange={(value) => setRefInputs((current) => ({ ...current, skillRefs: value }))}
+          onAdd={() => addRef("skillRefs", refInputs.skillRefs)}
+          onToggle={(ref) => toggleRef("skillRefs", ref)}
+          onRemove={(ref) => removeRef("skillRefs", ref)}
+        />
+        <RefEditor
+          title="MCP grants"
+          field="mcpGrantRefs"
+          refs={form.mcpGrantRefs}
+          disabled={!editable}
+          input={refInputs.mcpGrantRefs}
+          suggestions={candidateAlternatives?.mcpServers}
+          onInputChange={(value) => setRefInputs((current) => ({ ...current, mcpGrantRefs: value }))}
+          onAdd={() => addRef("mcpGrantRefs", refInputs.mcpGrantRefs)}
+          onToggle={(ref) => toggleRef("mcpGrantRefs", ref)}
+          onRemove={(ref) => removeRef("mcpGrantRefs", ref)}
+        />
+        <RefEditor
+          title="Tools"
+          field="toolGrantRefs"
+          refs={form.toolGrantRefs}
+          disabled={!editable}
+          input={refInputs.toolGrantRefs}
+          suggestions={candidateAlternatives?.tools}
+          onInputChange={(value) => setRefInputs((current) => ({ ...current, toolGrantRefs: value }))}
+          onAdd={() => addRef("toolGrantRefs", refInputs.toolGrantRefs)}
+          onToggle={(ref) => toggleRef("toolGrantRefs", ref)}
+          onRemove={(ref) => removeRef("toolGrantRefs", ref)}
+        />
+        <RefEditor
+          title="Vault leases"
+          field="vaultLeasePolicyRefs"
+          refs={form.vaultLeasePolicyRefs}
+          disabled={!editable}
+          input={refInputs.vaultLeasePolicyRefs}
+          suggestions={candidateAlternatives?.vaultLeasePolicies}
+          onInputChange={(value) => setRefInputs((current) => ({ ...current, vaultLeasePolicyRefs: value }))}
+          onAdd={() => addRef("vaultLeasePolicyRefs", refInputs.vaultLeasePolicyRefs)}
+          onToggle={(ref) => toggleRef("vaultLeasePolicyRefs", ref)}
+          onRemove={(ref) => removeRef("vaultLeasePolicyRefs", ref)}
+        />
+
+        <section style={sectionStyle}>
+          <div style={sectionHeaderStyle}>
+            <h2 style={sectionTitleStyle}>Original prompt</h2>
+            <span style={sectionMetaStyle}>nodePromptSpec JSON</span>
+          </div>
+          <textarea
+            data-testid="workflow-profile-prompt"
+            value={form.nodePromptSpec}
+            disabled={!editable}
+            onChange={(event) => update({ nodePromptSpec: event.currentTarget.value })}
+            rows={10}
+            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.45 }}
+          />
+        </section>
+
+        <section style={sectionStyle}>
+          <div style={sectionHeaderStyle}>
+            <h2 style={sectionTitleStyle}>Profile instruction</h2>
+            <span style={sectionMetaStyle}>worker system guidance</span>
+          </div>
+          <textarea
+            value={form.instruction}
+            disabled={!editable}
+            onChange={(event) => update({ instruction: event.currentTarget.value })}
+            rows={7}
+            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.45 }}
+          />
+        </section>
+
         <WorkflowNodeProfileRecommendations
           candidates={candidates}
           selectedDefinition={selectedDefinition}
           editable={editable}
         />
-        <section style={sectionStyle}>
-          <label style={labelStyle}>Host adapter</label>
-          <select value={form.provider} disabled={!editable} onChange={(event) => update({ provider: event.currentTarget.value })} style={inputStyle}>
-            <option value="">Default</option>
-            {["pi", "codex", "claude-code", "openai", "anthropic", "custom"].map((provider) => (
-              <option key={provider} value={provider}>{provider}</option>
-            ))}
-          </select>
-          <label style={labelStyle}>Model</label>
-          <input value={form.model} disabled={!editable} onChange={(event) => update({ model: event.currentTarget.value })} style={inputStyle} />
-          <label style={labelStyle}>Thinking mode</label>
-          <input value={form.thinkingLevel} disabled={!editable} onChange={(event) => update({ thinkingLevel: event.currentTarget.value })} placeholder="auto, low, medium, high" style={inputStyle} />
-        </section>
-        <section style={sectionStyle}>
-          <label style={labelStyle}>Instruction</label>
-          <textarea value={form.instruction} disabled={!editable} onChange={(event) => update({ instruction: event.currentTarget.value })} rows={7} style={{ ...inputStyle, resize: "vertical", lineHeight: 1.45 }} />
-        </section>
-        <RefEditor
-          title="Skills"
-          refs={form.skillRefs}
-          disabled={!editable}
-          input={skillInput}
-          suggestions={candidateAlternatives?.skills}
-          onInputChange={setSkillInput}
-          onAdd={() => addRef("skillRefs", skillInput)}
-          onRemove={(ref) => removeRef("skillRefs", ref)}
-        />
-        <RefEditor
-          title="MCP grants"
-          refs={form.mcpGrantRefs}
-          disabled={!editable}
-          input={mcpInput}
-          suggestions={candidateAlternatives?.mcpServers}
-          onInputChange={setMcpInput}
-          onAdd={() => addRef("mcpGrantRefs", mcpInput)}
-          onRemove={(ref) => removeRef("mcpGrantRefs", ref)}
-        />
-        {profileOptions.length > 0 && (
-          <section style={sectionStyle}>
-            <div style={labelStyle}>Available profiles</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {profileOptions.map((profile) => (
-                <div key={profile.id} style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
-                  {profile.id} {profile.model ? `/ ${profile.model}` : ""}
-                </div>
-              ))}
-            </div>
-          </section>
-        )}
       </div>
     </div>
   );
 }
 
+function Field(props: { label: string; children: ReactNode }) {
+  return (
+    <label style={fieldStyle}>
+      <span style={labelStyle}>{props.label}</span>
+      {props.children}
+    </label>
+  );
+}
+
 function RefEditor(props: {
   title: string;
+  field: RefField;
   refs: string[];
   disabled: boolean;
   input: string;
   suggestions?: unknown;
   onInputChange: (value: string) => void;
   onAdd: () => void;
+  onToggle: (ref: string) => void;
   onRemove: (ref: string) => void;
 }) {
-  const suggestions = Array.isArray(props.suggestions) ? props.suggestions.map(readProfileOption).filter((item): item is ProfileOption => item !== null) : [];
+  const [filter, setFilter] = useState("");
+  const suggestions = Array.isArray(props.suggestions) ? props.suggestions.map(readCandidateOption).filter((item): item is CandidateOption => item !== null) : [];
+  const normalizedFilter = filter.trim().toLowerCase();
+  const candidateIds = suggestions
+    .map((item) => item.id)
+    .filter((id) => !props.refs.includes(id))
+    .filter((id) => !normalizedFilter || id.toLowerCase().includes(normalizedFilter));
   return (
     <section style={sectionStyle}>
-      <div style={labelStyle}>{props.title}</div>
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+      <div style={sectionHeaderStyle}>
+        <h2 style={sectionTitleStyle}>{props.title}</h2>
+        <span style={sectionMetaStyle}>{props.refs.length} selected / {candidateIds.length} candidates</span>
+      </div>
+      <div style={chipRowStyle}>
+        {props.refs.length === 0 && <span style={emptyChipStyle}>none</span>}
         {props.refs.map((ref) => (
           <span key={ref} style={chipStyle}>
             {ref}
@@ -260,11 +512,36 @@ function RefEditor(props: {
           </span>
         ))}
       </div>
+      <input
+        data-testid={`workflow-profile-filter-${props.field}`}
+        value={filter}
+        disabled={props.disabled}
+        onChange={(event) => setFilter(event.currentTarget.value)}
+        placeholder="Search candidates..."
+        style={inputStyle}
+      />
+      {candidateIds.length > 0 && (
+        <div style={candidateGridStyle}>
+          {candidateIds.slice(0, 12).map((id) => (
+            <button
+              key={id}
+              type="button"
+              data-testid={`workflow-profile-candidate-${props.field}`}
+              disabled={props.disabled}
+              onClick={() => props.onToggle(id)}
+              style={candidateButtonStyle(props.disabled)}
+              title={id}
+            >
+              + {id}
+            </button>
+          ))}
+        </div>
+      )}
       <div style={{ display: "flex", gap: 6 }}>
-        <input value={props.input} disabled={props.disabled} onChange={(event) => props.onInputChange(event.currentTarget.value)} list={`${props.title}-suggestions`} style={inputStyle} />
+        <input value={props.input} disabled={props.disabled} onChange={(event) => props.onInputChange(event.currentTarget.value)} list={`${props.field}-suggestions`} style={inputStyle} />
         <button type="button" disabled={props.disabled || !props.input.trim()} onClick={props.onAdd} style={buttonStyle(props.disabled || !props.input.trim())}>Add</button>
       </div>
-      <datalist id={`${props.title}-suggestions`}>
+      <datalist id={`${props.field}-suggestions`}>
         {suggestions.map((item) => <option key={item.id} value={item.id} />)}
       </datalist>
     </section>
@@ -279,29 +556,149 @@ function stringValue(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
-function readProfileOption(value: unknown): ProfileOption | null {
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function readCandidateOption(value: unknown): CandidateOption | null {
   const record = recordValue(value);
   const id = stringValue(record?.id);
   if (!id) return null;
   const model = stringValue(record?.model);
+  const profileRefs = stringArray(record?.profileRefs);
   return {
     id,
     ...(model ? { model } : {}),
+    ...(profileRefs.length > 0 ? { profileRefs } : {}),
   };
 }
 
-const sectionStyle = { display: "flex", flexDirection: "column", gap: 8 } as const;
+function readPiModelOption(value: unknown): PiModelOption | null {
+  const record = recordValue(value);
+  const id = stringValue(record?.id);
+  const provider = stringValue(record?.provider);
+  if (!id || !provider) return null;
+  return { id, provider, name: stringValue(record?.name) || id };
+}
+
+function readAgentProfileOption(value: unknown): AgentProfileOption | null {
+  const record = recordValue(value);
+  const option = readCandidateOption(value);
+  if (!record || !option) return null;
+  const toolPolicy = recordValue(record.toolPolicy);
+  return {
+    ...option,
+    harnessRef: stringValue(record.harnessRef),
+    provider: stringValue(record.provider),
+    thinkingLevel: stringValue(record.thinkingLevel),
+    instruction: stringValue(record.instruction),
+    skillRefs: stringArray(record.skillRefs),
+    mcpGrantRefs: stringArray(record.mcpGrantRefs),
+    toolGrantRefs: stringArray(record.toolGrantRefs ?? toolPolicy?.allowedTools),
+    vaultLeasePolicyRefs: stringArray(record.vaultLeasePolicyRefs),
+  };
+}
+
+function uniqueOptionIds(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort();
+}
+
+const toolbarStyle = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  padding: "7px 10px",
+  borderBottom: "1px solid var(--border)",
+  background: "var(--bg-panel)",
+} as const;
+
+const taskTitleStyle = {
+  fontSize: 12,
+  fontWeight: 650,
+  color: "var(--text)",
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+} as const;
+
+const taskMetaStyle = {
+  fontSize: 11,
+  color: "var(--text-dim)",
+  fontFamily: "var(--font-mono)",
+} as const;
+
+const bodyStyle = {
+  flex: 1,
+  overflow: "auto",
+  padding: 12,
+  display: "flex",
+  flexDirection: "column",
+  gap: 12,
+} as const;
+
+const sectionStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  background: "var(--bg)",
+  padding: 10,
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+} as const;
+
+const sectionHeaderStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+} as const;
+
+const sectionTitleStyle = {
+  margin: 0,
+  color: "var(--text)",
+  fontSize: 12,
+  fontWeight: 650,
+} as const;
+
+const sectionMetaStyle = {
+  color: "var(--text-dim)",
+  fontSize: 10,
+  fontFamily: "var(--font-mono)",
+} as const;
+
+const fieldStyle = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 5,
+  minWidth: 0,
+} as const;
+
 const labelStyle = { fontSize: 11, color: "var(--text-dim)", fontWeight: 650 } as const;
+
+const twoColumnGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 8,
+} as const;
+
 const inputStyle = {
   width: "100%",
+  minWidth: 0,
   border: "1px solid var(--border)",
   borderRadius: 5,
-  background: "var(--bg)",
+  background: "var(--bg-panel)",
   color: "var(--text)",
   padding: "7px 8px",
   fontSize: 12,
   fontFamily: "var(--font-mono)",
 } as const;
+
+const chipRowStyle = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 6,
+} as const;
+
 const chipStyle = {
   display: "inline-flex",
   alignItems: "center",
@@ -313,7 +710,16 @@ const chipStyle = {
   fontFamily: "var(--font-mono)",
   color: "var(--text-muted)",
   background: "var(--bg-panel)",
+  maxWidth: "100%",
+  overflowWrap: "anywhere",
 } as const;
+
+const emptyChipStyle = {
+  fontSize: 11,
+  color: "var(--text-dim)",
+  fontFamily: "var(--font-mono)",
+} as const;
+
 const chipButtonStyle = {
   border: "none",
   background: "transparent",
@@ -323,9 +729,26 @@ const chipButtonStyle = {
   fontSize: 11,
 } as const;
 
+const candidateGridStyle = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 6,
+} as const;
+
+const noticeStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: 6,
+  padding: 10,
+  color: "var(--text-muted)",
+  fontSize: 12,
+  background: "var(--bg-panel)",
+} as const;
+
+const errorStyle = { color: "#ef4444", fontSize: 12 } as const;
+const successStyle = { color: "var(--accent)", fontSize: 12 } as const;
+
 function buttonStyle(disabled: boolean) {
   return {
-    marginLeft: "auto",
     border: "1px solid var(--border)",
     borderRadius: 5,
     background: disabled ? "var(--bg-panel)" : "var(--bg)",
@@ -333,5 +756,26 @@ function buttonStyle(disabled: boolean) {
     cursor: disabled ? "not-allowed" : "pointer",
     fontSize: 11,
     padding: "5px 9px",
+  } as const;
+}
+
+function primaryButtonStyle(disabled: boolean) {
+  return {
+    ...buttonStyle(disabled),
+    background: disabled ? "var(--bg-panel)" : "var(--accent)",
+    color: disabled ? "var(--text-dim)" : "white",
+    borderColor: disabled ? "var(--border)" : "var(--accent)",
+  } as const;
+}
+
+function candidateButtonStyle(disabled: boolean) {
+  return {
+    ...buttonStyle(disabled),
+    textAlign: "left",
+    overflow: "hidden",
+    textOverflow: "ellipsis",
+    whiteSpace: "nowrap",
+    fontFamily: "var(--font-mono)",
+    background: disabled ? "var(--bg-panel)" : "var(--bg-panel)",
   } as const;
 }
