@@ -16,12 +16,13 @@ import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } fro
 import { normalizeToolCalls } from "./normalize";
 import { classifySessionKindFromEntries, type SessionKind } from "./session-kind";
 import { buildWorkflowCompositionPlanDisplay } from "./workflow/composition-plan-dag";
+import { slimMessageForUi, slimSessionTreeForUi } from "./session-slimming";
 export { filterSessionsByKind, SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, type SessionKind } from "./session-kind";
+export { slimSessionTreeForUi } from "./session-slimming";
 
 export { getAgentDir };
 
 const SESSION_SUMMARY_BYTES = 64 * 1024;
-
 export function getSessionsDir(): string {
   return `${getAgentDir()}/sessions`;
 }
@@ -375,20 +376,20 @@ export function buildSessionContext(entries: SessionEntry[], leafId?: string | n
   const contextMessages = (piCtx.messages as AssistantMessage[]).map((msg) => {
     const raw = msg as unknown as Record<string, unknown>;
     if (raw.role === "compactionSummary") {
-      return {
+      return slimMessageForUi({
         role: "user" as const,
         content: `*The conversation history before this point was compacted into the following summary:*\n\n${raw.summary ?? ""}`,
         timestamp: raw.timestamp as number | undefined,
-      };
+      });
     }
     if (raw.role === "branchSummary") {
-      return {
+      return slimMessageForUi({
         role: "user" as const,
         content: `*The conversation briefly explored another branch and returned with this summary:*\n\n${raw.summary ?? ""}`,
         timestamp: raw.timestamp as number | undefined,
-      };
+      });
     }
-    return renderWorkflowComposerMessage(normalizeToolCalls(msg));
+    return slimMessageForUi(renderWorkflowComposerMessage(normalizeToolCalls(msg)));
   });
 
   const display = filterDisplayMessages(contextMessages, contextEntryIds);

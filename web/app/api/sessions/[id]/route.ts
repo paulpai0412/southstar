@@ -7,10 +7,11 @@ import {
   invalidateSessionPathCache,
   buildSessionContext,
   classifySessionKindForSession,
+  slimSessionTreeForUi,
 } from "@/lib/session-reader";
 import { allowFileRoot } from "@/lib/file-access";
 import { getRpcSession } from "@/lib/rpc-manager";
-import type { SessionEntry, SessionHeader } from "@/lib/types";
+import type { SessionEntry, SessionHeader, SessionTreeNode } from "@/lib/types";
 
 // BranchNavigator still traverses recursively, so keep the response tree shallow.
 const MAX_PROJECTED_TREE_DEPTH = 200;
@@ -140,7 +141,7 @@ export async function GET(
     const sm = SessionManager.open(filePath);
     const entries = sm.getEntries() as unknown as SessionEntry[];
     const leafId = sm.getLeafId();
-    const tree = projectTreeForResponse(sm.getTree());
+    const tree = projectTreeForResponse(slimSessionTreeForUi(sm.getTree() as SessionTreeNode[]));
     const context = buildSessionContext(entries, leafId);
 
     const header = sm.getHeader() as SessionHeader | null;
