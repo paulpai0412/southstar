@@ -1,0 +1,20 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.draft-wf-composed-9d6542711b88.implement-ppt-deck"
+title: "PPT 內容與投影片實作"
+scope: "software"
+status: approved
+agentRef: "agent.design-visual-storyteller"
+skillRefs:
+  - "skill.web-video-presentation"
+  - "skill.gpt-image-2"
+toolGrantRefs:
+  - "tool.workspace-read"
+  - "tool.workspace-write"
+  - "tool.shell-command"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.draft-wf-composed-9d6542711b88"
+  nodeId: "implement-ppt-deck"

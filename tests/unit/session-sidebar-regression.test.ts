@@ -172,6 +172,31 @@ test("single session route does not scan every session to load parent metadata",
   assert.match(route, /kind: classifySessionKindForSession/);
 });
 
+test("single session route allows the loaded cwd before file explorer reads it", () => {
+  const route = source("web/app/api/sessions/[id]/route.ts");
+
+  assert.match(route, /allowFileRoot/);
+  assert.match(route, /if \(header\?\.cwd\) allowFileRoot\(header\.cwd\);/);
+});
+
+test("recent session list reads bounded session summaries instead of full JSONL files", () => {
+  const reader = source("web/lib/session-reader.ts");
+  const readCandidate = reader.match(/async function readSessionInfoCandidate[\s\S]*?\n}/)?.[0] ?? "";
+
+  assert.ok(readCandidate);
+  assert.match(reader, /SESSION_SUMMARY_BYTES/);
+  assert.match(reader, /readSessionSummaryEntries/);
+  assert.doesNotMatch(readCandidate, /readFile\(filePath,\s*"utf8"\)/);
+  assert.doesNotMatch(readCandidate, /raw\.split\("\\n"\)/);
+});
+
+test("file allowed roots do not scan every session before listing files", () => {
+  const fileAccess = source("web/lib/file-access.ts");
+
+  assert.doesNotMatch(fileAccess, /from "\.\/session-reader"/);
+  assert.doesNotMatch(fileAccess, /listAllSessions\(/);
+});
+
 test("library and workflow session row actions are hidden until hover or focus", () => {
   const librarySidebar = source("web/components/library/LibrarySidebar.tsx");
   const workflowSidebar = source("web/components/WorkflowSidebar.tsx");

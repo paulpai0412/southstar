@@ -1,5 +1,5 @@
 import { SessionManager, buildSessionContext as piBuildSessionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
-import { readdir, readFile, stat } from "fs/promises";
+import { open, readdir, stat } from "fs/promises";
 import { isAbsolute, join, relative, resolve } from "path";
 import { tmpdir } from "os";
 import type {
@@ -19,6 +19,8 @@ import { buildWorkflowCompositionPlanDisplay } from "./workflow/composition-plan
 export { filterSessionsByKind, SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, type SessionKind } from "./session-kind";
 
 export { getAgentDir };
+
+const SESSION_SUMMARY_BYTES = 64 * 1024;
 
 export function getSessionsDir(): string {
   return `${getAgentDir()}/sessions`;
@@ -112,22 +114,8 @@ async function collectSessionFileCandidates(dir: string, candidates: Array<{ pat
 }
 
 async function readSessionInfoCandidate(filePath: string, modifiedMs: number): Promise<SessionInfo | null> {
-  let raw: string;
-  try {
-    raw = await readFile(filePath, "utf8");
-  } catch {
-    return null;
-  }
-
-  const fileEntries: FileEntry[] = [];
-  for (const line of raw.split("\n")) {
-    if (!line.trim()) continue;
-    try {
-      fileEntries.push(JSON.parse(line) as FileEntry);
-    } catch {
-      return null;
-    }
-  }
+  const fileEntries = await readSessionSummaryEntries(filePath);
+  if (!fileEntries) return null;
 
   const header = fileEntries.find(isSessionHeader);
   if (!header) return null;
@@ -148,6 +136,39 @@ async function readSessionInfoCandidate(filePath: string, modifiedMs: number): P
     messageCount: messages.length,
     firstMessage,
   };
+}
+
+async function readSessionSummaryEntries(filePath: string): Promise<FileEntry[] | null> {
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    handle = await open(filePath, "r");
+    const { size } = await handle.stat();
+    const text = size <= SESSION_SUMMARY_BYTES * 2
+      ? await readFileSlice(handle, 0, size)
+      : `${await readFileSlice(handle, 0, SESSION_SUMMARY_BYTES)}\n${await readFileSlice(handle, size - SESSION_SUMMARY_BYTES, SESSION_SUMMARY_BYTES)}`;
+    const entries: FileEntry[] = [];
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const entry = JSON.parse(trimmed) as { type?: unknown };
+        if (typeof entry.type === "string") entries.push(entry as FileEntry);
+      } catch {
+        // Tail slices can start or end mid-JSON line.
+      }
+    }
+    return entries;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function readFileSlice(handle: Awaited<ReturnType<typeof open>>, position: number, length: number): Promise<string> {
+  const buffer = Buffer.alloc(length);
+  const { bytesRead } = await handle.read(buffer, 0, length, position);
+  return buffer.subarray(0, bytesRead).toString("utf8");
 }
 
 export function classifySessionKindForSession(cwd: string, entries: SessionEntry[]): SessionKind {

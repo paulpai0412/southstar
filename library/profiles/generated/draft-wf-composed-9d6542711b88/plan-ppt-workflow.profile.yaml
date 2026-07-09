@@ -1,0 +1,20 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.draft-wf-composed-9d6542711b88.plan-ppt-workflow"
+title: "PPT 方案規劃"
+scope: "software"
+status: approved
+agentRef: "agent.design-visual-storyteller"
+skillRefs:
+  - "skill.web-video-presentation"
+  - "skill.beautiful-article"
+toolGrantRefs:
+  - "tool.workspace-read"
+  - "tool.workspace-write"
+  - "tool.shell-command"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.draft-wf-composed-9d6542711b88"
+  nodeId: "plan-ppt-workflow"

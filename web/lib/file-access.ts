@@ -1,12 +1,9 @@
 import { readdirSync } from "fs";
 import { homedir } from "os";
 import path from "path";
-import { listAllSessions } from "./session-reader";
 
-// Short-TTL cache for the allowed-roots set. Without this, every file list/read
-// request re-scans every pi session on disk just to check access. 5s is short
-// enough that newly-created cwds appear promptly; stored on globalThis so it
-// survives Next.js hot-reload.
+// Short-TTL cache for the allowed-roots set; stored on globalThis so it survives
+// Next.js hot-reload while explicit cwd selections remain immediately readable.
 declare global {
   var __piAllowedRootsCache: { roots: Set<string>; expiresAt: number } | undefined;
   var __piAdditionalAllowedRoots: Set<string> | undefined;
@@ -42,11 +39,7 @@ export async function getAllowedFileRoots(): Promise<Set<string>> {
   const cached = globalThis.__piAllowedRootsCache;
   if (cached && cached.expiresAt > now) return cached.roots;
 
-  const sessions = await listAllSessions();
   const roots = new Set<string>();
-  for (const s of sessions) {
-    if (s.cwd) roots.add(normalizeSlashes(s.cwd));
-  }
 
   // Also allow ~/pi-cwd-* directories created by the default-cwd endpoint.
   try {

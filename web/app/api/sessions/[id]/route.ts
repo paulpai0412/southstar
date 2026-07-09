@@ -8,6 +8,7 @@ import {
   buildSessionContext,
   classifySessionKindForSession,
 } from "@/lib/session-reader";
+import { allowFileRoot } from "@/lib/file-access";
 import { getRpcSession } from "@/lib/rpc-manager";
 import type { SessionEntry, SessionHeader } from "@/lib/types";
 
@@ -143,6 +144,7 @@ export async function GET(
     const context = buildSessionContext(entries, leafId);
 
     const header = sm.getHeader() as SessionHeader | null;
+    if (header?.cwd) allowFileRoot(header.cwd);
     let modified = header?.timestamp ?? new Date().toISOString();
     try { modified = statSync(filePath).mtime.toISOString(); } catch { /* use header timestamp */ }
     const parentSessionId = parentSessionIdFromHeader(header);
