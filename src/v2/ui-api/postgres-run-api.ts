@@ -94,7 +94,6 @@ export type PlannerDraftRequestContract = {
   goalPrompt: string;
   orchestrationMode?: "llm-constrained";
   composerMode?: WorkflowComposerMode;
-  domainPackId?: string;
   cwd?: string;
   compositionPlan?: WorkflowCompositionPlan;
   libraryHints?: PlannerDraftLibraryHints;
@@ -302,7 +301,6 @@ function boundedJsonValue(value: unknown, maxChars: number): unknown {
 function preservedPlannerRequestFields(input: PlannerDraftRequestContract | undefined): Partial<PlannerDraftRequestContract> {
   if (!input) return {};
   return {
-    ...(input.domainPackId !== undefined ? { domainPackId: input.domainPackId } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
     ...(input.libraryHints !== undefined ? { libraryHints: plannerLibraryHintsSnapshot(input.libraryHints) } : {}),
   };
@@ -313,7 +311,6 @@ function plannerRequestSnapshot(input: PlannerDraftRequestContract): PlannerDraf
     goalPrompt: input.goalPrompt,
     ...(input.orchestrationMode !== undefined ? { orchestrationMode: input.orchestrationMode } : {}),
     ...(input.composerMode !== undefined ? { composerMode: input.composerMode } : {}),
-    ...(input.domainPackId !== undefined ? { domainPackId: input.domainPackId } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
     ...(input.compositionPlan !== undefined ? { compositionPlan: input.compositionPlan } : {}),
   };
@@ -352,7 +349,6 @@ function plannerRequestFromStored(value: unknown): PlannerDraftRequestContract |
     goalPrompt,
     orchestrationMode: plannerRequestOrchestrationMode(record.orchestrationMode),
     composerMode: plannerRequestComposerMode(record.composerMode),
-    domainPackId: stringValue(record.domainPackId),
     cwd: stringValue(record.cwd),
     libraryHints: plannerLibraryHintsFromStored(record.libraryHints),
   });

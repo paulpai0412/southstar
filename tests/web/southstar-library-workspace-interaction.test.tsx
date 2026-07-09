@@ -68,7 +68,17 @@ test("LibrarySidebar renders the domain tree and calls onSelectObject when a row
       return (
         <LibrarySidebar
           model={model}
-          sessions={[{ id: "library-session-1", title: "Research import run", status: "completed" }]}
+          sessions={[{
+            id: "library-session-1",
+            path: "",
+            cwd: "/workspace",
+            name: "Research import run",
+            firstMessage: "Research import run",
+            kind: "library",
+            created: "2026-07-07T00:00:00.000Z",
+            modified: "2026-07-07T00:00:01.000Z",
+            messageCount: 1,
+          }]}
           selectedSessionId="library-session-1"
           selectedScope="software"
           selectedObjectKey={selectedObjectKey}
@@ -313,89 +323,6 @@ test("LibraryFileViewer renders graph-backed edge chart, usage, and merged prove
   });
 });
 
-test("LibraryChatWindow centers the workflow-style composer until the first prompt then docks it at the bottom", async () => {
-  await withBrowserHarness(`
-    import React from "react";
-    import { createRoot } from "react-dom/client";
-    import { LibraryChatWindow } from "./web/components/library/LibraryChatWindow";
-
-    createRoot(document.getElementById("root")).render(
-      <div style={{ height: "720px", width: "960px" }}>
-        <LibraryChatWindow
-          scope="software"
-          pendingPrompt=""
-          onPromptConsumed={() => {}}
-        />
-      </div>
-    );
-  `, async (page) => {
-    await page.locator('[data-testid="library-chat-composer"]').waitFor();
-    await page.locator('[data-testid="library-chat-empty-new"]').waitFor();
-    await page.getByText("Southstar Mission Engine").waitFor();
-
-    const before = await composerGeometry(page);
-    assert.equal(before.emptyVisible, true);
-    assert.equal(before.timelineVisible, false);
-    assert.ok(before.centerOffset < 90, `expected empty composer near center, got center offset ${before.centerOffset}`);
-    assert.ok(before.bottomGap > 170, `expected empty composer away from bottom, got bottom gap ${before.bottomGap}`);
-
-    await page.locator('[data-testid="library-chat-window"] textarea').fill("show the current library graph");
-    await page.keyboard.press("Enter");
-    await page.locator('[data-testid="library-chat-timeline"]').waitFor();
-    await page.locator('[data-testid="library-graph-chart"]').waitFor();
-
-    const after = await composerGeometry(page);
-    assert.equal(after.emptyVisible, false);
-    assert.equal(after.timelineVisible, true);
-    assert.ok(after.bottomGap < 140, `expected prompted composer docked near bottom, got bottom gap ${after.bottomGap}`);
-    assert.ok(after.centerOffset > 140, `expected prompted composer below center, got center offset ${after.centerOffset}`);
-  }, async (page) => {
-    await page.route("**/api/models", async (route) => {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({
-          models: { "gpt-5": "GPT-5" },
-          modelList: [{ provider: "openai", id: "gpt-5", name: "GPT-5" }],
-          defaultModel: { provider: "openai", modelId: "gpt-5" },
-          thinkingLevels: { "openai:gpt-5": ["auto", "medium", "high"] },
-          thinkingLevelMaps: {},
-        }),
-      });
-    });
-    await page.route("**/api/library/chat/messages", async (route) => {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({ ok: true, result: { sessionId: "library-session-1", actionId: "action-1" } }),
-      });
-    });
-    await page.route("**/api/library/chat/events?**", async (route) => {
-      await route.fulfill({
-        contentType: "text/event-stream",
-        body: "event: library.ontology.graph\ndata: {\"activeScope\":\"software\",\"availableScopes\":[\"software\"],\"nodes\":[{\"objectKey\":\"agent.frontend-developer\",\"objectKind\":\"agent_definition\",\"status\":\"approved\",\"title\":\"Frontend Developer\"}],\"edges\":[]}\n\n",
-      });
-    });
-    await page.route("**/api/library/graph**", async (route) => {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({
-          ok: true,
-          result: {
-            activeScope: "software",
-            availableScopes: ["software"],
-            nodes: [{
-              objectKey: "agent.frontend-developer",
-              objectKind: "agent_definition",
-              status: "approved",
-              title: "Frontend Developer",
-            }],
-            edges: [],
-          },
-        }),
-      });
-    });
-  }, { mockLibraryChat: false });
-});
-
 test("LibraryCandidateMessageBlock keeps candidate install controls in the message header and disables installed objects", async () => {
   await withBrowserHarness(`
     import React from "react";
@@ -538,76 +465,6 @@ test("LibraryCandidateMessageBlock keeps uninstalled candidates selectable after
   });
 });
 
-test("LibraryChatWindow streams GitHub repo import prompts through the library chat SSE pipeline", async () => {
-  let chatMessageBody: any;
-
-  await withBrowserHarness(`
-    import React from "react";
-    import { createRoot } from "react-dom/client";
-    import { LibraryChatWindow } from "./web/components/library/LibraryChatWindow";
-
-    createRoot(document.getElementById("root")).render(
-      <div style={{ height: "720px", width: "960px" }}>
-        <LibraryChatWindow
-          scope="software"
-          pendingPrompt=""
-          onPromptConsumed={() => {}}
-        />
-      </div>
-    );
-  `, async (page) => {
-    await page.locator('[data-testid="library-chat-window"] textarea').fill(
-      "將 https://github.com/jnMetaCode/agency-agents-zh 內的 266 個 agent 存入 southstar library",
-    );
-    const sendButton = page.getByRole("button", { name: "Send" });
-    await page.waitForFunction(() => {
-      const buttons = Array.from(document.querySelectorAll("button"));
-      return buttons.some((button) => button.textContent?.includes("Send") && !button.hasAttribute("disabled"));
-    });
-    const chatMessageResponse = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/library/chat/messages");
-    await sendButton.click();
-    await chatMessageResponse;
-    await page.getByText("Import candidates").waitFor();
-
-    assert.equal(chatMessageBody?.scope, "software");
-    assert.equal(chatMessageBody?.prompt, "將 https://github.com/jnMetaCode/agency-agents-zh 內的 266 個 agent 存入 southstar library");
-  }, async (page) => {
-    await page.route("**/api/models", async (route) => {
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({
-          models: { "gpt-5": "GPT-5" },
-          modelList: [{ provider: "openai", id: "gpt-5", name: "GPT-5" }],
-          defaultModel: { provider: "openai", modelId: "gpt-5" },
-        }),
-      });
-    });
-    await page.route("**/api/library/chat/messages", async (route) => {
-      chatMessageBody = JSON.parse(route.request().postData() ?? "{}");
-      await route.fulfill({
-        contentType: "application/json",
-        body: JSON.stringify({ ok: true, result: { sessionId: "library-session-github", actionId: "action-github" } }),
-      });
-    });
-    await page.route("**/api/library/chat/events?**", async (route) => {
-      await route.fulfill({
-        contentType: "text/event-stream",
-        body: [
-          "event: library.import.source.completed",
-          'data: {"sourceKind":"github","sourceRepoPath":"/tmp/southstar-library-imports/repo","documentCount":0}',
-          "",
-          "event: library.import.candidates",
-          'data: {"draftId":"library-import-draft-github","status":"draft","title":"Import candidates","candidates":[{"objectKey":"agent.frontend","kind":"agent","title":"Frontend","scope":"software","sourcePath":"engineering/frontend.md","selectedByDefault":true,"confidence":0.9}],"proposedEdges":[]}',
-          "",
-          "event: library.command.completed",
-          'data: {"draftId":"library-import-draft-github","status":"ready_for_review"}',
-          "",
-        ].join("\n"),
-      });
-    });
-  }, { mockLibraryChat: false });
-});
-
 test("library file API helpers unwrap envelopes and call file read, save, and sync routes", async () => {
   const api = await import("../../web/lib/library/api.ts");
   assert.equal(typeof api.readLibraryFile, "function");
@@ -678,7 +535,7 @@ test("library file API helpers report HTTP and non-JSON failures predictably", a
 });
 
 test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs clean content", async () => {
-  const requests: Array<{ method: string; path: string; body?: string }> = [];
+  const requests: Array<{ method: string; path: string; query?: string; body?: string }> = [];
   let fileContent = validAgentContent("agent.planner", "Planner Agent");
   const updatedContent = validAgentContent("agent.planner", "Planner Agent v2");
 
@@ -715,7 +572,7 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
 
     assert.deepEqual(
       requests
-        .filter((request) => request.path !== "/api/library/chat/sessions")
+        .filter((request) => request.path !== "/api/sessions")
         .map((request) => [request.method, request.path]),
       [
       ["GET", "/api/library/workspace"],
@@ -726,18 +583,29 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
       ["POST", "/api/library/files/software/agents/planner.agent.md/sync"],
       ],
     );
-    assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/chat/sessions"), true);
+    assert.equal(
+      requests.some((request) => request.method === "GET" && request.path === "/api/sessions" && request.query === "scope=all&kind=library&limit=50&compact=1"),
+      true,
+    );
     assert.equal(
       requests.find((request) => request.method === "PATCH")?.body,
       JSON.stringify({ content: updatedContent }),
     );
   }, async (page) => {
+    await page.route("**/api/sessions**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      requests.push({ method: request.method(), path: url.pathname, query: url.searchParams.toString() });
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions: [] }) });
+    });
+
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
       requests.push({
         method: request.method(),
         path: url.pathname,
+        query: url.searchParams.toString(),
         body: request.method() === "PATCH" ? request.postData() ?? undefined : undefined,
       });
 
@@ -821,11 +689,17 @@ test("LibraryWorkspace defaults to all domains so imported catalog agents are vi
     await page.locator('[data-testid="library-domain-tree"]').getByRole("button", { name: "marketing", exact: true }).waitFor();
     await page.getByText("SEO Agent").waitFor();
 
-    assert.deepEqual(requests.filter((request) => request.path !== "/api/library/chat/sessions"), [
+    assert.deepEqual(requests.filter((request) => request.path !== "/api/sessions"), [
       { path: "/api/library/workspace", query: "scope=all" },
     ]);
-    assert.equal(requests.some((request) => request.path === "/api/library/chat/sessions" && request.query === "limit=50"), true);
+    assert.equal(requests.some((request) => request.path === "/api/sessions" && request.query === "scope=all&kind=library&limit=50&compact=1"), true);
   }, async (page) => {
+    await page.route("**/api/sessions**", async (route) => {
+      const url = new URL(route.request().url());
+      requests.push({ path: url.pathname, query: url.searchParams.toString() });
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions: [] }) });
+    });
+
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
@@ -976,7 +850,7 @@ test("LibraryWorkspace records shared ChatWindow library session activity in the
     await page.locator('[data-testid="library-chat-mock"] textarea').fill("create a browser verification skill");
     await page.keyboard.press("Enter");
     await page.locator('[data-testid="library-session-row"]').filter({ hasText: "create a browser verification skill" }).waitFor();
-    assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "running" }).count(), 1);
+    assert.equal(await page.locator('[data-testid="library-session-row"]').filter({ hasText: "library" }).count(), 1);
     assert.equal(workspaceFetches, 1);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
@@ -1529,11 +1403,11 @@ function webAliasPlugin() {
 
 function libraryChatMockPlugin() {
   return {
-    name: "library-chat-window-mock",
+    name: "shared-library-chat-mock",
     setup(buildApi: any) {
       buildApi.onResolve({ filter: /^\.\.\/ChatWindow$/ }, (args: any) => {
         if (!args.importer.endsWith("LibraryWorkspace.tsx")) return undefined;
-        return { path: "library-chat-window-mock", namespace: "southstar-test" };
+        return { path: "shared-library-chat-mock", namespace: "southstar-test" };
       });
       buildApi.onLoad({ filter: /.*/, namespace: "southstar-test" }, () => ({
         loader: "js",
@@ -1739,27 +1613,4 @@ async function assertText(page: Page, selector: string, expected: string, should
   const text = await page.locator(selector).first().textContent();
   if (shouldMatch) assert.match(text ?? "", new RegExp(expected));
   else assert.doesNotMatch(text ?? "", new RegExp(expected));
-}
-
-async function composerGeometry(page: Page): Promise<{
-  bottomGap: number;
-  centerOffset: number;
-  emptyVisible: boolean;
-  timelineVisible: boolean;
-}> {
-  return page.evaluate(() => {
-    const workspace = document.querySelector('[data-testid="library-chat-window"]') as HTMLElement | null;
-    const composer = document.querySelector('[data-testid="library-chat-composer"]') as HTMLElement | null;
-    if (!workspace || !composer) throw new Error("missing library chat workspace or composer");
-    const workspaceRect = workspace.getBoundingClientRect();
-    const composerRect = composer.getBoundingClientRect();
-    return {
-      bottomGap: workspaceRect.bottom - composerRect.bottom,
-      centerOffset: Math.abs(
-        (composerRect.top + composerRect.height / 2) - (workspaceRect.top + workspaceRect.height / 2),
-      ),
-      emptyVisible: Boolean(document.querySelector('[data-testid="library-chat-empty-new"]')),
-      timelineVisible: Boolean(document.querySelector('[data-testid="library-chat-timeline"]')),
-    };
-  });
 }

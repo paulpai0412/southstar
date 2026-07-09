@@ -81,7 +81,7 @@ export function hardeningWorkflowManifest(runId: string, taskId = "task-a"): Sou
         infraRetry: { maxAttempts: 1 },
       },
       rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 1 },
-      skillRefs: ["software.implementation"],
+      skillRefs: ["skill.software-implementation"],
       subagents: [{ id: "impl", harnessId: "codex", prompt: "complete the task", requiredArtifacts: ["implementation_report"] }],
     }],
     harnessDefinitions: [{

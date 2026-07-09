@@ -33,7 +33,7 @@ function isValidWritableCwd(cwd: unknown): cwd is string {
   return typeof cwd === "string" && cwd.length > 0 && path.isAbsolute(cwd);
 }
 
-function metadataForResource(resourceSource: "file" | "fixture") {
+function metadataForResource(resourceSource: WorkflowResource["source"]) {
   return {
     source: { storage: "local", origin: resourceSource },
     capabilities: {
@@ -102,7 +102,7 @@ async function readGraphAgentAgentsMdResource(resourcePath: string, agentKey: st
     label: "AGENTS.md",
     kind: "markdown",
     content: renderAgentDefinitionAsAgentsMd(object.state, agentKey),
-    source: "fixture",
+    source: "generated",
     writable: false,
   };
 }
@@ -114,7 +114,7 @@ async function readGraphObjectResource(resourcePath: string, objectKey: string):
     label: path.posix.basename(resourcePath),
     kind: "json",
     content: JSON.stringify(payload, null, 2),
-    source: "fixture",
+    source: "generated",
     writable: false,
   };
 }

@@ -656,7 +656,6 @@ test("Postgres server planner draft route accepts and persists structured reques
         goalPrompt: "implement calc sum",
         orchestrationMode: "llm-constrained",
         composerMode: "llm",
-        domainPackId: "software",
         cwd: "/workspace/southstar",
         libraryHints: {
           roleRefs: ["agent.software-maker"],
@@ -673,6 +672,7 @@ test("Postgres server planner draft route accepts and persists structured reques
           },
         },
       };
+      const expectedPlannerRequest = request;
       const draft = await api<{
         draftId: string;
         goalPrompt: string;
@@ -692,8 +692,8 @@ test("Postgres server planner draft route accepts and persists structured reques
         "select summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
         [draft.draftId],
       );
-      assert.deepEqual(row.summary_json.plannerRequest, request);
-      assert.deepEqual(row.payload_json.plannerRequest, request);
+      assert.deepEqual(row.summary_json.plannerRequest, expectedPlannerRequest);
+      assert.deepEqual(row.payload_json.plannerRequest, expectedPlannerRequest);
     } finally {
       await server.close();
     }
@@ -706,7 +706,6 @@ test("Postgres planner draft snapshots structured request before async orchestra
       goalPrompt: "implement calc sum with snapshot boundary",
       orchestrationMode: "llm-constrained" as const,
       composerMode: "llm" as const,
-      domainPackId: "software",
       cwd: "/workspace/original",
       libraryHints: {
         roleRefs: ["agent.software-maker"],
@@ -754,7 +753,6 @@ test("Postgres planner draft revision preserves structured request hints with ex
       goalPrompt: "implement calc sum with structured revision context",
       orchestrationMode: "llm-constrained" as const,
       composerMode: "llm" as const,
-      domainPackId: "software",
       cwd: "/workspace/southstar",
       libraryHints: {
         roleRefs: ["agent.software-maker"],

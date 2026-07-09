@@ -15,10 +15,12 @@ test("coverage config scopes V2 runtime and UI sources with 85 percent threshold
   assert.equal(packageJson.c8.statements, 85);
   assert.deepEqual(packageJson.c8.include, [
     "src/v2/**/*.ts",
-    "app/**/*.ts",
-    "app/**/*.tsx",
-    "components/**/*.ts",
-    "components/**/*.tsx",
-    "lib/**/*.ts",
+    "web/app/**/*.ts",
+    "web/app/**/*.tsx",
+    "web/components/**/*.ts",
+    "web/components/**/*.tsx",
+    "web/hooks/**/*.ts",
+    "web/lib/**/*.ts",
+    "web/lib/**/*.tsx",
   ]);
 });

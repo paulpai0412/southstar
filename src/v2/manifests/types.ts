@@ -141,7 +141,6 @@ export type SouthstarWorkflowManifest = {
   goalPrompt: string;
   domain?: string;
   intent?: string;
-  domainPackRef?: { id: string; version: string; contentHash: string };
   workflowGeneration?: {
     planId: string;
     generatorPolicyRef: string;

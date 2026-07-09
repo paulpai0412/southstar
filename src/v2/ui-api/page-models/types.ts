@@ -6,7 +6,6 @@ export type UiPageSurface =
   | "southstar.ui.sessions-memory.v1"
   | "southstar.ui.worktree.v1"
   | "southstar.ui.executor.v1"
-  | "southstar.ui.domain-packs.v1"
   | "southstar.ui.governance.v1";
 
 export type UiStatus = "healthy" | "degraded" | "needs-binding" | "not-configured";

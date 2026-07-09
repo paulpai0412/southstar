@@ -35,7 +35,7 @@ export async function generatePlanBundleWithTimings(
     plannerMs += Date.now() - plannerStartedAt;
     const validationStartedAt = Date.now();
     try {
-      const parsed = parsePlanBundleJson(raw, context.goalPrompt);
+      const parsed = parsePlanBundleJson(raw);
       const validation = validatePlanBundle(parsed);
       validationMs += Date.now() - validationStartedAt;
       if (validation.ok) return { bundle: parsed, plannerMs, validationMs };
@@ -58,7 +58,7 @@ export async function runPlannerRevisionLoop(
   let lastIssues: Array<{ path: string; message: string }> = [];
   for (let attempt = 0; attempt <= maxRevisions; attempt++) {
     const raw = await client.generate(buildPlannerPrompt(nextContext));
-    const parsed = parsePlanBundleJson(raw, nextContext.goalPrompt);
+    const parsed = parsePlanBundleJson(raw);
     const validation = validatePlanBundle(parsed);
     if (validation.ok) return parsed;
     lastIssues = validation.issues;
@@ -174,7 +174,7 @@ export function plannerPromptHash(prompt: string): string {
   return createHash("sha256").update(prompt).digest("hex");
 }
 
-function parsePlanBundleJson(raw: string, sourceGoalPrompt?: string): PlanBundle {
+function parsePlanBundleJson(raw: string): PlanBundle {
   let parsed: unknown;
   try {
     parsed = JSON.parse(extractJsonObject(raw));
@@ -182,8 +182,6 @@ function parsePlanBundleJson(raw: string, sourceGoalPrompt?: string): PlanBundle
     throw new Error(`Pi planner must return a valid JSON object: ${(error as Error).message}`);
   }
   if (!isRecord(parsed) || !isRecord(parsed.workflow) || !isRecord(parsed.plannerTrace)) {
-    const canonical = canonicalizeCompactPiPlan(parsed, sourceGoalPrompt);
-    if (canonical) return canonical;
     throw new Error("Pi planner must return a valid JSON object with workflow and plannerTrace");
   }
   return canonicalizePlanBundle(parsed as PlanBundle);
@@ -197,46 +195,6 @@ function extractJsonObject(raw: string): string {
   const last = trimmed.lastIndexOf("}");
   if (first >= 0 && last > first) return trimmed.slice(first, last + 1);
   return trimmed;
-}
-
-function canonicalizeCompactPiPlan(parsed: unknown, sourceGoalPrompt?: string): PlanBundle | undefined {
-  if (!isRecord(parsed) || !Array.isArray(parsed.workflows) || !isRecord(parsed.workflows[0])) return undefined;
-  const compact = parsed.workflows[0];
-  if (!Array.isArray(compact.tasks)) return undefined;
-  const goalPrompt = sourceGoalPrompt ?? (typeof parsed.goalPrompt === "string" ? parsed.goalPrompt : "");
-  const tasks = compact.tasks
-    .filter(isRecord)
-    .map((task, index) => canonicalizeCompactTask(task, index, goalPrompt));
-  const harnessDefinitions = buildHarnessDefinitions(tasks);
-  const workflow: SouthstarWorkflowManifest = {
-    schemaVersion: "southstar.v2",
-    workflowId: stringValue(compact.id) ?? "southstar-pi-workflow",
-    title: stringValue(compact.name) ?? stringValue(compact.id) ?? "Southstar Pi Workflow",
-    goalPrompt,
-    tasks,
-    harnessDefinitions,
-    evaluators: [{
-      id: "schema-evaluator-v1",
-      kind: "schema",
-      artifactTypes: ["implementation-report"],
-      requiredFields: ["summary", "commandsRun", "testResults", "risks"],
-    }],
-    memoryPolicy: { retrievalLimit: 5, writeRequiresApproval: true },
-    vaultPolicy: { leaseTtlSeconds: 900, mountMode: "ephemeral-file" },
-    mcpServers: [],
-    mcpGrants: [],
-    progressPolicy: { firstEventWithinSeconds: 10, minEventsPerLongTask: 3 },
-    steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
-    learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
-  };
-  return {
-    workflow,
-    plannerTrace: {
-      model: "pi-agent",
-      promptHash: plannerPromptHash(JSON.stringify(parsed)),
-      generatedAt: new Date().toISOString(),
-    },
-  };
 }
 
 function canonicalizePlanBundle(bundle: PlanBundle): PlanBundle {
@@ -272,43 +230,6 @@ function canonicalizeWorkflowLike(workflow: SouthstarWorkflowManifest): Southsta
     steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
   };
-}
-
-function canonicalizeCompactTask(task: Record<string, unknown>, index: number, goalPrompt: string): WorkflowTaskDefinition {
-  const execution = isRecord(task.execution) ? task.execution : {};
-  const taskId = stringValue(task.id) ?? `task-${index + 1}`;
-  const harnessId = stringValue(task.harnessId) ?? "pi";
-  const instruction = instructionFromCompactCommand(execution.command) ?? stringValue(task.name) ?? taskId;
-  const fixtureRepoMount = fixtureRepoMountFromGoal(goalPrompt);
-  return {
-    id: taskId,
-    name: stringValue(task.name) ?? taskId,
-    domain: "software",
-    dependsOn: stringArray(task.dependsOn),
-    execution: {
-      engine: "tork",
-      image: normalizeExecutionImage(stringValue(execution.image)),
-      command: ["southstar-agent-runner"],
-      env: recordOfStrings(execution.env),
-      mounts: fixtureRepoMount ? [fixtureRepoMount] : [],
-      timeoutSeconds: numberValue(execution.timeoutSeconds) ?? 900,
-      infraRetry: { maxAttempts: 1 },
-    },
-    rootSession: { validator: "schema-evaluator-v1", maxRepairAttempts: 2 },
-    skillRefs: skillRefsForTask(task.skillRefs, taskId),
-    subagents: [{
-      id: `${taskId}-subagent`,
-      harnessId,
-      prompt: instruction,
-      requiredArtifacts: ["implementation-report"],
-    }],
-  };
-}
-
-function fixtureRepoMountFromGoal(goalPrompt: string): { source: string; target: string; readonly: boolean } | undefined {
-  const match = goalPrompt.match(/Fixture repo:\s*([^\s。]+)/i);
-  if (!match?.[1]) return undefined;
-  return { source: match[1], target: "/workspace/repo", readonly: false };
 }
 
 function canonicalizeWorkflowTaskLike(task: Record<string, unknown>, index: number): WorkflowTaskDefinition {

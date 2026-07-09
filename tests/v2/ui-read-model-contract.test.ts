@@ -5,18 +5,6 @@ import { buildPostgresCoreReadModel } from "../../src/v2/read-models/postgres-co
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
-test("ui read-model compatibility shim exports legacy builder symbols", async () => {
-  const shim = await import("../../src/v2/ui-api/read-models.ts");
-
-  assert.equal(typeof shim.buildWorkflowCanvasModel, "function");
-  assert.equal(typeof shim.buildRuntimeMonitorModel, "function");
-  assert.equal(typeof shim.buildTaskDetailModel, "function");
-  assert.equal(typeof shim.buildSessionsMemoryModel, "function");
-  assert.equal(typeof shim.sessionGraphResources, "function");
-  assert.equal(typeof shim.buildVaultMcpModel, "function");
-  assert.equal(typeof shim.buildExecutorOpsModel, "function");
-});
-
 test("ui read-model envelope includes required UI contract fields", () => {
   const envelope = createUiReadModelEnvelope({
     schemaVersion: "southstar.read_model.run_control.v1",

@@ -269,14 +269,6 @@ export async function handleLibraryRoute(
     });
   }
 
-  if (request.method === "GET" && url.pathname === "/api/v2/library/chat/sessions") {
-    return json("library-chat-sessions", {
-      sessions: await listLibraryChatSessionSummariesPg(context.db, {
-        limit: optionalNumber(url.searchParams.get("limit")),
-      }),
-    });
-  }
-
   if (request.method === "GET" && url.pathname === "/api/v2/library/chat/events") {
     const sessionId = requiredQueryParam(url, "sessionId");
     const actionId = requiredQueryParam(url, "actionId");

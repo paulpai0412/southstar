@@ -55,7 +55,7 @@ export interface WorkflowResource {
   label: string;
   kind: WorkflowResourceKind;
   content: string;
-  source: "file" | "fixture";
+  source: "file" | "generated";
   writable: boolean;
 }
 

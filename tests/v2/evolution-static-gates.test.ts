@@ -82,6 +82,18 @@ test("Southstar v2 production no longer carries SQLite/local API source", () => 
   assert.deepEqual(forbiddenNewCode, []);
 });
 
+test("retired runtime compatibility paths stay out of active source and tests", () => {
+  const removedFiles = [
+    "src/v2/pi-web/operations-dashboard-renderer.ts",
+  ];
+  assert.deepEqual(removedFiles.filter((file) => productionFiles.includes(file)), []);
+
+  const checkedFiles = sourceFiles.filter((file) => file !== "tests/v2/evolution-static-gates.test.ts");
+  const retiredPattern =
+    /pi-web\.operations-dashboard\.v1|canonicalizeCompactPiPlan|fixtureRepoMountFromGoal|callbackBindingExistsPg|software\.implementation|domainPackId/;
+  assert.deepEqual(grep(checkedFiles, retiredPattern), []);
+});
+
 function source(file: string): string {
   return readFileSync(join(root, file), "utf8");
 }

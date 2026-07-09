@@ -72,7 +72,7 @@ async function seedRun(db: SouthstarDb, runId: string, taskId: string): Promise<
         agentProfileRef: "software-maker-pi",
         evaluatorPipelineRef: "software-feature-quality",
         requiredArtifactRefs: ["implementation_report"],
-        skillRefs: ["software.implementation"],
+        skillRefs: ["skill.software-implementation"],
         mcpGrantRefs: [],
         execution: {
           engine: "tork",

@@ -119,10 +119,6 @@ export async function updateWorkflowManifestPg(db: SouthstarDb, runId: string, w
   await db.query("update southstar.workflow_runs set workflow_manifest_json = $1::jsonb, updated_at = now() where id = $2", [workflowManifestJson, runId]);
 }
 
-export async function updateExecutionProjectionPg(db: SouthstarDb, runId: string, executionProjectionJson: string): Promise<void> {
-  await db.query("update southstar.workflow_runs set execution_projection_json = $1::jsonb, updated_at = now() where id = $2", [executionProjectionJson, runId]);
-}
-
 export async function updateWorkflowRunStatusPg(db: SouthstarDb, runId: string, status: string): Promise<boolean> {
   const terminal = ["completed", "passed", "failed", "cancelled"].includes(status);
   const result = await db.query(
@@ -236,16 +232,6 @@ export async function appendHistoryEventOncePg(db: SouthstarDb, input: AppendHis
 
 export async function listHistoryForRunPg(db: SouthstarDb, runId: string): Promise<WorkflowHistoryEvent[]> {
   const rows = await db.query<WorkflowHistoryRow>("select * from southstar.workflow_history where run_id = $1 order by sequence", [runId]);
-  return rows.rows.map(mapHistoryEvent);
-}
-
-export async function listHistoryForTaskPg(db: SouthstarDb, taskId: string): Promise<WorkflowHistoryEvent[]> {
-  const rows = await db.query<WorkflowHistoryRow>("select * from southstar.workflow_history where task_id = $1 order by sequence", [taskId]);
-  return rows.rows.map(mapHistoryEvent);
-}
-
-export async function listHistoryForSessionPg(db: SouthstarDb, sessionId: string): Promise<WorkflowHistoryEvent[]> {
-  const rows = await db.query<WorkflowHistoryRow>("select * from southstar.workflow_history where session_id = $1 order by sequence", [sessionId]);
   return rows.rows.map(mapHistoryEvent);
 }
 

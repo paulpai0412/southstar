@@ -62,11 +62,13 @@
     "all": true,
     "include": [
       "src/v2/**/*.ts",
-      "app/**/*.ts",
-      "app/**/*.tsx",
-      "components/**/*.ts",
-      "components/**/*.tsx",
-      "lib/**/*.ts"
+      "web/app/**/*.ts",
+      "web/app/**/*.tsx",
+      "web/components/**/*.ts",
+      "web/components/**/*.tsx",
+      "web/hooks/**/*.ts",
+      "web/lib/**/*.ts",
+      "web/lib/**/*.tsx"
     ],
     "exclude": [
       "tests/**",

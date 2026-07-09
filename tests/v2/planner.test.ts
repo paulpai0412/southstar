@@ -81,73 +81,23 @@ test("planner retries abbreviated JSON and records cumulative timings", async ()
   assert.equal(Number.isFinite(result.validationMs), true);
 });
 
-test("planner canonicalizes compact Pi workflow output into a PlanBundle", async () => {
+test("planner rejects compact Pi workflow output instead of canonicalizing old schema", async () => {
   const client: PiPlannerClient = {
     generate: async () => JSON.stringify({
       schemaVersion: "southstar.v2",
-      goalPrompt: "implement calc sum\nFixture repo: /tmp/southstar-fixture",
       workflows: [{
         kind: "SouthstarWorkflowManifest",
-        id: "calc-sum-cli-fixture",
-        name: "calc-sum-cli-fixture",
-        tasks: [{
-          id: "planner",
-          name: "planner",
-          harnessId: "pi",
-          dependsOn: [],
-          execution: {
-            engine: "tork",
-            command: "southstar-agent-runner --harness pi --task planner --instruction plan",
-          },
-        }, {
-          id: "implementer",
-          name: "implementer",
-          harnessId: "codex",
-          dependsOn: ["planner"],
-          execution: {
-            engine: "tork",
-            command: "southstar-agent-runner --harness codex --task implementer --instruction implement",
-          },
-        }, {
-          id: "root-validator",
-          name: "root validator",
-          harnessId: "claude-code",
-          dependsOn: ["implementer"],
-          execution: {
-            engine: "tork",
-            command: "southstar-agent-runner --harness claude-code --task root-validator --instruction validate",
-          },
-        }, {
-          id: "summary",
-          name: "summary",
-          harnessId: "custom",
-          dependsOn: ["root-validator"],
-          execution: {
-            engine: "tork",
-            command: "southstar-agent-runner --harness custom --task summary --instruction summarize",
-          },
-        }],
+        id: "compact-old-schema",
+        tasks: [],
       }],
     }),
   };
 
-  const bundle = await generatePlanBundle(client, {
-    goalPrompt: "implement calc sum\nFixture repo: /tmp/southstar-fixture",
+  await assert.rejects(() => generatePlanBundle(client, {
+    goalPrompt: "implement calc sum",
     schemaVersion: "southstar.v2",
-    availableHarnesses: ["pi", "codex", "claude-code", "custom"],
-  });
-
-  assert.equal(bundle.workflow.workflowId, "calc-sum-cli-fixture");
-  assert.equal(bundle.workflow.tasks.length, 4);
-  assert.equal(bundle.workflow.tasks[1].execution.command[0], "southstar-agent-runner");
-  assert.deepEqual(bundle.workflow.tasks[1].execution.mounts, [{
-    source: "/tmp/southstar-fixture",
-    target: "/workspace/repo",
-    readonly: false,
-  }]);
-  assert.equal(bundle.workflow.tasks[1].subagents[0].harnessId, "codex");
-  assert.equal(bundle.workflow.evaluators[0].requiredFields.includes("commandsRun"), true);
-  assert.equal(bundle.plannerTrace.model, "pi-agent");
+    availableHarnesses: ["codex"],
+  }), /workflow and plannerTrace/);
 });
 
 test("planner canonicalizes Pi canonical-like workflow output with schema drift", async () => {

@@ -298,10 +298,6 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     getRunActions(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/actions`);
     },
-    getRunEvents(body: { runId: string; afterSequence?: number }) {
-      const after = body.afterSequence ?? 0;
-      return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/events?after=${encodeURIComponent(String(after))}`);
-    },
     listTasks(runId: string) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(runId)}/tasks`);
     },
@@ -439,17 +435,6 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     getTaskEnvelope(body: { runId: string; taskId: string }) {
       return get(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/tasks/${encodeURIComponent(body.taskId)}/envelope`);
     },
-    getUiPlanner(draftId?: string) {
-      const query = draftId ? `?draftId=${encodeURIComponent(draftId)}` : "";
-      return get(`${baseUrl}/api/v2/ui/planner${query}`);
-    },
-    getUiWorkflowCanvas(body: { runId: string; taskId?: string }) {
-      const task = body.taskId ? `&taskId=${encodeURIComponent(body.taskId)}` : "";
-      return get(`${baseUrl}/api/v2/ui/workflow-canvas?runId=${encodeURIComponent(body.runId)}${task}`);
-    },
-    getUiRuntimeMonitor(runId: string) {
-      return get(`${baseUrl}/api/v2/ui/runtime-monitor?runId=${encodeURIComponent(runId)}`);
-    },
     pauseRun(body: RunRuntimeCommandRequest) {
       return post(`${baseUrl}/api/v2/runs/${encodeURIComponent(body.runId)}/pause`, runtimeCommandBody(body));
     },
@@ -470,9 +455,6 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     },
     wakeRuntime(body: { runId?: string; taskId?: string } = {}) {
       return post(`${baseUrl}/api/v2/runtime/wake`, body);
-    },
-    submitTorkCallback(body: unknown) {
-      return post(`${baseUrl}/api/v2/tork/callback`, body);
     },
   };
 }

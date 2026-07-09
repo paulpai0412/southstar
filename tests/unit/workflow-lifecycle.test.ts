@@ -28,13 +28,12 @@ const dag: WorkflowDag = {
   edges: [],
 };
 
-test("buildPlannerDraftRequest maps dag to existing v2 planner contract", () => {
+test("buildPlannerDraftRequest maps dag to current v2 planner contract", () => {
   assert.deepEqual(buildPlannerDraftRequest(dag, "/repo"), {
     cwd: "/repo",
     goalPrompt: "Build API-aligned workflow UI",
     orchestrationMode: "llm-constrained",
-    composerMode: "llm-with-fixture-fallback",
-    domainPackId: "software",
+    composerMode: "llm",
     libraryHints: {
       agentProfileRefs: ["software-maker-pi"],
     },
@@ -56,7 +55,7 @@ test("workflowLifecycleReducer enables run only for validated draft", () => {
       },
     },
   );
-  assert.equal(drafted.phase, "planner_draft");
+  assert.equal(drafted.phase, "invalid");
   assert.equal(drafted.canRun, false);
 
   const validated = workflowLifecycleReducer(drafted, {

@@ -15,7 +15,6 @@ export type ReadModelKind =
   | "recovery-center"
   | "execution-center"
   | "planner-workbench"
-  | "domain-pack-governance"
   | "evolution-center";
 
 export type ReadModelInput = {

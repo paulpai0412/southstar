@@ -8,7 +8,7 @@ import { POST as postWorkflowGenerate } from "../../web/app/api/workflow/generat
 import { GET as getWorkflowLibrary } from "../../web/app/api/workflow/library/route";
 import { GET as getWorkflowResource, PUT as putWorkflowResource } from "../../web/app/api/workflow/resources/[...path]/route";
 import { groupSkillResourcePaths } from "../../web/lib/workflow/skill-resource-tree";
-import { loadWorkflowLibrary, readWorkflowResource, writeWorkflowResource } from "../../web/lib/workflow/library-store";
+import { readWorkflowResource, writeWorkflowResource } from "../../web/lib/workflow/library-store";
 import { buildWorkflowDagFromPlannerDraft } from "../../web/lib/workflow/v2-library-adapter";
 
 const originalFetch = global.fetch;
@@ -103,24 +103,6 @@ test("buildWorkflowDagFromPlannerDraft computes dependency-derived levels for pa
   });
 });
 
-test("loadWorkflowLibrary returns the software workflow fixture when no file library exists", async () => {
-  const library = await loadWorkflowLibrary({ cwd: "/tmp/path-that-does-not-exist" });
-
-  assert.equal(library.domains[0]?.id, "software");
-  assert.equal(library.domains[0]?.workflowTemplates[0]?.id, "template.software-feature");
-  assert.ok(library.domains[0]?.agents.some((agent) => agent.id === "agent.software-maker"));
-});
-
-test("readWorkflowResource returns editable profile json", async () => {
-  const resource = await readWorkflowResource({
-    cwd: "/tmp/path-that-does-not-exist",
-    resourcePath: "software/agents/software-maker/profile.json",
-  });
-
-  assert.equal(resource.kind, "json");
-  assert.match(resource.content, /software-maker-pi/);
-});
-
 test("writeWorkflowResource rejects path traversal", async () => {
   await assert.rejects(
     () => writeWorkflowResource({
@@ -132,7 +114,17 @@ test("writeWorkflowResource rejects path traversal", async () => {
   );
 });
 
-test("readWorkflowResource rejects unknown fixture profile paths", async () => {
+test("readWorkflowResource requires a project directory for local resources", async () => {
+  await assert.rejects(
+    () => readWorkflowResource({
+      cwd: null,
+      resourcePath: "software/agents/software-maker/profile.json",
+    }),
+    /A project directory is required/,
+  );
+});
+
+test("readWorkflowResource rejects missing local profile paths", async () => {
   await assert.rejects(
     () => readWorkflowResource({
       cwd: "/tmp/path-that-does-not-exist",
@@ -164,18 +156,6 @@ test("writeWorkflowResource persists valid json under file library root", async 
 
   assert.equal(resource.source, "file");
   assert.equal(JSON.parse(resource.content).provider, "pi");
-});
-
-test("GET workflow resource route returns fixture resource", async () => {
-  const response = await getWorkflowResource(
-    resourceRequest("software/agents/software-maker/profile.json"),
-    resourceRouteContext("software/agents/software-maker/profile.json"),
-  );
-
-  assert.equal(response.status, 200);
-  const body = await response.json() as { resource?: { source: string; kind: string } };
-  assert.equal(body.resource?.source, "fixture");
-  assert.equal(body.resource?.kind, "json");
 });
 
 test("groupSkillResourcePaths groups metadata and bundle files under one skill folder", () => {
@@ -231,9 +211,10 @@ test("GET workflow resource route renders graph agent definition as AGENTS.md", 
   );
 
   assert.equal(response.status, 200);
-  const body = await response.json() as { resource?: { kind?: string; path?: string; content?: string; writable?: boolean } };
+  const body = await response.json() as { resource?: { kind?: string; path?: string; content?: string; source?: string; writable?: boolean } };
   assert.equal(body.resource?.kind, "markdown");
   assert.equal(body.resource?.path, "library/generated-agents/agent.engineering-software-architect/AGENTS.md");
+  assert.equal(body.resource?.source, "generated");
   assert.equal(body.resource?.writable, false);
   assert.match(body.resource?.content ?? "", /# Software Architect/);
   assert.match(body.resource?.content ?? "", /Design implementation boundaries/);
@@ -520,8 +501,9 @@ test("generate route requires the v2 runtime planner instead of using local fall
 });
 
 test("GET workflow resource route returns 404 for an unknown resource", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "pi-web-workflow-"));
   const response = await getWorkflowResource(
-    resourceRequest("software/agents/not-real/profile.json"),
+    resourceRequest(`software/agents/not-real/profile.json?cwd=${encodeURIComponent(cwd)}`),
     resourceRouteContext("software/agents/not-real/profile.json"),
   );
 
@@ -606,8 +588,15 @@ test("PUT workflow resource route returns 400 for invalid json content", async (
 });
 
 test("resources route includes local source metadata and capability signals", async () => {
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "pi-web-workflow-"));
+  await writeWorkflowResource({
+    cwd,
+    resourcePath: "software/agents/software-maker/profile.json",
+    content: JSON.stringify({ id: "software-maker-pi", provider: "pi" }, null, 2),
+  });
+
   const response = await getWorkflowResource(
-    resourceRequest("software/agents/software-maker/profile.json"),
+    resourceRequest(`software/agents/software-maker/profile.json?cwd=${encodeURIComponent(cwd)}`),
     resourceRouteContext("software/agents/software-maker/profile.json"),
   );
   assert.equal(response.status, 200);
@@ -618,7 +607,7 @@ test("resources route includes local source metadata and capability signals", as
     capabilities?: { localResourceEditing?: boolean; v2Backend?: boolean };
   };
 
-  assert.equal(body.resource?.source, "fixture");
+  assert.equal(body.resource?.source, "file");
   assert.equal(body.source?.storage, "local");
   assert.equal(body.capabilities?.localResourceEditing, true);
   assert.equal(body.capabilities?.v2Backend, false);

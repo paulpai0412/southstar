@@ -205,7 +205,6 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         goalPrompt?: unknown;
         orchestrationMode?: unknown;
         composerMode?: unknown;
-        domainPackId?: unknown;
         cwd?: unknown;
         compositionPlan?: unknown;
         libraryHints?: unknown;
@@ -224,7 +223,6 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         goalPrompt?: unknown;
         orchestrationMode?: unknown;
         composerMode?: unknown;
-        domainPackId?: unknown;
         cwd?: unknown;
         compositionPlan?: unknown;
         libraryHints?: unknown;
@@ -666,7 +664,6 @@ function createPlannerDraftStreamResponse(
     goalPrompt?: unknown;
     orchestrationMode?: unknown;
     composerMode?: unknown;
-    domainPackId?: unknown;
     cwd?: unknown;
     libraryHints?: unknown;
   },
@@ -883,7 +880,6 @@ function parsePlannerDraftRequest(body: {
   goalPrompt?: unknown;
   orchestrationMode?: unknown;
   composerMode?: unknown;
-  domainPackId?: unknown;
   cwd?: unknown;
   compositionPlan?: unknown;
   libraryHints?: unknown;
@@ -891,7 +887,6 @@ function parsePlannerDraftRequest(body: {
   goalPrompt: string;
   orchestrationMode?: "llm-constrained";
   composerMode?: WorkflowComposerMode;
-  domainPackId?: string;
   cwd?: string;
   compositionPlan?: WorkflowCompositionPlan;
   libraryHints?: PlannerDraftLibraryHints;
@@ -900,7 +895,6 @@ function parsePlannerDraftRequest(body: {
     goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
     orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
     composerMode: optionalComposerMode(body.composerMode),
-    domainPackId: optionalString(body.domainPackId),
     cwd: optionalString(body.cwd),
     compositionPlan: optionalWorkflowCompositionPlan(body.compositionPlan),
     libraryHints: optionalPlannerDraftLibraryHints(body.libraryHints),

@@ -600,14 +600,6 @@ async function assertCallbackPersistedSurfacesSafePg(
   });
 }
 
-export async function callbackBindingExistsPg(db: SouthstarDb, input: { runId: string; taskId: string; attemptId?: string }): Promise<boolean> {
-  if (!input.attemptId) return true;
-  const handExecution = await getResourceByKeyPg(db, "hand_execution", canonicalHandExecutionId(input.runId, input.taskId, input.attemptId));
-  if (handExecution) return true;
-  const binding = await getResourceByKeyPg(db, "executor_binding", `executor-${input.runId}-${input.taskId}-${input.attemptId}`);
-  return Boolean(binding);
-}
-
 function callbackReceiptToken(result: PostgresTaskRunCallbackResult, handExecutionId: string): { idempotencyKey: string; artifactHash: string } {
   const artifactHash = createHash("sha256").update(stableStringify(result.artifact)).digest("hex");
   return {

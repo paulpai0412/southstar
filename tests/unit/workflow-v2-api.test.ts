@@ -5,7 +5,7 @@ import {
   buildWorkflowV2Url,
   proxyWorkflowV2Json,
   workflowV2Capabilities,
-} from "../../lib/workflow/v2-api";
+} from "../../web/lib/workflow/v2-api";
 
 const originalFetch = global.fetch;
 const originalBase = process.env.SOUTHSTAR_V2_API_BASE_URL;
