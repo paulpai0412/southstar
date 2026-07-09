@@ -52,6 +52,36 @@ export type LibraryGraphReadModel = {
   edges: LibraryGraphEdge[];
 };
 
+const EDGE_TYPE_ONTOLOGY_CATEGORY = {
+  belongs_to_domain: "classification",
+  has_capability: "capability",
+  provides_capability: "capability",
+  provides: "profile_composition",
+  uses: "usage",
+  requires: "requirement",
+  requires_capability: "requirement",
+  requires_skill: "requirement",
+  requires_tool: "requirement",
+  conflicts_with: "conflict",
+  incompatible_with: "conflict",
+  precedes: "workflow_order",
+  workflow_precedes: "workflow_order",
+  unblocks: "workflow_order",
+  validates: "quality_gate",
+  validates_artifact: "quality_gate",
+  reviews: "quality_gate",
+  produces: "artifact_flow",
+  consumes: "artifact_flow",
+  produces_artifact: "artifact_flow",
+  consumes_artifact: "artifact_flow",
+  similar_to: "similarity",
+  substitutes: "similarity",
+  complements: "similarity",
+  requires_approval: "risk",
+  requires_secret: "risk",
+  requires_secret_group: "risk",
+} satisfies Partial<Record<LibraryEdgeType, string>>;
+
 export async function buildLibraryGraphReadModel(
   db: SouthstarDb,
   input: {
@@ -229,48 +259,7 @@ function toGraphEdgeOntology(edge: LibraryEdgeRecord): LibraryGraphEdgeOntology 
 }
 
 function ontologyCategoryForEdgeType(edgeType: LibraryEdgeType): string | undefined {
-  switch (edgeType) {
-    case "belongs_to_domain":
-      return "classification";
-    case "has_capability":
-    case "provides_capability":
-      return "capability";
-    case "provides":
-      return "profile_composition";
-    case "uses":
-      return "usage";
-    case "requires":
-    case "requires_capability":
-    case "requires_skill":
-    case "requires_tool":
-      return "requirement";
-    case "conflicts_with":
-    case "incompatible_with":
-      return "conflict";
-    case "precedes":
-    case "workflow_precedes":
-    case "unblocks":
-      return "workflow_order";
-    case "validates":
-    case "validates_artifact":
-    case "reviews":
-      return "quality_gate";
-    case "produces":
-    case "consumes":
-    case "produces_artifact":
-    case "consumes_artifact":
-      return "artifact_flow";
-    case "similar_to":
-    case "substitutes":
-    case "complements":
-      return "similarity";
-    case "requires_approval":
-    case "requires_secret":
-    case "requires_secret_group":
-      return "risk";
-    default:
-      return undefined;
-  }
+  return EDGE_TYPE_ONTOLOGY_CATEGORY[edgeType];
 }
 
 function objectBelongsToScope(object: LibraryObjectSummary, scope: string): boolean {

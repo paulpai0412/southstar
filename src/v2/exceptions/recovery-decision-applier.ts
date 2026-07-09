@@ -156,44 +156,12 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
       );
       const executionResourceKey = recoveryExecutionResourceKey(decision.decisionId);
 
-      if (decision.status === "applied") {
-        return { status: "applied", executionResourceKey, reason: "decision already applied" };
-      }
-      if (decision.status === "waiting_operator_approval") {
-        return { status: "skipped", reason: "decision waiting for operator approval" };
-      }
-      if (decision.status === "blocked" || decision.status === "failed" || decision.status === "superseded") {
-        const repairedExecutionResourceKey = await repairTerminalRecoveryExecutionPg(deps.db, {
-          decision,
-          executionResourceKey,
-          now,
-        });
-        return {
-          status: decision.status,
-          ...(repairedExecutionResourceKey ? { executionResourceKey: repairedExecutionResourceKey } : {}),
-          reason: terminalDecisionReason(decision),
-        };
-      }
+      const settledResult = await applyResultForSettledDecision(deps.db, { decision, executionResourceKey, now });
+      if (settledResult) return settledResult;
 
       const claimedDecision = await claimRecoveryDecisionApplyingPg(deps.db, { decision, now });
-      if (claimedDecision.status === "applied") {
-        return { status: "applied", executionResourceKey, reason: "decision already applied" };
-      }
-      if (claimedDecision.status === "waiting_operator_approval") {
-        return { status: "skipped", reason: "decision waiting for operator approval" };
-      }
-      if (claimedDecision.status === "blocked" || claimedDecision.status === "failed" || claimedDecision.status === "superseded") {
-        const repairedExecutionResourceKey = await repairTerminalRecoveryExecutionPg(deps.db, {
-          decision: claimedDecision,
-          executionResourceKey,
-          now,
-        });
-        return {
-          status: claimedDecision.status,
-          ...(repairedExecutionResourceKey ? { executionResourceKey: repairedExecutionResourceKey } : {}),
-          reason: terminalDecisionReason(claimedDecision),
-        };
-      }
+      const claimedSettledResult = await applyResultForSettledDecision(deps.db, { decision: claimedDecision, executionResourceKey, now });
+      if (claimedSettledResult) return claimedSettledResult;
       const applyingDecision: RuntimeRecoveryDecisionRecord = { ...claimedDecision, status: "applying" };
 
       const started = await startRecoveryExecutionPg(deps.db, {
@@ -234,6 +202,39 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
       });
     },
   };
+}
+
+async function applyResultForSettledDecision(
+  db: SouthstarDb,
+  input: {
+    decision: RuntimeRecoveryDecisionRecord;
+    executionResourceKey: string;
+    now: string;
+  },
+): Promise<RecoveryDecisionApplyResult | null> {
+  const { decision, executionResourceKey, now } = input;
+  if (decision.status === "applied") {
+    return { status: "applied", executionResourceKey, reason: "decision already applied" };
+  }
+  if (decision.status === "waiting_operator_approval") {
+    return { status: "skipped", reason: "decision waiting for operator approval" };
+  }
+  if (!isTerminalRecoveryDecisionStatus(decision.status)) return null;
+
+  const repairedExecutionResourceKey = await repairTerminalRecoveryExecutionPg(db, {
+    decision,
+    executionResourceKey,
+    now,
+  });
+  return {
+    status: decision.status,
+    ...(repairedExecutionResourceKey ? { executionResourceKey: repairedExecutionResourceKey } : {}),
+    reason: terminalDecisionReason(decision),
+  };
+}
+
+function isTerminalRecoveryDecisionStatus(status: RecoveryDecisionStatus): status is "blocked" | "failed" | "superseded" {
+  return status === "blocked" || status === "failed" || status === "superseded";
 }
 
 const recoveryPathHandlers: Partial<Record<RecoveryPath, RecoveryPathHandler>> = {
