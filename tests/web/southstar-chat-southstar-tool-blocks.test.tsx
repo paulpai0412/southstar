@@ -247,6 +247,13 @@ test("Chat MessageView renders Southstar import candidates tool results as an in
     await assertText(page, '[data-testid="library-import-candidates"]', "Beautiful Page");
     await page.locator('[aria-label="Install selected candidates"]').click();
     await page.waitForFunction(() => window.__installRequests?.length === 1);
+    await assertText(page, '[data-testid="library-install-sse-frames"]', "library.import.install.requested");
+    await assertText(page, '[data-testid="library-install-sse-frames"]', "library.db.synced");
+    await assertText(page, '[data-testid="library-install-sse-frames"]', "library.graph.snapshot");
+    await assertText(page, '[data-testid="library-install-sse-frames"]', "library.command.completed");
+    await page.locator('[data-testid="library-install-graph"] [data-testid="library-graph-chart"]').waitFor();
+    await assertText(page, '[data-testid="library-install-graph"]', "Beautiful Page");
+    await assertText(page, '[data-testid="library-install-graph"]', "uses 0.86");
     assert.deepEqual(installRequests, [{
       selectedCandidateIds: ["skill.beautiful-page"],
       actor: "pi-agent",
@@ -264,7 +271,20 @@ test("Chat MessageView renders Southstar import candidates tool results as an in
       }, request);
       await route.fulfill({
         contentType: "text/event-stream",
-        body: "event: library.command.completed\ndata: {\"status\":\"installed\"}\n\n",
+        body: [
+          "event: library.import.install.requested",
+          'data: {"draftId":"draft-import-1","selectedCandidateCount":1}',
+          "",
+          "event: library.db.synced",
+          'data: {"draftId":"draft-import-1","objectKeys":["skill.beautiful-page"],"edgeIds":[]}',
+          "",
+          "event: library.graph.snapshot",
+          'data: {"activeScope":"design","availableScopes":["all","design"],"nodes":[{"id":"lib-skill","objectKey":"skill.beautiful-page","objectKind":"skill_spec","status":"approved","title":"Beautiful Page","scope":"design"},{"id":"lib-tool","objectKey":"tool.browser","objectKind":"tool_definition","status":"approved","title":"Browser","scope":"global"}],"edges":[{"id":"edge-1","fromObjectKey":"skill.beautiful-page","edgeType":"uses","toObjectKey":"tool.browser","scope":"design","status":"active","weight":0.86,"ontology":{"confidence":0.86}}]}',
+          "",
+          "event: library.command.completed",
+          'data: {"draftId":"draft-import-1","status":"installed"}',
+          "",
+        ].join("\n"),
       });
     });
   });

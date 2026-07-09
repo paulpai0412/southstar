@@ -54,7 +54,7 @@ test("session kind does not migrate old workflow-looking sessions without explic
   ]), "chat");
 });
 
-test("session kind recognizes API workflow composer prompt sessions", () => {
+test("session kind does not infer workflow from prompt text without metadata", () => {
   assert.equal(classifySessionKindFromEntries([
     {
       type: "message",
@@ -66,7 +66,7 @@ test("session kind recognizes API workflow composer prompt sessions", () => {
         content: "You are Southstar's library-constrained workflow architect.\nReturn exactly one JSON object.",
       },
     },
-  ]), "workflow");
+  ]), "chat");
 });
 
 test("filterSessionsByKind separates chat, workflow, and library sessions", () => {

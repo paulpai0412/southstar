@@ -58,3 +58,40 @@ test("library chat command dispatches streamed frames including trailing frame",
     globalThis.fetch = originalFetch;
   }
 });
+
+test("library candidate install command surfaces streamed library errors", async () => {
+  const { runLibraryCandidateInstallCommand } = await import("../../web/lib/library/chat-stream.ts");
+  const originalFetch = globalThis.fetch;
+  const encoder = new TextEncoder();
+
+  globalThis.fetch = async (input, init) => {
+    assert.equal(String(input), "/api/library/import-drafts/draft-1/install/stream");
+    assert.equal(init?.method, "POST");
+    return new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode("event: library.import.install.requested\ndata: {\"draftId\":\"draft-1\"}\n\n"));
+        controller.enqueue(encoder.encode("event: library.error\ndata: {\"message\":\"already installed\"}\n\n"));
+        controller.close();
+      },
+    }), {
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+
+  try {
+    const events: string[] = [];
+    await assert.rejects(
+      runLibraryCandidateInstallCommand({
+        draftId: "draft-1",
+        selectedCandidateIds: ["skill.a"],
+        reason: "test",
+        onFrame: (frame) => events.push(frame.event),
+      }),
+      /already installed/,
+    );
+
+    assert.deepEqual(events, ["library.import.install.requested", "library.error"]);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

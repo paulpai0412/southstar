@@ -826,14 +826,20 @@ function libraryChatEventStream(
   input: { sessionId: string; actionId: string; prompt: string; scope: string },
 ): Response {
   const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
   return new Response(new ReadableStream<Uint8Array>({
     async start(controller) {
-      let closed = false;
       const emit = (event: string, data: Record<string, unknown>) => {
         if (closed) return;
-        controller.enqueue(encoder.encode(sse(event, { sessionId: input.sessionId, actionId: input.actionId, ...data })));
+        try {
+          controller.enqueue(encoder.encode(sse(event, { sessionId: input.sessionId, actionId: input.actionId, ...data })));
+        } catch {
+          closed = true;
+          if (heartbeat) clearInterval(heartbeat);
+        }
       };
-      const heartbeat = startLibrarySseHeartbeat(context, emit, { phase: "library_chat" });
+      heartbeat = startLibrarySseHeartbeat(context, emit, { phase: "library_chat" });
       try {
         if (await replayCompletedLibraryChatAction(context, input, emit)) return;
         await updateLibraryChatAction(context, input, "running", {
@@ -903,10 +909,21 @@ function libraryChatEventStream(
         }).catch(() => undefined);
         emit("library.error", { message });
       } finally {
-        clearInterval(heartbeat);
+        const wasClosed = closed;
         closed = true;
-        controller.close();
+        if (heartbeat) clearInterval(heartbeat);
+        if (!wasClosed) {
+          try {
+            controller.close();
+          } catch {
+            // The browser may have cancelled the stream already.
+          }
+        }
       }
+    },
+    cancel() {
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
     },
   }), {
     headers: {
@@ -929,14 +946,20 @@ function libraryImportInstallEventStream(
   },
 ): Response {
   const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
   return new Response(new ReadableStream<Uint8Array>({
     async start(controller) {
-      let closed = false;
       const emit = (event: string, data: Record<string, unknown>) => {
         if (closed) return;
-        controller.enqueue(encoder.encode(sse(event, data)));
+        try {
+          controller.enqueue(encoder.encode(sse(event, data)));
+        } catch {
+          closed = true;
+          if (heartbeat) clearInterval(heartbeat);
+        }
       };
-      const heartbeat = startLibrarySseHeartbeat(context, emit, {
+      heartbeat = startLibrarySseHeartbeat(context, emit, {
         phase: "library_import_install",
         draftId: input.draftId,
       });
@@ -960,6 +983,7 @@ function libraryImportInstallEventStream(
           objectKeys: installed.graph.objectKeys,
           edgeIds: installed.graph.edgeIds,
         });
+        emit("library.graph.snapshot", await installedImportGraphSnapshot(context, installed));
         emit("library.command.completed", { draftId: input.draftId, status: "installed" });
       } catch (error) {
         emit("library.error", {
@@ -967,10 +991,21 @@ function libraryImportInstallEventStream(
           message: error instanceof Error ? error.message : String(error),
         });
       } finally {
-        clearInterval(heartbeat);
+        const wasClosed = closed;
         closed = true;
-        controller.close();
+        if (heartbeat) clearInterval(heartbeat);
+        if (!wasClosed) {
+          try {
+            controller.close();
+          } catch {
+            // The browser may have cancelled the stream already.
+          }
+        }
       }
+    },
+    cancel() {
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
     },
   }), {
     headers: {
@@ -980,6 +1015,35 @@ function libraryImportInstallEventStream(
       "access-control-allow-origin": "*",
     },
   });
+}
+
+async function installedImportGraphSnapshot(
+  context: RuntimeServerContext,
+  installed: Awaited<ReturnType<typeof installLibraryImportCandidates>>,
+): Promise<Record<string, unknown>> {
+  const graph = await buildLibraryGraphReadModel(context.db, { scope: "all" });
+  const installedObjectKeys = new Set(installed.graph.objectKeys);
+  const installedEdgeIds = new Set(installed.graph.edgeIds);
+  const edges = graph.edges.filter((edge) => installedEdgeIds.has(edge.id));
+  const visibleObjectKeys = new Set(installedObjectKeys);
+  for (const edge of edges) {
+    visibleObjectKeys.add(edge.fromObjectKey);
+    visibleObjectKeys.add(edge.toObjectKey);
+  }
+  const activeScope = installed.installedObjects
+    .map(({ object }) => optionalString(object.state.scope))
+    .find((scope): scope is string => Boolean(scope)) ?? "all";
+  return {
+    ...graph,
+    activeScope,
+    query: {
+      ...(activeScope !== "all" ? { scope: activeScope } : {}),
+      installedObjectKeys: installed.graph.objectKeys,
+      installedEdgeIds: installed.graph.edgeIds,
+    },
+    nodes: graph.nodes.filter((node) => visibleObjectKeys.has(node.objectKey)),
+    edges,
+  };
 }
 
 function isImportDraftPrompt(prompt: string): boolean {

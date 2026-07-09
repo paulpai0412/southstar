@@ -55,7 +55,10 @@ export async function runLibraryChatCommand(input: {
         const parts = buffer.replace(/\r\n/g, "\n").split("\n\n");
         buffer = parts.pop() ?? "";
         for (const frame of parts) {
-          for (const parsed of parseLibrarySseFrames(`${frame}\n\n`)) input.onFrame(parsed);
+          for (const parsed of parseLibrarySseFrames(`${frame}\n\n`)) {
+            input.onFrame(parsed);
+            throwIfLibraryError(parsed);
+          }
         }
       }
       if (done) break;
@@ -64,11 +67,20 @@ export async function runLibraryChatCommand(input: {
     buffer += decoder.decode();
     const trailing = buffer.trim();
     if (trailing) {
-      for (const parsed of parseLibrarySseFrames(`${trailing}\n\n`)) input.onFrame(parsed);
+      for (const parsed of parseLibrarySseFrames(`${trailing}\n\n`)) {
+        input.onFrame(parsed);
+        throwIfLibraryError(parsed);
+      }
     }
   } finally {
     reader.releaseLock();
   }
+}
+
+function throwIfLibraryError(frame: LibrarySseFrame): void {
+  if (frame.event !== "library.error") return;
+  const message = typeof frame.data.message === "string" ? frame.data.message : "library candidate install failed";
+  throw new Error(message);
 }
 
 export async function runLibraryCandidateInstallCommand(input: {
@@ -108,7 +120,10 @@ export async function runLibraryCandidateInstallCommand(input: {
         const parts = buffer.replace(/\r\n/g, "\n").split("\n\n");
         buffer = parts.pop() ?? "";
         for (const frame of parts) {
-          for (const parsed of parseLibrarySseFrames(`${frame}\n\n`)) input.onFrame(parsed);
+          for (const parsed of parseLibrarySseFrames(`${frame}\n\n`)) {
+            input.onFrame(parsed);
+            throwIfLibraryError(parsed);
+          }
         }
       }
       if (done) break;
@@ -117,7 +132,10 @@ export async function runLibraryCandidateInstallCommand(input: {
     buffer += decoder.decode();
     const trailing = buffer.trim();
     if (trailing) {
-      for (const parsed of parseLibrarySseFrames(`${trailing}\n\n`)) input.onFrame(parsed);
+      for (const parsed of parseLibrarySseFrames(`${trailing}\n\n`)) {
+        input.onFrame(parsed);
+        throwIfLibraryError(parsed);
+      }
     }
   } finally {
     reader.releaseLock();

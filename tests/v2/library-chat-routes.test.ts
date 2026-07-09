@@ -328,6 +328,74 @@ test("library chat import streams keepalive progress, candidates, and completes 
   }
 });
 
+test("library chat event streams tolerate client cancellation", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-chat-cancel-"));
+  const uncaught: unknown[] = [];
+  const onUncaught = (error: unknown) => {
+    uncaught.push(error);
+  };
+  process.on("uncaughtException", onUncaught);
+
+  try {
+    const context = {
+      db,
+      libraryRoot,
+      libraryChatHeartbeatMs: 1,
+      libraryImportSourceFetcher: async () => ({
+        documents: [],
+        repoPath: "/tmp/southstar-library-imports/cancel-test",
+      }),
+      libraryImportLlmProvider: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return {
+          sessionId: "pi-agent-cancel-session",
+          candidates: [{
+            objectKey: "skill.cancel-test",
+            kind: "skill",
+            title: "Cancel Test",
+            sourcePath: "skills/cancel-test/SKILL.md",
+          }],
+        };
+      },
+    } as any;
+
+    const messageResponse = await handleRuntimeRoute(
+      context,
+      new Request("http://local/api/v2/library/chat/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: "library-chat-cancel-test",
+          prompt: "import https://github.com/example/cancel-test skill",
+          scope: "software",
+        }),
+      }),
+    );
+    assert.equal(messageResponse.status, 200);
+    const message = await readEnvelope(messageResponse);
+
+    const streamResponse = await handleRuntimeRoute(
+      context,
+      new Request(
+        `http://local/api/v2/library/chat/events?sessionId=library-chat-cancel-test&actionId=${message.result.actionId}`,
+      ),
+    );
+    assert.equal(streamResponse.status, 200);
+    assert.ok(streamResponse.body);
+    const reader = streamResponse.body.getReader();
+    await reader.read();
+    await reader.cancel();
+    await new Promise((resolve) => setTimeout(resolve, 60));
+
+    assert.deepEqual(uncaught, []);
+  } finally {
+    process.off("uncaughtException", onUncaught);
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("library chat graph prompts stream and replay graph snapshot blocks", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-chat-graph-"));

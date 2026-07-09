@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { readLibraryFile, readLibraryGraphNeighborhood, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
-import type { LibraryFileEnvelope, LibraryGraphReadModel, LibraryObjectDetail, LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
+import type { LibraryFileEnvelope, LibraryGraphReadModel, LibraryObjectDetail, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
 import type { SessionInfo, WorkspaceSurface } from "@/lib/types";
 import { ChatWindow } from "../ChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
@@ -22,7 +22,7 @@ type LibraryWorkspaceContextValue = {
   saving: boolean;
   syncing: boolean;
   fileStatusMessage?: string;
-  librarySessions: LibrarySessionSummary[];
+  librarySessions: SessionInfo[];
   selectedSessionId?: string;
   selectedLibrarySession: SessionInfo | null;
   librarySessionKey: number;
@@ -36,11 +36,10 @@ type LibraryWorkspaceContextValue = {
   handleNewSession: () => void;
   handleSelectScope: (scope: string) => void;
   handleSelectObject: (object: LibraryWorkspaceObject) => void;
-  handleSelectSession: (session: LibrarySessionSummary) => void;
+  handleSelectSession: (session: SessionInfo) => void;
   handleRenameSession: (sessionId: string, title: string) => void;
   handleDeleteSession: (sessionId: string) => void;
   handleSelectGraphNode: (node: LibraryGraphChartNode) => void;
-  handleSessionActivity: (session: LibrarySessionSummary) => void;
   handleSharedSessionCreated: (session: SessionInfo) => void;
   setStatusFilter: (status: string) => void;
   updateDirtyFileContent: (content: string) => void;
@@ -82,7 +81,7 @@ export function LibraryWorkspaceProvider({
   const [saving, setSaving] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [fileStatusMessage, setFileStatusMessage] = useState<string | undefined>(undefined);
-  const [librarySessions, setLibrarySessions] = useState<LibrarySessionSummary[]>([]);
+  const [librarySessions, setLibrarySessions] = useState<SessionInfo[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | undefined>(undefined);
   const [librarySessionKey, setLibrarySessionKey] = useState(0);
   const selectedFilePathRef = useRef<string | undefined>(undefined);
@@ -113,11 +112,11 @@ export function LibraryWorkspaceProvider({
 
   const loadLibrarySessions = useCallback(() => {
     let cancelled = false;
-    fetch("/api/library/chat/sessions?limit=50", { cache: "no-store" })
+    fetch("/api/sessions?scope=all&kind=library&limit=50&compact=1", { cache: "no-store" })
       .then((response) => response.json())
       .then((payload) => {
         if (cancelled) return;
-        setLibrarySessions(readRuntimeLibrarySessions(payload));
+        setLibrarySessions(readPiLibrarySessions(payload));
       })
       .catch(() => {
         if (!cancelled) setLibrarySessions([]);
@@ -141,45 +140,33 @@ export function LibraryWorkspaceProvider({
   }, [loadLibrarySessions, loadWorkspace]);
 
   const selectedLibrarySession = useMemo<SessionInfo | null>(() => {
-    const session = librarySessions.find((item) => item.id === selectedSessionId);
-    if (!session) return null;
-    const modified = session.modified ?? new Date(0).toISOString();
-    return {
-      path: "",
-      id: session.id,
-      cwd: defaultCwd ?? "",
-      kind: "library",
-      name: session.title,
-      created: modified,
-      modified,
-      messageCount: session.itemCount ?? 0,
-      firstMessage: session.title || session.detail || session.id,
-    };
-  }, [defaultCwd, librarySessions, selectedSessionId]);
+    return librarySessions.find((item) => item.id === selectedSessionId) ?? null;
+  }, [librarySessions, selectedSessionId]);
 
-  const handleSessionActivity = useCallback((session: LibrarySessionSummary) => {
-    setSelectedSessionId(session.id);
-    setLibrarySessions((current) => {
-      const existing = current.findIndex((item) => item.id === session.id);
-      if (existing === -1) return [session, ...current];
-      const next = [...current];
-      next[existing] = { ...next[existing], ...session };
-      return next;
-    });
-  }, []);
-
-  const handleSelectSession = useCallback((session: LibrarySessionSummary) => {
+  const handleSelectSession = useCallback((session: SessionInfo) => {
     setSelectedSessionId(session.id);
     setLibrarySessionKey((value) => value + 1);
   }, []);
 
   const handleRenameSession = useCallback((sessionId: string, title: string) => {
-    setLibrarySessions((current) => current.map((session) => session.id === sessionId ? { ...session, title } : session));
+    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: title }),
+    }).then((response) => {
+      if (!response.ok) throw new Error("failed to rename library session");
+      setLibrarySessions((current) => current.map((session) => session.id === sessionId ? { ...session, name: title } : session));
+    }).catch(() => undefined);
   }, []);
 
   const handleDeleteSession = useCallback((sessionId: string) => {
-    setLibrarySessions((current) => current.filter((session) => session.id !== sessionId));
-    setSelectedSessionId((current) => current === sessionId ? undefined : current);
+    void fetch(`/api/sessions/${encodeURIComponent(sessionId)}`, { method: "DELETE" })
+      .then((response) => {
+        if (!response.ok) throw new Error("failed to delete library session");
+        setLibrarySessions((current) => current.filter((session) => session.id !== sessionId));
+        setSelectedSessionId((current) => current === sessionId ? undefined : current);
+      })
+      .catch(() => undefined);
   }, []);
 
   const handleNewSession = useCallback(() => {
@@ -189,15 +176,8 @@ export function LibraryWorkspaceProvider({
 
   const handleSharedSessionCreated = useCallback((session: SessionInfo) => {
     setSelectedSessionId(session.id);
-    setLibrarySessions((current) => mergeLibrarySessions(current, [{
-      id: session.id,
-      title: session.firstMessage || session.name || session.id,
-      status: "running",
-      modified: session.modified,
-      detail: selectedScope,
-      itemCount: session.messageCount,
-    }]));
-  }, [selectedScope]);
+    setLibrarySessions((current) => mergePiLibrarySessions(current, [session]));
+  }, []);
 
   const updateDirtyFileContent = useCallback((content: string) => {
     dirtyFileContentRef.current = content;
@@ -394,7 +374,6 @@ export function LibraryWorkspaceProvider({
     handleRenameSession,
     handleDeleteSession,
     handleSelectGraphNode,
-    handleSessionActivity,
     handleSharedSessionCreated,
     setStatusFilter,
     updateDirtyFileContent,
@@ -411,7 +390,6 @@ export function LibraryWorkspaceProvider({
     handleSelectSession,
     handleRenameSession,
     handleDeleteSession,
-    handleSessionActivity,
     handleSharedSessionCreated,
     librarySessions,
     librarySessionKey,
@@ -586,27 +564,29 @@ function sourcePathFromObjectDetail(detail: LibraryObjectDetail): string | undef
   return typeof sourcePath === "string" && sourcePath.length > 0 ? sourcePath : undefined;
 }
 
-function readRuntimeLibrarySessions(payload: unknown): LibrarySessionSummary[] {
+function readPiLibrarySessions(payload: unknown): SessionInfo[] {
   const root = isRecord(payload) ? payload : {};
-  const result = isRecord(root.result) ? root.result : root;
-  const sessions = Array.isArray(result.sessions) ? result.sessions : [];
-  return sessions.filter(isLibrarySessionSummary).slice(0, 50);
+  const sessions = Array.isArray(root.sessions) ? root.sessions : [];
+  return sessions.filter(isPiLibrarySession).slice(0, 50);
 }
 
-function isLibrarySessionSummary(value: unknown): value is LibrarySessionSummary {
+function isPiLibrarySession(value: unknown): value is SessionInfo {
   if (!value || typeof value !== "object") return false;
-  const session = value as LibrarySessionSummary;
-  return typeof session.id === "string" && typeof session.title === "string" && typeof session.status === "string";
+  const session = value as SessionInfo;
+  return typeof session.id === "string"
+    && typeof session.cwd === "string"
+    && session.kind === "library"
+    && typeof session.modified === "string";
 }
 
-function mergeLibrarySessions(current: LibrarySessionSummary[], incoming: LibrarySessionSummary[]): LibrarySessionSummary[] {
-  const byId = new Map<string, LibrarySessionSummary>();
+function mergePiLibrarySessions(current: SessionInfo[], incoming: SessionInfo[]): SessionInfo[] {
+  const byId = new Map<string, SessionInfo>();
   for (const session of [...current, ...incoming]) {
     const existing = byId.get(session.id);
-    byId.set(session.id, existing ? { ...existing, ...session, title: existing.title || session.title } : session);
+    byId.set(session.id, existing ? { ...existing, ...session, name: session.name ?? existing.name } : session);
   }
   return [...byId.values()]
-    .sort((left, right) => Date.parse(right.modified ?? "") - Date.parse(left.modified ?? ""))
+    .sort((left, right) => Date.parse(right.modified) - Date.parse(left.modified))
     .slice(0, 50);
 }
 

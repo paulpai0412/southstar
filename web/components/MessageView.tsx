@@ -7,7 +7,7 @@ import { LibraryCandidateMessageBlock } from "./library/LibraryCandidateMessageB
 import { LibraryGraphBlock } from "./library/LibraryGraphBlock";
 import type { LibraryGraphChartNode } from "./library/LibraryGraphChart";
 import { runLibraryCandidateInstallCommand } from "@/lib/library/chat-stream";
-import type { LibraryImportCandidate, LibraryImportProposedEdge } from "@/lib/library/types";
+import type { LibraryImportCandidate, LibraryImportProposedEdge, LibrarySseFrame } from "@/lib/library/types";
 import type {
   AgentMessage,
   UserMessage,
@@ -763,7 +763,7 @@ function SouthstarToolResultBlock({
   if (isLibraryImportTool(mcpToolName, piToolName) && isLibraryImportCandidatePayload(payload)) {
     return (
       <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
-        <ChatLibraryCandidateBlock data={payload} />
+        <ChatLibraryCandidateBlock data={payload} onSelectNode={onLibraryGraphNodeSelect} />
       </div>
     );
   }
@@ -780,12 +780,17 @@ function SouthstarToolResultBlock({
   return null;
 }
 
-function ChatLibraryCandidateBlock({ data }: { data: LibraryImportCandidatePayload }) {
+function ChatLibraryCandidateBlock({ data, onSelectNode }: { data: LibraryImportCandidatePayload; onSelectNode?: (node: LibraryGraphChartNode) => void }) {
   const [status, setStatus] = useState<"draft" | "installing" | "installed">("draft");
   const [installedObjectKeys, setInstalledObjectKeys] = useState<string[]>([]);
+  const [installFrames, setInstallFrames] = useState<LibrarySseFrame[]>([]);
+  const [installedGraph, setInstalledGraph] = useState<LibraryGraphPayload | null>(null);
 
   const installCandidates = async (selectedCandidateIds: string[]) => {
     setStatus("installing");
+    setInstallFrames([]);
+    setInstalledGraph(null);
+    let sawStreamError = false;
     try {
       await runLibraryCandidateInstallCommand({
         draftId: data.draftId,
@@ -793,6 +798,11 @@ function ChatLibraryCandidateBlock({ data }: { data: LibraryImportCandidatePaylo
         actor: "pi-agent",
         reason: "Installed from Southstar chat tool result.",
         onFrame(frame) {
+          if (frame.event === "library.error") sawStreamError = true;
+          setInstallFrames((current) => [...current, frame]);
+          if ((frame.event === "library.graph.snapshot" || frame.event === "library.ontology.graph") && isLibraryGraphPayload(frame.data)) {
+            setInstalledGraph(frame.data);
+          }
           if (frame.event === "library.command.completed" || frame.event === "library.db.synced") {
             setStatus("installed");
             setInstalledObjectKeys(selectedCandidateIds);
@@ -801,20 +811,66 @@ function ChatLibraryCandidateBlock({ data }: { data: LibraryImportCandidatePaylo
       });
       setStatus("installed");
       setInstalledObjectKeys(selectedCandidateIds);
-    } catch {
+    } catch (error) {
       setStatus("draft");
+      if (!sawStreamError) {
+        setInstallFrames((current) => [...current, {
+          event: "library.error",
+          data: { message: error instanceof Error ? error.message : String(error) },
+        }]);
+      }
     }
   };
 
   return (
-    <LibraryCandidateMessageBlock
-      draftId={data.draftId}
-      candidates={data.candidates}
-      proposedEdges={data.proposedEdges}
-      status={status}
-      installedObjectKeys={installedObjectKeys}
-      onInstall={(selectedCandidateIds) => void installCandidates(selectedCandidateIds)}
-    />
+    <>
+      <LibraryCandidateMessageBlock
+        draftId={data.draftId}
+        candidates={data.candidates}
+        proposedEdges={data.proposedEdges}
+        status={status}
+        installedObjectKeys={installedObjectKeys}
+        onInstall={(selectedCandidateIds) => void installCandidates(selectedCandidateIds)}
+      />
+      <LibraryInstallFrames frames={installFrames} />
+      {installedGraph ? (
+        <div data-testid="library-install-graph" style={{ marginTop: 8 }}>
+          <LibraryGraphBlock
+            key={`${data.draftId}:${installFrames.length}`}
+            data={installedGraph}
+            defaultScope={typeof installedGraph.activeScope === "string" ? installedGraph.activeScope : "all"}
+            onSelectNode={onSelectNode}
+            fetchOnMount={false}
+          />
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function LibraryInstallFrames({ frames }: { frames: LibrarySseFrame[] }) {
+  if (frames.length === 0) return null;
+  return (
+    <div data-testid="library-install-sse-frames" style={{ display: "grid", gap: 6, marginTop: 8 }}>
+      {frames.map((frame, index) => (
+        <div
+          key={`${frame.event}:${index}`}
+          style={{
+            border: `1px solid ${frame.event === "library.error" ? "rgba(248,113,113,0.35)" : "var(--border)"}`,
+            borderRadius: 6,
+            padding: 8,
+            background: frame.event === "library.error" ? "rgba(248,113,113,0.06)" : "var(--bg-subtle)",
+          }}
+        >
+          <div style={{ fontSize: 11, color: frame.event === "library.error" ? "#f87171" : "var(--text-dim)", marginBottom: 4, fontFamily: "var(--font-mono)" }}>
+            {frame.event}
+          </div>
+          <pre style={{ whiteSpace: "pre-wrap", margin: 0, fontSize: 12, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+            {JSON.stringify(frame.data, null, 2)}
+          </pre>
+        </div>
+      ))}
+    </div>
   );
 }
 

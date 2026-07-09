@@ -72,10 +72,12 @@ export function LibraryGraphBlock({
   data,
   defaultScope,
   onSelectNode,
+  fetchOnMount = true,
 }: {
   data: Record<string, unknown>;
   defaultScope: string;
   onSelectNode?: (node: LibraryGraphChartNode) => void;
+  fetchOnMount?: boolean;
 }) {
   const initialGraph = toGraphData(data);
   const initialScope = typeof initialGraph.activeScope === "string" && initialGraph.activeScope.length > 0
@@ -96,6 +98,7 @@ export function LibraryGraphBlock({
   }, [defaultScope, graph.availableScopes, selectedScope]);
 
   useEffect(() => {
+    if (!fetchOnMount) return;
     let cancelled = false;
     const params = new URLSearchParams({ scope: selectedScope });
     if (selectedKind !== "all") params.set("kind", selectedKind);
@@ -110,7 +113,7 @@ export function LibraryGraphBlock({
     return () => {
       cancelled = true;
     };
-  }, [selectedEdgeType, selectedKind, selectedScope, selectedStatus]);
+  }, [fetchOnMount, selectedEdgeType, selectedKind, selectedScope, selectedStatus]);
 
   const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter(isGraphNode) : [];
   const edges = Array.isArray(graph.edges) ? graph.edges.filter(isGraphEdge) : [];

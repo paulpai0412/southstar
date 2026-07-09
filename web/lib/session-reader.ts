@@ -1,6 +1,7 @@
 import { SessionManager, buildSessionContext as piBuildSessionContext, getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readdir, readFile, stat } from "fs/promises";
-import { join } from "path";
+import { isAbsolute, join, relative, resolve } from "path";
+import { tmpdir } from "os";
 import type {
   AgentMessage,
   FileEntry,
@@ -35,7 +36,7 @@ function toSessionInfo(piSessions: PiSessionInfo[]): SessionInfo[] {
       path: s.path,
       id: s.id,
       cwd: s.cwd,
-      kind: classifySessionKindFromEntries(safeSessionKindEntries(s.path)),
+      kind: classifySessionKindForSession(s.cwd, safeSessionKindEntries(s.path)),
       name: s.name,
       created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
       modified: s.modified instanceof Date ? s.modified.toISOString() : String(s.modified),
@@ -140,13 +141,25 @@ async function readSessionInfoCandidate(filePath: string, modifiedMs: number): P
     path: filePath,
     id: header.id,
     cwd: header.cwd,
-    kind: classifySessionKindFromEntries(entries),
+    kind: classifySessionKindForSession(header.cwd, entries),
     name,
     created: header.timestamp,
     modified: lastEntry?.timestamp ?? new Date(modifiedMs).toISOString(),
     messageCount: messages.length,
     firstMessage,
   };
+}
+
+function classifySessionKindForSession(cwd: string, entries: SessionEntry[]): SessionKind {
+  if (isLibraryImportCwd(cwd)) return "library";
+  return classifySessionKindFromEntries(entries);
+}
+
+function isLibraryImportCwd(cwd: string): boolean {
+  const root = resolve(process.env.SOUTHSTAR_LIBRARY_IMPORT_ROOT ?? join(tmpdir(), "southstar-library-imports"));
+  const child = resolve(cwd);
+  const path = relative(root, child);
+  return path === "" || (!!path && !path.startsWith("..") && !isAbsolute(path));
 }
 
 function isSessionHeader(entry: FileEntry): entry is SessionHeader {

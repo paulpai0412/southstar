@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
-import type { LibrarySessionSummary, LibraryWorkspaceModel, LibraryWorkspaceObject, LibraryWorkspaceObjectGroup } from "@/lib/library/types";
+import type { LibraryWorkspaceModel, LibraryWorkspaceObject, LibraryWorkspaceObjectGroup } from "@/lib/library/types";
+import type { SessionInfo } from "@/lib/types";
 import { FolderIcon } from "../FileIcons";
 import { ProjectScopePicker } from "../ProjectScopePicker";
 
@@ -52,7 +53,7 @@ export function LibrarySidebar({
   onSelectObject,
 }: {
   model: LibraryWorkspaceModel | null;
-  sessions?: LibrarySessionSummary[];
+  sessions?: SessionInfo[];
   selectedSessionId?: string;
   selectedScope: string;
   selectedObjectKey?: string;
@@ -61,7 +62,7 @@ export function LibrarySidebar({
   onCwdChange?: (cwd: string | null) => void;
   onSelectScope: (scope: string) => void;
   onStatusFilterChange: (status: string) => void;
-  onSelectSession?: (session: LibrarySessionSummary) => void;
+  onSelectSession?: (session: SessionInfo) => void;
   onRenameSession?: (sessionId: string, title: string) => void;
   onDeleteSession?: (sessionId: string) => void;
   onNewSession?: () => void;
@@ -397,13 +398,13 @@ function LibrarySessionRow({
   onRename,
   onDelete,
 }: {
-  session: LibrarySessionSummary;
+  session: SessionInfo;
   selected: boolean;
-  onSelect?: (session: LibrarySessionSummary) => void;
+  onSelect?: (session: SessionInfo) => void;
   onRename?: (sessionId: string, title: string) => void;
   onDelete?: (sessionId: string) => void;
 }) {
-  const title = session.title || "Untitled Library session";
+  const title = session.name || session.firstMessage || "Untitled Library session";
   const rename = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     const next = window.prompt("Rename Library session", title)?.trim();
@@ -453,8 +454,8 @@ function LibrarySessionRow({
         </span>
       </span>
       <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, color: "var(--text-dim)", fontSize: 11 }}>
-        <span>{session.status}</span>
-        <span>{session.detail ?? (typeof session.itemCount === "number" ? `${session.itemCount} items` : formatRelativeTime(session.modified))}</span>
+        <span>{session.kind}</span>
+        <span>{formatRelativeTime(session.modified)}</span>
       </span>
     </div>
   );

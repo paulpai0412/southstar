@@ -77,19 +77,19 @@ test("library import candidate checkboxes update from current selection state", 
   assert.doesNotMatch(block, /const next = new Set\(selected\);/);
 });
 
-test("library workspace uses dedicated library chat sessions", () => {
+test("library workspace uses Pi library sessions with dedicated library chat commands", () => {
   const workspace = source("web/components/library/LibraryWorkspace.tsx");
   const hook = source("web/hooks/useAgentSession.ts");
 
-  assert.match(workspace, /fetch\("\/api\/library\/chat\/sessions\?limit=50"/);
-  assert.match(workspace, /readRuntimeLibrarySessions/);
-  assert.match(workspace, /isLibrarySessionSummary/);
+  assert.match(workspace, /fetch\("\/api\/sessions\?scope=all&kind=library&limit=50&compact=1"/);
+  assert.match(workspace, /readPiLibrarySessions/);
+  assert.match(workspace, /isPiLibrarySession/);
   assert.match(workspace, /ChatWindow/);
   assert.match(workspace, /sessionKind="library"/);
   assert.match(workspace, /libraryScope=\{context\.selectedScope\}/);
   assert.match(hook, /runLibraryChatCommand/);
   assert.match(hook, /sessionKind === "library"/);
-  assert.doesNotMatch(workspace, /\/api\/sessions\?scope=all&kind=library/);
+  assert.doesNotMatch(workspace, /\/api\/library\/chat\/sessions\?limit=50/);
   assert.doesNotMatch(workspace, /LibraryChatWindow/);
   assert.doesNotMatch(workspace, /selectedChatSession/);
   assert.doesNotMatch(workspace, /LIBRARY_SESSIONS_STORAGE_KEY/);
@@ -126,4 +126,21 @@ test("library and workflow session row actions are hidden until hover or focus",
   assert.match(css, /\.southstar-session-row-actions\s*\{[\s\S]*opacity: 0;/);
   assert.match(css, /\.southstar-session-row:hover \.southstar-session-row-actions/);
   assert.match(css, /\.southstar-session-row:focus-within \.southstar-session-row-actions/);
+});
+
+test("session reader repairs legacy library import sessions from cwd metadata", () => {
+  const reader = source("web/lib/session-reader.ts");
+  const kind = source("web/lib/session-kind.ts");
+
+  assert.match(reader, /SOUTHSTAR_LIBRARY_IMPORT_ROOT/);
+  assert.match(reader, /southstar-library-imports/);
+  assert.match(reader, /classifySessionKindForSession\(header\.cwd, entries\)/);
+  assert.doesNotMatch(kind, /SOUTHSTAR_WORKFLOW_COMPOSER_PROMPT_PREFIX/);
+});
+
+test("workflow v2 proxy returns JSON when the runtime API is unavailable", () => {
+  const proxy = source("web/lib/workflow/v2-api.ts");
+
+  assert.match(proxy, /catch \(error\)/);
+  assert.match(proxy, /status: 502/);
 });

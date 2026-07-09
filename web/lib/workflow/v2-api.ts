@@ -51,14 +51,22 @@ export async function proxyWorkflowV2Json(request: NextRequest, pathname: string
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
   const upstreamUrl = buildWorkflowV2Url(pathname);
   upstreamUrl.search = request.nextUrl.search;
-  const response = await fetch(upstreamUrl, {
-    method: request.method,
-    headers: new Headers({
-      accept: request.headers.get("accept") ?? "application/json",
-      "content-type": request.headers.get("content-type") ?? "application/json",
-    }),
-    body,
-  });
+  let response: Response;
+  try {
+    response = await fetch(upstreamUrl, {
+      method: request.method,
+      headers: new Headers({
+        accept: request.headers.get("accept") ?? "application/json",
+        "content-type": request.headers.get("content-type") ?? "application/json",
+      }),
+      body,
+    });
+  } catch (error) {
+    return NextResponse.json({
+      status: "blocked",
+      error: error instanceof Error ? error.message : String(error),
+    }, { status: 502 });
+  }
 
   const text = await response.text();
   return new Response(text, {
