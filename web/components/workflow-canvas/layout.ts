@@ -16,12 +16,13 @@ export async function buildWorkflowFlowLayout(input: {
   selectedTaskId: string | null;
   direction?: "DOWN" | "RIGHT";
 }): Promise<{ nodes: Array<Node<WorkflowTaskNodeData>>; edges: Array<Edge<WorkflowDependencyEdgeData>> }> {
+  const nodeIds = new Set(input.canvas.nodes.map((node) => node.id));
   const dependencyByTarget = new Map<string, string[]>();
   for (const node of input.canvas.nodes) {
     if (node.dependsOn.length > 0) dependencyByTarget.set(node.id, [...node.dependsOn]);
   }
 
-  const dependencies = input.canvas.edges.length > 0
+  const rawDependencies = input.canvas.edges.length > 0
     ? input.canvas.edges
     : input.canvas.nodes.flatMap((node) => {
         const dependsOn = dependencyByTarget.get(node.id) ?? [];
@@ -32,6 +33,7 @@ export async function buildWorkflowFlowLayout(input: {
           status: "pending" as const,
         }));
       });
+  const dependencies = rawDependencies.filter((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target));
 
   const graph = await elk.layout({
     id: "southstar-workflow-canvas",

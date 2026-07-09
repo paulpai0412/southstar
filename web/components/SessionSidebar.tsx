@@ -384,7 +384,7 @@ export function SessionSidebar({ selectedSessionId, onSelectSession, onNewSessio
       if (showLoading) setLoading(true);
       const sessionsUrl = cwdForRequest
         ? `/api/sessions?kind=chat&cwd=${encodeURIComponent(cwdForRequest)}`
-        : "/api/sessions?kind=chat&scope=all";
+        : "/api/sessions?kind=chat&scope=all&limit=50&compact=1";
       const res = await fetch(sessionsUrl, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json() as { sessions: SessionInfo[] };

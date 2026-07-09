@@ -9,7 +9,7 @@ function source(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
 
-test("App mode rail exposes Library mode and AppShell renders persistent library panel", () => {
+test("App mode rail exposes Library mode and AppShell renders lazy library panel", () => {
   const rail = source("web/components/AppModeRail.tsx");
   assert.match(rail, /"library"/);
   assert.match(rail, /Library/);
@@ -21,8 +21,10 @@ test("App mode rail exposes Library mode and AppShell renders persistent library
   );
   const appShell = source("web/components/AppShell.tsx");
   assert.match(appShell, /LibraryWorkspaceProvider/);
+  assert.match(appShell, /active=\{appMode === "library"\}/);
   assert.match(appShell, /data-testid="library-sidebar-panel"/);
-  assert.match(appShell, /sidebarPanelStyle\(activeSidebarSurface === "library"\)/);
+  assert.match(appShell, /activeSidebarSurface === "library"/);
+  assert.doesNotMatch(appShell, /sidebarPanelStyle\(activeSidebarSurface === "library"\)/);
   assert.match(appShell, /LibrarySidebarPanel/);
   assert.match(appShell, /kind === "libraryFile"/);
   assert.match(appShell, /kind:\s*"libraryFile"/);
@@ -60,11 +62,11 @@ test("Library workspace follows AppShell sidebar plus center chat and file viewe
   assert.match(workspace, /ChatWindow/);
   assert.match(workspace, /sessionKind="library"/);
   assert.match(workspace, /libraryScope=\{context\.selectedScope\}/);
-  assert.match(workspace, /\/api\/library\/chat\/sessions\?limit=50/);
+  assert.match(workspace, /\/api\/sessions\?scope=all&kind=library&limit=50&compact=1/);
   assert.match(workspace, /data-testid="library-chat-empty-new"/);
   assert.doesNotMatch(workspace, /selectedChatSession/);
   assert.doesNotMatch(workspace, /LibraryChatWindow/);
-  assert.doesNotMatch(workspace, /\/api\/sessions\?scope=all&kind=library/);
+  assert.doesNotMatch(workspace, /\/api\/library\/chat\/sessions\?limit=50/);
   assert.match(workspace, /LibraryFileViewer/);
   assert.match(workspace, /gridTemplateColumns:\s*"minmax\(0, 1fr\)"/);
   assert.doesNotMatch(workspace, /gridTemplateColumns:\s*"260px minmax\(0, 1fr\) 360px"/);

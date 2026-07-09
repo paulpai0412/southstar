@@ -54,6 +54,8 @@ const LibraryWorkspaceContext = createContext<LibraryWorkspaceContextValue | nul
 
 export function LibraryWorkspaceProvider({
   children,
+  active = true,
+  restoredSession,
   onOpenFile,
   defaultCwd,
   modelsRefreshKey,
@@ -62,6 +64,8 @@ export function LibraryWorkspaceProvider({
   onWorkspaceSurfaceChange,
 }: {
   children: ReactNode;
+  active?: boolean;
+  restoredSession?: SessionInfo | null;
   onOpenFile?: (file: { objectKey: string; title: string; sourcePath?: string }) => void;
   defaultCwd?: string | null;
   modelsRefreshKey?: number;
@@ -130,9 +134,22 @@ export function LibraryWorkspaceProvider({
     selectedFilePathRef.current = selectedFilePath;
   }, [selectedFilePath]);
 
-  useEffect(() => loadWorkspaceWithCleanup(), [loadWorkspaceWithCleanup]);
+  useEffect(() => {
+    if (!active) return;
+    return loadWorkspaceWithCleanup();
+  }, [active, loadWorkspaceWithCleanup]);
 
-  useEffect(() => loadLibrarySessions(), [loadLibrarySessions]);
+  useEffect(() => {
+    if (!active) return;
+    return loadLibrarySessions();
+  }, [active, loadLibrarySessions]);
+
+  useEffect(() => {
+    if (!restoredSession || restoredSession.kind !== "library") return;
+    setSelectedSessionId(restoredSession.id);
+    setLibrarySessions((current) => mergePiLibrarySessions(current, [restoredSession]));
+    setLibrarySessionKey((value) => value + 1);
+  }, [restoredSession]);
 
   const refreshWorkspace = useCallback(() => {
     loadWorkspace();

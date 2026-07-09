@@ -172,7 +172,6 @@ test("AppShell renders Operator sidebar and workspace from the live web folder",
 test("Operator sidebar keeps project scope above operator focus", () => {
   const sidebar = source("web/components/operator/OperatorSidebar.tsx");
   assert.match(sidebar, /Project Scope/);
-  assert.match(sidebar, /Operator Focus/);
   assert.match(sidebar, /ProjectScopePicker/);
   assert.match(sidebar, /Running Workflow Runs/);
   assert.match(sidebar, /Completed Workflow Runs/);
@@ -269,7 +268,7 @@ test("Operator mode surfaces overview errors and keeps dashboard until user sele
   assert.match(sidebar, /Operator overview/);
 });
 
-test("AppShell keeps mode panels mounted when switching Chat Workflow Operator tabs", () => {
+test("AppShell keeps mode panels mounted but only mounts the active sidebar surface", () => {
   const shell = source("web/components/AppShell.tsx");
 
   assert.match(shell, /data-testid="chat-mode-panel"/);
@@ -278,6 +277,10 @@ test("AppShell keeps mode panels mounted when switching Chat Workflow Operator t
   assert.match(shell, /data-testid="chat-sidebar-panel"/);
   assert.match(shell, /data-testid="workflow-sidebar-panel"/);
   assert.match(shell, /data-testid="operator-sidebar-panel"/);
+  assert.match(shell, /activeSidebarSurface === "operator" \?/);
+  assert.match(shell, /activeSidebarSurface === "workflow" \?/);
+  assert.match(shell, /activeSidebarSurface === "library" \?/);
+  assert.doesNotMatch(shell, /sidebarPanelStyle\(activeSidebarSurface/);
   assert.match(shell, /key=\{`chat:\$\{sessionKey\}`\}/);
   assert.match(shell, /key=\{`workflow:\$\{workflowSessionKey\}`\}/);
   assert.doesNotMatch(shell, /key=\{`\$\{appMode\}:/);

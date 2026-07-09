@@ -35,6 +35,29 @@ test("chat session sidebar reuses cached chat sessions when remounted for the sa
   assert.match(sidebar, /kind=chat/);
 });
 
+test("chat session sidebar never uses the slow unbounded all-session path", () => {
+  const sidebar = source("web/components/SessionSidebar.tsx");
+
+  assert.match(sidebar, /kind=chat&scope=all&limit=50&compact=1/);
+  assert.doesNotMatch(sidebar, /kind=chat&scope=all["`]/);
+});
+
+test("project scope picker never uses the slow unbounded all-session path", () => {
+  const picker = source("web/components/ProjectScopePicker.tsx");
+
+  assert.match(picker, /kind=chat&scope=all&limit=50&compact=1/);
+  assert.doesNotMatch(picker, /api\/sessions\?scope=all["`]/);
+});
+
+test("AppShell only mounts the active session sidebar surface", () => {
+  const appShell = source("web/components/AppShell.tsx");
+
+  assert.match(appShell, /sidebarPanelBodyStyle/);
+  assert.match(appShell, /activeSidebarSurface === "workflow" \?/);
+  assert.match(appShell, /activeSidebarSurface === "library" \?/);
+  assert.doesNotMatch(appShell, /sidebarPanelStyle\(activeSidebarSurface/);
+});
+
 test("sessions route defaults omitted kind requests to chat sessions", () => {
   const route = source("web/app/api/sessions/route.ts");
 
@@ -112,6 +135,41 @@ test("workflow session selections suppress the duplicate cwd remount", () => {
   assert.ok(selectWorkflowSession);
   assert.match(selectWorkflowSession[0], /suppressCwdBumpRef\.current = true;/);
   assert.match(selectWorkflowSession[0], /setWorkflowSessionKey\(\(k\) => k \+ 1\);/);
+});
+
+test("AppShell restores workflow session URLs through the workflow surface", () => {
+  const appShell = source("web/components/AppShell.tsx");
+
+  assert.match(appShell, /fetch\(`\/api\/sessions\/\$\{encodeURIComponent\(initialSessionId\)\}`/);
+  assert.match(appShell, /info\.kind === "workflow"/);
+  assert.match(appShell, /setAppMode\("workflow"\)/);
+  assert.match(appShell, /setWorkflowSelectedSession\(info\)/);
+});
+
+test("AppShell restores library session URLs through the library surface", () => {
+  const appShell = source("web/components/AppShell.tsx");
+
+  assert.match(appShell, /info\.kind === "library"/);
+  assert.match(appShell, /setAppMode\("library"\)/);
+  assert.match(appShell, /setRestoredLibrarySession\(info\)/);
+  assert.match(appShell, /restoredSession=\{restoredLibrarySession\}/);
+});
+
+test("library workspace accepts a restored shared session without refetching every surface", () => {
+  const workspace = source("web/components/library/LibraryWorkspace.tsx");
+
+  assert.match(workspace, /restoredSession\?: SessionInfo \| null/);
+  assert.match(workspace, /if \(!restoredSession \|\| restoredSession\.kind !== "library"\) return;/);
+  assert.match(workspace, /setSelectedSessionId\(restoredSession\.id\)/);
+  assert.match(workspace, /mergePiLibrarySessions\(current, \[restoredSession\]\)/);
+});
+
+test("single session route does not scan every session to load parent metadata", () => {
+  const route = source("web/app/api/sessions/[id]/route.ts");
+
+  assert.doesNotMatch(route, /listAllSessions/);
+  assert.match(route, /parentSessionIdFromHeader/);
+  assert.match(route, /kind: classifySessionKindForSession/);
 });
 
 test("library and workflow session row actions are hidden until hover or focus", () => {

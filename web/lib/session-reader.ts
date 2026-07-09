@@ -150,7 +150,7 @@ async function readSessionInfoCandidate(filePath: string, modifiedMs: number): P
   };
 }
 
-function classifySessionKindForSession(cwd: string, entries: SessionEntry[]): SessionKind {
+export function classifySessionKindForSession(cwd: string, entries: SessionEntry[]): SessionKind {
   if (isLibraryImportCwd(cwd)) return "library";
   return classifySessionKindFromEntries(entries);
 }
@@ -209,9 +209,37 @@ export async function resolveSessionPath(sessionId: string): Promise<string | nu
   const cached = getPathCache().get(sessionId);
   if (cached) return cached;
 
-  // Cache miss: scan all sessions to populate cache, then retry
+  const direct = await findSessionPathById(getSessionsDir(), sessionId);
+  if (direct) {
+    getPathCache().set(sessionId, direct);
+    return direct;
+  }
+
+  // Cache miss fallback: keep the old broad scan for unusual session filenames.
   await listAllSessions();
   return getPathCache().get(sessionId) ?? null;
+}
+
+async function findSessionPathById(dir: string, sessionId: string): Promise<string | null> {
+  let dirents;
+  try {
+    dirents = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+
+  for (const dirent of dirents) {
+    if (!dirent.isFile()) continue;
+    if (dirent.name.endsWith(`${sessionId}.jsonl`)) return join(dir, dirent.name);
+  }
+
+  for (const dirent of dirents) {
+    if (!dirent.isDirectory()) continue;
+    const found = await findSessionPathById(join(dir, dirent.name), sessionId);
+    if (found) return found;
+  }
+
+  return null;
 }
 
 export function cacheSessionPath(sessionId: string, filePath: string): void {

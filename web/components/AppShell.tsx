@@ -109,6 +109,7 @@ export function AppShell() {
   const [appMode, setAppMode] = useState<AppMode>("chat");
   const [chatWorkspaceSurface, setChatWorkspaceSurface] = useState<WorkspaceSurface>("chat");
   const [selectedLibraryGraphNode, setSelectedLibraryGraphNode] = useState<{ id: number; node: LibraryGraphChartNode } | null>(null);
+  const [restoredLibrarySession, setRestoredLibrarySession] = useState<SessionInfo | null>(null);
   const [selectedWorkflowTemplate, setSelectedWorkflowTemplate] = useState<WorkflowTemplateSummary | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const chatInputRef = useRef<ChatInputHandle | null>(null);
@@ -424,6 +425,53 @@ export function AppShell() {
     router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
   }, [router]);
 
+  useEffect(() => {
+    if (!initialSessionId) return;
+    let cancelled = false;
+
+    fetch(`/api/sessions/${encodeURIComponent(initialSessionId)}`)
+      .then((res) => res.ok ? res.json() : null)
+      .then((data: { info?: SessionInfo | null } | null) => {
+        if (cancelled) return;
+        const info = data?.info;
+        if (!info) {
+          setInitialSessionRestored(true);
+          return;
+        }
+
+        if (info.cwd) window.localStorage.setItem(LAST_CWD_STORAGE_KEY, info.cwd);
+        suppressCwdBumpRef.current = true;
+        setActiveCwd(info.cwd || null);
+        setSystemPrompt(null);
+
+        if (info.kind === "workflow") {
+          setAppMode("workflow");
+          setRestoredLibrarySession(null);
+          setWorkflowNewSessionCwd(null);
+          setWorkflowSelectedSession(info);
+          setWorkflowSessionKey((k) => k + 1);
+        } else if (info.kind === "library") {
+          setAppMode("library");
+          setRestoredLibrarySession(info);
+        } else {
+          setAppMode("chat");
+          setRestoredLibrarySession(null);
+          setNewSessionCwd(null);
+          setSelectedSession(info);
+          setSessionKey((k) => k + 1);
+        }
+
+        setInitialSessionRestored(true);
+      })
+      .catch(() => {
+        if (!cancelled) setInitialSessionRestored(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [initialSessionId]);
+
   const handleAgentEnd = useCallback(() => {
     setRefreshKey((k) => k + 1);
     setExplorerRefreshKey((k) => k + 1);
@@ -699,13 +747,13 @@ export function AppShell() {
     setRefreshKey((value) => value + 1);
   }, []);
 
-  const sidebarPanelStyle = (active: boolean) => ({
-    display: active ? "flex" : "none",
+  const sidebarPanelBodyStyle = {
+    display: "flex",
     flexDirection: "column" as const,
     height: "100%",
     minHeight: 0,
     flex: "1 1 auto",
-  });
+  };
 
   const modePanelStyle = (active: boolean) => ({
     position: "absolute" as const,
@@ -735,62 +783,67 @@ export function AppShell() {
 
   const sidebarContent = (
     <>
-      <div data-testid="operator-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "operator")} aria-hidden={activeSidebarSurface !== "operator"}>
-        <OperatorSidebar
-          cwd={activeCwd}
-          runs={operator.model.runs}
-          incidents={operatorIncidents}
-          selectedRunId={operatorSelectedRunId}
-          selectedTaskId={operatorSelectedTaskId}
-          selectedIncidentId={operatorSelectedIncidentId}
-          error={operator.error}
-          onCwdChange={handleCwdChange}
-          onSelectRun={setOperatorSelectedRunId}
-          onSelectIncident={(incident) => {
-            setOperatorSelectedIncidentId(incident.id);
-            if (incident.runId) setOperatorSelectedRunId(incident.runId);
-            setOperatorSelectedTaskId(incident.taskId || null);
-            if (incident.runId && incident.taskId) {
-              openOperatorTaskSidecar({ runId: incident.runId, taskId: incident.taskId, attentionId: incident.sourceAttentionIds[0] });
-            }
-          }}
-          onRefresh={operator.refresh}
-        />
-      </div>
-      <div data-testid="workflow-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "workflow")} aria-hidden={activeSidebarSurface !== "workflow"}>
-        <WorkflowSidebar
-          cwd={workflowCurrentCwd}
-          selectedSessionId={workflowSelectedSession?.id ?? null}
-          selectedTemplateId={selectedWorkflowTemplate?.id ?? null}
-          onSessionSelect={handleSelectWorkflowSession}
-          onTemplateSelect={setSelectedWorkflowTemplate}
-          onTemplateMention={handleWorkflowTemplateMention}
-          onOpenResource={handleOpenWorkflowResource}
-          onCwdChange={handleCwdChange}
-          onNewSession={handleWorkflowSidebarNewSession}
-          onRefreshSessions={handleWorkflowSidebarRefresh}
-          onSessionDeleted={handleWorkflowSessionDeleted}
-        />
-      </div>
-      <div data-testid="library-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "library")} aria-hidden={activeSidebarSurface !== "library"}>
-        <LibrarySidebarPanel />
-      </div>
-      <div data-testid="chat-sidebar-panel" style={sidebarPanelStyle(activeSidebarSurface === "chat")} aria-hidden={activeSidebarSurface !== "chat"}>
-        <SessionSidebar
-          selectedSessionId={selectedSession?.id ?? null}
-          onSelectSession={handleSelectSession}
-          onNewSession={handleNewSession}
-          initialSessionId={initialSessionId}
-          onInitialRestoreDone={handleInitialRestoreDone}
-          refreshKey={refreshKey}
-          onSessionDeleted={handleSessionDeleted}
-          selectedCwd={activeCwd}
-          onCwdChange={handleCwdChange}
-          onOpenFile={handleOpenFile}
-          explorerRefreshKey={explorerRefreshKey}
-          onAtMention={handleAtMention}
-        />
-      </div>
+      {activeSidebarSurface === "operator" ? (
+        <div data-testid="operator-sidebar-panel" style={sidebarPanelBodyStyle}>
+          <OperatorSidebar
+            cwd={activeCwd}
+            runs={operator.model.runs}
+            incidents={operatorIncidents}
+            selectedRunId={operatorSelectedRunId}
+            selectedTaskId={operatorSelectedTaskId}
+            selectedIncidentId={operatorSelectedIncidentId}
+            error={operator.error}
+            onCwdChange={handleCwdChange}
+            onSelectRun={setOperatorSelectedRunId}
+            onSelectIncident={(incident) => {
+              setOperatorSelectedIncidentId(incident.id);
+              if (incident.runId) setOperatorSelectedRunId(incident.runId);
+              setOperatorSelectedTaskId(incident.taskId || null);
+              if (incident.runId && incident.taskId) {
+                openOperatorTaskSidecar({ runId: incident.runId, taskId: incident.taskId, attentionId: incident.sourceAttentionIds[0] });
+              }
+            }}
+            onRefresh={operator.refresh}
+          />
+        </div>
+      ) : activeSidebarSurface === "workflow" ? (
+        <div data-testid="workflow-sidebar-panel" style={sidebarPanelBodyStyle}>
+          <WorkflowSidebar
+            cwd={workflowCurrentCwd}
+            selectedSessionId={workflowSelectedSession?.id ?? null}
+            selectedTemplateId={selectedWorkflowTemplate?.id ?? null}
+            onSessionSelect={handleSelectWorkflowSession}
+            onTemplateSelect={setSelectedWorkflowTemplate}
+            onTemplateMention={handleWorkflowTemplateMention}
+            onOpenResource={handleOpenWorkflowResource}
+            onCwdChange={handleCwdChange}
+            onNewSession={handleWorkflowSidebarNewSession}
+            onRefreshSessions={handleWorkflowSidebarRefresh}
+            onSessionDeleted={handleWorkflowSessionDeleted}
+          />
+        </div>
+      ) : activeSidebarSurface === "library" ? (
+        <div data-testid="library-sidebar-panel" style={sidebarPanelBodyStyle}>
+          <LibrarySidebarPanel />
+        </div>
+      ) : (
+        <div data-testid="chat-sidebar-panel" style={sidebarPanelBodyStyle}>
+          <SessionSidebar
+            selectedSessionId={selectedSession?.id ?? null}
+            onSelectSession={handleSelectSession}
+            onNewSession={handleNewSession}
+            initialSessionId={initialSessionId}
+            onInitialRestoreDone={handleInitialRestoreDone}
+            refreshKey={refreshKey}
+            onSessionDeleted={handleSessionDeleted}
+            selectedCwd={activeCwd}
+            onCwdChange={handleCwdChange}
+            onOpenFile={handleOpenFile}
+            explorerRefreshKey={explorerRefreshKey}
+            onAtMention={handleAtMention}
+          />
+        </div>
+      )}
       <div data-testid="left-controls" style={{ padding: "8px", flexShrink: 0, display: "flex", justifyContent: "space-between", gap: 4 }}>
         {([
           {
@@ -977,6 +1030,8 @@ export function AppShell() {
       }
     `}</style>
     <LibraryWorkspaceProvider
+      active={appMode === "library"}
+      restoredSession={restoredLibrarySession}
       onOpenFile={handleOpenLibraryFile}
       defaultCwd={activeCwd}
       onCwdChange={handleCwdChange}

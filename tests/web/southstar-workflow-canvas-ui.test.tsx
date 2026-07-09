@@ -166,6 +166,28 @@ test("web workflow DAG block renders the shared React Flow canvas inside a scrol
   assert.match(block, /onSelectTask=\{handleSelectTask\}/);
 });
 
+test("workflow canvas layout ignores dependency edges that point at missing nodes", async () => {
+  const { buildWorkflowFlowLayout } = await import("../../web/components/workflow-canvas/layout.ts");
+  const flow = await buildWorkflowFlowLayout({
+    canvas: {
+      graphId: "dangling-edge",
+      mode: "draft",
+      nodes: [
+        { id: "plan", label: "Plan", kind: "task", status: "ready", dependsOn: [], badges: [] },
+        { id: "verify", label: "Verify", kind: "task", status: "ready", dependsOn: ["plan"], badges: [] },
+      ],
+      edges: [
+        { id: "missing->verify", source: "missing", target: "verify", status: "ready" },
+        { id: "plan->verify", source: "plan", target: "verify", status: "ready" },
+      ],
+    },
+    selectedTaskId: null,
+  });
+
+  assert.equal(flow.nodes.length, 2);
+  assert.deepEqual(flow.edges.map((edge) => edge.id), ["plan->verify"]);
+});
+
 test("Workflow DAG block exposes Save Template action for draft DAGs", () => {
   const sourceText = source("web/components/WorkflowDagBlock.tsx");
   assert.match(sourceText, /Save Template/);

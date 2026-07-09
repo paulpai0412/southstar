@@ -26,7 +26,7 @@ export function ProjectScopePicker({
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    fetch("/api/sessions?scope=all", { cache: "no-store" })
+    fetch("/api/sessions?kind=chat&scope=all&limit=50&compact=1", { cache: "no-store" })
       .then((res) => res.json())
       .then((data: { sessions?: SessionInfo[] }) => setSessions(data.sessions || []))
       .catch(() => setSessions([]));

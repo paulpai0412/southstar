@@ -6,9 +6,10 @@ import {
   resolveSessionPath,
   invalidateSessionPathCache,
   buildSessionContext,
-  listAllSessions,
+  classifySessionKindForSession,
 } from "@/lib/session-reader";
 import { getRpcSession } from "@/lib/rpc-manager";
+import type { SessionEntry, SessionHeader } from "@/lib/types";
 
 // BranchNavigator still traverses recursively, so keep the response tree shallow.
 const MAX_PROJECTED_TREE_DEPTH = 200;
@@ -110,6 +111,20 @@ function projectTreeForResponse<T extends { entry: { id: string }; children: T[]
   return projectedRoots;
 }
 
+function parentSessionIdFromHeader(header: SessionHeader | null): string | undefined {
+  const parentPath = header?.parentSession;
+  if (!parentPath) return undefined;
+  try {
+    const firstLine = readFileSync(parentPath, "utf8").split("\n")[0];
+    const parentHeader = JSON.parse(firstLine) as { type?: string; id?: unknown };
+    return parentHeader.type === "session" && typeof parentHeader.id === "string"
+      ? parentHeader.id
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ id: string }> }
@@ -122,20 +137,20 @@ export async function GET(
     }
 
     const sm = SessionManager.open(filePath);
-    const entries = sm.getEntries() as never;
+    const entries = sm.getEntries() as unknown as SessionEntry[];
     const leafId = sm.getLeafId();
     const tree = projectTreeForResponse(sm.getTree());
     const context = buildSessionContext(entries, leafId);
 
-    const header = sm.getHeader();
+    const header = sm.getHeader() as SessionHeader | null;
     let modified = header?.timestamp ?? new Date().toISOString();
     try { modified = statSync(filePath).mtime.toISOString(); } catch { /* use header timestamp */ }
-    const allSessions = await listAllSessions();
-    const parentSessionId = allSessions.find((s) => s.id === id)?.parentSessionId;
+    const parentSessionId = parentSessionIdFromHeader(header);
     const info = header ? {
       path: filePath,
       id: header.id,
       cwd: header.cwd ?? "",
+      kind: classifySessionKindForSession(header.cwd ?? "", entries),
       name: sm.getSessionName(),
       created: header.timestamp,
       modified,
