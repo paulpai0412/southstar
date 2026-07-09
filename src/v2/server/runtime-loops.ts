@@ -48,7 +48,6 @@ type FailedBindingRow = {
 
 export function createManagedRuntimeLoopPlan(input: { schedulerIntervalMs: number; recoveryIntervalMs: number }): ManagedRuntimeLoopPlanItem[] {
   return [
-    { id: "executor-reconciler", intervalMs: 30_000 },
     { id: "runnable-task-scheduler", intervalMs: input.schedulerIntervalMs },
     { id: "recovery-controller", intervalMs: input.recoveryIntervalMs },
     { id: "tork-exception-observer", intervalMs: input.recoveryIntervalMs },
@@ -99,11 +98,17 @@ export function createManagedRuntimeLoopRunners(input: ManagedRuntimeLoopDeps): 
       intervalMs: input.schedulerIntervalMs,
       runOnce: async () => {
         let processedRuns = 0;
+        const failedRunIds: string[] = [];
         for (const runId of await listActiveRunIds(input.db)) {
-          await scheduler.runOnce({ runId });
-          processedRuns += 1;
+          try {
+            await scheduler.runOnce({ runId });
+            processedRuns += 1;
+          } catch {
+            failedRunIds.push(runId);
+          }
         }
-        return { processedRuns };
+        if (failedRunIds.length === 0) return { processedRuns };
+        return { processedRuns, failedRuns: failedRunIds.length, failedRunIds };
       },
     },
     {

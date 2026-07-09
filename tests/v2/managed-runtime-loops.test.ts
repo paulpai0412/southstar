@@ -27,8 +27,75 @@ import { createTestPostgresDb, initSouthstarSchema } from "./postgres-test-utils
 test("managed runtime loop plan includes scheduler and recovery loops", () => {
   const plan = createManagedRuntimeLoopPlan({ schedulerIntervalMs: 1000, recoveryIntervalMs: 5000 });
 
-  assert.deepEqual(plan.map((item) => item.id), ["executor-reconciler", "runnable-task-scheduler", "recovery-controller", "tork-exception-observer", "recovery-decision-applier"]);
-  assert.deepEqual(plan.map((item) => item.intervalMs), [30_000, 1000, 5000, 5000, 5000]);
+  assert.deepEqual(plan.map((item) => item.id), ["runnable-task-scheduler", "recovery-controller", "tork-exception-observer", "recovery-decision-applier"]);
+  assert.deepEqual(plan.map((item) => item.intervalMs), [1000, 5000, 5000, 5000]);
+});
+
+test("managed runtime loop runners match the managed loop plan ids", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    const plan = createManagedRuntimeLoopPlan({ schedulerIntervalMs: 1000, recoveryIntervalMs: 5000 });
+    const runners = createManagedRuntimeLoopRunners({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: createFakeBrainProvider({ providerId: "fake-brain-loop-plan" }),
+      handProvider: createFakeHandProvider({ providerId: "fake-hand-loop-plan" }),
+      schedulerIntervalMs: 1000,
+      recoveryIntervalMs: 5000,
+    });
+
+    assert.deepEqual(runners.map((runner) => runner.id), plan.map((item) => item.id));
+  } finally {
+    await db.close();
+  }
+});
+
+test("managed scheduler loop continues after one active run fails", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedSoftwareLibraryGraph(db);
+    await seedManagedLoopRun(db, { runId: "run-managed-loop-bad", taskId: "task-managed-loop-bad" });
+    await seedManagedLoopRun(db, { runId: "run-managed-loop-good", taskId: "task-managed-loop-good" });
+
+    const baseBrainProvider = createFakeBrainProvider({ providerId: "fake-brain-loop-isolation" });
+    const handProvider = createFakeHandProvider({ providerId: "fake-hand-loop-isolation" });
+    handProvider.executeTask = async (_binding, input) => ({
+      ok: true,
+      output: `job-${input.taskId}`,
+      metadata: {
+        externalJobId: `job-${input.taskId}`,
+        handExecutionId: input.handExecutionId,
+      },
+    });
+    const runners = createManagedRuntimeLoopRunners({
+      db,
+      sessionStore: createPostgresSessionStore(db),
+      brainProvider: {
+        ...baseBrainProvider,
+        async wake(input) {
+          if (input.runId === "run-managed-loop-bad") throw new Error("expected bad run wake failure");
+          return baseBrainProvider.wake(input);
+        },
+      },
+      handProvider,
+      schedulerIntervalMs: 1000,
+      recoveryIntervalMs: 5000,
+    });
+
+    const result = await runners.find((runner) => runner.id === "runnable-task-scheduler")?.runOnce();
+
+    assert.deepEqual(result, {
+      processedRuns: 1,
+      failedRuns: 1,
+      failedRunIds: ["run-managed-loop-bad"],
+    });
+    const brainBindings = await listResourcesPg(db, { resourceType: "brain_binding" });
+    assert.equal(brainBindings.some((resource) => resource.runId === "run-managed-loop-good"), true);
+  } finally {
+    await db.close();
+  }
 });
 
 test("managed runtime loop dispatches runnable Postgres tasks through scheduler", async () => {
@@ -323,6 +390,40 @@ test("default managed runtime loop forwards managed provider actions to recovery
 
 async function sleep(ms: number): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function seedManagedLoopRun(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  input: { runId: string; taskId: string },
+): Promise<void> {
+  await createWorkflowRunPg(db, {
+    id: input.runId,
+    status: "running",
+    domain: "software",
+    goalPrompt: "managed loop",
+    workflowManifestJson: JSON.stringify(managedLoopManifest(`wf-${input.runId}`, input.taskId)),
+    executionProjectionJson: "{}",
+    snapshotJson: "{}",
+    runtimeContextJson: "{}",
+    metricsJson: "{}",
+  });
+  await createWorkflowTaskPg(db, {
+    id: input.taskId,
+    runId: input.runId,
+    taskKey: input.taskId,
+    status: "pending",
+    sortOrder: 0,
+    dependsOn: [],
+  });
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "context_packet",
+    resourceKey: `ctx-${input.taskId}`,
+    runId: input.runId,
+    taskId: input.taskId,
+    scope: "task",
+    status: "created",
+    payload: { id: `ctx-${input.taskId}` },
+  });
 }
 
 function managedLoopManifest(workflowId: string, taskId: string): unknown {
