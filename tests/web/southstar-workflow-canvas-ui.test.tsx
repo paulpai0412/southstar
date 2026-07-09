@@ -128,8 +128,12 @@ test("Workflow mode generate submit uses web generate stream and preserves norma
 
 test("Workflow mode does not revise non-draft composition DAG ids", () => {
   const hook = source("web/hooks/useAgentSession.ts");
+  const engine = source("web/lib/agent-session-engine.ts");
+
   assert.doesNotMatch(hook, /block\.dag\.draftId\s*\?\?\s*block\.dag\.id/);
-  assert.match(hook, /isPlannerDraftId/);
+  assert.match(hook, /latestWorkflowDraftId/);
+  assert.match(engine, /function isPlannerDraftId/);
+  assert.doesNotMatch(engine, /block\.dag\.draftId\s*\?\?\s*block\.dag\.id/);
 });
 
 test("Workflow mode renders DAG blocks while the workflow stream is still active", () => {

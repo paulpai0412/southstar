@@ -1,5 +1,4 @@
 import { evaluateApprovalPolicy } from "../approvals/policy.ts";
-import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { createExecutorBindingPg, getExecutorBindingPg, listExecutorBindingsForRunPg, updateExecutorBindingStatusPg } from "../executor/postgres-bindings.ts";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
@@ -8,27 +7,8 @@ import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approva
 import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
-import type { WorkflowCompositionPlan } from "../design-library/types.ts";
-import { buildEvolutionControlCenterReadModel } from "../read-models/evolution-control-center.ts";
-import { envelopeReadModel } from "../read-models/envelope.ts";
 import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } from "../read-models/agent-library.ts";
-import { buildPostgresCoreReadModel, isPostgresCoreReadModelKind } from "../read-models/postgres-core.ts";
-import { buildRunInspectionReadModelPg, buildRuntimeExceptionReadModelPg } from "../read-models/postgres-run-inspection.ts";
-import type { ReadModelKind } from "../read-models/types.ts";
-import { appendHistoryEventPg, getResourceByKeyPg, getWorkflowRunPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import {
-  createPostgresPlannerDraft,
-  createPostgresRunFromDraft,
-  getPostgresPlannerDraftOrchestration,
-  patchPostgresPlannerDraftTaskProfileOverride,
-  revisePostgresPlannerDraft,
-  validatePostgresPlannerDraft,
-  type PlannerDraftLibraryHints,
-} from "../ui-api/postgres-run-api.ts";
-import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
-import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
-import type { WorkflowComposer } from "../orchestration/composer.ts";
-import { getPostgresTaskEnvelope } from "../ui-api/postgres-task-envelope.ts";
+import { appendHistoryEventPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
 import { materializeRunFromWorkItemPg } from "../work-items/run-materialization.ts";
 import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
@@ -42,12 +22,12 @@ import { handleArtifactRoute } from "./artifact-routes.ts";
 import { handleWorkflowTemplateRoute } from "./workflow-template-routes.ts";
 import { handleSessionRoute } from "./session-routes.ts";
 import { handleTaskCommandRoute } from "./task-command-routes.ts";
+import { handlePlannerRoute } from "./planner-routes.ts";
+import { handleRunReadRoute } from "./run-read-routes.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
-import { createRuntimeEventStreamResponse } from "./runtime-event-stream.ts";
 import { parseRuntimeLoopId } from "./runtime-loop-registry.ts";
-import { parseRuntimeEventSequence, readRunEventsSince } from "./sse.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 
 const TERMINAL_HAND_EXECUTION_STATUSES = ["completed", "failed", "cancelled", "lost", "superseded"] as const;
@@ -80,6 +60,10 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
     if (executionResponse) return executionResponse;
     const taskCommandResponse = await handleTaskCommandRoute(context, request, url);
     if (taskCommandResponse) return taskCommandResponse;
+    const plannerResponse = await handlePlannerRoute(context, request, url);
+    if (plannerResponse) return plannerResponse;
+    const runReadResponse = await handleRunReadRoute(context, request, url);
+    if (runReadResponse) return runReadResponse;
 
     if (request.method === "GET" && url.pathname === "/api/v2/agent-library") {
       return json("agent-library", await buildAgentLibraryReadModelPg(context.db, {
@@ -187,104 +171,6 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       }));
     }
 
-    if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
-      const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown }>(request);
-      if (!body.goalPrompt) throw new Error("goalPrompt is required");
-      const draft = await createPostgresPlannerDraft(context.db, {
-        goalPrompt: body.goalPrompt,
-        orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-        composerMode: optionalComposerMode(body.composerMode),
-        composer: resolvePlannerWorkflowComposer(context),
-      });
-      const run = await createPostgresRunFromDraft(context.db, { draftId: draft.draftId });
-      return json("run-goal", { draft, ...run });
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts/stream") {
-      const body = await readJsonBody<{
-        goalPrompt?: unknown;
-        orchestrationMode?: unknown;
-        composerMode?: unknown;
-        cwd?: unknown;
-        compositionPlan?: unknown;
-        libraryHints?: unknown;
-      }>(request);
-      return createPlannerDraftStreamResponse(context, body);
-    }
-
-    const draftReviseStreamMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/revise\/stream$/);
-    if (request.method === "POST" && draftReviseStreamMatch) {
-      const body = await readJsonBody<{ prompt?: unknown; orchestrationMode?: unknown; composerMode?: unknown }>(request);
-      return createPlannerDraftRevisionStreamResponse(context, decodeURIComponent(draftReviseStreamMatch[1]!), body);
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
-      const body = await readJsonBody<{
-        goalPrompt?: unknown;
-        orchestrationMode?: unknown;
-        composerMode?: unknown;
-        cwd?: unknown;
-        compositionPlan?: unknown;
-        libraryHints?: unknown;
-      }>(request);
-      const plannerRequest = parsePlannerDraftRequest(body);
-      return json(
-        "planner-draft",
-        await createPostgresPlannerDraft(context.db, {
-          ...plannerRequest,
-          composer: resolvePlannerWorkflowComposer(context),
-        }),
-      );
-    }
-
-    const draftReviseMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/revise$/);
-    if (request.method === "POST" && draftReviseMatch) {
-      const body = await readJsonBody<{ prompt?: unknown; orchestrationMode?: unknown; composerMode?: unknown }>(request);
-      return json(
-        "planner-draft",
-        await revisePostgresPlannerDraft(context.db, {
-          draftId: decodeURIComponent(draftReviseMatch[1]!),
-          prompt: requiredString(body.prompt, "prompt"),
-          orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-          composerMode: optionalComposerMode(body.composerMode),
-          composer: resolvePlannerWorkflowComposer(context),
-        }),
-      );
-    }
-
-    const draftOrchestrationMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/orchestration$/);
-    if (request.method === "GET" && draftOrchestrationMatch) {
-      const draftId = decodeURIComponent(draftOrchestrationMatch[1]!);
-      return json("planner-draft-orchestration", await getPostgresPlannerDraftOrchestration(context.db, { draftId }));
-    }
-
-    const draftValidateMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/validate$/);
-    if (request.method === "POST" && draftValidateMatch) {
-      const draftId = decodeURIComponent(draftValidateMatch[1]!);
-      return json("planner-draft", await validatePostgresPlannerDraft(context.db, { draftId }));
-    }
-
-    const draftRunMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/runs$/);
-    if (request.method === "POST" && draftRunMatch) {
-      const draftId = decodeURIComponent(draftRunMatch[1]!);
-      return json("run", await createPostgresRunFromDraft(context.db, { draftId }));
-    }
-
-    const profileOverrideMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/tasks\/([^/]+)\/profile-override$/);
-    if (request.method === "PATCH" && profileOverrideMatch) {
-      return json("planner-draft-task-profile-override", await patchPostgresPlannerDraftTaskProfileOverride(context.db, {
-        draftId: decodeURIComponent(profileOverrideMatch[1]!),
-        taskId: decodeURIComponent(profileOverrideMatch[2]!),
-        profileOverride: await readJsonBody<any>(request),
-      }));
-    }
-
-    if (request.method === "POST" && url.pathname === "/api/v2/runs") {
-      const body = await readJsonBody<{ draftId?: string }>(request);
-      if (!body.draftId) throw new Error("draftId is required");
-      return json("run", await createPostgresRunFromDraft(context.db, { draftId: body.draftId }));
-    }
-
     const executeMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/execute$/);
     if (request.method === "POST" && executeMatch) {
       const runId = decodeURIComponent(executeMatch[1]!);
@@ -334,78 +220,6 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       }));
     }
 
-    const eventsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/events$/);
-    if (request.method === "GET" && eventsMatch) {
-      const after = parseRuntimeEventSequence(url.searchParams.get("after"));
-      return json("events", await readRunEventsSince(context.db, { runId: decodeURIComponent(eventsMatch[1]!), afterSequence: after }));
-    }
-
-    const exceptionsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/exceptions$/);
-    if (request.method === "GET" && exceptionsMatch) {
-      return json("runtime-exceptions", await buildRuntimeExceptionReadModelPg(context.db, { runId: decodeURIComponent(exceptionsMatch[1]!) }));
-    }
-
-    const streamMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/events\/stream$/);
-    if (request.method === "GET" && streamMatch) {
-      return createRuntimeEventStreamResponse(context, request, url, decodeURIComponent(streamMatch[1]!));
-    }
-
-    const readModelMatch = url.pathname.match(/^\/api\/v2\/read-models\/([^/]+)\/([^/]+)(?:\/([^/]+))?$/);
-    if (request.method === "GET" && readModelMatch) {
-      const kind = decodeURIComponent(readModelMatch[1]!) as ReadModelKind;
-      if (!isReadModelKind(kind)) throw new Error(`unknown read model kind: ${kind}`);
-      const runId = decodeURIComponent(readModelMatch[2]!);
-      const taskId = readModelMatch[3] ? decodeURIComponent(readModelMatch[3]) : undefined;
-      if (kind === "evolution-control-center") return json("read-model", await buildEvolutionControlCenterReadModel(context.db));
-      if (kind === "run-inspection") return json("read-model", await buildRunInspectionReadModelPg(context.db, runId));
-      if (kind === "exceptions") {
-        return json("read-model", envelopeReadModel({
-          schemaVersion: "southstar.read_model.exceptions.v1",
-          kind,
-          data: await buildRuntimeExceptionReadModelPg(context.db, { runId }),
-        }));
-      }
-      if (isPostgresCoreReadModelKind(kind)) return json("read-model", await buildPostgresCoreReadModel(context.db, { kind, runId, taskId }));
-      throw new Error(`unsupported read model kind: ${kind}`);
-    }
-
-    const runMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)$/);
-    if (request.method === "GET" && runMatch) {
-      const run = await getWorkflowRunPg(context.db, decodeURIComponent(runMatch[1]!));
-      if (!run) throw new Error("run not found");
-      return json("status", { run });
-    }
-
-    const tasksMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/tasks$/);
-    if (request.method === "GET" && tasksMatch) {
-      const runId = decodeURIComponent(tasksMatch[1]!);
-      const rows = await context.db.query("select * from southstar.workflow_tasks where run_id = $1 order by sort_order", [runId]);
-      return json("tasks", rows.rows);
-    }
-
-    const taskMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/tasks\/([^/]+)$/);
-    if (request.method === "GET" && taskMatch) {
-      const runId = decodeURIComponent(taskMatch[1]!);
-      const taskId = decodeURIComponent(taskMatch[2]!);
-      return json("task", await buildPostgresCoreReadModel(context.db, { kind: "task-detail", runId, taskId }));
-    }
-
-    const resourceMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/(artifacts|sessions|memory|logs)$/);
-    if (request.method === "GET" && resourceMatch) {
-      const runId = decodeURIComponent(resourceMatch[1]!);
-      const kind = resourceMatch[2]!;
-      if (kind === "logs") return json("logs", await listHistoryForRunPg(context.db, runId));
-      const resourceTypes = kind === "artifacts" ? ["artifact", ARTIFACT_REF_RESOURCE_TYPE] : kind === "sessions" ? ["session"] : ["memory_item", "memory_delta"];
-      const resources = (await Promise.all(resourceTypes.map((resourceType) => listResourcesPg(context.db, { resourceType })))).flat().filter((resource) => resource.runId === runId);
-      return json(kind, resources);
-    }
-
-    const approvalsMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/approvals$/);
-    if (request.method === "GET" && approvalsMatch) {
-      const runId = decodeURIComponent(approvalsMatch[1]!);
-      return json("approvals", (await listResourcesPg(context.db, { resourceType: "approval" })).filter((resource) => resource.runId === runId));
-    }
-
     const approvalDecisionMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/approvals\/([^/]+)\/decision$/);
     if (request.method === "POST" && approvalDecisionMatch) {
       const body = await readJsonBody<{ decision?: "approved" | "rejected"; reason?: string }>(request);
@@ -439,11 +253,6 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       const approval = policy.status === "pending" ? await createApprovalPg(context, { runId, actionType: "voiceCommand", riskTags, title: "Review voice command", payload: { transcript: body.transcript, policyReason: policy.reason } }) : undefined;
       const event = await appendHistoryEventPg(context.db, { runId, eventType: "steering.message", actorType: "user", payload: { message: body.transcript } });
       return json("voice-command", { transcript: body.transcript, approval, event });
-    }
-
-    const envelopeMatch = url.pathname.match(/^\/api\/v2\/runs\/([^/]+)\/tasks\/([^/]+)\/envelope$/);
-    if (request.method === "GET" && envelopeMatch) {
-      return json("task-envelope", await getPostgresTaskEnvelope(context.db, { runId: decodeURIComponent(envelopeMatch[1]!), taskId: decodeURIComponent(envelopeMatch[2]!) }));
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/executor/heartbeat") {
@@ -658,180 +467,6 @@ async function decideApprovalPg(context: RuntimeServerContext, input: { runId: s
   return { id: input.approvalId, status: input.decision };
 }
 
-function createPlannerDraftStreamResponse(
-  context: RuntimeServerContext,
-  body: {
-    goalPrompt?: unknown;
-    orchestrationMode?: unknown;
-    composerMode?: unknown;
-    cwd?: unknown;
-    libraryHints?: unknown;
-  },
-): Response {
-  const plannerRequest = parsePlannerDraftRequest(body);
-  const encoder = new TextEncoder();
-  let heartbeat: ReturnType<typeof setInterval> | undefined;
-  let closed = false;
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const send = (event: string, data: unknown) => {
-        if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        } catch {
-          closed = true;
-          if (heartbeat) clearInterval(heartbeat);
-        }
-      };
-      heartbeat = startPlannerSseHeartbeat(context, send, {
-        phase: "planner_draft_create",
-      });
-      try {
-        send("planner.stage", { stage: "request.accepted", message: "Accepted workflow generation request." });
-        const composer = resolvePlannerWorkflowComposer(context, {
-          onStreamDegraded(message) {
-            send("planner.stage", { stage: "planner.stream.degraded", message });
-          },
-        });
-        const draft = await createPostgresPlannerDraft(context.db, {
-          ...plannerRequest,
-          composer,
-          onProgress(event) {
-            send("planner.stage", event);
-          },
-          onLlmDelta(text) {
-            send("message.delta", { text });
-          },
-        });
-        send("draft", { draft });
-        send("planner.stage", { stage: "orchestration.loading", message: "Loading planner draft orchestration." });
-        const orchestration = await getPostgresPlannerDraftOrchestration(context.db, { draftId: draft.draftId });
-        send("orchestration", { orchestration });
-        send("done", {});
-      } catch (error) {
-        send("error", { error: error instanceof Error ? error.message : String(error) });
-      } finally {
-        const wasClosed = closed;
-        closed = true;
-        if (heartbeat) clearInterval(heartbeat);
-        if (!wasClosed) {
-          try {
-            controller.close();
-          } catch {
-            // The browser or CLI client may have cancelled the stream already.
-          }
-        }
-      }
-    },
-    cancel() {
-      closed = true;
-      if (heartbeat) clearInterval(heartbeat);
-    },
-  });
-  return new Response(stream, {
-    headers: {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    },
-  });
-}
-
-function createPlannerDraftRevisionStreamResponse(
-  context: RuntimeServerContext,
-  draftId: string,
-  body: {
-    prompt?: unknown;
-    orchestrationMode?: unknown;
-    composerMode?: unknown;
-  },
-): Response {
-  const encoder = new TextEncoder();
-  let heartbeat: ReturnType<typeof setInterval> | undefined;
-  let closed = false;
-  const stream = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const send = (event: string, data: unknown) => {
-        if (closed) return;
-        try {
-          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
-        } catch {
-          closed = true;
-          if (heartbeat) clearInterval(heartbeat);
-        }
-      };
-      heartbeat = startPlannerSseHeartbeat(context, send, {
-        phase: "planner_draft_revision",
-        draftId,
-      });
-      try {
-        send("planner.stage", { stage: "revision.requested", message: "Accepted workflow revision request." });
-        const composer = resolvePlannerWorkflowComposer(context, {
-          onStreamDegraded(message) {
-            send("planner.stage", { stage: "planner.stream.degraded", message });
-          },
-        });
-        const draft = await revisePostgresPlannerDraft(context.db, {
-          draftId,
-          prompt: requiredString(body.prompt, "prompt"),
-          orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-          composerMode: optionalComposerMode(body.composerMode),
-          composer,
-          onProgress(event) {
-            send("planner.stage", event);
-          },
-          onLlmDelta(text) {
-            send("message.delta", { text });
-          },
-        });
-        send("draft", { draft });
-        send("planner.stage", { stage: "orchestration.loading", message: "Loading revised planner draft orchestration." });
-        const orchestration = await getPostgresPlannerDraftOrchestration(context.db, { draftId: draft.draftId });
-        send("orchestration", { orchestration });
-        send("done", {});
-      } catch (error) {
-        send("error", { error: error instanceof Error ? error.message : String(error) });
-      } finally {
-        const wasClosed = closed;
-        closed = true;
-        if (heartbeat) clearInterval(heartbeat);
-        if (!wasClosed) {
-          try {
-            controller.close();
-          } catch {
-            // The browser or CLI client may have cancelled the stream already.
-          }
-        }
-      }
-    },
-    cancel() {
-      closed = true;
-      if (heartbeat) clearInterval(heartbeat);
-    },
-  });
-  return new Response(stream, {
-    headers: {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache, no-transform",
-      connection: "keep-alive",
-    },
-  });
-}
-
-function startPlannerSseHeartbeat(
-  context: RuntimeServerContext,
-  send: (event: string, data: unknown) => void,
-  data: Record<string, unknown>,
-): ReturnType<typeof setInterval> {
-  const intervalMs = Math.max(1, context.libraryChatHeartbeatMs ?? 15_000);
-  return setInterval(() => {
-    send("planner.progress.keepalive", {
-      ...data,
-      at: new Date().toISOString(),
-    });
-  }, intervalMs);
-}
-
 async function readJsonBody<T>(request: Request): Promise<T> {
   return await request.json() as T;
 }
@@ -876,82 +511,6 @@ function requiredString(value: unknown, field: string): string {
   return value;
 }
 
-function parsePlannerDraftRequest(body: {
-  goalPrompt?: unknown;
-  orchestrationMode?: unknown;
-  composerMode?: unknown;
-  cwd?: unknown;
-  compositionPlan?: unknown;
-  libraryHints?: unknown;
-}): {
-  goalPrompt: string;
-  orchestrationMode?: "llm-constrained";
-  composerMode?: WorkflowComposerMode;
-  cwd?: string;
-  compositionPlan?: WorkflowCompositionPlan;
-  libraryHints?: PlannerDraftLibraryHints;
-} {
-  return {
-    goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
-    orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-    composerMode: optionalComposerMode(body.composerMode),
-    cwd: optionalString(body.cwd),
-    compositionPlan: optionalWorkflowCompositionPlan(body.compositionPlan),
-    libraryHints: optionalPlannerDraftLibraryHints(body.libraryHints),
-  };
-}
-
-function optionalWorkflowCompositionPlan(value: unknown): WorkflowCompositionPlan | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("compositionPlan must be an object");
-  if (value.schemaVersion !== "southstar.workflow_composition_plan.v1") {
-    throw new Error("compositionPlan.schemaVersion must be southstar.workflow_composition_plan.v1");
-  }
-  if (typeof value.title !== "string" || value.title.length === 0) {
-    throw new Error("compositionPlan.title is required");
-  }
-  if (typeof value.selectedWorkflowTemplateRef !== "string" || value.selectedWorkflowTemplateRef.length === 0) {
-    throw new Error("compositionPlan.selectedWorkflowTemplateRef is required");
-  }
-  if (!Array.isArray(value.tasks) || value.tasks.length === 0) {
-    throw new Error("compositionPlan.tasks is required");
-  }
-  return value as WorkflowCompositionPlan;
-}
-
-function optionalPlannerDraftLibraryHints(value: unknown): PlannerDraftLibraryHints | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("libraryHints must be an object");
-  return {
-    roleRefs: parseOptionalStringArray(value.roleRefs, "libraryHints.roleRefs"),
-    agentProfileRefs: parseOptionalStringArray(value.agentProfileRefs, "libraryHints.agentProfileRefs"),
-    skillRefs: parseOptionalStringArray(value.skillRefs, "libraryHints.skillRefs"),
-    mcpGrantRefs: parseOptionalStringArray(value.mcpGrantRefs, "libraryHints.mcpGrantRefs"),
-    toolRefs: parseOptionalStringArray(value.toolRefs, "libraryHints.toolRefs"),
-    modelHints: parseOptionalStringRecord(value.modelHints, "libraryHints.modelHints"),
-    vaultLeasePolicyRefs: parseOptionalStringArray(value.vaultLeasePolicyRefs, "libraryHints.vaultLeasePolicyRefs"),
-    toolPolicyHints: optionalPlannerDraftToolPolicyHints(value.toolPolicyHints),
-  };
-}
-
-function optionalPlannerDraftToolPolicyHints(value: unknown): PlannerDraftLibraryHints["toolPolicyHints"] | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("libraryHints.toolPolicyHints must be an object");
-  return {
-    allowedTools: parseOptionalStringArray(value.allowedTools, "libraryHints.toolPolicyHints.allowedTools"),
-    deniedTools: parseOptionalStringArray(value.deniedTools, "libraryHints.toolPolicyHints.deniedTools"),
-    requiresApprovalFor: parseOptionalStringArray(value.requiresApprovalFor, "libraryHints.toolPolicyHints.requiresApprovalFor"),
-  };
-}
-
-function parseOptionalStringRecord(value: unknown, field: string): Record<string, string> | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value) || Object.values(value).some((item) => typeof item !== "string")) {
-    throw new Error(`${field} must be an object with string values`);
-  }
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item as string]));
-}
-
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
@@ -960,40 +519,6 @@ function requiredQueryParam(url: URL, name: string): string {
   const value = url.searchParams.get(name);
   if (!value) throw new Error(`${name} is required`);
   return value;
-}
-
-function optionalOrchestrationMode(value: unknown): "llm-constrained" | undefined {
-  if (value === undefined) return undefined;
-  if (value === "llm-constrained") return value;
-  throw new Error("orchestrationMode must be llm-constrained");
-}
-
-function optionalComposerMode(value: unknown): WorkflowComposerMode | undefined {
-  if (value === undefined) return undefined;
-  if (value === "llm") return value;
-  throw new Error("composerMode must be llm");
-}
-
-function resolvePlannerWorkflowComposer(
-  context: RuntimeServerContext,
-  options: { onStreamDegraded?: (message: string) => void } = {},
-): WorkflowComposer {
-  if (context.workflowComposer) return context.workflowComposer;
-  return new LlmWorkflowComposer({
-    model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
-    client: {
-      async generateText(input) {
-        return await context.plannerClient.generate(input.prompt);
-      },
-      async generateTextStream(input, handlers) {
-        if (context.plannerClient.generateStream) {
-          return await context.plannerClient.generateStream(input.prompt, { onDelta: handlers.onDelta });
-        }
-        options.onStreamDegraded?.("Planner client does not expose true token streaming; using final text only.");
-        return await context.plannerClient.generate(input.prompt);
-      },
-    },
-  });
 }
 
 function parseOptionalStringArray(value: unknown, field: string): string[] | undefined {
@@ -1079,24 +604,6 @@ async function databaseHealth(context: RuntimeServerContext): Promise<{ ok: true
 function errorResponse(error: string, status: number): Response {
   const envelope: ApiErrorEnvelope = { ok: false, error };
   return new Response(JSON.stringify(envelope), { status, headers: { "content-type": "application/json", ...corsHeaders() } });
-}
-
-function isReadModelKind(kind: string): kind is ReadModelKind {
-  return [
-    "run-inspection",
-    "run-summary",
-    "executions",
-    "exceptions",
-    "runtime-monitor",
-    "workflow-canvas",
-    "executor-ops",
-    "task-detail",
-    "sessions-memory",
-    "vault-mcp",
-    "evolution-control-center",
-    "run-control",
-    "workflow-dag",
-  ].includes(kind);
 }
 
 function corsHeaders(): Record<string, string> {

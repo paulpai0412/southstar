@@ -11,6 +11,13 @@ import type {
 } from "@/lib/types";
 import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
+import {
+  buildSessionStats,
+  latestWorkflowDraftId,
+  readCompactResult,
+  workflowTemplateIdFrom,
+} from "@/lib/agent-session-engine";
+import type { CompactResultInfo } from "@/lib/agent-session-engine";
 import { generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
 import { appendWorkflowStreamText, normalizeWorkflowStreamText } from "@/lib/workflow/stream-text";
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
@@ -19,6 +26,8 @@ import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { WorkflowDag } from "@/lib/workflow/types";
 import type { LibraryImportCandidate, LibraryImportProposedEdge, LibrarySseFrame } from "@/lib/library/types";
 import type { SessionKind } from "@/lib/session-kind";
+
+export type { CompactResultInfo } from "@/lib/agent-session-engine";
 
 export interface SessionData {
   sessionId: string;
@@ -159,12 +168,6 @@ export type AgentPhase =
   | { kind: "running_tools"; tools: { id: string; name: string }[] }
   | null;
 
-export interface CompactResultInfo {
-  reason: "manual" | "threshold" | "overflow" | "auto" | string;
-  tokensBefore: number;
-  estimatedTokensAfter: number;
-}
-
 export interface SlashCommandInfo {
   name: string;
   description?: string;
@@ -271,41 +274,6 @@ function noticeReducer(state: NoticeState, action: NoticeAction): NoticeState {
   }
 }
 
-function readCompactResult(result: unknown, reason: string): CompactResultInfo | null {
-  if (!result || typeof result !== "object") return null;
-  const r = result as CompactCommandResult;
-  if (typeof r.tokensBefore !== "number" || typeof r.estimatedTokensAfter !== "number") return null;
-  return { reason, tokensBefore: r.tokensBefore, estimatedTokensAfter: r.estimatedTokensAfter };
-}
-
-function workflowTemplateIdFrom(template: unknown): string | null {
-  if (!template || typeof template !== "object") return null;
-  const id = (template as { id?: unknown }).id;
-  return typeof id === "string" && id.length > 0 ? id : null;
-}
-
-function latestWorkflowDraftId(messages: AgentMessage[]): string | null {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const message = messages[i];
-    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
-    for (let j = message.content.length - 1; j >= 0; j -= 1) {
-      const block = message.content[j];
-      if (block.type !== "workflowDag") continue;
-      const draftId = isPlannerDraftId(block.dag.draftId)
-        ? block.dag.draftId
-        : isPlannerDraftId(block.dag.id)
-          ? block.dag.id
-          : null;
-      if (draftId) return draftId;
-    }
-  }
-  return null;
-}
-
-function isPlannerDraftId(value: unknown): value is string {
-  return typeof value === "string" && /^draft-/.test(value);
-}
-
 export interface ChatInputHandle {
   insertText: (text: string) => void;
   insertIfEmpty: (content: string) => void;
@@ -397,44 +365,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   const currentModel = currentModelOverride ?? data?.context.model ?? pendingModel ?? null;
   const displayModel = isNew ? (newSessionModel ?? newSessionDefaultModel) : (currentModel ?? newSessionDefaultModel);
 
-  const sessionStats = (() => {
-    if (sessionStatsOverride) return sessionStatsOverride;
-    const tokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 };
-    let cost = 0;
-    let userMessages = 0;
-    let assistantMessages = 0;
-    let toolResults = 0;
-    let toolCalls = 0;
-    for (const msg of messages) {
-      if (msg.role === "user") userMessages += 1;
-      if (msg.role === "toolResult") toolResults += 1;
-      if (msg.role !== "assistant") continue;
-      assistantMessages += 1;
-      const u = (msg as import("@/lib/types").AssistantMessage).usage;
-      toolCalls += (msg as import("@/lib/types").AssistantMessage).content.filter((c) => c.type === "toolCall").length;
-      if (!u) continue;
-      tokens.input += u.input ?? 0;
-      tokens.output += u.output ?? 0;
-      tokens.cacheRead += u.cacheRead ?? 0;
-      tokens.cacheWrite += u.cacheWrite ?? 0;
-      cost += u.cost?.total ?? 0;
-    }
-    tokens.total = tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite;
-    if (tokens.total === 0 && messages.length === 0) return null;
-    return {
-      sessionFile: data?.filePath || undefined,
-      sessionId: sessionIdRef.current ?? session?.id ?? "",
-      sessionName: session?.name,
-      userMessages,
-      assistantMessages,
-      toolCalls,
-      toolResults,
-      totalMessages: messages.length,
-      tokens,
-      cost,
-      ...(contextUsage ? { contextUsage } : {}),
-    } satisfies SessionStatsInfo;
-  })();
+  const sessionStats = sessionStatsOverride ?? buildSessionStats({
+    messages,
+    sessionFile: data?.filePath || undefined,
+    sessionId: sessionIdRef.current ?? session?.id ?? "",
+    sessionName: session?.name,
+    contextUsage,
+  });
 
   const loadSession = useCallback(async (sid: string, showLoading = false, includeState = false) => {
     try {

@@ -134,8 +134,10 @@ test("operator actions require reason and show consequence preview", () => {
 
 test("operator run commands expose pause with active job cancellation", () => {
   const readModel = source("src/v2/read-models/operator-overview.ts");
+  const attention = source("src/v2/read-models/operator-attention.ts");
   const normalizer = source("web/lib/operator/normalizers.ts");
-  assert.match(readModel, /commands: runCommands\(run\.id, run\.status\)/);
-  assert.match(readModel, /body: \{ payload: \{ cancelActiveJobs: true \} \}/);
+  assert.match(readModel, /activeRunFromRow/);
+  assert.match(attention, /commands: runCommands\(run\.id, run\.status\)/);
+  assert.match(attention, /body: \{ payload: \{ cancelActiveJobs: true \} \}/);
   assert.match(normalizer, /coerceArray\(run\.commands\)\.map\(readCommand\)/);
 });

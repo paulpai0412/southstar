@@ -94,6 +94,81 @@ test("retired runtime compatibility paths stay out of active source and tests", 
   assert.deepEqual(grep(checkedFiles, retiredPattern), []);
 });
 
+test("planner route surface stays in its focused route module", () => {
+  assert.equal(productionFiles.includes("src/v2/server/planner-routes.ts"), true);
+
+  const runtimeRoutes = source("src/v2/server/routes.ts");
+  assert.doesNotMatch(runtimeRoutes, /"\/api\/v2\/run-goal"/);
+  assert.doesNotMatch(runtimeRoutes, /\/api\\\/v2\\\/planner\\\/drafts/);
+  assert.doesNotMatch(runtimeRoutes, /"\/api\/v2\/planner\/drafts/);
+});
+
+test("run read-model route surface stays in its focused route module", () => {
+  assert.equal(productionFiles.includes("src/v2/server/run-read-routes.ts"), true);
+
+  const runtimeRoutes = source("src/v2/server/routes.ts");
+  assert.doesNotMatch(runtimeRoutes, /\/api\\\/v2\\\/read-models/);
+  assert.doesNotMatch(runtimeRoutes, /\/api\\\/v2\\\/runs\\\/\(\[\^\/]\+\)\\\/events/);
+  assert.doesNotMatch(runtimeRoutes, /artifacts\|sessions\|memory\|logs/);
+  assert.doesNotMatch(runtimeRoutes, /"task-envelope"/);
+});
+
+test("recovery decision applier dispatches paths through a handler table", () => {
+  const applier = source("src/v2/exceptions/recovery-decision-applier.ts");
+  assert.match(applier, /type RecoveryPathHandler/);
+  assert.match(applier, /const recoveryPathHandlers/);
+  assert.match(applier, /recoveryPathHandlers\[input\.decision\.payload\.path\]/);
+  assert.doesNotMatch(applier, /payload\.path === "wake-new-brain"/);
+  assert.doesNotMatch(applier, /payload\.path === "reprovision-hand"/);
+  assert.doesNotMatch(applier, /payload\.path !== "requeue-hand-execution"/);
+});
+
+test("runtime workflow projection stays in a focused read-model module", () => {
+  assert.equal(productionFiles.includes("src/v2/read-models/runtime-workflow-projection.ts"), true);
+
+  const workflowUi = source("src/v2/read-models/workflow-ui.ts");
+  assert.match(workflowUi, /buildRuntimeWorkflowCanvasProjection/);
+  assert.doesNotMatch(workflowUi, /function runtimeEdgeStatus/);
+  assert.doesNotMatch(workflowUi, /function runtimeOverlaysByTask/);
+  assert.doesNotMatch(workflowUi, /function attentionFromOverlays/);
+});
+
+test("operator overview delegates attention projection to focused read-model code", () => {
+  assert.equal(productionFiles.includes("src/v2/read-models/operator-attention.ts"), true);
+
+  const operatorOverview = source("src/v2/read-models/operator-overview.ts");
+  assert.match(operatorOverview, /buildOperatorAttentionItems/);
+  assert.doesNotMatch(operatorOverview, /function resourceAttentionItem/);
+  assert.doesNotMatch(operatorOverview, /function taskAttentionItem/);
+  assert.doesNotMatch(operatorOverview, /function compareAttention/);
+});
+
+test("composition compiler delegates library selection summaries to focused helper code", () => {
+  assert.equal(productionFiles.includes("src/v2/orchestration/composition-selection-summary.ts"), true);
+
+  const compiler = source("src/v2/orchestration/composition-compiler.ts");
+  assert.match(compiler, /summarizeCandidates/);
+  assert.match(compiler, /collectSelectedVersionRefs/);
+  assert.doesNotMatch(compiler, /function collectSelectedVersionRefs/);
+  assert.doesNotMatch(compiler, /function graphRefsByKind/);
+});
+
+test("agent session hook delegates pure session and message logic to a focused web module", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+  const engine = source("web/lib/agent-session-engine.ts");
+
+  assert.match(hook, /from "\@\/lib\/agent-session-engine"/);
+  assert.match(engine, /export function buildSessionStats/);
+  assert.match(engine, /export function latestWorkflowDraftId/);
+  assert.match(engine, /export function readCompactResult/);
+  assert.match(hook, /buildSessionStats\(/);
+  assert.match(hook, /latestWorkflowDraftId\(/);
+  assert.match(hook, /readCompactResult\(/);
+  assert.doesNotMatch(hook, /const sessionStats = \(\(\) =>/);
+  assert.doesNotMatch(hook, /function latestWorkflowDraftId/);
+  assert.doesNotMatch(hook, /function readCompactResult/);
+});
+
 function source(file: string): string {
   return readFileSync(join(root, file), "utf8");
 }

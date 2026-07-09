@@ -123,7 +123,9 @@ export function LibraryWorkspaceProvider({
         setLibrarySessions(readPiLibrarySessions(payload));
       })
       .catch(() => {
-        if (!cancelled) setLibrarySessions([]);
+        // Keep locally created/restored sessions visible when the refresh route
+        // is temporarily unavailable or loses a race with ChatWindow creation.
+        if (cancelled) return;
       });
     return () => {
       cancelled = true;

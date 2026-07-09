@@ -32,6 +32,7 @@ import {
   type RecoveryExecutionPayload,
   type RecoveryExecutionProviderAction,
   type RecoveryExecutionStateChange,
+  type RecoveryPath,
   type RuntimeRecoveryDecisionRecord,
 } from "./types.ts";
 
@@ -117,6 +118,16 @@ type SimpleRecoveryContext = {
   hand: RuntimeResourceRecord | null;
   sessionId?: string;
 };
+
+type RecoveryPathHandlerInput = {
+  deps: RecoveryDecisionApplierDeps;
+  decision: RuntimeRecoveryDecisionRecord;
+  originalDecisionStatus: RecoveryDecisionStatus;
+  executionResourceKey: string;
+  now: string;
+};
+
+type RecoveryPathHandler = (input: RecoveryPathHandlerInput) => Promise<RecoveryDecisionApplyResult>;
 
 export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps): {
   applyNext(input?: { runId?: string; now?: string }): Promise<RecoveryDecisionApplyResult | null>;
@@ -214,210 +225,242 @@ export function createRecoveryDecisionApplier(deps: RecoveryDecisionApplierDeps)
       });
       if (dynamicRepairPrecondition) return dynamicRepairPrecondition;
 
-      if (applyingDecision.payload.path === "wake-new-brain") {
-        const missingDeps = missingWakeNewBrainDeps(deps);
-        if (missingDeps.length > 0) {
-          const reason = `missing wake-new-brain dependencies: ${missingDeps.join(", ")}`;
-          const terminalDecision = await blockDecision(deps.db, {
-            decision: applyingDecision,
-            executionResourceKey: started.resourceKey,
-            now,
-            reason,
-          });
-          return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-        }
-
-        try {
-          return await applyWakeNewBrainMutation(deps as ManagedRecoveryDecisionApplierDeps, {
-            decision: applyingDecision,
-            executionResourceKey: started.resourceKey,
-            now,
-          });
-        } catch (error) {
-          if (error instanceof Error && isWakeNewBrainBlockableError(error.message, applyingDecision)) {
-            const terminalDecision = await blockDecision(deps.db, {
-              decision: applyingDecision,
-              executionResourceKey: started.resourceKey,
-              now,
-              reason: error.message,
-            });
-            return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-          }
-          throw error;
-        }
-      }
-
-      if (applyingDecision.payload.path === "reprovision-hand") {
-        const missingFieldReason = missingTaskOrHandReason(applyingDecision);
-        if (missingFieldReason) {
-          const terminalDecision = await blockDecision(deps.db, {
-            decision: applyingDecision,
-            executionResourceKey: started.resourceKey,
-            now,
-            reason: missingFieldReason,
-          });
-          return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-        }
-        const missingDeps = missingReprovisionDeps(deps);
-        if (missingDeps.length > 0) {
-          const reason = `missing reprovision-hand dependencies: ${missingDeps.join(", ")}`;
-          const terminalDecision = await blockDecision(deps.db, {
-            decision: applyingDecision,
-            executionResourceKey: started.resourceKey,
-            now,
-            reason,
-          });
-          return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-        }
-
-        try {
-          const result = await applyReprovisionMutation(deps as ManagedRecoveryDecisionApplierDeps, {
-            decision: applyingDecision,
-            executionResourceKey: started.resourceKey,
-            now,
-          });
-          const { cancelExecution, ...applyResult } = result;
-          if (cancelExecution) {
-            await executeAndUpdateStagedCancelActionPg(deps.db, {
-              executionResourceKey: started.resourceKey,
-              cancelExecution,
-              now,
-              providerActions: deps.providerActions,
-            });
-          }
-          return applyResult;
-        } catch (error) {
-          if (error instanceof Error && isReprovisionBlockableError(error.message, applyingDecision)) {
-            const terminalDecision = await blockDecision(deps.db, {
-              decision: applyingDecision,
-              executionResourceKey: started.resourceKey,
-              now,
-              reason: error.message,
-            });
-            return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-          }
-          throw error;
-        }
-      }
-
-      if (isSimpleRecoveryPath(applyingDecision.payload.path)) {
-        try {
-          return await applySimpleRecoveryMutation(deps.db, {
-            decision: applyingDecision,
-            executionResourceKey: started.resourceKey,
-            now,
-          });
-        } catch (error) {
-          if (error instanceof Error && isSimpleRecoveryBlockableError(error.message, applyingDecision)) {
-            const terminalDecision = await blockDecision(deps.db, {
-              decision: applyingDecision,
-              executionResourceKey: started.resourceKey,
-              now,
-              reason: error.message,
-            });
-            return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-          }
-          throw error;
-        }
-      }
-
-      if (isSessionRecoveryPath(applyingDecision.payload.path)) {
-        try {
-          return await applySessionRecoveryMutation(deps.db, {
-            decision: applyingDecision,
-            decisionWasApproved: decision.status === "approved",
-            executionResourceKey: started.resourceKey,
-            now,
-          });
-        } catch (error) {
-          if (error instanceof Error && isSessionRecoveryBlockableError(error.message, applyingDecision)) {
-            const terminalDecision = await blockDecision(deps.db, {
-              decision: applyingDecision,
-              executionResourceKey: started.resourceKey,
-              now,
-              reason: error.message,
-            });
-            return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-          }
-          throw error;
-        }
-      }
-
-      if (applyingDecision.payload.path !== "requeue-hand-execution") {
-        const terminalDecision = await blockDecision(deps.db, {
-          decision: applyingDecision,
-          executionResourceKey: started.resourceKey,
-          now,
-          reason: `unsupported recovery path ${applyingDecision.payload.path}`,
-        });
-        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-      }
-
-      const missingFieldReason = missingTaskOrHandReason(applyingDecision);
-      if (missingFieldReason) {
-        const terminalDecision = await blockDecision(deps.db, {
-          decision: applyingDecision,
-          executionResourceKey: started.resourceKey,
-          now,
-          reason: missingFieldReason,
-        });
-        return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-      }
-
-      let mutation: RequeueMutationResult | RecoveryDecisionApplyResult;
-      try {
-        const preparedEvidence = await stageRequeueRecoveryEvidencePg(deps.db, {
-          decision: applyingDecision,
-          executionResourceKey: started.resourceKey,
-          now,
-          providerActions: deps.providerActions,
-        });
-        if ("status" in preparedEvidence) return preparedEvidence;
-        const stagedEvidence = preparedEvidence.cancelExecution
-          ? await executeAndUpdateStagedCancelActionPg(deps.db, {
-            executionResourceKey: started.resourceKey,
-            cancelExecution: preparedEvidence.cancelExecution,
-            now,
-            providerActions: deps.providerActions,
-          })
-          : preparedEvidence.evidence;
-        mutation = await applyRequeueMutation(deps.db, {
-          decision: applyingDecision,
-          executionResourceKey: started.resourceKey,
-          now,
-          stagedEvidence,
-        });
-      } catch (error) {
-        if (error instanceof Error && error.message === `hand execution ${applyingDecision.payload.handExecutionId} not found`) {
-          const terminalDecision = await blockDecision(deps.db, {
-            decision: applyingDecision,
-            executionResourceKey: started.resourceKey,
-            now,
-            reason: error.message,
-          });
-          return terminalDecisionApplyResult(terminalDecision, started.resourceKey);
-        }
-        throw error;
-      }
-      if ("status" in mutation) return mutation;
-      await resolveRuntimeExceptionPg(deps.db, {
-        runId: applyingDecision.payload.runId,
-        resourceKey: mutation.exceptionResourceKey,
-        resolvedAt: now,
-        reason: "requeue-hand-execution applied",
-      });
-
-      await completeRecoveryExecutionPg(deps.db, {
-        runId: applyingDecision.payload.runId,
+      return await applyRecoveryPathMutation({
+        deps,
+        decision: applyingDecision,
+        originalDecisionStatus: decision.status,
         executionResourceKey: started.resourceKey,
-        status: "succeeded",
-        completedAt: requeueTerminalAt(mutation.providerActions) ?? now,
-        stateChanges: mutation.stateChanges,
-        providerActions: mutation.providerActions,
+        now,
       });
-      return await finalizeRecoveryDecisionAppliedPg(deps.db, { decision: applyingDecision, executionResourceKey: started.resourceKey, now });
     },
   };
+}
+
+const recoveryPathHandlers: Partial<Record<RecoveryPath, RecoveryPathHandler>> = {
+  "wake-new-brain": applyWakeNewBrainPath,
+  "reprovision-hand": applyReprovisionHandPath,
+  "retry-same-task-new-attempt": applySimpleRecoveryPath,
+  "repair-artifact": applySimpleRecoveryPath,
+  "block-for-operator": applySimpleRecoveryPath,
+  "fail-task": applySimpleRecoveryPath,
+  "fail-run": applySimpleRecoveryPath,
+  "fork-session": applySessionRecoveryPath,
+  "reset-session": applySessionRecoveryPath,
+  "rollback-session": applySessionRecoveryPath,
+  "requeue-hand-execution": applyRequeueHandExecutionPath,
+};
+
+async function applyRecoveryPathMutation(input: RecoveryPathHandlerInput): Promise<RecoveryDecisionApplyResult> {
+  const handler = recoveryPathHandlers[input.decision.payload.path];
+  if (!handler) {
+    const terminalDecision = await blockDecision(input.deps.db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+      reason: `unsupported recovery path ${input.decision.payload.path}`,
+    });
+    return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+  }
+  return await handler(input);
+}
+
+async function applyWakeNewBrainPath(input: RecoveryPathHandlerInput): Promise<RecoveryDecisionApplyResult> {
+  const missingDeps = missingWakeNewBrainDeps(input.deps);
+  if (missingDeps.length > 0) {
+    const reason = `missing wake-new-brain dependencies: ${missingDeps.join(", ")}`;
+    const terminalDecision = await blockDecision(input.deps.db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+      reason,
+    });
+    return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+  }
+
+  try {
+    return await applyWakeNewBrainMutation(input.deps as ManagedRecoveryDecisionApplierDeps, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+    });
+  } catch (error) {
+    if (error instanceof Error && isWakeNewBrainBlockableError(error.message, input.decision)) {
+      const terminalDecision = await blockDecision(input.deps.db, {
+        decision: input.decision,
+        executionResourceKey: input.executionResourceKey,
+        now: input.now,
+        reason: error.message,
+      });
+      return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+    }
+    throw error;
+  }
+}
+
+async function applyReprovisionHandPath(input: RecoveryPathHandlerInput): Promise<RecoveryDecisionApplyResult> {
+  const missingFieldReason = missingTaskOrHandReason(input.decision);
+  if (missingFieldReason) {
+    const terminalDecision = await blockDecision(input.deps.db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+      reason: missingFieldReason,
+    });
+    return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+  }
+  const missingDeps = missingReprovisionDeps(input.deps);
+  if (missingDeps.length > 0) {
+    const reason = `missing reprovision-hand dependencies: ${missingDeps.join(", ")}`;
+    const terminalDecision = await blockDecision(input.deps.db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+      reason,
+    });
+    return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+  }
+
+  try {
+    const result = await applyReprovisionMutation(input.deps as ManagedRecoveryDecisionApplierDeps, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+    });
+    const { cancelExecution, ...applyResult } = result;
+    if (cancelExecution) {
+      await executeAndUpdateStagedCancelActionPg(input.deps.db, {
+        executionResourceKey: input.executionResourceKey,
+        cancelExecution,
+        now: input.now,
+        providerActions: input.deps.providerActions,
+      });
+    }
+    return applyResult;
+  } catch (error) {
+    if (error instanceof Error && isReprovisionBlockableError(error.message, input.decision)) {
+      const terminalDecision = await blockDecision(input.deps.db, {
+        decision: input.decision,
+        executionResourceKey: input.executionResourceKey,
+        now: input.now,
+        reason: error.message,
+      });
+      return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+    }
+    throw error;
+  }
+}
+
+async function applySimpleRecoveryPath(input: RecoveryPathHandlerInput): Promise<RecoveryDecisionApplyResult> {
+  try {
+    return await applySimpleRecoveryMutation(input.deps.db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+    });
+  } catch (error) {
+    if (error instanceof Error && isSimpleRecoveryBlockableError(error.message, input.decision)) {
+      const terminalDecision = await blockDecision(input.deps.db, {
+        decision: input.decision,
+        executionResourceKey: input.executionResourceKey,
+        now: input.now,
+        reason: error.message,
+      });
+      return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+    }
+    throw error;
+  }
+}
+
+async function applySessionRecoveryPath(input: RecoveryPathHandlerInput): Promise<RecoveryDecisionApplyResult> {
+  try {
+    return await applySessionRecoveryMutation(input.deps.db, {
+      decision: input.decision,
+      decisionWasApproved: input.originalDecisionStatus === "approved",
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+    });
+  } catch (error) {
+    if (error instanceof Error && isSessionRecoveryBlockableError(error.message, input.decision)) {
+      const terminalDecision = await blockDecision(input.deps.db, {
+        decision: input.decision,
+        executionResourceKey: input.executionResourceKey,
+        now: input.now,
+        reason: error.message,
+      });
+      return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+    }
+    throw error;
+  }
+}
+
+async function applyRequeueHandExecutionPath(input: RecoveryPathHandlerInput): Promise<RecoveryDecisionApplyResult> {
+  const missingFieldReason = missingTaskOrHandReason(input.decision);
+  if (missingFieldReason) {
+    const terminalDecision = await blockDecision(input.deps.db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+      reason: missingFieldReason,
+    });
+    return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+  }
+
+  let mutation: RequeueMutationResult | RecoveryDecisionApplyResult;
+  try {
+    const preparedEvidence = await stageRequeueRecoveryEvidencePg(input.deps.db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+      providerActions: input.deps.providerActions,
+    });
+    if ("status" in preparedEvidence) return preparedEvidence;
+    const stagedEvidence = preparedEvidence.cancelExecution
+      ? await executeAndUpdateStagedCancelActionPg(input.deps.db, {
+        executionResourceKey: input.executionResourceKey,
+        cancelExecution: preparedEvidence.cancelExecution,
+        now: input.now,
+        providerActions: input.deps.providerActions,
+      })
+      : preparedEvidence.evidence;
+    mutation = await applyRequeueMutation(input.deps.db, {
+      decision: input.decision,
+      executionResourceKey: input.executionResourceKey,
+      now: input.now,
+      stagedEvidence,
+    });
+  } catch (error) {
+    if (error instanceof Error && error.message === `hand execution ${input.decision.payload.handExecutionId} not found`) {
+      const terminalDecision = await blockDecision(input.deps.db, {
+        decision: input.decision,
+        executionResourceKey: input.executionResourceKey,
+        now: input.now,
+        reason: error.message,
+      });
+      return terminalDecisionApplyResult(terminalDecision, input.executionResourceKey);
+    }
+    throw error;
+  }
+  if ("status" in mutation) return mutation;
+  await resolveRuntimeExceptionPg(input.deps.db, {
+    runId: input.decision.payload.runId,
+    resourceKey: mutation.exceptionResourceKey,
+    resolvedAt: input.now,
+    reason: "requeue-hand-execution applied",
+  });
+
+  await completeRecoveryExecutionPg(input.deps.db, {
+    runId: input.decision.payload.runId,
+    executionResourceKey: input.executionResourceKey,
+    status: "succeeded",
+    completedAt: requeueTerminalAt(mutation.providerActions) ?? input.now,
+    stateChanges: mutation.stateChanges,
+    providerActions: mutation.providerActions,
+  });
+  return await finalizeRecoveryDecisionAppliedPg(input.deps.db, {
+    decision: input.decision,
+    executionResourceKey: input.executionResourceKey,
+    now: input.now,
+  });
 }
 
 async function applyCompletedTaskPreconditionPg(
@@ -1901,18 +1944,6 @@ function simpleRecoveryTerminalAt(
     .map((action) => action.succeededAt ?? action.completedAt ?? action.attemptedAt)
     .find((value): value is string => typeof value === "string" && value.trim().length > 0);
   return providerTerminalAt ?? executionPayload.createdAt ?? fallback;
-}
-
-function isSimpleRecoveryPath(path: string): boolean {
-  return path === "retry-same-task-new-attempt"
-    || path === "repair-artifact"
-    || path === "block-for-operator"
-    || path === "fail-task"
-    || path === "fail-run";
-}
-
-function isSessionRecoveryPath(path: string): boolean {
-  return path === "fork-session" || path === "reset-session" || path === "rollback-session";
 }
 
 function missingTaskOrHandReason(decision: RuntimeRecoveryDecisionRecord): string | null {

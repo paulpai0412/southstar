@@ -23,6 +23,11 @@ import type {
   WorkspacePolicyDefinition,
 } from "../design-library/runtime-types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
+import {
+  collectSelectedVersionRefs,
+  summarizeCandidates,
+  type CandidateSelectionSummary,
+} from "./composition-selection-summary.ts";
 import { validateWorkflowCompositionPlan } from "./composition-validator.ts";
 
 export type CompileWorkflowCompositionInput = {
@@ -39,17 +44,7 @@ export type OrchestrationSnapshotV1 = {
   draftId: string;
   requirementSpec: CandidatePacket["requirementSpec"];
   candidatePacketHash: string;
-  candidateSummary: {
-    workflowTemplateRefs: string[];
-    agentDefinitionRefs: string[];
-    agentProfileRefs: string[];
-    skillRefs: string[];
-    toolGrantRefs: string[];
-    mcpGrantRefs: string[];
-    artifactContractRefs: string[];
-    evaluatorProfileRefs: string[];
-    policyRefs: string[];
-  };
+  candidateSummary: CandidateSelectionSummary;
   selectedCompositionPlan: WorkflowCompositionPlan;
   validation: WorkflowCompositionValidationResult;
   compiler: {
@@ -285,110 +280,6 @@ function titleFromTask(task: WorkflowCompositionTask): string {
     .split("-")
     .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
     .join(" ");
-}
-
-function summarizeCandidates(packet: CandidatePacket): OrchestrationSnapshotV1["candidateSummary"] {
-  return {
-    workflowTemplateRefs: uniqueSorted([
-      ...packet.workflowTemplateCandidates.map((candidate) => candidate.ref),
-      ...graphRefsByKind(packet, "workflow_template"),
-    ]),
-    agentDefinitionRefs: uniqueSorted([
-      ...flattenCandidateRefs(packet.agentCandidatesByCapability),
-      ...graphRefsByKind(packet, "agent_definition"),
-    ]),
-    agentProfileRefs: uniqueSorted([
-      ...flattenCandidateRefs(packet.profileCandidatesByAgent),
-    ]),
-    skillRefs: uniqueSorted([
-      ...flattenCandidateRefs(packet.skillCandidatesByProfile),
-      ...graphRefsByKind(packet, "skill_spec"),
-    ]),
-    toolGrantRefs: uniqueSorted([
-      ...flattenCandidateRefs(packet.toolCandidatesByProfile),
-      ...graphRefsByKind(packet, "tool_definition"),
-    ]),
-    mcpGrantRefs: uniqueSorted([
-      ...flattenCandidateRefs(packet.mcpGrantCandidatesByProfile),
-      ...graphRefsByKind(packet, "mcp_tool_grant"),
-    ]),
-    artifactContractRefs: uniqueSorted([
-      ...packet.artifactContractCandidates.map((candidate) => candidate.ref),
-      ...graphRefsByKind(packet, "artifact_contract"),
-    ]),
-    evaluatorProfileRefs: uniqueSorted([
-      ...flattenCandidateRefs(packet.evaluatorCandidatesByArtifact),
-      ...graphRefsByKind(packet, "evaluator_profile"),
-    ]),
-    policyRefs: uniqueSorted([
-      ...packet.policyConstraints.map((candidate) => candidate.ref),
-      ...graphRefsByKind(packet, "policy_bundle"),
-    ]),
-  };
-}
-
-function collectSelectedVersionRefs(packet: CandidatePacket, composition: WorkflowCompositionPlan): string[] {
-  const versionRefsByRef = new Map<string, string>();
-  for (const candidate of [
-    ...packet.workflowTemplateCandidates,
-    ...Object.values(packet.agentCandidatesByCapability).flat(),
-    ...Object.values(packet.profileCandidatesByAgent).flat(),
-    ...Object.values(packet.skillCandidatesByProfile).flat(),
-    ...Object.values(packet.toolCandidatesByProfile).flat(),
-    ...Object.values(packet.mcpGrantCandidatesByProfile).flat(),
-    ...Object.values(packet.vaultLeaseCandidatesByProfile).flat(),
-    ...Object.values(packet.instructionCandidatesByProfile).flat(),
-    ...packet.artifactContractCandidates,
-    ...Object.values(packet.evaluatorCandidatesByArtifact).flat(),
-    ...packet.policyConstraints,
-  ]) {
-    if (candidate.versionRef) {
-      versionRefsByRef.set(candidate.ref, candidate.versionRef);
-    }
-  }
-  for (const node of packet.graphMetadataCandidates?.nodes ?? []) {
-    if (node.versionRef) {
-      versionRefsByRef.set(node.ref, node.versionRef);
-    }
-  }
-
-  const selectedRefs = new Set<string>();
-  selectedRefs.add(composition.selectedWorkflowTemplateRef);
-  for (const task of composition.tasks) {
-    selectedRefs.add(task.agentDefinitionRef);
-    selectedRefs.add(task.agentProfileRef);
-    selectedRefs.add(task.evaluatorProfileRef);
-    addRefs(selectedRefs, task.skillRefs);
-    addRefs(selectedRefs, task.toolGrantRefs);
-    addRefs(selectedRefs, task.mcpGrantRefs);
-    addRefs(selectedRefs, task.vaultLeasePolicyRefs);
-    addRefs(selectedRefs, task.instructionRefs);
-    addRefs(selectedRefs, task.inputArtifactRefs);
-    addRefs(selectedRefs, task.outputArtifactRefs);
-    if (task.contextPolicyRef) selectedRefs.add(task.contextPolicyRef);
-    if (task.workspacePolicyRef) selectedRefs.add(task.workspacePolicyRef);
-  }
-
-  const selectedVersionRefs = [...selectedRefs]
-    .map((ref) => versionRefsByRef.get(ref))
-    .filter((value): value is string => Boolean(value));
-  return [...new Set(selectedVersionRefs)].sort();
-}
-
-function addRefs(target: Set<string>, refs: string[]): void {
-  for (const ref of refs) {
-    target.add(ref);
-  }
-}
-
-function flattenCandidateRefs(values: Record<string, Array<{ ref: string }>>): string[] {
-  return [...new Set(Object.values(values).flat().map((candidate) => candidate.ref))].sort();
-}
-
-function graphRefsByKind(packet: CandidatePacket, kind: string): string[] {
-  return (packet.graphMetadataCandidates?.nodes ?? [])
-    .filter((node) => node.kind === kind)
-    .map((node) => node.ref);
 }
 
 type ResolvedRuntimeRoles = {
