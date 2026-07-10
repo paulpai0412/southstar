@@ -13,6 +13,10 @@ export async function PATCH(request: NextRequest, { params }: { params: Promise<
   return proxy(request, params);
 }
 
+export async function DELETE(request: NextRequest, { params }: { params: Promise<{ path: string[] }> }) {
+  return proxy(request, params);
+}
+
 async function proxy(request: NextRequest, paramsPromise: Promise<{ path: string[] }>) {
   if (!workflowV2Capabilities().v2Backend) return workflowV2BlockedResponse();
   const params = await paramsPromise;

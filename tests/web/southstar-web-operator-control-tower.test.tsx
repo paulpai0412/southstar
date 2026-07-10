@@ -248,19 +248,21 @@ test("Operator task sidecar opens debug tabs with History selected", () => {
   assert.match(shell, /operatorHistory/);
   assert.match(shell, /operatorStream/);
   assert.match(shell, /operatorActions/);
+  assert.match(shell, /operatorRecovery/);
   assert.match(shell, /operatorDebug/);
   assert.doesNotMatch(shell, /operator-dag/);
   assert.match(shell, /setActiveSidecarTabId\(`operator-history:\$\{filePath\}`\)/);
   assert.match(shell, /current\.filter\(\(tab\) => !tab\.kind\?\.startsWith\("operator"\)\)/);
 });
 
-test("Operator task sidecar exposes History Live SSE Actions Debug tabs", () => {
+test("Operator task sidecar exposes History Live SSE Actions Recovery Debug tabs", () => {
   const tabs = source("web/components/operator/OperatorTaskTabs.tsx");
-  for (const token of ["History", "Live SSE", "Actions", "Debug"]) {
+  for (const token of ["History", "Live SSE", "Actions", "Recovery", "Debug"]) {
     assert.match(tabs, new RegExp(token));
   }
   assert.match(tabs, /debugModel\.data\.actions/);
   assert.match(tabs, /mergeOperatorTaskCommands/);
+  assert.match(tabs, /OperatorRecoveryPanel/);
   assert.doesNotMatch(tabs, /SouthstarWorkflowCanvas/);
   assert.doesNotMatch(tabs, /taskDagCanvasFromDebug/);
   assert.doesNotMatch(tabs, /JSON\.stringify\(debug\.model\.data\.task/);
@@ -337,4 +339,30 @@ test("Operator actions only treat successful POST responses as completed", () =>
   assert.match(panel, /setActionError/);
   assert.doesNotMatch(panel, /disabled=\{!command\.enabled \|\| pendingCommandId === command\.id \|\| \(requiresReason/);
   assert.match(panel, /setActionError\(`Reason required before running \$\{command\.label\}`\)/);
+});
+
+test("Operator recovery actions are separated from task actions and run controls stay on workflow cards", () => {
+  const workspace = source("web/components/operator/OperatorWorkspace.tsx");
+  const sidebar = source("web/components/operator/OperatorSidebar.tsx");
+  const taskTabs = source("web/components/operator/OperatorTaskTabs.tsx");
+  const actions = source("web/components/operator/OperatorActionsPanel.tsx");
+  const recovery = source("web/components/operator/OperatorRecoveryPanel.tsx");
+  const taskDebug = source("src/v2/read-models/operator-task-debug.ts");
+
+  assert.match(workspace, /WorkflowStateCard/);
+  assert.match(workspace, /Workflow run actions/);
+  assert.match(workspace, /runToggleCommand/);
+  assert.match(workspace, /run\.pause/);
+  assert.match(workspace, /run\.resume/);
+  assert.match(workspace, /run\.cancel/);
+  assert.doesNotMatch(workspace, /Selected workflow controls/);
+  assert.doesNotMatch(sidebar, /Workflow run actions/);
+  assert.doesNotMatch(sidebar, /invokeOperatorCommand/);
+  assert.match(taskTabs, /command\.id\.startsWith\("task\."\)/);
+  assert.match(actions, /workspaceSnapshotRef/);
+  assert.match(actions, /checkpointId/);
+  assert.match(recovery, /Recovery commands/);
+  assert.match(recovery, /command\.label/);
+  assert.match(taskDebug, /Approve Recovery/);
+  assert.match(taskDebug, /Apply Recovery/);
 });

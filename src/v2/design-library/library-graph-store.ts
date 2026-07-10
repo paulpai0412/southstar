@@ -50,6 +50,15 @@ export type ListLibraryEdgesInput = {
   status?: LibraryEdgeStatus;
 };
 
+export type DeleteLibraryObjectResult = {
+  object: LibraryObjectSummary;
+  deletedObjectKey: string;
+  deletedObjectCount: number;
+  deletedEdgeCount: number;
+  inboundEdgeCount: number;
+  outboundEdgeCount: number;
+};
+
 export async function upsertLibraryObject(db: SouthstarDb, input: UpsertLibraryObjectInput): Promise<LibraryObjectSummary> {
   const id = `lib-${hash(input.objectKey).slice(0, 16)}`;
   const row = await db.one<LibraryObjectRow>(
@@ -217,6 +226,38 @@ export async function updateLibraryObjectStatus(
   );
   if (!row) throw new Error(`library object not found: ${input.objectKey}`);
   return mapObject(row);
+}
+
+export async function deleteLibraryObject(db: SouthstarDb, objectKey: string): Promise<DeleteLibraryObjectResult | null> {
+  return await db.tx(async (tx) => {
+    const object = await findLibraryObjectByKeyForUpdate(tx, objectKey);
+    if (!object) return null;
+
+    const edgeCounts = await tx.one<{ inbound_count: string; outbound_count: string; edge_count: string }>(
+      `select
+          count(*) filter (where to_object_key = $1) as inbound_count,
+          count(*) filter (where from_object_key = $1) as outbound_count,
+          count(*) as edge_count
+         from southstar.library_edges
+        where from_object_key = $1
+           or to_object_key = $1`,
+      [objectKey],
+    );
+    const deleted = await tx.query(
+      `delete from southstar.library_objects
+        where object_key = $1`,
+      [objectKey],
+    );
+
+    return {
+      object,
+      deletedObjectKey: objectKey,
+      deletedObjectCount: deleted.rowCount ?? 0,
+      deletedEdgeCount: Number(edgeCounts.edge_count),
+      inboundEdgeCount: Number(edgeCounts.inbound_count),
+      outboundEdgeCount: Number(edgeCounts.outbound_count),
+    };
+  });
 }
 
 export async function listLibraryObjects(

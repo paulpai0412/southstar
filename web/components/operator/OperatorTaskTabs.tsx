@@ -8,6 +8,7 @@ import { OperatorActionsPanel } from "./OperatorActionsPanel";
 import { OperatorDebugPanel } from "./OperatorDebugPanel";
 import { OperatorHistoryPanel } from "./OperatorHistoryPanel";
 import { OperatorLiveStream } from "./OperatorLiveStream";
+import { OperatorRecoveryPanel } from "./OperatorRecoveryPanel";
 import { OperatorTaskSummary } from "./OperatorTaskSummary";
 
 export function OperatorTaskTabs({
@@ -18,7 +19,7 @@ export function OperatorTaskTabs({
   commandResults,
   onCommandComplete,
 }: {
-  kind: "operatorHistory" | "operatorStream" | "operatorActions" | "operatorDebug";
+  kind: "operatorHistory" | "operatorStream" | "operatorActions" | "operatorRecovery" | "operatorDebug";
   runId: string | null;
   taskId: string | null;
   commands: OperatorCommand[];
@@ -34,7 +35,8 @@ export function OperatorTaskTabs({
   if (!debug.model) return <p className="operator-muted">Loading task debug data.</p>;
   const debugModel = debug.model;
 
-  const taskCommands = mergeOperatorTaskCommands(commands, debugModel.data.actions);
+  const taskCommands = mergeOperatorTaskCommands(commands.filter((command) => command.id.startsWith("task.")), debugModel.data.actions);
+  const recoveryCommands = commands.filter((command) => command.id.startsWith("recovery.") || command.id.startsWith("approval."));
   const withTaskSummary = (content: ReactNode) => (
     <>
       <span hidden>Task Summary</span>
@@ -51,6 +53,16 @@ export function OperatorTaskTabs({
         runId={runId}
         taskId={taskId}
         commands={taskCommands}
+        commandResults={commandResults}
+        onCommandComplete={onCommandComplete}
+      />,
+    );
+  }
+  if (kind === "operatorRecovery") {
+    return withTaskSummary(
+      <OperatorRecoveryPanel
+        debug={debugModel}
+        commands={recoveryCommands}
         commandResults={commandResults}
         onCommandComplete={onCommandComplete}
       />,

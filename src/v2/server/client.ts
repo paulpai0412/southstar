@@ -240,6 +240,9 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
     getLibraryObject(objectKey: string) {
       return get(`${baseUrl}/api/v2/library/objects/${encodeURIComponent(objectKey)}`);
     },
+    deleteLibraryObject(objectKey: string) {
+      return del(`${baseUrl}/api/v2/library/objects/${encodeURIComponent(objectKey)}`);
+    },
     setLibraryObjectLifecycle(body: LibraryObjectLifecycleRequest) {
       return post(`${baseUrl}/api/v2/library/objects/${encodeURIComponent(body.objectKey)}/${body.action}`, {
         ...(body.actor !== undefined ? { actor: body.actor } : {}),
@@ -494,6 +497,10 @@ async function patch<T = unknown>(url: string, body: unknown): Promise<ApiEnvelo
 
 async function get<T = unknown>(url: string): Promise<ApiEnvelope<T>> {
   return readJson(await fetch(url));
+}
+
+async function del<T = unknown>(url: string): Promise<ApiEnvelope<T>> {
+  return readJson(await fetch(url, { method: "DELETE" }));
 }
 
 async function postSse(url: string, body: unknown, onEvent: RuntimeSseListener, signal?: AbortSignal): Promise<unknown> {

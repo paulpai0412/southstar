@@ -335,7 +335,17 @@ function taskCommands(runId: string, taskId: string, status: string): OperatorCo
       requiresConfirmation: true,
       disabledReason: recoverable ? undefined : `task status ${status} does not allow fork-session`,
     }),
-    command("task.request-revision", "Request Revision", `/api/v2/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/request-revision`, {
+    command("task.reset-session", "Reset Session", `/api/v2/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/reset-session`, {
+      enabled: recoverable,
+      requiresConfirmation: true,
+      disabledReason: recoverable ? undefined : `task status ${status} does not allow reset-session`,
+    }),
+    command("task.rollback-session", "Rollback Session", `/api/v2/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/rollback-session`, {
+      enabled: false,
+      requiresConfirmation: true,
+      disabledReason: "rollback requires a usable workspace snapshot",
+    }),
+    command("task.request-revision", "Request Workflow Revision", `/api/v2/runs/${encodeURIComponent(runId)}/tasks/${encodeURIComponent(taskId)}/request-revision`, {
       enabled: recoverable,
       requiresConfirmation: true,
       disabledReason: recoverable ? undefined : `task status ${status} does not allow request-revision`,

@@ -52,6 +52,7 @@ test("runtime server client exposes P0 runtime API methods", () => {
     "installLibraryImportCandidates",
     "installLibraryImportCandidatesStream",
     "getLibraryObject",
+    "deleteLibraryObject",
     "setLibraryObjectLifecycle",
     "listLibraryFiles",
     "getLibraryFile",
@@ -374,6 +375,7 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       reason: "install selected candidates",
     }, () => {});
     await client.getLibraryObject("agent.frontend");
+    await client.deleteLibraryObject("skill.react-ui");
     await client.setLibraryObjectLifecycle({
       objectKey: "agent.frontend",
       action: "approve",
@@ -492,6 +494,7 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
         body: { selectedCandidateIds: ["candidate-a"], selectedEdgeIds: ["edge-a"], actor: "pi-agent", reason: "install selected candidates" },
       },
       { url: "http://127.0.0.1/api/v2/library/objects/agent.frontend", method: undefined, body: undefined },
+      { url: "http://127.0.0.1/api/v2/library/objects/skill.react-ui", method: "DELETE", body: undefined },
       {
         url: "http://127.0.0.1/api/v2/library/objects/agent.frontend/approve",
         method: "POST",

@@ -560,10 +560,16 @@ export function AppShell() {
 
   const openOperatorTaskSidecar = useCallback((input: { runId: string; taskId: string; attentionId?: string }) => {
     const filePath = `${input.runId}/${input.taskId}`;
+    const hasRecovery = operator.model.attentionItems.some((item) =>
+      item.runId === input.runId &&
+      item.taskId === input.taskId &&
+      (item.interventionMode === "recovery" || item.interventionMode === "approval" || (item.commands ?? []).some((command) => command.id.startsWith("recovery.") || command.id.startsWith("approval.")))
+    );
     const tabs: Tab[] = [
       { id: `operator-history:${filePath}`, label: "History", filePath, kind: "operatorHistory", ...input },
       { id: `operator-stream:${filePath}`, label: "Live SSE", filePath, kind: "operatorStream", ...input },
       { id: `operator-actions:${filePath}`, label: "Actions", filePath, kind: "operatorActions", ...input },
+      ...(hasRecovery ? [{ id: `operator-recovery:${filePath}`, label: "Recovery", filePath, kind: "operatorRecovery", ...input } as Tab] : []),
       { id: `operator-debug:${filePath}`, label: "Debug", filePath, kind: "operatorDebug", ...input },
     ];
     setSidecarTabs((current) => {
@@ -573,7 +579,7 @@ export function AppShell() {
     });
     setActiveSidecarTabId(`operator-history:${filePath}`);
     setSidecarMode((mode) => mode === "hidden" ? "floating" : mode);
-  }, []);
+  }, [operator.model.attentionItems]);
 
   const openSkillsConfig = useCallback(async () => {
     const cwd = activeCwd
@@ -717,6 +723,7 @@ export function AppShell() {
       activeSidecarTab.kind === "operatorHistory" ||
       activeSidecarTab.kind === "operatorStream" ||
       activeSidecarTab.kind === "operatorActions" ||
+      activeSidecarTab.kind === "operatorRecovery" ||
       activeSidecarTab.kind === "operatorDebug"
     ) {
       const attention = operator.model.attentionItems.find((item) => item.id === activeSidecarTab.attentionId)

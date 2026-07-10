@@ -17,7 +17,7 @@ import {
   type NodeProfileDraft,
 } from "../design-library/profile-composer/node-profile-draft-service.ts";
 import { validateGeneratedNodeProfile } from "../design-library/profile-composer/generated-profile-validator.ts";
-import { findLibraryEdgesFrom, findLibraryEdgesTo, findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
+import { deleteLibraryObject, findLibraryEdgesFrom, findLibraryEdgesTo, findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
 import {
   saveWorkflowTemplateDraft,
   type SaveWorkflowTemplateDraftInput,
@@ -302,6 +302,12 @@ export async function handleLibraryRoute(
       "library-object-detail",
       await buildLibraryObjectDetail(context.db, decodeURIComponent(objectMatch[1]!)),
     );
+  }
+  if (request.method === "DELETE" && objectMatch) {
+    const objectKey = decodeURIComponent(objectMatch[1]!);
+    const result = await deleteLibraryObject(context.db, objectKey);
+    if (!result) return errorJson(`library object not found: ${objectKey}`, 404);
+    return json("library-object-delete", result);
   }
 
   const fileValidateMatch = url.pathname.match(/^\/api\/v2\/library\/files\/(.+)\/validate$/);

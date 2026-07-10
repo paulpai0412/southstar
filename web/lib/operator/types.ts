@@ -36,6 +36,10 @@ export type OperatorCommand = {
   requiresConfirmation: boolean;
   disabledReason?: string;
   body?: Record<string, unknown>;
+  inputOptions?: {
+    checkpointRefs?: string[];
+    workspaceSnapshotRefs?: string[];
+  };
 };
 
 export type OperatorCommandResult = {
@@ -82,6 +86,7 @@ export type OperatorTaskDebug = {
     artifacts: OperatorResourceItem[];
     debug?: OperatorTaskDebugGroups;
     actions: OperatorCommand[];
+    recoveryActions?: OperatorCommand[];
   };
 };
 
@@ -106,12 +111,17 @@ export type OperatorTaskDebugGroups = {
     selectedMemories?: unknown[];
     items?: OperatorResourceItem[];
     deltas?: OperatorResourceItem[];
+    invalidatedSourceRefs?: unknown[];
   };
   artifacts?: {
     priorArtifacts?: unknown[];
     refs?: OperatorResourceItem[];
   };
   resources?: Record<string, OperatorResourceItem[] | undefined>;
+  recovery?: {
+    items?: OperatorResourceItem[];
+    commands?: OperatorCommand[];
+  };
   raw?: { resources?: OperatorResourceItem[] };
 };
 

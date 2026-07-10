@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { applyLibraryObjectLifecycleAction } from "../../src/v2/design-library/lifecycle/library-object-lifecycle.ts";
-import { findLibraryObjectByKey, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import { findLibraryObjectByKey, listLibraryEdges, upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -222,6 +222,84 @@ test("library object lifecycle route deprecates and blocks objects", async () =>
       assert.equal(audit.payload_json.objectKey, objectKey);
       assert.equal(audit.payload_json.reason, `${action} from route review`);
     }
+  } finally {
+    await db.close();
+  }
+});
+
+test("library object delete route removes the object and cascades incident edges", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "agent.frontend-developer",
+      objectKind: "agent_definition",
+      status: "approved",
+      state: { title: "Frontend Developer", scope: "software" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "skill.react-ui",
+      objectKind: "skill_spec",
+      status: "approved",
+      state: { title: "React UI", scope: "software" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "tool.browser",
+      objectKind: "tool_definition",
+      status: "approved",
+      state: { title: "Browser", scope: "software" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "tool.playwright",
+      objectKind: "tool_definition",
+      status: "approved",
+      state: { title: "Playwright", scope: "software" },
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "requires_skill",
+      toObjectKey: "skill.react-ui",
+      scope: "software",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "skill.react-ui",
+      edgeType: "requires_tool",
+      toObjectKey: "tool.browser",
+      scope: "software",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "tool.browser",
+      edgeType: "uses",
+      toObjectKey: "tool.playwright",
+      scope: "software",
+    });
+
+    const response = await handleRuntimeRoute(
+      { db } as any,
+      new Request("http://local/api/v2/library/objects/skill.react-ui", { method: "DELETE" }),
+    );
+
+    assert.equal(response.status, 200);
+    const envelope = await readEnvelope(response);
+    assert.equal(envelope.kind, "library-object-delete");
+    assert.equal(envelope.result.deletedObjectKey, "skill.react-ui");
+    assert.equal(envelope.result.deletedObjectCount, 1);
+    assert.equal(envelope.result.inboundEdgeCount, 1);
+    assert.equal(envelope.result.outboundEdgeCount, 1);
+    assert.equal(envelope.result.deletedEdgeCount, 2);
+    assert.equal(await findLibraryObjectByKey(db, "skill.react-ui"), null);
+    assert.deepEqual(
+      (await listLibraryEdges(db)).map((edge) => [edge.fromObjectKey, edge.edgeType, edge.toObjectKey]),
+      [["tool.browser", "uses", "tool.playwright"]],
+    );
+
+    const missing = await handleRuntimeRoute(
+      { db } as any,
+      new Request("http://local/api/v2/library/objects/skill.react-ui", { method: "DELETE" }),
+    );
+    assert.equal(missing.status, 404);
+    const error = await readEnvelope(missing);
+    assert.equal(error.ok, false);
+    assert.match(error.error, /library object not found: skill\.react-ui/);
   } finally {
     await db.close();
   }

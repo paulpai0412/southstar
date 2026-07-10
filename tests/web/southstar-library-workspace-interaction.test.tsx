@@ -469,6 +469,7 @@ test("library file API helpers unwrap envelopes and call file read, save, and sy
   const api = await import("../../web/lib/library/api.ts");
   assert.equal(typeof api.readLibraryFile, "function");
   assert.equal(typeof api.readLibraryObjectDetail, "function");
+  assert.equal(typeof api.deleteLibraryObject, "function");
   assert.equal(typeof api.saveLibraryFile, "function");
   assert.equal(typeof api.syncLibraryFile, "function");
 
@@ -476,6 +477,19 @@ test("library file API helpers unwrap envelopes and call file read, save, and sy
   const requests: Array<{ url: string; method: string; body?: string }> = [];
   globalThis.fetch = async (input, init) => {
     requests.push({ url: String(input), method: init?.method ?? "GET", body: init?.body as string | undefined });
+    if (String(input).includes("/api/library/objects/") && init?.method === "DELETE") {
+      return new Response(JSON.stringify({
+        ok: true,
+        result: {
+          object: { objectKey: "agent.planner" },
+          deletedObjectKey: "agent.planner",
+          deletedObjectCount: 1,
+          deletedEdgeCount: 0,
+          inboundEdgeCount: 0,
+          outboundEdgeCount: 0,
+        },
+      }));
+    }
     if (String(input).includes("/api/library/objects/")) {
       return new Response(JSON.stringify({ ok: true, result: { object: { objectKey: "agent.planner" }, inboundEdges: [], outboundEdges: [] } }));
     }
@@ -495,6 +509,7 @@ test("library file API helpers unwrap envelopes and call file read, save, and sy
   try {
     await api.readLibraryFile("software/agents/planner.agent.md");
     await api.readLibraryObjectDetail("agent.planner");
+    await api.deleteLibraryObject("agent.planner");
     await api.saveLibraryFile("software/agents/planner.agent.md", "title: Planner v2");
     await api.syncLibraryFile("software/agents/planner.agent.md");
   } finally {
@@ -504,6 +519,7 @@ test("library file API helpers unwrap envelopes and call file read, save, and sy
   assert.deepEqual(requests, [
     { url: "/api/library/files/software/agents/planner.agent.md", method: "GET", body: undefined },
     { url: "/api/library/objects/agent.planner", method: "GET", body: undefined },
+    { url: "/api/library/objects/agent.planner", method: "DELETE", body: undefined },
     {
       url: "/api/library/files/software/agents/planner.agent.md",
       method: "PATCH",

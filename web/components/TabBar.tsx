@@ -17,6 +17,7 @@ export interface Tab {
     | "operatorHistory"
     | "operatorStream"
     | "operatorActions"
+    | "operatorRecovery"
     | "operatorDebug";
   draftId?: string;
   runId?: string;

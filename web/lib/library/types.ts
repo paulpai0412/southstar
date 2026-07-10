@@ -221,3 +221,12 @@ export type LibraryObjectDetail = {
     issues: Array<{ code: string; path: string; message: string }>;
   };
 };
+
+export type LibraryObjectDeleteResult = {
+  object: LibraryObjectDetail["object"];
+  deletedObjectKey: string;
+  deletedObjectCount: number;
+  deletedEdgeCount: number;
+  inboundEdgeCount: number;
+  outboundEdgeCount: number;
+};

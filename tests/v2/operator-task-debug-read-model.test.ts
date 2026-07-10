@@ -178,7 +178,7 @@ test("operator task debug route returns task detail, descending task history, re
             memory: { items: Array<{ payload: unknown }>; selectedMemories: unknown[] };
             artifacts: { refs: Array<{ resourceKey: string; content?: { content?: unknown }; contentError?: string }>; priorArtifacts: unknown[] };
           };
-          actions: Array<{ id: string; endpoint?: string; enabled: boolean; requiresConfirmation: boolean }>;
+          actions: Array<{ id: string; label?: string; endpoint?: string; enabled: boolean; requiresConfirmation: boolean; disabledReason?: string }>;
         };
       };
       assert.equal(envelope.kind, "ui-operator-task-debug");
@@ -220,6 +220,16 @@ test("operator task debug route returns task detail, descending task history, re
         action.enabled === true &&
         action.requiresConfirmation === true
       ), true);
+      assert.deepEqual(envelope.result.actions.map((action) => action.id), [
+        "task.retry",
+        "task.fork-session",
+        "task.reset-session",
+        "task.rollback-session",
+        "task.request-revision",
+      ]);
+      assert.equal(envelope.result.actions.find((action) => action.id === "task.request-revision")?.label, "Request Workflow Revision");
+      assert.equal(envelope.result.actions.find((action) => action.id === "task.rollback-session")?.enabled, false);
+      assert.equal(envelope.result.actions.find((action) => action.id === "task.rollback-session")?.disabledReason, "rollback requires a usable workspace snapshot");
     } finally {
       await server.close();
     }
@@ -254,7 +264,7 @@ test("run creation preserves planner draft cwd and operator overview exposes cwd
   }
 });
 
-test("operator task debug disables retry and request-revision for completed tasks", async () => {
+test("operator task debug disables task recovery actions for completed tasks", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDebugRunTask(db, {
@@ -267,14 +277,15 @@ test("operator task debug disables retry and request-revision for completed task
       runId: "run-operator-task-debug-completed",
       taskId: "task-completed",
     });
-    assert.equal(model.actions.find((action) => action.id === "task.retry")?.enabled, false);
-    assert.equal(model.actions.find((action) => action.id === "task.request-revision")?.enabled, false);
+    for (const id of ["task.retry", "task.fork-session", "task.reset-session", "task.rollback-session", "task.request-revision"]) {
+      assert.equal(model.actions.find((action) => action.id === id)?.enabled, false, id);
+    }
   } finally {
     await db.close();
   }
 });
 
-test("operator task debug enables retry and request-revision for running and queued tasks", async () => {
+test("operator task debug enables task recovery actions for running and queued tasks", async () => {
   const db = await createTestPostgresDb();
   try {
     for (const status of ["running", "queued"] as const) {
@@ -288,8 +299,10 @@ test("operator task debug enables retry and request-revision for running and que
         runId: `run-operator-task-debug-${status}`,
         taskId: `task-${status}`,
       });
-      assert.equal(model.actions.find((action) => action.id === "task.retry")?.enabled, true, status);
-      assert.equal(model.actions.find((action) => action.id === "task.request-revision")?.enabled, true, status);
+      for (const id of ["task.retry", "task.fork-session", "task.reset-session", "task.request-revision"]) {
+        assert.equal(model.actions.find((action) => action.id === id)?.enabled, true, `${status}:${id}`);
+      }
+      assert.equal(model.actions.find((action) => action.id === "task.rollback-session")?.enabled, false, status);
     }
   } finally {
     await db.close();

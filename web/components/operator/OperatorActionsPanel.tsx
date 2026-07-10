@@ -18,6 +18,8 @@ export function OperatorActionsPanel({
   onCommandComplete: () => void;
 }) {
   const [reasonByCommand, setReasonByCommand] = useState<Record<string, string>>({});
+  const [checkpointByCommand, setCheckpointByCommand] = useState<Record<string, string>>({});
+  const [snapshotByCommand, setSnapshotByCommand] = useState<Record<string, string>>({});
   const [pendingCommandId, setPendingCommandId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -38,6 +40,11 @@ export function OperatorActionsPanel({
         runId,
         taskId,
         reason: normalizedReason,
+        payload: commandPayload(command, {
+          checkpointId: checkpointByCommand[command.id],
+          workspaceSnapshotRef: snapshotByCommand[command.id] || command.inputOptions?.workspaceSnapshotRefs?.[0],
+          revisionReason: normalizedReason,
+        }),
       });
       onCommandComplete();
     } catch (caught) {
@@ -73,6 +80,29 @@ export function OperatorActionsPanel({
               {pendingCommandId === command.id ? `Pending ${command.label}` : command.label}
             </button>
           </div>
+          {command.inputOptions?.checkpointRefs?.length ? (
+            <label className="operator-action-field">
+              <span>Checkpoint</span>
+              <select
+                value={checkpointByCommand[command.id] || ""}
+                onChange={(event) => setCheckpointByCommand((current) => ({ ...current, [command.id]: event.currentTarget.value }))}
+              >
+                <option value="">Fresh session</option>
+                {command.inputOptions.checkpointRefs.map((ref) => <option key={ref} value={ref}>{ref}</option>)}
+              </select>
+            </label>
+          ) : null}
+          {command.inputOptions?.workspaceSnapshotRefs?.length ? (
+            <label className="operator-action-field">
+              <span>Workspace snapshot</span>
+              <select
+                value={snapshotByCommand[command.id] || command.inputOptions.workspaceSnapshotRefs[0] || ""}
+                onChange={(event) => setSnapshotByCommand((current) => ({ ...current, [command.id]: event.currentTarget.value }))}
+              >
+                {command.inputOptions.workspaceSnapshotRefs.map((ref) => <option key={ref} value={ref}>{ref}</option>)}
+              </select>
+            </label>
+          ) : null}
           <dl className="operator-action-meta">
             <dt>Consequence</dt>
             <dd>{command.consequence || describeCommandConsequence(command)}</dd>
@@ -106,6 +136,16 @@ export function OperatorActionsPanel({
       </section>
     </section>
   );
+}
+
+function commandPayload(command: OperatorCommand, input: { checkpointId?: string; workspaceSnapshotRef?: string; revisionReason?: string }): Record<string, unknown> {
+  return {
+    ...(command.id === "task.fork-session" || command.id === "task.reset-session" || command.id === "task.rollback-session"
+      ? input.checkpointId ? { checkpointId: input.checkpointId } : {}
+      : {}),
+    ...(command.id === "task.rollback-session" && input.workspaceSnapshotRef ? { workspaceSnapshotRef: input.workspaceSnapshotRef } : {}),
+    ...(command.id === "task.request-revision" && input.revisionReason ? { revisionReason: input.revisionReason } : {}),
+  };
 }
 
 function requiresReason(command: OperatorCommand): boolean {

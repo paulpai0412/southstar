@@ -12,6 +12,7 @@ import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { enforcePreExecutionToolProxyPolicyPg, isPreExecutionToolProxyPolicyError } from "../tool-proxy/runtime-enforcement.ts";
 import { observeDispatchPreparationException, redactProviderErrorExcerpt } from "./dispatch-preparation-exception.ts";
 import type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
+import { captureWorkspaceSnapshotForTaskPg } from "../session-recovery/workspace-snapshot.ts";
 
 export type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
 
@@ -124,6 +125,12 @@ async function dispatchTask(
       runId: input.runId,
       taskId: input.taskId,
     });
+    const workspaceSnapshot = await captureWorkspaceSnapshotForTaskPg(db, {
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId,
+    });
     const assembler = createManagedContextAssembler(db);
     const assembly = await assembler.buildForTask({
       runId: input.runId,
@@ -151,6 +158,7 @@ async function dispatchTask(
         artifactRefs: assembly.contextPacket.priorArtifacts
           .map((block) => block.sourceRef)
           .filter((value): value is string => Boolean(value)),
+        ...(workspaceSnapshot ? { workspaceSnapshotRefs: [workspaceSnapshot.resourceKey] } : {}),
       },
       metrics: { tokenEstimate: assembly.contextPacket.tokenEstimate.total },
     });

@@ -1,6 +1,7 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { getArtifactRefContentPg } from "../artifacts/artifact-read-service.ts";
 import { isTaskRecoverableStatus } from "../task-recovery.ts";
+import { usableWorkspaceSnapshotRefs } from "../session-recovery/workspace-snapshot.ts";
 
 export const OPERATOR_TASK_DEBUG_SCHEMA_VERSION = "southstar.read_model.operator_task_debug.v1";
 
@@ -12,6 +13,11 @@ type OperatorCommand = {
   enabled: boolean;
   requiresConfirmation: boolean;
   disabledReason?: string;
+  body?: Record<string, unknown>;
+  inputOptions?: {
+    checkpointRefs?: string[];
+    workspaceSnapshotRefs?: string[];
+  };
 };
 
 export async function buildOperatorTaskDebugReadModelPg(db: SouthstarDb, input: { runId: string; taskId: string }) {
@@ -127,6 +133,10 @@ export async function buildOperatorTaskDebugReadModelPg(db: SouthstarDb, input: 
   const contextPackets = resources.filter((resource) => resource.resourceType === "context_packet");
   const latestContextPacket = contextPackets[0];
   const contextPayload = asRecord(latestContextPacket?.payload);
+  const checkpointRefs = resources
+    .filter((resource) => resource.resourceType === "session_checkpoint")
+    .map((resource) => resource.resourceKey);
+  const workspaceSnapshotRefs = usableWorkspaceSnapshotRefs(resources);
 
   return {
     schemaVersion: OPERATOR_TASK_DEBUG_SCHEMA_VERSION,
@@ -188,9 +198,10 @@ export async function buildOperatorTaskDebugReadModelPg(db: SouthstarDb, input: 
         latestEnvelope: resources.find((resource) => resource.resourceType === "task_envelope") ?? null,
       },
       memory: {
-        selectedMemories: arrayValue(contextPayload.selectedMemories),
+        selectedMemories: arrayValue(contextPayload.selectedMemories).map((memory) => withSessionSource(memory)),
         items: resources.filter((resource) => resource.resourceType === "memory_item"),
         deltas: resources.filter((resource) => resource.resourceType === "memory_delta"),
+        invalidatedSourceRefs: arrayValue(asRecord(contextPayload.managedSourceRefs).rollbackMarkerRefs),
       },
       artifacts: {
         priorArtifacts: arrayValue(contextPayload.priorArtifacts),
@@ -203,6 +214,8 @@ export async function buildOperatorTaskDebugReadModelPg(db: SouthstarDb, input: 
         evaluatorResults: resources.filter((resource) => resource.resourceType === "evaluator_result"),
         recoveryDecisions: resources.filter((resource) => resource.resourceType === "recovery_decision"),
         recoveryExecutions: resources.filter((resource) => resource.resourceType === "recovery_execution"),
+        approvals: resources.filter((resource) => resource.resourceType === "approval"),
+        workspaceSnapshots: resources.filter((resource) => resource.resourceType === "workspace_snapshot"),
         toolProxyViolations: resources.filter((resource) => resource.resourceType === "tool_proxy_violation"),
         vaultLeases: resources.filter((resource) => resource.resourceType === "vault_lease"),
         toolGrants: resources.filter((resource) => resource.resourceType === "tool_grant"),
@@ -223,11 +236,16 @@ export async function buildOperatorTaskDebugReadModelPg(db: SouthstarDb, input: 
           "tool_grant",
           "tool_proxy_violation",
           "vault_lease",
+          "workspace_snapshot",
         ].includes(resource.resourceType)),
+      },
+      recovery: {
+        items: resources.filter((resource) => ["recovery_decision", "recovery_execution", "approval"].includes(resource.resourceType)),
+        commands: recoveryActions(input.runId, resources),
       },
       raw: { resources },
     },
-    actions: taskActions(input.runId, input.taskId, task.status),
+    actions: taskActions(input.runId, input.taskId, task.status, { checkpointRefs, workspaceSnapshotRefs }),
   };
 }
 
@@ -267,23 +285,96 @@ function mapHistoryRow(
   };
 }
 
-function taskActions(runId: string, taskId: string, status: string): OperatorCommand[] {
+function taskActions(
+  runId: string,
+  taskId: string,
+  status: string,
+  options: { checkpointRefs: string[]; workspaceSnapshotRefs: string[] },
+): OperatorCommand[] {
   const encodedRunId = encodeURIComponent(runId);
   const encodedTaskId = encodeURIComponent(taskId);
   const recoverable = isTaskRecoverableStatus(status);
+  const hasWorkspaceSnapshot = options.workspaceSnapshotRefs.length > 0;
   return [
     command("task.retry", "Retry Task", `/api/v2/runs/${encodedRunId}/tasks/${encodedTaskId}/retry`, {
       enabled: recoverable,
       requiresConfirmation: true,
     }),
-    command("task.request-revision", "Request Revision", `/api/v2/runs/${encodedRunId}/tasks/${encodedTaskId}/request-revision`, {
+    command("task.fork-session", "Fork Session", `/api/v2/runs/${encodedRunId}/tasks/${encodedTaskId}/fork-session`, {
+      enabled: recoverable,
+      requiresConfirmation: true,
+      inputOptions: { checkpointRefs: options.checkpointRefs },
+    }),
+    command("task.reset-session", "Reset Session", `/api/v2/runs/${encodedRunId}/tasks/${encodedTaskId}/reset-session`, {
+      enabled: recoverable,
+      requiresConfirmation: true,
+      inputOptions: { checkpointRefs: options.checkpointRefs },
+    }),
+    command("task.rollback-session", "Rollback Session", `/api/v2/runs/${encodedRunId}/tasks/${encodedTaskId}/rollback-session`, {
+      enabled: recoverable && hasWorkspaceSnapshot,
+      requiresConfirmation: true,
+      disabledReason: hasWorkspaceSnapshot ? undefined : "rollback requires a usable workspace snapshot",
+      inputOptions: { checkpointRefs: options.checkpointRefs, workspaceSnapshotRefs: options.workspaceSnapshotRefs },
+    }),
+    command("task.request-revision", "Request Workflow Revision", `/api/v2/runs/${encodedRunId}/tasks/${encodedTaskId}/request-revision`, {
       enabled: recoverable,
       requiresConfirmation: true,
     }),
   ];
 }
 
-function command(id: string, label: string, endpoint: string, options: { enabled: boolean; requiresConfirmation: boolean }): OperatorCommand {
+function recoveryActions(runId: string, resources: Array<{ resourceType: string; resourceKey: string; status: string; payload: unknown }>): OperatorCommand[] {
+  return resources.flatMap((resource) => {
+    if (resource.resourceType === "recovery_decision") return recoveryCommands(runId, recoveryDecisionId(resource.payload, resource.resourceKey), resource.status);
+    if (resource.resourceType === "approval") return approvalCommands(runId, approvalId(resource.payload, resource.resourceKey));
+    return [];
+  });
+}
+
+function recoveryCommands(runId: string, decisionId: string | undefined, status: string): OperatorCommand[] {
+  const endpoint = decisionId ? `/api/v2/runs/${encodeURIComponent(runId)}/recovery-decisions/${encodeURIComponent(decisionId)}` : undefined;
+  const waiting = status === "waiting_operator_approval";
+  const approved = status === "approved" || status === "recorded";
+  return [
+    command("recovery.approve", "Approve Recovery", endpoint ? `${endpoint}/approval` : "", {
+      enabled: Boolean(endpoint) && waiting,
+      requiresConfirmation: true,
+      body: { decision: "approved" },
+    }),
+    command("recovery.reject", "Reject Recovery", endpoint ? `${endpoint}/approval` : "", {
+      enabled: Boolean(endpoint) && waiting,
+      requiresConfirmation: true,
+      body: { decision: "rejected" },
+    }),
+    command("recovery.apply", "Apply Recovery", endpoint ? `${endpoint}/apply` : "", {
+      enabled: Boolean(endpoint) && approved,
+      requiresConfirmation: true,
+    }),
+  ];
+}
+
+function approvalCommands(runId: string, approvalIdValue: string | undefined): OperatorCommand[] {
+  const endpoint = approvalIdValue ? `/api/v2/runs/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(approvalIdValue)}/decision` : "";
+  return [
+    command("approval.approve", "Approve", endpoint, {
+      enabled: Boolean(approvalIdValue),
+      requiresConfirmation: true,
+      body: { decision: "approved" },
+    }),
+    command("approval.reject", "Reject", endpoint, {
+      enabled: Boolean(approvalIdValue),
+      requiresConfirmation: true,
+      body: { decision: "rejected" },
+    }),
+  ];
+}
+
+function command(
+  id: string,
+  label: string,
+  endpoint: string,
+  options: { enabled: boolean; requiresConfirmation: boolean; disabledReason?: string; body?: Record<string, unknown>; inputOptions?: OperatorCommand["inputOptions"] },
+): OperatorCommand {
   return {
     id,
     label,
@@ -291,7 +382,20 @@ function command(id: string, label: string, endpoint: string, options: { enabled
     method: "POST",
     enabled: options.enabled,
     requiresConfirmation: options.requiresConfirmation,
+    ...(options.disabledReason ? { disabledReason: options.disabledReason } : {}),
+    ...(options.body ? { body: options.body } : {}),
+    ...(options.inputOptions ? { inputOptions: options.inputOptions } : {}),
   };
+}
+
+function recoveryDecisionId(payload: unknown, fallback: string): string | undefined {
+  const record = asRecord(payload);
+  return stringValue(record.decisionId) ?? fallback.replace(/^recovery_decision:/, "");
+}
+
+function approvalId(payload: unknown, fallback: string): string | undefined {
+  const record = asRecord(payload);
+  return stringValue(record.approvalId) ?? fallback.replace(/^approval:/, "");
 }
 
 function artifactRefId(payload: unknown): string | undefined {
@@ -305,6 +409,13 @@ function stringArray(value: unknown): string[] {
 
 function arrayValue(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function withSessionSource(value: unknown): unknown {
+  const record = asRecord(value);
+  if (!record.source) return value;
+  const source = asRecord(record.source);
+  return { ...record, sourceSessionId: source.sessionId };
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

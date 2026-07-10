@@ -6,6 +6,7 @@ import type {
   LibraryImportCandidateInstallResult,
   LibraryImportProposedEdge,
   LibraryImportSourceDocument,
+  LibraryObjectDeleteResult,
   LibraryObjectDetail,
 } from "./types";
 
@@ -69,6 +70,12 @@ export async function readLibraryFile(relativePath: string): Promise<LibraryFile
 
 export async function readLibraryObjectDetail(objectKey: string): Promise<LibraryObjectDetail> {
   return requestLibraryJson<LibraryObjectDetail>(`/api/library/objects/${encodeURIComponent(objectKey)}`);
+}
+
+export async function deleteLibraryObject(objectKey: string): Promise<LibraryObjectDeleteResult> {
+  return requestLibraryJson<LibraryObjectDeleteResult>(`/api/library/objects/${encodeURIComponent(objectKey)}`, {
+    method: "DELETE",
+  });
 }
 
 export async function readLibraryGraphNeighborhood(input: {

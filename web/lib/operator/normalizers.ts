@@ -88,6 +88,15 @@ function readCommand(input: unknown): OperatorCommand | null {
     requiresConfirmation: Boolean(command?.requiresConfirmation),
     disabledReason: stringValue(command?.disabledReason),
     body: recordValue(command?.body),
+    inputOptions: readCommandInputOptions(command?.inputOptions),
+  };
+}
+
+function readCommandInputOptions(input: unknown): OperatorCommand["inputOptions"] {
+  const row = recordValue(input) ?? {};
+  return {
+    checkpointRefs: stringArray(row.checkpointRefs),
+    workspaceSnapshotRefs: stringArray(row.workspaceSnapshotRefs),
   };
 }
 
@@ -115,6 +124,10 @@ function unwrapEnvelope(input: unknown): Record<string, unknown> {
 
 function coerceArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function stringArray(value: unknown): string[] {
+  return coerceArray(value).filter((item): item is string => typeof item === "string");
 }
 
 function recordValue(value: unknown): Record<string, unknown> | undefined {

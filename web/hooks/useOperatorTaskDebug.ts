@@ -64,6 +64,7 @@ function normalizeOperatorTaskDebug(input: unknown): OperatorTaskDebug {
       artifacts: arrayValue(data.artifacts || data.artifactRefs).map(readArtifactItem),
       debug: readDebugGroups(data.debug),
       actions: arrayValue(data.actions).map(readCommand),
+      recoveryActions: arrayValue(data.recoveryActions).map(readCommand),
     },
   };
 }
@@ -78,6 +79,7 @@ function readDebugGroups(input: unknown): OperatorTaskDebugGroups | undefined {
   const artifacts = asRecord(row.artifacts);
   const resources = asRecord(row.resources);
   const raw = asRecord(row.raw);
+  const recovery = asRecord(row.recovery);
   return {
     session: {
       rootSessionId: nullableString(session.rootSessionId),
@@ -99,12 +101,17 @@ function readDebugGroups(input: unknown): OperatorTaskDebugGroups | undefined {
       selectedMemories: arrayValue(memory.selectedMemories),
       items: arrayValue(memory.items).map(readResourceItem),
       deltas: arrayValue(memory.deltas).map(readResourceItem),
+      invalidatedSourceRefs: arrayValue(memory.invalidatedSourceRefs),
     },
     artifacts: {
       priorArtifacts: arrayValue(artifacts.priorArtifacts),
       refs: arrayValue(artifacts.refs).map(readArtifactItem),
     },
     resources: Object.fromEntries(Object.entries(resources).map(([key, value]) => [key, arrayValue(value).map(readResourceItem)])),
+    recovery: {
+      items: arrayValue(recovery.items).map(readResourceItem),
+      commands: arrayValue(recovery.commands).map(readCommand),
+    },
     raw: { resources: arrayValue(raw.resources).map(readResourceItem) },
   };
 }
@@ -155,6 +162,15 @@ function readCommand(input: unknown): OperatorCommand {
     requiresConfirmation: Boolean(row.requiresConfirmation),
     disabledReason: stringValue(row.disabledReason),
     body: asRecord(row.body),
+    inputOptions: readCommandInputOptions(row.inputOptions),
+  };
+}
+
+function readCommandInputOptions(input: unknown): OperatorCommand["inputOptions"] {
+  const row = asRecord(input);
+  return {
+    checkpointRefs: stringArray(row.checkpointRefs),
+    workspaceSnapshotRefs: stringArray(row.workspaceSnapshotRefs),
   };
 }
 

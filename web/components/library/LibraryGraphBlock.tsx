@@ -87,6 +87,7 @@ export function LibraryGraphBlock({
   const [selectedKind, setSelectedKind] = useState(initialGraph.query?.kind ?? "all");
   const [selectedStatus, setSelectedStatus] = useState(initialGraph.query?.status ?? "all");
   const [selectedEdgeType, setSelectedEdgeType] = useState(initialGraph.query?.edgeType ?? "all");
+  const [nodeSearch, setNodeSearch] = useState("");
   const [open, setOpen] = useState(true);
   const [graph, setGraph] = useState<LibraryGraphData>(initialGraph);
   const options = useMemo(() => {
@@ -117,7 +118,8 @@ export function LibraryGraphBlock({
 
   const nodes = Array.isArray(graph.nodes) ? graph.nodes.filter(isGraphNode) : [];
   const edges = Array.isArray(graph.edges) ? graph.edges.filter(isGraphEdge) : [];
-  const layoutKey = `scope=${selectedScope};kind=${selectedKind};status=${selectedStatus};edge=${selectedEdgeType}`;
+  const visibleGraph = useMemo(() => filterGraphByNodeSearch(nodes, edges, nodeSearch), [edges, nodeSearch, nodes]);
+  const layoutKey = `scope=${selectedScope};kind=${selectedKind};status=${selectedStatus};edge=${selectedEdgeType};search=${nodeSearch}`;
   return (
     <div data-testid="library-graph-block" style={{ display: "grid", gap: 6, border: "1px solid var(--border)", borderRadius: 8, padding: 10, background: "var(--bg-subtle)" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -193,14 +195,65 @@ export function LibraryGraphBlock({
               ))}
             </select>
           </label>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+            <span>Search</span>
+            <input
+              data-testid="library-graph-node-search"
+              value={nodeSearch}
+              onChange={(event) => setNodeSearch(event.currentTarget.value)}
+              placeholder="node key/title, * and ?"
+              title="Use * and ? wildcards to search graph nodes"
+              style={{ minWidth: 180 }}
+            />
+          </label>
         </div>
       </div>
       <div style={{ fontSize: 12, color: "var(--text-muted)" }}>
-        {selectedScope} / {selectedKind} / {selectedStatus} / {selectedEdgeType} / {nodes.length} nodes / {edges.length} edges
+        {selectedScope} / {selectedKind} / {selectedStatus} / {selectedEdgeType} / {visibleGraph.matchedCount} matched / {visibleGraph.nodes.length} nodes / {visibleGraph.edges.length} edges
       </div>
-      {open ? <LibraryGraphChart nodes={nodes} edges={edges} onSelectNode={onSelectNode} persistLayoutKey={layoutKey} /> : null}
+      {open ? <LibraryGraphChart nodes={visibleGraph.nodes} edges={visibleGraph.edges} onSelectNode={onSelectNode} persistLayoutKey={layoutKey} /> : null}
     </div>
   );
+}
+
+function filterGraphByNodeSearch(
+  nodes: LibraryGraphChartNode[],
+  edges: LibraryGraphChartEdge[],
+  query: string,
+): { nodes: LibraryGraphChartNode[]; edges: LibraryGraphChartEdge[]; matchedCount: number } {
+  const pattern = query.trim();
+  if (!pattern) return { nodes, edges, matchedCount: nodes.length };
+  const matches = wildcardMatcher(pattern);
+  const matchedKeys = new Set(nodes.filter((node) => matches(nodeSearchText(node))).map((node) => node.objectKey));
+  const visibleKeys = new Set(matchedKeys);
+  const visibleEdges = edges.filter((edge) => {
+    if (!matchedKeys.has(edge.fromObjectKey) && !matchedKeys.has(edge.toObjectKey)) return false;
+    visibleKeys.add(edge.fromObjectKey);
+    visibleKeys.add(edge.toObjectKey);
+    return true;
+  });
+  return {
+    nodes: nodes.filter((node) => visibleKeys.has(node.objectKey)),
+    edges: visibleEdges,
+    matchedCount: matchedKeys.size,
+  };
+}
+
+function nodeSearchText(node: LibraryGraphChartNode): string {
+  return [node.objectKey, node.title, node.objectKind, node.status].filter(Boolean).join(" ");
+}
+
+function wildcardMatcher(pattern: string): (value: string) => boolean {
+  const escaped = pattern
+    .split("")
+    .map((char) => {
+      if (char === "*") return ".*";
+      if (char === "?") return ".";
+      return char.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
+    })
+    .join("");
+  const regex = new RegExp(escaped, "i");
+  return (value) => regex.test(value);
 }
 
 function toGraphData(value: Record<string, unknown>): LibraryGraphData {

@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { applySessionRecoveryOperationPg } from "../../src/v2/session-recovery/session-operations.ts";
+import { captureWorkspaceSnapshotForTaskPg } from "../../src/v2/session-recovery/workspace-snapshot.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
@@ -10,6 +16,8 @@ import {
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+const execFileAsync = promisify(execFile);
 
 test("reset-session releases failed task with durable reset evidence and stable new root session", async () => {
   const db = await createTestPostgresDb();
@@ -250,6 +258,11 @@ test("rollback-session requires workspace snapshot evidence and records rollback
         resourceKey: "workspace_snapshot:base",
         status: "captured",
       },
+      workspaceRestore: {
+        provider: "none",
+        action: "skipped",
+        reason: "snapshot is evidence-only or not clean-at-capture",
+      },
       rollbackMarkerRef: "rollback_marker:session-op-rollback-approved",
       reason: "rollback to known good workspace",
       rolledBackAt: "2026-06-22T08:03:00.000Z",
@@ -278,6 +291,62 @@ test("rollback-session requires workspace snapshot evidence and records rollback
       reason: "rollback to known good workspace",
       appliedAt: "2026-06-22T08:03:00.000Z",
     });
+  } finally {
+    await db.close();
+  }
+});
+
+test("workspace snapshot captures clean git repo and rollback restores files", async () => {
+  const db = await createTestPostgresDb();
+  const repo = await mkdtemp(join(tmpdir(), "southstar-workspace-snapshot-"));
+  try {
+    await git(repo, ["init"]);
+    await git(repo, ["config", "user.email", "southstar@example.test"]);
+    await git(repo, ["config", "user.name", "Southstar Test"]);
+    await writeFile(join(repo, "app.txt"), "before\n");
+    await git(repo, ["add", "app.txt"]);
+    await git(repo, ["commit", "-m", "initial"]);
+    await createWorkflowRunPg(db, {
+      id: "run-git-snapshot",
+      status: "running",
+      domain: "software",
+      goalPrompt: "snapshot clean repo",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: JSON.stringify({ cwd: repo, projectRoot: repo }),
+      metricsJson: "{}",
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement",
+      runId: "run-git-snapshot",
+      taskKey: "implement",
+      status: "failed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: "root-run-git-snapshot-implement-old",
+    });
+
+    const snapshot = await captureWorkspaceSnapshotForTaskPg(db, {
+      runId: "run-git-snapshot",
+      taskId: "implement",
+      sessionId: "root-run-git-snapshot-implement-old",
+      attemptId: "attempt-1",
+    });
+    assert.ok(snapshot);
+    assert.deepEqual(snapshot, { resourceKey: "workspace_snapshot:run-git-snapshot:implement:attempt-1", status: "captured" });
+    await writeFile(join(repo, "app.txt"), "after\n");
+
+    await applySessionRecoveryOperationPg(db, {
+      operationId: "session-op-git-rollback",
+      runId: "run-git-snapshot",
+      taskId: "implement",
+      path: "rollback-session",
+      approved: true,
+      workspaceSnapshotRef: snapshot.resourceKey,
+      reason: "restore clean git snapshot",
+    });
+    assert.equal(await readFile(join(repo, "app.txt"), "utf8"), "before\n");
   } finally {
     await db.close();
   }
@@ -382,4 +451,8 @@ async function seedWorkspaceSnapshotEvidence(
     },
     summary: { provider: "git", commitSha: "abc123" },
   });
+}
+
+async function git(cwd: string, args: string[]): Promise<void> {
+  await execFileAsync("git", ["-C", cwd, ...args]);
 }

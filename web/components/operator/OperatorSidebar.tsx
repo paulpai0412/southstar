@@ -3,8 +3,7 @@
 import { AlertTriangle, CheckCircle2, CircleDot, PauseCircle, PlayCircle, XCircle } from "lucide-react";
 import { useState } from "react";
 import { ProjectScopePicker } from "../ProjectScopePicker";
-import { invokeOperatorCommand } from "@/lib/operator/invokeCommand";
-import type { OperatorCommand, OperatorIncident, OperatorRun } from "@/lib/operator/types";
+import type { OperatorIncident, OperatorRun } from "@/lib/operator/types";
 
 export function OperatorSidebar({
   cwd,
@@ -31,8 +30,6 @@ export function OperatorSidebar({
   onSelectIncident: (incident: OperatorIncident) => void;
   onRefresh: () => void;
 }) {
-  const [pendingCommandId, setPendingCommandId] = useState<string | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
   const [overviewRefreshDone, setOverviewRefreshDone] = useState(false);
   const sortedRuns = [...runs].sort(compareRunUpdatedAt);
   const runningRuns = sortedRuns.filter((run) => !isCompletedRun(run));
@@ -42,23 +39,6 @@ export function OperatorSidebar({
     onRefresh();
     setOverviewRefreshDone(true);
     window.setTimeout(() => setOverviewRefreshDone(false), 1800);
-  }
-
-  async function invokeRunCommand(run: OperatorRun, command: OperatorCommand) {
-    const reason = window.prompt(`Reason for ${command.label}`, command.id === "run.pause" ? "Pause workflow from Operator" : "");
-    if (reason === null) return;
-    const normalizedReason = reason.trim() || command.label;
-    if (command.requiresConfirmation && !window.confirm(`Run ${command.label} with reason "${normalizedReason}"?`)) return;
-    setPendingCommandId(`${run.runId}:${command.id}`);
-    setActionError(null);
-    try {
-      await invokeOperatorCommand({ command, runId: run.runId, reason: normalizedReason });
-      onRefresh();
-    } catch (caught) {
-      setActionError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      setPendingCommandId(null);
-    }
   }
 
   return (
@@ -105,7 +85,6 @@ export function OperatorSidebar({
       />
       <section style={{ flex: "1 1 0", minHeight: 0, overflow: "auto", borderBottom: "1px solid var(--border)" }}>
         {error ? <p className="operator-muted operator-danger">Operator overview error: {error}</p> : null}
-        {actionError ? <p className="operator-muted operator-danger">{actionError}</p> : null}
         <RunSection
           title="Running Workflow Runs"
           empty={cwd ? "No running workflows for this project." : "No running workflows."}
@@ -113,8 +92,6 @@ export function OperatorSidebar({
           selectedRunId={selectedRunId}
           selectedTaskId={selectedTaskId}
           onSelectRun={onSelectRun}
-          onRunCommand={(run, command) => void invokeRunCommand(run, command)}
-          pendingCommandId={pendingCommandId}
           incidents={incidents}
           selectedIncidentId={selectedIncidentId}
           onSelectIncident={onSelectIncident}
@@ -128,8 +105,6 @@ export function OperatorSidebar({
           selectedRunId={selectedRunId}
           selectedTaskId={selectedTaskId}
           onSelectRun={onSelectRun}
-          onRunCommand={(run, command) => void invokeRunCommand(run, command)}
-          pendingCommandId={pendingCommandId}
           incidents={incidents}
           selectedIncidentId={selectedIncidentId}
           onSelectIncident={onSelectIncident}
@@ -148,8 +123,6 @@ function RunSection({
   incidents,
   selectedIncidentId,
   onSelectRun,
-  onRunCommand,
-  pendingCommandId,
   onSelectIncident,
 }: {
   title: string;
@@ -160,8 +133,6 @@ function RunSection({
   incidents: OperatorIncident[];
   selectedIncidentId: string | null;
   onSelectRun: (runId: string) => void;
-  onRunCommand: (run: OperatorRun, command: OperatorCommand) => void;
-  pendingCommandId: string | null;
   onSelectIncident: (incident: OperatorIncident) => void;
 }) {
   return (
@@ -172,7 +143,6 @@ function RunSection({
       ) : runs.map((run) => {
         const runIncidents = incidents.filter((incident) => incident.runId === run.runId);
         const selectedIncident = runIncidents.find((incident) => incident.id === selectedIncidentId) || runIncidents[0] || null;
-        const rowCommands = (run.commands ?? []).filter((command) => command.id === "run.pause" || command.id === "run.cancel");
         return (
           <div
             key={run.runId}
@@ -202,24 +172,6 @@ function RunSection({
                 </span>
               ) : null}
             </div>
-            {rowCommands.length > 0 ? (
-              <div className="operator-run-command-row" aria-label="Workflow run actions">
-                {rowCommands.map((command) => (
-                  <button
-                    key={command.id}
-                    type="button"
-                    disabled={!command.enabled || pendingCommandId === `${run.runId}:${command.id}`}
-                    title={command.disabledReason || command.label}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onRunCommand(run, command);
-                    }}
-                  >
-                    {pendingCommandId === `${run.runId}:${command.id}` ? "..." : command.label.replace(" Run", "")}
-                  </button>
-                ))}
-              </div>
-            ) : null}
             {selectedRunId === run.runId && selectedTaskId ? <em>task {selectedTaskId}</em> : null}
           </div>
         );

@@ -5,6 +5,7 @@ export async function invokeOperatorCommand(input: {
   runId: string | null;
   taskId?: string | null;
   reason?: string;
+  payload?: Record<string, unknown>;
 }): Promise<void> {
   const { command, runId, taskId, reason } = input;
   if (!command.endpoint || !command.enabled) return;
@@ -17,6 +18,7 @@ export async function invokeOperatorCommand(input: {
     commandId: `ui:${command.id}:${Date.now()}:${crypto.randomUUID()}`,
     actor: { type: "user", id: "operator-ui" },
     ...(reason ? { reason } : {}),
+    ...(input.payload || {}),
   };
   const response = await fetch("/api/operator/command", {
     method: "POST",

@@ -11,6 +11,7 @@ import type {
   RecoveryExecutionStateChange,
   RecoveryPath,
 } from "../exceptions/types.ts";
+import { restoreWorkspaceSnapshotPg } from "./workspace-snapshot.ts";
 
 export type SessionRecoveryOperationPath = Extract<RecoveryPath, "fork-session" | "reset-session" | "rollback-session">;
 
@@ -144,6 +145,11 @@ export async function applySessionRecoveryOperationPg(
     }
 
     if (input.path === "rollback-session") {
+      const workspaceRestore = await restoreWorkspaceSnapshotPg(tx, {
+        runId: input.runId,
+        taskId: input.taskId,
+        workspaceSnapshotRef: requireString(input.workspaceSnapshotRef),
+      });
       await upsertRollbackMarkerPg(tx, {
         input,
         markerRef: requireString(rollbackMarkerRef),
@@ -156,6 +162,7 @@ export async function applySessionRecoveryOperationPg(
         rollbackRef: requireString(workspaceRollbackRef),
         markerRef: requireString(rollbackMarkerRef),
         workspaceSnapshotEvidence: requireValue(workspaceSnapshotEvidence),
+        workspaceRestore,
         now,
       });
     }
@@ -362,6 +369,7 @@ async function upsertWorkspaceRollbackPg(
     rollbackRef: string;
     markerRef: string;
     workspaceSnapshotEvidence: WorkspaceSnapshotEvidence;
+    workspaceRestore: Record<string, unknown>;
     now: string;
   },
 ): Promise<RuntimeResourceRecord> {
@@ -380,6 +388,7 @@ async function upsertWorkspaceRollbackPg(
       taskId: input.input.taskId,
       workspaceSnapshotRef: input.input.workspaceSnapshotRef,
       workspaceSnapshotEvidence: input.workspaceSnapshotEvidence,
+      workspaceRestore: input.workspaceRestore,
       rollbackMarkerRef: input.markerRef,
       reason: input.input.reason,
       rolledBackAt: input.now,
@@ -387,6 +396,7 @@ async function upsertWorkspaceRollbackPg(
     summary: {
       operationId: input.input.operationId,
       workspaceSnapshotRef: input.input.workspaceSnapshotRef,
+      workspaceRestore: input.workspaceRestore,
       rollbackMarkerRef: input.markerRef,
     },
   });

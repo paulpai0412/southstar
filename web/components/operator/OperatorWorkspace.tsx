@@ -260,7 +260,8 @@ function WorkflowStateCard({
   const attentionCount = attentionItems.length + incidents.length;
   const highestIncident = incidents[0] || null;
   const projectLabel = formatProjectLabel(run);
-  const rowCommands = (run.commands ?? []).filter((command) => command.id === "run.pause" || command.id === "run.cancel");
+  const toggleCommand = runToggleCommand(run);
+  const cancelCommand = run.commands?.find((command) => command.id === "run.cancel");
   const selectRun = () => onSelectRun(run.runId);
 
   return (
@@ -288,26 +289,46 @@ function WorkflowStateCard({
           {attentionCount} attention{highestIncident ? ` · ${highestIncident.nextAction}` : ""}
         </span>
       ) : null}
-      {rowCommands.length > 0 ? (
+      {(toggleCommand || cancelCommand) ? (
         <span className="operator-run-command-row" aria-label="Workflow run actions">
-          {rowCommands.map((command) => (
+          {toggleCommand ? (
             <button
-              key={command.id}
               type="button"
-              disabled={!command.enabled || pendingCommandId === `${run.runId}:${command.id}`}
-              title={command.disabledReason || command.label}
+              disabled={!toggleCommand.enabled || pendingCommandId === `${run.runId}:${toggleCommand.id}`}
+              title={toggleCommand.disabledReason || toggleCommand.label}
               onClick={(event) => {
                 event.stopPropagation();
-                onRunCommand(run, command);
+                onRunCommand(run, toggleCommand);
               }}
             >
-              {pendingCommandId === `${run.runId}:${command.id}` ? "..." : command.label.replace(" Run", "")}
+              {pendingCommandId === `${run.runId}:${toggleCommand.id}` ? "..." : toggleCommand.label.replace(" Run", "")}
             </button>
-          ))}
+          ) : null}
+          {cancelCommand ? (
+            <button
+              type="button"
+              disabled={!cancelCommand.enabled || pendingCommandId === `${run.runId}:${cancelCommand.id}`}
+              title={cancelCommand.disabledReason || cancelCommand.label}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRunCommand(run, cancelCommand);
+              }}
+            >
+              {pendingCommandId === `${run.runId}:${cancelCommand.id}` ? "..." : "Cancel"}
+            </button>
+          ) : null}
         </span>
       ) : null}
     </div>
   );
+}
+
+function runToggleCommand(run: OperatorRun): OperatorCommand | undefined {
+  const pause = run.commands?.find((command) => command.id === "run.pause");
+  const resume = run.commands?.find((command) => command.id === "run.resume");
+  if (resume?.enabled) return resume;
+  if (pause?.enabled) return pause;
+  return run.status === "paused" || run.status === "blocked" ? resume : pause;
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {

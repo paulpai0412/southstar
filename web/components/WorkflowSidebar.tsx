@@ -551,6 +551,7 @@ function WorkflowTemplateTree({
   return (
     <div>
       <div
+        title={template.title}
         onMouseEnter={() => setMentionVisible(true)}
         onMouseLeave={() => setMentionVisible(false)}
         onFocus={() => setMentionVisible(true)}
@@ -595,7 +596,19 @@ function WorkflowTemplateTree({
           <Chevron open={isOpen(templateKey)} />
           <span style={{ width: 14, display: "flex", alignItems: "center", flexShrink: 0 }}>{getFileIcon("workflow.json", 14)}</span>
           <span style={{ minWidth: 0, flex: 1 }}>
-            <span style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{template.title}</span>
+            <span
+              title={template.title}
+              style={{
+                display: "-webkit-box",
+                overflow: "hidden",
+                WebkitLineClamp: 2,
+                WebkitBoxOrient: "vertical",
+                lineHeight: 1.3,
+                overflowWrap: "anywhere",
+              }}
+            >
+              {template.title}
+            </span>
             <span style={{ color: "var(--text-dim)", fontSize: 11 }}>{template.nodes.length || template.stageRefs.length} nodes</span>
           </span>
           <span style={{ flexShrink: 0, color: "var(--text-dim)", fontSize: 11 }}>{template.status}</span>
@@ -622,7 +635,8 @@ function WorkflowTemplateTree({
               lineHeight: "18px",
               whiteSpace: "nowrap",
               padding: "0 8px",
-              visibility: mentionVisible ? "visible" : "hidden",
+              display: mentionVisible ? "inline-flex" : "none",
+              alignItems: "center",
             }}
           >
             @ memtion
