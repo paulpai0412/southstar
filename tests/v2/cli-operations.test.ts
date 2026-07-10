@@ -39,6 +39,11 @@ test("parses phase 1.5 CLI commands", () => {
   });
   assert.throws(() => parseV2Command(["start", "--port", "0"]), /--port must be an integer between 1 and 65535/);
   assert.deepEqual(parseV2Command(["run-goal", "--goal", "Add calc sum"]), { command: "run-goal", goal: "Add calc sum" });
+  assert.deepEqual(parseV2Command(["run-goal", "--goal", "Add calc sum", "--cwd", "/workspace/calc"]), {
+    command: "run-goal",
+    goal: "Add calc sum",
+    cwd: "/workspace/calc",
+  });
   assert.deepEqual(parseV2Command(["wait", "--run-id", "run-1"]), { command: "wait", runId: "run-1" });
   assert.deepEqual(parseV2Command(["tasks", "--run-id", "run-1"]), { command: "tasks", runId: "run-1" });
   assert.deepEqual(parseV2Command(["task", "--run-id", "run-1", "--task-id", "task-1"]), {
@@ -86,8 +91,12 @@ test("db:init executes through the V2 Postgres schema initializer", async () => 
 
 test("server-backed phase 1.5 CLI commands execute through the runtime client without local db fallback", async () => {
   const calls: string[] = [];
+  const runGoalRequests: Array<Record<string, unknown>> = [];
   const runtimeClient = {
-    runGoal: async () => envelope("run-goal", { runId: "run-1" }, calls),
+    runGoal: async (body: Record<string, unknown>) => {
+      runGoalRequests.push(body);
+      return envelope("run-goal", { runId: "run-1" }, calls);
+    },
     getRun: async () => envelope("status", { runId: "run-1" }, calls),
     listTasks: async () => envelope("tasks", [], calls),
     getTask: async () => envelope("task", { id: "task-1" }, calls),
@@ -118,6 +127,9 @@ test("server-backed phase 1.5 CLI commands execute through the runtime client wi
     assert.notEqual(result.kind, "serve");
   }
   assert.deepEqual(calls, ["run-goal", "status", "tasks", "task", "artifacts", "sessions", "memory", "logs", "voice-command", "read-model"]);
+  assert.equal(runGoalRequests[0]?.goalPrompt, "Add calc sum");
+  assert.equal(runGoalRequests[0]?.cwd, process.cwd());
+  assert.match(String(runGoalRequests[0]?.idempotencyKey), /^[0-9a-f-]{36}$/);
 });
 
 test("task-detail read-model CLI requires task id", () => {

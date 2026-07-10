@@ -1,14 +1,9 @@
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
 import type { ReadModelKind } from "../read-models/types.ts";
 import type { RuntimeCommandRequest } from "../ui-api/commands/runtime-command.ts";
+import type { RunGoalRequest, RunGoalResult } from "../orchestration/run-goal-service.ts";
 
 export type RuntimeServerClient = ReturnType<typeof createRuntimeServerClient>;
-
-type RunGoalResult = {
-  draft: { draftId: string; goalPrompt: string; workflowId: string };
-  runId: string;
-  taskIds: string[];
-};
 
 type PlannerRequestBody = {
   goalPrompt: string;
@@ -140,8 +135,11 @@ type RuntimeLoopId =
 export function createRuntimeServerClient(input: { baseUrl: string }) {
   const baseUrl = input.baseUrl.replace(/\/$/, "");
   return {
-    runGoal(body: PlannerRequestBody) {
+    runGoal(body: RunGoalRequest) {
       return post<RunGoalResult>(`${baseUrl}/api/v2/run-goal`, body);
+    },
+    runGoalStream(body: RunGoalRequest, onEvent: RuntimeSseListener, signal?: AbortSignal) {
+      return postSse(`${baseUrl}/api/v2/run-goal`, body, onEvent, signal, { accept: "text/event-stream" });
     },
     createPlannerDraft(body: PlannerRequestBody) {
       return post(`${baseUrl}/api/v2/planner/drafts`, body);
@@ -503,8 +501,14 @@ async function del<T = unknown>(url: string): Promise<ApiEnvelope<T>> {
   return readJson(await fetch(url, { method: "DELETE" }));
 }
 
-async function postSse(url: string, body: unknown, onEvent: RuntimeSseListener, signal?: AbortSignal): Promise<unknown> {
-  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal });
+async function postSse(
+  url: string,
+  body: unknown,
+  onEvent: RuntimeSseListener,
+  signal?: AbortSignal,
+  headers: Record<string, string> = {},
+): Promise<unknown> {
+  const response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify(body), signal });
   return readSse(response, onEvent);
 }
 
@@ -586,7 +590,10 @@ function summarizeSseEvents(events: RuntimeSseEvent[]): Record<string, unknown> 
     if (event.event === "draft" && isRecord(event.data) && event.data.draft !== undefined) result.draft = event.data.draft;
     if (event.event === "orchestration" && isRecord(event.data) && event.data.orchestration !== undefined) result.orchestration = event.data.orchestration;
     if (event.event === "error") result.error = event.data;
-    if (event.event === "done") result.done = true;
+    if (event.event === "done") {
+      result.done = true;
+      if (isRecord(event.data)) result.result = event.data;
+    }
   }
   return result;
 }

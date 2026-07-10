@@ -1,0 +1,272 @@
+import { randomUUID } from "node:crypto";
+import type { SouthstarDb } from "../db/postgres.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
+import { recordRuntimeExceptionPg } from "../exceptions/postgres-runtime-exceptions.ts";
+import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { goalContractHash, storedGoalContract, type GoalContractV1 } from "../orchestration/goal-contract.ts";
+import { loadRunLibrarySnapshotPg, type RunLibrarySnapshotV1 } from "../orchestration/run-library-snapshot.ts";
+import {
+  continueDynamicRepairApprovalPg,
+  rejectDynamicRepairApprovalPg,
+} from "../runtime-revision/dynamic-repair-revision.ts";
+import {
+  appendHistoryEventOncePg,
+  appendHistoryEventPg,
+  getResourceByKeyPg,
+  upsertRuntimeResourcePg,
+} from "../stores/postgres-runtime-store.ts";
+import { startRunSchedulingPg, type StartRunSchedulingResult } from "../server/run-execution-controller.ts";
+
+export type GoalExecutionApprovalPayload = {
+  actionType: "goalExecution";
+  decisionMode: "auto" | "manual";
+  policyReason: string;
+  riskTags: string[];
+  requestedSideEffects: string[];
+  goalContractHash: string;
+  manifestHash: string;
+  librarySnapshotHash: string;
+  sideEffectEnvelopeHash: string;
+};
+
+export async function createApprovalPg(db: SouthstarDb, input: {
+  runId: string;
+  actionType: string;
+  riskTags: string[];
+  title: string;
+  payload: Record<string, unknown>;
+  status?: "pending" | "approved";
+}): Promise<{ id: string; status: "pending" | "approved" }> {
+  const approvalId = `approval-${randomUUID()}`;
+  const status = input.status ?? "pending";
+  await upsertRuntimeResourcePg(db, {
+    id: approvalId,
+    resourceType: "approval",
+    resourceKey: approvalId,
+    runId: input.runId,
+    scope: "approval",
+    status,
+    title: input.title,
+    payload: {
+      ...input.payload,
+      actionType: input.actionType,
+      riskTags: input.riskTags,
+      ...(status === "approved" ? { decision: "approved", decisionReason: input.payload.policyReason, decidedBy: "policy" } : {}),
+    },
+  });
+  await appendHistoryEventPg(db, {
+    runId: input.runId,
+    eventType: "approval.requested",
+    actorType: "orchestrator",
+    payload: { approvalId, actionType: input.actionType, riskTags: input.riskTags, decisionMode: input.payload.decisionMode },
+  });
+  if (status === "approved") {
+    await appendHistoryEventOncePg(db, {
+      runId: input.runId,
+      eventType: "approval.decided",
+      actorType: "orchestrator",
+      idempotencyKey: `${approvalId}:decided:auto`,
+      payload: { approvalId, decision: "approved", reason: input.payload.policyReason, decidedBy: "policy" },
+    });
+  }
+  return { id: approvalId, status };
+}
+
+export async function decideApprovalPg(db: SouthstarDb, input: {
+  runId: string;
+  approvalId: string;
+  decision: "approved" | "rejected";
+  reason: string;
+  startScheduling?: (db: SouthstarDb, input: { runId: string }) => Promise<StartRunSchedulingResult>;
+}) {
+  const decision = await db.tx(async (tx) => {
+    const run = await tx.maybeOne<{ status: string }>(
+      "select status from southstar.workflow_runs where id = $1 for update",
+      [input.runId],
+    );
+    if (!run) throw new Error(`run not found: ${input.runId}`);
+    const row = await tx.maybeOne<{ status: string; payload_json: Record<string, unknown>; title: string | null; task_id: string | null }>(
+      `select status, payload_json, title, task_id
+         from southstar.runtime_resources
+        where resource_type = 'approval' and resource_key = $1 and run_id = $2
+        for update`,
+      [input.approvalId, input.runId],
+    );
+    if (!row) throw new Error(`approval not found: ${input.approvalId}`);
+    const priorDecision = optionalString(row.payload_json.decision);
+    const priorReason = optionalString(row.payload_json.decisionReason);
+    if (priorDecision && (priorDecision !== input.decision || priorReason !== input.reason)) {
+      throw new Error(`approval already ${priorDecision}: ${input.approvalId}`);
+    }
+    const goalExecutionApproval = row.payload_json.actionType === "goalExecution";
+    if (goalExecutionApproval && input.decision === "approved" && !priorDecision) {
+      await assertGoalExecutionHashesCurrent(tx, input.runId, row.payload_json);
+      if (run.status !== "awaiting_approval") {
+        throw new Error(`goal execution approval cannot schedule run from status ${run.status}`);
+      }
+      await tx.query("update southstar.workflow_runs set status = 'created', updated_at = now() where id = $1", [input.runId]);
+    }
+    await upsertRuntimeResourcePg(tx, {
+      id: input.approvalId,
+      resourceType: "approval",
+      resourceKey: input.approvalId,
+      runId: input.runId,
+      taskId: row.task_id ?? undefined,
+      scope: "approval",
+      status: input.decision,
+      title: row.title ?? "Approval",
+      payload: { ...row.payload_json, decision: input.decision, decisionReason: input.reason, decidedBy: "user" },
+    });
+    await appendHistoryEventOncePg(tx, {
+      runId: input.runId,
+      taskId: row.task_id ?? undefined,
+      eventType: "approval.decided",
+      actorType: "user",
+      idempotencyKey: `${input.approvalId}:decided:${input.decision}`,
+      payload: { approvalId: input.approvalId, decision: input.decision, reason: input.reason },
+    });
+    return {
+      goalExecutionApproval,
+      dynamicRepairApproval: row.payload_json.schemaVersion === "southstar.dynamic_repair_authority_approval.v1"
+        && row.payload_json.actionType === "dynamic_repair_authority_expansion",
+    };
+  });
+
+  if (decision.goalExecutionApproval && input.decision === "approved") {
+    const scheduling = await scheduleRunOrRecordExceptionPg(db, input.runId, input.startScheduling ?? startRunSchedulingPg);
+    return { id: input.approvalId, status: input.decision, ...scheduling };
+  }
+  const continuation = !decision.dynamicRepairApproval
+    ? undefined
+    : input.decision === "approved"
+      ? await continueDynamicRepairApprovalPg(db, { runId: input.runId, approvalId: input.approvalId })
+      : await rejectDynamicRepairApprovalPg(db, { runId: input.runId, approvalId: input.approvalId, reason: input.reason });
+  return { id: input.approvalId, status: input.decision, ...(continuation ? { continuation } : {}) };
+}
+
+export function deriveGoalExecutionRisk(input: {
+  goalContract: GoalContractV1;
+  workflow: SouthstarWorkflowManifest;
+  librarySnapshot: RunLibrarySnapshotV1;
+}): { riskTags: string[]; sideEffectEnvelopeHash: string } {
+  const riskTags = new Set(input.goalContract.riskTags);
+  const authority = authorityEnvelope(input.workflow, input.librarySnapshot);
+  const authorityText = authority.values.join(" ").toLowerCase();
+  if (authority.vaultLeasePolicyRefs.length > 0 || /secret|vault|credential/.test(authorityText)) riskTags.add("secret-access");
+  if (authority.writableMounts.length > 0 || /external[-_ ]?write|webhook|upload/.test(authorityText)) riskTags.add("external-write");
+  if (/deploy/.test(authorityText)) riskTags.add("deployment");
+  if (/\bdelete\b|\bdestroy\b/.test(authorityText)) riskTags.add("delete");
+  if (/cost[-_ ]?high|high[-_ ]?cost/.test(authorityText)) riskTags.add("cost-high");
+  if (/production|prod[-_ ]?change/.test(authorityText)) riskTags.add("production-change");
+  for (const sideEffect of input.goalContract.requestedSideEffects) {
+    const normalized = sideEffect.toLowerCase();
+    if (/secret|vault|credential/.test(normalized)) riskTags.add("secret-access");
+    if (/external[-_ ]?write|webhook|upload/.test(normalized)) riskTags.add("external-write");
+    if (/deploy/.test(normalized)) riskTags.add("deployment");
+    if (/delete|destroy/.test(normalized)) riskTags.add("delete");
+    if (/cost[-_ ]?high|high[-_ ]?cost/.test(normalized)) riskTags.add("cost-high");
+    if (/production|prod[-_ ]?change/.test(normalized)) riskTags.add("production-change");
+  }
+  const effectiveRiskTags = [...riskTags].sort();
+  return {
+    riskTags: effectiveRiskTags,
+    sideEffectEnvelopeHash: contentHashForPayload({
+      requestedSideEffects: [...input.goalContract.requestedSideEffects].sort(),
+      riskTags: effectiveRiskTags,
+      authority,
+    }),
+  };
+}
+
+async function assertGoalExecutionHashesCurrent(
+  db: SouthstarDb,
+  runId: string,
+  approvalPayload: Record<string, unknown>,
+): Promise<void> {
+  const run = await db.one<{
+    workflow_manifest_json: SouthstarWorkflowManifest;
+    runtime_context_json: Record<string, unknown>;
+  }>("select workflow_manifest_json, runtime_context_json from southstar.workflow_runs where id = $1", [runId]);
+  const draftId = requiredString(run.runtime_context_json.draftId, "run draftId");
+  const draft = await getResourceByKeyPg(db, "planner_draft", draftId);
+  const contract = storedGoalContract(asRecord(draft?.payload).goalContract);
+  if (!contract) throw new Error(`goal execution approval Goal Contract missing: ${draftId}`);
+  const snapshot = await loadRunLibrarySnapshotPg(db, runId);
+  const risk = deriveGoalExecutionRisk({ goalContract: contract, workflow: run.workflow_manifest_json, librarySnapshot: snapshot });
+  const current = {
+    goalContractHash: goalContractHash(contract),
+    manifestHash: contentHashForPayload(run.workflow_manifest_json),
+    librarySnapshotHash: snapshot.snapshotHash,
+    sideEffectEnvelopeHash: risk.sideEffectEnvelopeHash,
+  };
+  for (const [name, value] of Object.entries(current)) {
+    if (approvalPayload[name] !== value) throw new Error(`${labelForHash(name)} hash mismatch for approval ${runId}`);
+  }
+}
+
+export async function scheduleRunOrRecordExceptionPg(
+  db: SouthstarDb,
+  runId: string,
+  startScheduling: (db: SouthstarDb, input: { runId: string }) => Promise<StartRunSchedulingResult>,
+): Promise<{ runStatus: "scheduling"; schedulerExceptionId?: string }> {
+  try {
+    await startScheduling(db, { runId });
+    return { runStatus: "scheduling" };
+  } catch (error) {
+    const exception = await recordRuntimeExceptionPg(db, {
+      runId,
+      source: "scheduler",
+      kind: "provider_unreachable",
+      severity: "blocking",
+      observedAt: new Date().toISOString(),
+      evidenceRefs: [`run:${runId}:scheduling-wakeup`],
+      providerEvidence: { error: error instanceof Error ? error.message : String(error) },
+    });
+    return { runStatus: "scheduling", schedulerExceptionId: exception.id };
+  }
+}
+
+function authorityEnvelope(workflow: SouthstarWorkflowManifest, snapshot: RunLibrarySnapshotV1) {
+  const taskRefs = workflow.tasks.flatMap((task) => [
+    ...(task.toolGrantRefs ?? []),
+    ...(task.mcpGrantRefs ?? []),
+    ...(task.vaultLeasePolicyRefs ?? []),
+  ]);
+  const selectedObjects = snapshot.objects.map((object) => ({
+    objectKey: object.objectKey,
+    objectKind: object.objectKind,
+    state: object.state,
+    stateHash: object.stateHash,
+  }));
+  const mounts = workflow.tasks.flatMap((task) => task.execution.mounts);
+  return {
+    selectedRefs: [...new Set(taskRefs)].sort(),
+    vaultLeasePolicyRefs: [...new Set(workflow.tasks.flatMap((task) => task.vaultLeasePolicyRefs ?? []))].sort(),
+    writableMounts: mounts.filter((mount) => !mount.readonly),
+    mcpGrants: workflow.mcpGrants,
+    selectedObjects,
+    values: [
+      ...taskRefs,
+      ...workflow.mcpGrants.flatMap((grant) => [grant.serverId, ...grant.allowedTools]),
+      ...mounts.map((mount) => JSON.stringify(mount)),
+      ...selectedObjects.flatMap((object) => [object.objectKey, JSON.stringify(object.state)]),
+    ],
+  };
+}
+
+function labelForHash(name: string): string {
+  return name.replace(/Hash$/, "").replace(/[A-Z]/g, (character) => ` ${character.toLowerCase()}`);
+}
+
+function requiredString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${label} is required`);
+  return value;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}

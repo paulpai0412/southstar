@@ -316,9 +316,8 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
     }, () => {});
     await client.runGoal({
       goalPrompt: "implement calc sum",
-      orchestrationMode: "llm-constrained",
-      composerMode: "llm",
-      scope: "software",
+      cwd: "/workspace/software",
+      idempotencyKey: "goal-client-1",
     });
     await client.getPlannerDraftOrchestration("draft/a");
     await client.createRunFromPlannerDraft("draft/a");
@@ -443,7 +442,7 @@ test("runtime server client exposes operator route URLs and bodies", async () =>
       {
         url: "http://127.0.0.1/api/v2/run-goal",
         method: "POST",
-        body: { goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained", composerMode: "llm", scope: "software" },
+        body: { goalPrompt: "implement calc sum", cwd: "/workspace/software", idempotencyKey: "goal-client-1" },
       },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/orchestration", method: undefined, body: undefined },
       { url: "http://127.0.0.1/api/v2/planner/drafts/draft%2Fa/runs", method: "POST", body: {} },

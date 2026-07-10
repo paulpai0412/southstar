@@ -7,6 +7,11 @@ import {
   type GoalContractInterpreter,
 } from "../orchestration/goal-contract.ts";
 import {
+  GoalSubmissionPendingError,
+  submitGoalPg,
+  type RunGoalRequest,
+} from "../orchestration/run-goal-service.ts";
+import {
   createPostgresPlannerDraft,
   createPostgresRunFromDraft,
   getPostgresPlannerDraftOrchestration,
@@ -24,18 +29,27 @@ export async function handlePlannerRoute(
   url: URL,
 ): Promise<Response | undefined> {
   if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
-    const body = await readJsonBody<{ goalPrompt?: string; orchestrationMode?: unknown; composerMode?: unknown }>(request);
-    if (!body.goalPrompt) throw new Error("goalPrompt is required");
-    const draft = await createPostgresPlannerDraft(context.db, {
-      goalPrompt: body.goalPrompt,
-      orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-      composerMode: optionalComposerMode(body.composerMode),
-      goalInterpreter: resolveGoalInterpreter(context),
-      composer: resolvePlannerWorkflowComposer(context),
-    });
-    if (draft.status === "needs_input") return json("run-goal", { draft });
-    const run = await createPostgresRunFromDraft(context.db, { draftId: draft.draftId });
-    return json("run-goal", { draft, ...run });
+    const body = await readJsonBody<Record<string, unknown>>(request);
+    const runGoalRequest: RunGoalRequest = {
+      goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
+      cwd: requiredString(body.cwd, "cwd"),
+      idempotencyKey: requiredString(body.idempotencyKey, "idempotencyKey"),
+    };
+    if (request.headers.get("accept")?.includes("text/event-stream")) {
+      return createRunGoalStreamResponse(context, runGoalRequest);
+    }
+    try {
+      return json("run-goal", await submitGoalPg({
+        db: context.db,
+        goalInterpreter: resolveGoalInterpreter(context),
+        composer: resolvePlannerWorkflowComposer(context),
+      }, runGoalRequest));
+    } catch (error) {
+      if (error instanceof GoalSubmissionPendingError) {
+        return json("run-goal", { submissionId: error.submissionId, status: "processing" }, 202);
+      }
+      throw error;
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts/stream") {
@@ -126,6 +140,65 @@ export async function handlePlannerRoute(
   }
 
   return undefined;
+}
+
+function createRunGoalStreamResponse(context: RuntimeServerContext, request: RunGoalRequest): Response {
+  const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
+          if (heartbeat) clearInterval(heartbeat);
+        }
+      };
+      heartbeat = startPlannerSseHeartbeat(context, send, { phase: "run_goal", idempotencyKey: request.idempotencyKey });
+      try {
+        const result = await submitGoalPg({
+          db: context.db,
+          goalInterpreter: resolveGoalInterpreter(context),
+          composer: resolvePlannerWorkflowComposer(context),
+          onStage(stage) {
+            if (stage !== "done") send("planner.stage", { stage });
+          },
+        }, request);
+        send("done", result);
+      } catch (error) {
+        if (error instanceof GoalSubmissionPendingError) {
+          send("done", { submissionId: error.submissionId, status: "processing" });
+        } else {
+          send("error", { error: error instanceof Error ? error.message : String(error) });
+        }
+      } finally {
+        const wasClosed = closed;
+        closed = true;
+        if (heartbeat) clearInterval(heartbeat);
+        if (!wasClosed) {
+          try {
+            controller.close();
+          } catch {
+            // The browser or CLI client may have cancelled the stream already.
+          }
+        }
+      }
+    },
+    cancel() {
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
 }
 
 function createPlannerDraftStreamResponse(

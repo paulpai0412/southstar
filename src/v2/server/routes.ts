@@ -1,4 +1,5 @@
 import { evaluateApprovalPolicy } from "../approvals/policy.ts";
+import { createApprovalPg, decideApprovalPg } from "../approvals/postgres-approval-service.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { createExecutorBindingPg, getExecutorBindingPg, listExecutorBindingsForRunPg, updateExecutorBindingStatusPg } from "../executor/postgres-bindings.ts";
 import { reconcileExecutorBindingsPg } from "../executor/postgres-reconciler.ts";
@@ -7,12 +8,8 @@ import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approva
 import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
-import {
-  continueDynamicRepairApprovalPg,
-  rejectDynamicRepairApprovalPg,
-} from "../runtime-revision/dynamic-repair-revision.ts";
 import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } from "../read-models/agent-library.ts";
-import { appendHistoryEventOncePg, appendHistoryEventPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { appendHistoryEventPg, getResourceByKeyPg, listResourcesPg } from "../stores/postgres-runtime-store.ts";
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
 import { materializeRunFromWorkItemPg } from "../work-items/run-materialization.ts";
 import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
@@ -230,7 +227,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       const body = await readJsonBody<{ decision?: "approved" | "rejected"; reason?: string }>(request);
       if (body.decision !== "approved" && body.decision !== "rejected") throw new Error("decision must be approved or rejected");
       if (!body.reason) throw new Error("reason is required");
-      return json("approval-decision", await decideApprovalPg(context, {
+      return json("approval-decision", await decideApprovalPg(context.db, {
         runId: decodeURIComponent(approvalDecisionMatch[1]!),
         approvalId: decodeURIComponent(approvalDecisionMatch[2]!),
         decision: body.decision,
@@ -255,7 +252,7 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
       await appendHistoryEventPg(context.db, { runId, eventType: "voice.command_received", actorType: "user", payload: { transcript: body.transcript } });
       const riskTags = riskTagsForVoiceTranscript(body.transcript);
       const policy = evaluateApprovalPolicy({ mode: "policy", actionType: "voiceCommand", riskTags });
-      const approval = policy.status === "pending" ? await createApprovalPg(context, { runId, actionType: "voiceCommand", riskTags, title: "Review voice command", payload: { transcript: body.transcript, policyReason: policy.reason } }) : undefined;
+      const approval = policy.status === "pending" ? await createApprovalPg(context.db, { runId, actionType: "voiceCommand", riskTags, title: "Review voice command", payload: { transcript: body.transcript, policyReason: policy.reason } }) : undefined;
       const event = await appendHistoryEventPg(context.db, { runId, eventType: "steering.message", actorType: "user", payload: { message: body.transcript } });
       return json("voice-command", { transcript: body.transcript, approval, event });
     }
@@ -353,7 +350,10 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
 
     return errorResponse("not found", 404);
   } catch (error) {
-    return errorResponse((error as Error).message, 400);
+    const status = typeof (error as { status?: unknown }).status === "number"
+      ? (error as { status: number }).status
+      : 400;
+    return errorResponse((error as Error).message, status);
   }
 }
 
@@ -447,72 +447,6 @@ async function patchManagedHandExecutionHeartbeatPg(
     [input.runId],
   );
   return { id, runId: input.runId, taskId: input.taskId, status: "running", payload: nextPayload };
-}
-
-async function createApprovalPg(context: RuntimeServerContext, input: { runId: string; actionType: string; riskTags: string[]; title: string; payload: Record<string, unknown> }) {
-  const approvalId = `approval-${crypto.randomUUID()}`;
-  await upsertRuntimeResourcePg(context.db, {
-    id: approvalId,
-    resourceType: "approval",
-    resourceKey: approvalId,
-    runId: input.runId,
-    scope: "approval",
-    status: "pending",
-    title: input.title,
-    payload: { ...input.payload, actionType: input.actionType, riskTags: input.riskTags },
-  });
-  await appendHistoryEventPg(context.db, { runId: input.runId, eventType: "approval.requested", actorType: "orchestrator", payload: { approvalId, actionType: input.actionType, riskTags: input.riskTags } });
-  return { id: approvalId, status: "pending" as const };
-}
-
-async function decideApprovalPg(context: RuntimeServerContext, input: { runId: string; approvalId: string; decision: "approved" | "rejected"; reason: string }) {
-  const decision = await context.db.tx(async (tx) => {
-    if (!await tx.maybeOne("select id from southstar.workflow_runs where id = $1 for update", [input.runId])) {
-      throw new Error(`run not found: ${input.runId}`);
-    }
-    const row = await tx.maybeOne<{ status: string; payload_json: Record<string, unknown>; title: string | null; task_id: string | null }>(
-      `select status, payload_json, title, task_id
-         from southstar.runtime_resources
-        where resource_type = 'approval' and resource_key = $1 and run_id = $2
-        for update`,
-      [input.approvalId, input.runId],
-    );
-    if (!row) throw new Error(`approval not found: ${input.approvalId}`);
-    const priorDecision = optionalString(row.payload_json.decision);
-    const priorReason = optionalString(row.payload_json.decisionReason);
-    if (priorDecision && (priorDecision !== input.decision || priorReason !== input.reason)) {
-      throw new Error(`approval already ${priorDecision}: ${input.approvalId}`);
-    }
-    await upsertRuntimeResourcePg(tx, {
-      id: input.approvalId,
-      resourceType: "approval",
-      resourceKey: input.approvalId,
-      runId: input.runId,
-      taskId: row.task_id ?? undefined,
-      scope: "approval",
-      status: input.decision,
-      title: row.title ?? "Approval",
-      payload: { ...row.payload_json, decision: input.decision, decisionReason: input.reason, decidedBy: "user" },
-    });
-    await appendHistoryEventOncePg(tx, {
-      runId: input.runId,
-      taskId: row.task_id ?? undefined,
-      eventType: "approval.decided",
-      actorType: "user",
-      idempotencyKey: `${input.approvalId}:decided:${input.decision}`,
-      payload: { approvalId: input.approvalId, decision: input.decision, reason: input.reason },
-    });
-    return {
-      dynamicRepairApproval: row.payload_json.schemaVersion === "southstar.dynamic_repair_authority_approval.v1"
-        && row.payload_json.actionType === "dynamic_repair_authority_expansion",
-    };
-  });
-  const continuation = !decision.dynamicRepairApproval
-    ? undefined
-    : input.decision === "approved"
-      ? await continueDynamicRepairApprovalPg(context.db, { runId: input.runId, approvalId: input.approvalId })
-      : await rejectDynamicRepairApprovalPg(context.db, { runId: input.runId, approvalId: input.approvalId, reason: input.reason });
-  return { id: input.approvalId, status: input.decision, ...(continuation ? { continuation } : {}) };
 }
 
 async function readJsonBody<T>(request: Request): Promise<T> {
