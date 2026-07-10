@@ -427,6 +427,29 @@ test("llm-constrained planner does not fallback when primary composer fails", as
   });
 });
 
+test("llm-constrained planner passes requested cwd to workflow composer", async () => {
+  await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
+    let composerCwd: string | undefined;
+    const composer = {
+      async compose(input: { cwd?: string }): Promise<WorkflowCompositionPlan> {
+        composerCwd = input.cwd;
+        return deterministicFixtureComposition();
+      },
+    };
+
+    await createPostgresPlannerDraft(db, {
+      goalPrompt: "implement vocab challenge",
+      orchestrationMode: "llm-constrained",
+      composerMode: "llm",
+      cwd: "/home/timmypai/apps/southstar-vocab",
+      composer,
+    });
+
+    assert.equal(composerCwd, "/home/timmypai/apps/southstar-vocab");
+  });
+});
+
 test("Postgres planner draft can use injected scripted LLM composer for non-fixture DAG shape", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);

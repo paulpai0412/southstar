@@ -5,8 +5,12 @@ import type { TaskEnvelope, TaskEnvelopeV2 } from "../../src/v2/agent-runner/tas
 
 test("Pi SDK agent harness sends TaskEnvelope prompt and parses assistant artifact JSON", async () => {
   const prompts: string[] = [];
+  const deltas: string[] = [];
   const listeners: Array<(event: unknown) => void> = [];
   const harness = createPiSdkAgentHarness({
+    onDelta: (text) => {
+      deltas.push(text);
+    },
     createSession: async () => ({
       subscribe: (listener: (event: unknown) => void) => {
         listeners.push(listener);
@@ -40,6 +44,11 @@ test("Pi SDK agent harness sends TaskEnvelope prompt and parses assistant artifa
   assert.deepEqual(result.artifact, { summary: "implemented", commandsRun: ["npm test"], risks: ["low"] });
   assert.deepEqual(result.progress, ["read repo", "edited cli", "ran tests"]);
   assert.equal(result.metrics?.toolCalls, 3);
+  assert.equal(deltas.join(""), JSON.stringify({
+    artifact: { summary: "implemented", commandsRun: ["npm test"], risks: ["low"] },
+    progress: ["read repo", "edited cli", "ran tests"],
+    metrics: { tokens: 10, costMicrosUsd: 20, toolCalls: 3, retryCount: 0 },
+  }));
 });
 
 test("Pi SDK agent harness canonicalizes bare assistant artifact JSON", async () => {
@@ -226,6 +235,87 @@ test("Pi SDK agent harness marks unstructured verification_report as blocking fa
   }]);
   assert.deepEqual(result.artifact.risks, ["Pi SDK returned unstructured verification text; runtime must trigger repair before accepting this work."]);
   assert.deepEqual(result.progress, ["pi-agent returned unstructured text"]);
+});
+
+test("Pi SDK agent harness promotes nested verification_report artifacts to the primary contract", async () => {
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async () => {
+        listeners.forEach((listener) => listener({
+          type: "agent_end",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: JSON.stringify({
+              artifact: {
+                verification_report: {
+                  summary: "All blocking checks passed.",
+                  pass: true,
+                  safeToSave: true,
+                  commandsRun: ["npm test"],
+                  testResults: [{ command: "npm test", status: "passed", gating: "blocking" }],
+                  remainingFailures: [],
+                },
+              },
+              progress: ["verified"],
+            }) }],
+          }],
+        }));
+      },
+    }),
+  });
+
+  const result = await harness.run({ envelope: envelopeV2WithVerificationReport(), attempt: 1 });
+
+  assert.equal(result.artifact.summary, "All blocking checks passed.");
+  assert.equal(result.artifact.pass, true);
+  assert.equal(result.artifact.safeToSave, true);
+  assert.deepEqual(result.artifact.commandsRun, ["npm test"]);
+  assert.deepEqual(result.artifact.remainingFailures, []);
+});
+
+test("Pi SDK agent harness prompts verification tasks for top-level artifact fields", async () => {
+  const prompts: string[] = [];
+  const listeners: Array<(event: unknown) => void> = [];
+  const harness = createPiSdkAgentHarness({
+    createSession: async () => ({
+      subscribe: (listener: (event: unknown) => void) => {
+        listeners.push(listener);
+        return () => undefined;
+      },
+      prompt: async (prompt: string) => {
+        prompts.push(prompt);
+        listeners.forEach((listener) => listener({
+          type: "agent_end",
+          messages: [{
+            role: "assistant",
+            content: [{ type: "text", text: JSON.stringify({
+              artifact: {
+                summary: "All blocking checks passed.",
+                pass: true,
+                safeToSave: true,
+                commandsRun: ["npm test"],
+                testResults: [{ command: "npm test", status: "passed", gating: "blocking" }],
+                remainingFailures: [],
+              },
+              progress: ["verified"],
+            }) }],
+          }],
+        }));
+      },
+    }),
+  });
+
+  await harness.run({ envelope: envelopeV2WithVerificationReport(), attempt: 1 });
+
+  assert.match(prompts[0], /Runner output contract:/);
+  assert.match(prompts[0], /artifact must contain these fields at top level: summary, pass, safeToSave, commandsRun, testResults, remainingFailures/);
+  assert.match(prompts[0], /Do not put the report under artifact\.verification_report/);
+  assert.match(prompts[0], /Do not return \{"verification_report": \.\.\.\}/);
 });
 
 test("Pi SDK agent harness sends TaskEnvelopeV2 rendered agent prompt", async () => {

@@ -102,6 +102,17 @@ test("web operator helpers normalize overview and build stream urls", async () =
     sse.operatorRuntimeEventStreamUrl({ runId: "run-a", taskId: "task-a", after: "12" }),
     "/api/operator/runs/run-a/events/stream?closeOnTerminal=false&taskId=task-a&after=12",
   );
+  const event = sse.runtimeEventFromFrame({
+    id: "live-1",
+    eventType: "agent.message.delta",
+    data: JSON.stringify({
+      eventType: "agent.message.delta",
+      runId: "run-a",
+      taskId: "task-a",
+      payload: { text: "streamed token" },
+    }),
+  });
+  assert.equal(event?.text, "streamed token");
 });
 
 test("operator repo filter includes project-root parent and child matches", async () => {
@@ -114,6 +125,10 @@ test("operator repo filter includes project-root parent and child matches", asyn
     progress.runMatchesCwd({ runId: "run-b", status: "running", title: "Child run", projectRoot: "/repo/apps/southstar" }, "/repo"),
     true,
   );
+  assert.equal(progress.bucketForRunStatus("blocked"), "exception");
+  assert.equal(progress.bucketForRunStatus("failed"), "exception");
+  assert.equal(progress.bucketForRunStatus("cancelled"), "cancelled");
+  assert.equal(progress.bucketForRunStatus("passed"), "completed");
 });
 
 test("AppShell uses shared floating sidecar instead of mode-specific fixed file panel", () => {
@@ -178,15 +193,19 @@ test("Operator sidebar keeps project scope above operator focus", () => {
   assert.match(sidebar, /compareRunUpdatedAt/);
 });
 
-test("Workflow sidebar project selector accepts custom cwd input", () => {
+test("Workflow sidebar uses the shared project scope picker", () => {
   const sidebar = source("web/components/WorkflowSidebar.tsx");
   const shell = source("web/components/AppShell.tsx");
+  const picker = source("web/components/ProjectScopePicker.tsx");
 
   assert.match(sidebar, /onCwdChange/);
-  assert.match(sidebar, /customPathValue/);
-  assert.match(sidebar, /\/api\/cwd\/validate/);
-  assert.match(sidebar, /data-testid="workflow-project-custom-path"/);
-  assert.match(sidebar, /onChange=\{\(event\) => setCustomPathValue\(event\.currentTarget\.value\)\}/);
+  assert.match(sidebar, /ProjectScopePicker/);
+  assert.match(sidebar, /selectedCwd=\{cwd\}/);
+  assert.match(sidebar, /onCwdChange=\{\(nextCwd\) => onCwdChange\?\.\(nextCwd\)\}/);
+  assert.doesNotMatch(sidebar, /workflow-project-custom-path/);
+  assert.match(picker, /\/api\/cwd\/validate/);
+  assert.match(picker, /data-testid="project-scope-custom-path"/);
+  assert.match(picker, /placeholder="~\/apps\/southstar-vocab"/);
   assert.match(shell, /onCwdChange=\{handleCwdChange\}/);
 });
 
@@ -205,8 +224,11 @@ test("Operator workspace defaults to state dashboard before opening selected wor
 });
 
 test("Operator state board exposes counts, age, and attention severity", () => {
+  const workspace = source("web/components/operator/OperatorWorkspace.tsx");
   const board = source("web/components/operator/OperatorStateBoard.tsx");
+  assert.match(workspace, /exception \{exceptionRunCount\}/);
   assert.match(board, /attentionItems/);
+  assert.match(board, /bucketForRunStatus/);
   assert.match(board, /operator-state-count/);
   assert.match(board, /formatRunAge/);
   assert.match(board, /operator-run-severity/);
@@ -226,15 +248,15 @@ test("Operator task sidecar opens debug tabs with History selected", () => {
   assert.match(shell, /operatorHistory/);
   assert.match(shell, /operatorStream/);
   assert.match(shell, /operatorActions/);
-  assert.match(shell, /operatorArtifacts/);
+  assert.match(shell, /operatorDebug/);
   assert.doesNotMatch(shell, /operator-dag/);
   assert.match(shell, /setActiveSidecarTabId\(`operator-history:\$\{filePath\}`\)/);
   assert.match(shell, /current\.filter\(\(tab\) => !tab\.kind\?\.startsWith\("operator"\)\)/);
 });
 
-test("Operator task sidecar exposes History Live SSE Actions Artifacts tabs", () => {
+test("Operator task sidecar exposes History Live SSE Actions Debug tabs", () => {
   const tabs = source("web/components/operator/OperatorTaskTabs.tsx");
-  for (const token of ["History", "Live SSE", "Actions", "Artifacts"]) {
+  for (const token of ["History", "Live SSE", "Actions", "Debug"]) {
     assert.match(tabs, new RegExp(token));
   }
   assert.match(tabs, /debugModel\.data\.actions/);
@@ -245,6 +267,18 @@ test("Operator task sidecar exposes History Live SSE Actions Artifacts tabs", ()
   assert.match(source("web/components/operator/OperatorHistoryPanel.tsx"), /history/);
   assert.match(source("web/components/operator/OperatorLiveStream.tsx"), /Task stream/);
   assert.match(source("web/components/operator/OperatorLiveStream.tsx"), /Run stream/);
+});
+
+test("Operator debug panel renders searchable session context envelope memory artifact content", () => {
+  const panel = source("web/components/operator/OperatorDebugPanel.tsx");
+  for (const token of ["Session", "Context", "Envelope", "Memory", "Artifacts", "Resources", "Raw"]) {
+    assert.match(panel, new RegExp(token));
+  }
+  assert.match(panel, /Search content/);
+  assert.match(panel, /selectedMemories/);
+  assert.match(panel, /priorArtifacts/);
+  assert.match(panel, /contentError/);
+  assert.match(panel, /content: item\.content/);
 });
 
 test("AppShell renders operator task tabs into the shared sidecar", () => {

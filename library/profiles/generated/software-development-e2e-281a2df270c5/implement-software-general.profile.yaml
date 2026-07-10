@@ -1,0 +1,18 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.software-development-e2e-281a2df270c5.implement-software-general"
+title: "實作：產出變更與實作報告"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-senior-developer"
+skillRefs:
+  - "skill.mattpocock.implement"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-write"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.software-development-e2e-281a2df270c5"
+  nodeId: "implement-software-general"

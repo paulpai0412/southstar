@@ -2,6 +2,13 @@ import { NextRequest } from "next/server";
 import { buildWorkflowV2Url, workflowV2Capabilities } from "../../../../lib/workflow/v2-api";
 import { buildWorkflowDagFromPlannerDraft, unwrapV2Envelope, type V2PlannerDraftOrchestrationView } from "../../../../lib/workflow/v2-library-adapter";
 
+type WorkflowTemplateInstantiateResult = {
+  templateRef: string;
+  draftId: string;
+  workflowId: string;
+  status: string;
+  validationIssues: Array<{ path: string; message: string; code?: string }>;
+};
 
 export async function POST(request: NextRequest) {
   const body = await request.json() as {
@@ -26,26 +33,31 @@ export async function POST(request: NextRequest) {
       }
 
       try {
-        const plannerStreamResponse = await fetch(buildWorkflowV2Url("/api/v2/planner/drafts/stream"), {
-          method: "POST",
-          headers: {
-            accept: "text/event-stream",
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({
-            goalPrompt: prompt,
-            ...(body.cwd ? { cwd: body.cwd } : {}),
-            orchestrationMode: "llm-constrained",
-            composerMode: "llm",
-          }),
-        });
-        if (!plannerStreamResponse.ok) {
-          throw new Error(`planner draft stream request failed: HTTP ${plannerStreamResponse.status}`);
+        const templateId = body.templateId?.trim() || workflowTemplateIdFromPrompt(prompt);
+        if (templateId) {
+          await instantiateWorkflowTemplate({ prompt, cwd: body.cwd, templateId, send });
+        } else {
+          const plannerStreamResponse = await fetch(buildWorkflowV2Url("/api/v2/planner/drafts/stream"), {
+            method: "POST",
+            headers: {
+              accept: "text/event-stream",
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({
+              goalPrompt: prompt,
+              ...(body.cwd ? { cwd: body.cwd } : {}),
+              orchestrationMode: "llm-constrained",
+              composerMode: "llm",
+            }),
+          });
+          if (!plannerStreamResponse.ok) {
+            throw new Error(`planner draft stream request failed: HTTP ${plannerStreamResponse.status}`);
+          }
+          if (!plannerStreamResponse.body) {
+            throw new Error("planner draft stream response is missing body");
+          }
+          await proxyPlannerDraftStream(plannerStreamResponse.body, send);
         }
-        if (!plannerStreamResponse.body) {
-          throw new Error("planner draft stream response is missing body");
-        }
-        await proxyPlannerDraftStream(plannerStreamResponse.body, send);
       } catch (error) {
         send("error", { error: error instanceof Error ? error.message : String(error) });
       }
@@ -64,6 +76,47 @@ export async function POST(request: NextRequest) {
 
 
 type SendWorkflowGenerateEvent = (event: string, data: unknown) => void;
+
+async function instantiateWorkflowTemplate(input: {
+  prompt: string;
+  cwd?: string | null;
+  templateId: string;
+  send: SendWorkflowGenerateEvent;
+}): Promise<void> {
+  input.send("planner.stage", { stage: "template.instantiate", message: "Instantiating selected workflow template." });
+  const response = await fetch(buildWorkflowV2Url("/api/v2/workflow/templates/instantiate"), {
+    method: "POST",
+    headers: {
+      accept: "application/json",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({
+      templateRef: input.templateId,
+      goalPrompt: input.prompt,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
+      constraints: { mode: "strict" },
+    }),
+  });
+  if (!response.ok) {
+    throw new Error(`workflow template instantiate request failed: HTTP ${response.status}`);
+  }
+  const result = unwrapV2Envelope<WorkflowTemplateInstantiateResult>(await response.json());
+  input.send("draft", { draft: result });
+  input.send("planner.stage", { stage: "orchestration.loading", message: "Loading instantiated planner draft orchestration." });
+  const orchestrationResponse = await fetch(buildWorkflowV2Url(`/api/v2/planner/drafts/${encodeURIComponent(result.draftId)}/orchestration`), {
+    headers: { accept: "application/json" },
+  });
+  if (!orchestrationResponse.ok) {
+    throw new Error(`planner draft orchestration request failed: HTTP ${orchestrationResponse.status}`);
+  }
+  const orchestrationPayload = unwrapV2Envelope<V2PlannerDraftOrchestrationView>(await orchestrationResponse.json());
+  input.send("dag", { dag: { ...buildWorkflowDagFromPlannerDraft(orchestrationPayload), templateId: input.templateId } });
+  input.send("done", {});
+}
+
+function workflowTemplateIdFromPrompt(prompt: string): string | null {
+  return prompt.match(/@workflow-template[^\n]*\((template\.[^)]+)\)/)?.[1]?.trim() ?? null;
+}
 
 async function proxyPlannerDraftStream(
   body: ReadableStream<Uint8Array>,

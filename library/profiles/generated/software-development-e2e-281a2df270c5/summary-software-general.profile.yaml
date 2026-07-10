@@ -1,0 +1,18 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.software-development-e2e-281a2df270c5.summary-software-general"
+title: "總結：完成判定與交接摘要"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-code-reviewer"
+skillRefs:
+  - "skill.mattpocock.code-review"
+toolGrantRefs:
+  - "tool.workspace-read"
+  - "tool.shell-command"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.software-development-e2e-281a2df270c5"
+  nodeId: "summary-software-general"

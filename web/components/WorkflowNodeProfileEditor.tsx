@@ -8,6 +8,7 @@ import {
   normalizeNodeProfileForm,
   type WorkflowNodeProfileForm,
 } from "@/lib/workflow/node-profile";
+import { StructuredJsonEditor } from "./StructuredJsonEditor";
 import { WorkflowNodeProfileRecommendations } from "./WorkflowNodeProfileRecommendations";
 import { WorkflowNodeProfileSummary } from "./WorkflowNodeProfileSummary";
 
@@ -156,9 +157,15 @@ export function WorkflowNodeProfileEditor({
     return uniqueOptionIds([form.provider, ...piModelOptions.map((model) => model.provider)]);
   }, [form.provider, isPiHost, piModelOptions]);
 
-  const selectedProviderPiModels = useMemo(() => {
-    if (!isPiHost || !form.provider) return piModelOptions;
-    return piModelOptions.filter((model) => model.provider === form.provider);
+  const selectedProviderPiModelOptions = useMemo(() => {
+    const options = !isPiHost || !form.provider
+      ? piModelOptions
+      : piModelOptions.filter((model) => model.provider === form.provider);
+    if (!isPiHost || !form.provider || !form.model || options.some((model) => model.id === form.model)) return options;
+    return [
+      { id: form.model, name: `${form.model} (current)`, provider: form.provider },
+      ...options,
+    ];
   }, [form.provider, isPiHost, piModelOptions]);
 
   const thinkingOptions = useMemo(() => {
@@ -334,20 +341,30 @@ export function WorkflowNodeProfileEditor({
             </Field>
             <Field label="Model">
               {isPiHost ? (
-                <select
-                  data-testid="workflow-profile-model"
-                  value={form.model}
-                  disabled={!editable}
-                  onChange={(event) => update({ model: event.currentTarget.value, thinkingLevel: "" })}
-                  style={inputStyle}
-                >
-                  <option value="">Default</option>
-                  {selectedProviderPiModels.map((model) => (
-                    <option key={`${model.provider}:${model.id}`} value={model.id}>
-                      {model.name || model.id}
-                    </option>
-                  ))}
-                </select>
+                <div style={{ display: "grid", gap: 6 }}>
+                  <select
+                    data-testid="workflow-profile-model"
+                    value={form.model}
+                    disabled={!editable}
+                    onChange={(event) => update({ model: event.currentTarget.value, thinkingLevel: "" })}
+                    style={inputStyle}
+                  >
+                    <option value="">Default</option>
+                    {selectedProviderPiModelOptions.map((model) => (
+                      <option key={`${model.provider}:${model.id}`} value={model.id}>
+                        {model.name || model.id}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    data-testid="workflow-profile-model-custom"
+                    value={form.model}
+                    disabled={!editable || !form.provider}
+                    onChange={(event) => update({ model: event.currentTarget.value, thinkingLevel: "" })}
+                    placeholder="Custom model id"
+                    style={inputStyle}
+                  />
+                </div>
               ) : (
                 <>
                   <input
@@ -435,14 +452,13 @@ export function WorkflowNodeProfileEditor({
             <h2 style={sectionTitleStyle}>Original prompt</h2>
             <span style={sectionMetaStyle}>nodePromptSpec JSON</span>
           </div>
-          <textarea
-            data-testid="workflow-profile-prompt"
-            value={form.nodePromptSpec}
-            disabled={!editable}
-            onChange={(event) => update({ nodePromptSpec: event.currentTarget.value })}
-            rows={10}
-            style={{ ...inputStyle, resize: "vertical", lineHeight: 1.45 }}
-          />
+          <div data-testid="workflow-profile-prompt" style={jsonEditorFrameStyle}>
+            <StructuredJsonEditor
+              value={form.nodePromptSpec}
+              onChange={(nodePromptSpec) => update({ nodePromptSpec })}
+              readOnly={!editable}
+            />
+          </div>
         </section>
 
         <section style={sectionStyle}>
@@ -457,6 +473,16 @@ export function WorkflowNodeProfileEditor({
             rows={7}
             style={{ ...inputStyle, resize: "vertical", lineHeight: 1.45 }}
           />
+        </section>
+
+        <section data-testid="workflow-profile-agents-md" style={sectionStyle}>
+          <div style={sectionHeaderStyle}>
+            <h2 style={sectionTitleStyle}>AGENTS.md</h2>
+            <span style={sectionMetaStyle}>generated worker instructions</span>
+          </div>
+          <div style={agentsMdNoteStyle}>
+            Runtime AGENTS.md is generated from Profile instruction, nodePromptSpec, selected skills, MCP grants, tools, and vault leases. Edit those source fields here before launching the run.
+          </div>
         </section>
 
         <WorkflowNodeProfileRecommendations
@@ -691,6 +717,24 @@ const inputStyle = {
   padding: "7px 8px",
   fontSize: 12,
   fontFamily: "var(--font-mono)",
+} as const;
+
+const jsonEditorFrameStyle = {
+  minHeight: 260,
+  border: "1px solid var(--border)",
+  borderRadius: 5,
+  overflow: "hidden",
+  background: "var(--bg-panel)",
+} as const;
+
+const agentsMdNoteStyle = {
+  border: "1px solid var(--border)",
+  borderRadius: 5,
+  background: "var(--bg-panel)",
+  color: "var(--text-muted)",
+  fontSize: 12,
+  lineHeight: 1.45,
+  padding: 10,
 } as const;
 
 const chipRowStyle = {

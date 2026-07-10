@@ -18,6 +18,7 @@ type PiSdkHarnessSessionInput = {
 
 export type PiSdkAgentHarnessOptions = {
   createSession?: (input: PiSdkHarnessSessionInput) => Promise<PiSdkHarnessSession>;
+  onDelta?: (text: string) => void | Promise<void>;
   timeoutMs?: number;
 };
 
@@ -37,7 +38,7 @@ export function createPiSdkAgentHarness(options: PiSdkAgentHarnessOptions = {}):
           timeoutMs,
         );
         await configurePiSdkSession(session, sessionInput);
-        const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input, cwd), timeoutMs);
+        const raw = await runPromptAndCollectAssistantText(session, buildHarnessPrompt(input, cwd), timeoutMs, options.onDelta);
         completed = true;
         return parseHarnessResult(raw, input.envelope);
       } finally {
@@ -124,6 +125,8 @@ function buildHarnessPrompt(input: HarnessRunInput, cwd: string): string {
       input.envelope.agentPrompt,
       ...resolvedSkillInstructions(input.envelope.skills),
       "",
+      ...runnerOutputContractDirective(input.envelope),
+      "",
       ...workspaceDirective(cwd),
       `Attempt: ${input.attempt}`,
       input.repairInstruction ? `Repair instruction: ${input.repairInstruction}` : "",
@@ -134,12 +137,30 @@ function buildHarnessPrompt(input: HarnessRunInput, cwd: string): string {
     "Execute the task described by the TaskEnvelope. Use the available Pi Agent tools as needed.",
     "Return exactly one JSON object with keys: artifact, progress, metrics.",
     "artifact must satisfy the required fields from artifactContract.",
+    ...runnerOutputContractDirective(input.envelope),
     ...workspaceDirective(cwd),
     `Attempt: ${input.attempt}`,
     input.repairInstruction ? `Repair instruction: ${input.repairInstruction}` : "",
     "TaskEnvelope:",
     JSON.stringify(input.envelope),
   ].filter(Boolean).join("\n");
+}
+
+function runnerOutputContractDirective(envelope: HarnessRunInput["envelope"]): string[] {
+  const contract = primaryArtifactContract(envelope);
+  const contractId = contract?.id;
+  if (!contractId) return [];
+  const fields = contractId === "verification_report"
+    ? ["summary", "pass", "safeToSave", "commandsRun", "testResults", "remainingFailures"]
+    : contract?.requiredFields ?? [];
+  return [
+    "Runner output contract:",
+    "Return exactly one JSON object. Do not wrap it in markdown.",
+    `Top-level shape: {"artifact": {...}, "progress": string[], "metrics": object}.`,
+    `artifact must contain these fields at top level: ${fields.join(", ")}.`,
+    `Do not put the report under artifact.${contractId}.`,
+    `Do not return {"${contractId}": ...} as the primary artifact shape.`,
+  ];
 }
 
 function resolvedSkillInstructions(skills: Array<{ skillId: string; version?: string; instructions: string }>): string[] {
@@ -200,14 +221,21 @@ async function runPromptAndCollectAssistantText(
   session: PiSdkHarnessSession,
   prompt: string,
   timeoutMs: number,
+  onDelta?: (text: string) => void | Promise<void>,
 ): Promise<string> {
   let finalText = "";
+  let lastStreamedText = "";
   let unsubscribe: (() => void) | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const done = new Promise<string>((resolve, reject) => {
     const listener = (event: unknown) => {
       const text = assistantTextFromEvent(event);
-      if (text) finalText = text;
+      if (text) {
+        finalText = text;
+        const delta = text.startsWith(lastStreamedText) ? text.slice(lastStreamedText.length) : text;
+        if (delta) void onDelta?.(delta);
+        lastStreamedText = text;
+      }
       if (isRecord(event) && event.type === "agent_end") {
         resolve(finalText);
       }
@@ -249,20 +277,32 @@ function parseHarnessResult(raw: string, envelope: AnyTaskEnvelope): HarnessRunR
   }
   if (isRecord(parsed.artifact)) {
     return {
-      artifact: completeArtifactForEnvelope(parsed.artifact, envelope, "assistant artifact JSON omitted required fields"),
+      artifact: completeArtifactForEnvelope(
+        primaryContractArtifact(parsed.artifact, envelope),
+        envelope,
+        "assistant artifact JSON omitted required fields",
+      ),
       progress: progressArray(parsed.progress),
       metrics: metricsFrom(parsed.metrics),
     };
   }
   if (isRecord(parsed.output) && isRecord(parsed.output.artifact)) {
     return {
-      artifact: completeArtifactForEnvelope(parsed.output.artifact, envelope, "assistant output artifact JSON omitted required fields"),
+      artifact: completeArtifactForEnvelope(
+        primaryContractArtifact(parsed.output.artifact, envelope),
+        envelope,
+        "assistant output artifact JSON omitted required fields",
+      ),
       progress: progressArray(parsed.output.progress),
       metrics: metricsFrom(parsed.output.metrics),
     };
   }
   return {
-    artifact: completeArtifactForEnvelope(parsed, envelope, "assistant bare JSON artifact omitted required fields"),
+    artifact: completeArtifactForEnvelope(
+      primaryContractArtifact(parsed, envelope),
+      envelope,
+      "assistant bare JSON artifact omitted required fields",
+    ),
     progress: progressArray(parsed.progress),
     metrics: metricsFrom(parsed.metrics),
   };
@@ -333,6 +373,17 @@ function primaryArtifactContract(envelope: AnyTaskEnvelope): { id: string; requi
     item.id === "verification_report" || item.id === "completion_report" || item.id === "implementation_report"
   );
   return contract ? { id: contract.id, requiredFields: contract.requiredFields } : undefined;
+}
+
+function primaryContractArtifact(artifact: Record<string, unknown>, envelope: AnyTaskEnvelope): Record<string, unknown> {
+  const contractId = primaryArtifactContract(envelope)?.id;
+  if (!contractId) return artifact;
+  const nested = artifact[contractId];
+  if (!isRecord(nested)) return artifact;
+  return {
+    ...artifact,
+    ...nested,
+  };
 }
 
 function applyContractFallbackFields(next: Record<string, unknown>, contractId: string | undefined, reason: string): void {

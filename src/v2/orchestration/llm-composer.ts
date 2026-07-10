@@ -20,9 +20,9 @@ import {
 } from "./generated-agent-profile-policy.ts";
 
 export type LlmTextClient = {
-  generateText(input: { model: string; prompt: string; temperature?: number }): Promise<string>;
+  generateText(input: { model: string; prompt: string; temperature?: number; cwd?: string }): Promise<string>;
   generateTextStream?: (
-    input: { model: string; prompt: string; temperature?: number },
+    input: { model: string; prompt: string; temperature?: number; cwd?: string },
     handlers: { onDelta?: (text: string) => void },
   ) => Promise<string>;
 };
@@ -336,6 +336,7 @@ export class LlmWorkflowComposer implements WorkflowComposer {
       model: this.options.model,
       prompt,
       temperature: this.options.temperature ?? 0,
+      ...(input.cwd ? { cwd: input.cwd } : {}),
     };
     const text = this.options.client.generateTextStream
       ? await this.options.client.generateTextStream(textInput, { onDelta: input.onLlmDelta })

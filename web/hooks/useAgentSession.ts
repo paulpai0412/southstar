@@ -306,8 +306,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
   } = opts;
   const sessionKind = opts.sessionKind ?? (opts.workflowMode ? "workflow" : "chat");
+  const effectiveNewSessionCwd = opts.workflowMode ? (opts.workflowCwd ?? newSessionCwd) : newSessionCwd;
 
-  const isNew = session === null && newSessionCwd !== null;
+  const isNew = session === null && effectiveNewSessionCwd !== null;
 
   const [data, setData] = useState<SessionData | null>(null);
   const [loading, setLoading] = useState(!isNew);
@@ -441,12 +442,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const promoteNewSession = useCallback((messageCount = 0, firstMessage = "(no messages)") => {
     const sid = sessionIdRef.current;
-    if (!isNew || !newSessionCwd || !sid || newSessionPromotedRef.current) return;
+    if (!isNew || !effectiveNewSessionCwd || !sid || newSessionPromotedRef.current) return;
     newSessionPromotedRef.current = true;
     onSessionCreated?.({
       id: sid,
       path: "",
-      cwd: newSessionCwd,
+      cwd: effectiveNewSessionCwd,
       name: undefined,
       created: new Date().toISOString(),
       modified: new Date().toISOString(),
@@ -454,11 +455,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       firstMessage,
       kind: sessionKind,
     });
-  }, [isNew, newSessionCwd, onSessionCreated, sessionKind]);
+  }, [effectiveNewSessionCwd, isNew, onSessionCreated, sessionKind]);
 
   const ensureNewSession = useCallback(async () => {
     if (sessionIdRef.current) return sessionIdRef.current;
-    if (!isNew || !newSessionCwd) return sessionIdRef.current;
+    if (!isNew || !effectiveNewSessionCwd) return sessionIdRef.current;
     if (ensuringNewSessionRef.current) return ensuringNewSessionRef.current;
 
     const promise = (async () => {
@@ -470,7 +471,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          cwd: newSessionCwd,
+          cwd: effectiveNewSessionCwd,
           type: "ensure_session",
           toolNames,
           sessionKind,
@@ -491,7 +492,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     } finally {
       ensuringNewSessionRef.current = null;
     }
-  }, [isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, sessionKind]);
+  }, [effectiveNewSessionCwd, isNew, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, sessionKind]);
 
   const loadSlashCommands = useCallback(async () => {
     const sid = sessionIdRef.current ?? await ensureNewSession();
@@ -997,7 +998,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
     try {
       let sentSessionId: string | null = null;
-      if (isNew && newSessionCwd) {
+      if (isNew && effectiveNewSessionCwd) {
         const selectedModel = newSessionModel;
         const existingSid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
 
@@ -1022,7 +1023,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              cwd: newSessionCwd,
+              cwd: effectiveNewSessionCwd,
               type: "ensure_session",
               toolNames,
               sessionKind,
@@ -1062,7 +1063,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [isNew, newSessionCwd, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, addNotice]);
+  }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, addNotice]);
 
   const handleAbort = useCallback(async () => {
     if (workflowAbortControllerRef.current) {
@@ -1437,7 +1438,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   // Load model list
   useEffect(() => {
-    const modelCwd = newSessionCwd ?? session?.cwd ?? "";
+    const modelCwd = effectiveNewSessionCwd ?? session?.cwd ?? "";
     const modelsUrl = modelCwd ? `/api/models?cwd=${encodeURIComponent(modelCwd)}` : "/api/models";
     const controller = new AbortController();
     fetch(modelsUrl, { signal: controller.signal }).then((r) => {
@@ -1458,7 +1459,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (e instanceof DOMException && e.name === "AbortError") return;
     });
     return () => controller.abort();
-  }, [isNew, modelsRefreshKey, newSessionCwd, session?.cwd]);
+  }, [effectiveNewSessionCwd, isNew, modelsRefreshKey, session?.cwd]);
 
   // Compact error auto-dismiss
   useEffect(() => {

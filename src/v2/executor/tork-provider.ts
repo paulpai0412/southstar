@@ -6,6 +6,7 @@ export type TorkExecutorProviderOptions = {
   torkClient: Pick<TorkClient, "submit">;
   callbackUrl?: string;
   heartbeatUrl?: string;
+  liveEventUrl?: string;
   envelopeBasePath?: string;
 };
 
@@ -14,12 +15,14 @@ export class TorkExecutorProvider implements ExecutorProvider {
   private readonly torkClient: Pick<TorkClient, "submit">;
   private readonly callbackUrl?: string;
   private readonly heartbeatUrl?: string;
+  private readonly liveEventUrl?: string;
   private readonly envelopeBasePath?: string;
 
   constructor(options: TorkExecutorProviderOptions) {
     this.torkClient = options.torkClient;
     this.callbackUrl = options.callbackUrl;
     this.heartbeatUrl = options.heartbeatUrl;
+    this.liveEventUrl = options.liveEventUrl;
     this.envelopeBasePath = options.envelopeBasePath;
   }
 
@@ -30,6 +33,7 @@ export class TorkExecutorProvider implements ExecutorProvider {
     const projection = buildTorkJobProjection(request.workflow, {
       callbackUrl,
       heartbeatUrl: request.heartbeatUrl ?? this.heartbeatUrl,
+      liveEventUrl: request.liveEventUrl ?? this.liveEventUrl,
       envelopeBasePath,
       runId: request.runId,
       attemptId: request.attemptId,

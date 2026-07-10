@@ -2,7 +2,7 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import type { AgentProvider, PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 
-const allowedProviders = new Set<AgentProvider>(["pi", "codex", "claude-code", "openai", "anthropic", "custom"]);
+const allowedProviders = new Set<AgentProvider>(["pi", "codex", "claude-code", "openai", "openai-codex", "anthropic", "custom"]);
 
 export type PatchPlannerDraftTaskProfileOverrideInput = {
   draftId: string;

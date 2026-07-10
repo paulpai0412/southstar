@@ -20,6 +20,7 @@ export type RunCompositionRepairLoopInput = {
   goalPrompt: string;
   candidatePacket: CandidatePacket;
   composer: WorkflowComposer;
+  cwd?: string;
   scope?: string;
   maxRepairAttempts: number;
   onProgress?: PlannerDraftProgressListener;
@@ -43,6 +44,7 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
       composition = await input.composer.compose({
         goalPrompt: renderRepairGoal(input.goalPrompt, previousAttempt),
         candidatePacket: input.candidatePacket,
+        ...(input.cwd ? { cwd: input.cwd } : {}),
         onLlmDelta: input.onLlmDelta,
       });
       input.onProgress?.({ stage: "composer.completed", attempt, message: `Workflow composition attempt ${attempt + 1} returned a plan.` });

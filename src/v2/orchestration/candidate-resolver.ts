@@ -5,7 +5,7 @@ import {
   findLibraryObjectByKey,
   listLibraryObjects,
 } from "../design-library/library-graph-store.ts";
-import { resolveGraphProfileCandidates } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
+import { isRuntimeProfilePrimitiveCandidate, resolveGraphProfileCandidates } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
 import type { CandidatePacket, CandidateSummary, RequirementSpecV2 } from "../design-library/types.ts";
 import { buildGraphMetadataCandidatePacket } from "./graph-metadata-packet.ts";
 
@@ -75,7 +75,7 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
         status: "approved",
         objectKind: "instruction_template",
       })
-    ).map((object) => object.objectKey).sort(),
+    ).filter(isRuntimeProfilePrimitiveCandidate).map((object) => object.objectKey).sort(),
   };
   const graphMetadataCandidates = await buildGraphMetadataCandidatePacket(db, { scope: input.scope });
   if (!graphMetadataCandidates.nodes.some((node) => node.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)) {

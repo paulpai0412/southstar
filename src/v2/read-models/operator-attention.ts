@@ -3,7 +3,7 @@ import { isTaskRecoverableStatus } from "../task-recovery.ts";
 export const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "scheduling", "running", "paused", "blocked"] as const;
 export const TERMINAL_RUN_STATUSES = ["completed", "passed", "failed", "cancelled"] as const;
 export const OPERATOR_ATTENTION_RUN_STATUSES = ["paused", "blocked", "failed", "cancelled"] as const;
-export const RECENT_RESOLVED_RUN_STATUSES = ["completed", "passed"] as const;
+export const RECENT_RESOLVED_RUN_STATUSES = ["completed", "passed", "cancelled"] as const;
 export const ACTIVE_EXECUTOR_STATUSES = ["submitted", "queued", "starting", "running", "heartbeat-lost", "queue-timeout", "hard-timeout", "callback-missing", "orphaned"] as const;
 export const NORMAL_EXECUTOR_RESOURCE_STATUSES = ["submitted", "queued", "starting", "running"] as const;
 export const TERMINAL_RESOURCE_STATUSES = ["resolved", "rejected", "completed", "passed", "cancelled", "superseded", "applied"] as const;

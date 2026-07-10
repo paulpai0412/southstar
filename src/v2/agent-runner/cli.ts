@@ -63,6 +63,7 @@ export function parseAgentRunnerArgs(argv: string[], env: Record<string, string 
     resultPath: flagValue(argv, "--result") ?? env.SOUTHSTAR_RESULT_PATH,
     callbackUrl: flagValue(argv, "--callback-url") ?? env.SOUTHSTAR_CALLBACK_URL,
     heartbeatUrl: flagValue(argv, "--heartbeat-url") ?? env.SOUTHSTAR_HEARTBEAT_URL,
+    liveEventUrl: flagValue(argv, "--live-event-url") ?? env.SOUTHSTAR_LIVE_EVENT_URL,
     heartbeatIntervalMs: numberFromEnv(flagValue(argv, "--heartbeat-interval-ms") ?? env.SOUTHSTAR_HEARTBEAT_INTERVAL_MS) ?? 10_000,
     attemptId: flagValue(argv, "--attempt-id") ?? env.SOUTHSTAR_ATTEMPT_ID ?? "attempt-1",
     torkJobId: flagValue(argv, "--tork-job-id") ?? env.SOUTHSTAR_TORK_JOB_ID ?? env.TORK_JOB_ID,
@@ -80,7 +81,10 @@ function createAgentHarness(options: ReturnType<typeof parseAgentRunnerArgs>, en
   if (harnessKind === "builtin") return createBuiltinAgentHarness();
   return options.harnessEndpoint
     ? createHttpHarness(options.harnessEndpoint)
-    : createPiSdkAgentHarness({ timeoutMs: options.harnessTimeoutMs ?? timeoutFromEnvelope(envelope) });
+    : createPiSdkAgentHarness({
+      timeoutMs: options.harnessTimeoutMs ?? timeoutFromEnvelope(envelope),
+      ...(options.liveEventUrl ? { onDelta: (text) => postLiveDelta(options, envelope, text) } : {}),
+    });
 }
 
 function defaultHarnessKindFromEnvelope(envelope: AnyTaskEnvelope): string | undefined {
@@ -119,6 +123,31 @@ async function postCallback(callbackUrl: string, result: TaskRunResult): Promise
   });
   if (!response.ok) {
     throw new Error(`callback request failed: ${response.status} ${await response.text()}`);
+  }
+}
+
+async function postLiveDelta(options: ReturnType<typeof parseAgentRunnerArgs>, envelope: AnyTaskEnvelope, text: string): Promise<void> {
+  if (!options.liveEventUrl) return;
+  const taskId = envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.taskId : envelope.task.id;
+  const sessionId = envelope.schemaVersion === "southstar.task-envelope.v2" ? envelope.session.sessionId : envelope.rootSession.id;
+  try {
+    await fetch(options.liveEventUrl, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: AbortSignal.timeout(5_000),
+      body: JSON.stringify({
+        runId: envelope.runId,
+        taskId,
+        sessionId,
+        attemptId: options.attemptId,
+        eventType: "agent.message.delta",
+        actorType: "subagent",
+        payload: { text },
+        createdAt: new Date().toISOString(),
+      }),
+    });
+  } catch {
+    // Best-effort live UI stream; callback remains authoritative.
   }
 }
 

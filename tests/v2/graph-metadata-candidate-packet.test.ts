@@ -72,6 +72,77 @@ test("workflow candidate resolver exposes graph primitives without stored agent 
   }
 });
 
+test("workflow candidates exclude approved primitives that cannot materialize at runtime", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedGraph(db);
+    await upsertLibraryObject(db, {
+      objectKey: "skill.placeholder-ui",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.placeholder-ui@1",
+      state: { scope: "engineering", title: "Placeholder UI" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "instruction.placeholder-review",
+      objectKind: "instruction_template",
+      status: "approved",
+      headVersionId: "instruction.placeholder-review@1",
+      state: { scope: "engineering", title: "Placeholder Review" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "mcp.placeholder-workspace",
+      objectKind: "mcp_tool_grant",
+      status: "approved",
+      headVersionId: "mcp.placeholder-workspace@1",
+      state: { scope: "global", title: "Placeholder Workspace" },
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "uses",
+      toObjectKey: "skill.placeholder-ui",
+      scope: "engineering",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "skill.placeholder-ui",
+      edgeType: "uses_instruction",
+      toObjectKey: "instruction.placeholder-review",
+      scope: "engineering",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "skill.placeholder-ui",
+      edgeType: "allows_mcp_grant",
+      toObjectKey: "mcp.placeholder-workspace",
+      scope: "engineering",
+    });
+
+    const packet = await resolveWorkflowCandidates(db, {
+      scope: "engineering",
+      requirementSpec: {
+        summary: "Build a todo app",
+        workType: "software_feature",
+        requiredCapabilities: [],
+        expectedArtifacts: [],
+        acceptanceCriteria: [],
+        nonGoals: [],
+        riskNotes: [],
+        workspaceAssumptions: [],
+        missingInputs: [],
+      },
+    });
+
+    assert.equal(packet.profilePrimitiveCandidates?.skills.includes("skill.placeholder-ui"), false);
+    assert.equal(packet.profilePrimitiveCandidates?.instructions.includes("instruction.placeholder-review"), false);
+    assert.equal(packet.profilePrimitiveCandidates?.mcpGrants.includes("mcp.placeholder-workspace"), false);
+    assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "skill.placeholder-ui"), false);
+    assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "instruction.placeholder-review"), false);
+    assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "mcp.placeholder-workspace"), false);
+    assert.equal(packet.graphMetadataCandidates?.edges.some((edge) => edge.from === "skill.placeholder-ui" || edge.to === "skill.placeholder-ui"), false);
+  } finally {
+    await db.close();
+  }
+});
+
 async function seedGraph(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
   await upsertLibraryObject(db, {
     objectKey: "profile.legacy-frontend",

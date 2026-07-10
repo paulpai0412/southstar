@@ -1,0 +1,18 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.software-development-e2e-281a2df270c5.verify-software-general"
+title: "驗證：正向驗證與失敗報告"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-code-reviewer"
+skillRefs:
+  - "skill.mattpocock.code-review"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-read"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.software-development-e2e-281a2df270c5"
+  nodeId: "verify-software-general"

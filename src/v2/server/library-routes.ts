@@ -526,7 +526,8 @@ function matchTokenAfter(text: string, prefixes: string[]): string | undefined {
 
 function kindFromPrompt(text: string): LibraryDefinitionKind | undefined {
   if (/\bagents?\b|agent_definition|代理|智能体/.test(text)) return "agent_definition";
-  if (/\bskills?\b|skill_definition|skill_spec|技能/.test(text)) return "skill_definition";
+  if (/skill_definition/.test(text)) return "skill_definition";
+  if (/\bskills?\b|skill_spec|技能/.test(text)) return "skill_spec";
   if (/\btools?\b|tool_definition|工具/.test(text)) return "tool_definition";
   if (/\bmcp\b|mcp_tool_grant/.test(text)) return "mcp_tool_grant";
   if (/\bprofiles?\b|agent_profile/.test(text)) return "agent_profile";

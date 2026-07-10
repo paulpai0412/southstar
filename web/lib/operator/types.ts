@@ -80,8 +80,39 @@ export type OperatorTaskDebug = {
     history: OperatorHistoryItem[];
     resources: OperatorResourceItem[];
     artifacts: OperatorResourceItem[];
+    debug?: OperatorTaskDebugGroups;
     actions: OperatorCommand[];
   };
+};
+
+export type OperatorTaskDebugGroups = {
+  session?: {
+    rootSessionId?: string | null;
+    sessionIds?: string[];
+    checkpoints?: OperatorResourceItem[];
+    history?: OperatorHistoryItem[];
+    rawEventRefs?: unknown[];
+  };
+  context?: {
+    packets?: OperatorResourceItem[];
+    latestPacket?: OperatorResourceItem | null;
+    assemblyTraces?: OperatorResourceItem[];
+  };
+  envelope?: {
+    envelopes?: OperatorResourceItem[];
+    latestEnvelope?: OperatorResourceItem | null;
+  };
+  memory?: {
+    selectedMemories?: unknown[];
+    items?: OperatorResourceItem[];
+    deltas?: OperatorResourceItem[];
+  };
+  artifacts?: {
+    priorArtifacts?: unknown[];
+    refs?: OperatorResourceItem[];
+  };
+  resources?: Record<string, OperatorResourceItem[] | undefined>;
+  raw?: { resources?: OperatorResourceItem[] };
 };
 
 export type OperatorHistoryItem = {
@@ -102,6 +133,9 @@ export type OperatorResourceItem = {
   title?: string;
   payload: unknown;
   summary: unknown;
+  content?: unknown;
+  contentError?: string;
+  artifactRefId?: string;
   updatedAt: string;
 };
 

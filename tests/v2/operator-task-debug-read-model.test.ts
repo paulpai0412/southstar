@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref-store.ts";
 import { buildOperatorTaskDebugReadModelPg } from "../../src/v2/read-models/operator-task-debug.ts";
 import { buildOperatorOverviewReadModelPg } from "../../src/v2/read-models/operator-overview.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
@@ -71,6 +72,75 @@ test("operator task debug route returns task detail, descending task history, re
       summary: { message: "callback missing" },
     });
     await upsertRuntimeResourcePg(db, {
+      resourceType: "session_checkpoint",
+      resourceKey: "checkpoint-task-debug",
+      runId,
+      taskId,
+      sessionId: "session-root",
+      scope: "session",
+      status: "created",
+      title: "Checkpoint",
+      payload: { summary: "session checkpoint content" },
+      summary: { message: "checkpoint summary" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "memory_item",
+      resourceKey: "memory-task-debug",
+      runId,
+      taskId: "task-plan",
+      sessionId: "session-root",
+      scope: "memory",
+      status: "active",
+      title: "Run memory",
+      payload: { text: "remember implementation plan content" },
+      summary: { source: "plan" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "context_packet",
+      resourceKey: "context-task-debug",
+      runId,
+      taskId,
+      sessionId: "session-root",
+      scope: "context",
+      status: "created",
+      title: "Context packet",
+      payload: {
+        id: "context-task-debug",
+        selectedMemories: [{ title: "Selected memory", text: "selected memory content", sourceRef: "memory_item:memory-task-debug" }],
+        priorArtifacts: [{ title: "Prior artifact", text: "prior artifact content", sourceRef: "artifact_ref:prior" }],
+        managedSourceRefs: { rawEventRefs: [{ sequence: firstTaskEvent.sequence, sessionId: "session-root" }] },
+      },
+      summary: { tokenEstimate: 123 },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "task_envelope",
+      resourceKey: "envelope-task-debug",
+      runId,
+      taskId,
+      sessionId: "session-root",
+      scope: "task",
+      status: "materialized",
+      title: "Task envelope",
+      payload: { envelope: { taskId, prompt: "full task envelope content" } },
+      summary: { contextPacketId: "context-task-debug" },
+    });
+    const writtenArtifact = await acceptOrRejectArtifactRefPg(db, {
+      runId,
+      taskId,
+      sessionId: "session-root",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-execution-task-debug",
+      producer: { actorType: "hand", providerId: "test" },
+      artifactType: "implementation_report",
+      status: "accepted",
+      content: { report: "artifact blob content" },
+      contractRefs: ["implementation_report"],
+      summary: "implemented",
+      evidenceRefs: [],
+      evaluatorResultRefs: [],
+      sourceEventRefs: [],
+    });
+    await upsertRuntimeResourcePg(db, {
       resourceType: "artifact_ref",
       resourceKey: "artifact-task-debug",
       runId,
@@ -101,6 +171,13 @@ test("operator task debug route returns task detail, descending task history, re
           history: Array<{ sequence: number; eventType: string; taskId?: string; payload: unknown }>;
           resources: Array<{ resourceType: string; resourceKey: string; title?: string; summary: unknown }>;
           artifactRefs: Array<{ resourceKey: string; artifactRefId?: string; status: string }>;
+          debug: {
+            session: { checkpoints: unknown[]; history: unknown[]; rawEventRefs: unknown[] };
+            context: { packets: Array<{ payload: { selectedMemories?: unknown[] } }> };
+            envelope: { envelopes: Array<{ payload: unknown }> };
+            memory: { items: Array<{ payload: unknown }>; selectedMemories: unknown[] };
+            artifacts: { refs: Array<{ resourceKey: string; content?: { content?: unknown }; contentError?: string }>; priorArtifacts: unknown[] };
+          };
           actions: Array<{ id: string; endpoint?: string; enabled: boolean; requiresConfirmation: boolean }>;
         };
       };
@@ -112,16 +189,31 @@ test("operator task debug route returns task detail, descending task history, re
       assert.deepEqual(envelope.result.task.dependsOn, ["task-plan"]);
       assert.equal(envelope.result.task.rootSessionId, "session-root");
       assert.equal(envelope.result.task.executorTaskId, "executor-task-1");
-      assert.deepEqual(envelope.result.history.map((event) => event.sequence), [secondTaskEvent.sequence, firstTaskEvent.sequence]);
-      assert.deepEqual(envelope.result.history.map((event) => event.eventType), ["task.blocked", "task.started"]);
+      assert.deepEqual(envelope.result.history.map((event) => event.sequence), [secondTaskEvent.sequence + 1, secondTaskEvent.sequence, firstTaskEvent.sequence]);
+      assert.deepEqual(envelope.result.history.map((event) => event.eventType), ["artifact.accepted", "task.blocked", "task.started"]);
       assert.equal(envelope.result.history.every((event) => event.taskId === taskId), true);
       assert.equal(envelope.result.resources.some((resource) =>
         resource.resourceType === "runtime_exception" &&
         resource.resourceKey === "exception-task-debug" &&
         resource.title === "Task stalled"
       ), true);
-      assert.deepEqual(envelope.result.artifactRefs.map((artifact) => artifact.resourceKey), ["artifact-task-debug"]);
-      assert.equal(envelope.result.artifactRefs[0]?.artifactRefId, "artifact_ref:task-debug");
+      assert.equal(envelope.result.artifactRefs.some((artifact) => artifact.resourceKey === "artifact-task-debug"), true);
+      assert.equal(envelope.result.artifactRefs.some((artifact) => artifact.artifactRefId === "artifact_ref:task-debug"), true);
+      assert.equal(envelope.result.debug.session.checkpoints.length > 0, true);
+      assert.equal(envelope.result.debug.session.history.some((event) => JSON.stringify(event).includes("needs operator")), true);
+      assert.equal(envelope.result.debug.session.rawEventRefs.length, 1);
+      assert.equal(JSON.stringify(envelope.result.debug.context.packets[0]?.payload).includes("selected memory content"), true);
+      assert.equal(JSON.stringify(envelope.result.debug.envelope.envelopes[0]?.payload).includes("full task envelope content"), true);
+      assert.equal(JSON.stringify(envelope.result.debug.memory.items[0]?.payload).includes("remember implementation plan content"), true);
+      assert.equal(JSON.stringify(envelope.result.debug.memory.selectedMemories).includes("selected memory content"), true);
+      assert.equal(JSON.stringify(envelope.result.debug.artifacts.priorArtifacts).includes("prior artifact content"), true);
+      assert.equal(
+        envelope.result.debug.artifacts.refs.some((artifact) =>
+          artifact.resourceKey === writtenArtifact.artifactRefId &&
+          JSON.stringify(artifact.content?.content).includes("artifact blob content")
+        ),
+        true,
+      );
       assert.equal(envelope.result.actions.some((action) =>
         action.id === "task.retry" &&
         action.endpoint === `/api/v2/runs/${runId}/tasks/${taskId}/retry` &&

@@ -541,7 +541,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
   }
   if (block.type === "libraryImportCandidates") {
     const candidates = block as LibraryImportCandidatesContent;
-    return <ChatLibraryCandidateBlock data={{ draftId: candidates.draftId, candidates: candidates.candidates, proposedEdges: candidates.proposedEdges }} />;
+    return <ChatLibraryCandidateBlock data={{ draftId: candidates.draftId, candidates: candidates.candidates, proposedEdges: candidates.proposedEdges }} onSelectNode={onLibraryGraphNodeSelect} />;
   }
   if (block.type === "thinking") {
     return <ThinkingBlock block={block as ThinkingContent} duration={streamingDuration} />;

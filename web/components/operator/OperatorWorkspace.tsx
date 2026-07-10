@@ -178,6 +178,7 @@ function OperatorStateDashboard({
 }) {
   const sortedRuns = [...overview.runs].sort(compareRunUpdatedAt);
   const problemCount = overview.attentionItems.length + incidents.length;
+  const exceptionRunCount = sortedRuns.filter((run) => bucketForRunStatus(run.status) === "exception").length;
 
   return (
     <section className="operator-state-dashboard" data-testid="operator-state-dashboard">
@@ -188,7 +189,7 @@ function OperatorStateDashboard({
           <div className="operator-state-dashboard-meta">
             <span>active {overview.runtimeHealth.activeRunCount}</span>
             <span>attention {overview.runtimeHealth.attentionCount}</span>
-            <span>blocked {overview.runtimeHealth.blockedCount}</span>
+            <span>exception {exceptionRunCount}</span>
             <span>runs {overview.runs.length}</span>
           </div>
         </div>

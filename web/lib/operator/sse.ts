@@ -70,6 +70,7 @@ function eventText(parsed: Record<string, unknown>, fallback: string): string {
     || stringValue(parsed.summary)
     || stringValue(payload.message)
     || stringValue(payload.summary)
+    || stringValue(payload.text)
     || fallback;
 }
 

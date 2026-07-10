@@ -1,5 +1,6 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { listLibraryEdges, listLibraryObjects } from "../design-library/library-graph-store.ts";
+import { isRuntimeProfilePrimitiveCandidate } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
 import type {
   GraphMetadataCandidatePacket,
   GraphMetadataEdgeCandidate,
@@ -28,7 +29,7 @@ export async function buildGraphMetadataCandidatePacket(
   input: { scope: string },
 ): Promise<GraphMetadataCandidatePacket> {
   const objects = (await listLibraryObjects(db, { scope: input.scope, status: "approved" }))
-    .filter((object) => INCLUDED_KINDS.has(object.objectKind));
+    .filter((object) => INCLUDED_KINDS.has(object.objectKind) && isRuntimeProfilePrimitiveCandidate(object));
   const objectKeys = new Set(objects.map((object) => object.objectKey));
   const edges = (await listLibraryEdges(db, { scope: input.scope, status: "active" }))
     .filter((edge) => objectKeys.has(edge.fromObjectKey) && objectKeys.has(edge.toObjectKey));

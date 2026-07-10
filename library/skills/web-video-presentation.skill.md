@@ -4,14 +4,14 @@ id: skill.web-video-presentation
 title: "Web Video Presentation"
 scope: "design"
 status: approved
-importDraftId: "library-import-draft-d66744ae-cdaf-4de3-8c35-9bead3eafa8d"
+importDraftId: "library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059"
 importCandidateKey: "skill.web-video-presentation"
 importSourcePath: "skills/web-video-presentation/SKILL.md"
 ---
 
 # Instructions
 
-Imported skill candidate from library import draft library-import-draft-d66744ae-cdaf-4de3-8c35-9bead3eafa8d.
+Imported skill candidate from library import draft library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059.
 
 ## Source Definition
 

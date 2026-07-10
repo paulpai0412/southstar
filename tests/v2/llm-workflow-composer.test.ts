@@ -93,6 +93,27 @@ test("LLM composer uses streaming text client and relays true deltas", async () 
   assert.deepEqual(deltas, ["{", "\"schemaVersion\""]);
 });
 
+test("LLM composer forwards requested cwd to the text client", async () => {
+  let receivedCwd: string | undefined;
+  const composer = new LlmWorkflowComposer({
+    model: "cwd-aware-model",
+    client: {
+      async generateText(input) {
+        receivedCwd = input.cwd;
+        return JSON.stringify(validPlan());
+      },
+    },
+  });
+
+  await composer.compose({
+    goalPrompt: "implement feature in selected project",
+    candidatePacket: candidatePacket(),
+    cwd: "/home/timmypai/apps/southstar-vocab",
+  });
+
+  assert.equal(receivedCwd, "/home/timmypai/apps/southstar-vocab");
+});
+
 test("LLM composer parser accepts strict contract payload", () => {
   const parsed = parseWorkflowCompositionPlanFromText(JSON.stringify(validPlan()), 20_000);
   assert.equal(parsed.title, "Dynamic Mock Plan");

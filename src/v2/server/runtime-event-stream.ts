@@ -8,6 +8,29 @@ const MAX_POLL_INTERVAL_MS = 30_000;
 const MIN_HEARTBEAT_INTERVAL_MS = 10;
 const MAX_HEARTBEAT_INTERVAL_MS = 60_000;
 const TERMINAL_RUN_STATUSES = new Set(["completed", "passed", "failed", "cancelled"]);
+const liveListeners = new Set<(event: RuntimeLiveEventFrame) => void>();
+let liveSequence = 0;
+
+export type RuntimeLiveEventFrame = {
+  id: string;
+  eventType: string;
+  runId: string;
+  taskId?: string;
+  sessionId?: string;
+  actorType: string;
+  payload: unknown;
+  createdAt: string;
+};
+
+export function broadcastRuntimeLiveEvent(input: Omit<RuntimeLiveEventFrame, "id" | "createdAt"> & { createdAt?: string }): RuntimeLiveEventFrame {
+  const event: RuntimeLiveEventFrame = {
+    ...input,
+    id: `live-${++liveSequence}`,
+    createdAt: input.createdAt ?? new Date().toISOString(),
+  };
+  for (const listener of liveListeners) listener(event);
+  return event;
+}
 
 export function createRuntimeEventStreamResponse(context: RuntimeServerContext, request: Request, url: URL, runId: string): Response {
   const initialAfter = parseAfterSequence(url, request);
@@ -102,6 +125,14 @@ function createRuntimeEventStream(
       const abort = () => safeClose();
       request.signal.addEventListener("abort", abort, { once: true });
       removeAbortListener = () => request.signal.removeEventListener("abort", abort);
+      const removeLiveListener = addRuntimeLiveEventListener(input, (event) => {
+        safeEnqueue(toLiveSseFrame(event));
+      });
+      const previousRemoveAbortListener = removeAbortListener;
+      removeAbortListener = () => {
+        previousRemoveAbortListener?.();
+        removeLiveListener();
+      };
       if (request.signal.aborted) {
         safeClose();
         return;
@@ -174,6 +205,23 @@ function createRuntimeEventStream(
       removeAbortListener = undefined;
     },
   });
+}
+
+function addRuntimeLiveEventListener(
+  input: { runId: string; taskId?: string; includeRunEvents: boolean },
+  listener: (event: RuntimeLiveEventFrame) => void,
+): () => void {
+  const wrapped = (event: RuntimeLiveEventFrame) => {
+    if (event.runId !== input.runId) return;
+    if (input.taskId && event.taskId !== input.taskId && !(input.includeRunEvents && !event.taskId)) return;
+    listener(event);
+  };
+  liveListeners.add(wrapped);
+  return () => liveListeners.delete(wrapped);
+}
+
+function toLiveSseFrame(event: RuntimeLiveEventFrame): string {
+  return `id: ${event.id}\nevent: ${event.eventType}\ndata: ${JSON.stringify(event)}\n\n`;
 }
 
 function parseAfterSequence(url: URL, request: Request): number {

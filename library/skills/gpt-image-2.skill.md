@@ -4,14 +4,14 @@ id: skill.gpt-image-2
 title: "GPT Image 2"
 scope: "design"
 status: approved
-importDraftId: "library-import-draft-0f1b56a4-cdf8-4251-978a-34ce5bd63aca"
+importDraftId: "library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059"
 importCandidateKey: "skill.gpt-image-2"
 importSourcePath: "skills/gpt-image-2/SKILL.md"
 ---
 
 # Instructions
 
-Imported skill candidate from library import draft library-import-draft-0f1b56a4-cdf8-4251-978a-34ce5bd63aca.
+Imported skill candidate from library import draft library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059.
 
 ## Source Definition
 

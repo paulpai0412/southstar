@@ -7,6 +7,7 @@ export type ExecutorSubmitRequest = {
   workflow: SouthstarWorkflowManifest & { runtime?: Record<string, unknown> };
   callbackUrl?: string;
   heartbeatUrl?: string;
+  liveEventUrl?: string;
   envelopeBasePath?: string;
   attemptId?: string;
 };

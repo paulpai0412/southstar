@@ -1,0 +1,19 @@
+schemaVersion: southstar.library.generated_agent_profile_file.v1
+id: "profile.generated.software-development-e2e-281a2df270c5.plan-software-general"
+title: "規劃：產出實作計畫"
+scope: "software"
+status: approved
+agentRef: "agent.engineering-software-architect"
+skillRefs:
+  - "skill.mattpocock.improve-codebase-architecture"
+  - "skill.mattpocock.codebase-design"
+toolGrantRefs:
+  - "tool.shell-command"
+  - "tool.workspace-write"
+mcpGrantRefs:
+  []
+instructionRefs: []
+source:
+  kind: "workflow-generate-save"
+  templateRef: "template.software-development-e2e-281a2df270c5"
+  nodeId: "plan-software-general"

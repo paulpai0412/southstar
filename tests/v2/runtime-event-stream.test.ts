@@ -192,6 +192,50 @@ test("runtime event stream closes after terminal history on reconnect unless clo
   }
 });
 
+test("runtime event stream emits in-memory live executor events without history writes", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedRun(db, "run-runtime-live-event");
+    const response = await handleRuntimeRoute(
+      context(db),
+      request("GET", "/api/v2/runs/run-runtime-live-event/events/stream?closeOnTerminal=false&pollMs=1000&heartbeatMs=1000"),
+    );
+    assert.ok(response.body, "stream response must have a body");
+    const reader = response.body.getReader();
+    try {
+      const posted = await readOk<{ accepted: boolean; eventId: string }>(
+        await handleRuntimeRoute(context(db), request("POST", "/api/v2/executor/live-event", {
+          runId: "run-runtime-live-event",
+          taskId: "task-a",
+          sessionId: "session-a",
+          eventType: "agent.message.delta",
+          actorType: "subagent",
+          payload: { text: "streamed token" },
+          createdAt: "2026-06-20T08:01:00.000Z",
+        })),
+      );
+      assert.equal(posted.result.accepted, true);
+      const frame = await readNextSseEvent(reader);
+      assert.equal(frame.event, "agent.message.delta");
+      assert.equal(frame.id, posted.result.eventId);
+      assert.deepEqual(frame.data, {
+        id: posted.result.eventId,
+        eventType: "agent.message.delta",
+        runId: "run-runtime-live-event",
+        taskId: "task-a",
+        sessionId: "session-a",
+        actorType: "subagent",
+        payload: { text: "streamed token" },
+        createdAt: "2026-06-20T08:01:00.000Z",
+      });
+    } finally {
+      await reader.cancel();
+    }
+  } finally {
+    await db.close();
+  }
+});
+
 test("runtime event stream abort during in-flight read does not enqueue into a closed stream", async () => {
   let releaseQuery: ((rows: unknown[]) => void) | undefined;
   const db = {

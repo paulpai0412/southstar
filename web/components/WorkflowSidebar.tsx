@@ -1,11 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { SessionInfo } from "@/lib/types";
 import { groupSkillResourcePaths } from "@/lib/workflow/skill-resource-tree";
 import type { WorkflowAgentSummary, WorkflowLibrary, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import { getFileIcon, FolderIcon } from "./FileIcons";
-import { PiAgentTitle } from "./SessionSidebar";
+import { ProjectScopePicker } from "./ProjectScopePicker";
 
 interface Props {
   cwd: string | null;
@@ -34,40 +34,16 @@ export function WorkflowSidebar({
   onRefreshSessions,
   onSessionDeleted,
 }: Props) {
-  const projectMenuRef = useRef<HTMLDivElement>(null);
   const [library, setLibrary] = useState<WorkflowLibrary | null>(null);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [sessionError, setSessionError] = useState<string | null>(null);
-  const [homeDir, setHomeDir] = useState("");
-  const [projectMenuOpen, setProjectMenuOpen] = useState(false);
-  const [customPathOpen, setCustomPathOpen] = useState(false);
-  const [customPathValue, setCustomPathValue] = useState("");
-  const [customPathError, setCustomPathError] = useState<string | null>(null);
-  const [customPathValidating, setCustomPathValidating] = useState(false);
   const [templatesOpen, setTemplatesOpen] = useState(true);
   const [openMap, setOpenMap] = useState<Record<string, boolean>>({});
   const [libraryRefreshKey, setLibraryRefreshKey] = useState(0);
   const [sessionRefreshKey, setSessionRefreshKey] = useState(0);
   const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
   const [libraryRefreshDone, setLibraryRefreshDone] = useState(false);
-
-  useEffect(() => {
-    fetch("/api/home")
-      .then((res) => res.json())
-      .then((data: { home?: string }) => {
-        if (data.home) setHomeDir(data.home);
-      })
-      .catch(() => {});
-  }, []);
-
-  useEffect(() => {
-    const handler = (event: MouseEvent) => {
-      if (!projectMenuRef.current?.contains(event.target as Node)) setProjectMenuOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
 
   useEffect(() => {
     const url = cwd ? `/api/workflow/library?cwd=${encodeURIComponent(cwd)}` : "/api/workflow/library";
@@ -156,42 +132,13 @@ export function WorkflowSidebar({
     onRefreshSessions?.();
   }, [onRefreshSessions, onSessionDeleted]);
 
-  const commitCustomPath = useCallback(async () => {
-    const nextCwd = customPathValue.trim();
-    if (!nextCwd || !onCwdChange) return;
-    setCustomPathError(null);
-    setCustomPathValidating(true);
-    try {
-      const res = await fetch("/api/cwd/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cwd: nextCwd }),
-      });
-      const data = await res.json() as { cwd?: string; error?: string };
-      if (!res.ok || !data.cwd) {
-        setCustomPathError(data.error || "Directory does not exist");
-        return;
-      }
-      onCwdChange(data.cwd);
-      setCustomPathValue("");
-      setCustomPathOpen(false);
-      setProjectMenuOpen(false);
-    } finally {
-      setCustomPathValidating(false);
-    }
-  }, [customPathValue, onCwdChange]);
-
   return (
     <div data-testid="workflow-sidebar" style={{ display: "flex", flexDirection: "column", minHeight: 0, flex: 1 }}>
-      <div
-        style={{
-          padding: "12px 10px 10px",
-          borderBottom: "1px solid var(--border)",
-          flexShrink: 0,
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-          <PiAgentTitle />
+      <ProjectScopePicker
+        selectedCwd={cwd}
+        onCwdChange={(nextCwd) => onCwdChange?.(nextCwd)}
+        emptyLabel="Select project..."
+        actions={
           <div style={{ display: "flex", gap: 6 }}>
             <button
               onClick={onNewSession}
@@ -248,152 +195,8 @@ export function WorkflowSidebar({
               )}
             </button>
           </div>
-        </div>
-        <div ref={projectMenuRef} style={{ position: "relative" }}>
-          <button
-            type="button"
-            onClick={() => {
-              if (!onCwdChange) return;
-              setProjectMenuOpen((value) => !value);
-            }}
-            style={{
-              width: "100%",
-              padding: "6px 10px",
-              background: cwd ? "var(--bg-hover)" : "rgba(37,99,235,0.06)",
-              border: cwd ? "1px solid var(--border)" : "1px solid rgba(37,99,235,0.4)",
-              borderRadius: 7,
-              fontSize: 11,
-              color: cwd ? "var(--text)" : "var(--text-dim)",
-              fontFamily: "var(--font-mono)",
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              textAlign: "left",
-              cursor: onCwdChange ? "pointer" : "default",
-            }}
-            title={cwd ?? ""}
-          >
-            {cwd ? shortenCwd(cwd, homeDir) : "Select project..."}
-          </button>
-          {projectMenuOpen && (
-            <div
-              style={{
-                position: "absolute",
-                top: "calc(100% + 4px)",
-                left: 0,
-                right: 0,
-                zIndex: 100,
-                background: "var(--bg)",
-                border: "1px solid var(--border)",
-                borderRadius: 8,
-                boxShadow: "0 6px 20px rgba(0,0,0,0.10)",
-                overflow: "hidden",
-              }}
-            >
-              {cwd && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    onCwdChange?.(null);
-                    setProjectMenuOpen(false);
-                  }}
-                  style={projectMenuItemStyle}
-                >
-                  Select project...
-                </button>
-              )}
-              {customPathOpen ? (
-                <div style={{ padding: "6px 8px" }}>
-                  <input
-                    data-testid="workflow-project-custom-path"
-                    value={customPathValue}
-                    onChange={(event) => setCustomPathValue(event.currentTarget.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter") {
-                        event.preventDefault();
-                        void commitCustomPath();
-                      }
-                      if (event.key === "Escape") {
-                        setCustomPathOpen(false);
-                        setCustomPathValue("");
-                        setCustomPathError(null);
-                      }
-                    }}
-                    placeholder="/path/to/project"
-                    disabled={customPathValidating}
-                    autoFocus
-                    style={{
-                      width: "100%",
-                      fontSize: 11,
-                      fontFamily: "var(--font-mono)",
-                      padding: "5px 8px",
-                      border: "1px solid var(--accent)",
-                      borderRadius: 5,
-                      outline: "none",
-                      background: "var(--bg)",
-                      color: "var(--text)",
-                      boxSizing: "border-box",
-                    }}
-                  />
-                  {customPathError && (
-                    <div style={{ marginTop: 5, color: "#ef4444", fontSize: 11, lineHeight: 1.35 }}>
-                      {customPathError}
-                    </div>
-                  )}
-                  <div style={{ display: "flex", gap: 5, marginTop: 5 }}>
-                    <button
-                      type="button"
-                      onClick={() => { void commitCustomPath(); }}
-                      disabled={customPathValidating}
-                      style={{
-                        flex: 1,
-                        padding: "4px 0",
-                        background: "var(--accent)",
-                        border: "none",
-                        borderRadius: 5,
-                        color: "#fff",
-                        fontSize: 11,
-                        fontWeight: 600,
-                        cursor: customPathValidating ? "wait" : "pointer",
-                        opacity: customPathValidating ? 0.7 : 1,
-                      }}
-                    >
-                      {customPathValidating ? "Checking..." : "Use"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCustomPathOpen(false);
-                        setCustomPathValue("");
-                        setCustomPathError(null);
-                      }}
-                      style={{
-                        padding: "4px 8px",
-                        background: "var(--bg-hover)",
-                        border: "1px solid var(--border)",
-                        borderRadius: 5,
-                        color: "var(--text-muted)",
-                        fontSize: 11,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setCustomPathOpen(true)}
-                  style={projectMenuItemStyle}
-                >
-                  Custom path...
-                </button>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+        }
+      />
 
       {error && <div style={{ padding: 10, color: "#f87171", fontSize: 12 }}>{error}</div>}
       {sessionError && <div style={{ padding: 10, color: "#f87171", fontSize: 12 }}>{sessionError}</div>}
@@ -462,21 +265,6 @@ export function WorkflowSidebar({
   );
 }
 
-const projectMenuItemStyle = {
-  display: "flex",
-  alignItems: "center",
-  gap: 7,
-  width: "100%",
-  padding: "8px 10px",
-  background: "none",
-  border: "none",
-  borderBottom: "1px solid var(--border)",
-  color: "var(--text-muted)",
-  cursor: "pointer",
-  textAlign: "left",
-  fontSize: 11,
-} as const;
-
 const sessionListTitleStyle = {
   padding: "7px 10px",
   color: "var(--text-muted)",
@@ -484,14 +272,6 @@ const sessionListTitleStyle = {
   fontWeight: 650,
   textTransform: "uppercase",
 } as const;
-
-function shortenCwd(cwd: string, homeDir?: string): string {
-  const path = homeDir && cwd.startsWith(homeDir) ? `~${cwd.slice(homeDir.length)}` : cwd;
-  const sep = path.includes("/") ? "/" : "\\";
-  const parts = path.split(sep).filter(Boolean);
-  if (parts.length <= 2) return path;
-  return `.../${parts.slice(-2).join(sep)}`;
-}
 
 function SectionHeader({
   title,

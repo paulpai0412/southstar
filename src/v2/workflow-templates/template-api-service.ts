@@ -183,6 +183,7 @@ async function composeSkeletonTemplate(
     goalPrompt: renderTemplateInstantiationGoal(input, detail),
     candidatePacket,
     composer: input.composer,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
     scope,
     maxRepairAttempts: 2,
     onProgress: input.onProgress,

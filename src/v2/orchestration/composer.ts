@@ -3,6 +3,7 @@ import type { CandidatePacket, WorkflowCompositionPlan } from "../design-library
 export type ComposeWorkflowInput = {
   goalPrompt: string;
   candidatePacket: CandidatePacket;
+  cwd?: string;
   onLlmDelta?: (text: string) => void;
 };
 

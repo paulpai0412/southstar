@@ -543,6 +543,7 @@ async function createLibraryConstrainedPlannerDraft(
     goalPrompt: input.goalPrompt,
     candidatePacket,
     composer,
+    ...(input.cwd ? { cwd: input.cwd } : {}),
     scope: WORKFLOW_LIBRARY_SCOPE,
     maxRepairAttempts: 2,
     onProgress: input.onProgress,

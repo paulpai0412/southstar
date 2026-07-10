@@ -198,6 +198,34 @@ test("operator overview keeps recently passed runs visible after refresh without
   }
 });
 
+test("operator overview keeps cancelled runs visible after operator cancel without counting them active", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-operator-cancelled-visible";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "cancelled",
+      domain: "software",
+      goalPrompt: "cancelled run",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+
+    assert.equal(model.activeRuns.some((run) => run.runId === runId && run.status === "cancelled"), true);
+    assert.equal(model.runtimeHealth.activeRunCount, 0);
+    assert.equal(model.runtimeHealth.attentionCount, 0);
+    assert.equal(model.attentionItems.some((item) => item.runId === runId), false);
+    assert.equal(model.defaultSelection?.runId, runId);
+  } finally {
+    await db.close();
+  }
+});
+
 test("operator overview disables managed recovery decisions because runtime applies them internally", async () => {
   const db = await createTestPostgresDb();
   try {

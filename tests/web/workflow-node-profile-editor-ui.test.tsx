@@ -55,7 +55,20 @@ test("workflow node profile editor filters refs and uses pi model registry optio
   assert.match(editor, /field="vaultLeasePolicyRefs"/);
   assert.match(editor, /\/api\/models\?/);
   assert.match(editor, /piModelOptions/);
+  assert.match(editor, /selectedProviderPiModelOptions/);
+  assert.match(editor, /workflow-profile-model-custom/);
   assert.match(editor, /thinkingLevels/);
+});
+
+test("workflow node profile editor uses structured prompt editing and explains generated AGENTS.md", () => {
+  const editor = readFileSync(join(root, "web/components/WorkflowNodeProfileEditor.tsx"), "utf8");
+
+  assert.match(editor, /StructuredJsonEditor/);
+  assert.match(editor, /data-testid="workflow-profile-prompt"/);
+  assert.match(editor, /data-testid="workflow-profile-agents-md"/);
+  assert.match(editor, /AGENTS\.md/);
+  assert.match(editor, /nodePromptSpec/);
+  assert.match(editor, /Profile instruction/);
 });
 
 test("workflow node click opens a usable static profile before planner draft exists", () => {

@@ -290,6 +290,60 @@ test("Chat MessageView renders Southstar import candidates tool results as an in
   });
 });
 
+test("Chat MessageView lets streamed library import graph nodes open the library sidecar", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { MessageView } from "./web/components/MessageView";
+
+    window.__selectedLibraryNode = null;
+
+    const message = {
+      role: "assistant",
+      model: "library-chat",
+      provider: "southstar",
+      content: [{
+        type: "libraryImportCandidates",
+        draftId: "draft-import-streamed",
+        candidates: [{
+          objectKey: "skill.beautiful-page",
+          kind: "skill",
+          title: "Beautiful Page",
+          scope: "design",
+          selectedByDefault: true,
+        }],
+        proposedEdges: [],
+      }],
+    };
+
+    createRoot(document.getElementById("root")).render(
+      <MessageView
+        message={message}
+        onLibraryGraphNodeSelect={(node) => { window.__selectedLibraryNode = node.objectKey; }}
+      />,
+    );
+  `, async (page) => {
+    await page.locator('[data-testid="library-import-candidates"]').waitFor();
+    await page.locator('[aria-label="Install selected candidates"]').click();
+    await page.locator('[data-testid="library-install-graph"] [aria-label="Beautiful Page"]').click();
+    await page.waitForFunction(() => window.__selectedLibraryNode === "skill.beautiful-page");
+  }, async (page) => {
+    await page.route("**/api/library/import-drafts/draft-import-streamed/install/stream", async (route) => {
+      await route.fulfill({
+        contentType: "text/event-stream",
+        body: [
+          "event: library.graph.snapshot",
+          'data: {"activeScope":"design","availableScopes":["design"],"nodes":[{"objectKey":"skill.beautiful-page","objectKind":"skill_spec","status":"approved","title":"Beautiful Page","scope":"design"}],"edges":[]}',
+          "",
+          "event: library.command.completed",
+          'data: {"draftId":"draft-import-streamed","status":"installed"}',
+          "",
+        ].join("\n"),
+      });
+    });
+  });
+});
+
 test("Chat MessageView renders Southstar workflow draft tool results as a workflow DAG block", async () => {
   await withBrowserHarness(`
     import React from "react";

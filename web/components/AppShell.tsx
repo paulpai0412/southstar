@@ -564,7 +564,7 @@ export function AppShell() {
       { id: `operator-history:${filePath}`, label: "History", filePath, kind: "operatorHistory", ...input },
       { id: `operator-stream:${filePath}`, label: "Live SSE", filePath, kind: "operatorStream", ...input },
       { id: `operator-actions:${filePath}`, label: "Actions", filePath, kind: "operatorActions", ...input },
-      { id: `operator-artifacts:${filePath}`, label: "Artifacts", filePath, kind: "operatorArtifacts", ...input },
+      { id: `operator-debug:${filePath}`, label: "Debug", filePath, kind: "operatorDebug", ...input },
     ];
     setSidecarTabs((current) => {
       const byId = new Map(current.filter((tab) => !tab.kind?.startsWith("operator")).map((tab) => [tab.id, tab]));
@@ -717,7 +717,7 @@ export function AppShell() {
       activeSidecarTab.kind === "operatorHistory" ||
       activeSidecarTab.kind === "operatorStream" ||
       activeSidecarTab.kind === "operatorActions" ||
-      activeSidecarTab.kind === "operatorArtifacts"
+      activeSidecarTab.kind === "operatorDebug"
     ) {
       const attention = operator.model.attentionItems.find((item) => item.id === activeSidecarTab.attentionId)
         ?? operator.model.attentionItems.find((item) => item.runId === activeSidecarTab.runId && item.taskId === activeSidecarTab.taskId);

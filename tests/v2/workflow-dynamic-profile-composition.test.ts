@@ -129,7 +129,7 @@ test("workflow composition rejects generated profile that ignores graph metadata
       objectKind: "skill_spec",
       status: "approved",
       headVersionId: "skill.legacy-ui@1",
-      state: { scope: "software", title: "Legacy UI" },
+      state: { scope: "software", title: "Legacy UI", body: "# Instructions\n\nBuild legacy UI." },
     });
     await upsertLibraryEdge(db, {
       fromObjectKey: "agent.frontend-developer",
@@ -475,28 +475,28 @@ async function seedDynamicPrimitives(db: Awaited<ReturnType<typeof createTestPos
     objectKind: "skill_spec",
     status: "approved",
     headVersionId: "skill.react-ui@1",
-    state: { scope: "software", title: "React UI" },
+    state: { scope: "software", title: "React UI", body: "# Instructions\n\nBuild React UI." },
   });
   await upsertLibraryObject(db, {
     objectKey: "tool.workspace-write",
     objectKind: "tool_definition",
     status: "approved",
     headVersionId: "tool.workspace-write@1",
-    state: { scope: "global", title: "Workspace Write" },
+    state: { scope: "global", title: "Workspace Write", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" },
   });
   await upsertLibraryObject(db, {
     objectKey: "mcp.filesystem-workspace",
     objectKind: "mcp_tool_grant",
     status: "approved",
     headVersionId: "mcp.filesystem-workspace@1",
-    state: { scope: "global", title: "Filesystem Workspace" },
+    state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] },
   });
   await upsertLibraryObject(db, {
     objectKey: "instruction.react-review",
     objectKind: "instruction_template",
     status: "approved",
     headVersionId: "instruction.react-review@1",
-    state: { scope: "software", title: "React Review" },
+    state: { scope: "software", title: "React Review", content: "Use React best practices.", variables: [] },
   });
   await upsertLibraryObject(db, {
     objectKey: "artifact.todo_app",

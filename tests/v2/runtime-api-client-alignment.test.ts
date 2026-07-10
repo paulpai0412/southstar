@@ -93,8 +93,8 @@ test("runtime route patches planner draft task profile override", async () => {
     const envelope = await call<any>(db, `/api/v2/planner/drafts/${draftId}/tasks/task-build/profile-override`, {
       method: "PATCH",
       body: JSON.stringify({
-        provider: "codex",
-        model: "gpt-5-codex",
+        provider: "openai-codex",
+        model: "gpt-5.5",
         skillRefs: ["software.calc-cli"],
         mcpGrantRefs: [],
       }),
@@ -102,7 +102,8 @@ test("runtime route patches planner draft task profile override", async () => {
 
     assert.equal(envelope.kind, "planner-draft-task-profile-override");
     assert.equal(envelope.result.taskId, "task-build");
-    assert.equal(envelope.result.profileOverride.model, "gpt-5-codex");
+    assert.equal(envelope.result.profileOverride.provider, "openai-codex");
+    assert.equal(envelope.result.profileOverride.model, "gpt-5.5");
   } finally {
     await db.close();
   }

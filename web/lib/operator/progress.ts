@@ -1,16 +1,16 @@
 import type { OperatorAttentionItem, OperatorRun } from "./types";
 
-export const operatorStateBuckets = ["created", "scheduling", "running", "verifying", "blocked", "paused", "completed", "failed"] as const;
+export const operatorStateBuckets = ["created", "scheduling", "running", "verifying", "exception", "paused", "completed", "cancelled"] as const;
 export type OperatorStateBucket = (typeof operatorStateBuckets)[number];
 
 export function bucketForRunStatus(status: string): OperatorStateBucket {
   if (status === "created" || status === "ready" || status === "validated") return "created";
   if (status === "scheduling" || status === "queued") return "scheduling";
   if (status === "verifying" || status === "release_pending") return "verifying";
-  if (status === "failed" || status === "quarantined") return "failed";
-  if (status === "blocked" || status === "exception") return "blocked";
+  if (status === "failed" || status === "quarantined" || status === "blocked" || status === "exception") return "exception";
   if (status === "paused") return "paused";
-  if (status === "completed" || status === "passed" || status === "cancelled") return "completed";
+  if (status === "cancelled") return "cancelled";
+  if (status === "completed" || status === "passed") return "completed";
   return "running";
 }
 

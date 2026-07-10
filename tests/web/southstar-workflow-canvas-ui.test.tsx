@@ -126,6 +126,15 @@ test("Workflow mode generate submit uses web generate stream and preserves norma
   assert.match(hook, /workflowCwd/);
 });
 
+test("Workflow mode creates its backing session with the same cwd used for planner generation", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+
+  assert.match(hook, /effectiveNewSessionCwd/);
+  assert.match(hook, /opts\.workflowMode\s*\?\s*\(opts\.workflowCwd\s*\?\?\s*newSessionCwd\)\s*:\s*newSessionCwd/);
+  assert.match(hook, /cwd:\s*effectiveNewSessionCwd/);
+  assert.doesNotMatch(hook, /cwd:\s*newSessionCwd,\s*\n\s*type:\s*"ensure_session"/);
+});
+
 test("Workflow mode does not revise non-draft composition DAG ids", () => {
   const hook = source("web/hooks/useAgentSession.ts");
   const engine = source("web/lib/agent-session-engine.ts");

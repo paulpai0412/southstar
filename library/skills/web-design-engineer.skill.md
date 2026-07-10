@@ -3,15 +3,15 @@ schemaVersion: southstar.library.skill_spec_file.v1
 id: skill.web-design-engineer
 title: "Web Design Engineer"
 scope: "design"
-status: draft
-importDraftId: "library-import-draft-a323fb52-2efb-406a-8473-616d1513749c"
+status: approved
+importDraftId: "library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059"
 importCandidateKey: "skill.web-design-engineer"
 importSourcePath: "skills/web-design-engineer/SKILL.md"
 ---
 
 # Instructions
 
-Imported skill candidate from library import draft library-import-draft-a323fb52-2efb-406a-8473-616d1513749c.
+Imported skill candidate from library import draft library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059.
 
 ## Source Definition
 

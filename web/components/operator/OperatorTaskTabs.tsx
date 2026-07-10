@@ -5,7 +5,7 @@ import { useOperatorTaskDebug } from "@/hooks/useOperatorTaskDebug";
 import { mergeOperatorTaskCommands } from "@/lib/operator/taskCommands";
 import type { OperatorCommand, OperatorCommandResult } from "@/lib/operator/types";
 import { OperatorActionsPanel } from "./OperatorActionsPanel";
-import { OperatorArtifactsPanel } from "./OperatorArtifactsPanel";
+import { OperatorDebugPanel } from "./OperatorDebugPanel";
 import { OperatorHistoryPanel } from "./OperatorHistoryPanel";
 import { OperatorLiveStream } from "./OperatorLiveStream";
 import { OperatorTaskSummary } from "./OperatorTaskSummary";
@@ -18,7 +18,7 @@ export function OperatorTaskTabs({
   commandResults,
   onCommandComplete,
 }: {
-  kind: "operatorHistory" | "operatorStream" | "operatorActions" | "operatorArtifacts";
+  kind: "operatorHistory" | "operatorStream" | "operatorActions" | "operatorDebug";
   runId: string | null;
   taskId: string | null;
   commands: OperatorCommand[];
@@ -28,7 +28,7 @@ export function OperatorTaskTabs({
   const debug = useOperatorTaskDebug(runId, taskId);
 
   if (!runId || !taskId) {
-    return <p className="operator-muted">Select a task to inspect History, Live SSE, Actions, and Artifacts.</p>;
+    return <p className="operator-muted">Select a task to inspect History, Live SSE, Actions, and Debug.</p>;
   }
   if (debug.error) return <p className="operator-muted operator-danger">{debug.error}</p>;
   if (!debug.model) return <p className="operator-muted">Loading task debug data.</p>;
@@ -56,8 +56,8 @@ export function OperatorTaskTabs({
       />,
     );
   }
-  if (kind === "operatorArtifacts") {
-    return withTaskSummary(<OperatorArtifactsPanel artifacts={debugModel.data.artifacts} resources={debugModel.data.resources} />);
+  if (kind === "operatorDebug") {
+    return withTaskSummary(<OperatorDebugPanel debug={debugModel} />);
   }
 
   return withTaskSummary(<p className="operator-muted">Select a task debug tab.</p>);

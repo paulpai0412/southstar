@@ -110,9 +110,11 @@ export function ProjectScopePicker({
             {customPathOpen ? (
               <div style={{ padding: 8, display: "grid", gap: 6 }}>
                 <input
+                  data-testid="project-scope-custom-path"
                   value={customPathValue}
                   onChange={(event) => setCustomPathValue(event.currentTarget.value)}
                   onKeyDown={(event) => { if (event.key === "Enter") void commitCustomPath(); }}
+                  placeholder="~/apps/southstar-vocab"
                   autoFocus
                 />
                 <button type="button" onClick={() => void commitCustomPath()}>Use</button>

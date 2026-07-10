@@ -7,6 +7,7 @@ test("builds a Tork job projection from task execution specs only", () => {
   const projection = buildTorkJobProjection(workflow(), {
     callbackUrl: "http://127.0.0.1:3000/api/v2/tork/callback",
     heartbeatUrl: "http://127.0.0.1:3000/api/v2/executor/heartbeat",
+    liveEventUrl: "http://127.0.0.1:3000/api/v2/executor/live-event",
     envelopeBasePath: "/southstar-runs",
     runId: "run-wf-software-mvp",
   });
@@ -25,6 +26,7 @@ test("builds a Tork job projection from task execution specs only", () => {
   assert.equal(projection.job.tasks[0].env.SOUTHSTAR_TASK_ID, "task-plan");
   assert.equal(projection.job.tasks[0].env.SOUTHSTAR_ATTEMPT_ID, "attempt-1");
   assert.equal(projection.job.tasks[0].env.SOUTHSTAR_HEARTBEAT_URL, "http://127.0.0.1:3000/api/v2/executor/heartbeat");
+  assert.equal(projection.job.tasks[0].env.SOUTHSTAR_LIVE_EVENT_URL, "http://127.0.0.1:3000/api/v2/executor/live-event");
   assert.equal(projection.job.tasks[0].webhook, "http://127.0.0.1:3000/api/v2/tork/callback");
 });
 

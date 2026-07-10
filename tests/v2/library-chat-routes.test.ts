@@ -459,6 +459,34 @@ test("library chat graph prompts stream and replay graph snapshot blocks", async
     const replayFrames = parseSseFrames(await replayStreamResponse.text());
     assert.equal(replayFrames.some((frame) => frame.event === "library.graph.snapshot"), true);
     assert.equal(replayFrames.find((frame) => frame.event === "library.command.completed")?.data.cached, true);
+
+    await seedObject(db, "skill.browser-verification", "skill_spec", "software", "Browser Verification");
+    const skillSpecMessageResponse = await handleRuntimeRoute(
+      context,
+      new Request("http://local/api/v2/library/chat/messages", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          sessionId: "library-chat-skill-spec-test",
+          prompt: "show skill_spec graph",
+          scope: "software",
+        }),
+      }),
+    );
+    assert.equal(skillSpecMessageResponse.status, 200);
+    const skillSpecMessage = await readEnvelope(skillSpecMessageResponse);
+    const skillSpecStreamResponse = await handleRuntimeRoute(
+      context,
+      new Request(
+        `http://local/api/v2/library/chat/events?sessionId=library-chat-skill-spec-test&actionId=${skillSpecMessage.result.actionId}`,
+      ),
+    );
+    assert.equal(skillSpecStreamResponse.status, 200);
+    const skillSpecFrames = parseSseFrames(await skillSpecStreamResponse.text());
+    const skillSpecGraph = skillSpecFrames.find((frame) => frame.event === "library.graph.snapshot");
+    assert.equal(skillSpecGraph?.data.nodes.some((node: any) => node.objectKind === "skill_spec"), true);
+    const skillSpecAction = await getResourceByKeyPg(db, "library_chat_action", skillSpecMessage.result.actionId);
+    assert.equal((skillSpecAction?.payload as any).result.graphQuery.kind, "skill_spec");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

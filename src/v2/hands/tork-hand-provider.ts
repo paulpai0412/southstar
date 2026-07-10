@@ -14,6 +14,7 @@ export function createTorkHandProvider(input: {
   executorProvider: ExecutorProvider;
   callbackUrl: string;
   heartbeatUrl?: string;
+  liveEventUrl?: string;
   runRoot?: string;
 }): HandProvider {
   return {
@@ -60,6 +61,7 @@ export function createTorkHandProvider(input: {
           workflow,
           callbackUrl: input.callbackUrl,
           heartbeatUrl: input.heartbeatUrl,
+          ...(input.liveEventUrl ? { liveEventUrl: input.liveEventUrl } : {}),
           envelopeBasePath: typeof call.input.envelopeBasePath === "string" ? call.input.envelopeBasePath : "/southstar-runs",
           attemptId: typeof call.input.attemptId === "string" ? call.input.attemptId : "attempt-1",
         });
@@ -174,6 +176,7 @@ export function createTorkHandProvider(input: {
           workflow,
           callbackUrl: taskInput.callbackUrl ?? input.callbackUrl,
           heartbeatUrl: taskInput.heartbeatUrl ?? input.heartbeatUrl,
+          ...(taskInput.liveEventUrl ?? input.liveEventUrl ? { liveEventUrl: taskInput.liveEventUrl ?? input.liveEventUrl } : {}),
           envelopeBasePath: mounted.envelopeBasePath,
           attemptId: taskInput.attemptId,
         });

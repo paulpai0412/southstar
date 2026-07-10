@@ -290,6 +290,7 @@ async function createRuntime(
     torkClient,
     callbackUrl: `${baseUrl}/api/v2/tork/callback`,
     heartbeatUrl: `${baseUrl}/api/v2/executor/heartbeat`,
+    liveEventUrl: `${baseUrl}/api/v2/executor/live-event`,
   });
   const plannerClient = env.piPlannerEndpoint
     ? createHttpPiPlannerClient({ endpoint: env.piPlannerEndpoint })
@@ -300,12 +301,16 @@ async function createRuntime(
   const workflowComposer = new LlmWorkflowComposer({
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
     client: {
-      generateText: (input) => plannerClient.generate(input.prompt),
+      generateText: (input) => workflowPlannerClientForInput(input.cwd).generate(input.prompt),
       generateTextStream: plannerClient.generateStream
-        ? (input, handlers) => plannerClient.generateStream!(input.prompt, { onDelta: handlers.onDelta })
+        ? (input, handlers) => workflowPlannerClientForInput(input.cwd).generateStream!(input.prompt, { onDelta: handlers.onDelta })
         : undefined,
     },
   });
+  function workflowPlannerClientForInput(cwd?: string) {
+    if (env.piPlannerEndpoint || !cwd) return plannerClient;
+    return createPiSdkPlannerClient({ cwd, timeoutMs: env.piPlannerTimeoutMs });
+  }
   const server = await createSouthstarRuntimeServer({
     host,
     port,
@@ -340,6 +345,7 @@ async function createRuntime(
         executorProvider,
         callbackUrl: `${baseUrl}/api/v2/tork/callback`,
         heartbeatUrl: `${baseUrl}/api/v2/executor/heartbeat`,
+        liveEventUrl: `${baseUrl}/api/v2/executor/live-event`,
       }),
       providerActions: providerActionsFromTork(torkClient),
     },

@@ -71,6 +71,7 @@ export type ExecuteTaskInput = {
   heartbeatTimeoutSeconds: number;
   callbackUrl?: string;
   heartbeatUrl?: string;
+  liveEventUrl?: string;
   runRoot?: string;
   envelopeBasePath?: string;
 };

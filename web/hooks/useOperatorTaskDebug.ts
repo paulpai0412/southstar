@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import type { OperatorCommand, OperatorHistoryItem, OperatorResourceItem, OperatorTaskDebug } from "@/lib/operator/types";
+import type { OperatorCommand, OperatorHistoryItem, OperatorResourceItem, OperatorTaskDebug, OperatorTaskDebugGroups } from "@/lib/operator/types";
 
 export function useOperatorTaskDebug(runId: string | null, taskId: string | null) {
   const [model, setModel] = useState<OperatorTaskDebug | null>(null);
@@ -62,8 +62,50 @@ function normalizeOperatorTaskDebug(input: unknown): OperatorTaskDebug {
       history: arrayValue(data.history).map(readHistoryItem),
       resources: arrayValue(data.resources).map(readResourceItem),
       artifacts: arrayValue(data.artifacts || data.artifactRefs).map(readArtifactItem),
+      debug: readDebugGroups(data.debug),
       actions: arrayValue(data.actions).map(readCommand),
     },
+  };
+}
+
+function readDebugGroups(input: unknown): OperatorTaskDebugGroups | undefined {
+  const row = recordValue(input);
+  if (!row) return undefined;
+  const session = asRecord(row.session);
+  const context = asRecord(row.context);
+  const envelope = asRecord(row.envelope);
+  const memory = asRecord(row.memory);
+  const artifacts = asRecord(row.artifacts);
+  const resources = asRecord(row.resources);
+  const raw = asRecord(row.raw);
+  return {
+    session: {
+      rootSessionId: nullableString(session.rootSessionId),
+      sessionIds: stringArray(session.sessionIds),
+      checkpoints: arrayValue(session.checkpoints).map(readResourceItem),
+      history: arrayValue(session.history).map(readHistoryItem),
+      rawEventRefs: arrayValue(session.rawEventRefs),
+    },
+    context: {
+      packets: arrayValue(context.packets).map(readResourceItem),
+      latestPacket: recordValue(context.latestPacket) ? readResourceItem(context.latestPacket) : null,
+      assemblyTraces: arrayValue(context.assemblyTraces).map(readResourceItem),
+    },
+    envelope: {
+      envelopes: arrayValue(envelope.envelopes).map(readResourceItem),
+      latestEnvelope: recordValue(envelope.latestEnvelope) ? readResourceItem(envelope.latestEnvelope) : null,
+    },
+    memory: {
+      selectedMemories: arrayValue(memory.selectedMemories),
+      items: arrayValue(memory.items).map(readResourceItem),
+      deltas: arrayValue(memory.deltas).map(readResourceItem),
+    },
+    artifacts: {
+      priorArtifacts: arrayValue(artifacts.priorArtifacts),
+      refs: arrayValue(artifacts.refs).map(readArtifactItem),
+    },
+    resources: Object.fromEntries(Object.entries(resources).map(([key, value]) => [key, arrayValue(value).map(readResourceItem)])),
+    raw: { resources: arrayValue(raw.resources).map(readResourceItem) },
   };
 }
 
@@ -90,6 +132,9 @@ function readResourceItem(input: unknown): OperatorResourceItem {
     title: stringValue(row.title),
     payload: row.payload ?? row.payload_json ?? {},
     summary: row.summary ?? row.summary_json ?? {},
+    content: row.content,
+    contentError: stringValue(row.contentError),
+    artifactRefId: stringValue(row.artifactRefId),
     updatedAt: stringValue(row.updatedAt || row.updated_at) || "",
   };
 }

@@ -4,14 +4,14 @@ id: skill.kb-retriever
 title: "KB Retriever"
 scope: "engineering"
 status: approved
-importDraftId: "library-import-draft-0f1b56a4-cdf8-4251-978a-34ce5bd63aca"
+importDraftId: "library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059"
 importCandidateKey: "skill.kb-retriever"
 importSourcePath: "skills/kb-retriever/SKILL.md"
 ---
 
 # Instructions
 
-Imported skill candidate from library import draft library-import-draft-0f1b56a4-cdf8-4251-978a-34ce5bd63aca.
+Imported skill candidate from library import draft library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059.
 
 ## Source Definition
 

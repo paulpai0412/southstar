@@ -266,11 +266,20 @@ test("graph profile candidate resolver returns approved scoped primitives", asyn
 });
 
 async function seedPrimitive(db: any, objectKey: string, objectKind: any, scope = "software") {
+  const runtimeState = objectKind === "skill_spec"
+    ? { body: "# Instructions\n\nBuild React UI." }
+    : objectKind === "tool_definition"
+      ? { toolName: "workspace-write", proxyToolName: "workspace-write-proxy" }
+      : objectKind === "mcp_tool_grant"
+        ? { serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] }
+        : objectKind === "instruction_template"
+          ? { content: "Use React best practices.", variables: [] }
+          : {};
   await upsertLibraryObject(db, {
     objectKey,
     objectKind,
     status: "approved",
     headVersionId: `${objectKey}@v1`,
-    state: { scope, title: objectKey },
+    state: { scope, title: objectKey, ...runtimeState },
   });
 }

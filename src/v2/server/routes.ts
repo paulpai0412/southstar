@@ -24,6 +24,7 @@ import { handleSessionRoute } from "./session-routes.ts";
 import { handleTaskCommandRoute } from "./task-command-routes.ts";
 import { handlePlannerRoute } from "./planner-routes.ts";
 import { handleRunReadRoute } from "./run-read-routes.ts";
+import { broadcastRuntimeLiveEvent } from "./runtime-event-stream.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
 import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
@@ -290,6 +291,20 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
         })
         : managedResult!;
       return json("executor-heartbeat", result);
+    }
+
+    if (request.method === "POST" && url.pathname === "/api/v2/executor/live-event") {
+      const body = await readJsonBody<Record<string, unknown>>(request);
+      const event = broadcastRuntimeLiveEvent({
+        runId: requiredString(body.runId, "runId"),
+        taskId: optionalString(body.taskId),
+        sessionId: optionalString(body.sessionId),
+        actorType: optionalString(body.actorType) ?? "subagent",
+        eventType: optionalString(body.eventType) ?? "agent.message.delta",
+        payload: body.payload ?? {},
+        createdAt: optionalString(body.createdAt),
+      });
+      return json("executor-live-event", { accepted: true, eventId: event.id });
     }
 
     if (request.method === "POST" && url.pathname === "/api/v2/executor/reconcile") {

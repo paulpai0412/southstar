@@ -1,17 +1,17 @@
 ---
 schemaVersion: southstar.library.skill_spec_file.v1
 id: skill.beautiful-article
-title: "beautiful-article"
+title: "Beautiful Article"
 scope: "design"
 status: approved
-importDraftId: "library-import-draft-180cbd14-9df5-41a7-9e26-51a20485719b"
+importDraftId: "library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059"
 importCandidateKey: "skill.beautiful-article"
 importSourcePath: "skills/beautiful-article/SKILL.md"
 ---
 
 # Instructions
 
-Imported skill candidate from library import draft library-import-draft-180cbd14-9df5-41a7-9e26-51a20485719b.
+Imported skill candidate from library import draft library-import-draft-62d80ce5-dba7-42d0-9ae3-9afe7835d059.
 
 ## Source Definition
 

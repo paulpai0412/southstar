@@ -478,6 +478,86 @@ test("generate route proxies backend planner draft stream and converts orchestra
   }]);
 });
 
+test("generate route instantiates referenced workflow templates instead of planner stream", async () => {
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
+  const calls: Array<{ url: string; method: string; body?: unknown }> = [];
+  global.fetch = (async (url, init) => {
+    const href = String(url);
+    calls.push({
+      url: href,
+      method: init?.method ?? "GET",
+      body: init?.body ? JSON.parse(String(init.body)) as unknown : undefined,
+    });
+    if (href.endsWith("/api/v2/workflow/templates/instantiate")) {
+      return Response.json({
+        ok: true,
+        result: {
+          templateRef: "template.software-dev",
+          draftId: "draft-template-1",
+          workflowId: "wf-template-1",
+          status: "validated",
+          validationIssues: [],
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/planner/drafts/draft-template-1/orchestration")) {
+      return Response.json({
+        ok: true,
+        result: {
+          draftId: "draft-template-1",
+          goalPrompt: "@workflow-template 前後台軟體開發流程 (template.software-dev)\n生成一個猜謎的webapp",
+          workflowId: "wf-template-1",
+          status: "validated",
+          validationIssues: [],
+          taskSummaries: [
+            {
+              taskId: "task.plan",
+              taskName: "Plan riddle app",
+              dependsOn: [],
+              roleRef: "architect",
+              agentProfileRef: "generated.agent_profile.riddle.plan.v1",
+            },
+          ],
+        },
+      });
+    }
+    throw new Error(`unexpected fetch: ${href}`);
+  }) as typeof fetch;
+
+  const response = await postWorkflowGenerate(new NextRequest("http://localhost/api/workflow/generate", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      prompt: "@workflow-template 前後台軟體開發流程 (template.software-dev)\n生成一個猜謎的webapp",
+      cwd: "/tmp/demo",
+    }),
+  }));
+
+  assert.equal(response.status, 200);
+  const events = readSse(await response.text());
+  assert.deepEqual(events.map((event) => event.event), ["planner.stage", "draft", "planner.stage", "dag", "done"]);
+  const dagPayload = events.find((event) => event.event === "dag")?.data as { dag?: { id?: string; templateId?: string } };
+  assert.equal(dagPayload.dag?.id, "draft-template-1");
+  assert.equal(dagPayload.dag?.templateId, "template.software-dev");
+  assert.deepEqual(calls, [
+    {
+      url: "http://127.0.0.1:3000/api/v2/workflow/templates/instantiate",
+      method: "POST",
+      body: {
+        templateRef: "template.software-dev",
+        goalPrompt: "@workflow-template 前後台軟體開發流程 (template.software-dev)\n生成一個猜謎的webapp",
+        cwd: "/tmp/demo",
+        constraints: { mode: "strict" },
+      },
+    },
+    {
+      url: "http://127.0.0.1:3000/api/v2/planner/drafts/draft-template-1/orchestration",
+      method: "GET",
+      body: undefined,
+    },
+  ]);
+});
+
 test("generate route requires the v2 runtime planner instead of using local fallback DAG generation", async () => {
   delete process.env.SOUTHSTAR_V2_API_BASE_URL;
   global.fetch = (async () => {
