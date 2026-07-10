@@ -33,13 +33,19 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
     if (!/^[a-f0-9]{64}$/.test(workflow.compiledFrom.inputHash ?? "")) {
       issues.push({ path: "workflow.compiledFrom.inputHash", message: "must be a 64-char lowercase sha256 hex string" });
     }
-    if (!Array.isArray(workflow.compiledFrom.libraryVersionRefs) || workflow.compiledFrom.libraryVersionRefs.length === 0) {
+    const libraryVersionRefs = workflow.compiledFrom.libraryVersionRefs;
+    const validLibraryVersionRefs: string[] = [];
+    if (!Array.isArray(libraryVersionRefs) || libraryVersionRefs.length === 0) {
       issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must contain at least one immutable library version ref" });
     } else {
-      if (workflow.compiledFrom.libraryVersionRefs.some((ref) => typeof ref !== "string" || ref.length === 0)) {
-        issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must contain only non-empty immutable library version refs" });
+      for (const [index, ref] of libraryVersionRefs.entries()) {
+        if (typeof ref !== "string" || ref.length === 0) {
+          issues.push({ path: `workflow.compiledFrom.libraryVersionRefs.${index}`, message: "must be a non-empty immutable library version ref" });
+          continue;
+        }
+        validLibraryVersionRefs.push(ref);
       }
-      if (!workflow.compiledFrom.libraryVersionRefs.includes(workflow.compiledFrom.templateVersionId)) {
+      if (!validLibraryVersionRefs.includes(workflow.compiledFrom.templateVersionId)) {
         issues.push({ path: "workflow.compiledFrom.templateVersionId", message: "must be included in compiledFrom.libraryVersionRefs" });
       }
     }
@@ -65,7 +71,7 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
         issues.push({ path: "workflow.compiledFrom.templateDefinitionId", message: "must map to templateVersionId in libraryObjectVersionRefs" });
       }
       const pairVersions = [...new Set(validObjectVersionRefs.map((pair) => pair.versionRef))].sort();
-      const compatibilityVersions = [...new Set(workflow.compiledFrom.libraryVersionRefs ?? [])].sort();
+      const compatibilityVersions = [...new Set(validLibraryVersionRefs)].sort();
       if (JSON.stringify(pairVersions) !== JSON.stringify(compatibilityVersions)) {
         issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must match libraryObjectVersionRefs versions" });
       }

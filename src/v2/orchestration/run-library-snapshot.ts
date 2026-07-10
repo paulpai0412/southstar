@@ -205,7 +205,7 @@ function visitCredentialValues(value: unknown, path: string): void {
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (typeof child === "string" && isCredentialValueKey(key)) {
+    if (child !== null && child !== undefined && isCredentialValueKey(key)) {
       throw new Error(`credential-looking Library state is forbidden: ${path}.${key}`);
     }
     visitCredentialValues(child, `${path}.${key}`);

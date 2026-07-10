@@ -258,24 +258,30 @@ test("snapshot capture enforces per-file and total skill bundle byte ceilings", 
 test("snapshot capture rejects normalized credential keys but preserves vault reference metadata", async () => {
   const db = await createTestPostgresDb();
   try {
-    const sensitiveKeys = [
-      "AWS_SECRET_ACCESS_KEY",
-      "clientSecret",
-      "refreshToken",
-      "bearerToken",
-      "dbPassword",
-      "privateKey",
-      "accessToken",
+    const sensitiveStates: Array<{ label: string; state: Record<string, unknown> }> = [
+      { label: "aws-direct", state: { AWS_SECRET_ACCESS_KEY: "plain-sensitive-value" } },
+      { label: "client-direct", state: { clientSecret: "plain-sensitive-value" } },
+      { label: "refresh-direct", state: { refreshToken: "plain-sensitive-value" } },
+      { label: "bearer-direct", state: { bearerToken: "plain-sensitive-value" } },
+      { label: "password-direct", state: { dbPassword: "plain-sensitive-value" } },
+      { label: "private-key-direct", state: { privateKey: "plain-sensitive-value" } },
+      { label: "access-direct", state: { accessToken: "plain-sensitive-value" } },
+      { label: "credentials-object", state: { credentials: { value: "plain-sensitive-value" } } },
+      { label: "access-array", state: { accessToken: ["plain-sensitive-value"] } },
+      { label: "refresh-nested", state: { oauth: { refreshToken: "plain-sensitive-value" } } },
+      { label: "client-nested", state: { oauth: { clientSecret: "plain-sensitive-value" } } },
+      { label: "bearer-nested", state: { auth: { bearerToken: "plain-sensitive-value" } } },
+      { label: "aws-nested", state: { aws: { AWS_SECRET_ACCESS_KEY: "plain-sensitive-value" } } },
     ];
-    for (const [index, sensitiveKey] of sensitiveKeys.entries()) {
-      const objectKey = `instruction.secret-key-${index}`;
+    for (const [index, fixture] of sensitiveStates.entries()) {
+      const objectKey = `instruction.secret-key-${fixture.label}`;
       const versionRef = `${objectKey}@1`;
       await upsertLibraryObject(db, {
         objectKey,
         objectKind: "instruction_template",
         status: "approved",
         headVersionId: versionRef,
-        state: { content: "safe", [sensitiveKey]: "plain-sensitive-value" },
+        state: { content: "safe", ...fixture.state },
       });
       const runId = `run-secret-key-${index}`;
       await createSnapshotRun(db, runId);
@@ -285,7 +291,7 @@ test("snapshot capture rejects normalized credential keys but preserves vault re
           manifestHash: "2".repeat(64),
           libraryObjectVersionRefs: [{ objectKey, versionRef }],
         }),
-        new RegExp(`credential-looking.*${sensitiveKey}`, "i"),
+        /credential-looking Library state/i,
       );
     }
 

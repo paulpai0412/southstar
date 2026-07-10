@@ -109,6 +109,38 @@ test("compiledFrom reports malformed object-version pairs without throwing", () 
   assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /object-version pair/i);
 });
 
+test("compiledFrom reports malformed version-ref containers without throwing", () => {
+  for (const malformed of [{}, 42, null]) {
+    const flatBundle = makeBundle();
+    flatBundle.workflow.compiledFrom = {
+      templateDefinitionId: "template.software-feature",
+      templateVersionId: "template.software-feature@1",
+      compilerVersion: "library-constrained-compiler-v1",
+      inputHash: "1".repeat(64),
+      libraryVersionRefs: malformed,
+      libraryObjectVersionRefs: [{ objectKey: "template.software-feature", versionRef: "template.software-feature@1" }],
+    } as never;
+
+    const flatResult = validatePlanBundle(flatBundle);
+    assert.equal(flatResult.ok, false);
+    assert.match(flatResult.issues.map((issue) => issue.path).join("\n"), /compiledFrom\.libraryVersionRefs/);
+
+    const pairBundle = makeBundle();
+    pairBundle.workflow.compiledFrom = {
+      templateDefinitionId: "template.software-feature",
+      templateVersionId: "template.software-feature@1",
+      compilerVersion: "library-constrained-compiler-v1",
+      inputHash: "1".repeat(64),
+      libraryVersionRefs: ["template.software-feature@1"],
+      libraryObjectVersionRefs: malformed,
+    } as never;
+
+    const pairResult = validatePlanBundle(pairBundle);
+    assert.equal(pairResult.ok, false);
+    assert.match(pairResult.issues.map((issue) => issue.path).join("\n"), /compiledFrom\.libraryObjectVersionRefs/);
+  }
+});
+
 function makeBundle(): PlanBundle {
   return {
     workflow: {
