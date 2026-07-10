@@ -6,6 +6,7 @@ import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orches
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 test("runtime routes expose workflow template search, detail, and instantiation", async () => {
   const db = await createTestPostgresDb();
@@ -42,6 +43,7 @@ test("runtime routes expose workflow template search, detail, and instantiation"
           constraints: { mode: "strict" },
         }),
       },
+      { goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app")) },
     );
     assert.equal(instantiated.kind, "workflow-template-instantiate");
     assert.equal(instantiated.result.templateRef, "template.software-dev-standard");
@@ -71,7 +73,10 @@ test("runtime route can instantiate a skeleton template through workflowComposer
           constraints: { mode: "strict" },
         }),
       },
-      { workflowComposer },
+      {
+        workflowComposer,
+        goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app")),
+      },
     );
 
     assert.equal(instantiated.result.status, "validated");
@@ -129,6 +134,7 @@ function compositionPlan(): WorkflowCompositionPlan {
       id: "understand-repo",
       name: "Understand Repo",
       responsibility: "Plan the requested software change.",
+      requirementIds: [],
       nodePromptSpec: {
         nodeType: "plan",
         goal: "Plan the requested software change.",
@@ -154,6 +160,36 @@ function compositionPlan(): WorkflowCompositionPlan {
       evaluatorProfileRef: "evaluator.software-plan-quality",
       recoveryStrategyRefs: ["retry-same-agent"],
       rationale: "Use software explorer.",
+    }, {
+      id: "verify-plan",
+      name: "Verify Plan",
+      responsibility: "Independently verify the implementation plan.",
+      requirementIds: [],
+      nodePromptSpec: {
+        nodeType: "verify",
+        goal: "Verify the implementation plan.",
+        requirements: ["Check that the plan satisfies the requested goal."],
+        boundaries: ["Do not edit files."],
+        nonGoals: ["Do not implement."],
+        deliverableDocuments: [],
+        expectedOutputs: ["artifact.implementation_plan"],
+        testCases: [],
+        acceptanceCriteria: ["Plan covers requirements, risks, and verification."],
+      },
+      dependsOn: ["understand-repo"],
+      templateSlotRef: "verify-plan",
+      agentDefinitionRef: "agent.software-explorer",
+      agentProfileRef: "profile.generated.software-understand-repo",
+      instructionRefs: [],
+      skillRefs: [],
+      toolGrantRefs: [],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.implementation_plan"],
+      outputArtifactRefs: [],
+      evaluatorProfileRef: "evaluator.software-plan-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "Use a separate downstream task to evaluate the plan artifact.",
     }],
     rejectedCandidates: [],
     generatedComponentProposals: [{
@@ -198,6 +234,11 @@ class CapturingComposer implements WorkflowComposer {
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
     this.lastGoalPrompt = input.goalPrompt;
-    return structuredClone(this.plan);
+    const plan = structuredClone(this.plan);
+    const requirementIds = input.goalContract.requirements.map((requirement) => requirement.id);
+    plan.tasks.forEach((task) => {
+      task.requirementIds = requirementIds;
+    });
+    return plan;
   }
 }

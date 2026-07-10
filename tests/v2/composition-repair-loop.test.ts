@@ -6,21 +6,25 @@ import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-
 import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { runCompositionRepairLoop } from "../../src/v2/orchestration/composition-repair-loop.ts";
 import { LlmComposerOutputError } from "../../src/v2/orchestration/llm-composer.ts";
-import { analyzeRequirementDeterministically } from "../../src/v2/orchestration/requirement-analyzer.ts";
+import { requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
+
+const GOAL_CONTRACT = softwareGoalContract();
 
 test("composition repair loop retries once and returns valid composition", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
     const candidatePacket = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(GOAL_CONTRACT),
       scope: "software",
     });
     const composer = new ScriptedWorkflowComposer([invalidPlan(), validPlan()]);
     const result = await runCompositionRepairLoop({
       db,
       goalPrompt: "implement calc sum",
+      goalContract: GOAL_CONTRACT,
       candidatePacket,
       composer,
       scope: "software",
@@ -40,7 +44,7 @@ test("composition repair loop retry prompt includes previous composition JSON an
   try {
     await seedSoftwareLibraryGraph(db);
     const candidatePacket = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(GOAL_CONTRACT),
       scope: "software",
     });
     const prompts: string[] = [];
@@ -53,6 +57,7 @@ test("composition repair loop retry prompt includes previous composition JSON an
     const result = await runCompositionRepairLoop({
       db,
       goalPrompt: "implement calc sum",
+      goalContract: GOAL_CONTRACT,
       candidatePacket,
       composer,
       scope: "software",
@@ -77,7 +82,7 @@ test("composition repair loop retries when composer output violates schema contr
   try {
     await seedSoftwareLibraryGraph(db);
     const candidatePacket = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(GOAL_CONTRACT),
       scope: "software",
     });
     let attempt = 0;
@@ -101,6 +106,7 @@ test("composition repair loop retries when composer output violates schema contr
     const result = await runCompositionRepairLoop({
       db,
       goalPrompt: "implement calc sum",
+      goalContract: GOAL_CONTRACT,
       candidatePacket,
       composer,
       scope: "software",
@@ -308,6 +314,9 @@ function task(
     id,
     name: id,
     responsibility: id,
+    requirementIds: id === "summarize-completion"
+      ? []
+      : GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,

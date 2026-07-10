@@ -4,9 +4,10 @@ import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { findLibraryEdgesFrom } from "../../src/v2/design-library/library-graph-store.ts";
 import type { LibraryEdgeType } from "../../src/v2/design-library/types.ts";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
-import { analyzeRequirementDeterministically } from "../../src/v2/orchestration/requirement-analyzer.ts";
+import { requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 test("software library seed smoke: expected maker and evaluator edges exist", async () => {
   const db = await createTestPostgresDb();
@@ -38,7 +39,7 @@ test("candidate resolver returns agents but disables legacy stored agent profile
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
-    const requirement = analyzeRequirementDeterministically("implement calc sum");
+    const requirement = requirementSpecFromGoalContract(softwareGoalContract());
     const packet = await resolveWorkflowCandidates(db, { requirementSpec: requirement, scope: "software" });
 
     assert.deepEqual(packet.unavailableRequirements, []);
@@ -59,7 +60,7 @@ test("candidate resolver exposes MCP primitives without direct profile edges", a
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
-    const requirement = analyzeRequirementDeterministically("implement calc sum");
+    const requirement = requirementSpecFromGoalContract(softwareGoalContract());
     const packet = await resolveWorkflowCandidates(db, { requirementSpec: requirement, scope: "software" });
 
     assert.deepEqual(packet.mcpGrantCandidatesByProfile, {});

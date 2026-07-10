@@ -4,15 +4,17 @@ import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import type { WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
-import { analyzeRequirementDeterministically } from "../../src/v2/orchestration/requirement-analyzer.ts";
+import { buildGoalRequirementCoverage } from "../../src/v2/orchestration/goal-requirement-coverage.ts";
+import { requirementSpecFromGoalContract, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { articleGoalContract, softwareGoalContract, subscriptionGoalContract } from "./fixtures/goal-contract.ts";
 
 test("validator rejects legacy stored-profile compositions when graph metadata is active", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const validation = await validateWorkflowCompositionPlan(db, packet, validComposition());
@@ -28,7 +30,7 @@ test("validator rejects refs outside the candidate packet", async () => {
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const plan = validComposition();
@@ -47,7 +49,7 @@ test("validator rejects dependency cycles in memory", async () => {
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const plan = validComposition();
@@ -66,7 +68,7 @@ test("validator rejects vault refs not allowed by selected profile", async () =>
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const plan = validComposition();
@@ -85,7 +87,7 @@ test("validator rejects selected artifacts not produced by selected agent", asyn
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const plan = validComposition();
@@ -104,7 +106,7 @@ test("validator rejects legacy stored-profile bugfix compositions when graph met
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("fix a typo bug in the todo form"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract("fix a typo bug in the todo form")),
       scope: "software",
     });
     const plan = simpleBugfixComposition();
@@ -122,7 +124,7 @@ test("validator does not re-enable legacy stored profiles for code quality revie
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const plan = validComposition();
@@ -141,7 +143,7 @@ test("validator rejects input artifacts that are not satisfied by upstream depen
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const plan = validComposition();
@@ -167,7 +169,7 @@ test("validator rejects tasks that use template slots not defined by the selecte
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const plan = validComposition();
@@ -193,7 +195,7 @@ test("validator rejects tasks that do not satisfy selected template slot constra
   try {
     await seedSoftwareLibraryGraph(db);
     const packet = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(softwareGoalContract()),
       scope: "software",
     });
     const plan = validComposition();
@@ -218,7 +220,106 @@ test("validator rejects tasks that do not satisfy selected template slot constra
   }
 });
 
-function validComposition(): WorkflowCompositionPlan {
+test("coverage maps every blocking requirement to producer and independent evaluator", () => {
+  const goalContract = articleGoalContract();
+  const coverage = buildGoalRequirementCoverage({
+    goalContract,
+    composition: articleCompositionWithRequirementIds(goalContract),
+  });
+
+  assert.deepEqual(coverage.entries[0], {
+    requirementId: goalContract.requirements[0]!.id,
+    producerTaskIds: ["task-build-article"],
+    artifactRefs: ["artifact.article_html"],
+    evaluatorTaskIds: ["task-verify-article"],
+    evaluatorProfileRefs: ["evaluator.article-browser-quality"],
+    requiredEvidenceKinds: ["artifact-ref", "screenshot", "url"],
+  });
+});
+
+test("coverage rejects a producer as its only evaluator", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+
+    const validation = await validateWorkflowCompositionPlan(
+      db,
+      packet,
+      selfEvaluatingComposition(goalContract),
+      { scope: "software", goalContract },
+    );
+
+    assert.equal(validation.ok, false);
+    assert.equal(
+      validation.issues.some((issue) => issue.code === "requirement_evaluator_not_independent"),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("compound requirements form parallel producer branches and a dependent verification wave", () => {
+  const goalContract = subscriptionGoalContract();
+  const composition = subscriptionCompositionWithRequirementIds(goalContract);
+  const coverage = buildGoalRequirementCoverage({ goalContract, composition });
+  const producerTasks = composition.tasks.filter((task) => task.nodePromptSpec?.nodeType === "implement");
+  const verifier = composition.tasks.find((task) => task.id === "task-verify-subscription");
+
+  assert.deepEqual(
+    new Set(coverage.entries.map((entry) => entry.requirementId)),
+    new Set(goalContract.requirements.map((requirement) => requirement.id)),
+  );
+  assert.equal(producerTasks.filter((task) => task.dependsOn.length === 0).length >= 2, true);
+  assert.deepEqual(new Set(verifier?.dependsOn), new Set(producerTasks.map((task) => task.id)));
+  assert.deepEqual(
+    new Set(verifier?.requirementIds),
+    new Set(goalContract.requirements.map((requirement) => requirement.id)),
+  );
+});
+
+test("validator reports unknown and incomplete blocking requirement coverage", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const composition = validComposition(goalContract);
+    composition.tasks.forEach((compositionTask) => {
+      compositionTask.requirementIds = [];
+    });
+    composition.tasks[2]!.requirementIds = [goalContract.requirements[0]!.id, "requirement.unknown"];
+    composition.tasks[2]!.outputArtifactRefs = [];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
+      scope: "software",
+      goalContract,
+    });
+
+    for (const code of [
+      "unknown_requirement_id",
+      "requirement_missing_artifact",
+      "requirement_missing_evaluator",
+      "requirement_missing_evidence",
+      "task_without_requirement_coverage",
+    ]) {
+      assert.equal(validation.issues.some((issue) => issue.code === code), true, `missing ${code}`);
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+function validComposition(goalContract = softwareGoalContract()): WorkflowCompositionPlan {
+  const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Software Dynamic Feature Workflow",
@@ -227,6 +328,7 @@ function validComposition(): WorkflowCompositionPlan {
     tasks: [
       task(
         "understand-repo",
+        requirementIds,
         [],
         "agent.software-explorer",
         "profile.software-explorer-codex",
@@ -238,6 +340,7 @@ function validComposition(): WorkflowCompositionPlan {
       ),
       task(
         "review-spec",
+        requirementIds,
         ["understand-repo"],
         "agent.software-spec-reviewer",
         "profile.software-spec-reviewer-codex",
@@ -249,6 +352,7 @@ function validComposition(): WorkflowCompositionPlan {
       ),
       task(
         "implement-feature",
+        requirementIds,
         ["review-spec"],
         "agent.software-maker",
         "profile.software-maker-pi",
@@ -260,6 +364,7 @@ function validComposition(): WorkflowCompositionPlan {
       ),
       task(
         "verify-feature",
+        requirementIds,
         ["implement-feature"],
         "agent.software-checker",
         "profile.software-checker-codex",
@@ -271,6 +376,7 @@ function validComposition(): WorkflowCompositionPlan {
       ),
       task(
         "review-code-quality",
+        requirementIds,
         ["implement-feature"],
         "agent.software-code-quality-reviewer",
         "profile.software-code-quality-reviewer-codex",
@@ -282,6 +388,7 @@ function validComposition(): WorkflowCompositionPlan {
       ),
       task(
         "summarize-completion",
+        [],
         ["verify-feature", "review-code-quality"],
         "agent.software-summarizer",
         "profile.software-summarizer-codex",
@@ -298,6 +405,7 @@ function validComposition(): WorkflowCompositionPlan {
 }
 
 function simpleBugfixComposition(): WorkflowCompositionPlan {
+  const requirementIds = softwareGoalContract("fix a typo bug in the todo form").requirements.map((requirement) => requirement.id);
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Simple Bugfix Workflow",
@@ -306,6 +414,7 @@ function simpleBugfixComposition(): WorkflowCompositionPlan {
     tasks: [
       task(
         "implement-fix",
+        requirementIds,
         [],
         "agent.software-maker",
         "profile.software-maker-pi",
@@ -317,6 +426,7 @@ function simpleBugfixComposition(): WorkflowCompositionPlan {
       ),
       task(
         "verify-fix",
+        requirementIds,
         ["implement-fix"],
         "agent.software-checker",
         "profile.software-checker-codex",
@@ -332,8 +442,130 @@ function simpleBugfixComposition(): WorkflowCompositionPlan {
   };
 }
 
+function articleCompositionWithRequirementIds(goalContract: GoalContractV1): WorkflowCompositionPlan {
+  const [requirementId] = goalContract.requirements.map((requirement) => requirement.id);
+  return coverageComposition([
+    coverageTask({
+      id: "task-build-article",
+      requirementIds: [requirementId!],
+      nodeType: "implement",
+      outputArtifactRefs: ["artifact.article_html"],
+    }),
+    coverageTask({
+      id: "task-verify-article",
+      requirementIds: [requirementId!],
+      nodeType: "verify",
+      dependsOn: ["task-build-article"],
+      outputArtifactRefs: ["artifact.verification_report"],
+      evaluatorProfileRef: "evaluator.article-browser-quality",
+      mcpGrantRefs: ["mcp.browser-playwright"],
+    }),
+  ]);
+}
+
+function subscriptionCompositionWithRequirementIds(goalContract: GoalContractV1): WorkflowCompositionPlan {
+  const producerIds = [
+    "task-implement-account-access",
+    "task-implement-billing",
+    "task-implement-cancellation-refund",
+    "task-implement-admin-audit",
+  ];
+  const producers = goalContract.requirements.map((requirement, index) => coverageTask({
+    id: producerIds[index]!,
+    requirementIds: [requirement.id],
+    nodeType: "implement",
+    outputArtifactRefs: [`artifact.subscription_${index + 1}`],
+  }));
+  return coverageComposition([
+    ...producers,
+    coverageTask({
+      id: "task-verify-subscription",
+      requirementIds: goalContract.requirements.map((requirement) => requirement.id),
+      nodeType: "verify",
+      dependsOn: producerIds,
+      outputArtifactRefs: ["artifact.verification_report"],
+      evaluatorProfileRef: "evaluator.subscription-quality",
+      toolGrantRefs: ["tool.test-runner"],
+    }),
+  ]);
+}
+
+function selfEvaluatingComposition(goalContract: GoalContractV1): WorkflowCompositionPlan {
+  const composition = validComposition(goalContract);
+  composition.tasks.forEach((compositionTask) => {
+    compositionTask.requirementIds = [];
+  });
+  const producer = composition.tasks.find((compositionTask) => compositionTask.id === "implement-feature")!;
+  producer.requirementIds = [goalContract.requirements[0]!.id];
+  producer.nodePromptSpec = nodePromptSpec("verify", producer.outputArtifactRefs);
+  return composition;
+}
+
+function coverageComposition(tasks: WorkflowCompositionTask[]): WorkflowCompositionPlan {
+  return {
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Coverage fixture",
+    selectedWorkflowTemplateRef: "template.coverage",
+    rationale: "Exercise deterministic Goal Contract coverage.",
+    tasks,
+    rejectedCandidates: [],
+    generatedComponentProposals: [],
+  };
+}
+
+function coverageTask(input: {
+  id: string;
+  requirementIds: string[];
+  nodeType: "implement" | "verify";
+  dependsOn?: string[];
+  outputArtifactRefs: string[];
+  evaluatorProfileRef?: string;
+  toolGrantRefs?: string[];
+  mcpGrantRefs?: string[];
+}): WorkflowCompositionTask {
+  return {
+    id: input.id,
+    name: input.id,
+    responsibility: input.id,
+    requirementIds: input.requirementIds,
+    nodePromptSpec: nodePromptSpec(input.nodeType, input.outputArtifactRefs),
+    dependsOn: input.dependsOn ?? [],
+    templateSlotRef: input.id,
+    agentDefinitionRef: `agent.${input.id}`,
+    agentProfileRef: `profile.${input.id}`,
+    instructionRefs: [],
+    skillRefs: [],
+    toolGrantRefs: input.toolGrantRefs ?? [],
+    mcpGrantRefs: input.mcpGrantRefs ?? [],
+    vaultLeasePolicyRefs: [],
+    inputArtifactRefs: [],
+    outputArtifactRefs: input.outputArtifactRefs,
+    evaluatorProfileRef: input.evaluatorProfileRef ?? `evaluator.${input.id}`,
+    recoveryStrategyRefs: [],
+    rationale: input.id,
+  };
+}
+
+function nodePromptSpec(
+  nodeType: "implement" | "verify",
+  expectedOutputs: string[],
+): NonNullable<WorkflowCompositionTask["nodePromptSpec"]> {
+  return {
+    nodeType,
+    goal: `${nodeType} the requirement`,
+    requirements: ["Satisfy the linked Goal Contract requirement."],
+    boundaries: [],
+    nonGoals: [],
+    deliverableDocuments: [],
+    expectedOutputs,
+    testCases: [],
+    acceptanceCriteria: ["Produce evidence for the linked requirement."],
+  };
+}
+
 function task(
   id: string,
+  requirementIds: string[],
   dependsOn: string[],
   agentDefinitionRef: string,
   agentProfileRef: string,
@@ -347,6 +579,7 @@ function task(
     id,
     name: id,
     responsibility: id,
+    requirementIds,
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,

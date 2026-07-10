@@ -12,6 +12,15 @@ import { compileWorkflowComposition } from "../../src/v2/orchestration/compositi
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
+
+const GOAL_CONTRACT = {
+  ...softwareGoalContract("Build todo web app"),
+  requirements: softwareGoalContract("Build todo web app").requirements.map((requirement) => ({
+    ...requirement,
+    blocking: false,
+  })),
+};
 
 test("graph metadata composition refs materialize into Docker-visible task bundle", async () => {
   const db = await createTestPostgresDb();
@@ -45,6 +54,7 @@ test("graph metadata composition refs materialize into Docker-visible task bundl
     const compiled = await compileWorkflowComposition(db, {
       runId: "run-chain",
       goalPrompt: "Build todo web app",
+      goalContract: GOAL_CONTRACT,
       candidatePacket,
       composition,
       scope: "software",
@@ -117,6 +127,7 @@ function generatedCompositionPlan(): WorkflowCompositionPlan {
       id: "implement-ui",
       name: "Implement UI",
       responsibility: "Build todo web app UI",
+      requirementIds: GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
       dependsOn: [],
       templateSlotRef: "implement",
       agentDefinitionRef: "agent.frontend-developer",

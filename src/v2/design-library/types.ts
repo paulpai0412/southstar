@@ -359,6 +359,7 @@ export type WorkflowCompositionTask = {
   id: string;
   name: string;
   responsibility: string;
+  requirementIds: string[];
   nodePromptSpec?: WorkflowNodePromptSpec;
   dependsOn: string[];
   templateSlotRef: string;
@@ -476,7 +477,14 @@ export type WorkflowCompositionValidationIssueCode =
   | "agent_does_not_use_skill"
   | "generated_profile_missing_agent_profile"
   | "generated_profile_incomplete_agent_profile"
-  | "generated_profile_invalid_value";
+  | "generated_profile_invalid_value"
+  | "unknown_requirement_id"
+  | "requirement_missing_producer"
+  | "requirement_missing_artifact"
+  | "requirement_missing_evaluator"
+  | "requirement_evaluator_not_independent"
+  | "requirement_missing_evidence"
+  | "task_without_requirement_coverage";
 
 export type WorkflowCompositionValidationIssue = {
   code: WorkflowCompositionValidationIssueCode;

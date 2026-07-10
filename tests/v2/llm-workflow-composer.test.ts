@@ -7,6 +7,9 @@ import {
   parseWorkflowCompositionPlanFromText,
   WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA,
 } from "../../src/v2/orchestration/llm-composer.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
+
+const GOAL_CONTRACT = softwareGoalContract();
 
 test("LLM composer sends bounded candidate packet and explicit output schema contract", async () => {
   const prompts: string[] = [];
@@ -21,7 +24,11 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
     },
   });
 
-  const plan = await composer.compose({ goalPrompt: "implement calc sum", candidatePacket: candidatePacket() });
+  const plan = await composer.compose({
+    goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
+    candidatePacket: candidatePacket(),
+  });
   assert.equal(plan.schemaVersion, "southstar.workflow_composition_plan.v1");
   assert.equal(prompts.length, 1);
   assert.match(prompts[0] ?? "", /OutputJsonSchema:/);
@@ -56,7 +63,19 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /\"schemaVersion\":\{\"const\":\"southstar.workflow_composition_plan.v1\"\}/);
   assert.match(prompts[0] ?? "", /nodePromptSpec/);
   assert.match(prompts[0] ?? "", /acceptanceCriteria/);
+  assert.match(prompts[0] ?? "", /GoalContractRequirements:/);
+  assert.match(prompts[0] ?? "", new RegExp(GOAL_CONTRACT.requirements[0]!.id));
+  assert.match(prompts[0] ?? "", /turn each observable requirement into one or more executable producer work packages/i);
+  assert.match(prompts[0] ?? "", /preserve independent branches as tasks without artificial dependencies/i);
+  assert.match(prompts[0] ?? "", /never force one task per requirement/i);
+  assert.match(prompts[0] ?? "", /independent evaluator/i);
   assert.equal(typeof WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.id.type, "string");
+  assert.equal(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.requirementIds.type, "array");
+  assert.equal("minItems" in WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.requirementIds, false);
+  assert.equal(
+    WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("requirementIds"),
+    true,
+  );
   assert.equal(
     WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("nodePromptSpec"),
     true,
@@ -83,6 +102,7 @@ test("LLM composer uses streaming text client and relays true deltas", async () 
 
   const plan = await composer.compose({
     goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
     candidatePacket: candidatePacket(),
     onLlmDelta(delta) {
       deltas.push(delta);
@@ -107,6 +127,7 @@ test("LLM composer forwards requested cwd to the text client", async () => {
 
   await composer.compose({
     goalPrompt: "implement feature in selected project",
+    goalContract: GOAL_CONTRACT,
     candidatePacket: candidatePacket(),
     cwd: "/home/timmypai/apps/southstar-vocab",
   });
@@ -253,6 +274,34 @@ test("LLM composer parser rejects tasks without node prompt specs", () => {
   );
 });
 
+test("LLM composer parser rejects tasks without requirement ids", () => {
+  const plan = validPlan();
+  const { requirementIds: _requirementIds, ...taskWithoutRequirementIds } = plan.tasks[0] as Record<string, unknown>;
+
+  assert.throws(
+    () => parseWorkflowCompositionPlanFromText(JSON.stringify({
+      ...plan,
+      tasks: [taskWithoutRequirementIds, ...plan.tasks.slice(1)],
+    }), 20_000),
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues.some((issue) =>
+        issue.path === "tasks.0.requirementIds"
+        && /missing required property/.test(issue.message)
+      ),
+  );
+});
+
+test("LLM composer parser allows an explicit summary task with empty requirement ids", () => {
+  const plan = validPlan();
+  plan.tasks[0]!.requirementIds = [];
+  plan.tasks[0]!.nodePromptSpec!.nodeType = "summary";
+  plan.tasks[0]!.nodePromptSpec!.summarySections = ["completed work"];
+  plan.tasks[0]!.nodePromptSpec!.handoffCriteria = ["Final state is clear."];
+
+  assert.doesNotThrow(() => parseWorkflowCompositionPlanFromText(JSON.stringify(plan), 20_000));
+});
+
 function validPlan(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
@@ -370,6 +419,7 @@ function task(
     id,
     name: id,
     responsibility: id,
+    requirementIds: GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,

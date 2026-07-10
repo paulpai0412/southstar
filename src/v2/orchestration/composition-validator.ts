@@ -19,9 +19,15 @@ import {
   isAllowedGeneratedAgentProfileValue,
   runtimeBindingForGeneratedProfileImage,
 } from "./generated-agent-profile-policy.ts";
+import {
+  buildGoalRequirementCoverage,
+  isCoverageExceptionTask,
+} from "./goal-requirement-coverage.ts";
+import type { GoalContractV1 } from "./goal-contract.ts";
 
 export type ValidateWorkflowCompositionOptions = {
   scope?: string;
+  goalContract?: GoalContractV1;
 };
 
 export async function validateWorkflowCompositionPlan(
@@ -40,6 +46,7 @@ export async function validateWorkflowCompositionPlan(
   }
   const constraints = compositionConstraintsForTemplate(packet, plan.selectedWorkflowTemplateRef);
   validateTaskDependencies(plan, issues);
+  if (options.goalContract) validateGoalRequirementCoverage(options.goalContract, plan, issues);
   validateCoverageConstraints(constraints, plan, issues);
   validateInputArtifactsAreSatisfied(plan, constraints, issues);
   validateTemplateSlotConstraints(plan.selectedWorkflowTemplateRef, constraints, plan, issues);
@@ -47,6 +54,83 @@ export async function validateWorkflowCompositionPlan(
   await validateGeneratedProfileClosure(db, plan, issues, options.scope ?? "software");
   await validateEdgeConstraints(db, plan, issues, options.scope ?? "software");
   return { ok: issues.length === 0, issues };
+}
+
+function validateGoalRequirementCoverage(
+  goalContract: GoalContractV1,
+  plan: WorkflowCompositionPlan,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const knownRequirementIds = new Set(goalContract.requirements.map((requirement) => requirement.id));
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    const requirementIds = task.requirementIds ?? [];
+    for (const requirementId of requirementIds) {
+      if (knownRequirementIds.has(requirementId)) continue;
+      issues.push(issue(
+        "unknown_requirement_id",
+        `tasks.${taskIndex}.requirementIds`,
+        `task ${task.id} references unknown Goal Contract requirement: ${requirementId}`,
+      ));
+    }
+    if (requirementIds.some((requirementId) => knownRequirementIds.has(requirementId))) continue;
+    if (isCoverageExceptionTask(task)) continue;
+    issues.push(issue(
+      "task_without_requirement_coverage",
+      `tasks.${taskIndex}.requirementIds`,
+      `task ${task.id} does not contribute to a Goal Contract requirement`,
+    ));
+  }
+
+  const coverage = buildGoalRequirementCoverage({ goalContract, composition: plan });
+  const coverageByRequirementId = new Map(coverage.entries.map((entry) => [entry.requirementId, entry]));
+  const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
+  for (const [requirementIndex, requirement] of goalContract.requirements.entries()) {
+    if (!requirement.blocking) continue;
+    const entry = coverageByRequirementId.get(requirement.id)!;
+    const path = `goalContract.requirements.${requirementIndex}`;
+    if (entry.producerTaskIds.length === 0) {
+      issues.push(issue(
+        "requirement_missing_producer",
+        path,
+        `blocking requirement has no producer task: ${requirement.id}`,
+      ));
+    }
+    if (entry.artifactRefs.length === 0) {
+      issues.push(issue(
+        "requirement_missing_artifact",
+        path,
+        `blocking requirement has no producer artifact: ${requirement.id}`,
+      ));
+    }
+    if (entry.evaluatorTaskIds.length === 0) {
+      issues.push(issue(
+        "requirement_missing_evaluator",
+        path,
+        `blocking requirement has no verify or review evaluator task: ${requirement.id}`,
+      ));
+    }
+    const independentEvaluator = entry.evaluatorTaskIds.some((evaluatorTaskId) => {
+      if (entry.producerTaskIds.includes(evaluatorTaskId)) return false;
+      const evaluatorTask = tasksById.get(evaluatorTaskId);
+      if (!evaluatorTask) return false;
+      const upstreamTaskIds = collectUpstreamTaskIds(evaluatorTask, tasksById);
+      return entry.producerTaskIds.some((producerTaskId) => upstreamTaskIds.has(producerTaskId));
+    });
+    if (!independentEvaluator) {
+      issues.push(issue(
+        "requirement_evaluator_not_independent",
+        path,
+        `blocking requirement evaluator must be distinct from and downstream of a producer: ${requirement.id}`,
+      ));
+    }
+    if (entry.requiredEvidenceKinds.length === 0) {
+      issues.push(issue(
+        "requirement_missing_evidence",
+        path,
+        `blocking requirement evaluator has no required evidence: ${requirement.id}`,
+      ));
+    }
+  }
 }
 
 type CompositionTaskGroupMatcher = {

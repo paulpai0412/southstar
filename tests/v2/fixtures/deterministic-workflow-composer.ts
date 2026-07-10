@@ -2,14 +2,17 @@ import type { SouthstarDb } from "../../../src/v2/db/postgres.ts";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../../src/v2/design-library/library-graph-store.ts";
 import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowCompositionTask } from "../../../src/v2/design-library/types.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../../src/v2/orchestration/composer.ts";
+import type { GoalContractV1 } from "../../../src/v2/orchestration/goal-contract.ts";
+import { softwareGoalContract } from "./goal-contract.ts";
 
 export class DeterministicFixtureComposer implements WorkflowComposer {
-  async compose(_input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
-    return deterministicFixtureComposition();
+  async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    return deterministicFixtureComposition(input.goalContract);
   }
 }
 
-export function deterministicFixtureComposition(): WorkflowCompositionPlan {
+export function deterministicFixtureComposition(goalContract: GoalContractV1 = softwareGoalContract()): WorkflowCompositionPlan {
+  const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Software Dynamic Feature Workflow",
@@ -18,6 +21,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
     tasks: [
       task(
         "understand-repo",
+        requirementIds,
         [],
         "agent.software-explorer",
         "profile.generated.software-understand-repo",
@@ -26,6 +30,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "review-spec",
+        requirementIds,
         ["understand-repo"],
         "agent.software-spec-reviewer",
         "profile.generated.software-review-spec",
@@ -34,6 +39,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "implement-feature",
+        requirementIds,
         ["review-spec"],
         "agent.software-maker",
         "profile.generated.software-implement-feature",
@@ -42,6 +48,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "verify-feature",
+        requirementIds,
         ["implement-feature"],
         "agent.software-checker",
         "profile.generated.software-verify-feature",
@@ -50,6 +57,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "review-code-quality",
+        requirementIds,
         ["implement-feature"],
         "agent.software-code-quality-reviewer",
         "profile.generated.software-review-code-quality",
@@ -58,6 +66,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "summarize-completion",
+        [],
         ["verify-feature", "review-code-quality"],
         "agent.software-summarizer",
         "profile.generated.software-summarize-completion",
@@ -137,6 +146,7 @@ export async function seedDeterministicWorkflowGraph(db: SouthstarDb, scope = "s
 
 function task(
   id: string,
+  requirementIds: string[],
   dependsOn: string[],
   agentDefinitionRef: string,
   agentProfileRef: string,
@@ -150,6 +160,7 @@ function task(
       .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
       .join(" "),
     responsibility: id,
+    requirementIds,
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,

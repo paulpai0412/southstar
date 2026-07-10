@@ -144,7 +144,7 @@ export async function instantiateWorkflowTemplatePg(
     const savedCompositionPlan = workflowCompositionPlanValue(state.compositionPlan)
       ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64);
     compositionPlan = savedCompositionPlan
-      ? instantiateSavedCompositionPlan(savedCompositionPlan, input)
+      ? instantiateSavedCompositionPlan(savedCompositionPlan, input, goalContract)
       : await composeSkeletonTemplate(db, input, template, goalContract);
   }
 
@@ -208,6 +208,7 @@ async function composeSkeletonTemplate(
   const repair = await runCompositionRepairLoop({
     db,
     goalPrompt: renderTemplateInstantiationGoal(input, detail),
+    goalContract,
     candidatePacket,
     composer: input.composer,
     ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -259,6 +260,7 @@ function renderTemplateInstantiationGoal(
 function instantiateSavedCompositionPlan(
   plan: WorkflowCompositionPlan,
   input: InstantiateWorkflowTemplateInput,
+  goalContract: GoalContractV1,
 ): WorkflowCompositionPlan {
   const goalRequirement = `Instantiation goal: ${input.goalPrompt}`;
   return {
@@ -267,6 +269,7 @@ function instantiateSavedCompositionPlan(
     rationale: `${plan.rationale}\n\nInstantiated for: ${input.goalPrompt}`,
     tasks: plan.tasks.map((task) => ({
       ...task,
+      requirementIds: goalContract.requirements.map((requirement) => requirement.id),
       nodePromptSpec: {
         ...task.nodePromptSpec,
         goal: `${task.nodePromptSpec.goal}\n\nInstantiation goal: ${input.goalPrompt}`,

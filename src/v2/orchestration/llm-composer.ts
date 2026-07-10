@@ -6,6 +6,7 @@ import type {
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
+import type { GoalContractV1 } from "./goal-contract.ts";
 import {
   GENERATED_AGENT_PROFILE_ALLOWED_VALUES,
   GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
@@ -97,6 +98,7 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         "id",
         "name",
         "responsibility",
+        "requirementIds",
         "nodePromptSpec",
         "dependsOn",
         "templateSlotRef",
@@ -117,6 +119,7 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         id: { type: "string", minLength: 1 },
         name: { type: "string", minLength: 1 },
         responsibility: { type: "string", minLength: 1 },
+        requirementIds: { type: "array", items: { type: "string", minLength: 1 } },
         nodePromptSpec: { $ref: "#/$defs/nodePromptSpec" },
         dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
         templateSlotRef: { type: "string", minLength: 1 },
@@ -331,7 +334,7 @@ export class LlmWorkflowComposer implements WorkflowComposer {
   constructor(private readonly options: LlmWorkflowComposerOptions) {}
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
-    const prompt = renderComposerPrompt(input.goalPrompt, input.candidatePacket);
+    const prompt = renderComposerPrompt(input.goalPrompt, input.goalContract, input.candidatePacket);
     const textInput = {
       model: this.options.model,
       prompt,
@@ -382,7 +385,11 @@ export function parseWorkflowCompositionPlanFromText(text: string, maxOutputChar
   return parsed as WorkflowCompositionPlan;
 }
 
-export function renderComposerPrompt(goalPrompt: string, candidatePacket: CandidatePacket): string {
+export function renderComposerPrompt(
+  goalPrompt: string,
+  goalContract: GoalContractV1,
+  candidatePacket: CandidatePacket,
+): string {
   const boundedPacket = boundCandidatePacket(candidatePacket);
   return [
     "You are Southstar's library-constrained workflow architect.",
@@ -409,6 +416,12 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Validation-oriented agent profiles may use a lightweight/no-reasoning model profile when deterministic shell/test verification is sufficient, but must still include provider, harnessRef, instruction, toolPolicy, and budgetPolicy.",
     "Never create cyclic dependencies. Runtime dynamic repair is represented by appended repair/reverify nodes, not by back edges to earlier nodes.",
     "Every task must include nodePromptSpec. Treat nodePromptSpec as the per-node prompt contract that the Docker worker will see: nodeType, goal, requirements, boundaries, nonGoals, deliverableDocuments, expectedOutputs, testCases, acceptanceCriteria, and optional failureReportContract.",
+    "Every task must include requirementIds selected from GoalContractRequirements, except explicit coordination or summary nodes may use an empty array.",
+    "Every blocking Goal Contract requirement must have an executable producer with an output artifact and a distinct independent evaluator task using verify or review that produces evidence.",
+    "Turn each observable requirement into one or more executable producer work packages.",
+    "Preserve independent branches as tasks without artificial dependencies so the scheduler can run them in parallel.",
+    "Use shared integration or evaluator tasks when they legitimately cover several requirements.",
+    "Never force one task per requirement or model plan, implement, and verify phases as new Goal Contract requirements.",
     "nodePromptSpec.nodeType must be one of plan, implement, verify, repair, review, summary, or general. Choose it from the node's role in the DAG, not from the worker profile name alone.",
     "nodePromptSpec must be specific to that node, not a copy of the global goal. Implementation nodes must include concrete boundaries and expected outputs. Validation/review nodes must include concrete testCases or verification checks and acceptanceCriteria.",
     "The generated profile instruction must explain the worker's exact responsibility, selected skills/tools/MCP grants, success criteria, and what artifact/error report it must produce.",
@@ -416,6 +429,14 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Use DagAndAgentProfileSop as the mandatory generation procedure.",
     "",
     `Goal: ${goalPrompt}`,
+    "",
+    "GoalContractRequirements:",
+    JSON.stringify(goalContract.requirements.map((requirement) => ({
+      id: requirement.id,
+      statement: requirement.statement,
+      acceptanceCriteria: requirement.acceptanceCriteria,
+      blocking: requirement.blocking,
+    }))),
     "",
     "DagAndAgentProfileSop:",
     renderDagAndAgentProfileSop(),
@@ -454,6 +475,8 @@ function renderDagAndAgentProfileSop(): string {
     "2. Use GraphMetadataCandidates.nodes and GraphMetadataCandidates.edges as the only library candidate source. Build a task-specific candidate subgraph by semantic fit to the goal and by edge closure.",
     "3. Do not select stored agent_profile refs. Every task must use a generated profile id, and that id must appear in generatedComponentProposals as kind agent_profile with validationStatus validated.",
     "4. Design a DAG, not a manifest. Use explicit dependsOn edges. Choose task count and workerKind dynamically from the goal, graph evidence, risk, and deliverables.",
+    "4a. Turn each observable requirement into one or more executable producer work packages. Preserve independent branches without artificial dependencies, allow shared integration/evaluator tasks, and never force one task per requirement.",
+    "4b. Attach every task to the requirementIds it contributes to. Explicit coordination and summary nodes are the only exception. Every blocking requirement needs artifact-producing work and an independent verify/review evaluator with evidence.",
     "5. Execution workers create or modify requested artifacts. Validation, review, or deterministic-check workers positively verify artifacts when the workflow creates or modifies them.",
     "6. Initial workflow rule: when validation can fail, do not automatically add repair/reverify nodes. Instead, make the validation node produce an explicit repair-ready failure artifact with pass, safeToSave, blockingTests, failed commands, affected files, and concrete repair instructions.",
     "6a. Runtime dynamic repair rule: when the goal begins with a Runtime dynamic repair request, output a bounded appended flow: one repair node and one reverify node unless the failure evidence clearly requires more. The repair node consumes the failed verification artifact and prior implementation artifacts, preserves existing behavior, fixes only the reported failures, and outputs a repaired implementation artifact. The reverify node depends on the repair node, reruns the failed checks plus relevant regression checks, and outputs a verification_report with pass, safeToSave, blockingTests, evidence, and remaining failures.",
@@ -1121,6 +1144,7 @@ const TASK_STRING_FIELDS: Array<keyof WorkflowCompositionTask> = [
 ];
 
 const TASK_STRING_ARRAY_FIELDS: Array<keyof WorkflowCompositionTask> = [
+  "requirementIds",
   "dependsOn",
   "instructionRefs",
   "skillRefs",

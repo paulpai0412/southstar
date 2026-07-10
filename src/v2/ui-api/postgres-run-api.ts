@@ -364,6 +364,7 @@ export async function validatePostgresPlannerDraft(
       workflow: refreshed.workflow,
       validationIssues: issues,
       orchestrationSnapshot,
+      goalRequirementCoverage: refreshed.goalRequirementCoverage,
     },
     summary: {
       ...summary,
@@ -509,6 +510,7 @@ async function createPlannerDraftFromComposition(
   const compiled = await compileWorkflowComposition(db, {
     runId: draftRunId,
     goalPrompt: input.goalPrompt,
+    goalContract: input.goalContract,
     candidatePacket,
     composition,
     scope: input.goalContract.domain,
@@ -523,11 +525,13 @@ async function createPlannerDraftFromComposition(
   const status = validationIssues.length === 0 ? "validated" : "invalid";
   const bundle: PlanBundle & {
     orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
+    goalRequirementCoverage: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["goalRequirementCoverage"] : never;
     plannerRequest: PlannerDraftRequestContract;
     goalContract: GoalContractV1;
     goalContractHash: string;
   } = {
     workflow: compiled.workflow,
+    goalRequirementCoverage: compiled.goalRequirementCoverage,
     goalContract: input.goalContract,
     goalContractHash: input.goalContractHash,
     plannerTrace: {
@@ -643,6 +647,7 @@ async function createLibraryConstrainedPlannerDraft(
   const repairResult = await runCompositionRepairLoop({
     db,
     goalPrompt: input.goalPrompt,
+    goalContract: input.goalContract,
     candidatePacket,
     composer,
     ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -702,6 +707,7 @@ async function createLibraryConstrainedPlannerDraft(
   const compiled = await compileWorkflowComposition(db, {
     runId: draftRunId,
     goalPrompt: input.goalPrompt,
+    goalContract: input.goalContract,
     candidatePacket,
     composition,
     scope: input.goalContract.domain,
@@ -710,12 +716,14 @@ async function createLibraryConstrainedPlannerDraft(
   input.onProgress?.({ stage: "composition.compiled", message: "Workflow composition compiled." });
   const bundle: PlanBundle & {
     orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
+    goalRequirementCoverage: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["goalRequirementCoverage"] : never;
     repairAttempts: typeof repairResult.attempts;
     plannerRequest: PlannerDraftRequestContract;
     goalContract: GoalContractV1;
     goalContractHash: string;
   } = {
     workflow: compiled.workflow,
+    goalRequirementCoverage: compiled.goalRequirementCoverage,
     goalContract: input.goalContract,
     goalContractHash: input.goalContractHash,
     plannerTrace: {
@@ -984,13 +992,20 @@ async function refreshPlannerDraftCompilation(
 ): Promise<{
   workflow: SouthstarWorkflowManifest;
   orchestrationSnapshot: unknown;
+  goalRequirementCoverage: unknown;
   issues: PlannerDraftValidationIssue[];
 }> {
   const candidatePacket = maybeCandidatePacket(input.payload.candidatePacket);
   const currentSnapshot = input.payload.orchestrationSnapshot;
+  const currentCoverage = input.payload.goalRequirementCoverage;
   const composition = maybeWorkflowCompositionPlan(asRecord(currentSnapshot).selectedCompositionPlan);
   if (!candidatePacket || !composition) {
-    return { workflow: input.workflow, orchestrationSnapshot: currentSnapshot, issues: [] };
+    return {
+      workflow: input.workflow,
+      orchestrationSnapshot: currentSnapshot,
+      goalRequirementCoverage: currentCoverage,
+      issues: [],
+    };
   }
 
   try {
@@ -998,6 +1013,7 @@ async function refreshPlannerDraftCompilation(
     const compiled = await compileWorkflowComposition(db, {
       runId: input.draftId,
       goalPrompt: input.goalPrompt,
+      goalContract: contract,
       candidatePacket,
       composition: applyWorkflowTaskSelectionsToComposition(composition, input.workflow),
       scope: contract.domain,
@@ -1006,12 +1022,14 @@ async function refreshPlannerDraftCompilation(
     return {
       workflow: copyProfileOverridesToWorkflow(compiled.workflow, input.workflow),
       orchestrationSnapshot: compiled.orchestrationSnapshot,
+      goalRequirementCoverage: compiled.goalRequirementCoverage,
       issues: [],
     };
   } catch (error) {
     return {
       workflow: input.workflow,
       orchestrationSnapshot: currentSnapshot,
+      goalRequirementCoverage: currentCoverage,
       issues: [{
         path: "orchestrationSnapshot.selectedCompositionPlan",
         code: "composition_compile_failed",

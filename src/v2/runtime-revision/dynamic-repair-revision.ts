@@ -3,6 +3,7 @@ import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
+import { finalizeGoalContract } from "../orchestration/goal-contract.ts";
 import type { WorkflowCompositionPlan } from "../design-library/types.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
@@ -104,13 +105,54 @@ export async function maybeApplyDynamicRepairRevisionPg(
 
     const scope = run.domain || run.workflow_manifest_json.domain || "software";
     const candidateScope = "all";
+    const repairGoalPrompt = dynamicRepairGoalPrompt({
+      goalPrompt: run.goal_prompt,
+      failedTask,
+      rootFailedTaskId,
+      failedArtifactRefId: input.failedArtifactRefId,
+      failedArtifact: input.failedArtifact,
+      profileHints,
+      round,
+      maxRounds,
+    });
+    const repairGoalContract = finalizeGoalContract({
+      goalPrompt: repairGoalPrompt,
+      cwd: process.cwd(),
+      interpretation: {
+        domain: scope,
+        intent: "repair",
+        summary: `Repair and independently reverify failed task ${input.failedTaskId}`,
+        requirements: [{
+          statement: `Repair and independently reverify failed task ${input.failedTaskId}`,
+          acceptanceCriteria: [
+            "The reported blocking failures are repaired without regressing preserved behavior.",
+            "An independent verifier reruns the failed and relevant regression checks.",
+          ],
+          blocking: true,
+          source: "inferred",
+        }],
+        expectedArtifactRefs: [...new Set([
+          ...(failedTask.requiredArtifactRefs ?? []),
+          "artifact.verification_report",
+        ])],
+        requiredCapabilities: [],
+        nonGoals: ["Do not replace or rerun the completed initial workflow."],
+        assumptions: [],
+        blockingInputs: [],
+        riskTags: ["runtime-repair"],
+        requestedSideEffects: ["workspace-write"],
+      },
+    });
     const candidatePacket = await resolveWorkflowCandidates(tx, {
       requirementSpec: {
         summary: `Repair failed validation task ${input.failedTaskId}`,
         workType: "bugfix",
         requiredCapabilities: [],
         expectedArtifacts: failedTask.requiredArtifactRefs ?? [],
-        acceptanceCriteria: ["Repair the implementation using the failed verifier report.", "Reverify the repaired implementation."],
+        acceptanceCriteria: [
+          "Repair the implementation using the failed verifier report.",
+          "Reverify the repaired implementation.",
+        ],
         nonGoals: ["Do not create cyclic workflow dependencies."],
         riskNotes: ["Dynamic repair revision generated after verifier failure."],
         workspaceAssumptions: [],
@@ -125,29 +167,26 @@ export async function maybeApplyDynamicRepairRevisionPg(
     };
     const repairLoop = await runCompositionRepairLoop({
       db: tx,
-      goalPrompt: dynamicRepairGoalPrompt({
-        goalPrompt: run.goal_prompt,
-        failedTask,
-        rootFailedTaskId,
-        failedArtifactRefId: input.failedArtifactRefId,
-        failedArtifact: input.failedArtifact,
-        profileHints,
-        round,
-        maxRounds,
-      }),
+      goalPrompt: repairGoalPrompt,
+      goalContract: repairGoalContract,
       candidatePacket,
       composer: repairLoopComposer,
       scope: candidateScope,
       maxRepairAttempts: 2,
     });
     if (!repairLoop.validation.ok || !repairLoop.composition) {
-      return { status: "skipped", reason: `dynamic-repair-composition-invalid:${repairLoop.validation.issues[0]?.code ?? "unknown"}` };
+      const firstIssue = repairLoop.validation.issues[0];
+      return {
+        status: "skipped",
+        reason: `dynamic-repair-composition-invalid:${firstIssue?.code ?? "unknown"}:${firstIssue?.message ?? "unknown"}`,
+      };
     }
     const composition = repairLoop.composition;
     const compositionForCompile = composition;
     const compiled = await compileWorkflowComposition(tx, {
       runId: `${input.runId}-dynamic-repair-${round}`,
       goalPrompt: run.goal_prompt,
+      goalContract: repairGoalContract,
       candidatePacket,
       composition: compositionForCompile,
       scope: candidateScope,

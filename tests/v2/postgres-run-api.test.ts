@@ -570,11 +570,12 @@ test("llm-constrained planner drafts fail closed when llm composer is not config
 test("planner draft creates from an existing composition without calling an LLM composer", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);
+    const goalContract = softwareGoalContract("reuse visible DAG");
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "reuse visible DAG",
       orchestrationMode: "llm-constrained",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("reuse visible DAG")),
-      compositionPlan: deterministicFixtureComposition(),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      compositionPlan: deterministicFixtureComposition(goalContract),
     });
 
     assert.equal(draft.status, "validated");
@@ -590,6 +591,7 @@ test("planner draft creates from an existing composition without calling an LLM 
         orchestrationSnapshot?: {
           selectedCompositionPlan?: { title?: string };
         };
+        goalRequirementCoverage?: { goalContractHash?: string };
       };
     }>(
       "select summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
@@ -599,6 +601,7 @@ test("planner draft creates from an existing composition without calling an LLM 
     assert.equal(draftResource.payload_json.plannerTrace?.composerMode, "existing-composition");
     assert.equal(draftResource.payload_json.plannerTrace?.composerFallbackUsed, false);
     assert.equal(draftResource.payload_json.orchestrationSnapshot?.selectedCompositionPlan?.title, "Software Dynamic Feature Workflow");
+    assert.equal(draftResource.payload_json.goalRequirementCoverage?.goalContractHash, goalContractHash(goalContract));
   });
 });
 
@@ -672,9 +675,9 @@ test("llm-constrained planner passes requested cwd to workflow composer", async 
     await seedDeterministicWorkflowGraph(db);
     let composerCwd: string | undefined;
     const composer = {
-      async compose(input: { cwd?: string }): Promise<WorkflowCompositionPlan> {
+      async compose(input: { cwd?: string; goalContract: GoalContractV1 }): Promise<WorkflowCompositionPlan> {
         composerCwd = input.cwd;
-        return deterministicFixtureComposition();
+        return deterministicFixtureComposition(input.goalContract);
       },
     };
 
@@ -694,12 +697,16 @@ test("llm-constrained planner passes requested cwd to workflow composer", async 
 test("Postgres planner draft can use injected scripted LLM composer for non-fixture DAG shape", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);
-    const composer = new ScriptedWorkflowComposer([invalidInspectOnlyPlan(), deterministicFixtureComposition()]);
+    const goalContract = softwareGoalContract("implement calc sum with a single exploration task");
+    const composer = new ScriptedWorkflowComposer([
+      invalidInspectOnlyPlan(goalContract),
+      deterministicFixtureComposition(goalContract),
+    ]);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with a single exploration task",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum with a single exploration task")),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
       composer,
     });
     const draftResource = await db.one<{ payload_json: { repairAttempts: Array<{ validation: { ok: boolean } }> } }>(
@@ -725,19 +732,20 @@ test("Postgres planner draft can use injected scripted LLM composer for non-fixt
 test("llm-constrained planner uses graph metadata even when legacy capability candidates are unavailable", async () => {
   await withDb(async (db) => {
     await seedGraphMetadataOnlyWorkflowPrimitives(db);
-    const composer = new ScriptedWorkflowComposer([graphMetadataOnlyPlan()]);
+    const goalContract = softwareGoalContract("build a vocabulary learning feature");
+    const composer = new ScriptedWorkflowComposer([graphMetadataOnlyPlan(goalContract)]);
 
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "build a vocabulary learning feature",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build a vocabulary learning feature")),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
       composer,
     });
 
     assert.equal(draft.status, "validated", JSON.stringify(draft.validationIssues));
     assert.deepEqual(draft.validationIssues, []);
-    assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), ["implement-vocab"]);
+    assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), ["implement-vocab", "verify-vocab"]);
 
     const draftResource = await db.one<{
       payload_json: {
@@ -790,16 +798,17 @@ test("llm-constrained planner uses graph metadata even when legacy capability ca
 
 test("Postgres planner draft is invalid when repair loop remains invalid after max attempts", async () => {
   await withDb(async (db) => {
+    const goalContract = softwareGoalContract("implement calc sum with invalid explorer profile");
     const composer = new ScriptedWorkflowComposer([
-      invalidInspectOnlyPlan(),
-      invalidInspectOnlyPlan(),
-      invalidInspectOnlyPlan(),
+      invalidInspectOnlyPlan(goalContract),
+      invalidInspectOnlyPlan(goalContract),
+      invalidInspectOnlyPlan(goalContract),
     ]);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with invalid explorer profile",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum with invalid explorer profile")),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
       composer,
     });
     assert.ok(draft.draftId.length > 0);
@@ -1363,31 +1372,20 @@ function reviseArticleGoalContract(previousContract: GoalContractV1, revisionPro
   });
 }
 
-function invalidInspectOnlyPlan(): WorkflowCompositionPlan {
+function invalidInspectOnlyPlan(goalContract: GoalContractV1): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Invalid Inspect Plan",
     selectedWorkflowTemplateRef: "template.software-feature",
     rationale: "invalid profile for explorer task",
-    tasks: inspectPlanTasks("profile.software-maker-pi"),
+    tasks: inspectPlanTasks(goalContract, "profile.software-maker-pi"),
     rejectedCandidates: [],
     generatedComponentProposals: [],
   };
 }
 
-function validInspectOnlyPlan(): WorkflowCompositionPlan {
-  return {
-    schemaVersion: "southstar.workflow_composition_plan.v1",
-    title: "Valid Inspect Plan",
-    selectedWorkflowTemplateRef: "template.software-feature",
-    rationale: "valid repaired plan",
-    tasks: inspectPlanTasks("profile.software-explorer-codex"),
-    rejectedCandidates: [],
-    generatedComponentProposals: [],
-  };
-}
-
-function graphMetadataOnlyPlan(): WorkflowCompositionPlan {
+function graphMetadataOnlyPlan(goalContract: GoalContractV1): WorkflowCompositionPlan {
+  const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Vocabulary Learning Feature",
@@ -1397,6 +1395,7 @@ function graphMetadataOnlyPlan(): WorkflowCompositionPlan {
       id: "implement-vocab",
       name: "Implement Vocabulary Feature",
       responsibility: "Build a simple English vocabulary learning feature.",
+      requirementIds,
       dependsOn: [],
       templateSlotRef: "implement",
       agentDefinitionRef: "agent.frontend-developer",
@@ -1411,6 +1410,25 @@ function graphMetadataOnlyPlan(): WorkflowCompositionPlan {
       evaluatorProfileRef: "evaluator.vocab-quality",
       recoveryStrategyRefs: [],
       rationale: "A frontend developer with UI skill and workspace access can implement the requested feature.",
+    }, {
+      id: "verify-vocab",
+      name: "Verify Vocabulary Feature",
+      responsibility: "Independently verify the vocabulary learning feature and its evidence.",
+      requirementIds,
+      dependsOn: ["implement-vocab"],
+      templateSlotRef: "verify",
+      agentDefinitionRef: "agent.frontend-developer",
+      agentProfileRef: "profile.generated.vocab.implement",
+      instructionRefs: ["instruction.react-review"],
+      skillRefs: ["skill.react-ui"],
+      toolGrantRefs: ["tool.workspace-write"],
+      mcpGrantRefs: ["mcp.filesystem-workspace"],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.vocab_feature"],
+      outputArtifactRefs: [],
+      evaluatorProfileRef: "evaluator.vocab-quality",
+      recoveryStrategyRefs: [],
+      rationale: "Use a distinct downstream task to evaluate the produced feature artifact.",
     }],
     rejectedCandidates: [],
     generatedComponentProposals: [{
@@ -1561,12 +1579,17 @@ async function seedGraphMetadataOnlyWorkflowPrimitives(db: SouthstarDb): Promise
   });
 }
 
-function inspectPlanTasks(explorerProfileRef: string): WorkflowCompositionPlan["tasks"] {
+function inspectPlanTasks(
+  goalContract: GoalContractV1,
+  explorerProfileRef: string,
+): WorkflowCompositionPlan["tasks"] {
+  const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
   return [
     {
       id: "inspect-only",
       name: "Inspect Only",
       responsibility: "inspect repository and produce a plan",
+      requirementIds,
       dependsOn: [],
       templateSlotRef: "understand",
       agentDefinitionRef: "agent.software-explorer",
@@ -1586,6 +1609,7 @@ function inspectPlanTasks(explorerProfileRef: string): WorkflowCompositionPlan["
       id: "review-spec",
       name: "Review Spec",
       responsibility: "review plan quality",
+      requirementIds,
       dependsOn: ["inspect-only"],
       templateSlotRef: "review-spec",
       agentDefinitionRef: "agent.software-spec-reviewer",
@@ -1605,6 +1629,7 @@ function inspectPlanTasks(explorerProfileRef: string): WorkflowCompositionPlan["
       id: "implement-feature",
       name: "Implement Feature",
       responsibility: "implement the feature",
+      requirementIds,
       dependsOn: ["review-spec"],
       templateSlotRef: "implement",
       agentDefinitionRef: "agent.software-maker",
@@ -1624,6 +1649,7 @@ function inspectPlanTasks(explorerProfileRef: string): WorkflowCompositionPlan["
       id: "verify-feature",
       name: "Verify Feature",
       responsibility: "run functional verification",
+      requirementIds,
       dependsOn: ["implement-feature"],
       templateSlotRef: "verify",
       agentDefinitionRef: "agent.software-checker",
@@ -1643,6 +1669,7 @@ function inspectPlanTasks(explorerProfileRef: string): WorkflowCompositionPlan["
       id: "review-code-quality",
       name: "Review Code Quality",
       responsibility: "review maintainability and quality",
+      requirementIds,
       dependsOn: ["implement-feature"],
       templateSlotRef: "review-code-quality",
       agentDefinitionRef: "agent.software-code-quality-reviewer",
@@ -1662,6 +1689,7 @@ function inspectPlanTasks(explorerProfileRef: string): WorkflowCompositionPlan["
       id: "summarize-completion",
       name: "Summarize Completion",
       responsibility: "summarize final outcome",
+      requirementIds: [],
       dependsOn: ["verify-feature", "review-code-quality"],
       templateSlotRef: "summarize",
       agentDefinitionRef: "agent.software-summarizer",

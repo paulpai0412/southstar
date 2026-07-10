@@ -242,6 +242,7 @@ function compositionPlan(): WorkflowCompositionPlan {
       id: "understand-repo",
       name: "Understand Repo",
       responsibility: "Plan the requested software change.",
+      requirementIds: [],
       nodePromptSpec: {
         nodeType: "plan",
         goal: "Plan the requested software change.",
@@ -267,6 +268,36 @@ function compositionPlan(): WorkflowCompositionPlan {
       evaluatorProfileRef: "evaluator.software-plan-quality",
       recoveryStrategyRefs: ["retry-same-agent"],
       rationale: "Use software explorer.",
+    }, {
+      id: "verify-plan",
+      name: "Verify Plan",
+      responsibility: "Independently verify the implementation plan.",
+      requirementIds: [],
+      nodePromptSpec: {
+        nodeType: "verify",
+        goal: "Verify the implementation plan.",
+        requirements: ["Check that the plan satisfies the requested goal."],
+        boundaries: ["Do not edit files."],
+        nonGoals: ["Do not implement."],
+        deliverableDocuments: [],
+        expectedOutputs: ["artifact.implementation_plan"],
+        testCases: [],
+        acceptanceCriteria: ["Plan covers requirements, risks, and verification."],
+      },
+      dependsOn: ["understand-repo"],
+      templateSlotRef: "verify-plan",
+      agentDefinitionRef: "agent.software-explorer",
+      agentProfileRef: "profile.generated.software-understand-repo",
+      instructionRefs: [],
+      skillRefs: [],
+      toolGrantRefs: [],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.implementation_plan"],
+      outputArtifactRefs: [],
+      evaluatorProfileRef: "evaluator.software-plan-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "Use a separate downstream task to evaluate the plan artifact.",
     }],
     rejectedCandidates: [],
     generatedComponentProposals: [{
@@ -311,6 +342,11 @@ class CapturingComposer implements WorkflowComposer {
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
     this.lastGoalPrompt = input.goalPrompt;
-    return structuredClone(this.plan);
+    const plan = structuredClone(this.plan);
+    const requirementIds = input.goalContract.requirements.map((requirement) => requirement.id);
+    plan.tasks.forEach((task) => {
+      task.requirementIds = requirementIds;
+    });
+    return plan;
   }
 }

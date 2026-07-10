@@ -29,10 +29,20 @@ import {
   type CandidateSelectionSummary,
 } from "./composition-selection-summary.ts";
 import { validateWorkflowCompositionPlan } from "./composition-validator.ts";
+import {
+  buildGoalRequirementCoverage,
+  type GoalRequirementCoverageV1,
+} from "./goal-requirement-coverage.ts";
+import {
+  goalContractHash,
+  requirementSpecFromGoalContract,
+  type GoalContractV1,
+} from "./goal-contract.ts";
 
 export type CompileWorkflowCompositionInput = {
   runId: string;
   goalPrompt: string;
+  goalContract: GoalContractV1;
   candidatePacket: CandidatePacket;
   composition: WorkflowCompositionPlan;
   scope?: string;
@@ -43,6 +53,7 @@ export type OrchestrationSnapshotV1 = {
   schemaVersion: "southstar.orchestration_snapshot.v1";
   draftId: string;
   requirementSpec: CandidatePacket["requirementSpec"];
+  goalContractHash: string;
   candidatePacketHash: string;
   candidateSummary: CandidateSelectionSummary;
   selectedCompositionPlan: WorkflowCompositionPlan;
@@ -56,6 +67,7 @@ export type OrchestrationSnapshotV1 = {
 
 export type CompiledWorkflowComposition = {
   workflow: SouthstarWorkflowManifest;
+  goalRequirementCoverage: GoalRequirementCoverageV1;
   orchestrationSnapshot: OrchestrationSnapshotV1;
 };
 
@@ -65,7 +77,10 @@ export async function compileWorkflowComposition(
 ): Promise<CompiledWorkflowComposition> {
   const libraryScope = input.scope ?? "software";
   const manifestDomain = input.manifestDomain ?? (libraryScope === "all" ? "software" : libraryScope);
-  const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, { scope: libraryScope });
+  const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, {
+    scope: libraryScope,
+    goalContract: input.goalContract,
+  });
   if (!validation.ok) {
     throw new Error(`workflow composition failed validation: ${JSON.stringify(validation.issues)}`);
   }
@@ -85,7 +100,7 @@ export async function compileWorkflowComposition(
     const promptTemplateRef = normalizeInstructionRef(
       task.instructionRefs[0] ?? `instruction.${profile.promptTemplateRef}`,
     );
-    const nodePromptSpec = nodePromptSpecForTask(input.goalPrompt, task);
+    const nodePromptSpec = nodePromptSpecForTask(input.goalPrompt, input.goalContract, task);
     return {
       id: task.id,
       name: task.name,
@@ -96,6 +111,7 @@ export async function compileWorkflowComposition(
       promptInputs: {
         goalPrompt: input.goalPrompt,
         responsibility: task.responsibility,
+        requirementIds: task.requirementIds,
         instructionRefs: task.instructionRefs,
         nodePromptSpec,
       },
@@ -195,13 +211,19 @@ export async function compileWorkflowComposition(
     steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
   };
+  const goalRequirementCoverage = buildGoalRequirementCoverage({
+    goalContract: input.goalContract,
+    composition: input.composition,
+  });
 
   return {
     workflow,
+    goalRequirementCoverage,
     orchestrationSnapshot: {
       schemaVersion: "southstar.orchestration_snapshot.v1",
       draftId: input.runId,
-      requirementSpec: input.candidatePacket.requirementSpec,
+      requirementSpec: requirementSpecFromGoalContract(input.goalContract),
+      goalContractHash: goalContractHash(input.goalContract),
       candidatePacketHash: hash(JSON.stringify(input.candidatePacket)),
       candidateSummary: summarizeCandidates(input.candidatePacket),
       selectedCompositionPlan: input.composition,
@@ -215,21 +237,38 @@ export async function compileWorkflowComposition(
   };
 }
 
-function nodePromptSpecForTask(goalPrompt: string, task: WorkflowCompositionTask): WorkflowNodePromptSpec {
-  if (task.nodePromptSpec) return task.nodePromptSpec;
+function nodePromptSpecForTask(
+  goalPrompt: string,
+  goalContract: GoalContractV1,
+  task: WorkflowCompositionTask,
+): WorkflowNodePromptSpec {
+  const linkedRequirements = goalContract.requirements.filter((requirement) => task.requirementIds.includes(requirement.id));
+  if (task.nodePromptSpec) {
+    return linkedRequirements.length === 0
+      ? task.nodePromptSpec
+      : {
+          ...task.nodePromptSpec,
+          requirements: linkedRequirements.map((requirement) => requirement.statement),
+          acceptanceCriteria: linkedRequirements.flatMap((requirement) => requirement.acceptanceCriteria),
+        };
+  }
   const nodeType = inferNodePromptType(task);
   return {
     nodeType,
     goal: `${titleFromTask(task)}: ${task.responsibility}`,
-    requirements: [`Advance the workflow goal: ${goalPrompt}`],
+    requirements: linkedRequirements.length > 0
+      ? linkedRequirements.map((requirement) => requirement.statement)
+      : [`Advance the workflow goal: ${goalPrompt}`],
     boundaries: ["Work only on this task's declared responsibility and artifacts."],
     nonGoals: ["Do not perform unrelated work outside this task."],
     deliverableDocuments: deliverableDocumentsForNodeType(nodeType),
     expectedOutputs: [...task.outputArtifactRefs],
     testCases: [],
-    acceptanceCriteria: task.outputArtifactRefs.length > 0
-      ? task.outputArtifactRefs.map((artifactRef) => `Produce ${artifactRef} with clear evidence.`)
-      : [`Complete ${task.id} and report evidence.`],
+    acceptanceCriteria: linkedRequirements.length > 0
+      ? linkedRequirements.flatMap((requirement) => requirement.acceptanceCriteria)
+      : task.outputArtifactRefs.length > 0
+        ? task.outputArtifactRefs.map((artifactRef) => `Produce ${artifactRef} with clear evidence.`)
+        : [`Complete ${task.id} and report evidence.`],
     ...(nodeType === "implement" ? { implementationScope: [task.responsibility] } : {}),
     ...(nodeType === "verify" ? { verificationChecks: ["Verify the declared task outputs and report evidence."] } : {}),
     ...(nodeType === "plan" ? { planningQuestions: ["What has to change to satisfy the goal?"], decisionCriteria: ["The plan is scoped, ordered, and testable."] } : {}),

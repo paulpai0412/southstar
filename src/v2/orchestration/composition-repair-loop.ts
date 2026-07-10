@@ -8,6 +8,7 @@ import type { WorkflowComposer } from "./composer.ts";
 import type { PlannerDraftProgressListener } from "../ui-api/postgres-run-api.ts";
 import { validateWorkflowCompositionPlan } from "./composition-validator.ts";
 import { LlmComposerOutputError } from "./llm-composer.ts";
+import type { GoalContractV1 } from "./goal-contract.ts";
 
 export type CompositionRepairAttempt = {
   attempt: number;
@@ -18,6 +19,7 @@ export type CompositionRepairAttempt = {
 export type RunCompositionRepairLoopInput = {
   db: SouthstarDb;
   goalPrompt: string;
+  goalContract: GoalContractV1;
   candidatePacket: CandidatePacket;
   composer: WorkflowComposer;
   cwd?: string;
@@ -43,6 +45,7 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
       input.onProgress?.({ stage: "composer.started", attempt, message: `Starting workflow composition attempt ${attempt + 1}.` });
       composition = await input.composer.compose({
         goalPrompt: renderRepairGoal(input.goalPrompt, previousAttempt),
+        goalContract: input.goalContract,
         candidatePacket: input.candidatePacket,
         ...(input.cwd ? { cwd: input.cwd } : {}),
         onLlmDelta: input.onLlmDelta,
@@ -52,7 +55,7 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
         input.db,
         input.candidatePacket,
         composition,
-        { scope: input.scope },
+        { scope: input.scope, goalContract: input.goalContract },
       );
       input.onProgress?.({
         stage: "validation.completed",

@@ -4,24 +4,28 @@ import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
 import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
-import { analyzeRequirementDeterministically } from "../../src/v2/orchestration/requirement-analyzer.ts";
+import { goalContractHash, requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 test("compiler builds library-constrained workflow manifest and snapshot from approved candidates", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
-    const requirementSpec = analyzeRequirementDeterministically("implement calc sum");
+    const goalContract = softwareGoalContract();
+    const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
     const composer = new DeterministicFixtureComposer();
     const composition = await composer.compose({
       goalPrompt: "implement calc sum",
+      goalContract,
       candidatePacket,
     });
 
     const compiled = await compileWorkflowComposition(db, {
       runId: "draft-library-test-run",
       goalPrompt: "implement calc sum",
+      goalContract,
       candidatePacket,
       composition,
     });
@@ -49,8 +53,30 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
       JSON.stringify(makerTask.promptInputs?.nodePromptSpec),
       /Implement Feature/,
     );
+    assert.deepEqual(makerTask.promptInputs?.requirementIds, [goalContract.requirements[0]!.id]);
+    assert.deepEqual(
+      (makerTask.promptInputs?.nodePromptSpec as { requirements?: string[] })?.requirements,
+      [goalContract.requirements[0]!.statement],
+    );
+    assert.deepEqual(
+      (makerTask.promptInputs?.nodePromptSpec as { acceptanceCriteria?: string[] })?.acceptanceCriteria,
+      goalContract.requirements[0]!.acceptanceCriteria,
+    );
 
     assert.equal(compiled.orchestrationSnapshot.validation.ok, true);
+    assert.equal(compiled.orchestrationSnapshot.goalContractHash, goalContractHash(goalContract));
+    assert.deepEqual(compiled.orchestrationSnapshot.requirementSpec, requirementSpec);
+    assert.equal(compiled.goalRequirementCoverage.goalContractHash, goalContractHash(goalContract));
+    assert.deepEqual(
+      compiled.goalRequirementCoverage.entries[0]?.producerTaskIds.includes("implement-feature"),
+      true,
+    );
+    assert.equal(
+      ["verify-feature", "review-code-quality"].every((taskId) =>
+        compiled.goalRequirementCoverage.entries[0]?.evaluatorTaskIds.includes(taskId)
+      ),
+      true,
+    );
     assert.equal(
       compiled.orchestrationSnapshot.selectedCompositionPlan.generatedComponentProposals.some((proposal) =>
         proposal.id === "profile.generated.software-implement-feature"
@@ -66,16 +92,19 @@ test("compiler resolves runtime role/profile definitions for deterministic fixtu
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
-    const requirementSpec = analyzeRequirementDeterministically("implement calc sum");
+    const goalContract = softwareGoalContract();
+    const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
     const composition = await new DeterministicFixtureComposer().compose({
       goalPrompt: "implement calc sum",
+      goalContract,
       candidatePacket,
     });
 
     const compiled = await compileWorkflowComposition(db, {
       runId: "draft-library-roles-profiles-test-run",
       goalPrompt: "implement calc sum",
+      goalContract,
       candidatePacket,
       composition,
     });
@@ -104,10 +133,12 @@ test("compiler snapshot freezes only selected library version refs", async () =>
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
-    const requirementSpec = analyzeRequirementDeterministically("implement calc sum");
+    const goalContract = softwareGoalContract();
+    const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
     const composition = await new DeterministicFixtureComposer().compose({
       goalPrompt: "implement calc sum",
+      goalContract,
       candidatePacket,
     });
 
@@ -146,6 +177,7 @@ test("compiler snapshot freezes only selected library version refs", async () =>
     const compiled = await compileWorkflowComposition(db, {
       runId: "draft-library-selected-version-refs-test-run",
       goalPrompt: "implement calc sum",
+      goalContract,
       candidatePacket: inflatedPacket,
       composition,
     });
@@ -170,16 +202,19 @@ test("compiler threads explicit scope into workflow domain, task domain, and har
   try {
     await seedSoftwareLibraryGraph(db);
     await mirrorLibraryScope(db, { fromScope: "software", toScope: "research" });
-    const requirementSpec = analyzeRequirementDeterministically("implement calc sum");
+    const goalContract = softwareGoalContract();
+    const requirementSpec = requirementSpecFromGoalContract(goalContract);
     const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "research" });
     const composition = await new DeterministicFixtureComposer().compose({
       goalPrompt: "implement calc sum",
+      goalContract,
       candidatePacket,
     });
 
     const compiled = await compileWorkflowComposition(db, {
       runId: "draft-library-explicit-scope",
       goalPrompt: "implement calc sum",
+      goalContract,
       candidatePacket,
       composition,
       scope: "research",

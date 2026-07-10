@@ -30,6 +30,31 @@ export function softwareGoalContract(goalPrompt = "implement calc sum"): GoalCon
   });
 }
 
+export function articleGoalContract(): GoalContractV1 {
+  return finalizeGoalContract({
+    goalPrompt: "Build and publish a browser-verifiable article",
+    cwd: "/workspace/article",
+    interpretation: {
+      domain: "article",
+      intent: "publish",
+      summary: "Build and publish a browser-verifiable article",
+      requirements: [{
+        statement: "The article is complete, readable, and available at a URL",
+        acceptanceCriteria: ["The rendered article passes browser quality review"],
+        blocking: true,
+        source: "explicit",
+      }],
+      expectedArtifactRefs: ["artifact.article_html", "artifact.verification_report"],
+      requiredCapabilities: ["capability.workspace-write", "capability.browser"],
+      nonGoals: [],
+      assumptions: [],
+      blockingInputs: [],
+      riskTags: [],
+      requestedSideEffects: ["workspace-write"],
+    },
+  });
+}
+
 export function subscriptionGoalContract(): GoalContractV1 {
   return finalizeGoalContract({
     goalPrompt: "Deliver a local membership subscription flow using the fake payment adapter",

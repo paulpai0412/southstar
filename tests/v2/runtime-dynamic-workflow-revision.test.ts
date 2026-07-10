@@ -10,7 +10,6 @@ import { createExecutorBindingPg } from "../../src/v2/executor/postgres-bindings
 import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
 import { maybeApplyDynamicRepairRevisionPg } from "../../src/v2/runtime-revision/dynamic-repair-revision.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
-import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -69,10 +68,10 @@ test("dynamic repair revision appends repair and reverify tasks for failed valid
       failedTaskId: "verify-feature",
       failedArtifactRefId: "artifact-ref-verify-failed",
       failedArtifact: { summary: "npm test failed in todo component", findings: ["button handler missing"] },
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
-    assert.equal(result.status, "applied");
+    assert.equal(result.status, "applied", JSON.stringify(result));
     assert.deepEqual(result.newTaskIds, ["repair-verify-feature-attempt-1", "reverify-verify-feature-attempt-1"]);
 
     const run = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
@@ -237,7 +236,7 @@ test("dynamic repair revision reconnects pending downstream tasks after generate
       failedTaskId: "verify-feature",
       failedArtifactRefId: "artifact-ref-verify-failed",
       failedArtifact: { summary: "npm test failed in todo component", findings: ["button handler missing"] },
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
     assert.equal(result.status, "applied");
@@ -324,7 +323,7 @@ test("dynamic repair limits consecutive reverify repair chain by root failed tas
       failedTaskId: "verify-feature",
       failedArtifactRefId: "artifact-ref-verify-failed",
       failedArtifact: { summary: "first verification failed" },
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
       maxDynamicRepairRounds: 2,
     });
 
@@ -384,7 +383,7 @@ test("dynamic repair limits consecutive reverify repair chain by root failed tas
       failedTaskId: secondReverifyId,
       failedArtifactRefId: "artifact-ref-reverify-2-failed",
       failedArtifact: { summary: "reverify failed after second repair" },
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
       maxDynamicRepairRounds: 2,
     });
     assert.deepEqual(third, { status: "skipped", reason: "dynamic-repair-round-limit" });
@@ -460,7 +459,7 @@ test("failed validation callback applies dynamic repair revision before completi
       receivedAt: "2026-07-05T10:05:00.000Z",
       events: [],
     }, {
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
     assert.equal(result.accepted, false);
@@ -547,7 +546,7 @@ test("failing verification report semantics apply dynamic repair revision", asyn
       receivedAt: "2026-07-05T10:05:00.000Z",
       events: [],
     }, {
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
     assert.equal(result.accepted, false);
@@ -630,7 +629,7 @@ test("direct verification report fields apply dynamic repair revision", async ()
       receivedAt: "2026-07-05T10:05:00.000Z",
       events: [],
     }, {
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
     assert.equal(result.accepted, false);
@@ -718,7 +717,7 @@ test("failed callback advances dynamic repair round when prior repair task exist
       receivedAt: "2026-07-05T10:05:00.000Z",
       events: [],
     }, {
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
     assert.equal(result.accepted, false);
@@ -797,7 +796,7 @@ test("dynamic repair round advances when prior repair task exists without revisi
       failedTaskId: "verify-feature",
       failedArtifactRefId: "artifact-ref-verify-failed",
       failedArtifact: { summary: "verification failed" },
-      workflowComposer: new ScriptedWorkflowComposer([repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
     assert.equal(result.status, "applied");
@@ -852,7 +851,7 @@ test("dynamic repair revision retries invalid LLM composition before appending t
       failedTaskId: "verify-feature",
       failedArtifactRefId: "artifact-ref-verify-failed",
       failedArtifact: { summary: "npm test failed in todo component", findings: ["button handler missing"] },
-      workflowComposer: new ScriptedWorkflowComposer([invalid, repairCompositionPlan()]),
+      workflowComposer: new GoalContractBindingWorkflowComposer([invalid, repairCompositionPlan()]),
     });
 
     assert.equal(result.status, "applied");
@@ -1020,6 +1019,7 @@ function repairCompositionPlan(): WorkflowCompositionPlan {
         id: "repair",
         name: "Repair failed verification",
         responsibility: "Use the failed verification report to repair the implementation.",
+        requirementIds: [],
         dependsOn: [],
         templateSlotRef: "repair",
         agentDefinitionRef: "agent.frontend-developer",
@@ -1039,6 +1039,7 @@ function repairCompositionPlan(): WorkflowCompositionPlan {
         id: "reverify",
         name: "Reverify repaired implementation",
         responsibility: "Verify the repaired implementation and produce a verification report.",
+        requirementIds: [],
         dependsOn: ["repair"],
         templateSlotRef: "reverify",
         agentDefinitionRef: "agent.frontend-developer",
@@ -1100,6 +1101,19 @@ function generatedProfile(id: string, workerKind: "repair_worker" | "validation_
   };
 }
 
+class GoalContractBindingWorkflowComposer implements WorkflowComposer {
+  private index = 0;
+
+  constructor(private readonly plans: WorkflowCompositionPlan[]) {}
+
+  async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    const plan = this.plans[Math.min(this.index, this.plans.length - 1)];
+    this.index += 1;
+    if (!plan) throw new Error("GoalContractBindingWorkflowComposer has no plans");
+    return bindRequirementIds(plan, input);
+  }
+}
+
 class CapturingWorkflowComposer implements WorkflowComposer {
   readonly goalPrompts: string[] = [];
 
@@ -1107,17 +1121,29 @@ class CapturingWorkflowComposer implements WorkflowComposer {
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
     this.goalPrompts.push(input.goalPrompt);
-    return structuredClone(this.plan);
+    return bindRequirementIds(this.plan, input);
   }
+}
+
+function bindRequirementIds(
+  plan: WorkflowCompositionPlan,
+  input: ComposeWorkflowInput,
+): WorkflowCompositionPlan {
+  const copy = structuredClone(plan);
+  const requirementIds = input.goalContract.requirements.map((requirement) => requirement.id);
+  copy.tasks.forEach((task) => {
+    task.requirementIds = requirementIds;
+  });
+  return copy;
 }
 
 async function seedDynamicRepairPrimitives(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
   await upsertLibraryObject(db, { objectKey: "capability.frontend-ui", objectKind: "capability_spec", status: "approved", headVersionId: "capability.frontend-ui@1", state: { scope: "software", title: "Frontend UI" } });
   await upsertLibraryObject(db, { objectKey: "agent.frontend-developer", objectKind: "agent_definition", status: "approved", headVersionId: "agent.frontend-developer@1", state: { scope: "software", title: "Frontend Developer" } });
-  await upsertLibraryObject(db, { objectKey: "skill.react-ui", objectKind: "skill_spec", status: "approved", headVersionId: "skill.react-ui@1", state: { scope: "software", title: "React UI" } });
-  await upsertLibraryObject(db, { objectKey: "tool.workspace-write", objectKind: "tool_definition", status: "approved", headVersionId: "tool.workspace-write@1", state: { scope: "global", title: "Workspace Write" } });
-  await upsertLibraryObject(db, { objectKey: "mcp.filesystem-workspace", objectKind: "mcp_tool_grant", status: "approved", headVersionId: "mcp.filesystem-workspace@1", state: { scope: "global", title: "Filesystem Workspace" } });
-  await upsertLibraryObject(db, { objectKey: "instruction.react-review", objectKind: "instruction_template", status: "approved", headVersionId: "instruction.react-review@1", state: { scope: "software", title: "React Review" } });
+  await upsertLibraryObject(db, { objectKey: "skill.react-ui", objectKind: "skill_spec", status: "approved", headVersionId: "skill.react-ui@1", state: { scope: "software", title: "React UI", body: "# Instructions\n\nBuild React UI." } });
+  await upsertLibraryObject(db, { objectKey: "tool.workspace-write", objectKind: "tool_definition", status: "approved", headVersionId: "tool.workspace-write@1", state: { scope: "global", title: "Workspace Write", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" } });
+  await upsertLibraryObject(db, { objectKey: "mcp.filesystem-workspace", objectKind: "mcp_tool_grant", status: "approved", headVersionId: "mcp.filesystem-workspace@1", state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] } });
+  await upsertLibraryObject(db, { objectKey: "instruction.react-review", objectKind: "instruction_template", status: "approved", headVersionId: "instruction.react-review@1", state: { scope: "software", title: "React Review", content: "Use React best practices.", variables: [] } });
   await upsertLibraryObject(db, { objectKey: "artifact.todo_app", objectKind: "artifact_contract", status: "approved", headVersionId: "artifact.todo_app@1", state: { scope: "software", title: "Todo app artifact" } });
   await upsertLibraryObject(db, { objectKey: "evaluator.todo-quality", objectKind: "evaluator_profile", status: "approved", headVersionId: "evaluator.todo-quality@1", state: { scope: "software", title: "Todo quality evaluator" } });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "provides_capability", toObjectKey: "capability.frontend-ui", scope: "software" });
