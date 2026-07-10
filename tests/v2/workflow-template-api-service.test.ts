@@ -135,20 +135,48 @@ test("instantiateWorkflowTemplatePg rejects a template outside the interpreted G
         goalInterpreter: fixedGoalInterpreter(goalContract),
         constraints: { mode: "strict" },
       }),
-      /template scope software is not compatible with Goal Contract domain design\/article/,
+      /workflow template template\.software-dev-standard is not compatible with Goal Contract domain design\/article/,
     );
   } finally {
     await db.close();
   }
 });
 
-test("blocking template instantiation does not report composition loaded", async () => {
+test("instantiateWorkflowTemplatePg accepts a template whose domainRefs include the interpreted domain", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const domain = "design/article";
+    await seedDeterministicWorkflowGraph(db, domain);
+    await seedWorkflowTemplate(db, compositionPlan(), { domainRefs: [domain] });
+    const goalPrompt = "Turn notes.md into an offline HTML article";
+    const goalContract = {
+      ...softwareGoalContract(goalPrompt),
+      domain,
+      workspace: { cwd: "/workspace/article" },
+    };
+
+    const result = await instantiateWorkflowTemplatePg(db, {
+      templateRef: "template.software-dev-standard",
+      goalPrompt,
+      cwd: "/workspace/article",
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      constraints: { mode: "strict" },
+    });
+    assert.equal(result.status, "validated");
+  } finally {
+    await db.close();
+  }
+});
+
+test("blocking template instantiation persists needs_input before incompatible or missing template scope checks", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedWorkflowTemplate(db, compositionPlan());
     const goalPrompt = "Publish my article";
     const goalContract = {
       ...softwareGoalContract(goalPrompt),
+      domain: "design/article",
+      workspace: { cwd: "/workspace/article" },
       blockingInputs: ["Which source file should be used?"],
     };
     const stages: string[] = [];
@@ -165,6 +193,15 @@ test("blocking template instantiation does not report composition loaded", async
 
     assert.equal(result.status, "needs_input");
     assert.equal(stages.includes("template.loaded"), false);
+
+    await seedWorkflowTemplate(db, compositionPlan(), { scope: undefined });
+    const missingScopeResult = await instantiateWorkflowTemplatePg(db, {
+      templateRef: "template.software-dev-standard",
+      goalPrompt,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      constraints: { mode: "strict" },
+    });
+    assert.equal(missingScopeResult.status, "needs_input");
   } finally {
     await db.close();
   }

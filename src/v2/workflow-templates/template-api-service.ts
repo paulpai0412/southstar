@@ -138,14 +138,15 @@ export async function instantiateWorkflowTemplatePg(
     cwd: input.cwd ?? process.cwd(),
     onDelta: input.onGoalContractDelta,
   });
-  assertTemplateScopeCompatible(template, goalContract);
-  const savedCompositionPlan = workflowCompositionPlanValue(state.compositionPlan)
-    ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64);
-  const compositionPlan = goalContract.blockingInputs.length > 0
-    ? undefined
-    : savedCompositionPlan
+  let compositionPlan: WorkflowCompositionPlan | undefined;
+  if (goalContract.blockingInputs.length === 0) {
+    await assertTemplateScopeCompatible(db, input.templateRef, goalContract.domain);
+    const savedCompositionPlan = workflowCompositionPlanValue(state.compositionPlan)
+      ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64);
+    compositionPlan = savedCompositionPlan
       ? instantiateSavedCompositionPlan(savedCompositionPlan, input)
       : await composeSkeletonTemplate(db, input, template, goalContract);
+  }
 
   input.onProgress?.(compositionPlan
     ? { stage: "template.loaded", message: "Workflow template composition loaded." }
@@ -176,11 +177,14 @@ export async function instantiateWorkflowTemplatePg(
   };
 }
 
-function assertTemplateScopeCompatible(template: LibraryObjectSummary, goalContract: GoalContractV1): void {
-  const templateScope = stringValue(template.state.scope);
-  if (!templateScope) throw new Error(`workflow template scope is missing: ${template.objectKey}`);
-  if (templateScope === goalContract.domain || templateScope === "global" || templateScope === "all") return;
-  throw new Error(`template scope ${templateScope} is not compatible with Goal Contract domain ${goalContract.domain}`);
+async function assertTemplateScopeCompatible(
+  db: SouthstarDb,
+  templateRef: string,
+  domain: string,
+): Promise<void> {
+  const visibleTemplates = await findApprovedLibraryObjectsByKind(db, "workflow_template", domain);
+  if (visibleTemplates.some((template) => template.objectKey === templateRef)) return;
+  throw new Error(`workflow template ${templateRef} is not compatible with Goal Contract domain ${domain}`);
 }
 
 async function composeSkeletonTemplate(

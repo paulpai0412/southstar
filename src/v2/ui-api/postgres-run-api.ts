@@ -281,16 +281,54 @@ export async function validatePostgresPlannerDraft(
   const summary = asRecord(draft.summary);
   const contract = storedOrLegacyGoalContract(payload, summary, input.draftId);
   const contractHash = storedGoalContractHash(summary, payload, contract);
-  if (draft.status === PLANNER_DRAFT_STATUS_NEEDS_INPUT) {
+  if (draft.status === PLANNER_DRAFT_STATUS_NEEDS_INPUT || contract.blockingInputs.length > 0) {
+    const workflow = asRecord(payload.workflow);
+    const workflowId = stringValue(summary.workflowId) ?? stringValue(workflow.workflowId) ?? "";
+    const validationIssues = parseValidationIssues(summary.validationIssues);
+    const taskSummaries = parseTaskSummaries(summary.taskSummaries).length > 0
+      ? parseTaskSummaries(summary.taskSummaries)
+      : summarizeWorkflowTasksFromPayload(workflow.tasks);
+    const storedContract = goalContractFromStored(payload.goalContract);
+    const canonicalHash = goalContractHash(contract);
+    if (
+      draft.status !== PLANNER_DRAFT_STATUS_NEEDS_INPUT
+      || !storedContract
+      || stringValue(payload.goalContractHash) !== canonicalHash
+      || stringValue(summary.goalContractHash) !== canonicalHash
+    ) {
+      await upsertRuntimeResourcePg(db, {
+        id: draft.id,
+        resourceType: "planner_draft",
+        resourceKey: input.draftId,
+        ...(draft.runId ? { runId: draft.runId } : {}),
+        ...(draft.taskId ? { taskId: draft.taskId } : {}),
+        ...(draft.sessionId ? { sessionId: draft.sessionId } : {}),
+        scope: draft.scope,
+        status: PLANNER_DRAFT_STATUS_NEEDS_INPUT,
+        ...(draft.title ? { title: draft.title } : {}),
+        payload: { ...payload, goalContract: contract, goalContractHash: canonicalHash },
+        summary: {
+          ...summary,
+          status: PLANNER_DRAFT_STATUS_NEEDS_INPUT,
+          workflowId,
+          goalPrompt: contract.originalPrompt,
+          validationIssues,
+          taskSummaries,
+          ...goalContractSummary(contract, canonicalHash),
+        },
+        metrics: draft.metrics,
+        ...(draft.expiresAt ? { expiresAt: draft.expiresAt } : {}),
+      });
+    }
     return {
       draftId: input.draftId,
       goalPrompt: contract.originalPrompt,
-      workflowId: stringValue(summary.workflowId) ?? "",
+      workflowId,
       status: PLANNER_DRAFT_STATUS_NEEDS_INPUT,
-      goalContractHash: contractHash,
+      goalContractHash: canonicalHash,
       blockers: [...contract.blockingInputs],
-      validationIssues: parseValidationIssues(summary.validationIssues),
-      taskSummaries: parseTaskSummaries(summary.taskSummaries),
+      validationIssues,
+      taskSummaries,
     };
   }
   const workflow = asWorkflowManifest(payload.workflow);
@@ -1177,6 +1215,7 @@ function storedGoalContractHash(
   payload: Record<string, unknown>,
   contract: GoalContractV1,
 ): string {
+  if (!goalContractFromStored(payload.goalContract)) return goalContractHash(contract);
   return stringValue(summary.goalContractHash)
     ?? stringValue(payload.goalContractHash)
     ?? goalContractHash(contract);

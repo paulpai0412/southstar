@@ -15,6 +15,7 @@ import {
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import {
   finalizeGoalContract,
+  goalContractHash,
   reviseGoalContract,
   type GoalContractInterpreter,
   type GoalContractV1,
@@ -133,6 +134,31 @@ test("legacy planner draft inspection and validation adapt and persist a canonic
   });
 });
 
+test("legacy planner draft missingInputs canonicalize validation to needs_input with a fresh hash", async () => {
+  await withDb(async (db) => {
+    const draft = await createFixturePlannerDraft(db, "implement legacy missing input compatibility");
+    await stripGoalContractFromDraft(db, draft.draftId, {
+      missingInputs: ["Which API contract should be used?"],
+      staleGoalContractHash: "stale-goal-contract-hash",
+    });
+
+    const validated = await validatePostgresPlannerDraft(db, { draftId: draft.draftId });
+    assert.equal(validated.status, "needs_input");
+    assert.deepEqual(validated.blockers, ["Which API contract should be used?"]);
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    const contract = (stored?.payload as any).goalContract as GoalContractV1;
+    const canonicalHash = goalContractHash(contract);
+    assert.equal(stored?.status, "needs_input");
+    assert.equal((stored?.payload as any).goalContractHash, canonicalHash);
+    assert.equal((stored?.summary as any).goalContractHash, canonicalHash);
+    assert.notEqual(canonicalHash, "stale-goal-contract-hash");
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
+      /planner draft is not validated/,
+    );
+  });
+});
+
 test("legacy planner draft revision adapts the previous Goal Contract without changing originalPrompt", async () => {
   await withDb(async (db) => {
     const goalPrompt = "implement legacy revision compatibility";
@@ -154,7 +180,9 @@ test("legacy planner draft revision adapts the previous Goal Contract without ch
 test("legacy planner draft profile override persists the adapted canonical Goal Contract", async () => {
   await withDb(async (db) => {
     const draft = await createFixturePlannerDraft(db, "implement legacy profile override compatibility");
-    await stripGoalContractFromDraft(db, draft.draftId);
+    await stripGoalContractFromDraft(db, draft.draftId, {
+      staleGoalContractHash: "stale-profile-goal-contract-hash",
+    });
 
     await patchPostgresPlannerDraftTaskProfileOverride(db, {
       draftId: draft.draftId,
@@ -162,8 +190,12 @@ test("legacy planner draft profile override persists the adapted canonical Goal 
       profileOverride: { model: "gpt-5-codex" },
     });
     const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
-    assert.equal((stored?.payload as any).goalContract.schemaVersion, "southstar.goal_contract.v1");
-    assert.match((stored?.summary as any).goalContractHash, /^[a-f0-9]{64}$/);
+    const contract = (stored?.payload as any).goalContract as GoalContractV1;
+    const canonicalHash = goalContractHash(contract);
+    assert.equal(contract.schemaVersion, "southstar.goal_contract.v1");
+    assert.equal((stored?.payload as any).goalContractHash, canonicalHash);
+    assert.equal((stored?.summary as any).goalContractHash, canonicalHash);
+    assert.notEqual(canonicalHash, "stale-profile-goal-contract-hash");
   });
 });
 
@@ -1168,7 +1200,11 @@ async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string) {
   });
 }
 
-async function stripGoalContractFromDraft(db: SouthstarDb, draftId: string): Promise<void> {
+async function stripGoalContractFromDraft(
+  db: SouthstarDb,
+  draftId: string,
+  options: { missingInputs?: string[]; staleGoalContractHash?: string } = {},
+): Promise<void> {
   const draft = await getResourceByKeyPg(db, "planner_draft", draftId);
   assert.ok(draft);
   const payload = structuredClone(draft.payload) as Record<string, unknown>;
@@ -1180,6 +1216,17 @@ async function stripGoalContractFromDraft(db: SouthstarDb, draftId: string): Pro
   delete summary.intent;
   delete summary.blockers;
   delete summary.requirementCount;
+  if (options.missingInputs) {
+    const orchestrationSnapshot = payload.orchestrationSnapshot as Record<string, any>;
+    orchestrationSnapshot.requirementSpec = {
+      ...orchestrationSnapshot.requirementSpec,
+      missingInputs: [...options.missingInputs],
+    };
+  }
+  if (options.staleGoalContractHash) {
+    payload.goalContractHash = options.staleGoalContractHash;
+    summary.goalContractHash = options.staleGoalContractHash;
+  }
   await upsertRuntimeResourcePg(db, {
     id: draft.id,
     resourceType: "planner_draft",
