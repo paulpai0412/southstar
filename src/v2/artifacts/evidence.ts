@@ -75,7 +75,7 @@ function evidenceByKind(
       status: aggregateCommandStatus(commandEvidenceResults),
       summary: commandEvidenceResults.map(summarizeCommand).join("; ").slice(0, 500),
       sourceRef: executedCommandResults.length > 0 ? "artifact.commandsRun" : "artifact.testResults",
-      sha256: shortHash(JSON.stringify(commandEvidenceResults)),
+      sha256: shortHash(safeJson(commandEvidenceResults)),
       capturedAt: now,
       reproducibleCommand: splitCommand(commandEvidenceResults[0]!.command),
       redactionApplied: true,
@@ -314,7 +314,7 @@ function objectTestEvidence(
             ? firstRecord.output
             : "test results present",
       sourceRef: "artifact.testResults",
-      sha256: shortHash(JSON.stringify(testResults)),
+      sha256: shortHash(safeJson(testResults)),
       capturedAt: now,
       reproducibleCommand: splitCommand(firstRecord.command) ?? splitCommand(findTestCommand(commands)),
       redactionApplied: true,
@@ -333,7 +333,7 @@ function objectTestEvidence(
       status,
       summary: summary || "test results present",
       sourceRef: "artifact.testResults",
-      sha256: shortHash(JSON.stringify(testResults)),
+      sha256: shortHash(safeJson(testResults)),
       capturedAt: now,
       reproducibleCommand: splitCommand(findTestCommand(commands)),
       redactionApplied: true,
@@ -368,7 +368,7 @@ function objectTestEvidence(
             ? firstRecord.output
             : "tests evidence present",
       sourceRef: "artifact.tests",
-      sha256: shortHash(JSON.stringify(tests)),
+      sha256: shortHash(safeJson(tests)),
       capturedAt: now,
       reproducibleCommand: splitCommand(firstRecord.command) ?? splitCommand(findTestCommand(commands)),
       redactionApplied: true,
@@ -393,7 +393,7 @@ function objectTestEvidence(
         status: testRecordStatus(evidence),
         summary,
         sourceRef: "artifact.artifactEvidence",
-        sha256: shortHash(JSON.stringify(evidence)),
+        sha256: shortHash(safeJson(evidence)),
         capturedAt: now,
         reproducibleCommand: splitCommand(findTestCommand(commands)),
         redactionApplied: true,
@@ -405,22 +405,63 @@ function objectTestEvidence(
 }
 
 function testRecordStatus(value: Record<string, unknown>): "present" | "invalid" {
+  return resultTreeStatus(value, 0, new WeakSet()) ?? "invalid";
+}
+
+function resultTreeStatus(
+  value: unknown,
+  depth: number,
+  ancestors: WeakSet<object>,
+): "present" | "invalid" | undefined {
+  if (depth > 8) return "invalid";
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) return "invalid";
+    ancestors.add(value);
+    let sawPresent = false;
+    for (const item of value) {
+      const status = resultTreeStatus(item, depth + 1, ancestors);
+      if (status === "invalid") {
+        ancestors.delete(value);
+        return "invalid";
+      }
+      if (status === "present") sawPresent = true;
+    }
+    ancestors.delete(value);
+    return sawPresent ? "present" : undefined;
+  }
+  if (!isRecord(value)) return undefined;
+  if (ancestors.has(value)) return "invalid";
+  ancestors.add(value);
+
   const outcome = value.status ?? value.result ?? value.outcome ?? value.overall;
   const countStatus = statusFromCounts(value);
-  const nestedStatus = nestedStatusFromResultTree(value);
   if (
     (outcome !== undefined && valueStatus(outcome) !== "present")
     || value.passed === false
     || value.ok === false
     || (typeof value.exitCode === "number" && Number.isInteger(value.exitCode) && value.exitCode !== 0)
     || countStatus === "invalid"
-    || nestedStatus === "invalid"
-  ) return "invalid";
-  return valueStatus(outcome)
-    ?? (value.passed === true || value.ok === true || value.exitCode === 0 ? "present" : undefined)
-    ?? countStatus
-    ?? nestedStatus
-    ?? "invalid";
+  ) {
+    ancestors.delete(value);
+    return "invalid";
+  }
+
+  let sawPresent = valueStatus(outcome) === "present"
+    || value.passed === true
+    || value.ok === true
+    || value.exitCode === 0
+    || countStatus === "present";
+  for (const child of Object.values(value)) {
+    if (!child || typeof child !== "object") continue;
+    const status = resultTreeStatus(child, depth + 1, ancestors);
+    if (status === "invalid") {
+      ancestors.delete(value);
+      return "invalid";
+    }
+    if (status === "present") sawPresent = true;
+  }
+  ancestors.delete(value);
+  return sawPresent ? "present" : undefined;
 }
 
 function testResultItemStatus(value: unknown): "present" | "invalid" {
@@ -463,19 +504,8 @@ function valueStatus(value: unknown): "present" | "invalid" | undefined {
 function statusFromCounts(testResults: Record<string, unknown>): "present" | "invalid" | undefined {
   const failed = numberFromObject(testResults, ["failed", "failCount"]);
   const passed = numberFromObject(testResults, ["passed", "passCount"]);
-  if (typeof failed === "number") {
-    if (failed > 0) return "invalid";
-    if ((passed ?? 0) > 0) return "present";
-  }
-  const automated = testResults.automated;
-  if (isRecord(automated)) {
-    const automatedFailed = numberFromObject(automated, ["failed", "failCount"]);
-    const automatedPassed = numberFromObject(automated, ["passed", "passCount"]);
-    if (typeof automatedFailed === "number") {
-      if (automatedFailed > 0) return "invalid";
-      if ((automatedPassed ?? 0) > 0) return "present";
-    }
-  }
+  if ((failed ?? 0) > 0) return "invalid";
+  if ((passed ?? 0) > 0) return "present";
   return undefined;
 }
 
@@ -485,34 +515,6 @@ function numberFromObject(value: Record<string, unknown>, keys: string[]): numbe
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
   }
   return undefined;
-}
-
-function nestedStatusFromResultTree(value: unknown, depth = 0): "present" | "invalid" | undefined {
-  if (depth > 5) return undefined;
-  if (Array.isArray(value)) {
-    let sawPresent = false;
-    for (const item of value) {
-      const nested = nestedStatusFromResultTree(item, depth + 1);
-      if (nested === "invalid") return "invalid";
-      if (nested === "present") sawPresent = true;
-    }
-    return sawPresent ? "present" : undefined;
-  }
-  if (!isRecord(value)) return undefined;
-
-  let sawPresent = false;
-  for (const key of ["status", "result", "overall", "outcome"]) {
-    const direct = valueStatus(value[key]);
-    if (direct === "invalid") return "invalid";
-    if (direct === "present") sawPresent = true;
-  }
-
-  for (const nested of Object.values(value)) {
-    const status = nestedStatusFromResultTree(nested, depth + 1);
-    if (status === "invalid") return "invalid";
-    if (status === "present") sawPresent = true;
-  }
-  return sawPresent ? "present" : undefined;
 }
 
 function extractPathLikeValues(value: unknown): string[] {
@@ -551,7 +553,7 @@ function extractArtifactRefs(value: unknown): string[] {
     }
 
     if (!captured) {
-      refs.push(`artifact-object-${shortHash(JSON.stringify(item))}`);
+      refs.push(`artifact-object-${shortHash(safeJson(item))}`);
     }
   }
   return refs;
@@ -569,6 +571,17 @@ function missingEvidence(kind: EvidenceKind, now: string): EvidencePacket["evide
 
 function shortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function safeJson(value: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(value, (_key, child: unknown) => {
+    if (typeof child === "bigint") return child.toString();
+    if (!child || typeof child !== "object") return child;
+    if (seen.has(child)) return "[Circular]";
+    seen.add(child);
+    return child;
+  }) ?? "null";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

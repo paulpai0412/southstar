@@ -219,10 +219,35 @@ function credentialBearingUrl(
       nestedValues.push(...fragmentParams.values());
       if (/^(?:https?:)?\/\//i.test(decodedFragment)) nestedValues.push(decodedFragment);
     }
-    return nestedValues.some((nested) => credentialBearingUrl(nested, depth + 1, seen, url.origin));
+    for (const nested of nestedValues) {
+      if (credentialBearingUrl(nested, depth + 1, seen, url.origin)) return true;
+      const decoded = decodedNestedUrl(nested);
+      if (decoded === "limit-exceeded") return true;
+      if (decoded && credentialBearingUrl(decoded.value, depth + 1 + decoded.layers, seen, url.origin)) return true;
+    }
+    return false;
   } catch {
     return false;
   }
+}
+
+function decodedNestedUrl(value: string): { value: string; layers: number } | "limit-exceeded" | undefined {
+  let current = value;
+  for (let layers = 1; layers <= 4; layers += 1) {
+    if (!/%[0-9a-f]{2}/i.test(current)) return undefined;
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current || decoded.length > 16_384) return decoded.length > 16_384 ? "limit-exceeded" : undefined;
+      current = decoded;
+      if (/^(?:https?:)?\/\//i.test(current)) return { value: current, layers };
+      if (/^[^#?=&]+=[^&]*(?:&|$)/.test(current)) return { value: `?${current}`, layers };
+    } catch {
+      return undefined;
+    }
+  }
+  return /^https?%[0-9a-f]{2}/i.test(current) || /%3d/i.test(current)
+    ? "limit-exceeded"
+    : undefined;
 }
 
 function redactText(value: string): string {

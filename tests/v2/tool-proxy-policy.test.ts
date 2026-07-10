@@ -63,11 +63,14 @@ test("tool proxy policy scanner recursively rejects credentials in nested URL pa
     "https://example.test/callback?redirect=https%3A%2F%2Fuser%3Apassword%40private.test",
     "https://example.test/callback?next=https%3A%2F%2Fprivate.test%2Fdone%3Faccess_token%3Dx",
     "https://example.test/callback#redirect=https%3A%2F%2Fprivate.test%2Fdone%3Fapi_key%3Dx",
+    "https://example.test/callback?redirect=https%253A%252F%252Fuser%253Apassword%2540private.test",
+    "https://example.test/callback?next=https%25253A%25252F%25252Fprivate.test%25252Fdone%25253Faccess_token%25253Dx",
   ]) {
     const finding = scanForCredentialLeak({ url });
     assert.equal(finding?.reason, "raw_credential_in_envelope", url);
     assert.doesNotMatch(finding?.redactedExcerpt ?? "", /password|access_token=x|api_key=x/);
   }
+  assert.equal(scanForCredentialLeak({ url: "https://example.test/callback?note=hello%2520world" }), null);
 });
 
 test("tool proxy policy redacts entire sensitive-key subtrees before excerpt persistence", () => {
@@ -360,7 +363,7 @@ test("callback URL credentials are rejected before callback history, resources, 
 test("callback nested redirect credentials are rejected before artifact blob persistence", async () => {
   await withDb(async (db) => {
     const runId = "run-callback-policy-nested-url-leak";
-    const leakedUrl = "https://example.test/result?redirect=https%3A%2F%2Fuser%3Apassword%40private.test";
+    const leakedUrl = "https://example.test/result?redirect=https%253A%252F%252Fuser%253Apassword%2540private.test";
     await seedRunTask(db, runId, "task-1");
 
     await assert.rejects(

@@ -190,6 +190,9 @@ test("buildEvidencePacket rejects command evidence without a trusted outcome", (
     [{ status: "passed", ok: false }],
     [{ status: "passed", exitCode: 1 }],
     [{ status: "passed", suites: [{ status: "failed" }] }],
+    [{ status: "passed", suites: [{ failed: 1 }] }],
+    [{ status: "passed", suites: [{ ok: false }] }],
+    [{ status: "passed", suites: [{ exitCode: 1 }] }],
   ]) {
     const packet = buildEvidencePacket({
       runId: "run-contradictory-test-evidence",
@@ -199,6 +202,25 @@ test("buildEvidencePacket rejects command evidence without a trusted outcome", (
       artifact: { testResults },
     });
     assert.equal(packet.evidenceItems[0]?.status, "invalid", JSON.stringify(testResults));
+  }
+
+  const cyclic: Record<string, unknown> = { status: "passed" };
+  cyclic.nested = cyclic;
+  const tooDeep: Record<string, unknown> = { status: "passed" };
+  let cursor = tooDeep;
+  for (let index = 0; index < 10; index += 1) {
+    cursor.nested = {};
+    cursor = cursor.nested as Record<string, unknown>;
+  }
+  for (const testResults of [[cyclic], [tooDeep]]) {
+    const packet = buildEvidencePacket({
+      runId: "run-bounded-test-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result"],
+      artifact: { testResults },
+    });
+    assert.equal(packet.evidenceItems[0]?.status, "invalid");
   }
 });
 
