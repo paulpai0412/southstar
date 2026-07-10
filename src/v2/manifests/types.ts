@@ -121,6 +121,12 @@ export type CompiledFromTemplate = {
   compilerVersion: string;
   inputHash: string;
   libraryVersionRefs: string[];
+  libraryObjectVersionRefs: LibraryObjectVersionRef[];
+};
+
+export type LibraryObjectVersionRef = {
+  objectKey: string;
+  versionRef: string;
 };
 
 export type EffortPolicy = {

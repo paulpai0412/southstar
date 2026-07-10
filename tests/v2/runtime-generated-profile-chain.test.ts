@@ -80,9 +80,15 @@ test("graph metadata composition refs materialize into Docker-visible task bundl
       runId: "run-chain",
       goalContractHash: compiled.orchestrationSnapshot.goalContractHash,
       manifestHash: compiled.orchestrationSnapshot.compiler.manifestHash,
-      selectedRefs: compiled.orchestrationSnapshot.compiler.selectedLibraryRefs,
-      libraryVersionRefs: compiled.orchestrationSnapshot.compiler.libraryVersionRefs,
+      libraryObjectVersionRefs: compiled.orchestrationSnapshot.compiler.libraryObjectVersionRefs,
       libraryRoot,
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "agent.frontend-reviewer",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.frontend-reviewer@mutated",
+      state: { scope: "software", title: "Mutated Reviewer", body: "MUTATED REVIEWER AFTER RUN CREATION" },
     });
     await createWorkflowTaskPg(db, {
       id: task.id,
@@ -109,6 +115,8 @@ test("graph metadata composition refs materialize into Docker-visible task bundl
     const taskMaterialization = await materializeTaskEnvelope(assembled.taskEnvelope, { runRoot });
 
     assert.match(await readFile(join(taskMaterialization.taskDir, "AGENTS.md"), "utf8"), /frontend developer agent playbook/);
+    assert.match(await readFile(join(taskMaterialization.taskDir, "AGENTS.md"), "utf8"), /frontend reviewer snapshot instructions/);
+    assert.doesNotMatch(await readFile(join(taskMaterialization.taskDir, "AGENTS.md"), "utf8"), /MUTATED REVIEWER/);
     assert.match(await readFile(join(taskMaterialization.taskDir, "skills", "skill.react-ui", "SKILL.md"), "utf8"), /Build React UI/);
     assert.equal(await readFile(join(taskMaterialization.taskDir, "skills", "skill.react-ui", "references", "patterns.md"), "utf8"), "Use controlled inputs.");
     assert.equal(JSON.parse(await readFile(join(taskMaterialization.taskDir, "tools", "tool-policy.json"), "utf8")).allowedTools.includes("workspace-write"), true);
@@ -170,7 +178,7 @@ function generatedCompositionPlan(): WorkflowCompositionPlan {
         contextPolicyRef: "context.generated",
         sessionPolicyRef: "session.generated",
         memoryScopes: [],
-        agentsMdRefs: [],
+        agentsMdRefs: ["agent.frontend-reviewer"],
         vaultLeasePolicyRefs: [],
         toolPolicy: {
           allowedTools: ["tool.workspace-write"],
@@ -205,6 +213,17 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
     status: "approved",
     headVersionId: "template.dynamic-single-task@1",
     state: { scope: "software", title: "Dynamic Single Task" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "agent.frontend-reviewer",
+    objectKind: "agent_definition",
+    status: "approved",
+    headVersionId: "agent.frontend-reviewer@1",
+    state: {
+      scope: "software",
+      title: "Frontend Reviewer",
+      body: "Use the frontend reviewer snapshot instructions.",
+    },
   });
   await upsertLibraryObject(db, {
     objectKey: "capability.frontend-ui",
@@ -297,6 +316,7 @@ async function seedExecutableGraph(db: Awaited<ReturnType<typeof createTestPostg
   });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "provides_capability", toObjectKey: "capability.frontend-ui", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "skill.react-ui", scope: "software" });
+  await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "uses", toObjectKey: "agent.frontend-reviewer", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "agent.frontend-developer", edgeType: "produces_artifact", toObjectKey: "artifact.web_app", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "requires_tool", toObjectKey: "tool.workspace-write", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });

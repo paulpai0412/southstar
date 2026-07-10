@@ -23,10 +23,10 @@ import type {
   StopConditionDefinition,
   WorkspacePolicyDefinition,
 } from "../design-library/runtime-types.ts";
-import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
+import type { LibraryObjectVersionRef, SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import {
+  collectSelectedObjectVersionRefs,
   collectSelectedRefs,
-  collectSelectedVersionRefs,
   summarizeCandidates,
   type CandidateSelectionSummary,
 } from "./composition-selection-summary.ts";
@@ -67,6 +67,7 @@ export type OrchestrationSnapshotV1 = {
     manifestHash: string;
     selectedLibraryRefs: string[];
     libraryVersionRefs: string[];
+    libraryObjectVersionRefs: LibraryObjectVersionRef[];
   };
 };
 
@@ -96,15 +97,27 @@ export async function compileWorkflowComposition(
   const artifactContracts = await resolveRuntimeArtifactContracts(db, input.composition);
   const evaluatorPipelines = await resolveRuntimeEvaluatorPipelines(db, input.composition);
   const planHash = contentHashForPayload(input.composition);
-  const selectedLibraryRefs = collectSelectedRefs(input.candidatePacket, input.composition);
-  const libraryVersionRefs = collectSelectedVersionRefs(input.candidatePacket, input.composition);
+  const profileLibraryRefs = [...resolvedProfiles.values()].flatMap((profile) => [
+    ...(profile.agentRef ? [profile.agentRef] : []),
+    ...profile.agentsMdRefs,
+  ]).filter((ref) => !ref.startsWith("repo:"));
+  const libraryObjectVersionRefs = collectSelectedObjectVersionRefs(
+    input.candidatePacket,
+    input.composition,
+    profileLibraryRefs,
+  );
+  const selectedLibraryRefs = collectSelectedRefs(input.candidatePacket, input.composition, profileLibraryRefs);
+  const libraryVersionRefs = [...new Set(libraryObjectVersionRefs.map((pair) => pair.versionRef))].sort();
   const selectedTemplate = await findLibraryObjectByKey(db, input.composition.selectedWorkflowTemplateRef);
   const templateVersionId = required(
     selectedTemplate?.headVersionId,
     `missing immutable version for ${input.composition.selectedWorkflowTemplateRef}`,
   );
-  if (!libraryVersionRefs.includes(templateVersionId)) {
-    throw new Error(`selected workflow template version is not in compiler Library refs: ${templateVersionId}`);
+  const selectedTemplatePair = libraryObjectVersionRefs.find((pair) =>
+    pair.objectKey === input.composition.selectedWorkflowTemplateRef
+  );
+  if (selectedTemplatePair?.versionRef !== templateVersionId) {
+    throw new Error(`selected workflow template object-version pair does not match current head: ${templateVersionId}`);
   }
   const taskDefinitions = input.composition.tasks.map((task): WorkflowTaskDefinition => {
     const role = required(rolesByAgentRef.get(task.agentDefinitionRef), `missing resolved role for ${task.agentDefinitionRef}`);
@@ -232,6 +245,7 @@ export async function compileWorkflowComposition(
       compilerVersion: "library-constrained-compiler-v1",
       inputHash: planHash,
       libraryVersionRefs,
+      libraryObjectVersionRefs,
     },
   };
   const goalRequirementCoverage = buildGoalRequirementCoverage({
@@ -257,6 +271,7 @@ export async function compileWorkflowComposition(
         manifestHash: contentHashForPayload(workflow),
         selectedLibraryRefs,
         libraryVersionRefs,
+        libraryObjectVersionRefs,
       },
     },
   };

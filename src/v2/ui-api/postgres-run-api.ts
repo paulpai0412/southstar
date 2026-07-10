@@ -802,9 +802,8 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const cwd = plannerRequest?.cwd;
   if (cwd) assertWorkspaceMountAllowed(cwd);
   const orchestrationCompiler = asRecord(asRecord(draftPayload.orchestrationSnapshot).compiler);
-  const selectedRefs = stringArrayValue(orchestrationCompiler.selectedLibraryRefs) ?? [];
-  const libraryVersionRefs = stringArrayValue(orchestrationCompiler.libraryVersionRefs) ?? [];
-  if (selectedRefs.length === 0 || libraryVersionRefs.length === 0) {
+  const libraryObjectVersionRefs = workflow.compiledFrom?.libraryObjectVersionRefs ?? [];
+  if (libraryObjectVersionRefs.length === 0 || !Array.isArray(orchestrationCompiler.libraryObjectVersionRefs)) {
     throw new Error(`planner draft is missing immutable Library selection metadata: ${input.draftId}`);
   }
   const coverage = asRecord(draftPayload.goalRequirementCoverage);
@@ -838,8 +837,7 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
       runId,
       goalContractHash: contractHash,
       manifestHash,
-      selectedRefs,
-      libraryVersionRefs,
+      libraryObjectVersionRefs,
       libraryRoot: process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
     });
     await tx.query(

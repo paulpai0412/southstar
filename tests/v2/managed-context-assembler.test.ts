@@ -632,7 +632,6 @@ async function captureManagedContextSnapshot(
     runId,
     goalContractHash: "1".repeat(64),
     manifestHash: "2".repeat(64),
-    selectedRefs,
-    libraryVersionRefs: selectedRefs.map((ref) => `${ref}@managed-context-test`),
+    libraryObjectVersionRefs: selectedRefs.map((objectKey) => ({ objectKey, versionRef: `${objectKey}@managed-context-test` })),
   });
 }

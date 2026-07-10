@@ -192,6 +192,16 @@ test("compiler snapshot freezes only selected library version refs", async () =>
     );
     assert.equal(compiled.orchestrationSnapshot.compiler.libraryVersionRefs.includes("template.unused@v1"), false);
     assert.equal(compiled.orchestrationSnapshot.compiler.libraryVersionRefs.includes("agent.unused@v1"), false);
+    assert.equal(
+      compiled.orchestrationSnapshot.compiler.libraryObjectVersionRefs.find((pair) =>
+        pair.objectKey === "template.software-feature"
+      )?.versionRef,
+      "template.software-feature@v1",
+    );
+    assert.deepEqual(
+      compiled.workflow.compiledFrom?.libraryObjectVersionRefs,
+      compiled.orchestrationSnapshot.compiler.libraryObjectVersionRefs,
+    );
   } finally {
     await db.close();
   }

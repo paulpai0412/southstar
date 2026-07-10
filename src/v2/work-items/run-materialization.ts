@@ -1,4 +1,6 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
+import { captureRunLibrarySnapshotPg } from "../orchestration/run-library-snapshot.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { validateWorkflowManifest } from "../manifests/validate.ts";
 import { createWorkflowRunPg } from "../stores/postgres-runtime-store.ts";
@@ -17,6 +19,7 @@ export type MaterializeRunFromWorkItemInput = {
   workflowManifest: SouthstarWorkflowManifest;
   executionProjection: Record<string, unknown>;
   metadata?: Record<string, unknown>;
+  libraryRoot?: string;
 };
 
 export type MaterializeRunFromWorkItemResult = {
@@ -74,6 +77,9 @@ export async function materializeRunFromWorkItemPg(
       throw new Error(`workflow run already exists but is not linked to work item ${intake.workItemId}: ${input.runId}`);
     }
 
+    const manifestHash = contentHashForPayload(input.workflowManifest);
+    const libraryObjectVersionRefs = input.workflowManifest.compiledFrom?.libraryObjectVersionRefs ?? [];
+    assertManifestLibraryRefsAreCaptured(input.workflowManifest, libraryObjectVersionRefs);
     await createWorkflowRunPg(tx, {
       id: input.runId,
       status: "created",
@@ -82,9 +88,22 @@ export async function materializeRunFromWorkItemPg(
       workflowManifestJson: JSON.stringify(input.workflowManifest),
       executionProjectionJson: JSON.stringify(input.executionProjection),
       snapshotJson: "{}",
-      runtimeContextJson: "{}",
+      runtimeContextJson: JSON.stringify({ manifestHash }),
       metricsJson: "{}",
     });
+    const librarySnapshot = await captureRunLibrarySnapshotPg(tx, {
+      runId: input.runId,
+      manifestHash,
+      libraryObjectVersionRefs,
+      libraryRoot: input.libraryRoot ?? process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
+    });
+    await tx.query(
+      `update southstar.workflow_runs
+          set runtime_context_json = runtime_context_json || $2::jsonb,
+              updated_at = now()
+        where id = $1`,
+      [input.runId, JSON.stringify({ librarySnapshotHash: librarySnapshot.snapshotHash })],
+    );
 
     const runRef = await linkRunAttemptFromWorkItemPg(tx, {
       workItemId: intake.workItemId,
@@ -95,6 +114,33 @@ export async function materializeRunFromWorkItemPg(
 
     return { workItemId: intake.workItemId, runId: input.runId, runAttempt: runRef.runAttempt };
   });
+}
+
+function assertManifestLibraryRefsAreCaptured(
+  manifest: SouthstarWorkflowManifest,
+  pairs: Array<{ objectKey: string; versionRef: string }>,
+): void {
+  const capturedRefs = new Set(pairs.map((pair) => pair.objectKey));
+  const requiredRefs = new Set<string>();
+  for (const task of manifest.tasks) {
+    for (const ref of [
+      ...(task.instructionRefs ?? []),
+      ...(task.skillRefs ?? []),
+      ...(task.toolGrantRefs ?? []),
+      ...(task.mcpGrantRefs ?? []),
+      ...(task.vaultLeasePolicyRefs ?? []),
+    ]) requiredRefs.add(ref);
+  }
+  for (const profile of manifest.agentProfiles ?? []) {
+    for (const ref of [
+      ...(profile.agentRef ? [profile.agentRef] : []),
+      ...profile.agentsMdRefs,
+    ]) {
+      if (!ref.startsWith("repo:")) requiredRefs.add(ref);
+    }
+  }
+  const missing = [...requiredRefs].filter((ref) => !capturedRefs.has(ref)).sort();
+  if (missing.length > 0) throw new Error(`workflow manifest Library refs are missing immutable object-version pairs: ${missing.join(", ")}`);
 }
 
 function validateMaterializationManifest(workflowManifest: SouthstarWorkflowManifest): void {

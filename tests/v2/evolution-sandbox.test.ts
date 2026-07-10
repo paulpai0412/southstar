@@ -5,6 +5,8 @@ import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createLearningNode } from "../../src/v2/evolution/learning-graph.ts";
+import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import { loadRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createSandboxExperiment, recordSandboxTrial, evaluateSandboxExperiment, startSandboxExecutionPg, recordSandboxEvaluatorOutputPg } from "../../src/v2/evolution/sandbox.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
@@ -105,6 +107,16 @@ test("sandbox execution materializes baseline and candidate runs with env marker
       composer: new DeterministicFixtureComposer(),
     });
     const replayRun = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const replaySnapshot = await loadRunLibrarySnapshotPg(db, replayRun.runId);
+    const maker = replaySnapshot.objects.find((object) => object.objectKey === "agent.software-maker");
+    assert.ok(maker);
+    await upsertLibraryObject(db, {
+      objectKey: maker.objectKey,
+      objectKind: maker.objectKind,
+      status: "approved",
+      headVersionId: "agent.software-maker@mutated-after-parent-run",
+      state: { ...maker.state, body: "MUTATED AFTER PARENT RUN" },
+    });
     const experiment = await createSandboxExperiment(db, {
       deltaProposalId: "delta-sandbox-execution",
       baselineAssetRefs: ["prompt@v1"],
@@ -133,6 +145,17 @@ test("sandbox execution materializes baseline and candidate runs with env marker
     assert.equal(submissions[0]?.env?.SOUTHSTAR_RUN_MODE, "sandbox");
     assert.equal(submissions[0]?.env?.SOUTHSTAR_SANDBOX_EXPERIMENT_ID, experiment.experimentId);
     assert.equal(submissions[1]?.env?.SOUTHSTAR_SANDBOX_VARIANT, "candidate");
+
+    for (const childRunId of [started.runs.baseline.runId, started.runs.candidate.runId]) {
+      const childSnapshot = await loadRunLibrarySnapshotPg(db, childRunId);
+      assert.equal(childSnapshot.runId, childRunId);
+      assert.notEqual(childSnapshot.snapshotHash, replaySnapshot.snapshotHash);
+      assert.deepEqual(childSnapshot.objects, replaySnapshot.objects);
+      assert.equal(
+        childSnapshot.objects.find((object) => object.objectKey === maker.objectKey)?.stateHash,
+        maker.stateHash,
+      );
+    }
 
     const runRows = await db.query<{ id: string; runtime_context_json: { runMode?: string; sandboxExperimentId?: string; sandboxVariant?: string } }>(
       "select id, runtime_context_json from southstar.workflow_runs where id = any($1::text[]) order by id",

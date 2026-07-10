@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -9,6 +9,47 @@ import { materializeTaskLibraryRefs } from "../../src/v2/orchestration/runtime-l
 import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import { createWorkflowRunPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("snapshot capture rejects swapped object-version pairs", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    for (const objectKey of ["instruction.pair-a", "instruction.pair-b"]) {
+      await upsertLibraryObject(db, {
+        objectKey,
+        objectKind: "instruction_template",
+        status: "approved",
+        headVersionId: `${objectKey}@v1`,
+        state: { content: objectKey, variables: [] },
+      });
+    }
+    await createWorkflowRunPg(db, {
+      id: "run-swapped-pairs",
+      status: "created",
+      domain: "test",
+      goalPrompt: "reject swapped pairs",
+      workflowManifestJson: "{}",
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: "{}",
+      metricsJson: "{}",
+    });
+
+    await assert.rejects(
+      () => captureRunLibrarySnapshotPg(db, {
+        runId: "run-swapped-pairs",
+        goalContractHash: "1".repeat(64),
+        manifestHash: "2".repeat(64),
+        libraryObjectVersionRefs: [
+          { objectKey: "instruction.pair-a", versionRef: "instruction.pair-b@v1" },
+          { objectKey: "instruction.pair-b", versionRef: "instruction.pair-a@v1" },
+        ],
+      }),
+      /version mismatch.*instruction\.pair-a/i,
+    );
+  } finally {
+    await db.close();
+  }
+});
 
 test("task materialization uses the run snapshot after Library head changes", async () => {
   const db = await createTestPostgresDb();
@@ -34,8 +75,7 @@ test("task materialization uses the run snapshot after Library head changes", as
         runId: "run-article-builder",
         goalContractHash: "1".repeat(64),
         manifestHash: "2".repeat(64),
-        selectedRefs: ["instruction.article-builder"],
-        libraryVersionRefs: ["instruction.article-builder@v2"],
+        libraryObjectVersionRefs: [{ objectKey: "instruction.article-builder", versionRef: "instruction.article-builder@v2" }],
       }),
       /snapshot already exists/i,
     );
@@ -108,6 +148,196 @@ test("skill materialization uses snapshot-backed bundle files", async () => {
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("snapshot capture rejects symlinked bundle roots and recursive entries", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-safe-root-"));
+  const outsideRoot = await mkdtemp(join(tmpdir(), "southstar-library-outside-"));
+  try {
+    await mkdir(join(libraryRoot, "skills", "entry-link"), { recursive: true });
+    await writeFile(join(outsideRoot, "outside.md"), "outside bundle content", "utf8");
+    await symlink(join(outsideRoot, "outside.md"), join(libraryRoot, "skills", "entry-link", "outside.md"), "file");
+    await upsertLibraryObject(db, {
+      objectKey: "skill.entry-link",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.entry-link@1",
+      state: { body: "safe", assetBundlePath: "library/skills/entry-link" },
+    });
+    await createSnapshotRun(db, "run-entry-link");
+    await assert.rejects(
+      () => captureRunLibrarySnapshotPg(db, {
+        runId: "run-entry-link",
+        manifestHash: "2".repeat(64),
+        libraryRoot,
+        libraryObjectVersionRefs: [{ objectKey: "skill.entry-link", versionRef: "skill.entry-link@1" }],
+      }),
+      /symlink|escapes library root/i,
+    );
+
+    await symlink(outsideRoot, join(libraryRoot, "skills", "root-link"), "dir");
+    await upsertLibraryObject(db, {
+      objectKey: "skill.root-link",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.root-link@1",
+      state: { body: "safe", assetBundlePath: "library/skills/root-link" },
+    });
+    await createSnapshotRun(db, "run-root-link");
+    await assert.rejects(
+      () => captureRunLibrarySnapshotPg(db, {
+        runId: "run-root-link",
+        manifestHash: "2".repeat(64),
+        libraryRoot,
+        libraryObjectVersionRefs: [{ objectKey: "skill.root-link", versionRef: "skill.root-link@1" }],
+      }),
+      /symlink|escapes library root/i,
+    );
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+    await rm(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test("snapshot capture enforces per-file and total skill bundle byte ceilings", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-size-ceiling-"));
+  try {
+    const perFileRoot = join(libraryRoot, "skills", "large-file");
+    await mkdir(perFileRoot, { recursive: true });
+    await writeFile(join(perFileRoot, "large.md"), Buffer.alloc(256 * 1024 + 1, 97));
+    await upsertLibraryObject(db, {
+      objectKey: "skill.large-file",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.large-file@1",
+      state: { body: "safe", assetBundlePath: "library/skills/large-file" },
+    });
+    await createSnapshotRun(db, "run-large-file");
+    await assert.rejects(
+      () => captureRunLibrarySnapshotPg(db, {
+        runId: "run-large-file",
+        manifestHash: "2".repeat(64),
+        libraryRoot,
+        libraryObjectVersionRefs: [{ objectKey: "skill.large-file", versionRef: "skill.large-file@1" }],
+      }),
+      /bundle file.*too large|per-file.*limit/i,
+    );
+
+    const totalRoot = join(libraryRoot, "skills", "large-total");
+    await mkdir(totalRoot, { recursive: true });
+    for (let index = 0; index < 5; index += 1) {
+      await writeFile(join(totalRoot, `${index}.md`), Buffer.alloc(225 * 1024, 98));
+    }
+    await upsertLibraryObject(db, {
+      objectKey: "skill.large-total",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.large-total@1",
+      state: { body: "safe", assetBundlePath: "library/skills/large-total" },
+    });
+    await createSnapshotRun(db, "run-large-total");
+    await assert.rejects(
+      () => captureRunLibrarySnapshotPg(db, {
+        runId: "run-large-total",
+        manifestHash: "2".repeat(64),
+        libraryRoot,
+        libraryObjectVersionRefs: [{ objectKey: "skill.large-total", versionRef: "skill.large-total@1" }],
+      }),
+      /bundle total.*too large|total.*limit/i,
+    );
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("snapshot capture rejects normalized credential keys but preserves vault reference metadata", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const sensitiveKeys = [
+      "AWS_SECRET_ACCESS_KEY",
+      "clientSecret",
+      "refreshToken",
+      "bearerToken",
+      "dbPassword",
+      "privateKey",
+      "accessToken",
+    ];
+    for (const [index, sensitiveKey] of sensitiveKeys.entries()) {
+      const objectKey = `instruction.secret-key-${index}`;
+      const versionRef = `${objectKey}@1`;
+      await upsertLibraryObject(db, {
+        objectKey,
+        objectKind: "instruction_template",
+        status: "approved",
+        headVersionId: versionRef,
+        state: { content: "safe", [sensitiveKey]: "plain-sensitive-value" },
+      });
+      const runId = `run-secret-key-${index}`;
+      await createSnapshotRun(db, runId);
+      await assert.rejects(
+        () => captureRunLibrarySnapshotPg(db, {
+          runId,
+          manifestHash: "2".repeat(64),
+          libraryObjectVersionRefs: [{ objectKey, versionRef }],
+        }),
+        new RegExp(`credential-looking.*${sensitiveKey}`, "i"),
+      );
+    }
+
+    await upsertLibraryObject(db, {
+      objectKey: "vault.safe-refs",
+      objectKind: "vault_lease_policy",
+      status: "approved",
+      headVersionId: "vault.safe-refs@1",
+      state: {
+        secretGroupRef: "github.write",
+        leaseRef: "vault.github-write-token",
+        vaultLeasePolicyRef: "vault.policy.github",
+        accessTokenRef: "vault.github-access-token",
+        passwordPolicyRef: "policy.password-rotation",
+      },
+    });
+    await createSnapshotRun(db, "run-safe-refs");
+    const snapshot = await captureRunLibrarySnapshotPg(db, {
+      runId: "run-safe-refs",
+      manifestHash: "2".repeat(64),
+      libraryObjectVersionRefs: [{ objectKey: "vault.safe-refs", versionRef: "vault.safe-refs@1" }],
+    });
+    assert.equal(snapshot.objects[0]?.state.secretGroupRef, "github.write");
+    assert.equal(snapshot.objects[0]?.state.accessTokenRef, "vault.github-access-token");
+  } finally {
+    await db.close();
+  }
+});
+
+test("snapshot hash excludes capture time for identical semantic inputs", async () => {
+  const firstDb = await createTestPostgresDb();
+  const secondDb = await createTestPostgresDb();
+  try {
+    await createSnapshotRun(firstDb, "run-stable-hash");
+    const first = await captureRunLibrarySnapshotPg(firstDb, {
+      runId: "run-stable-hash",
+      manifestHash: "2".repeat(64),
+      libraryObjectVersionRefs: [],
+    });
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 5));
+    await createSnapshotRun(secondDb, "run-stable-hash");
+    const second = await captureRunLibrarySnapshotPg(secondDb, {
+      runId: "run-stable-hash",
+      manifestHash: "2".repeat(64),
+      libraryObjectVersionRefs: [],
+    });
+
+    assert.notEqual(first.createdAt, second.createdAt);
+    assert.equal(first.snapshotHash, second.snapshotHash);
+  } finally {
+    await firstDb.close();
+    await secondDb.close();
   }
 });
 
@@ -298,12 +528,26 @@ async function captureSnapshotFromHeads(
   objectKeys: string[],
   libraryRoot?: string,
 ): Promise<void> {
-  const libraryVersionRefs: string[] = [];
+  const libraryObjectVersionRefs: Array<{ objectKey: string; versionRef: string }> = [];
   for (const objectKey of objectKeys) {
     const object = await findLibraryObjectByKey(db, objectKey);
     assert.ok(object?.headVersionId, `missing fixture Library head: ${objectKey}`);
-    libraryVersionRefs.push(object.headVersionId);
+    libraryObjectVersionRefs.push({ objectKey, versionRef: object.headVersionId });
   }
+  await createSnapshotRun(db, runId);
+  await captureRunLibrarySnapshotPg(db, {
+    runId,
+    goalContractHash: "1".repeat(64),
+    manifestHash: "2".repeat(64),
+    libraryObjectVersionRefs,
+    ...(libraryRoot ? { libraryRoot } : {}),
+  });
+}
+
+async function createSnapshotRun(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  runId: string,
+): Promise<void> {
   await createWorkflowRunPg(db, {
     id: runId,
     status: "created",
@@ -314,13 +558,5 @@ async function captureSnapshotFromHeads(
     snapshotJson: "{}",
     runtimeContextJson: "{}",
     metricsJson: "{}",
-  });
-  await captureRunLibrarySnapshotPg(db, {
-    runId,
-    goalContractHash: "1".repeat(64),
-    manifestHash: "2".repeat(64),
-    selectedRefs: objectKeys,
-    libraryVersionRefs,
-    ...(libraryRoot ? { libraryRoot } : {}),
   });
 }

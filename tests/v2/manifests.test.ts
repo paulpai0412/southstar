@@ -45,6 +45,7 @@ test("validates compiledFrom metadata when present", () => {
     compilerVersion: "design-library-compiler-v1",
     inputHash: "1".repeat(64),
     libraryVersionRefs: ["ver-software-template-1"],
+    libraryObjectVersionRefs: [{ objectKey: "obj-software-template", versionRef: "ver-software-template-1" }],
   };
   assert.deepEqual(validatePlanBundle(bundle), { ok: true, issues: [] });
 
@@ -62,12 +63,50 @@ test("compiledFrom includes its selected template version in immutable Library r
     compilerVersion: "library-constrained-compiler-v1",
     inputHash: "1".repeat(64),
     libraryVersionRefs: ["agent.software-maker@1"],
+    libraryObjectVersionRefs: [{ objectKey: "template.software-feature", versionRef: "agent.software-maker@1" }],
   };
 
   const result = validatePlanBundle(bundle);
 
   assert.equal(result.ok, false);
   assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /templateVersionId.*libraryVersionRefs/i);
+});
+
+test("compiledFrom rejects swapped Library object-version pairs", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    templateDefinitionId: "template.software-feature",
+    templateVersionId: "template.software-feature@1",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["template.software-feature@1", "agent.software-maker@1"],
+    libraryObjectVersionRefs: [
+      { objectKey: "template.software-feature", versionRef: "agent.software-maker@1" },
+      { objectKey: "agent.software-maker", versionRef: "template.software-feature@1" },
+    ],
+  };
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /object-version|templateDefinitionId/i);
+});
+
+test("compiledFrom reports malformed object-version pairs without throwing", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    templateDefinitionId: "template.software-feature",
+    templateVersionId: "template.software-feature@1",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["template.software-feature@1"],
+    libraryObjectVersionRefs: [null],
+  } as never;
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /object-version pair/i);
 });
 
 function makeBundle(): PlanBundle {

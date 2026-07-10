@@ -14,6 +14,7 @@ import {
 } from "./fixtures/runtime-manifest-primitives.ts";
 import type { HandProvider } from "../../src/v2/hands/types.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
+import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import {
   createWorkflowRunPg,
@@ -277,6 +278,14 @@ async function seedRun(
     snapshotJson: "{}",
     runtimeContextJson: "{}",
     metricsJson: "{}",
+  });
+  await captureRunLibrarySnapshotPg(db, {
+    runId: input.runId,
+    manifestHash: "2".repeat(64),
+    libraryObjectVersionRefs: [{
+      objectKey: "skill.software-implementation",
+      versionRef: "skill.software-implementation@v1",
+    }],
   });
   await createWorkflowTaskPg(db, {
     id: input.taskId,

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
 import { createManagedContextAssembler } from "../context/managed-context-assembler.ts";
 import type { ExecutorProvider } from "../executor/provider.ts";
@@ -9,6 +10,7 @@ import { withMaterializationMount } from "../executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
 import { createExecutorBindingPg } from "../executor/postgres-bindings.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { cloneRunLibrarySnapshotPg } from "../orchestration/run-library-snapshot.ts";
 import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createLearningEdge, createLearningNode } from "./learning-graph.ts";
 
@@ -121,36 +123,54 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
       envelopeBasePath: input.envelopeBasePath,
     });
 
-    await createWorkflowRunPg(db, {
-      id: sandboxRunId,
-      status: "running",
-      domain: sourceRun.domain,
-      goalPrompt: `[sandbox:${variant}] ${sourceRun.goal_prompt}`,
-      workflowManifestJson: JSON.stringify(workflow),
-      executionProjectionJson: JSON.stringify({ executor: "tork", sandbox: true, variant }),
-      snapshotJson: JSON.stringify({ activeTaskIds: workflow.tasks.map((task) => task.id) }),
-      runtimeContextJson: JSON.stringify({ runMode: "sandbox", sandboxExperimentId: input.experimentId, sandboxVariant: variant, sourceRunId, assetRefs }),
-      metricsJson: JSON.stringify({}),
-    });
-    await appendHistoryEventPg(db, {
-      runId: sandboxRunId,
-      eventType: "sandbox.run_materialized",
-      actorType: "southstar-evolution",
-      payload: { experimentId: input.experimentId, variant, sourceRunId, assetRefs, workspacePath },
+    const manifestHash = contentHashForPayload(workflow);
+    const runtimeContext = { runMode: "sandbox", sandboxExperimentId: input.experimentId, sandboxVariant: variant, sourceRunId, assetRefs, manifestHash };
+    await db.tx(async (tx) => {
+      await createWorkflowRunPg(tx, {
+        id: sandboxRunId,
+        status: "running",
+        domain: sourceRun.domain,
+        goalPrompt: `[sandbox:${variant}] ${sourceRun.goal_prompt}`,
+        workflowManifestJson: JSON.stringify(workflow),
+        executionProjectionJson: JSON.stringify({ executor: "tork", sandbox: true, variant }),
+        snapshotJson: JSON.stringify({ activeTaskIds: workflow.tasks.map((task) => task.id) }),
+        runtimeContextJson: JSON.stringify(runtimeContext),
+        metricsJson: JSON.stringify({}),
+      });
+      const librarySnapshot = await cloneRunLibrarySnapshotPg(tx, {
+        sourceRunId,
+        runId: sandboxRunId,
+        manifestHash,
+      });
+      await tx.query(
+        `update southstar.workflow_runs
+            set runtime_context_json = $2::jsonb,
+                updated_at = now()
+          where id = $1`,
+        [sandboxRunId, JSON.stringify({ ...runtimeContext, librarySnapshotHash: librarySnapshot.snapshotHash })],
+      );
+      await appendHistoryEventPg(tx, {
+        runId: sandboxRunId,
+        eventType: "sandbox.run_materialized",
+        actorType: "southstar-evolution",
+        payload: { experimentId: input.experimentId, variant, sourceRunId, assetRefs, workspacePath },
+      });
+      for (const [index, task] of workflow.tasks.entries()) {
+        await createWorkflowTaskPg(tx, {
+          id: task.id,
+          runId: sandboxRunId,
+          taskKey: task.name ?? task.id,
+          status: "pending",
+          sortOrder: index,
+          dependsOn: task.dependsOn,
+          rootSessionId: `root-${sandboxRunId}-${task.id}`,
+          snapshot: { roleRef: task.roleRef, agentProfileRef: task.agentProfileRef },
+        });
+      }
     });
 
-    for (const [index, task] of workflow.tasks.entries()) {
+    for (const task of workflow.tasks) {
       const sessionId = `root-${sandboxRunId}-${task.id}`;
-      await createWorkflowTaskPg(db, {
-        id: task.id,
-        runId: sandboxRunId,
-        taskKey: task.name ?? task.id,
-        status: "pending",
-        sortOrder: index,
-        dependsOn: task.dependsOn,
-        rootSessionId: sessionId,
-        snapshot: { roleRef: task.roleRef, agentProfileRef: task.agentProfileRef },
-      });
       const assembler = createManagedContextAssembler(db);
       const assembly = await assembler.buildForTask({
         runId: sandboxRunId,

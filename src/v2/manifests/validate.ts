@@ -43,6 +43,33 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
         issues.push({ path: "workflow.compiledFrom.templateVersionId", message: "must be included in compiledFrom.libraryVersionRefs" });
       }
     }
+    const objectVersionRefs = workflow.compiledFrom.libraryObjectVersionRefs;
+    if (!Array.isArray(objectVersionRefs) || objectVersionRefs.length === 0) {
+      issues.push({ path: "workflow.compiledFrom.libraryObjectVersionRefs", message: "must contain exact Library object-version pairs" });
+    } else {
+      const seenObjectKeys = new Set<string>();
+      const validObjectVersionRefs: Array<{ objectKey: string; versionRef: string }> = [];
+      for (const [index, pair] of objectVersionRefs.entries()) {
+        if (!pair || typeof pair.objectKey !== "string" || pair.objectKey.length === 0 || typeof pair.versionRef !== "string" || pair.versionRef.length === 0) {
+          issues.push({ path: `workflow.compiledFrom.libraryObjectVersionRefs.${index}`, message: "must be a non-empty object-version pair" });
+          continue;
+        }
+        if (seenObjectKeys.has(pair.objectKey)) {
+          issues.push({ path: `workflow.compiledFrom.libraryObjectVersionRefs.${index}.objectKey`, message: "must be unique" });
+        }
+        seenObjectKeys.add(pair.objectKey);
+        validObjectVersionRefs.push(pair);
+      }
+      const templatePair = validObjectVersionRefs.find((pair) => pair.objectKey === workflow.compiledFrom!.templateDefinitionId);
+      if (templatePair?.versionRef !== workflow.compiledFrom.templateVersionId) {
+        issues.push({ path: "workflow.compiledFrom.templateDefinitionId", message: "must map to templateVersionId in libraryObjectVersionRefs" });
+      }
+      const pairVersions = [...new Set(validObjectVersionRefs.map((pair) => pair.versionRef))].sort();
+      const compatibilityVersions = [...new Set(workflow.compiledFrom.libraryVersionRefs ?? [])].sort();
+      if (JSON.stringify(pairVersions) !== JSON.stringify(compatibilityVersions)) {
+        issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must match libraryObjectVersionRefs versions" });
+      }
+    }
   }
 
   if (issues.length > 0) return { ok: false, issues };

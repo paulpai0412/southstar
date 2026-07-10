@@ -1,4 +1,5 @@
 import type { CandidatePacket, WorkflowCompositionPlan } from "../design-library/types.ts";
+import type { LibraryObjectVersionRef } from "../manifests/types.ts";
 
 export type CandidateSelectionSummary = {
   workflowTemplateRefs: string[];
@@ -52,20 +53,29 @@ export function summarizeCandidates(packet: CandidatePacket): CandidateSelection
   };
 }
 
-export function collectSelectedVersionRefs(packet: CandidatePacket, composition: WorkflowCompositionPlan): string[] {
-  const versionRefsByRef = new Map<string, string>();
-  for (const candidate of candidateEntries(packet)) {
-    if (candidate.versionRef) {
-      versionRefsByRef.set(candidate.ref, candidate.versionRef);
-    }
+export function collectSelectedObjectVersionRefs(
+  packet: CandidatePacket,
+  composition: WorkflowCompositionPlan,
+  additionalRefs: string[] = [],
+): LibraryObjectVersionRef[] {
+  const versionRefsByRef = new Map(candidateEntries(packet)
+    .filter((candidate): candidate is { ref: string; versionRef: string } => Boolean(candidate.versionRef))
+    .map((candidate) => [candidate.ref, candidate.versionRef]));
+  const missingAdditionalRefs = uniqueSorted(additionalRefs).filter((ref) => !versionRefsByRef.has(ref));
+  if (missingAdditionalRefs.length > 0) {
+    throw new Error(`missing immutable Library candidates for resolved profile refs: ${missingAdditionalRefs.join(", ")}`);
   }
-  const selectedVersionRefs = collectSelectedRefs(packet, composition)
-    .map((ref) => versionRefsByRef.get(ref))
-    .filter((value): value is string => Boolean(value));
-  return uniqueSorted(selectedVersionRefs);
+  return collectSelectedRefs(packet, composition, additionalRefs).map((objectKey) => ({
+    objectKey,
+    versionRef: requiredVersionRef(versionRefsByRef, objectKey),
+  }));
 }
 
-export function collectSelectedRefs(packet: CandidatePacket, composition: WorkflowCompositionPlan): string[] {
+export function collectSelectedRefs(
+  packet: CandidatePacket,
+  composition: WorkflowCompositionPlan,
+  additionalRefs: string[] = [],
+): string[] {
   const availableRefs = new Set(candidateEntries(packet).map((candidate) => candidate.ref));
   const selectedRefs = new Set<string>([composition.selectedWorkflowTemplateRef]);
   for (const task of composition.tasks) {
@@ -83,7 +93,14 @@ export function collectSelectedRefs(packet: CandidatePacket, composition: Workfl
     if (task.contextPolicyRef) selectedRefs.add(task.contextPolicyRef);
     if (task.workspacePolicyRef) selectedRefs.add(task.workspacePolicyRef);
   }
+  addRefs(selectedRefs, additionalRefs);
   return uniqueSorted([...selectedRefs].filter((ref) => availableRefs.has(ref)));
+}
+
+function requiredVersionRef(versionRefsByRef: Map<string, string>, objectKey: string): string {
+  const versionRef = versionRefsByRef.get(objectKey);
+  if (!versionRef) throw new Error(`missing immutable Library version for selected object: ${objectKey}`);
+  return versionRef;
 }
 
 function candidateEntries(packet: CandidatePacket): Array<{ ref: string; versionRef?: string }> {
