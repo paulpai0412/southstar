@@ -643,6 +643,13 @@ test("failed validation callback applies dynamic repair revision before completi
       queueTimeoutSeconds: 3600,
       hardTimeoutSeconds: 600,
     });
+    await seedDynamicCallbackEvidenceState(db, {
+      runId: "run-callback-dynamic-repair",
+      taskId: "verify-feature",
+      sessionId: "session-verify",
+      attemptId: "attempt-1",
+      goalContract: lineage.goalContract,
+    });
 
     const result = await ingestTaskRunResultPg(db, {
       runId: "run-callback-dynamic-repair",
@@ -723,6 +730,13 @@ test("failing verification report semantics apply dynamic repair revision", asyn
       now: "2026-07-05T10:00:00.000Z",
       queueTimeoutSeconds: 3600,
       hardTimeoutSeconds: 600,
+    });
+    await seedDynamicCallbackEvidenceState(db, {
+      runId: "run-callback-semantic-verification-failure",
+      taskId: "verify-feature",
+      sessionId: "session-verify",
+      attemptId: "attempt-1",
+      goalContract: lineage.goalContract,
     });
 
     const result = await ingestTaskRunResultPg(db, {
@@ -809,6 +823,13 @@ test("direct verification report fields apply dynamic repair revision", async ()
       now: "2026-07-05T10:00:00.000Z",
       queueTimeoutSeconds: 3600,
       hardTimeoutSeconds: 600,
+    });
+    await seedDynamicCallbackEvidenceState(db, {
+      runId: "run-callback-direct-verification-failure",
+      taskId: "verify-feature",
+      sessionId: "session-verify",
+      attemptId: "attempt-1",
+      goalContract: lineage.goalContract,
     });
 
     const result = await ingestTaskRunResultPg(db, {
@@ -903,6 +924,13 @@ test("failed callback advances dynamic repair round when prior repair task exist
       now: "2026-07-05T10:00:00.000Z",
       queueTimeoutSeconds: 3600,
       hardTimeoutSeconds: 600,
+    });
+    await seedDynamicCallbackEvidenceState(db, {
+      runId: "run-callback-invalid-dynamic-repair",
+      taskId: "verify-feature",
+      sessionId: "session-verify",
+      attemptId: "attempt-1",
+      goalContract: lineage.goalContract,
     });
 
     const result = await ingestTaskRunResultPg(db, {
@@ -1389,4 +1417,108 @@ async function seedPlannerDraftLineage(
     goalContractHash: contractHash,
     runtimeContextJson: JSON.stringify({ draftId, goalContractHash: contractHash }),
   };
+}
+
+async function seedDynamicCallbackEvidenceState(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  input: {
+    runId: string;
+    taskId: string;
+    sessionId: string;
+    attemptId: string;
+    goalContract: GoalContractV1;
+  },
+): Promise<void> {
+  const contractHash = goalContractHash(input.goalContract);
+  await upsertRuntimeResourcePg(db, {
+    id: `goal-requirement-coverage:${input.runId}`,
+    resourceType: "goal_requirement_coverage",
+    resourceKey: input.runId,
+    runId: input.runId,
+    scope: "run",
+    status: "frozen",
+    title: "Goal Requirement Coverage",
+    payload: {
+      schemaVersion: "southstar.goal_requirement_coverage.v1",
+      goalContractHash: contractHash,
+      entries: input.goalContract.requirements.map((requirement) => ({
+        requirementId: requirement.id,
+        producerTaskIds: ["implement-feature"],
+        artifactRefs: ["artifact.todo_app"],
+        evaluatorTaskIds: [input.taskId],
+        evaluatorProfileRefs: ["evaluator.schema-evaluator-v1"],
+        requiredEvidenceKinds: ["artifact-ref"],
+      })),
+    },
+    summary: { goalContractHash: contractHash },
+  });
+  const handExecutionId = `hand-execution:${input.runId}:${input.taskId}:${input.attemptId}`;
+  await upsertRuntimeResourcePg(db, {
+    id: handExecutionId,
+    resourceType: "hand_execution",
+    resourceKey: handExecutionId,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    scope: "hand",
+    status: "running",
+    title: `Hand execution ${input.taskId}`,
+    payload: {
+      schemaVersion: "southstar.runtime.hand_execution.v1",
+      handExecutionId,
+      providerId: "tork",
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId: input.attemptId,
+      brainBindingId: `brain-${input.runId}-${input.taskId}`,
+      handBindingId: `hand-${input.runId}-${input.taskId}`,
+      status: "running",
+      queuedAt: "2026-07-05T10:00:00.000Z",
+      queueTimeoutSeconds: 3600,
+      heartbeatTimeoutSeconds: 60,
+    },
+  });
+  const intentKey = `task-intent:${input.runId}:${input.taskId}:${input.attemptId}`;
+  await upsertRuntimeResourcePg(db, {
+    id: intentKey,
+    resourceType: "task_execution_intent",
+    resourceKey: intentKey,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    scope: "task",
+    status: "created",
+    title: `Task intent ${input.taskId}`,
+    payload: {
+      schemaVersion: "southstar.brain.task_execution_intent.v1",
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId: input.attemptId,
+      handProviderId: "tork",
+    },
+  });
+  const envelopeKey = `task-envelope-${input.runId}-${input.taskId}-${input.attemptId}`;
+  await upsertRuntimeResourcePg(db, {
+    id: envelopeKey,
+    resourceType: "task_envelope",
+    resourceKey: envelopeKey,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    scope: "task",
+    status: "materialized",
+    title: `Task envelope ${input.taskId}`,
+    payload: {
+      envelope: {
+        schemaVersion: "southstar.task-envelope.v2",
+        runId: input.runId,
+        taskId: input.taskId,
+        evaluatorPipeline: { id: "schema-evaluator-v1" },
+        session: { sessionId: input.sessionId },
+      },
+    },
+    summary: { attemptId: input.attemptId },
+  });
 }

@@ -5,7 +5,10 @@ import { recordArtifactRepairMarkerPg } from "../artifacts/lineage.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
-import { recordRequirementEvaluatorResultsPg } from "../evaluators/requirement-evaluator-results.ts";
+import {
+  assertRequirementEvaluatorExecutionIdentityPg,
+  recordRequirementEvaluatorResultsPg,
+} from "../evaluators/requirement-evaluator-results.ts";
 import { writeCallbackMemoryPg } from "../memory/writeback-policy.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
@@ -48,6 +51,22 @@ export async function ingestTaskRunResultPg(
     );
     if (!run) throw new Error(`callback run not found: ${result.runId}`);
 
+    if (run.status === "cancelled") {
+      return { kind: "result" as const, result: await recordCancelledRunCallbackAuditPg(tx, result, receipt) };
+    }
+
+    try {
+      await assertRequirementEvaluatorExecutionIdentityPg(tx, {
+        runId: result.runId,
+        taskId: result.taskId,
+        rootSessionId: result.rootSessionId,
+        attemptId: result.attemptId,
+        handExecutionId,
+      });
+    } catch (error) {
+      return { kind: "error" as const, error };
+    }
+
     const existingReceipt = await tx.maybeOne<{ id: string }>(
       "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
       [result.runId, receipt.idempotencyKey],
@@ -61,10 +80,6 @@ export async function ingestTaskRunResultPg(
           ...(run.status === "cancelled" ? { ignoredRunStatus: run.status } : {}),
         },
       };
-    }
-
-    if (run.status === "cancelled") {
-      return { kind: "result" as const, result: await recordCancelledRunCallbackAuditPg(tx, result, receipt) };
     }
 
     try {
@@ -85,12 +100,6 @@ export async function ingestTaskRunResultPg(
       [result.runId],
     );
     if (!run) throw new Error(`callback run not found: ${result.runId}`);
-
-    const existingReceipt = await tx.maybeOne<{ id: string }>(
-      "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
-      [result.runId, receipt.idempotencyKey],
-    );
-    if (existingReceipt) return { ...(await duplicateCallbackOutcome(tx, result, receipt.idempotencyKey)), duplicate: true };
     if (run.status === "cancelled") return await recordCancelledRunCallbackAuditPg(tx, result, receipt);
 
     const task = await tx.maybeOne<{ status: string; root_session_id: string | null }>(
@@ -98,6 +107,20 @@ export async function ingestTaskRunResultPg(
       [result.runId, result.taskId],
     );
     if (!task) throw new Error(`callback task not found: ${result.runId}/${result.taskId}`);
+
+    await assertRequirementEvaluatorExecutionIdentityPg(tx, {
+      runId: result.runId,
+      taskId: result.taskId,
+      rootSessionId: result.rootSessionId,
+      attemptId: result.attemptId,
+      handExecutionId,
+    });
+
+    const existingReceipt = await tx.maybeOne<{ id: string }>(
+      "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+      [result.runId, receipt.idempotencyKey],
+    );
+    if (existingReceipt) return { ...(await duplicateCallbackOutcome(tx, result, receipt.idempotencyKey)), duplicate: true };
 
     await appendHistoryEventPg(tx, {
       runId: result.runId,
@@ -182,6 +205,9 @@ export async function ingestTaskRunResultPg(
       artifactRefId: identity.artifactRefId,
       artifact: effectiveResult.artifact,
       callbackOk: effectiveResult.ok,
+      rootSessionId: effectiveResult.rootSessionId,
+      attemptId: effectiveResult.attemptId,
+      handExecutionId,
       now: effectiveResult.receivedAt,
     });
     const accepted = effectiveResult.ok && requirementEvaluation.ok;

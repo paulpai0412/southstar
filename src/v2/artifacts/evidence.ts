@@ -136,7 +136,103 @@ function evidenceByKind(artifact: Record<string, unknown>, now: string): Map<Evi
     });
   }
 
+  const browserEvidence = isRecord(artifact.browserEvidence) ? artifact.browserEvidence : {};
+  const browserUrl = firstDefined(
+    browserEvidence.url,
+    firstArrayItem(browserEvidence.urls),
+    artifact.url,
+    firstArrayItem(artifact.urls),
+  );
+  if (browserUrl !== undefined) {
+    const safeUrl = safeHttpUrl(browserUrl);
+    byKind.set("url", safeUrl
+      ? {
+        kind: "url",
+        status: "present",
+        summary: `Visited ${safeUrl}`,
+        sourceRef: isRecord(artifact.browserEvidence) ? "artifact.browserEvidence.url" : "artifact.url",
+        sha256: shortHash(safeUrl),
+        capturedAt: now,
+        redactionApplied: true,
+      }
+      : invalidBrowserEvidence("url", "browser URL must be a credential-free HTTP(S) URL", now));
+  }
+
+  const screenshot = firstDefined(
+    firstArrayItem(browserEvidence.screenshots),
+    browserEvidence.screenshot,
+    firstArrayItem(artifact.screenshots),
+    artifact.screenshot,
+  );
+  if (screenshot !== undefined) {
+    const safeScreenshot = safeScreenshotRef(screenshot);
+    byKind.set("screenshot", safeScreenshot
+      ? {
+        kind: "screenshot",
+        status: "present",
+        summary: `Captured screenshot ${safeScreenshot}`,
+        sourceRef: isRecord(artifact.browserEvidence)
+          ? "artifact.browserEvidence.screenshots"
+          : "artifact.screenshots",
+        sha256: shortHash(safeScreenshot),
+        capturedAt: now,
+        redactionApplied: true,
+      }
+      : invalidBrowserEvidence("screenshot", "screenshot must use an artifact ref, safe relative path, or HTTP(S) URL", now));
+  }
+
   return byKind;
+}
+
+function firstDefined(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
+}
+
+function firstArrayItem(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : undefined;
+}
+
+function safeHttpUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_048) return undefined;
+  try {
+    const parsed = new URL(value);
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) return undefined;
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function safeScreenshotRef(value: unknown): string | undefined {
+  const candidate = isRecord(value)
+    ? firstDefined(value.artifactRef, value.ref, value.path, value.url)
+    : value;
+  if (typeof candidate !== "string" || candidate.length === 0 || candidate.length > 1_024) return undefined;
+  if (candidate.startsWith("artifact_ref:")) return candidate;
+  const url = safeHttpUrl(candidate);
+  if (url) return url;
+  if (
+    candidate.startsWith("/")
+    || candidate.includes(":")
+    || candidate.includes("\\")
+    || candidate.split("/").some((segment) => segment === ".." || segment === ".")
+    || !/\.(png|jpe?g|webp)$/i.test(candidate)
+  ) return undefined;
+  return candidate;
+}
+
+function invalidBrowserEvidence(
+  kind: "url" | "screenshot",
+  summary: string,
+  now: string,
+): EvidencePacket["evidenceItems"][number] {
+  return {
+    kind,
+    status: "invalid",
+    summary,
+    capturedAt: now,
+    redactionApplied: true,
+  };
 }
 
 function firstCommandResult(value: unknown): Record<string, unknown> | undefined {

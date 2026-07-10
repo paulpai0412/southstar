@@ -252,23 +252,57 @@ async function dispatchTask(
 
     if (!deps.handProvider.executeTask) throw new Error(`hand provider ${deps.handProvider.providerId} does not support executeTask`);
 
-    const handResult = await deps.handProvider.executeTask(handBinding, {
+    await persistHandExecution(db, {
       runId: input.runId,
       taskId: input.taskId,
       sessionId: input.sessionId,
       attemptId,
-      handExecutionId,
       brainBindingId,
       handBindingId,
-      intent,
-      contextPacketRef: contextPacketId,
-      taskEnvelope: assembly.taskEnvelope,
-      acceptedInputArtifactRefs,
-      toolProxyPolicyRef,
-      workflow: input.manifest,
+      handExecutionId,
+      providerId: deps.handProvider.providerId,
+      status: "queued",
       queueTimeoutSeconds,
       heartbeatTimeoutSeconds,
     });
+
+    let handResult;
+    try {
+      handResult = await deps.handProvider.executeTask(handBinding, {
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        attemptId,
+        handExecutionId,
+        brainBindingId,
+        handBindingId,
+        intent,
+        contextPacketRef: contextPacketId,
+        taskEnvelope: assembly.taskEnvelope,
+        acceptedInputArtifactRefs,
+        toolProxyPolicyRef,
+        workflow: input.manifest,
+        queueTimeoutSeconds,
+        heartbeatTimeoutSeconds,
+      });
+    } catch (error) {
+      handRejected = true;
+      await markTaskDispatchFailed(db, {
+        runId: input.runId,
+        taskId: input.taskId,
+        sessionId: input.sessionId,
+        attemptId,
+        handExecutionId,
+        brainBindingId,
+        handBindingId,
+        providerId: deps.handProvider.providerId,
+        queueTimeoutSeconds,
+        heartbeatTimeoutSeconds,
+        recoveryKey,
+        errorMessage: errorMessage(error),
+      });
+      throw error;
+    }
     if (!handResult.ok) {
       handRejected = true;
       await persistHandBindingPg(db, handBinding);
@@ -289,24 +323,15 @@ async function dispatchTask(
       throw new Error(handResult.output);
     }
     handAccepted = true;
-    await persistHandBindingPg(db, handBinding);
-
     const externalJobId = stringValue(handResult.metadata.externalJobId) ?? handResult.output;
-    await persistHandExecution(db, {
+    const queued = await finalizeSubmittedHandExecutionPg(db, {
       runId: input.runId,
       taskId: input.taskId,
-      sessionId: input.sessionId,
-      attemptId,
-      brainBindingId,
-      handBindingId,
       handExecutionId,
-      providerId: deps.handProvider.providerId,
-      status: "queued",
       externalJobId,
-      queueTimeoutSeconds,
-      heartbeatTimeoutSeconds,
+      handBinding,
     });
-    await db.query("update southstar.workflow_tasks set status = 'queued', updated_at = now() where run_id = $1 and id = $2", [input.runId, input.taskId]);
+    if (!queued) return;
     await appendHistoryEventOnce(db, {
       runId: input.runId,
       taskId: input.taskId,
@@ -355,6 +380,65 @@ async function dispatchTask(
     });
     throw error;
   }
+}
+
+async function finalizeSubmittedHandExecutionPg(
+  db: SouthstarDb,
+  input: {
+    runId: string;
+    taskId: string;
+    handExecutionId: string;
+    externalJobId: string;
+    handBinding: HandBinding;
+  },
+): Promise<boolean> {
+  return await db.tx(async (tx) => {
+    const handExecution = await tx.maybeOne<{ status: string }>(
+      `select status
+         from southstar.runtime_resources
+        where resource_type = 'hand_execution' and resource_key = $1
+        for update`,
+      [input.handExecutionId],
+    );
+    if (!handExecution) throw new Error(`hand execution disappeared after provider submit: ${input.handExecutionId}`);
+    const task = await tx.one<{ status: string }>(
+      "select status from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
+      [input.runId, input.taskId],
+    );
+    await tx.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(payload_json, '{externalJobId}', to_jsonb($2::text), true),
+              updated_at = now()
+        where resource_type = 'hand_execution' and resource_key = $1`,
+      [input.handExecutionId, input.externalJobId],
+    );
+    if (isTerminalHandExecutionStatus(handExecution.status) || isTerminalTaskStatus(task.status)) return false;
+
+    const persistedHandBinding = await tx.maybeOne<{ status: string }>(
+      "select status from southstar.runtime_resources where resource_type = 'hand_binding' and resource_key = $1 for update",
+      [input.handBinding.id],
+    );
+    if (!persistedHandBinding || !isTerminalBindingStatus(persistedHandBinding.status)) {
+      await persistHandBindingPg(tx, input.handBinding);
+    }
+    const updated = await tx.query<{ id: string }>(
+      "update southstar.workflow_tasks set status = 'queued', updated_at = now() where run_id = $1 and id = $2 and status = 'claimed' returning id",
+      [input.runId, input.taskId],
+    );
+    return updated.rows.length > 0;
+  });
+}
+
+function isTerminalHandExecutionStatus(status: string): boolean {
+  return ["completed", "failed", "lost", "superseded", "cancelled"].includes(status);
+}
+
+function isTerminalTaskStatus(status: string): boolean {
+  return ["completed", "failed", "cancelled", "lost", "blocked"].includes(status);
+}
+
+function isTerminalBindingStatus(status: string): boolean {
+  return ["succeeded", "failed", "cancelled", "lost", "destroyed"].includes(status);
 }
 
 async function latestSessionRecoveryCheckpointRefsForTask(

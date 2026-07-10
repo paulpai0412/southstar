@@ -5,6 +5,7 @@ import { compileWorkflowComposition } from "../orchestration/composition-compile
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
 import {
   goalContractHash,
+  storedGoalContract,
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
 import type { WorkflowCompositionPlan } from "../design-library/types.ts";
@@ -334,45 +335,6 @@ async function loadCanonicalGoalContractLineage(
     return { reason: "goal-contract-hash-mismatch" };
   }
   return { goalContract, goalContractHash: recomputedGoalContractHash };
-}
-
-function storedGoalContract(value: unknown): GoalContractV1 | undefined {
-  const contract = asRecord(value);
-  const workspace = asRecord(contract.workspace);
-  if (contract.schemaVersion !== "southstar.goal_contract.v1") return undefined;
-  if (
-    !nonEmptyString(contract.originalPrompt)
-    || !nonEmptyString(contract.promptHash)
-    || !Number.isInteger(contract.revision)
-    || !nonEmptyString(workspace.cwd)
-    || !nonEmptyString(contract.domain)
-    || !nonEmptyString(contract.intent)
-    || !nonEmptyString(contract.summary)
-  ) return undefined;
-  if (workspace.projectRef !== undefined && !nonEmptyString(workspace.projectRef)) return undefined;
-  const stringArrayFields = [
-    "expectedArtifactRefs",
-    "requiredCapabilities",
-    "nonGoals",
-    "assumptions",
-    "blockingInputs",
-    "riskTags",
-    "requestedSideEffects",
-  ];
-  if (stringArrayFields.some((field) => !isStringArray(contract[field]))) return undefined;
-  if (!Array.isArray(contract.requirements) || contract.requirements.length === 0) return undefined;
-  if (!contract.requirements.every((value) => {
-    const requirement = asRecord(value);
-    return Boolean(
-      nonEmptyString(requirement.id)
-      && nonEmptyString(requirement.statement)
-      && isStringArray(requirement.acceptanceCriteria)
-      && (requirement.acceptanceCriteria as string[]).length > 0
-      && typeof requirement.blocking === "boolean"
-      && (requirement.source === "explicit" || requirement.source === "inferred"),
-    );
-  })) return undefined;
-  return contract as GoalContractV1;
 }
 
 function rewriteDynamicRepairTasks(

@@ -6,10 +6,58 @@ import {
   artifactRefIdentity,
   sha256Stable,
 } from "../../src/v2/artifacts/artifact-ref-store.ts";
+import { buildEvidencePacket } from "../../src/v2/artifacts/evidence.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE, type ArtifactRefPayload } from "../../src/v2/artifacts/types.ts";
 import { createWorkflowRunPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("buildEvidencePacket captures redacted browser URL and screenshot evidence", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-browser-evidence",
+    taskId: "task-browser-verify",
+    artifactRef: "artifact-ref-browser",
+    requiredEvidenceKinds: ["url", "screenshot"],
+    artifact: {
+      browserEvidence: {
+        url: "https://example.test/subscriptions?access_token=secret#private",
+        screenshots: [{ path: "artifacts/subscription-page.png" }],
+      },
+    },
+    now: "2026-07-11T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness.missingKinds, []);
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+    ["url", "present"],
+    ["screenshot", "present"],
+  ]);
+  assert.match(packet.evidenceItems[0]!.summary, /https:\/\/example\.test\/subscriptions/);
+  assert.doesNotMatch(JSON.stringify(packet), /access_token|secret|private/);
+  assert.equal(packet.evidenceItems.every((item) => item.redactionApplied), true);
+});
+
+test("buildEvidencePacket marks malformed browser evidence invalid without exposing host paths", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-browser-evidence-invalid",
+    taskId: "task-browser-verify",
+    artifactRef: "artifact-ref-browser-invalid",
+    requiredEvidenceKinds: ["url", "screenshot"],
+    artifact: {
+      browserEvidence: {
+        url: "file:///home/user/.ssh/id_rsa",
+        screenshots: [{ path: "../../home/user/.ssh/id_rsa" }],
+      },
+    },
+    now: "2026-07-11T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+    ["url", "invalid"],
+    ["screenshot", "invalid"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(packet), /home\/user|id_rsa/);
+});
 
 test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref runtime resources", async () => {
   const db = await createTestPostgresDb();

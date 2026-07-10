@@ -154,6 +154,45 @@ export function goalContractHash(contract: GoalContractV1): string {
   return createHash("sha256").update(stableStringify(contract)).digest("hex");
 }
 
+export function storedGoalContract(value: unknown): GoalContractV1 | undefined {
+  const contract = asRecord(value);
+  const workspace = asRecord(contract.workspace);
+  if (contract.schemaVersion !== "southstar.goal_contract.v1") return undefined;
+  if (
+    !nonEmptyString(contract.originalPrompt)
+    || !nonEmptyString(contract.promptHash)
+    || !Number.isInteger(contract.revision)
+    || !nonEmptyString(workspace.cwd)
+    || !nonEmptyString(contract.domain)
+    || !nonEmptyString(contract.intent)
+    || !nonEmptyString(contract.summary)
+  ) return undefined;
+  if (workspace.projectRef !== undefined && !nonEmptyString(workspace.projectRef)) return undefined;
+  const stringArrayFields = [
+    "expectedArtifactRefs",
+    "requiredCapabilities",
+    "nonGoals",
+    "assumptions",
+    "blockingInputs",
+    "riskTags",
+    "requestedSideEffects",
+  ];
+  if (stringArrayFields.some((field) => !isStringArray(contract[field]))) return undefined;
+  if (!Array.isArray(contract.requirements) || contract.requirements.length === 0) return undefined;
+  if (!contract.requirements.every((value) => {
+    const requirement = asRecord(value);
+    return Boolean(
+      nonEmptyString(requirement.id)
+      && nonEmptyString(requirement.statement)
+      && isStringArray(requirement.acceptanceCriteria)
+      && (requirement.acceptanceCriteria as string[]).length > 0
+      && typeof requirement.blocking === "boolean"
+      && (requirement.source === "explicit" || requirement.source === "inferred"),
+    );
+  })) return undefined;
+  return contract as GoalContractV1;
+}
+
 export function requirementSpecFromGoalContract(contract: GoalContractV1): RequirementSpecV2 {
   return {
     summary: contract.summary,
@@ -303,6 +342,18 @@ function exactKeys(object: Record<string, unknown>, allowedKeys: readonly string
 
 function normalizeStatement(statement: string): string {
   return statement.trim();
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0);
 }
 
 function workTypeFromContract(contract: GoalContractV1): RequirementSpecV2["workType"] {

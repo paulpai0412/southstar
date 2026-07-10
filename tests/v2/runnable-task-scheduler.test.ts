@@ -18,6 +18,8 @@ import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts
 import type { ExecuteTaskInput, HandBinding, HandProvider } from "../../src/v2/hands/types.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
+import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
+import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import { listManagedBindingsForRunPg } from "../../src/v2/meta-harness/postgres-bindings.ts";
 import {
   createWorkflowRunPg,
@@ -86,6 +88,26 @@ test("runnable scheduler dispatches a dependent pending task when dependencies h
     const bindingsAfterRetry = await listManagedBindingsForRunPg(db, "run-scheduler-dependent-ready");
     assert.equal(bindingsAfterRetry.brainBindings.length, 1);
     assert.equal(bindingsAfterRetry.handBindings.length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler persists hand execution before invoking the external provider", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-persist-before-effect",
+      maxParallelTasks: 1,
+      tasks: [{ id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] }],
+    });
+    await seedContextPacket(db, "run-scheduler-persist-before-effect", "task-a");
+
+    const fixture = scheduler(db, { assertHandExecutionBeforeProvider: true });
+    await fixture.scheduler.runOnce({ runId: "run-scheduler-persist-before-effect" });
+
+    assert.equal(fixture.persistedBeforeProvider, true);
   } finally {
     await db.close();
   }
@@ -491,6 +513,60 @@ test("runnable scheduler records runtime exception and reprovision decision when
   }
 });
 
+test("runnable scheduler terminalizes the pre-persisted hand execution when provider throws", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-provider-throws",
+      maxParallelTasks: 1,
+      tasks: [{ id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] }],
+    });
+    await seedContextPacket(db, "run-scheduler-provider-throws", "task-a");
+
+    const fixture = scheduler(db, { throwExecuteTask: true });
+    await assert.rejects(
+      fixture.scheduler.runOnce({ runId: "run-scheduler-provider-throws" }),
+      /provider submit threw/,
+    );
+
+    const handExecution = (await listResourcesPg(db, { resourceType: "hand_execution" }))
+      .find((resource) => resource.runId === "run-scheduler-provider-throws" && resource.taskId === "task-a");
+    assert.equal(handExecution?.status, "failed");
+    assert.equal(handExecution?.payload.status, "failed");
+    assert.equal((await taskRow(db, "run-scheduler-provider-throws", "task-a")).status, "failed");
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler does not reopen task or hand state after a fast callback", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-fast-callback",
+      maxParallelTasks: 1,
+      tasks: [{ id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] }],
+    });
+    await seedContextPacket(db, "run-scheduler-fast-callback", "task-a");
+
+    const fixture = scheduler(db, { fastCallback: true });
+    await fixture.scheduler.runOnce({ runId: "run-scheduler-fast-callback" });
+
+    assert.equal((await taskRow(db, "run-scheduler-fast-callback", "task-a")).status, "completed");
+    const handExecution = (await listResourcesPg(db, { resourceType: "hand_execution" }))
+      .find((resource) => resource.runId === "run-scheduler-fast-callback" && resource.taskId === "task-a");
+    assert.equal(handExecution?.status, "completed");
+    assert.equal(handExecution?.payload.status, "completed");
+    assert.equal(handExecution?.payload.externalJobId, "job-task-a");
+    const history = await listHistoryForRunPg(db, "run-scheduler-fast-callback");
+    assert.equal(history.some((event) => event.eventType === "hand.execute_queued"), false);
+  } finally {
+    await db.close();
+  }
+});
+
 test("runnable scheduler blocks pre-execution tool proxy violations without persisting leaked intent or retrying", async () => {
   const db = await createTestPostgresDb();
   const rawToken = "ghp_abcdefghijklmnopqrstuvwxyz123456";
@@ -580,15 +656,43 @@ function scheduler(
     failBrainWake?: boolean;
     omitExecuteTask?: boolean;
     brainProviderId?: string;
+    assertHandExecutionBeforeProvider?: boolean;
+    throwExecuteTask?: boolean;
+    fastCallback?: boolean;
   } = {},
 ) {
   const executeTaskCalls: ExecuteTaskInput[] = [];
   const executeTaskBindings: HandBinding[] = [];
+  let persistedBeforeProvider = false;
   const handProvider: HandProvider = createFakeHandProvider({ providerId: "fake-hand" });
   if (!input.omitExecuteTask) {
     handProvider.executeTask = async (binding, executeTaskInput) => {
       executeTaskBindings.push(binding);
       executeTaskCalls.push(executeTaskInput);
+      if (input.assertHandExecutionBeforeProvider) {
+        const persisted = await db.maybeOne<{ status: string; payload_json: unknown }>(
+          "select status, payload_json from southstar.runtime_resources where resource_type = 'hand_execution' and resource_key = $1",
+          [executeTaskInput.handExecutionId],
+        );
+        assert.equal(persisted?.status, "queued");
+        assert.equal((persisted?.payload_json as { externalJobId?: string } | undefined)?.externalJobId, undefined);
+        persistedBeforeProvider = true;
+      }
+      if (input.throwExecuteTask) throw new Error("provider submit threw");
+      if (input.fastCallback) {
+        await ingestTaskRunResultPg(db, {
+          runId: executeTaskInput.runId,
+          taskId: executeTaskInput.taskId,
+          rootSessionId: executeTaskInput.sessionId,
+          ok: true,
+          attempts: 1,
+          attemptId: executeTaskInput.attemptId,
+          artifact: { kind: "implementation_report", summary: "fast callback completed" },
+          metrics: {},
+          events: [],
+          receivedAt: "2026-07-11T00:00:00.000Z",
+        });
+      }
       if (input.failExecuteTask || input.executeTaskFailureOutput) {
         return { ok: false, output: input.executeTaskFailureOutput ?? `hand execution failed for ${executeTaskInput.taskId}`, metadata: {} };
       }
@@ -605,6 +709,7 @@ function scheduler(
   return {
     executeTaskCalls,
     executeTaskBindings,
+    get persistedBeforeProvider() { return persistedBeforeProvider; },
     scheduler: createRunnableTaskScheduler(db, {
     sessionStore: createPostgresSessionStore(db),
     brainProvider: createFakeBrainProvider({
@@ -626,7 +731,7 @@ function dbFailingQueuedTaskUpdate(db: SouthstarDb): SouthstarDb {
     },
     one: db.one.bind(db),
     maybeOne: db.maybeOne.bind(db),
-    tx: db.tx.bind(db),
+    tx: async (run) => await db.tx(async (tx) => await run(dbFailingQueuedTaskUpdate(tx))),
     close: db.close.bind(db),
   };
 }
@@ -721,6 +826,14 @@ async function seedRun(
     snapshotJson: "{}",
     runtimeContextJson: "{}",
     metricsJson: "{}",
+  });
+  await captureRunLibrarySnapshotPg(db, {
+    runId: input.runId,
+    manifestHash: `manifest-${input.runId}`,
+    libraryObjectVersionRefs: [{
+      objectKey: "skill.software-implementation",
+      versionRef: "skill.software-implementation@v1",
+    }],
   });
 
   for (const task of input.tasks) {

@@ -89,7 +89,7 @@ export function evidenceValidatorResult(input: {
   const messages = [...missingMessages, ...invalidMessages];
   return {
     schemaVersion: VALIDATOR_RESULT_SCHEMA_VERSION,
-    id: `validator-${input.runId}-${input.taskId}-${input.contractRef}-evidence`,
+    id: `validator:${input.evidence.id}`,
     runId: input.runId,
     taskId: input.taskId,
     artifactRef: input.artifactRef,

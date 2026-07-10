@@ -230,7 +230,7 @@ function renderContextPacketPrompt(
     formatBlocks("Agents.md", packet.agentsMdBlocks),
     formatBlocks("Memory", packet.selectedMemories),
     formatBlocks("Knowledge Cards", packet.selectedKnowledgeCards ?? []),
-    formatBlocks("Prior artifacts", packet.priorArtifacts),
+    formatPriorArtifacts(packet.priorArtifacts),
     formatBlocks("Checkpoint", packet.checkpointSummary ? [packet.checkpointSummary] : []),
     formatBlocks("Failure", packet.failureSummary ? [packet.failureSummary] : []),
     formatBlocks("Workspace", packet.workspaceSummary ? [packet.workspaceSummary] : []),
@@ -310,6 +310,19 @@ function formatTestCases(testCases: NonNullable<ContextPacket["nodePromptSpec"]>
 function formatBlocks(title: string, blocks: ContextBlock[]): string {
   if (blocks.length === 0) return "";
   return ["", `${title}:`, ...blocks.map((block) => `- ${block.text}`)].join("\n");
+}
+
+function formatPriorArtifacts(blocks: ContextBlock[]): string {
+  if (blocks.length === 0) return "";
+  return [
+    "",
+    "Prior artifacts:",
+    ...blocks.flatMap((block) => [
+      `- ArtifactRef: ${block.sourceRef ?? block.id}`,
+      `  ${block.text}`,
+    ]),
+    "Verifier and reviewer artifacts must return verifiedArtifactRefs containing the exact ArtifactRef values they evaluated.",
+  ].join("\n");
 }
 
 function formatRuntimeGrantContract(input: {
