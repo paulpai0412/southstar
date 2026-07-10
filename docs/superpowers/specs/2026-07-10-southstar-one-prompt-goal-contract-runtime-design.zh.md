@@ -214,6 +214,7 @@ type GoalContractV1 = {
   schemaVersion: "southstar.goal_contract.v1";
   originalPrompt: string;
   promptHash: string;
+  revision: number;
   workspace: {
     cwd: string;
     projectRef?: string;
@@ -224,11 +225,12 @@ type GoalContractV1 = {
   requirements: Array<{
     id: string;
     statement: string;
+    acceptanceCriteria: string[];
     blocking: boolean;
     source: "explicit" | "inferred";
   }>;
   expectedArtifactRefs: string[];
-  requiredCapabilityRefs: string[];
+  requiredCapabilities: string[];
   nonGoals: string[];
   assumptions: string[];
   blockingInputs: string[];
@@ -240,11 +242,15 @@ type GoalContractV1 = {
 Rules:
 
 - Requirement ids are stable inside a draft revision lineage.
+- Every requirement has observable acceptance criteria; execution strategy and evaluator bindings remain outside the contract.
 - Explicit requirements are never silently removed by revision or repair.
 - Inferred requirements may be refined, but the refinement is recorded in draft history.
 - `blockingInputs.length > 0` produces draft status `needs_input` and no run.
 - The contract is stored inside the `planner_draft` payload and summary; no new table is required.
 - The contract hash is copied into run runtime context and all approvals.
+- `requiredCapabilities` contains semantic needs such as `code-review`, not concrete Agent, Skill, Tool, MCP, or Library object refs.
+- The original prompt is immutable. Steering creates a new revision and preserves prior revisions for audit.
+- A contract hash change invalidates prior coverage, manifest, Library snapshot, and approval projections before execution may continue.
 
 Interpretation may use an LLM, but the output must pass deterministic schema and policy validation. The interpreter cannot grant tools, MCP access, vault access, or execution authority.
 
@@ -546,14 +552,45 @@ No production content is added through hardcoded seed code.
 
 ## 20. Read Models And UI
 
-Workflow shows an answer-first mission summary:
+The first version does not add a standalone Goal Contract page. Goal Contract is part of the Workflow mission, not a separate authoring workflow.
 
-- interpreted outcome and assumptions;
+### 20.1 Workflow summary card
+
+Workflow shows an answer-first Goal Contract summary card before the generated DAG:
+
+- interpreted outcome and top-level acceptance criteria;
+- selected workspace and execution scope;
+- assumptions and blocking inputs;
+- expected deliverables;
+- risk tags and requested side effects;
+- requirement coverage count;
 - current execution status;
-- current outcome coverage count;
 - current operational health;
 - pending blocker or approval;
+- a `Revise goal` action;
 - generated DAG as inspectable detail.
+
+For a low-risk complete contract, the card is a visible receipt and does not require another confirmation click. Interpretation, validation, and scheduling continue automatically.
+
+For blocking input or high-risk effects, the card expands the exact question or approval choices and pauses the durable state transition.
+
+### 20.2 Goal Contract sidecar
+
+Selecting the summary card opens the existing Workflow sidecar/resource viewer pattern. It presents grouped product concepts rather than raw JSON:
+
+- requirements and acceptance criteria;
+- deliverables;
+- boundaries and non-goals;
+- assumptions and blocking inputs;
+- risk and requested side effects;
+- coverage and evaluator evidence;
+- revisions and provenance, including the original prompt and contract hash.
+
+Operator may render the same contract projection read-only beside run health and recovery controls. It does not maintain a second editable contract.
+
+### 20.3 Standalone-page threshold
+
+A standalone page is deferred until Goal Contracts become reusable across runs, independently searchable, collaboratively reviewed, or managed as first-class versioned product objects.
 
 Operator shows:
 
@@ -584,13 +621,16 @@ Project scope must be explicit. A project-filtered empty Operator view must not 
 - **AC-15 No silent escalation:** a repair requiring new side effects pauses for a new hash-bound approval.
 - **AC-16 No auto Library promotion:** generated profiles/templates remain run-scoped or proposal/draft until separately approved.
 - **AC-17 Cross-domain E2E:** real Postgres/Tork/Pi E2E passes for one software goal and the offline `design/article` goal.
-- **AC-18 Browser flow:** browser E2E submits one low-risk prompt and observes goal contract, DAG, scheduling, evidence, and satisfied outcome without launch clicks.
+- **AC-18 Browser flow:** browser E2E submits one low-risk prompt and observes the Goal Contract summary card, DAG, scheduling, evidence, and satisfied outcome without launch clicks.
+- **AC-19 Contract detail:** selecting the summary card opens the existing sidecar with acceptance criteria, scope, risks, coverage, revisions, and provenance.
+- **AC-20 No form gate:** a complete low-risk prompt never requires a standalone Goal Contract form or confirmation page before scheduling.
 
 ## 22. Verification Strategy
 
 ### 22.1 Focused tests
 
 - Goal interpreter schema, domain, assumptions, risk tags, and blocking-input behavior.
+- Goal requirement acceptance criteria and semantic capability validation.
 - Goal contract to `RequirementSpecV2` compatibility projection.
 - Deterministic candidate ranking and executable-closure rejection.
 - Coverage completeness and producer/evaluator separation.
@@ -608,6 +648,7 @@ Project scope must be explicit. A project-filtered empty Operator view must not 
 - Planner draft becomes stale when selected Library heads change.
 - Callback ingestion links evaluator results and evidence to covered requirements.
 - Dynamic repair preserves requirements and stops on authority expansion.
+- Goal steering creates a new contract revision and invalidates stale derived projections.
 
 ### 22.3 Real E2E gates
 
