@@ -17,6 +17,7 @@ import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
 import type { HarnessDefinition, SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { loadRunLibrarySnapshotPg, type RunLibrarySnapshotV1 } from "../orchestration/run-library-snapshot.ts";
+import { isRecoveryStrategy } from "../session-recovery/types.ts";
 import {
   appendHistoryEventPg,
   appendHistoryEventOncePg,
@@ -235,7 +236,10 @@ export async function maybeApplyDynamicRepairRevisionPg(
     if (protection.snapshot) {
       const closureFailure = await compiledLibraryClosureFailurePg(tx, compiled.workflow, protection.snapshot);
       if (closureFailure) return { status: "skipped", reason: closureFailure };
-      const requestedAuthority = expandedRepairAuthority(run.workflow_manifest_json, compiled.workflow, newTasks);
+      const requestedAuthority = expandedRepairAuthority(run.workflow_manifest_json, compiled.workflow, newTasks, {
+        repairSourceTask: repairSeedTask,
+        reverifySourceTask: failedTask,
+      });
       if (hasExpandedAuthority(requestedAuthority)) {
         const compositionHash = contentHashForPayload(composition);
         const approval = await requireDynamicRepairAuthorityApprovalPg(tx, {
@@ -585,6 +589,12 @@ async function compiledLibraryClosureFailurePg(
 ): Promise<string | undefined> {
   const refs = compiled.compiledFrom?.libraryObjectVersionRefs;
   if (!refs || refs.length === 0) return "dynamic-repair-compiled-library-refs-missing";
+  const compiledRefByKey = new Map(refs.map((pair) => [pair.objectKey, pair]));
+  for (const runtimeRef of runtimeLibraryRefs(compiled)) {
+    if (!compiledRefByKey.has(runtimeRef)) {
+      return `dynamic-repair-runtime-ref-version-missing:${runtimeRef}`;
+    }
+  }
   const snapshotByKey = new Map(snapshot.objects.map((object) => [object.objectKey, object]));
   for (const pair of [...refs].sort((a, b) => a.objectKey.localeCompare(b.objectKey))) {
     const frozen = snapshotByKey.get(pair.objectKey);
@@ -601,6 +611,52 @@ async function compiledLibraryClosureFailurePg(
   return undefined;
 }
 
+function runtimeLibraryRefs(workflow: SouthstarWorkflowManifest): string[] {
+  const inlineRefs = new Set([
+    ...(workflow.contextPolicies ?? []).map((policy) => policy.id),
+    ...(workflow.sessionPolicies ?? []).map((policy) => policy.id),
+    ...(workflow.memoryPolicies ?? []).map((policy) => policy.id),
+    ...(workflow.workspacePolicies ?? []).map((policy) => policy.id),
+    ...(workflow.stopConditions ?? []).map((condition) => condition.id),
+  ]);
+  const refs = new Set<string>();
+  const add = (values: Array<string | undefined>) => {
+    for (const value of values) {
+      if (value && !inlineRefs.has(value)) refs.add(value);
+    }
+  };
+  for (const profile of workflow.agentProfiles ?? []) {
+    add([
+      profile.agentRef,
+      profile.systemPromptRef,
+      profile.contextPolicyRef,
+      profile.sessionPolicyRef,
+      ...profile.agentsMdRefs,
+      ...profile.skillRefs,
+      ...profile.mcpGrantRefs,
+      ...(profile.vaultLeasePolicyRefs ?? []),
+      ...profile.toolPolicy.allowedTools,
+      ...profile.toolPolicy.deniedTools,
+      ...profile.toolPolicy.requiresApprovalFor,
+    ]);
+  }
+  for (const task of workflow.tasks) {
+    add([
+      ...(task.instructionRefs ?? []),
+      ...(task.skillRefs ?? []),
+      ...(task.toolGrantRefs ?? []),
+      ...(task.mcpGrantRefs ?? []),
+      ...(task.vaultLeasePolicyRefs ?? []),
+      task.contextPolicyRef,
+      task.sessionPolicyRef,
+      task.workspacePolicyRef,
+      ...(task.stopConditionRefs ?? []),
+      ...(task.recoveryStrategyRefs ?? []).filter((ref) => !isRecoveryStrategy(ref)),
+    ]);
+  }
+  return [...refs].sort();
+}
+
 type RepairAuthorityExpansion = {
   toolGrantRefs: string[];
   mcpGrantRefs: string[];
@@ -614,45 +670,59 @@ function expandedRepairAuthority(
   current: SouthstarWorkflowManifest,
   compiled: SouthstarWorkflowManifest,
   newTasks: WorkflowTaskDefinition[],
+  sources: {
+    repairSourceTask?: WorkflowTaskDefinition;
+    reverifySourceTask: WorkflowTaskDefinition;
+  },
 ): RepairAuthorityExpansion {
-  const currentProfiles = current.agentProfiles ?? [];
-  const newProfileIds = new Set(newTasks.map((task) => task.agentProfileRef).filter((ref): ref is string => Boolean(ref)));
-  const proposedProfiles = (compiled.agentProfiles ?? []).filter((profile) => newProfileIds.has(profile.id));
-  const currentToolCapabilities = executableToolCapabilities(current.tasks, currentProfiles);
-  const proposedToolCapabilities = executableToolCapabilities(newTasks, proposedProfiles);
-  const currentMcp = new Set([
-    ...current.tasks.flatMap((task) => task.mcpGrantRefs ?? []),
-    ...currentProfiles.flatMap((profile) => profile.mcpGrantRefs),
-  ]);
-  const currentVault = new Set([
-    ...current.tasks.flatMap((task) => task.vaultLeasePolicyRefs ?? []),
-    ...currentProfiles.flatMap((profile) => profile.vaultLeasePolicyRefs ?? []),
-  ]);
-  const currentMounts = new Set(current.tasks.flatMap((task) => task.execution.mounts).map(mountKey));
+  const currentProfiles = new Map((current.agentProfiles ?? []).map((profile) => [profile.id, profile]));
+  const proposedProfiles = new Map((compiled.agentProfiles ?? []).map((profile) => [profile.id, profile]));
+  const toolGrantRefs = new Set<string>();
+  const mcpGrantRefs = new Set<string>();
+  const vaultLeasePolicyRefs = new Set<string>();
+  const mounts = new Map<string, { source: string; target: string; readonly: boolean }>();
+  const removedDeniedTools = new Set<string>();
+  const removedApprovalRequirements = new Set<string>();
+  for (const task of newTasks) {
+    const proposedProfile = task.agentProfileRef ? proposedProfiles.get(task.agentProfileRef) : undefined;
+    if (!proposedProfile) continue;
+    const sourceTask = proposedProfile.workerKind === "validation_worker"
+      ? sources.reverifySourceTask
+      : sources.repairSourceTask ?? sources.reverifySourceTask;
+    const sourceProfile = sourceTask.agentProfileRef ? currentProfiles.get(sourceTask.agentProfileRef) : undefined;
+    const currentToolCapabilities = sourceProfile
+      ? executableToolCapabilities([sourceTask], [sourceProfile])
+      : new Map<string, { executable: boolean; noApproval: boolean; allowedButDenied: boolean }>();
+    const proposedToolCapabilities = executableToolCapabilities([task], [proposedProfile]);
+    for (const [tool, proposed] of proposedToolCapabilities) {
+      const existing = currentToolCapabilities.get(tool);
+      if (proposed.executable && !existing?.executable) toolGrantRefs.add(tool);
+      if (proposed.executable && !existing?.executable && existing?.allowedButDenied) removedDeniedTools.add(tool);
+      if (proposed.noApproval && existing?.executable && !existing.noApproval) removedApprovalRequirements.add(tool);
+    }
+    const currentMcp = new Set([...(sourceTask.mcpGrantRefs ?? []), ...(sourceProfile?.mcpGrantRefs ?? [])]);
+    for (const ref of unique([...(task.mcpGrantRefs ?? []), ...proposedProfile.mcpGrantRefs])) {
+      if (!currentMcp.has(ref)) mcpGrantRefs.add(ref);
+    }
+    const currentVault = new Set([
+      ...(sourceTask.vaultLeasePolicyRefs ?? []),
+      ...(sourceProfile?.vaultLeasePolicyRefs ?? []),
+    ]);
+    for (const ref of unique([...(task.vaultLeasePolicyRefs ?? []), ...(proposedProfile.vaultLeasePolicyRefs ?? [])])) {
+      if (!currentVault.has(ref)) vaultLeasePolicyRefs.add(ref);
+    }
+    const currentMounts = new Set(sourceTask.execution.mounts.map(mountKey));
+    for (const mount of task.execution.mounts) {
+      if (!currentMounts.has(mountKey(mount))) mounts.set(mountKey(mount), mount);
+    }
+  }
   return {
-    toolGrantRefs: [...proposedToolCapabilities.entries()]
-      .filter(([tool, proposed]) => proposed.executable && !currentToolCapabilities.get(tool)?.executable)
-      .map(([tool]) => tool)
-      .sort(),
-    mcpGrantRefs: unique([
-      ...newTasks.flatMap((task) => task.mcpGrantRefs ?? []),
-      ...proposedProfiles.flatMap((profile) => profile.mcpGrantRefs),
-    ]).filter((ref) => !currentMcp.has(ref)).sort(),
-    vaultLeasePolicyRefs: unique([
-      ...newTasks.flatMap((task) => task.vaultLeasePolicyRefs ?? []),
-      ...proposedProfiles.flatMap((profile) => profile.vaultLeasePolicyRefs ?? []),
-    ]).filter((ref) => !currentVault.has(ref)).sort(),
-    mounts: newTasks.flatMap((task) => task.execution.mounts)
-      .filter((mount) => !currentMounts.has(mountKey(mount)))
-      .sort((a, b) => mountKey(a).localeCompare(mountKey(b))),
-    removedDeniedTools: [...proposedToolCapabilities.entries()]
-      .filter(([tool, proposed]) => proposed.executable && !currentToolCapabilities.get(tool)?.executable && currentToolCapabilities.get(tool)?.allowedButDenied)
-      .map(([tool]) => tool)
-      .sort(),
-    removedApprovalRequirements: [...proposedToolCapabilities.entries()]
-      .filter(([tool, proposed]) => proposed.noApproval && currentToolCapabilities.get(tool)?.executable && !currentToolCapabilities.get(tool)?.noApproval)
-      .map(([tool]) => tool)
-      .sort(),
+    toolGrantRefs: [...toolGrantRefs].sort(),
+    mcpGrantRefs: [...mcpGrantRefs].sort(),
+    vaultLeasePolicyRefs: [...vaultLeasePolicyRefs].sort(),
+    mounts: [...mounts.values()].sort((a, b) => mountKey(a).localeCompare(mountKey(b))),
+    removedDeniedTools: [...removedDeniedTools].sort(),
+    removedApprovalRequirements: [...removedApprovalRequirements].sort(),
   };
 }
 

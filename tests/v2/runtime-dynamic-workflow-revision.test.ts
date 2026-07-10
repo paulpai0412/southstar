@@ -526,6 +526,65 @@ test("dynamic repair snapshot closure includes agents md and recovery context wo
   }
 });
 
+test("dynamic repair snapshot closure includes generated profile context and session policies", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-generated-profile-policy-closure";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+    for (const objectKey of ["policy.repair-context", "policy.repair-session"]) {
+      await upsertLibraryObject(db, {
+        objectKey,
+        objectKind: "policy_bundle",
+        status: "approved",
+        headVersionId: `${objectKey}@1`,
+        state: { scope: "software", title: objectKey },
+      });
+    }
+    const plan = repairCompositionPlan();
+    for (const proposal of plan.generatedComponentProposals) {
+      if (!proposal.agentProfile) continue;
+      proposal.agentProfile.contextPolicyRef = "policy.repair-context";
+      proposal.agentProfile.sessionPolicyRef = "policy.repair-session";
+    }
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([plan]),
+    });
+
+    assert.deepEqual(result, {
+      status: "skipped",
+      reason: "dynamic-repair-ref-version-not-in-run-snapshot:policy.repair-context@1",
+    });
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair fails closed when a runtime recovery strategy has no Library candidate version", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-recovery-ref-without-candidate";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+    const plan = repairCompositionPlan();
+    for (const task of plan.tasks) task.recoveryStrategyRefs = ["policy.repair-absent"];
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([plan]),
+    });
+
+    assert.deepEqual(result, {
+      status: "skipped",
+      reason: "dynamic-repair-runtime-ref-version-missing:policy.repair-absent",
+    });
+  } finally {
+    await db.close();
+  }
+});
+
 test("dynamic repair treats removed tool approval requirements as authority relaxation", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -601,6 +660,44 @@ test("dynamic repair computes executable authority per profile instead of unioni
     );
     assert.deepEqual(approval.payload_json.requestedAuthority.toolGrantRefs, ["tool.workspace-write"]);
     assert.deepEqual(approval.payload_json.requestedAuthority.removedDeniedTools, ["tool.workspace-write"]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair does not let a permissive sibling profile hide verifier approval relaxation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-sibling-profile-approval-relaxation";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+    const run = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
+      "select workflow_manifest_json from southstar.workflow_runs where id = $1",
+      [runId],
+    );
+    run.workflow_manifest_json.agentProfiles = run.workflow_manifest_json.agentProfiles?.map((profile) => ({
+      ...profile,
+      toolPolicy: {
+        ...profile.toolPolicy,
+        requiresApprovalFor: profile.id === "profile.verify" ? ["tool.workspace-write"] : [],
+      },
+    }));
+    await db.query(
+      "update southstar.workflow_runs set workflow_manifest_json = $2::jsonb where id = $1",
+      [runId, JSON.stringify(run.workflow_manifest_json)],
+    );
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.equal(result.status, "waiting_operator_approval");
+    const approval = await db.one<{ payload_json: { requestedAuthority: { removedApprovalRequirements: string[] } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'approval' and resource_key = $1",
+      [result.approvalId],
+    );
+    assert.deepEqual(approval.payload_json.requestedAuthority.removedApprovalRequirements, ["tool.workspace-write"]);
   } finally {
     await db.close();
   }

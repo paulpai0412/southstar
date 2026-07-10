@@ -97,16 +97,27 @@ export async function compileWorkflowComposition(
   const artifactContracts = await resolveRuntimeArtifactContracts(db, input.composition);
   const evaluatorPipelines = await resolveRuntimeEvaluatorPipelines(db, input.composition);
   const planHash = contentHashForPayload(input.composition);
-  const profileLibraryRefs = [...resolvedProfiles.values()].flatMap((profile) => [
+  const profileRuntimeRefs = [...resolvedProfiles.values()].flatMap((profile) => [
     ...(profile.agentRef ? [profile.agentRef] : []),
     ...profile.agentsMdRefs,
+    ...profile.skillRefs,
+    ...profile.mcpGrantRefs,
+    ...(profile.vaultLeasePolicyRefs ?? []),
+    ...profile.toolPolicy.allowedTools,
+    ...profile.toolPolicy.deniedTools,
+    ...profile.toolPolicy.requiresApprovalFor,
+    profile.contextPolicyRef,
+    profile.sessionPolicyRef,
+    ...(profile.systemPromptRef ? [profile.systemPromptRef] : []),
   ]).filter((ref) => !ref.startsWith("repo:"));
+  const selectedLibraryRefs = collectSelectedRefs(input.candidatePacket, input.composition, profileRuntimeRefs);
+  const selectedLibraryRefSet = new Set(selectedLibraryRefs);
+  const profileLibraryRefs = profileRuntimeRefs.filter((ref) => selectedLibraryRefSet.has(ref));
   const libraryObjectVersionRefs = collectSelectedObjectVersionRefs(
     input.candidatePacket,
     input.composition,
     profileLibraryRefs,
   );
-  const selectedLibraryRefs = collectSelectedRefs(input.candidatePacket, input.composition, profileLibraryRefs);
   const libraryVersionRefs = [...new Set(libraryObjectVersionRefs.map((pair) => pair.versionRef))].sort();
   const selectedTemplate = await findLibraryObjectByKey(db, input.composition.selectedWorkflowTemplateRef);
   const templateVersionId = required(
@@ -147,6 +158,8 @@ export async function compileWorkflowComposition(
       requiredArtifactRefs: task.outputArtifactRefs.map(normalizeArtifactRef),
       evaluatorPipelineRef: normalizeEvaluatorRef(task.evaluatorProfileRef),
       recoveryStrategyRefs: task.recoveryStrategyRefs,
+      ...(task.contextPolicyRef ? { contextPolicyRef: task.contextPolicyRef } : {}),
+      ...(task.workspacePolicyRef ? { workspacePolicyRef: task.workspacePolicyRef } : {}),
       execution: {
         engine: execution.engine ?? "tork",
         image: execution.image,
