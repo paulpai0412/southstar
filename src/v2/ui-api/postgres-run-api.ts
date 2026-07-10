@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
 import type {
   CandidatePacket,
+  RequirementSpecV2,
   WorkflowCompositionPlan,
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
@@ -14,6 +15,7 @@ import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { createWorkflowComposerRegistry, type WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
 import {
+  finalizeGoalContract,
   goalContractHash,
   requirementSpecFromGoalContract,
   type GoalContractInterpreter,
@@ -125,6 +127,7 @@ export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
   goalInterpreter: GoalContractInterpreter;
   composer?: WorkflowComposer;
   onProgress?: PlannerDraftProgressListener;
+  onGoalContractDelta?: (text: string) => void;
   onLlmDelta?: (text: string) => void;
 };
 
@@ -136,6 +139,7 @@ export type RevisePostgresPlannerDraftInput = {
   goalInterpreter: GoalContractInterpreter;
   composer?: WorkflowComposer;
   onProgress?: PlannerDraftProgressListener;
+  onGoalContractDelta?: (text: string) => void;
   onLlmDelta?: (text: string) => void;
 };
 
@@ -150,7 +154,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
   const goalContract = await input.goalInterpreter.interpret({
     goalPrompt: plannerRequest.goalPrompt,
     cwd: plannerRequest.cwd ?? process.cwd(),
-    onDelta: input.onLlmDelta,
+    onDelta: input.onGoalContractDelta,
   });
   const contractHash = goalContractHash(goalContract);
   input.onProgress?.({ stage: "goal_contract.interpreted", message: "Goal Contract interpreted." });
@@ -164,6 +168,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
     goalContractHash: contractHash,
     composer: input.composer,
     onProgress: input.onProgress,
+    onGoalContractDelta: input.onGoalContractDelta,
     onLlmDelta: input.onLlmDelta,
   };
   if (plannerRequest.compositionPlan) {
@@ -228,12 +233,8 @@ export async function revisePostgresPlannerDraft(
   const summary = asRecord(draft.summary);
   const payload = asRecord(draft.payload);
   const workflow = asRecord(payload.workflow);
-  const previousContract = goalContractFromStored(payload.goalContract);
-  const baseGoalPrompt = previousContract?.originalPrompt
-    ?? stringValue(summary.goalPrompt)
-    ?? stringValue(workflow.goalPrompt);
-  if (!baseGoalPrompt) throw new Error(`planner draft goalPrompt is missing: ${input.draftId}`);
-  if (!previousContract) throw new Error(`planner draft Goal Contract is missing: ${input.draftId}`);
+  const previousContract = storedOrLegacyGoalContract(payload, summary, input.draftId);
+  const baseGoalPrompt = previousContract.originalPrompt;
   const priorPlannerRequest = plannerRequestFromStored(summary.plannerRequest) ?? plannerRequestFromStored(payload.plannerRequest);
   const revisedDraft = await createPostgresPlannerDraft(db, {
     ...preservedPlannerRequestFields(priorPlannerRequest),
@@ -250,6 +251,7 @@ export async function revisePostgresPlannerDraft(
     },
     composer: input.composer,
     onProgress: input.onProgress,
+    onGoalContractDelta: input.onGoalContractDelta,
     onLlmDelta: input.onLlmDelta,
   });
   const preservedOverrides = profileOverridesByTaskId(workflow.tasks);
@@ -277,15 +279,28 @@ export async function validatePostgresPlannerDraft(
   if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
   const payload = asRecord(draft.payload);
   const summary = asRecord(draft.summary);
-  const workflow = asWorkflowManifest(payload.workflow);
-  const contract = requiredStoredGoalContract(payload.goalContract, input.draftId);
+  const contract = storedOrLegacyGoalContract(payload, summary, input.draftId);
   const contractHash = storedGoalContractHash(summary, payload, contract);
+  if (draft.status === PLANNER_DRAFT_STATUS_NEEDS_INPUT) {
+    return {
+      draftId: input.draftId,
+      goalPrompt: contract.originalPrompt,
+      workflowId: stringValue(summary.workflowId) ?? "",
+      status: PLANNER_DRAFT_STATUS_NEEDS_INPUT,
+      goalContractHash: contractHash,
+      blockers: [...contract.blockingInputs],
+      validationIssues: parseValidationIssues(summary.validationIssues),
+      taskSummaries: parseTaskSummaries(summary.taskSummaries),
+    };
+  }
+  const workflow = asWorkflowManifest(payload.workflow);
+  const canonicalPayload = { ...payload, goalContract: contract, goalContractHash: contractHash };
   const workflowId = stringValue(summary.workflowId) ?? workflow.workflowId ?? "";
   const goalPrompt = stringValue(summary.goalPrompt) ?? workflow.goalPrompt ?? "";
   const refreshed = await refreshPlannerDraftCompilation(db, {
     draftId: input.draftId,
     goalPrompt,
-    payload,
+    payload: canonicalPayload,
     workflow,
   });
   const issues = [
@@ -307,7 +322,7 @@ export async function validatePostgresPlannerDraft(
     status,
     ...(draft.title ? { title: draft.title } : {}),
     payload: {
-      ...payload,
+      ...canonicalPayload,
       workflow: refreshed.workflow,
       validationIssues: issues,
       orchestrationSnapshot,
@@ -319,6 +334,7 @@ export async function validatePostgresPlannerDraft(
       taskSummaries,
       workflowId,
       goalPrompt,
+      ...goalContractSummary(contract, contractHash),
     },
     metrics: draft.metrics,
     ...(draft.expiresAt ? { expiresAt: draft.expiresAt } : {}),
@@ -799,7 +815,7 @@ export async function getPostgresPlannerDraftOrchestration(
   const taskSummaries = parseTaskSummaries(summary.taskSummaries).length > 0
     ? parseTaskSummaries(summary.taskSummaries)
     : summarizeWorkflowTasksFromPayload(workflow.tasks);
-  const contract = requiredStoredGoalContract(payload.goalContract, input.draftId);
+  const contract = storedOrLegacyGoalContract(payload, summary, input.draftId);
 
   return {
     draftId: input.draftId,
@@ -822,7 +838,7 @@ async function markPlannerDraftNeedsValidation(db: SouthstarDb, draftId: string)
   const payload = asRecord(draft.payload);
   const summary = asRecord(draft.summary);
   const workflow = asWorkflowManifest(payload.workflow);
-  const contract = requiredStoredGoalContract(payload.goalContract, draftId);
+  const contract = storedOrLegacyGoalContract(payload, summary, draftId);
   const contractHash = storedGoalContractHash(summary, payload, contract);
   const taskSummaries = summarizeWorkflowTasksFromPayload(workflow.tasks);
   const workflowId = stringValue(summary.workflowId) ?? workflow.workflowId ?? "";
@@ -841,6 +857,8 @@ async function markPlannerDraftNeedsValidation(db: SouthstarDb, draftId: string)
     ...(draft.title ? { title: draft.title } : {}),
     payload: {
       ...payload,
+      goalContract: contract,
+      goalContractHash: contractHash,
       workflow,
       validationIssues,
       orchestrationSnapshot: refreshDraftValidationSnapshot(payload.orchestrationSnapshot, validationIssues),
@@ -852,6 +870,7 @@ async function markPlannerDraftNeedsValidation(db: SouthstarDb, draftId: string)
       taskSummaries,
       workflowId,
       goalPrompt,
+      ...goalContractSummary(contract, contractHash),
     },
     metrics: draft.metrics,
     ...(draft.expiresAt ? { expiresAt: draft.expiresAt } : {}),
@@ -1093,6 +1112,64 @@ function requiredStoredGoalContract(value: unknown, draftId: string): GoalContra
   const contract = goalContractFromStored(value);
   if (!contract) throw new Error(`planner draft Goal Contract is missing: ${draftId}`);
   return contract;
+}
+
+function storedOrLegacyGoalContract(
+  payload: Record<string, unknown>,
+  summary: Record<string, unknown>,
+  draftId: string,
+): GoalContractV1 {
+  return goalContractFromStored(payload.goalContract)
+    ?? legacyGoalContractFromStored(payload, summary, draftId);
+}
+
+function legacyGoalContractFromStored(
+  payload: Record<string, unknown>,
+  summary: Record<string, unknown>,
+  draftId: string,
+): GoalContractV1 {
+  const workflow = asRecord(payload.workflow);
+  const plannerRequest = asRecord(summary.plannerRequest);
+  const payloadPlannerRequest = asRecord(payload.plannerRequest);
+  const goalPrompt = stringValue(summary.goalPrompt)
+    ?? stringValue(workflow.goalPrompt)
+    ?? stringValue(plannerRequest.goalPrompt)
+    ?? stringValue(payloadPlannerRequest.goalPrompt);
+  if (!goalPrompt) throw new Error(`planner draft goalPrompt is missing: ${draftId}`);
+  const requirementSpec = legacyRequirementSpec(payload);
+  const acceptanceCriteria = stringArrayValue(requirementSpec.acceptanceCriteria) ?? [];
+  const fallbackRequirement = stringValue(requirementSpec.summary) ?? goalPrompt;
+  return finalizeGoalContract({
+    goalPrompt,
+    cwd: stringValue(plannerRequest.cwd) ?? stringValue(payloadPlannerRequest.cwd) ?? "/",
+    interpretation: {
+      domain: stringValue(workflow.domain) ?? stringValue(summary.domain) ?? "general",
+      intent: stringValue(workflow.intent) ?? "legacy_planner_draft",
+      summary: stringValue(requirementSpec.summary) ?? goalPrompt,
+      requirements: (acceptanceCriteria.length > 0 ? acceptanceCriteria : [fallbackRequirement]).map((criterion) => ({
+        statement: criterion,
+        acceptanceCriteria: [criterion],
+        blocking: false,
+        source: "inferred" as const,
+      })),
+      expectedArtifactRefs: stringArrayValue(requirementSpec.expectedArtifacts) ?? [],
+      requiredCapabilities: [],
+      nonGoals: stringArrayValue(requirementSpec.nonGoals) ?? [],
+      assumptions: stringArrayValue(requirementSpec.workspaceAssumptions) ?? [],
+      blockingInputs: stringArrayValue(requirementSpec.missingInputs) ?? [],
+      riskTags: stringArrayValue(requirementSpec.riskNotes) ?? [],
+      requestedSideEffects: [],
+    },
+  });
+}
+
+function legacyRequirementSpec(payload: Record<string, unknown>): Partial<RequirementSpecV2> & Record<string, unknown> {
+  const candidatePacket = asRecord(payload.candidatePacket);
+  const orchestrationSnapshot = asRecord(payload.orchestrationSnapshot);
+  const value = candidatePacket.requirementSpec
+    ?? orchestrationSnapshot.requirementSpec
+    ?? payload.requirementSpec;
+  return asRecord(value) as Partial<RequirementSpecV2> & Record<string, unknown>;
 }
 
 function storedGoalContractHash(

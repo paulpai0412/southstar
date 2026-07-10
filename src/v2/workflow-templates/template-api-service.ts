@@ -82,6 +82,7 @@ export type InstantiateWorkflowTemplateInput = {
   goalInterpreter: GoalContractInterpreter;
   composer?: WorkflowComposer;
   onProgress?: PlannerDraftProgressListener;
+  onGoalContractDelta?: (text: string) => void;
   onLlmDelta?: (text: string) => void;
 };
 
@@ -135,20 +136,20 @@ export async function instantiateWorkflowTemplatePg(
   const goalContract = await goalInterpreter.interpret({
     goalPrompt: input.goalPrompt,
     cwd: input.cwd ?? process.cwd(),
-    onDelta: input.onLlmDelta,
+    onDelta: input.onGoalContractDelta,
   });
+  assertTemplateScopeCompatible(template, goalContract);
   const savedCompositionPlan = workflowCompositionPlanValue(state.compositionPlan)
-    ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64)
+    ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64);
   const compositionPlan = goalContract.blockingInputs.length > 0
     ? undefined
     : savedCompositionPlan
       ? instantiateSavedCompositionPlan(savedCompositionPlan, input)
       : await composeSkeletonTemplate(db, input, template, goalContract);
 
-  input.onProgress?.({
-    stage: "template.loaded",
-    message: "Workflow template composition loaded.",
-  });
+  input.onProgress?.(compositionPlan
+    ? { stage: "template.loaded", message: "Workflow template composition loaded." }
+    : { stage: "template.blocked", message: "Workflow template is waiting for required Goal Contract input." });
   const draft = await createPostgresPlannerDraft(db, {
     goalPrompt: input.goalPrompt,
     orchestrationMode: "llm-constrained",
@@ -157,6 +158,7 @@ export async function instantiateWorkflowTemplatePg(
     goalInterpreter,
     composer: input.composer,
     onProgress: input.onProgress,
+    onGoalContractDelta: input.onGoalContractDelta,
     onLlmDelta: input.onLlmDelta,
   });
   const persistedDraft = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
@@ -172,6 +174,13 @@ export async function instantiateWorkflowTemplatePg(
     validationIssues: draft.validationIssues,
     nodes: tasks.map((task) => instanceNodeFromTask(asWorkflowTask(task))),
   };
+}
+
+function assertTemplateScopeCompatible(template: LibraryObjectSummary, goalContract: GoalContractV1): void {
+  const templateScope = stringValue(template.state.scope);
+  if (!templateScope) throw new Error(`workflow template scope is missing: ${template.objectKey}`);
+  if (templateScope === goalContract.domain || templateScope === "global" || templateScope === "all") return;
+  throw new Error(`template scope ${templateScope} is not compatible with Goal Contract domain ${goalContract.domain}`);
 }
 
 async function composeSkeletonTemplate(

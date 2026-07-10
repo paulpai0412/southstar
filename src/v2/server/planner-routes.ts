@@ -171,6 +171,9 @@ function createPlannerDraftStreamResponse(
           onProgress(event) {
             send("planner.stage", event);
           },
+          onGoalContractDelta(text) {
+            send("goal_contract.delta", { text });
+          },
           onLlmDelta(text) {
             send("message.delta", { text });
           },
@@ -252,6 +255,9 @@ function createPlannerDraftRevisionStreamResponse(
           composer,
           onProgress(event) {
             send("planner.stage", event);
+          },
+          onGoalContractDelta(text) {
+            send("goal_contract.delta", { text });
           },
           onLlmDelta(text) {
             send("message.delta", { text });

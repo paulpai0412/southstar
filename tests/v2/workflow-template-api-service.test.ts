@@ -116,6 +116,60 @@ test("instantiateWorkflowTemplatePg asks composer to bind a skeleton-only templa
   }
 });
 
+test("instantiateWorkflowTemplatePg rejects a template outside the interpreted Goal Contract domain", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedWorkflowTemplate(db, compositionPlan());
+    const goalPrompt = "Turn notes.md into an offline HTML article";
+    const goalContract = {
+      ...softwareGoalContract(goalPrompt),
+      domain: "design/article",
+      workspace: { cwd: "/workspace/article" },
+    };
+
+    await assert.rejects(
+      () => instantiateWorkflowTemplatePg(db, {
+        templateRef: "template.software-dev-standard",
+        goalPrompt,
+        cwd: "/workspace/article",
+        goalInterpreter: fixedGoalInterpreter(goalContract),
+        constraints: { mode: "strict" },
+      }),
+      /template scope software is not compatible with Goal Contract domain design\/article/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("blocking template instantiation does not report composition loaded", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedWorkflowTemplate(db, compositionPlan());
+    const goalPrompt = "Publish my article";
+    const goalContract = {
+      ...softwareGoalContract(goalPrompt),
+      blockingInputs: ["Which source file should be used?"],
+    };
+    const stages: string[] = [];
+
+    const result = await instantiateWorkflowTemplatePg(db, {
+      templateRef: "template.software-dev-standard",
+      goalPrompt,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      constraints: { mode: "strict" },
+      onProgress(event) {
+        stages.push(event.stage);
+      },
+    });
+
+    assert.equal(result.status, "needs_input");
+    assert.equal(stages.includes("template.loaded"), false);
+  } finally {
+    await db.close();
+  }
+});
+
 async function seedWorkflowTemplate(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   compositionPlan?: WorkflowCompositionPlan,

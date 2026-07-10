@@ -92,6 +92,81 @@ test("blocking Goal Contract persists needs_input without compiling", async () =
   });
 });
 
+test("validating a durable needs_input draft preserves needs_input without requiring a workflow", async () => {
+  await withDb(async (db) => {
+    const goalContract = {
+      ...articleGoalContract("Publish my article"),
+      blockingInputs: ["Which source file should be used?"],
+    };
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: "/workspace/article",
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    const validated = await validatePostgresPlannerDraft(db, { draftId: draft.draftId });
+    assert.equal(validated.status, "needs_input");
+    assert.deepEqual(validated.blockers, goalContract.blockingInputs);
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal(stored?.status, "needs_input");
+    assert.equal((stored?.payload as any).workflow, undefined);
+  });
+});
+
+test("legacy planner draft inspection and validation adapt and persist a canonical Goal Contract", async () => {
+  await withDb(async (db) => {
+    const draft = await createFixturePlannerDraft(db, "implement legacy inspection compatibility");
+    await stripGoalContractFromDraft(db, draft.draftId);
+
+    const inspection = await getPostgresPlannerDraftOrchestration(db, { draftId: draft.draftId });
+    assert.match(inspection.goalContractHash, /^[a-f0-9]{64}$/);
+    assert.deepEqual(inspection.blockers, []);
+
+    const validated = await validatePostgresPlannerDraft(db, { draftId: draft.draftId });
+    assert.equal(validated.status, "validated");
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal((stored?.payload as any).goalContract.schemaVersion, "southstar.goal_contract.v1");
+    assert.equal((stored?.payload as any).goalContract.requiredCapabilities.length, 0);
+    assert.equal((stored?.payload as any).goalContract.requestedSideEffects.length, 0);
+    assert.equal((stored?.summary as any).goalContractHash, validated.goalContractHash);
+  });
+});
+
+test("legacy planner draft revision adapts the previous Goal Contract without changing originalPrompt", async () => {
+  await withDb(async (db) => {
+    const goalPrompt = "implement legacy revision compatibility";
+    const draft = await createFixturePlannerDraft(db, goalPrompt);
+    await stripGoalContractFromDraft(db, draft.draftId);
+
+    const revised = await revisePostgresPlannerDraft(db, {
+      draftId: draft.draftId,
+      prompt: "also handle empty input",
+      goalInterpreter: softwareRevisionInterpreter(goalPrompt),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const stored = await getResourceByKeyPg(db, "planner_draft", revised.draftId);
+    assert.equal((stored?.payload as any).goalContract.originalPrompt, goalPrompt);
+    assert.equal((stored?.payload as any).goalContract.revision, 2);
+  });
+});
+
+test("legacy planner draft profile override persists the adapted canonical Goal Contract", async () => {
+  await withDb(async (db) => {
+    const draft = await createFixturePlannerDraft(db, "implement legacy profile override compatibility");
+    await stripGoalContractFromDraft(db, draft.draftId);
+
+    await patchPostgresPlannerDraftTaskProfileOverride(db, {
+      draftId: draft.draftId,
+      taskId: "implement-feature",
+      profileOverride: { model: "gpt-5-codex" },
+    });
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal((stored?.payload as any).goalContract.schemaVersion, "southstar.goal_contract.v1");
+    assert.match((stored?.summary as any).goalContractHash, /^[a-f0-9]{64}$/);
+  });
+});
+
 test("planner draft revision preserves the original prompt and revises the Goal Contract", async () => {
   await withDb(async (db) => {
     const goalPrompt = "Turn notes.md into an offline HTML article";
@@ -1090,6 +1165,31 @@ async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string) {
     composerMode: "llm",
     goalInterpreter: fixedGoalInterpreter(softwareGoalContract(goalPrompt)),
     composer: new DeterministicFixtureComposer(),
+  });
+}
+
+async function stripGoalContractFromDraft(db: SouthstarDb, draftId: string): Promise<void> {
+  const draft = await getResourceByKeyPg(db, "planner_draft", draftId);
+  assert.ok(draft);
+  const payload = structuredClone(draft.payload) as Record<string, unknown>;
+  const summary = structuredClone(draft.summary) as Record<string, unknown>;
+  delete payload.goalContract;
+  delete payload.goalContractHash;
+  delete summary.goalContractHash;
+  delete summary.domain;
+  delete summary.intent;
+  delete summary.blockers;
+  delete summary.requirementCount;
+  await upsertRuntimeResourcePg(db, {
+    id: draft.id,
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: draft.scope,
+    status: draft.status,
+    ...(draft.title ? { title: draft.title } : {}),
+    payload,
+    summary,
+    metrics: draft.metrics,
   });
 }
 

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
+import {
+  DeterministicFixtureComposer,
+  deterministicFixtureComposition,
+} from "./fixtures/deterministic-workflow-composer.ts";
+import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -9,18 +13,19 @@ type SseFrame = { event: string; data: Record<string, unknown> };
 test("planner draft stream route emits true LLM deltas, backend stages, draft, orchestration, and done", async () => {
   const db = await createTestPostgresDb();
   try {
+    const interpretationText = goalInterpretation("Generate a todo webapp");
+    const compositionText = JSON.stringify(deterministicFixtureComposition());
     const context = {
       db,
-      workflowComposer: new DeterministicFixtureComposer(),
+      workflowComposer: new DeltaComposer(compositionText),
       plannerClient: {
         async generate() {
           throw new Error("generate should not be used by streaming route");
         },
         async generateStream(_prompt: string, handlers?: { onDelta?: (text: string) => void }) {
-          const text = goalInterpretation("Generate a todo webapp");
-          handlers?.onDelta?.(text.slice(0, 32));
-          handlers?.onDelta?.(text.slice(32));
-          return text;
+          handlers?.onDelta?.(interpretationText.slice(0, 32));
+          handlers?.onDelta?.(interpretationText.slice(32));
+          return interpretationText;
         },
       },
       executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
@@ -39,7 +44,11 @@ test("planner draft stream route emits true LLM deltas, backend stages, draft, o
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "text/event-stream");
     const frames = parseSse(await response.text());
-    assert.ok(frames.some((frame) => frame.event === "message.delta" && typeof frame.data.text === "string"));
+    assert.equal(joinDeltaFrames(frames, "goal_contract.delta"), interpretationText);
+    const messageText = joinDeltaFrames(frames, "message.delta");
+    assert.ok(messageText.length > 0);
+    assert.equal(messageText.includes(interpretationText), false);
+    assert.equal(messageText.split(compositionText).join(""), "");
     assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "composer.started"));
     assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "goal_contract.interpreted"));
     assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "draft.persisted"));
@@ -99,7 +108,8 @@ test("planner draft revise stream route includes the previous Goal Contract and 
     assert.equal(reviseResponse.status, 200);
     assert.equal(reviseResponse.headers.get("content-type"), "text/event-stream");
     const reviseFrames = parseSse(await reviseResponse.text());
-    assert.ok(reviseFrames.some((frame) => frame.event === "message.delta" && typeof frame.data.text === "string"));
+    assert.ok(reviseFrames.some((frame) => frame.event === "goal_contract.delta" && typeof frame.data.text === "string"));
+    assert.equal(reviseFrames.some((frame) => frame.event === "message.delta"), false);
     assert.ok(reviseFrames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "revision.requested"));
     assert.ok(reviseFrames.some((frame) => frame.event === "draft" && typeof (frame.data.draft as { draftId?: unknown }).draftId === "string"));
     assert.ok(reviseFrames.some((frame) => frame.event === "orchestration" && Array.isArray((frame.data.orchestration as { taskSummaries?: unknown }).taskSummaries)));
@@ -123,6 +133,23 @@ function parseSse(text: string): SseFrame[] {
       .join("\n");
     return { event, data: rawData ? JSON.parse(rawData) : {} };
   });
+}
+
+function joinDeltaFrames(frames: SseFrame[], event: string): string {
+  return frames
+    .filter((frame) => frame.event === event)
+    .map((frame) => typeof frame.data.text === "string" ? frame.data.text : "")
+    .join("");
+}
+
+class DeltaComposer implements WorkflowComposer {
+  constructor(private readonly text: string) {}
+
+  async compose(input: ComposeWorkflowInput) {
+    input.onLlmDelta?.(this.text.slice(0, 48));
+    input.onLlmDelta?.(this.text.slice(48));
+    return deterministicFixtureComposition();
+  }
 }
 
 function goalInterpretation(summary: string): string {
