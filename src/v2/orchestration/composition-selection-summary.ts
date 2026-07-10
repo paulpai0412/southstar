@@ -13,6 +13,10 @@ export type CandidateSelectionSummary = {
   policyRefs: string[];
 };
 
+export function isLibraryBackedRef(ref: string): boolean {
+  return !ref.startsWith("repo:");
+}
+
 export function summarizeCandidates(packet: CandidatePacket): CandidateSelectionSummary {
   return {
     workflowTemplateRefs: uniqueSorted([

@@ -27,6 +27,7 @@ import type { LibraryObjectVersionRef, SouthstarWorkflowManifest, WorkflowTaskDe
 import {
   collectSelectedObjectVersionRefs,
   collectSelectedRefs,
+  isLibraryBackedRef,
   summarizeCandidates,
   type CandidateSelectionSummary,
 } from "./composition-selection-summary.ts";
@@ -109,7 +110,7 @@ export async function compileWorkflowComposition(
     profile.contextPolicyRef,
     profile.sessionPolicyRef,
     ...(profile.systemPromptRef ? [profile.systemPromptRef] : []),
-  ]).filter((ref) => !ref.startsWith("repo:"));
+  ]).filter(isLibraryBackedRef);
   const selectedLibraryRefs = collectSelectedRefs(input.candidatePacket, input.composition, profileRuntimeRefs);
   const selectedLibraryRefSet = new Set(selectedLibraryRefs);
   const profileLibraryRefs = profileRuntimeRefs.filter((ref) => selectedLibraryRefSet.has(ref));

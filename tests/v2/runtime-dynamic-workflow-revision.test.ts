@@ -562,6 +562,28 @@ test("dynamic repair snapshot closure includes generated profile context and ses
   }
 });
 
+test("dynamic repair allows generated profiles to load repo-local AGENTS instructions", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-repo-agents-md";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+    const plan = repairCompositionPlan();
+    for (const proposal of plan.generatedComponentProposals) {
+      if (proposal.agentProfile) proposal.agentProfile.agentsMdRefs = ["repo:AGENTS.md"];
+    }
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([plan]),
+    });
+
+    assert.equal(result.status, "applied", JSON.stringify(result));
+  } finally {
+    await db.close();
+  }
+});
+
 test("dynamic repair fails closed when a runtime recovery strategy has no Library candidate version", async () => {
   const db = await createTestPostgresDb();
   try {

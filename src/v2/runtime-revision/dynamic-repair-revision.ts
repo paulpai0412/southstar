@@ -17,6 +17,7 @@ import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
 import type { HarnessDefinition, SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { loadRunLibrarySnapshotPg, type RunLibrarySnapshotV1 } from "../orchestration/run-library-snapshot.ts";
+import { isLibraryBackedRef } from "../orchestration/composition-selection-summary.ts";
 import { isRecoveryStrategy } from "../session-recovery/types.ts";
 import {
   appendHistoryEventPg,
@@ -622,7 +623,7 @@ function runtimeLibraryRefs(workflow: SouthstarWorkflowManifest): string[] {
   const refs = new Set<string>();
   const add = (values: Array<string | undefined>) => {
     for (const value of values) {
-      if (value && !inlineRefs.has(value)) refs.add(value);
+      if (value && isLibraryBackedRef(value) && !inlineRefs.has(value)) refs.add(value);
     }
   };
   for (const profile of workflow.agentProfiles ?? []) {
