@@ -341,10 +341,9 @@ function objectTestEvidence(
   }
 
   if (typeof testResults === "string") {
-    const status = valueStatus(testResults) ?? "invalid";
     return {
       kind: "test-result",
-      status,
+      status: "invalid",
       summary: `test result: ${testResults}`,
       sourceRef: "artifact.testResults",
       sha256: shortHash(testResults),
@@ -391,8 +390,7 @@ function objectTestEvidence(
           : "artifact evidence present";
       return {
         kind: "test-result",
-        status: valueStatus(evidence.status ?? evidence.result ?? evidence.outcome)
-          ?? (evidence.ok === true || evidence.passed === true ? "present" : "invalid"),
+        status: testRecordStatus(evidence),
         summary,
         sourceRef: "artifact.artifactEvidence",
         sha256: shortHash(JSON.stringify(evidence)),
@@ -408,21 +406,25 @@ function objectTestEvidence(
 
 function testRecordStatus(value: Record<string, unknown>): "present" | "invalid" {
   const outcome = value.status ?? value.result ?? value.outcome ?? value.overall;
+  const countStatus = statusFromCounts(value);
+  const nestedStatus = nestedStatusFromResultTree(value);
   if (
     (outcome !== undefined && valueStatus(outcome) !== "present")
     || value.passed === false
     || value.ok === false
     || (typeof value.exitCode === "number" && Number.isInteger(value.exitCode) && value.exitCode !== 0)
+    || countStatus === "invalid"
+    || nestedStatus === "invalid"
   ) return "invalid";
   return valueStatus(outcome)
     ?? (value.passed === true || value.ok === true || value.exitCode === 0 ? "present" : undefined)
-    ?? statusFromCounts(value)
-    ?? nestedStatusFromResultTree(value)
+    ?? countStatus
+    ?? nestedStatus
     ?? "invalid";
 }
 
 function testResultItemStatus(value: unknown): "present" | "invalid" {
-  return isRecord(value) ? testRecordStatus(value) : valueStatus(value) ?? "invalid";
+  return isRecord(value) ? testRecordStatus(value) : "invalid";
 }
 
 function asEvidenceRecord(value: unknown): Record<string, unknown> {

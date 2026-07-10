@@ -182,6 +182,24 @@ test("buildEvidencePacket rejects command evidence without a trusted outcome", (
     artifact: { testResults: [{ status: "passed" }, "unknown"] },
   });
   assert.equal(mixedTestKinds.evidenceItems[0]?.status, "invalid");
+
+  for (const testResults of [
+    ["passed"],
+    "passed",
+    [{ status: "passed", failed: 1, passed: 1 }],
+    [{ status: "passed", ok: false }],
+    [{ status: "passed", exitCode: 1 }],
+    [{ status: "passed", suites: [{ status: "failed" }] }],
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-contradictory-test-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result"],
+      artifact: { testResults },
+    });
+    assert.equal(packet.evidenceItems[0]?.status, "invalid", JSON.stringify(testResults));
+  }
 });
 
 test("buildEvidencePacket never treats planned or unstructured commands as executed evidence", () => {

@@ -58,6 +58,18 @@ test("tool proxy policy scanner rejects credential URL fragments", () => {
   }
 });
 
+test("tool proxy policy scanner recursively rejects credentials in nested URL parameter values", () => {
+  for (const url of [
+    "https://example.test/callback?redirect=https%3A%2F%2Fuser%3Apassword%40private.test",
+    "https://example.test/callback?next=https%3A%2F%2Fprivate.test%2Fdone%3Faccess_token%3Dx",
+    "https://example.test/callback#redirect=https%3A%2F%2Fprivate.test%2Fdone%3Fapi_key%3Dx",
+  ]) {
+    const finding = scanForCredentialLeak({ url });
+    assert.equal(finding?.reason, "raw_credential_in_envelope", url);
+    assert.doesNotMatch(finding?.redactedExcerpt ?? "", /password|access_token=x|api_key=x/);
+  }
+});
+
 test("tool proxy policy redacts entire sensitive-key subtrees before excerpt persistence", () => {
   const nestedSecret = "raw-secret-not-matching-common-token-regex";
   const finding = scanForCredentialLeak({
@@ -342,6 +354,32 @@ test("callback URL credentials are rejected before callback history, resources, 
     assert.equal(history.some((event) => event.eventType === "executor.callback_received"), false);
     assert.doesNotMatch(JSON.stringify(history), /access_token|\?access_token=x/);
     assert.doesNotMatch(JSON.stringify(resources), /access_token|\?access_token=x/);
+  });
+});
+
+test("callback nested redirect credentials are rejected before artifact blob persistence", async () => {
+  await withDb(async (db) => {
+    const runId = "run-callback-policy-nested-url-leak";
+    const leakedUrl = "https://example.test/result?redirect=https%3A%2F%2Fuser%3Apassword%40private.test";
+    await seedRunTask(db, runId, "task-1");
+
+    await assert.rejects(
+      () => ingestTaskRunResultPg(db, {
+        runId,
+        taskId: "task-1",
+        rootSessionId: "session-1",
+        ok: true,
+        attempts: 1,
+        attemptId: "attempt-1",
+        artifact: { kind: "implementation_report", browserEvidence: { url: leakedUrl } },
+        metrics: {},
+        events: [],
+      }),
+      /raw credential detected/i,
+    );
+
+    assert.equal((await db.query("select id from southstar.artifact_blobs where run_id = $1", [runId])).rows.length, 0);
+    assert.doesNotMatch(JSON.stringify(await listHistoryForRunPg(db, runId)), /password|private\.test/);
   });
 });
 

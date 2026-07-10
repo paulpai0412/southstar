@@ -190,28 +190,36 @@ function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): 
   return { value: redacted, foundSensitiveKey };
 }
 
-function credentialBearingUrl(value: string): boolean {
+function credentialBearingUrl(
+  value: string,
+  depth = 0,
+  seen = new Set<string>(),
+  base?: string,
+): boolean {
   try {
-    const url = new URL(value);
+    if (depth > 4 || seen.size >= 32) return true;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    const url = new URL(value, base);
+    if (url.href.length > 16_384) return true;
     if (url.username || url.password || [...url.searchParams.keys()].some(isSensitivePolicyKey)) return true;
+    const nestedValues = [...url.searchParams.values()];
     const fragment = url.hash.slice(1);
-    if (!fragment) return false;
-    let decodedFragment = fragment;
-    try {
-      decodedFragment = decodeURIComponent(fragment);
-    } catch {
-      // URLSearchParams still recognizes sensitive keys in malformed fragments.
+    if (fragment) {
+      let decodedFragment = fragment;
+      try {
+        decodedFragment = decodeURIComponent(fragment);
+      } catch {
+        // URLSearchParams still recognizes sensitive keys in malformed fragments.
+      }
+      const fragmentParams = new URLSearchParams(decodedFragment.includes("?")
+        ? decodedFragment.slice(decodedFragment.indexOf("?") + 1)
+        : decodedFragment);
+      if ([...fragmentParams.keys()].some(isSensitivePolicyKey)) return true;
+      nestedValues.push(...fragmentParams.values());
+      if (/^(?:https?:)?\/\//i.test(decodedFragment)) nestedValues.push(decodedFragment);
     }
-    const fragmentParams = new URLSearchParams(decodedFragment.includes("?")
-      ? decodedFragment.slice(decodedFragment.indexOf("?") + 1)
-      : decodedFragment);
-    if ([...fragmentParams.keys()].some(isSensitivePolicyKey)) return true;
-    try {
-      const nested = new URL(decodedFragment, url.origin);
-      return Boolean(nested.username || nested.password || [...nested.searchParams.keys()].some(isSensitivePolicyKey));
-    } catch {
-      return false;
-    }
+    return nestedValues.some((nested) => credentialBearingUrl(nested, depth + 1, seen, url.origin));
   } catch {
     return false;
   }

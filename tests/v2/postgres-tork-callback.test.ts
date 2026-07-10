@@ -23,6 +23,10 @@ import {
 const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=", "base64");
 const ONE_PIXEL_JPEG = Buffer.from("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/AP/EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAQUCf//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8Bf//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8Bf//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEABj8Cf//Z", "base64");
 const ONE_PIXEL_WEBP = Buffer.from("UklGRhwAAABXRUJQVlA4TA8AAAAvAAAAAAcQ/Y/+ByKi/wEA", "base64");
+const HEADER_ONLY_WEBP = Buffer.concat([
+  Buffer.from("RIFF"), Buffer.from([18, 0, 0, 0]), Buffer.from("WEBPVP8L"),
+  Buffer.from([5, 0, 0, 0, 0x2f, 0, 0, 0, 0, 0]),
+]);
 
 test("Postgres Tork callback route ingests task result, artifacts, binding status, and audit history idempotently", async () => {
   await withDb(async (db) => {
@@ -842,6 +846,52 @@ test("workspace screenshot proof reads a contained regular image through one no-
   }
 });
 
+test("workspace screenshot proof requires full decoder success, not only valid container headers", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "southstar-decoded-proof-"));
+  const pngChunk = (type: string, data: Buffer) => {
+    const length = Buffer.alloc(4);
+    length.writeUInt32BE(data.length);
+    return Buffer.concat([length, Buffer.from(type), data, Buffer.alloc(4)]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr.set([8, 2, 0, 0, 0], 8);
+  const syntheticPng = Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", Buffer.from([0])),
+    pngChunk("IEND", Buffer.alloc(0)),
+  ]);
+  const syntheticJpeg = Buffer.from([
+    0xff, 0xd8,
+    0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0,
+    0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0, 0,
+    0xff, 0xd9,
+  ]);
+  try {
+    for (const [name, content] of [
+      ["synthetic.png", syntheticPng],
+      ["synthetic.jpg", syntheticJpeg],
+      ["synthetic.webp", HEADER_ONLY_WEBP],
+    ] as const) {
+      assert.ok(inspectSupportedImage(content), name);
+      await writeFile(join(workspace, name), content);
+      assert.equal(await prepareWorkspaceScreenshotProof(workspace, name), undefined, name);
+    }
+    for (const [name, content] of [
+      ["real.png", ONE_PIXEL_PNG],
+      ["real.jpg", ONE_PIXEL_JPEG],
+      ["real.webp", ONE_PIXEL_WEBP],
+    ] as const) {
+      await writeFile(join(workspace, name), content);
+      assert.ok(await prepareWorkspaceScreenshotProof(workspace, name), name);
+    }
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
 test("workspace screenshot proof is prepared before the callback run-lock transaction", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-browser-proof-before-lock");
@@ -904,6 +954,39 @@ test("canonical screenshot artifact_ref written by the production store passes v
       },
     }));
     assert.equal(result.accepted, true);
+  });
+});
+
+test("canonical screenshot artifact_ref rejects structurally valid but undecodable JSON image content", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-browser-undecodable-artifact");
+    const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
+    coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "screenshot"];
+    await replaceRequirementCoverage(db, fixture.runId, coverage);
+    const screenshot = await acceptOrRejectArtifactRefPg(db, {
+      runId: fixture.runId,
+      taskId: "task-build",
+      sessionId: "session-build",
+      attemptId: "attempt-screenshot",
+      handExecutionId: `hand-execution:${fixture.runId}:task-build:attempt-screenshot`,
+      producer: { actorType: "hand", providerId: "tork" },
+      artifactType: "screenshot",
+      status: "accepted",
+      content: { kind: "screenshot", base64: HEADER_ONLY_WEBP.toString("base64") },
+      contractRefs: ["screenshot"],
+      summary: "Undecodable screenshot",
+    });
+    assert.ok(inspectSupportedImage(HEADER_ONLY_WEBP));
+    const result = await ingestTaskRunResultPg(db, verifierCallback({
+      runId: fixture.runId,
+      artifact: {
+        kind: "verification_report",
+        pass: true,
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+        screenshot: { artifactRef: screenshot.artifactRefId },
+      },
+    }));
+    assert.equal(result.accepted, false);
   });
 });
 

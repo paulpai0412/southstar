@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, realpath, type FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
+import sharp from "sharp";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { buildEvidencePacket, screenshotEvidenceRef } from "../artifacts/evidence.ts";
 import type { EvidenceKind, EvidencePacket, ValidatorResult } from "../artifacts/types.ts";
@@ -52,7 +53,7 @@ type EvaluatorCallbackIdentity = {
 
 const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
 const MAX_IMAGE_DIMENSION = 100_000;
-const MAX_IMAGE_PIXELS = 100_000_000;
+const MAX_IMAGE_PIXELS = 25_000_000;
 
 export type WorkspaceScreenshotProof = {
   ref: string;
@@ -308,7 +309,8 @@ async function acceptedArtifactBlobHashPg(db: SouthstarDb, runId: string, artifa
   if (!blob || blob.sha256 !== contentRef.sha256) return undefined;
   if (createHash("sha256").update(blob.body).digest("hex") !== blob.sha256) return undefined;
   const image = imageBytesFromArtifactJson(blob.body);
-  return image && inspectSupportedImage(image) ? blob.sha256 : undefined;
+  const structure = image ? inspectSupportedImage(image) : undefined;
+  return image && structure && await fullyDecodesAs(image, structure) ? blob.sha256 : undefined;
 }
 
 export async function prepareRequirementEvaluatorScreenshotProofPg(
@@ -342,7 +344,7 @@ export async function prepareWorkspaceScreenshotProof(
     if (contained.startsWith("..") || isAbsolute(contained)) return undefined;
     const content = await readBounded(handle, MAX_SCREENSHOT_BYTES);
     const image = inspectSupportedImage(content);
-    if (!image) return undefined;
+    if (!image || !await fullyDecodesAs(content, image)) return undefined;
     return {
       ref: screenshotPath,
       workspaceRoot,
@@ -373,6 +375,25 @@ async function readBounded(handle: FileHandle, maxBytes: number): Promise<Buffer
 export function inspectSupportedImage(content: Buffer): Pick<WorkspaceScreenshotProof, "format" | "width" | "height"> | undefined {
   if (content.byteLength === 0 || content.byteLength > MAX_SCREENSHOT_BYTES) return undefined;
   return inspectPng(content) ?? inspectJpeg(content) ?? inspectWebp(content);
+}
+
+async function fullyDecodesAs(
+  content: Buffer,
+  expected: Pick<WorkspaceScreenshotProof, "width" | "height">,
+): Promise<boolean> {
+  try {
+    const image = sharp(content, {
+      failOn: "error",
+      limitInputPixels: MAX_IMAGE_PIXELS,
+      sequentialRead: true,
+    });
+    const metadata = await image.metadata();
+    if (metadata.width !== expected.width || metadata.height !== expected.height) return false;
+    await image.stats();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function inspectPng(content: Buffer): Pick<WorkspaceScreenshotProof, "format" | "width" | "height"> | undefined {
