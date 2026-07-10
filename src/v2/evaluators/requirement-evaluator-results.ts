@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath, type FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { buildEvidencePacket, screenshotEvidenceRef } from "../artifacts/evidence.ts";
@@ -49,6 +50,21 @@ type EvaluatorCallbackIdentity = {
   handExecutionId: string;
 };
 
+const MAX_SCREENSHOT_BYTES = 10 * 1024 * 1024;
+const MAX_IMAGE_DIMENSION = 100_000;
+const MAX_IMAGE_PIXELS = 100_000_000;
+
+export type WorkspaceScreenshotProof = {
+  ref: string;
+  workspaceRoot: string;
+  canonicalWorkspaceRoot: string;
+  sha256: string;
+  sizeBytes: number;
+  format: "png" | "jpeg" | "webp";
+  width: number;
+  height: number;
+};
+
 export async function assertRequirementEvaluatorExecutionIdentityPg(
   db: SouthstarDb,
   input: EvaluatorCallbackIdentity,
@@ -71,6 +87,7 @@ export async function recordRequirementEvaluatorResultsPg(
     rootSessionId: string;
     attemptId?: string;
     handExecutionId: string;
+    screenshotProof?: WorkspaceScreenshotProof;
     now?: string;
   },
 ): Promise<RequirementEvaluationWriteResult> {
@@ -119,6 +136,7 @@ async function evaluateEntry(
     rootSessionId: string;
     attemptId?: string;
     handExecutionId: string;
+    screenshotProof?: WorkspaceScreenshotProof;
     now?: string;
   },
   entry: CoverageEntry,
@@ -147,7 +165,7 @@ async function evaluateEntry(
     identityScope: entry.requirementId,
     now: input.now,
   });
-  await verifyScreenshotEvidenceProvenancePg(db, input.runId, workspaceRoot, artifact, evidence);
+  await verifyScreenshotEvidenceProvenancePg(db, input.runId, workspaceRoot, artifact, evidence, input.screenshotProof);
   const contractRef = `requirement:${input.runId}:${entry.requirementId}`;
   const validator = evidenceValidatorResult({
     runId: input.runId,
@@ -237,6 +255,7 @@ async function verifyScreenshotEvidenceProvenancePg(
   workspaceRoot: string | undefined,
   artifact: Record<string, unknown>,
   evidence: EvidencePacket,
+  screenshotProof: WorkspaceScreenshotProof | undefined,
 ): Promise<void> {
   const index = evidence.evidenceItems.findIndex((item) => item.kind === "screenshot" && item.status === "present");
   if (index < 0) return;
@@ -244,7 +263,9 @@ async function verifyScreenshotEvidenceProvenancePg(
   const sha256 = ref?.startsWith("artifact_ref:")
     ? await acceptedArtifactBlobHashPg(db, runId, ref)
     : ref && !/^https?:/i.test(ref)
-      ? await workspaceScreenshotHash(workspaceRoot, ref)
+      ? screenshotProof?.ref === ref && screenshotProof.workspaceRoot === workspaceRoot
+        ? screenshotProof.sha256
+        : undefined
       : undefined;
   evidence.evidenceItems[index] = sha256
     ? { ...evidence.evidenceItems[index]!, sha256 }
@@ -284,31 +305,264 @@ async function acceptedArtifactBlobHashPg(db: SouthstarDb, runId: string, artifa
     "select sha256, body from southstar.artifact_blobs where id = $1 and run_id = $2",
     [contentRef.ref, runId],
   );
-  if (!blob || blob.sha256 !== contentRef.sha256 || !isSupportedImage(blob.body)) return undefined;
-  return createHash("sha256").update(blob.body).digest("hex") === blob.sha256 ? blob.sha256 : undefined;
+  if (!blob || blob.sha256 !== contentRef.sha256) return undefined;
+  if (createHash("sha256").update(blob.body).digest("hex") !== blob.sha256) return undefined;
+  const image = imageBytesFromArtifactJson(blob.body);
+  return image && inspectSupportedImage(image) ? blob.sha256 : undefined;
 }
 
-async function workspaceScreenshotHash(workspaceRoot: string | undefined, screenshotPath: string): Promise<string | undefined> {
-  if (!workspaceRoot) return undefined;
+export async function prepareRequirementEvaluatorScreenshotProofPg(
+  db: SouthstarDb,
+  input: { runId: string; artifact: unknown },
+): Promise<WorkspaceScreenshotProof | undefined> {
+  const artifact = asRecord(input.artifact);
+  const ref = screenshotEvidenceRef(artifact, input.runId);
+  if (!ref || ref.startsWith("artifact_ref:") || /^https?:/i.test(ref)) return undefined;
+  const run = await db.one<{ runtime_context_json: unknown }>(
+    "select runtime_context_json from southstar.workflow_runs where id = $1",
+    [input.runId],
+  );
+  const runtimeContext = asRecord(run.runtime_context_json);
+  const workspaceRoot = nonEmptyString(runtimeContext.projectRoot) ?? nonEmptyString(runtimeContext.cwd);
+  return workspaceRoot ? await prepareWorkspaceScreenshotProof(workspaceRoot, ref) : undefined;
+}
+
+export async function prepareWorkspaceScreenshotProof(
+  workspaceRoot: string,
+  screenshotPath: string,
+): Promise<WorkspaceScreenshotProof | undefined> {
+  let handle: FileHandle | undefined;
   try {
     const root = await realpath(workspaceRoot);
-    const target = await realpath(resolve(root, screenshotPath));
+    handle = await open(resolve(root, screenshotPath), constants.O_RDONLY | constants.O_NOFOLLOW);
+    const info = await handle.stat();
+    if (!info.isFile() || info.size === 0 || info.size > MAX_SCREENSHOT_BYTES) return undefined;
+    const target = await realpath(`/proc/self/fd/${handle.fd}`);
     const contained = relative(root, target);
     if (contained.startsWith("..") || isAbsolute(contained)) return undefined;
-    const info = await stat(target);
-    if (!info.isFile() || info.size === 0 || info.size > 10 * 1024 * 1024) return undefined;
-    const content = await readFile(target);
-    if (content.byteLength === 0 || content.byteLength > 10 * 1024 * 1024 || !isSupportedImage(content)) return undefined;
-    return createHash("sha256").update(content).digest("hex");
+    const content = await readBounded(handle, MAX_SCREENSHOT_BYTES);
+    const image = inspectSupportedImage(content);
+    if (!image) return undefined;
+    return {
+      ref: screenshotPath,
+      workspaceRoot,
+      canonicalWorkspaceRoot: root,
+      sha256: createHash("sha256").update(content).digest("hex"),
+      sizeBytes: content.byteLength,
+      ...image,
+    };
+  } catch {
+    return undefined;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+async function readBounded(handle: FileHandle, maxBytes: number): Promise<Buffer> {
+  const output = Buffer.allocUnsafe(maxBytes + 1);
+  let offset = 0;
+  while (offset <= maxBytes) {
+    const { bytesRead } = await handle.read(output, offset, maxBytes + 1 - offset, offset);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset === 0 || offset > maxBytes) throw new Error("screenshot exceeds bounded read limit");
+  return output.subarray(0, offset);
+}
+
+export function inspectSupportedImage(content: Buffer): Pick<WorkspaceScreenshotProof, "format" | "width" | "height"> | undefined {
+  if (content.byteLength === 0 || content.byteLength > MAX_SCREENSHOT_BYTES) return undefined;
+  return inspectPng(content) ?? inspectJpeg(content) ?? inspectWebp(content);
+}
+
+function inspectPng(content: Buffer): Pick<WorkspaceScreenshotProof, "format" | "width" | "height"> | undefined {
+  if (!content.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return undefined;
+  let offset = 8;
+  let width = 0;
+  let height = 0;
+  let sawImageData = false;
+  let chunks = 0;
+  while (offset + 12 <= content.length && chunks++ < 4_096) {
+    const length = content.readUInt32BE(offset);
+    const type = content.subarray(offset + 4, offset + 8).toString("ascii");
+    const end = offset + 12 + length;
+    if (!/^[A-Za-z]{4}$/.test(type) || end > content.length) return undefined;
+    if (chunks === 1) {
+      if (type !== "IHDR" || length !== 13) return undefined;
+      width = content.readUInt32BE(offset + 8);
+      height = content.readUInt32BE(offset + 12);
+      if (!validDimensions(width, height)) return undefined;
+    } else if (type === "IHDR") return undefined;
+    if (type === "IDAT") sawImageData = true;
+    offset = end;
+    if (type === "IEND") return length === 0 && sawImageData && offset === content.length
+      ? { format: "png", width, height }
+      : undefined;
+  }
+  return undefined;
+}
+
+function inspectJpeg(content: Buffer): Pick<WorkspaceScreenshotProof, "format" | "width" | "height"> | undefined {
+  if (content.length < 4 || content[0] !== 0xff || content[1] !== 0xd8) return undefined;
+  let offset = 2;
+  let width = 0;
+  let height = 0;
+  let sawScan = false;
+  let segments = 0;
+  while (offset < content.length && segments++ < 4_096) {
+    if (content[offset++] !== 0xff) return undefined;
+    while (content[offset] === 0xff) offset += 1;
+    const marker = content[offset++];
+    if (marker === 0xd9) return sawScan && validDimensions(width, height) && offset === content.length
+      ? { format: "jpeg", width, height }
+      : undefined;
+    if (marker === undefined || marker === 0x00 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) return undefined;
+    if (offset + 2 > content.length) return undefined;
+    const length = content.readUInt16BE(offset);
+    if (length < 2 || offset + length > content.length) return undefined;
+    if (isSofMarker(marker)) {
+      if (length < 11) return undefined;
+      height = content.readUInt16BE(offset + 3);
+      width = content.readUInt16BE(offset + 5);
+      const components = content[offset + 7]!;
+      if (length !== 8 + 3 * components || !validDimensions(width, height)) return undefined;
+    }
+    if (marker === 0xda) {
+      sawScan = true;
+      offset += length;
+      while (offset + 1 < content.length) {
+        if (content[offset] !== 0xff) {
+          offset += 1;
+          continue;
+        }
+        const next = content[offset + 1]!;
+        if (next === 0x00 || (next >= 0xd0 && next <= 0xd7)) {
+          offset += 2;
+          continue;
+        }
+        break;
+      }
+    } else {
+      offset += length;
+    }
+  }
+  return undefined;
+}
+
+function inspectWebp(content: Buffer): Pick<WorkspaceScreenshotProof, "format" | "width" | "height"> | undefined {
+  if (
+    content.length < 20
+    || content.subarray(0, 4).toString("ascii") !== "RIFF"
+    || content.readUInt32LE(4) !== content.length - 8
+    || content.subarray(8, 12).toString("ascii") !== "WEBP"
+  ) return undefined;
+  let offset = 12;
+  let dimensions: { width: number; height: number } | undefined;
+  let extendedDimensions: { width: number; height: number } | undefined;
+  let sawImageData = false;
+  let chunks = 0;
+  while (offset + 8 <= content.length && chunks++ < 4_096) {
+    const type = content.subarray(offset, offset + 4).toString("ascii");
+    const length = content.readUInt32LE(offset + 4);
+    const dataOffset = offset + 8;
+    const end = dataOffset + length;
+    if (!/^[\x20-\x7e]{4}$/.test(type) || end > content.length) return undefined;
+    const data = content.subarray(dataOffset, end);
+    const parsed = type === "VP8X" ? dimensionsFromVp8x(data)
+      : type === "VP8L" ? dimensionsFromVp8l(data)
+      : type === "VP8 " ? dimensionsFromVp8(data)
+      : undefined;
+    if (parsed) {
+      if (type === "VP8X") extendedDimensions = parsed;
+      else {
+        dimensions = parsed;
+        sawImageData = true;
+      }
+    }
+    else if (type === "VP8X" || type === "VP8L" || type === "VP8 ") return undefined;
+    if (length % 2 && content[end] !== 0) return undefined;
+    offset = end + (length % 2);
+  }
+  const resolved = extendedDimensions ?? dimensions;
+  return offset === content.length
+    && sawImageData
+    && resolved
+    && dimensions
+    && (!extendedDimensions || (extendedDimensions.width === dimensions.width && extendedDimensions.height === dimensions.height))
+    && validDimensions(resolved.width, resolved.height)
+    ? { format: "webp", ...resolved }
+    : undefined;
+}
+
+function dimensionsFromVp8x(data: Buffer): { width: number; height: number } | undefined {
+  if (data.length !== 10 || (data[0]! & 0xc1) !== 0 || data[1] !== 0 || data[2] !== 0 || data[3] !== 0) return undefined;
+  return { width: data.readUIntLE(4, 3) + 1, height: data.readUIntLE(7, 3) + 1 };
+}
+
+function dimensionsFromVp8l(data: Buffer): { width: number; height: number } | undefined {
+  if (data.length < 5 || data[0] !== 0x2f) return undefined;
+  const bits = data.readUInt32LE(1);
+  if ((bits >>> 29) !== 0) return undefined;
+  return { width: (bits & 0x3fff) + 1, height: ((bits >>> 14) & 0x3fff) + 1 };
+}
+
+function dimensionsFromVp8(data: Buffer): { width: number; height: number } | undefined {
+  if (data.length < 10 || (data[0]! & 1) !== 0 || !data.subarray(3, 6).equals(Buffer.from([0x9d, 0x01, 0x2a]))) return undefined;
+  return { width: data.readUInt16LE(6) & 0x3fff, height: data.readUInt16LE(8) & 0x3fff };
+}
+
+function isSofMarker(marker: number): boolean {
+  return (marker >= 0xc0 && marker <= 0xc3)
+    || (marker >= 0xc5 && marker <= 0xc7)
+    || (marker >= 0xc9 && marker <= 0xcb)
+    || (marker >= 0xcd && marker <= 0xcf);
+}
+
+function validDimensions(width: number, height: number): boolean {
+  return width > 0
+    && height > 0
+    && width <= MAX_IMAGE_DIMENSION
+    && height <= MAX_IMAGE_DIMENSION
+    && width * height <= MAX_IMAGE_PIXELS;
+}
+
+function imageBytesFromArtifactJson(body: Buffer): Buffer | undefined {
+  try {
+    const value = JSON.parse(body.toString("utf8")) as unknown;
+    if (isBufferJson(value)) return boundedBuffer(value.data);
+    const artifact = asRecord(value);
+    if (!/(screenshot|image)/i.test(nonEmptyString(artifact.kind) ?? "")) return undefined;
+    if (typeof artifact.dataUrl === "string") {
+      const match = artifact.dataUrl.match(/^data:image\/(?:png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})$/i);
+      return match ? decodeBoundedBase64(match[1]!) : undefined;
+    }
+    if (typeof artifact.base64 === "string") return decodeBoundedBase64(artifact.base64);
+    if (isBufferJson(artifact.bytes)) return boundedBuffer(artifact.bytes.data);
+    if (Array.isArray(artifact.bytes)) return boundedBuffer(artifact.bytes);
+    return undefined;
   } catch {
     return undefined;
   }
 }
 
-function isSupportedImage(content: Buffer): boolean {
-  return content.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
-    || (content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff)
-    || (content.subarray(0, 4).toString("ascii") === "RIFF" && content.subarray(8, 12).toString("ascii") === "WEBP");
+function isBufferJson(value: unknown): value is { type: "Buffer"; data: unknown[] } {
+  const record = asRecord(value);
+  return record.type === "Buffer" && Array.isArray(record.data);
+}
+
+function boundedBuffer(value: unknown[]): Buffer | undefined {
+  if (value.length === 0 || value.length > MAX_SCREENSHOT_BYTES) return undefined;
+  if (value.some((byte) => !Number.isInteger(byte) || Number(byte) < 0 || Number(byte) > 255)) return undefined;
+  return Buffer.from(value as number[]);
+}
+
+function decodeBoundedBase64(value: string): Buffer | undefined {
+  if (value.length === 0 || value.length > Math.ceil(MAX_SCREENSHOT_BYTES / 3) * 4) return undefined;
+  const decoded = Buffer.from(value, "base64");
+  return decoded.length > 0 && decoded.length <= MAX_SCREENSHOT_BYTES
+    && decoded.toString("base64").replace(/=+$/, "") === value.replace(/=+$/, "")
+    ? decoded
+    : undefined;
 }
 
 function claimedArtifactRefs(artifact: unknown): Set<string> {

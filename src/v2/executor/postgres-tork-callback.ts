@@ -7,6 +7,7 @@ import { createRuntimeExceptionController } from "../exceptions/runtime-exceptio
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
 import {
   assertRequirementEvaluatorExecutionIdentityPg,
+  prepareRequirementEvaluatorScreenshotProofPg,
   recordRequirementEvaluatorResultsPg,
 } from "../evaluators/requirement-evaluator-results.ts";
 import { writeCallbackMemoryPg } from "../memory/writeback-policy.ts";
@@ -96,6 +97,10 @@ export async function ingestTaskRunResultPg(
 
   if (preflight.kind === "result") return preflight.result;
   if (preflight.kind === "error") throw preflight.error;
+  const screenshotProof = await prepareRequirementEvaluatorScreenshotProofPg(db, {
+    runId: result.runId,
+    artifact: result.artifact,
+  });
 
   return await db.tx(async (tx) => {
     const run = await tx.maybeOne<{ status: string }>(
@@ -214,6 +219,7 @@ export async function ingestTaskRunResultPg(
       rootSessionId: effectiveResult.rootSessionId,
       attemptId: effectiveResult.attemptId,
       handExecutionId,
+      screenshotProof,
       now: effectiveResult.receivedAt,
     });
     const accepted = effectiveResult.ok && requirementEvaluation.ok;

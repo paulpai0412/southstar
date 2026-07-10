@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
@@ -15,6 +15,14 @@ import { persistBrainBindingPg, persistHandBindingPg } from "../../src/v2/meta-h
 import { createRuntimeServerClient } from "../../src/v2/server/client.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
+import {
+  inspectSupportedImage,
+  prepareWorkspaceScreenshotProof,
+} from "../../src/v2/evaluators/requirement-evaluator-results.ts";
+
+const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=", "base64");
+const ONE_PIXEL_JPEG = Buffer.from("/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAH/AP/EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEAAQUCf//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQMBAT8Bf//EABQRAQAAAAAAAAAAAAAAAAAAABD/2gAIAQIBAT8Bf//EABQQAQAAAAAAAAAAAAAAAAAAABD/2gAIAQEABj8Cf//Z", "base64");
+const ONE_PIXEL_WEBP = Buffer.from("UklGRhwAAABXRUJQVlA4TA8AAAAvAAAAAAcQ/Y/+ByKi/wEA", "base64");
 
 test("Postgres Tork callback route ingests task result, artifacts, binding status, and audit history idempotently", async () => {
   await withDb(async (db) => {
@@ -401,7 +409,7 @@ test("verifier callback persists requirement evidence and evaluator result idemp
       artifact: {
         kind: "verification_report",
         pass: true,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ command: ["npm", "test"], status: "passed" }],
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
       },
@@ -473,7 +481,7 @@ test("verifier callback cannot satisfy coverage with an arbitrary artifact ref",
       artifact: {
         kind: "verification_report",
         pass: true,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ status: "passed" }],
         verifiedArtifactRefs: ["artifact_ref:unrelated:task:attempt-1:abc"],
       },
@@ -495,7 +503,7 @@ test("invalid verifier evidence produces a failed requirement evaluator result",
       artifact: {
         kind: "verification_report",
         pass: true,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ note: "no result status" }],
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
       },
@@ -530,6 +538,40 @@ test("blocking verifier callbacks reject command results without a passing outco
   });
 });
 
+test("command-output coverage ignores plans and accepts only structured executed commands", async () => {
+  await withDb(async (db) => {
+    const planned = await seedRequirementEvidenceRun(db, "run-requirement-command-planned");
+    const plannedCoverage = requirementCoverage(["req-offline"], planned.goalContractHash);
+    plannedCoverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "command-output"];
+    await replaceRequirementCoverage(db, planned.runId, plannedCoverage);
+    const plannedResult = await ingestTaskRunResultPg(db, verifierCallback({
+      runId: planned.runId,
+      artifact: {
+        kind: "verification_report",
+        pass: true,
+        commandsToRun: [{ command: "npm test", status: "passed" }],
+        verifiedArtifactRefs: [planned.producerArtifactRefId],
+      },
+    }));
+    assert.equal(plannedResult.accepted, false);
+
+    const executed = await seedRequirementEvidenceRun(db, "run-requirement-command-executed");
+    const executedCoverage = requirementCoverage(["req-offline"], executed.goalContractHash);
+    executedCoverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "command-output"];
+    await replaceRequirementCoverage(db, executed.runId, executedCoverage);
+    const executedResult = await ingestTaskRunResultPg(db, verifierCallback({
+      runId: executed.runId,
+      artifact: {
+        kind: "verification_report",
+        pass: true,
+        commandsRun: [{ command: ["npm", "test"], exitCode: 0 }],
+        verifiedArtifactRefs: [executed.producerArtifactRefId],
+      },
+    }));
+    assert.equal(executedResult.accepted, true);
+  });
+});
+
 test("one evaluator task persists distinct evidence packets for multiple requirements", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-multiple", {
@@ -550,7 +592,7 @@ test("one evaluator task persists distinct evidence packets for multiple require
       artifact: {
         kind: "verification_report",
         pass: true,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ status: "passed" }],
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
       },
@@ -619,7 +661,7 @@ test("requirement evaluator profile must match the persisted manifest task", asy
         artifact: {
           kind: "verification_report",
           pass: true,
-          commandsRun: ["npm test"],
+          commandsRun: [{ command: "npm test", status: "passed" }],
           testResults: [{ status: "passed" }],
           verifiedArtifactRefs: [fixture.producerArtifactRefId],
         },
@@ -649,7 +691,7 @@ test("a producer task cannot act as its own independent requirement evaluator", 
       artifact: {
         kind: "verification_report",
         pass: true,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ status: "passed" }],
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
       },
@@ -675,7 +717,7 @@ test("a verifier callback that reports failure produces a failed requirement eva
       artifact: {
         kind: "verification_report",
         pass: false,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ status: "failed" }],
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
       },
@@ -714,7 +756,7 @@ test("browser verifier evidence passes only with valid structured URL and screen
     coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "url", "screenshot"];
     await replaceRequirementCoverage(db, fixture.runId, coverage);
     try {
-      const screenshotBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
+      const screenshotBytes = ONE_PIXEL_PNG;
       await mkdir(join(workspace, "artifacts"));
       await writeFile(join(workspace, "artifacts/subscription-page.png"), screenshotBytes);
       await db.query(
@@ -744,6 +786,124 @@ test("browser verifier evidence passes only with valid structured URL and screen
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+});
+
+test("image evidence requires complete bounded PNG, JPEG, or WebP structure", () => {
+  assert.deepEqual(inspectSupportedImage(ONE_PIXEL_PNG), { format: "png", width: 1, height: 1 });
+  assert.deepEqual(inspectSupportedImage(ONE_PIXEL_JPEG), { format: "jpeg", width: 1, height: 1 });
+  assert.deepEqual(inspectSupportedImage(ONE_PIXEL_WEBP), { format: "webp", width: 1, height: 1 });
+  const pngWithoutIdat = Buffer.concat([ONE_PIXEL_PNG.subarray(0, 33), ONE_PIXEL_PNG.subarray(-12)]);
+  const jpegWithoutScan = Buffer.from([
+    0xff, 0xd8,
+    0xff, 0xc0, 0x00, 0x0b, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x11, 0x00,
+    0xff, 0xd9,
+  ]);
+  const webpExtendedWithoutImage = Buffer.concat([
+    Buffer.from("RIFF"), Buffer.from([22, 0, 0, 0]), Buffer.from("WEBPVP8X"),
+    Buffer.from([10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+  ]);
+  const webpBadVersion = Buffer.from(ONE_PIXEL_WEBP);
+  webpBadVersion[24] = webpBadVersion[24]! | 0xe0;
+  const webpBadPadding = Buffer.concat([
+    ONE_PIXEL_WEBP.subarray(0, 12),
+    Buffer.from("JUNK"), Buffer.from([1, 0, 0, 0, 0, 1]),
+    ONE_PIXEL_WEBP.subarray(12),
+  ]);
+  webpBadPadding.writeUInt32LE(webpBadPadding.length - 8, 4);
+  for (const invalid of [
+    ONE_PIXEL_PNG.subarray(0, 8),
+    Buffer.concat([ONE_PIXEL_PNG, Buffer.from("garbage")]),
+    pngWithoutIdat,
+    ONE_PIXEL_JPEG.subarray(0, 3),
+    jpegWithoutScan,
+    Buffer.from([0x52, 0x49, 0x46, 0x46, 0x0c, 0, 0, 0, 0x57, 0x45, 0x42, 0x50, 0x56, 0x50, 0x38, 0x20, 0, 0, 0, 0]),
+    webpExtendedWithoutImage,
+    webpBadVersion,
+    webpBadPadding,
+  ]) assert.equal(inspectSupportedImage(invalid), undefined);
+});
+
+test("workspace screenshot proof reads a contained regular image through one no-follow file descriptor", async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "southstar-proof-workspace-"));
+  const outside = await mkdtemp(join(tmpdir(), "southstar-proof-outside-"));
+  try {
+    await writeFile(join(workspace, "inside.png"), ONE_PIXEL_PNG);
+    await writeFile(join(outside, "outside.png"), ONE_PIXEL_PNG);
+    await symlink(join(outside, "outside.png"), join(workspace, "linked.png"));
+    const proof = await prepareWorkspaceScreenshotProof(workspace, "inside.png");
+    assert.equal(proof?.sha256, createHash("sha256").update(ONE_PIXEL_PNG).digest("hex"));
+    assert.deepEqual(proof && { format: proof.format, width: proof.width, height: proof.height }, { format: "png", width: 1, height: 1 });
+    assert.equal(await prepareWorkspaceScreenshotProof(workspace, "linked.png"), undefined);
+    assert.equal(await prepareWorkspaceScreenshotProof(workspace, "../outside.png"), undefined);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+    await rm(outside, { recursive: true, force: true });
+  }
+});
+
+test("workspace screenshot proof is prepared before the callback run-lock transaction", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-browser-proof-before-lock");
+    const workspace = await mkdtemp(join(tmpdir(), "southstar-proof-before-lock-"));
+    const screenshotPath = join(workspace, "proof.png");
+    const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
+    coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "screenshot"];
+    await replaceRequirementCoverage(db, fixture.runId, coverage);
+    await writeFile(screenshotPath, ONE_PIXEL_PNG);
+    await db.query(
+      "update southstar.workflow_runs set runtime_context_json = jsonb_set(runtime_context_json, '{projectRoot}', to_jsonb($2::text)) where id = $1",
+      [fixture.runId, workspace],
+    );
+    try {
+      const instrumented = withBeforeTopLevelTransaction(db, 2, async () => {
+        await rm(screenshotPath);
+      });
+      const result = await ingestTaskRunResultPg(instrumented, verifierCallback({
+        runId: fixture.runId,
+        artifact: {
+          kind: "verification_report",
+          pass: true,
+          verifiedArtifactRefs: [fixture.producerArtifactRefId],
+          screenshot: { path: "proof.png" },
+        },
+      }));
+      assert.equal(result.accepted, true);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+test("canonical screenshot artifact_ref written by the production store passes verifier evidence", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-browser-canonical-artifact");
+    const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
+    coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "screenshot"];
+    await replaceRequirementCoverage(db, fixture.runId, coverage);
+    const screenshot = await acceptOrRejectArtifactRefPg(db, {
+      runId: fixture.runId,
+      taskId: "task-build",
+      sessionId: "session-build",
+      attemptId: "attempt-screenshot",
+      handExecutionId: `hand-execution:${fixture.runId}:task-build:attempt-screenshot`,
+      producer: { actorType: "hand", providerId: "tork" },
+      artifactType: "screenshot",
+      status: "accepted",
+      content: { kind: "screenshot", base64: ONE_PIXEL_PNG.toString("base64") },
+      contractRefs: ["screenshot"],
+      summary: "Canonical screenshot",
+    });
+    const result = await ingestTaskRunResultPg(db, verifierCallback({
+      runId: fixture.runId,
+      artifact: {
+        kind: "verification_report",
+        pass: true,
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+        screenshot: { artifactRef: screenshot.artifactRefId },
+      },
+    }));
+    assert.equal(result.accepted, true);
   });
 });
 
@@ -914,7 +1074,7 @@ test("retry keeps old rejected evaluator resources immutable", async () => {
       artifact: {
         kind: "verification_report",
         pass: false,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ status: "failed" }],
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
       },
@@ -943,7 +1103,7 @@ test("retry keeps old rejected evaluator resources immutable", async () => {
       artifact: {
         kind: "verification_report",
         pass: true,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ status: "passed" }],
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
       },
@@ -1215,7 +1375,7 @@ test("producer artifacts match frozen coverage through host-owned contract refs 
       artifact: {
         kind: "verification_report",
         pass: true,
-        commandsRun: ["npm test"],
+        commandsRun: [{ command: "npm test", status: "passed" }],
         testResults: [{ status: "passed" }],
         verifiedArtifactRefs: [fixture.producerArtifactRefId],
       },
@@ -1606,7 +1766,7 @@ function validVerifierCallback(fixture: { runId: string; producerArtifactRefId: 
     artifact: {
       kind: "verification_report",
       pass: true,
-      commandsRun: ["npm test"],
+      commandsRun: [{ command: "npm test", status: "passed" }],
       testResults: [{ status: "passed" }],
       verifiedArtifactRefs: [fixture.producerArtifactRefId],
     },

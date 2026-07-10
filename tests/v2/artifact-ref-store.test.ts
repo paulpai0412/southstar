@@ -109,6 +109,133 @@ test("buildEvidencePacket rejects command evidence without a trusted outcome", (
       ["command-output", "invalid"],
     ]);
   }
+
+  for (const testResult of [{ status: "failed" }, { status: "unknown" }]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact: { testResults: [testResult] },
+    });
+    assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+      ["test-result", "invalid"],
+      ["command-output", "missing"],
+    ]);
+  }
+
+  for (const command of [
+    { command: "npm test", status: "failed" },
+    { command: ["npm", "test"], exitCode: 1 },
+    { command: "npm test", status: "unknown" },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["command-output"],
+      artifact: { commandsRun: [command] },
+    });
+    assert.equal(packet.evidenceItems[0]?.status, "invalid");
+  }
+
+  const mixed = buildEvidencePacket({
+    runId: "run-command-evidence",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result", "command-output"],
+    artifact: {
+      testResults: [
+        { command: "npm test", status: "passed" },
+        { command: "npm run integration", status: "failed" },
+      ],
+    },
+  });
+  assert.deepEqual(mixed.evidenceItems.map((item) => [item.kind, item.status]), [
+    ["test-result", "invalid"],
+    ["command-output", "invalid"],
+  ]);
+
+  const mixedStatusOnly = buildEvidencePacket({
+    runId: "run-command-evidence",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: { testResults: [{ status: "passed" }, { status: "failed" }] },
+  });
+  assert.equal(mixedStatusOnly.evidenceItems[0]?.status, "invalid");
+
+  const mixedCommandKinds = buildEvidencePacket({
+    runId: "run-command-evidence",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["command-output"],
+    artifact: { commandsRun: [{ command: "npm test", status: "passed" }, "npm lint"] },
+  });
+  assert.equal(mixedCommandKinds.evidenceItems[0]?.status, "invalid");
+
+  const mixedTestKinds = buildEvidencePacket({
+    runId: "run-command-evidence",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: { testResults: [{ status: "passed" }, "unknown"] },
+  });
+  assert.equal(mixedTestKinds.evidenceItems[0]?.status, "invalid");
+});
+
+test("buildEvidencePacket never treats planned or unstructured commands as executed evidence", () => {
+  for (const artifact of [
+    { commandsToRun: [{ command: "npm test", status: "passed" }] },
+    { commandsRun: ["npm test"] },
+    { commandsRun: [{ command: "npm test" }] },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-boundary",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact,
+    });
+    assert.notEqual(packet.evidenceItems.find((item) => item.kind === "command-output")?.status, "present");
+    assert.notEqual(packet.evidenceItems.find((item) => item.kind === "test-result")?.status, "present");
+  }
+});
+
+test("buildEvidencePacket accepts structured executed commands without promoting them to test results", () => {
+  for (const command of [
+    { command: "npm test", status: "passed" },
+    { command: ["npm", "test"], exitCode: 0 },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-boundary",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact: { commandsRun: [command] },
+    });
+    assert.equal(packet.evidenceItems.find((item) => item.kind === "command-output")?.status, "present");
+    assert.equal(packet.evidenceItems.find((item) => item.kind === "test-result")?.status, "missing");
+  }
+});
+
+test("buildEvidencePacket supports structured test results with command strings or argv", () => {
+  for (const testResult of [
+    { command: "npm test", passed: true },
+    { command: ["npm", "test"], ok: true },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-test-command-boundary",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact: { testResults: [testResult] },
+    });
+    assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+      ["test-result", "present"],
+      ["command-output", "present"],
+    ]);
+  }
 });
 
 test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref runtime resources", async () => {

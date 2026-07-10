@@ -193,7 +193,25 @@ function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): 
 function credentialBearingUrl(value: string): boolean {
   try {
     const url = new URL(value);
-    return Boolean(url.username || url.password || [...url.searchParams.keys()].some(isSensitivePolicyKey));
+    if (url.username || url.password || [...url.searchParams.keys()].some(isSensitivePolicyKey)) return true;
+    const fragment = url.hash.slice(1);
+    if (!fragment) return false;
+    let decodedFragment = fragment;
+    try {
+      decodedFragment = decodeURIComponent(fragment);
+    } catch {
+      // URLSearchParams still recognizes sensitive keys in malformed fragments.
+    }
+    const fragmentParams = new URLSearchParams(decodedFragment.includes("?")
+      ? decodedFragment.slice(decodedFragment.indexOf("?") + 1)
+      : decodedFragment);
+    if ([...fragmentParams.keys()].some(isSensitivePolicyKey)) return true;
+    try {
+      const nested = new URL(decodedFragment, url.origin);
+      return Boolean(nested.username || nested.password || [...nested.searchParams.keys()].some(isSensitivePolicyKey));
+    } catch {
+      return false;
+    }
   } catch {
     return false;
   }

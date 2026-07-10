@@ -104,6 +104,9 @@ export async function updateExecutorBindingStatusPg(db: SouthstarDb, input: {
     );
     const current = await getExecutorBindingPg(tx, input.bindingId);
     if (!current) throw new Error(`executor binding not found: ${input.bindingId}`);
+    if (current.runId !== observed.runId) {
+      throw new Error(`executor binding ${input.bindingId} changed run while acquiring locks`);
+    }
     if (isExecutorTerminalStatus(current.status)) return current;
     const status = current.status === "cancel_requested" && input.status !== "cancelled"
       ? "cancel_requested"

@@ -95,6 +95,35 @@ test("executor binding updates lock the run first and ignore heartbeat downgrade
   });
 });
 
+test("executor binding update fails closed when the locked binding moved after the observed run lock", async () => {
+  await withDb(async (db) => {
+    await seedRunTask(db);
+    const binding = await createExecutorBindingPg(db, {
+      runId: "run-bindings-pg",
+      taskId: "task-1",
+      attemptId: "attempt-race",
+      torkJobId: "job-race",
+      status: "running",
+      now: "2026-06-19T10:00:00.000Z",
+      queueTimeoutSeconds: 60,
+      hardTimeoutSeconds: 600,
+    });
+    const historyBefore = await listHistoryForRunPg(db, "run-bindings-pg");
+
+    await assert.rejects(
+      () => updateExecutorBindingStatusPg(withBindingRunRace(db, binding.id, "run-moved"), {
+        bindingId: binding.id,
+        status: "completed",
+        eventType: "executor.callback_completed",
+      }),
+      /changed run while acquiring locks/,
+    );
+
+    assert.equal((await getExecutorBindingPg(db, binding.id))?.status, "running");
+    assert.deepEqual(await listHistoryForRunPg(db, "run-bindings-pg"), historyBefore);
+  });
+});
+
 async function seedRunTask(db: SouthstarDb): Promise<void> {
   await createWorkflowRunPg(db, {
     id: "run-bindings-pg",
@@ -130,6 +159,36 @@ async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
   } finally {
     await fixture.drop();
   }
+}
+
+function withBindingRunRace(db: SouthstarDb, bindingId: string, movedRunId: string): SouthstarDb {
+  return {
+    query: db.query.bind(db),
+    one: db.one.bind(db),
+    maybeOne: db.maybeOne.bind(db),
+    tx: async (run) => await db.tx(async (tx) => {
+      let bindingReads = 0;
+      const racedTx: SouthstarDb = {
+        query: tx.query.bind(tx),
+        one: tx.one.bind(tx),
+        maybeOne: async <T>(sql: string, params?: unknown[]) => {
+          const row = await tx.maybeOne<T>(sql, params);
+          if (
+            row
+            && sql.includes("from southstar.runtime_resources")
+            && params?.[0] === "executor_binding"
+            && params?.[1] === bindingId
+            && ++bindingReads === 2
+          ) return { ...(row as object), run_id: movedRunId } as T;
+          return row;
+        },
+        tx: tx.tx.bind(tx),
+        close: async () => {},
+      };
+      return await run(racedTx);
+    }),
+    close: async () => {},
+  };
 }
 
 async function createTestDatabase(): Promise<{ databaseUrl: string; drop(): Promise<void> }> {

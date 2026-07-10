@@ -45,6 +45,19 @@ test("tool proxy policy scanner treats credential URL query keys as secrets even
   assert.equal(scanForCredentialLeak({ url: "https://example.test/result?view=summary" }), null);
 });
 
+test("tool proxy policy scanner rejects credential URL fragments", () => {
+  for (const url of [
+    "https://example.test/callback#access_token=x&state=ok",
+    "https://example.test/callback#/done?access_token=x",
+    "https://user:password@example.test/callback#state=ok",
+    "https://example.test/callback#https://redirect.test/?api_key=x",
+  ]) {
+    const finding = scanForCredentialLeak({ url });
+    assert.equal(finding?.reason, "raw_credential_in_envelope", url);
+    assert.doesNotMatch(finding?.redactedExcerpt ?? "", /access_token=x|password|api_key=x/);
+  }
+});
+
 test("tool proxy policy redacts entire sensitive-key subtrees before excerpt persistence", () => {
   const nestedSecret = "raw-secret-not-matching-common-token-regex";
   const finding = scanForCredentialLeak({
@@ -304,7 +317,7 @@ test("callback artifact leak persists violation and does not write accepted arti
 test("callback URL credentials are rejected before callback history, resources, or artifact blobs persist them", async () => {
   await withDb(async (db) => {
     const runId = "run-callback-policy-url-leak";
-    const leakedUrl = "https://example.test/result?access_token=x&view=summary";
+    const leakedUrl = "https://example.test/result#access_token=x&view=summary";
     await seedRunTask(db, runId, "task-1");
 
     await assert.rejects(
