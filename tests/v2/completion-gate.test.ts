@@ -4,6 +4,7 @@ import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { evaluateRunCompletionGatePg } from "../../src/v2/evaluators/completion-gate.ts";
 import { recordRuntimeExceptionPg } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
+import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
@@ -11,6 +12,116 @@ import {
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("completion reports satisfied separately from degraded operational health", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-satisfied-degraded");
+    await recordRuntimeExceptionPg(db, {
+      runId,
+      source: "callback",
+      kind: "late_callback",
+      severity: "warning",
+      status: "observed",
+      observedAt: "2026-07-11T00:00:00.000Z",
+      evidenceRefs: ["callback:late"],
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.executionStatus, "completed");
+    assert.equal(result.outcomeStatus, "satisfied");
+    assert.equal((await runStatus(db, runId)).status, "completed");
+    const outcome = await goalOutcome(db, runId);
+    assert.equal(outcome.status, "satisfied");
+    assert.deepEqual(outcome.payload_json.coveredRequirementIds, ["req-blocking"]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion cannot satisfy an uncovered blocking requirement", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-uncovered", { evaluatorVerdict: "failed" });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.executionStatus, "completed");
+    assert.equal(result.outcomeStatus, "unsatisfied");
+    assert.match(result.findings.join("\n"), /req-blocking/);
+    assert.equal((await runStatus(db, runId)).status, "completed");
+    assert.equal((await goalOutcome(db, runId)).status, "unsatisfied");
+  } finally {
+    await db.close();
+  }
+});
+
+test("optional requirements do not block a satisfied goal outcome", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-optional-uncovered", { includeOptionalRequirement: true });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "satisfied");
+    assert.deepEqual((await goalOutcome(db, runId)).payload_json.failedRequirementIds, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("terminal completion evaluation is deterministic and auditable", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-outcome-idempotent");
+
+    const first = await evaluateRunCompletionGatePg(db, { runId });
+    const firstOutcome = await goalOutcome(db, runId);
+    const second = await evaluateRunCompletionGatePg(db, { runId });
+    const secondOutcome = await goalOutcome(db, runId);
+
+    assert.deepEqual(second, first);
+    assert.deepEqual(secondOutcome.payload_json, firstOutcome.payload_json);
+    const history = await listHistoryForRunPg(db, runId);
+    assert.equal(history.filter((event) => event.eventType === "run.completed").length, 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion rejects frozen coverage with phantom producer tasks", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-phantom-coverage");
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(payload_json, '{entries,0,producerTaskIds}', '["phantom-producer"]'::jsonb)
+        where resource_type = 'goal_requirement_coverage' and resource_key = $1`,
+      [runId],
+    );
+
+    await assert.rejects(
+      evaluateRunCompletionGatePg(db, { runId }),
+      /manifest is missing producer task phantom-producer/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion reuses artifact type aliases and colon-prefixed evaluator refs", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-coverage-ref-aliases", { useAliases: true });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "satisfied");
+  } finally {
+    await db.close();
+  }
+});
 
 test("completion gate passes all completed tasks with accepted artifact_ref resources", async () => {
   const db = await createTestPostgresDb();
@@ -23,13 +134,13 @@ test("completion gate passes all completed tasks with accepted artifact_ref reso
 
     const result = await evaluateRunCompletionGatePg(db, { runId: "run-gate-pass" });
 
-    assert.deepEqual(result, { runId: "run-gate-pass", status: "passed", findings: [] });
+    assert.deepEqual(result, { runId: "run-gate-pass", executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
     const run = await runStatus(db, "run-gate-pass");
-    assert.equal(run.status, "passed");
+    assert.equal(run.status, "completed");
     assert.ok(run.completed_at);
     const evaluator = await evaluatorResult(db, "run-gate-pass");
-    assert.equal(evaluator.status, "passed");
-    assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
+    assert.equal(evaluator.status, "satisfied");
+    assert.deepEqual(evaluator.payload_json, { executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
     assert.deepEqual(evaluator.summary_json, { findingCount: 0 });
   } finally {
     await db.close();
@@ -68,7 +179,8 @@ test("completion gate records a new immutable terminal event after recovery re-e
     const failed = await evaluateRunCompletionGatePg(db, { runId: "run-gate-recovery-pass" });
     assert.deepEqual(failed, {
       runId: "run-gate-recovery-pass",
-      status: "failed",
+      executionStatus: "completed",
+      outcomeStatus: "unsatisfied",
       findings: ["task task-a terminal status is failed"],
     });
 
@@ -80,16 +192,16 @@ test("completion gate records a new immutable terminal event after recovery re-e
 
     const passed = await evaluateRunCompletionGatePg(db, { runId: "run-gate-recovery-pass" });
 
-    assert.deepEqual(passed, { runId: "run-gate-recovery-pass", status: "passed", findings: [] });
+    assert.deepEqual(passed, { runId: "run-gate-recovery-pass", executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
     const run = await runStatus(db, "run-gate-recovery-pass");
-    assert.equal(run.status, "passed");
+    assert.equal(run.status, "completed");
     const evaluator = await evaluatorResult(db, "run-gate-recovery-pass");
-    assert.equal(evaluator.status, "passed");
-    assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
+    assert.equal(evaluator.status, "satisfied");
+    assert.deepEqual(evaluator.payload_json, { executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
     const completedEvents = (await listHistoryForRunPg(db, "run-gate-recovery-pass"))
       .filter((event) => event.eventType === "run.completed");
     assert.equal(completedEvents.length, 2);
-    assert.deepEqual(completedEvents.map((event) => (event.payload as { status?: string }).status), ["failed", "passed"]);
+    assert.deepEqual(completedEvents.map((event) => (event.payload as { outcomeStatus?: string }).outcomeStatus), ["unsatisfied", "satisfied"]);
     assert.notEqual(completedEvents[0]?.idempotencyKey, completedEvents[1]?.idempotencyKey);
   } finally {
     await db.close();
@@ -106,7 +218,7 @@ test("completion gate does not set completed_at while tasks are not ready for fi
 
     const result = await evaluateRunCompletionGatePg(db, { runId: "run-gate-not-ready" });
 
-    assert.deepEqual(result, { runId: "run-gate-not-ready", status: "not_ready", findings: ["tasks are not terminal"] });
+    assert.deepEqual(result, { runId: "run-gate-not-ready", executionStatus: "not_ready", outcomeStatus: "in_progress", findings: ["tasks are not terminal"] });
     const run = await runStatus(db, "run-gate-not-ready");
     assert.equal(run.status, "running");
     assert.equal(run.completed_at, null);
@@ -126,15 +238,16 @@ test("completion gate fails completed tasks missing accepted artifact_ref resour
 
     const result = await evaluateRunCompletionGatePg(db, { runId: "run-gate-missing-artifact-ref" });
 
-    assert.equal(result.status, "failed");
+    assert.equal(result.outcomeStatus, "unsatisfied");
     assert.deepEqual(result.findings, ["missing accepted artifact_ref for task task-a"]);
     const run = await runStatus(db, "run-gate-missing-artifact-ref");
-    assert.equal(run.status, "failed");
+    assert.equal(run.status, "completed");
     assert.ok(run.completed_at);
     const evaluator = await evaluatorResult(db, "run-gate-missing-artifact-ref");
-    assert.equal(evaluator.status, "failed");
+    assert.equal(evaluator.status, "unsatisfied");
     assert.deepEqual(evaluator.payload_json, {
-      status: "failed",
+      executionStatus: "completed",
+      outcomeStatus: "unsatisfied",
       findings: ["missing accepted artifact_ref for task task-a"],
     });
   } finally {
@@ -163,10 +276,10 @@ test("completion gate fails runs with blocking tool proxy violations", async () 
 
     const result = await evaluateRunCompletionGatePg(db, { runId: "run-gate-tool-proxy" });
 
-    assert.equal(result.status, "failed");
+    assert.equal(result.outcomeStatus, "blocked");
     assert.equal(result.findings.some((finding) => finding.includes("blocking tool proxy violation violation-run-gate-tool-proxy")), true);
     const run = await runStatus(db, "run-gate-tool-proxy");
-    assert.equal(run.status, "failed");
+    assert.equal(run.status, "completed");
   } finally {
     await db.close();
   }
@@ -182,11 +295,12 @@ test("completion gate treats non-completed terminal tasks as findings", async ()
 
     assert.deepEqual(result, {
       runId: "run-gate-terminal-finding",
-      status: "failed",
+      executionStatus: "completed",
+      outcomeStatus: "unsatisfied",
       findings: ["task task-a terminal status is failed"],
     });
     const run = await runStatus(db, "run-gate-terminal-finding");
-    assert.equal(run.status, "failed");
+    assert.equal(run.status, "completed");
   } finally {
     await db.close();
   }
@@ -239,7 +353,7 @@ test("completion gate ignores a failed verifier superseded by accepted dynamic r
 
     const result = await evaluateRunCompletionGatePg(db, { runId });
 
-    assert.deepEqual(result, { runId, status: "passed", findings: [] });
+    assert.deepEqual(result, { runId, executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
   } finally {
     await db.close();
   }
@@ -252,7 +366,7 @@ test("completion gate returns not_ready without mutation when a run has no tasks
 
     const result = await evaluateRunCompletionGatePg(db, { runId: "run-gate-no-tasks" });
 
-    assert.deepEqual(result, { runId: "run-gate-no-tasks", status: "not_ready", findings: ["run has no tasks"] });
+    assert.deepEqual(result, { runId: "run-gate-no-tasks", executionStatus: "not_ready", outcomeStatus: "in_progress", findings: ["run has no tasks"] });
     const run = await runStatus(db, "run-gate-no-tasks");
     assert.equal(run.status, "running");
     assert.equal(run.completed_at, null);
@@ -318,15 +432,171 @@ async function runStatus(db: SouthstarDb, runId: string): Promise<{ status: stri
 
 async function evaluatorResult(db: SouthstarDb, runId: string): Promise<{
   status: string;
-  payload_json: { status: string; findings: string[] };
+  payload_json: { executionStatus: string; outcomeStatus: string; findings: string[] };
   summary_json: { findingCount: number };
 }> {
   return await db.one<{
     status: string;
-    payload_json: { status: string; findings: string[] };
+    payload_json: { executionStatus: string; outcomeStatus: string; findings: string[] };
     summary_json: { findingCount: number };
   }>(
     "select status, payload_json, summary_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
     [`completion-gate:${runId}`],
+  );
+}
+
+async function seedCoveredGoalRun(
+  db: SouthstarDb,
+  runId: string,
+  options: { evaluatorVerdict?: "passed" | "failed"; includeOptionalRequirement?: boolean; useAliases?: boolean } = {},
+): Promise<{ runId: string }> {
+  const requirements: GoalContractV1["requirements"] = [{
+    id: "req-blocking",
+    statement: "The blocking outcome works",
+    acceptanceCriteria: ["The produced artifact is independently verified"],
+    blocking: true,
+    source: "explicit",
+  }];
+  if (options.includeOptionalRequirement) {
+    requirements.push({
+      id: "req-optional",
+      statement: "Optional polish exists",
+      acceptanceCriteria: ["Optional polish may be deferred"],
+      blocking: false,
+      source: "inferred",
+    });
+  }
+  const goalContract: GoalContractV1 = {
+    schemaVersion: "southstar.goal_contract.v1",
+    originalPrompt: "Ship a covered outcome",
+    promptHash: "prompt-hash",
+    revision: 1,
+    workspace: { cwd: "/tmp/southstar" },
+    domain: "software",
+    intent: "ship",
+    summary: "Ship a covered outcome",
+    requirements,
+    expectedArtifactRefs: ["artifact.output"],
+    requiredCapabilities: [],
+    nonGoals: [],
+    assumptions: [],
+    blockingInputs: [],
+    riskTags: [],
+    requestedSideEffects: [],
+  };
+  const contractHash = goalContractHash(goalContract);
+  const draftId = `draft-${runId}`;
+  await upsertRuntimeResourcePg(db, {
+    id: draftId,
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: "planner",
+    status: "validated",
+    title: "Planner draft",
+    payload: { goalContract, goalContractHash: contractHash },
+  });
+  await createWorkflowRunPg(db, {
+    id: runId,
+    status: "running",
+    domain: "software",
+    goalPrompt: goalContract.originalPrompt,
+    workflowManifestJson: JSON.stringify({
+      schemaVersion: "southstar.v2",
+      workflowId: runId,
+      artifactContracts: [{ id: "artifact.output", artifactType: "implementation_report" }],
+      tasks: [
+        { id: "task-producer", requiredArtifactRefs: ["artifact.output"] },
+        { id: "task-evaluator", evaluatorPipelineRef: "evaluator.independent" },
+      ],
+    }),
+    executionProjectionJson: JSON.stringify({ executor: "tork" }),
+    snapshotJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify({ draftId, goalContractHash: contractHash }),
+    metricsJson: JSON.stringify({}),
+  });
+  await seedTask(db, runId, "task-producer", "completed", 0);
+  await seedTask(db, runId, "task-evaluator", "completed", 1);
+  const artifact = await acceptOrRejectArtifactRefPg(db, {
+    runId,
+    taskId: "task-producer",
+    sessionId: "session-task-producer",
+    attemptId: "attempt-1",
+    handExecutionId: "hand-task-producer",
+    producer: { actorType: "hand", providerId: "workspace" },
+    artifactType: "implementation_report",
+    status: "accepted",
+    content: { ok: true },
+    contractRefs: [options.useAliases ? "implementation_report" : "artifact.output"],
+    summary: "Produced output",
+    producedAt: "2026-07-11T00:00:00.000Z",
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: `coverage-${runId}`,
+    resourceType: "goal_requirement_coverage",
+    resourceKey: runId,
+    runId,
+    scope: "run",
+    status: "frozen",
+    title: "Frozen coverage",
+    payload: {
+      schemaVersion: "southstar.goal_requirement_coverage.v1",
+      goalContractHash: contractHash,
+      entries: [
+        {
+          requirementId: "req-blocking",
+          producerTaskIds: ["task-producer"],
+          artifactRefs: [options.useAliases ? "artifact:output" : "artifact.output"],
+          evaluatorTaskIds: ["task-evaluator"],
+          evaluatorProfileRefs: [options.useAliases ? "evaluator:independent" : "evaluator.independent"],
+          requiredEvidenceKinds: ["artifact-ref"],
+        },
+        ...(options.includeOptionalRequirement ? [{
+          requirementId: "req-optional",
+          producerTaskIds: [],
+          artifactRefs: [],
+          evaluatorTaskIds: [],
+          evaluatorProfileRefs: [],
+          requiredEvidenceKinds: [],
+        }] : []),
+      ],
+    },
+  });
+  const verdict = options.evaluatorVerdict ?? "passed";
+  await upsertRuntimeResourcePg(db, {
+    id: `requirement-result-${runId}`,
+    resourceType: "requirement_evaluator_result",
+    resourceKey: `requirement:${runId}:req-blocking:task-evaluator:${artifact.artifactRefId}`,
+    runId,
+    taskId: "task-evaluator",
+    scope: "evaluator",
+    status: verdict,
+    title: "Requirement evaluator",
+    payload: {
+      schemaVersion: "southstar.requirement_evaluator_result.v1",
+      requirementIds: ["req-blocking"],
+      artifactRefs: [artifact.artifactRefId],
+      evaluatorId: `evaluator-${runId}`,
+      evaluatorTaskId: "task-evaluator",
+      evaluatorProfileRef: "evaluator.independent",
+      verdict,
+      evidenceRefs: [`evidence-${runId}`],
+      findings: verdict === "passed" ? [] : ["verification failed"],
+    },
+  });
+  return { runId };
+}
+
+async function goalOutcome(db: SouthstarDb, runId: string): Promise<{
+  status: string;
+  payload_json: {
+    outcomeStatus: string;
+    coveredRequirementIds: string[];
+    failedRequirementIds: string[];
+    findings: string[];
+  };
+}> {
+  return await db.one(
+    "select status, payload_json from southstar.runtime_resources where resource_type = 'goal_outcome' and resource_key = $1",
+    [`goal-outcome:${runId}`],
   );
 }

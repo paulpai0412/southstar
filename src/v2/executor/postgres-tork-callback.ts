@@ -376,9 +376,13 @@ export async function ingestTaskRunResultPg(
     }
 
     const allTasks = await tx.query<{ status: string }>("select status from southstar.workflow_tasks where run_id = $1", [effectiveResult.runId]);
-    if (allTasks.rows.length > 0 && allTasks.rows.every((row) => ["completed", "failed", "cancelled", "lost", "blocked"].includes(row.status))) {
+    if (
+      dynamicRepairRevision?.status !== "waiting_operator_approval"
+      && allTasks.rows.length > 0
+      && allTasks.rows.every((row) => ["completed", "failed", "cancelled", "lost", "blocked"].includes(row.status))
+    ) {
       const gateResult = await evaluateRunCompletionGatePg(tx, { runId: effectiveResult.runId });
-      if (gateResult.status !== "not_ready") {
+      if (gateResult.executionStatus === "completed") {
         await triggerRunCompletedKnowledgeCardSynthesis(tx, {
           runId: effectiveResult.runId,
           actor: "southstar-evolution",

@@ -9,11 +9,15 @@ import {
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
 import type { WorkflowCompositionPlan } from "../design-library/types.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
+import { loadFrozenCoverageContextPg, type FrozenCoverageContext } from "../evaluators/requirement-evaluator-results.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
 import type { HarnessDefinition, SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
+import { loadRunLibrarySnapshotPg, type RunLibrarySnapshotV1 } from "../orchestration/run-library-snapshot.ts";
 import {
   appendHistoryEventPg,
+  appendHistoryEventOncePg,
   createWorkflowTaskPg,
   getResourceByKeyPg,
   upsertRuntimeResourcePg,
@@ -31,6 +35,7 @@ export type DynamicRepairRevisionInput = {
 
 export type DynamicRepairRevisionResult =
   | { status: "applied"; revisionId: string; newTaskIds: string[] }
+  | { status: "waiting_operator_approval"; approvalId: string }
   | { status: "skipped"; reason: string };
 
 type TaskRow = {
@@ -66,13 +71,15 @@ export async function maybeApplyDynamicRepairRevisionPg(
       [input.runId],
     );
     if (!run) throw new Error(`run not found: ${input.runId}`);
-    if (!["running", "scheduling"].includes(run.status)) {
+    if (!["running", "scheduling", "awaiting_approval"].includes(run.status)) {
       return { status: "skipped", reason: `run-status:${run.status}` };
     }
     const goalContractLineage = await loadCanonicalGoalContractLineage(tx, run);
     if ("reason" in goalContractLineage) {
       return { status: "skipped", reason: goalContractLineage.reason };
     }
+    const protection = await loadFrozenRepairProtectionPg(tx, input.runId, run, goalContractLineage.goalContractHash);
+    if ("reason" in protection) return { status: "skipped", reason: protection.reason };
 
     const taskRows = await tx.query<TaskRow>(
       `select id, status, sort_order, depends_on_json, snapshot_json
@@ -96,6 +103,11 @@ export async function maybeApplyDynamicRepairRevisionPg(
     if (targetRequirementIds.some((requirementId) => !knownRequirementIds.has(requirementId))) {
       return { status: "skipped", reason: "dynamic-repair-target-requirements-invalid" };
     }
+    if (protection.coverageContext && targetRequirementIds.some((requirementId) =>
+      !protection.coverageContext!.coverage.entries.some((entry) => entry.requirementId === requirementId)
+    )) {
+      return { status: "skipped", reason: "dynamic-repair-target-coverage-missing" };
+    }
     const failedProfile = run.workflow_manifest_json.agentProfiles?.find((profile) => profile.id === failedTask.agentProfileRef);
     if (failedProfile?.workerKind !== "validation_worker") {
       return { status: "skipped", reason: "failed-task-is-not-validation-worker" };
@@ -115,7 +127,10 @@ export async function maybeApplyDynamicRepairRevisionPg(
       workflow: run.workflow_manifest_json,
       taskRows: taskRows.rows,
     });
-    if (round > maxRounds) return { status: "skipped", reason: "dynamic-repair-round-limit" };
+    if (round > maxRounds) {
+      await persistExhaustedRepairOutcomePg(tx, input.runId, targetRequirementIds, maxRounds);
+      return { status: "skipped", reason: "dynamic-repair-round-limit" };
+    }
 
     const resourceKey = dynamicRevisionResourceKey(input.runId, rootFailedTaskId, round);
     if (await getResourceByKeyPg(tx, "workflow_dynamic_repair_revision", resourceKey)) {
@@ -195,6 +210,35 @@ export async function maybeApplyDynamicRepairRevisionPg(
       targetRequirementIds,
       round,
     });
+    const repairCoverage = rewriteRepairCoverageTaskIds(
+      compiled.goalRequirementCoverage,
+      compiled.workflow.tasks,
+      newTasks,
+    );
+    if (protection.snapshot) {
+      const missingRef = firstRefMissingFromSnapshot(
+        run.workflow_manifest_json,
+        composition,
+        compiled.workflow,
+        newTasks,
+        protection.snapshot,
+      );
+      if (missingRef) return { status: "skipped", reason: `dynamic-repair-ref-not-in-run-snapshot:${missingRef}` };
+      const requestedAuthority = expandedRepairAuthority(run.workflow_manifest_json, compiled.workflow, newTasks);
+      if (hasExpandedAuthority(requestedAuthority)) {
+        const approval = await requireDynamicRepairAuthorityApprovalPg(tx, {
+          runId: input.runId,
+          failedTaskId: input.failedTaskId,
+          round,
+          goalContractHash: goalContractLineage.goalContractHash,
+          librarySnapshotHash: protection.snapshot.snapshotHash,
+          baseManifestHash: contentHashForPayload(run.workflow_manifest_json),
+          targetRequirementIds,
+          requestedAuthority,
+        });
+        if (approval.status !== "approved") return approval;
+      }
+    }
     const reconnectTargetTaskId = dynamicRepairReconnectTargetTaskId(newTasks, compiled.workflow.agentProfiles);
     const downstreamDependencyChanges = reconnectTargetTaskId
       ? downstreamDependencyChangesFor({
@@ -250,6 +294,35 @@ export async function maybeApplyDynamicRepairRevisionPg(
         },
       });
     }
+    if (protection.coverageContext) {
+      const effectiveCoverage = mergeGoalRequirementCoverage(
+        protection.coverageContext.coverage,
+        repairCoverage,
+        targetRequirementIds,
+      );
+      await upsertRuntimeResourcePg(tx, {
+        id: `goal-requirement-coverage-revision:${input.runId}:${revisionId}`,
+        resourceType: "goal_requirement_coverage_revision",
+        resourceKey: `goal-requirement-coverage-revision:${input.runId}:${revisionId}`,
+        runId: input.runId,
+        taskId: input.failedTaskId,
+        scope: "run",
+        status: "frozen",
+        title: `Goal Requirement Coverage revision ${revisionId}`,
+        payload: {
+          schemaVersion: "southstar.goal_requirement_coverage_revision.v1",
+          revisionId,
+          baseCoverageResourceKey: input.runId,
+          goalContractHash: goalContractLineage.goalContractHash,
+          targetRequirementIds,
+          baseCoverageHash: contentHashForPayload(protection.coverageContext.coverage),
+          repairCoverage,
+          effectiveCoverage,
+          effectiveCoverageHash: contentHashForPayload(effectiveCoverage),
+        },
+        summary: { revisionId, targetRequirementIds },
+      });
+    }
     await upsertRuntimeResourcePg(tx, {
       id: `workflow-dynamic-repair-${input.runId}-${input.failedTaskId}-${round}`.replace(/[^a-z0-9_-]+/gi, "-").toLowerCase(),
       resourceType: "workflow_dynamic_repair_revision",
@@ -272,7 +345,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
         composition,
         compiledComposition: compositionForCompile,
         goalContractHash: goalContractLineage.goalContractHash,
-        goalRequirementCoverage: compiled.goalRequirementCoverage,
+        goalRequirementCoverage: repairCoverage,
         orchestrationSnapshot: compiled.orchestrationSnapshot,
         repairLoopAttempts: repairLoop.attempts.map((attempt) => ({
           attempt: attempt.attempt,
@@ -299,8 +372,47 @@ export async function maybeApplyDynamicRepairRevisionPg(
         manifestFingerprint: revision.manifestFingerprint,
       },
     });
+    await tx.query(
+      "update southstar.workflow_runs set status = 'running', updated_at = now() where id = $1 and status = 'awaiting_approval'",
+      [input.runId],
+    );
     return { status: "applied", revisionId, newTaskIds: revision.newTaskIds };
   });
+}
+
+function mergeGoalRequirementCoverage(
+  base: FrozenCoverageContext["coverage"],
+  repair: FrozenCoverageContext["coverage"],
+  targetRequirementIds: string[],
+): FrozenCoverageContext["coverage"] {
+  const targets = new Set(targetRequirementIds);
+  const replacements = new Map(repair.entries.map((entry) => [entry.requirementId, entry]));
+  if (replacements.size !== targets.size || [...targets].some((id) => !replacements.has(id))) {
+    throw new Error("dynamic repair coverage does not exactly match target requirements");
+  }
+  return {
+    ...base,
+    entries: base.entries.map((entry) => targets.has(entry.requirementId)
+      ? required(replacements.get(entry.requirementId), `missing repair coverage for ${entry.requirementId}`)
+      : entry),
+  };
+}
+
+function rewriteRepairCoverageTaskIds(
+  coverage: FrozenCoverageContext["coverage"],
+  compiledTasks: WorkflowTaskDefinition[],
+  rewrittenTasks: WorkflowTaskDefinition[],
+): FrozenCoverageContext["coverage"] {
+  if (compiledTasks.length !== rewrittenTasks.length) throw new Error("dynamic repair task rewrite changed task count");
+  const idMap = new Map(compiledTasks.map((task, index) => [task.id, required(rewrittenTasks[index], `missing rewritten task ${task.id}`).id]));
+  return {
+    ...coverage,
+    entries: coverage.entries.map((entry) => ({
+      ...entry,
+      producerTaskIds: entry.producerTaskIds.map((id) => required(idMap.get(id), `missing rewritten producer task ${id}`)),
+      evaluatorTaskIds: entry.evaluatorTaskIds.map((id) => required(idMap.get(id), `missing rewritten evaluator task ${id}`)),
+    })),
+  };
 }
 
 async function loadCanonicalGoalContractLineage(
@@ -335,6 +447,263 @@ async function loadCanonicalGoalContractLineage(
     return { reason: "goal-contract-hash-mismatch" };
   }
   return { goalContract, goalContractHash: recomputedGoalContractHash };
+}
+
+async function loadFrozenRepairProtectionPg(
+  db: SouthstarDb,
+  runId: string,
+  run: RunRow,
+  canonicalGoalContractHash: string,
+): Promise<
+  | { coverageContext?: FrozenCoverageContext; snapshot?: RunLibrarySnapshotV1 }
+  | { reason: string }
+> {
+  const runtimeContext = asRecord(run.runtime_context_json);
+  const librarySnapshotHash = nonEmptyString(runtimeContext.librarySnapshotHash);
+  if (!librarySnapshotHash) return { reason: "dynamic-repair-library-snapshot-missing" };
+  const coverageContext = await loadFrozenCoverageContextPg(db, runId);
+  if (!coverageContext) return { reason: "dynamic-repair-frozen-coverage-missing" };
+  const snapshot = await loadRunLibrarySnapshotPg(db, runId);
+  if (
+    snapshot.snapshotHash !== librarySnapshotHash
+    || snapshot.goalContractHash !== canonicalGoalContractHash
+    || snapshot.manifestHash !== nonEmptyString(runtimeContext.manifestHash)
+  ) return { reason: "dynamic-repair-frozen-lineage-mismatch" };
+  return { coverageContext, snapshot };
+}
+
+function firstRefMissingFromSnapshot(
+  current: SouthstarWorkflowManifest,
+  composition: WorkflowCompositionPlan,
+  compiled: SouthstarWorkflowManifest,
+  newTasks: WorkflowTaskDefinition[],
+  snapshot: RunLibrarySnapshotV1,
+): string | undefined {
+  const selectedProfileIds = new Set(newTasks.map((task) => task.agentProfileRef).filter((ref): ref is string => Boolean(ref)));
+  const selectedProfiles = (compiled.agentProfiles ?? []).filter((profile) => selectedProfileIds.has(profile.id));
+  const selectedRefs = unique([
+    composition.selectedWorkflowTemplateRef,
+    ...composition.tasks.flatMap((task) => [
+      task.agentDefinitionRef,
+      ...task.skillRefs,
+      ...task.toolGrantRefs,
+      ...task.mcpGrantRefs,
+      ...task.instructionRefs,
+      task.evaluatorProfileRef,
+      ...task.inputArtifactRefs,
+      ...task.outputArtifactRefs,
+    ]),
+    ...selectedProfiles.flatMap((profile) => [
+      profile.agentRef,
+      profile.harnessRef,
+      ...profile.skillRefs,
+      ...profile.mcpGrantRefs,
+      ...(profile.vaultLeasePolicyRefs ?? []),
+      ...profile.toolPolicy.allowedTools,
+    ].filter((ref): ref is string => Boolean(ref))),
+  ]).sort();
+  const snapshotRefs = new Set(snapshot.objects.map((object) => object.objectKey));
+  const existingRuntimeRefs = new Set(current.harnessDefinitions.map((definition) => definition.id));
+  return selectedRefs.find((ref) => !snapshotRefs.has(ref) && !existingRuntimeRefs.has(ref));
+}
+
+type RepairAuthorityExpansion = {
+  toolGrantRefs: string[];
+  mcpGrantRefs: string[];
+  vaultLeasePolicyRefs: string[];
+  mounts: Array<{ source: string; target: string; readonly: boolean }>;
+};
+
+function expandedRepairAuthority(
+  current: SouthstarWorkflowManifest,
+  compiled: SouthstarWorkflowManifest,
+  newTasks: WorkflowTaskDefinition[],
+): RepairAuthorityExpansion {
+  const currentProfiles = current.agentProfiles ?? [];
+  const newProfileIds = new Set(newTasks.map((task) => task.agentProfileRef).filter((ref): ref is string => Boolean(ref)));
+  const proposedProfiles = (compiled.agentProfiles ?? []).filter((profile) => newProfileIds.has(profile.id));
+  const currentTools = new Set([
+    ...current.tasks.flatMap((task) => task.toolGrantRefs ?? []),
+    ...currentProfiles.flatMap((profile) => profile.toolPolicy.allowedTools),
+  ]);
+  const currentMcp = new Set([
+    ...current.tasks.flatMap((task) => task.mcpGrantRefs ?? []),
+    ...currentProfiles.flatMap((profile) => profile.mcpGrantRefs),
+  ]);
+  const currentVault = new Set([
+    ...current.tasks.flatMap((task) => task.vaultLeasePolicyRefs ?? []),
+    ...currentProfiles.flatMap((profile) => profile.vaultLeasePolicyRefs ?? []),
+  ]);
+  const currentMounts = new Set(current.tasks.flatMap((task) => task.execution.mounts).map(mountKey));
+  return {
+    toolGrantRefs: unique([
+      ...newTasks.flatMap((task) => task.toolGrantRefs ?? []),
+      ...proposedProfiles.flatMap((profile) => profile.toolPolicy.allowedTools),
+    ]).filter((ref) => !currentTools.has(ref)).sort(),
+    mcpGrantRefs: unique([
+      ...newTasks.flatMap((task) => task.mcpGrantRefs ?? []),
+      ...proposedProfiles.flatMap((profile) => profile.mcpGrantRefs),
+    ]).filter((ref) => !currentMcp.has(ref)).sort(),
+    vaultLeasePolicyRefs: unique([
+      ...newTasks.flatMap((task) => task.vaultLeasePolicyRefs ?? []),
+      ...proposedProfiles.flatMap((profile) => profile.vaultLeasePolicyRefs ?? []),
+    ]).filter((ref) => !currentVault.has(ref)).sort(),
+    mounts: newTasks.flatMap((task) => task.execution.mounts)
+      .filter((mount) => !currentMounts.has(mountKey(mount)))
+      .sort((a, b) => mountKey(a).localeCompare(mountKey(b))),
+  };
+}
+
+function hasExpandedAuthority(authority: RepairAuthorityExpansion): boolean {
+  return authority.toolGrantRefs.length > 0
+    || authority.mcpGrantRefs.length > 0
+    || authority.vaultLeasePolicyRefs.length > 0
+    || authority.mounts.length > 0;
+}
+
+async function requireDynamicRepairAuthorityApprovalPg(
+  db: SouthstarDb,
+  input: {
+    runId: string;
+    failedTaskId: string;
+    round: number;
+    goalContractHash: string;
+    librarySnapshotHash: string;
+    baseManifestHash: string;
+    targetRequirementIds: string[];
+    requestedAuthority: RepairAuthorityExpansion;
+  },
+): Promise<
+  | { status: "approved" }
+  | { status: "waiting_operator_approval"; approvalId: string }
+  | { status: "skipped"; reason: string }
+> {
+  const proposalHash = contentHashForPayload({
+    actionType: "dynamic_repair_authority_expansion",
+    failedTaskId: input.failedTaskId,
+    round: input.round,
+    goalContractHash: input.goalContractHash,
+    librarySnapshotHash: input.librarySnapshotHash,
+    baseManifestHash: input.baseManifestHash,
+    targetRequirementIds: [...input.targetRequirementIds].sort(),
+    requestedAuthority: input.requestedAuthority,
+  });
+  const approvalId = `dynamic-repair-approval:${input.runId}:${proposalHash}`;
+  const existing = await getResourceByKeyPg(db, "approval", approvalId);
+  if (existing) {
+    const payload = asRecord(existing.payload);
+    const validTuple = existing.runId === input.runId
+      && existing.taskId === input.failedTaskId
+      && existing.scope === "approval"
+      && payload.schemaVersion === "southstar.dynamic_repair_authority_approval.v1"
+      && payload.approvalId === approvalId
+      && payload.runId === input.runId
+      && payload.failedTaskId === input.failedTaskId
+      && payload.actionType === "dynamic_repair_authority_expansion"
+      && payload.round === input.round
+      && payload.proposalHash === proposalHash
+      && payload.baseManifestHash === input.baseManifestHash
+      && payload.goalContractHash === input.goalContractHash
+      && payload.librarySnapshotHash === input.librarySnapshotHash
+      && contentHashForPayload(payload.requestedAuthority) === contentHashForPayload(input.requestedAuthority)
+      && contentHashForPayload(stringArray(payload.targetRequirementIds).sort())
+        === contentHashForPayload([...input.targetRequirementIds].sort());
+    if (!validTuple) return { status: "skipped", reason: `dynamic-repair-authority-approval-invalid:${approvalId}` };
+  }
+  if (existing?.status === "approved") return { status: "approved" };
+  if (existing?.status === "rejected") return { status: "skipped", reason: `dynamic-repair-authority-approval-rejected:${approvalId}` };
+  if (!existing) {
+    await upsertRuntimeResourcePg(db, {
+      id: approvalId,
+      resourceType: "approval",
+      resourceKey: approvalId,
+      runId: input.runId,
+      taskId: input.failedTaskId,
+      scope: "approval",
+      status: "waiting_operator_approval",
+      title: `Dynamic repair authority approval for ${input.failedTaskId}`,
+      payload: {
+        schemaVersion: "southstar.dynamic_repair_authority_approval.v1",
+        approvalId,
+        actionType: "dynamic_repair_authority_expansion",
+        runId: input.runId,
+        failedTaskId: input.failedTaskId,
+        round: input.round,
+        goalContractHash: input.goalContractHash,
+        librarySnapshotHash: input.librarySnapshotHash,
+        baseManifestHash: input.baseManifestHash,
+        proposalHash,
+        targetRequirementIds: [...input.targetRequirementIds].sort(),
+        requestedAuthority: input.requestedAuthority,
+      },
+      summary: { proposalHash, targetRequirementIds: input.targetRequirementIds },
+    });
+    await appendHistoryEventPg(db, {
+      runId: input.runId,
+      taskId: input.failedTaskId,
+      eventType: "approval.requested",
+      actorType: "orchestrator",
+      idempotencyKey: `${approvalId}:requested`,
+      payload: { approvalId, actionType: "dynamic_repair_authority_expansion", proposalHash },
+    });
+  }
+  await db.query(
+    "update southstar.workflow_runs set status = 'awaiting_approval', updated_at = now() where id = $1 and status in ('running', 'scheduling')",
+    [input.runId],
+  );
+  return { status: "waiting_operator_approval", approvalId };
+}
+
+async function persistExhaustedRepairOutcomePg(
+  db: SouthstarDb,
+  runId: string,
+  failedRequirementIds: string[],
+  maxRounds: number,
+): Promise<void> {
+  const existing = await getResourceByKeyPg(db, "goal_outcome", `goal-outcome:${runId}`);
+  const payload = asRecord(existing?.payload);
+  const allFailedRequirementIds = unique([
+    ...stringArray(payload.failedRequirementIds),
+    ...failedRequirementIds,
+  ]).sort();
+  const findings = unique([
+    ...stringArray(payload.findings),
+    `dynamic repair round limit exhausted after ${maxRounds} rounds`,
+  ]);
+  await upsertRuntimeResourcePg(db, {
+    id: `goal-outcome:${runId}`,
+    resourceType: "goal_outcome",
+    resourceKey: `goal-outcome:${runId}`,
+    runId,
+    scope: "outcome",
+    status: "unsatisfied",
+    title: `Goal outcome ${runId}`,
+    payload: {
+      schemaVersion: "southstar.goal_outcome.v1",
+      outcomeStatus: "unsatisfied",
+      coveredRequirementIds: stringArray(payload.coveredRequirementIds).filter((id) => !allFailedRequirementIds.includes(id)),
+      failedRequirementIds: allFailedRequirementIds,
+      findings,
+    },
+    summary: { failed: allFailedRequirementIds.length },
+  });
+  const auditPayload = {
+    outcomeStatus: "unsatisfied",
+    failedRequirementIds: allFailedRequirementIds,
+    maxRounds,
+    findings,
+  };
+  await appendHistoryEventOncePg(db, {
+    runId,
+    eventType: "workflow.dynamic_repair_exhausted",
+    actorType: "orchestrator",
+    idempotencyKey: `dynamic-repair-exhausted:${runId}:${contentHashForPayload(auditPayload)}`,
+    payload: auditPayload,
+  });
+}
+
+function mountKey(mount: { source: string; target: string; readonly: boolean }): string {
+  return `${mount.source}\u0000${mount.target}\u0000${mount.readonly ? "readonly" : "write"}`;
 }
 
 function rewriteDynamicRepairTasks(
@@ -765,4 +1134,8 @@ function nonEmptyString(value: unknown): string | undefined {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+function stringArray(value: unknown): string[] {
+  return isStringArray(value) ? value : [];
 }

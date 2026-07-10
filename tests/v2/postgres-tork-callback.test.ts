@@ -79,7 +79,7 @@ test("Postgres Tork callback route ingests task result, artifacts, binding statu
       const task = await db.one<{ status: string }>("select status from southstar.workflow_tasks where id = 'task-1' and run_id = 'run-callback-pg'");
       assert.equal(task.status, "completed");
       const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = 'run-callback-pg'");
-      assert.equal(run.status, "passed");
+      assert.equal(run.status, "completed");
       const binding = await getExecutorBindingPg(db, "executor-run-callback-pg-task-1-attempt-1");
       assert.equal(binding?.status, "completed");
       assert.equal(binding?.payload.callbackReceivedAt, "2026-06-19T10:05:00.000Z");
@@ -117,12 +117,12 @@ test("Postgres Tork callback route ingests task result, artifacts, binding statu
       assert.equal(artifactList[0]?.status, "accepted");
       assert.equal(artifactList[0]?.taskId, "task-1");
 
-      const evaluator = await db.one<{ status: string; payload_json: { status?: string; findings?: string[] } }>(
+      const evaluator = await db.one<{ status: string; payload_json: { executionStatus?: string; outcomeStatus?: string; findings?: string[] } }>(
         "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
         ["completion-gate:run-callback-pg"],
       );
-      assert.equal(evaluator.status, "passed");
-      assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
+      assert.equal(evaluator.status, "satisfied");
+      assert.deepEqual(evaluator.payload_json, { executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
 
       const history = await listHistoryForRunPg(db, "run-callback-pg");
       const historyTypes = history.map((event) => event.eventType);
@@ -189,14 +189,15 @@ test("Postgres Tork callback ok false writes rejected artifact_ref and evaluator
       const task = await db.one<{ status: string }>("select status from southstar.workflow_tasks where id = 'task-1' and run_id = 'run-callback-rejected'");
       assert.equal(task.status, "failed");
       const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = 'run-callback-rejected'");
-      assert.equal(run.status, "failed");
-      const evaluator = await db.one<{ status: string; payload_json: { status?: string; findings?: string[] } }>(
+      assert.equal(run.status, "completed");
+      const evaluator = await db.one<{ status: string; payload_json: { executionStatus?: string; outcomeStatus?: string; findings?: string[] } }>(
         "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
         ["completion-gate:run-callback-rejected"],
       );
-      assert.equal(evaluator.status, "failed");
+      assert.equal(evaluator.status, "unsatisfied");
       assert.deepEqual(evaluator.payload_json, {
-        status: "failed",
+        executionStatus: "completed",
+        outcomeStatus: "unsatisfied",
         findings: ["task task-1 terminal status is failed"],
       });
       const history = await listHistoryForRunPg(db, "run-callback-rejected");
@@ -205,7 +206,10 @@ test("Postgres Tork callback ok false writes rejected artifact_ref and evaluator
       assert.equal(completed.length, 1);
       assert.equal(completed[0]?.actorType, "evaluator");
       assert.deepEqual(completed[0]?.payload, {
-        status: "failed",
+        schemaVersion: "southstar.goal_outcome.v1",
+        outcomeStatus: "unsatisfied",
+        coveredRequirementIds: [],
+        failedRequirementIds: [],
         findings: ["task task-1 terminal status is failed"],
       });
     } finally {
@@ -274,13 +278,13 @@ test("Postgres Tork callback ignores stale attempt after a newer attempt complet
       const task = await db.one<{ status: string }>("select status from southstar.workflow_tasks where id = 'task-1' and run_id = 'run-callback-stale'");
       assert.equal(task.status, "completed");
       const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = 'run-callback-stale'");
-      assert.equal(run.status, "passed");
-      const evaluator = await db.one<{ status: string; payload_json: { status?: string; findings?: string[] } }>(
+      assert.equal(run.status, "completed");
+      const evaluator = await db.one<{ status: string; payload_json: { executionStatus?: string; outcomeStatus?: string; findings?: string[] } }>(
         "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
         ["completion-gate:run-callback-stale"],
       );
-      assert.equal(evaluator.status, "passed");
-      assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
+      assert.equal(evaluator.status, "satisfied");
+      assert.deepEqual(evaluator.payload_json, { executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
       const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
       assert.equal(artifactRefs.length, 1);
       assert.equal(artifactRefs[0]?.resourceKey, newer.result.artifactRefId);
@@ -351,13 +355,13 @@ test("Postgres Tork callback ignores non-identical callback for an already termi
       const task = await db.one<{ status: string }>("select status from southstar.workflow_tasks where id = 'task-1' and run_id = 'run-callback-terminal'");
       assert.equal(task.status, "completed");
       const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = 'run-callback-terminal'");
-      assert.equal(run.status, "passed");
-      const evaluator = await db.one<{ status: string; payload_json: { status?: string; findings?: string[] } }>(
+      assert.equal(run.status, "completed");
+      const evaluator = await db.one<{ status: string; payload_json: { executionStatus?: string; outcomeStatus?: string; findings?: string[] } }>(
         "select status, payload_json from southstar.runtime_resources where resource_type = 'evaluator_result' and resource_key = $1",
         ["completion-gate:run-callback-terminal"],
       );
-      assert.equal(evaluator.status, "passed");
-      assert.deepEqual(evaluator.payload_json, { status: "passed", findings: [] });
+      assert.equal(evaluator.status, "satisfied");
+      assert.deepEqual(evaluator.payload_json, { executionStatus: "completed", outcomeStatus: "satisfied", findings: [] });
       const artifactRefs = await listResourcesPg(db, { resourceType: ARTIFACT_REF_RESOURCE_TYPE });
       assert.equal(artifactRefs.length, 1);
       assert.equal(artifactRefs[0]?.resourceKey, first.result.artifactRefId);
@@ -472,7 +476,7 @@ test("missing required evidence blocks an otherwise ok verifier callback", async
     );
     assert.equal(task.status, "failed");
     const completion = await getResourceByKeyPg(db, "evaluator_result", `completion-gate:${fixture.runId}`);
-    assert.equal(completion?.status, "failed");
+    assert.equal(completion?.status, "unsatisfied");
   });
 });
 

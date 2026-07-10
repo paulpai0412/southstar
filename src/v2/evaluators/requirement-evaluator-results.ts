@@ -7,6 +7,7 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import { buildEvidencePacket, screenshotEvidenceRef } from "../artifacts/evidence.ts";
 import type { EvidenceKind, EvidencePacket, ValidatorResult } from "../artifacts/types.ts";
 import { evidenceValidatorResult } from "../artifacts/validator-results.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import {
   goalContractHash,
@@ -36,9 +37,10 @@ export type RequirementEvaluationWriteResult = {
 };
 
 type CoverageEntry = GoalRequirementCoverageV1["entries"][number];
-type FrozenCoverageContext = {
+export type FrozenCoverageContext = {
   coverage: GoalRequirementCoverageV1;
   manifest: SouthstarWorkflowManifest;
+  goalContract: GoalContractV1;
   blockingRequirementIds: Set<string>;
   workspaceRoot?: string;
 };
@@ -215,7 +217,7 @@ async function evaluateEntry(
   };
 }
 
-async function acceptedProducerArtifactRefsPg(
+export async function acceptedProducerArtifactRefsPg(
   db: SouthstarDb,
   runId: string,
   entry: CoverageEntry,
@@ -645,7 +647,7 @@ async function persistRequirementResult(
   });
 }
 
-async function loadFrozenCoverageContextPg(
+export async function loadFrozenCoverageContextPg(
   db: SouthstarDb,
   runId: string,
 ): Promise<FrozenCoverageContext | undefined> {
@@ -688,18 +690,79 @@ async function loadFrozenCoverageContextPg(
     throw new Error(`invalid Goal Requirement Coverage for run ${runId}: canonical Goal Contract hash mismatch`);
   }
   const manifest = parseManifest(run.workflow_manifest_json, runId);
-  const coverage = parseCoverage(coverageResource.payload, runId, goalContract, manifest);
+  const baseCoverage = parseCoverage(coverageResource.payload, runId, goalContract, manifest);
+  const coverage = await loadEffectiveCoveragePg(db, runId, goalContract, manifest, baseCoverage);
   if (coverage.goalContractHash !== canonicalHash) {
     throw new Error(`Goal Requirement Coverage for run ${runId} goalContractHash does not match canonical Goal Contract`);
   }
   return {
     coverage,
     manifest,
+    goalContract,
     workspaceRoot: nonEmptyString(runtimeContext.projectRoot) ?? nonEmptyString(runtimeContext.cwd),
     blockingRequirementIds: new Set(
       goalContract.requirements.filter((requirement) => requirement.blocking).map((requirement) => requirement.id),
     ),
   };
+}
+
+async function loadEffectiveCoveragePg(
+  db: SouthstarDb,
+  runId: string,
+  goalContract: GoalContractV1,
+  manifest: SouthstarWorkflowManifest,
+  baseCoverage: GoalRequirementCoverageV1,
+): Promise<GoalRequirementCoverageV1> {
+  const rows = (await db.query<{
+    resource_key: string;
+    run_id: string | null;
+    scope: string;
+    status: string;
+    payload_json: unknown;
+  }>(
+    `select resource_key, run_id, scope, status, payload_json
+       from southstar.runtime_resources
+      where run_id = $1 and resource_type = 'goal_requirement_coverage_revision'
+      order by created_at, resource_key`,
+    [runId],
+  )).rows;
+  let effective = baseCoverage;
+  for (const row of rows) {
+    const payload = asRecord(row.payload_json);
+    const targetRequirementIds = stringArray(payload.targetRequirementIds).sort();
+    const repairCoverage = asRecord(payload.repairCoverage);
+    const storedEffective = asRecord(payload.effectiveCoverage);
+    if (
+      row.run_id !== runId
+      || row.scope !== "run"
+      || row.status !== "frozen"
+      || payload.schemaVersion !== "southstar.goal_requirement_coverage_revision.v1"
+      || payload.baseCoverageResourceKey !== runId
+      || payload.goalContractHash !== goalContractHash(goalContract)
+      || payload.baseCoverageHash !== contentHashForPayload(effective)
+      || targetRequirementIds.length === 0
+      || repairCoverage.schemaVersion !== "southstar.goal_requirement_coverage.v1"
+      || repairCoverage.goalContractHash !== goalContractHash(goalContract)
+      || !Array.isArray(repairCoverage.entries)
+      || !Array.isArray(storedEffective.entries)
+      || payload.effectiveCoverageHash !== contentHashForPayload(storedEffective)
+    ) throw new Error(`invalid Goal Requirement Coverage revision for run ${runId}: ${row.resource_key}`);
+    const repairEntries = repairCoverage.entries.map(asRecord);
+    if (
+      repairEntries.length !== targetRequirementIds.length
+      || repairEntries.map((entry) => nonEmptyString(entry.requirementId)).sort().join("\u0000") !== targetRequirementIds.join("\u0000")
+    ) throw new Error(`invalid Goal Requirement Coverage revision targets for run ${runId}: ${row.resource_key}`);
+    const replacement = new Map(repairEntries.map((entry) => [entry.requirementId as string, entry]));
+    const expected = {
+      ...effective,
+      entries: effective.entries.map((entry) => replacement.get(entry.requirementId) ?? entry),
+    };
+    if (contentHashForPayload(expected) !== contentHashForPayload(storedEffective)) {
+      throw new Error(`invalid Goal Requirement Coverage revision fold for run ${runId}: ${row.resource_key}`);
+    }
+    effective = parseCoverage(storedEffective, runId, goalContract, manifest);
+  }
+  return effective;
 }
 
 function parseCoverage(
@@ -885,7 +948,7 @@ async function assertExecutionIdentityPg(
   if (!executedProfile) throw new Error(`${prefix}: task envelope evaluator profile is missing`);
   for (const entry of entries) {
     const expectedProfile = resolveEvaluatorProfileRef(context.manifest, entry, input.taskId);
-    if (normalizeRef(executedProfile, "evaluator") !== normalizeRef(expectedProfile, "evaluator")) {
+    if (normalizeRequirementEvidenceRef(executedProfile, "evaluator") !== normalizeRequirementEvidenceRef(expectedProfile, "evaluator")) {
       throw new Error(`executed evaluator profile ${executedProfile} does not match frozen coverage for task ${input.taskId}`);
     }
   }
@@ -920,19 +983,19 @@ function parseManifest(value: unknown, runId: string): SouthstarWorkflowManifest
 function artifactContractAliases(manifest: SouthstarWorkflowManifest): Map<string, string> {
   const aliases = new Map<string, string>();
   for (const contract of manifest.artifactContracts ?? []) {
-    const id = normalizeRef(contract.id, "artifact");
+    const id = normalizeRequirementEvidenceRef(contract.id, "artifact");
     aliases.set(id, id);
-    aliases.set(normalizeRef(contract.artifactType, "artifact"), id);
+    aliases.set(normalizeRequirementEvidenceRef(contract.artifactType, "artifact"), id);
   }
   return aliases;
 }
 
 function canonicalContractRef(ref: string, aliases: Map<string, string>): string {
-  const normalized = normalizeRef(ref, "artifact");
+  const normalized = normalizeRequirementEvidenceRef(ref, "artifact");
   return aliases.get(normalized) ?? normalized;
 }
 
-function normalizeRef(value: string, namespace: "artifact" | "evaluator"): string {
+export function normalizeRequirementEvidenceRef(value: string, namespace: "artifact" | "evaluator"): string {
   return value.replace(new RegExp(`^${namespace}[.:]`), "");
 }
 
