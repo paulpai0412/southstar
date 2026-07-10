@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
@@ -56,6 +57,41 @@ test("Postgres executor binding store persists bindings, status updates, and aud
     const history = await listHistoryForRunPg(db, "run-bindings-pg");
     assert.deepEqual(history.map((event) => event.eventType), ["executor.submitted", "executor.running"]);
     assert.equal(history[0]?.idempotencyKey, "executor-binding:run-bindings-pg:task-1:attempt-1");
+  });
+});
+
+test("executor binding updates lock the run first and ignore heartbeat downgrades after terminal callback state", async () => {
+  const source = readFileSync(new URL("../../src/v2/executor/postgres-bindings.ts", import.meta.url), "utf8");
+  const start = source.indexOf("export async function updateExecutorBindingStatusPg");
+  const end = source.indexOf("\nfunction toRecord", start);
+  const helper = source.slice(start, end);
+  const runLock = helper.indexOf("southstar.workflow_runs");
+  const bindingLock = helper.indexOf("resource_type = 'executor_binding'");
+  assert.ok(runLock >= 0 && bindingLock >= 0 && runLock < bindingLock);
+
+  await withDb(async (db) => {
+    await seedRunTask(db);
+    const binding = await createExecutorBindingPg(db, {
+      runId: "run-bindings-pg",
+      taskId: "task-1",
+      attemptId: "attempt-1",
+      torkJobId: "job-1",
+      status: "completed",
+      now: "2026-06-19T10:00:00.000Z",
+      queueTimeoutSeconds: 60,
+      hardTimeoutSeconds: 600,
+    });
+
+    const updated = await updateExecutorBindingStatusPg(db, {
+      bindingId: binding.id,
+      status: "running",
+      eventType: "executor.heartbeat",
+      payloadPatch: { lastHeartbeatAt: "2026-06-19T10:00:30.000Z", heartbeatSeq: 2 },
+    });
+
+    assert.equal(updated.status, "completed");
+    assert.equal(updated.payload.lastHeartbeatAt, undefined);
+    assert.deepEqual((await listHistoryForRunPg(db, "run-bindings-pg")).map((event) => event.eventType), ["executor.submitted"]);
   });
 });
 

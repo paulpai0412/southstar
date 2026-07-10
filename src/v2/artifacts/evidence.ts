@@ -42,6 +42,16 @@ export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePa
   };
 }
 
+export function screenshotEvidenceRef(artifact: Record<string, unknown>, runId: string): string | undefined {
+  const browserEvidence = isRecord(artifact.browserEvidence) ? artifact.browserEvidence : {};
+  return safeScreenshotRef(firstDefined(
+    firstArrayItem(browserEvidence.screenshots),
+    browserEvidence.screenshot,
+    firstArrayItem(artifact.screenshots),
+    artifact.screenshot,
+  ), runId);
+}
+
 function evidenceByKind(
   artifact: Record<string, unknown>,
   now: string,
@@ -257,7 +267,16 @@ function firstCommandResult(value: unknown): Record<string, unknown> | undefined
 
 function commandStatus(command: Record<string, unknown>): "present" | "invalid" {
   if (typeof command.command !== "string" || command.command.trim().length === 0) return "invalid";
-  return "present";
+  const outcome = command.status ?? command.result ?? command.outcome;
+  if (
+    (typeof outcome === "string" && /^(fail(ed)?|error|errored)$/i.test(outcome.trim()))
+    || command.ok === false
+    || command.passed === false
+    || (typeof command.exitCode === "number" && Number.isInteger(command.exitCode) && command.exitCode !== 0)
+  ) return "invalid";
+  if (typeof outcome === "string" && /^(pass(ed)?|success|succeeded|ok)$/i.test(outcome.trim())) return "present";
+  if (command.ok === true || command.passed === true || command.exitCode === 0) return "present";
+  return "invalid";
 }
 
 function summarizeCommand(command: Record<string, unknown>): string {

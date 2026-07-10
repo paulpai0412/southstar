@@ -597,8 +597,9 @@ test("runnable scheduler ignores a provider rejection after a fast callback comp
     await seedContextPacket(db, runId, "task-a");
 
     const fixture = scheduler(db, { fastCallback: true, failExecuteTask: true });
-    await assert.rejects(fixture.scheduler.runOnce({ runId }), /hand execution failed/);
+    const result = await fixture.scheduler.runOnce({ runId });
 
+    assert.deepEqual(result.dispatchedTaskIds, ["task-a"]);
     assert.equal((await taskRow(db, runId, "task-a")).status, "completed");
     const handExecution = (await listResourcesPg(db, { resourceType: "hand_execution" }))
       .find((resource) => resource.runId === runId && resource.taskId === "task-a");
@@ -626,8 +627,9 @@ test("runnable scheduler ignores a provider throw after a fast callback complete
     await seedContextPacket(db, runId, "task-a");
 
     const fixture = scheduler(db, { fastCallback: true, throwExecuteTask: true });
-    await assert.rejects(fixture.scheduler.runOnce({ runId }), /provider submit threw/);
+    const result = await fixture.scheduler.runOnce({ runId });
 
+    assert.deepEqual(result.dispatchedTaskIds, ["task-a"]);
     assert.equal((await taskRow(db, runId, "task-a")).status, "completed");
     const handExecution = (await listResourcesPg(db, { resourceType: "hand_execution" }))
       .find((resource) => resource.runId === runId && resource.taskId === "task-a");

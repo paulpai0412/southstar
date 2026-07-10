@@ -286,8 +286,7 @@ async function dispatchTask(
         heartbeatTimeoutSeconds,
       });
     } catch (error) {
-      handRejected = true;
-      const persistedErrorMessage = await markTaskDispatchFailed(db, {
+      const failure = await markTaskDispatchFailed(db, {
         runId: input.runId,
         taskId: input.taskId,
         sessionId: input.sessionId,
@@ -301,11 +300,12 @@ async function dispatchTask(
         recoveryKey,
         errorMessage: errorMessage(error),
       });
-      throw new Error(persistedErrorMessage);
+      if (failure.kind === "ignored_terminal") return;
+      handRejected = true;
+      throw new Error(failure.errorMessage);
     }
     if (!handResult.ok) {
-      handRejected = true;
-      const persistedErrorMessage = await markTaskDispatchFailed(db, {
+      const failure = await markTaskDispatchFailed(db, {
         runId: input.runId,
         taskId: input.taskId,
         sessionId: input.sessionId,
@@ -319,7 +319,9 @@ async function dispatchTask(
         recoveryKey,
         errorMessage: handResult.output,
       });
-      throw new Error(persistedErrorMessage);
+      if (failure.kind === "ignored_terminal") return;
+      handRejected = true;
+      throw new Error(failure.errorMessage);
     }
     handAccepted = true;
     const externalJobId = stringValue(handResult.metadata.externalJobId) ?? handResult.output;
@@ -710,7 +712,7 @@ async function markTaskDispatchFailed(
     recoveryKey: string;
     errorMessage: string;
   },
-): Promise<string> {
+): Promise<{ kind: "failed"; errorMessage: string } | { kind: "ignored_terminal" }> {
   const persistedErrorMessage = redactProviderErrorExcerpt(input.errorMessage);
   return await db.tx(async (tx) => {
     const locked = await lockDispatchFinalizationPg(tx, {
@@ -721,7 +723,7 @@ async function markTaskDispatchFailed(
       handBindingId: input.handBindingId,
     });
     if (isTerminalTaskStatus(locked.taskStatus) || isTerminalHandExecutionStatus(locked.handExecutionStatus)) {
-      return persistedErrorMessage;
+      return { kind: "ignored_terminal" };
     }
     await persistHandExecution(tx, {
       runId: input.runId,
@@ -763,7 +765,7 @@ async function markTaskDispatchFailed(
       idempotencyKey: `${input.recoveryKey}:hand-execute-failed`,
       payload: { attemptId: input.attemptId, handExecutionId: input.handExecutionId, error: persistedErrorMessage },
     });
-    return persistedErrorMessage;
+    return { kind: "failed", errorMessage: persistedErrorMessage };
   });
 }
 

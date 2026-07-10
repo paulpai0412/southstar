@@ -20,7 +20,7 @@ test("buildEvidencePacket captures redacted browser URL and screenshot evidence"
     requiredEvidenceKinds: ["url", "screenshot"],
     artifact: {
       browserEvidence: {
-        url: "https://example.test/subscriptions?access_token=secret#private",
+        url: "https://example.test/subscriptions?view=summary#private",
         screenshots: [{ path: "artifacts/subscription-page.png" }],
       },
     },
@@ -33,7 +33,7 @@ test("buildEvidencePacket captures redacted browser URL and screenshot evidence"
     ["screenshot", "present"],
   ]);
   assert.match(packet.evidenceItems[0]!.summary, /https:\/\/example\.test\/subscriptions/);
-  assert.doesNotMatch(JSON.stringify(packet), /access_token|secret|private/);
+  assert.doesNotMatch(JSON.stringify(packet), /view=summary|private/);
   assert.equal(packet.evidenceItems.every((item) => item.redactionApplied), true);
 });
 
@@ -85,6 +85,29 @@ test("buildEvidencePacket accepts only canonical artifact identities as screensh
     });
     assert.equal(packet.evidenceItems[0]?.status, "invalid", artifactRef);
     assert.doesNotMatch(JSON.stringify(packet), /home\/user|secret-token|other-run/);
+  }
+});
+
+test("buildEvidencePacket rejects command evidence without a trusted outcome", () => {
+  for (const testResult of [
+    { command: "npm test" },
+    { command: "npm test", status: "unknown" },
+    { command: "npm test", status: "failed" },
+    { command: "npm test", ok: false },
+    { command: "npm test", exitCode: 1 },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact: { testResults: [testResult] },
+    });
+
+    assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+      ["test-result", "invalid"],
+      ["command-output", "invalid"],
+    ]);
   }
 });
 

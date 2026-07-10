@@ -12,6 +12,7 @@ import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts
 import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
+import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import {
   contextPolicy,
   implementationReportContract,
@@ -185,6 +186,24 @@ test("Postgres task envelope fallback preserves canonical graph library refs", a
       sortOrder: 0,
       dependsOn: [],
       rootSessionId: "session-envelope-canonical-refs",
+    });
+    const selectedRefs = [
+      "instruction.software-maker",
+      "skill.software-implementation",
+      "tool.workspace-read",
+      "tool.workspace-write",
+      "tool.shell-command",
+      "mcp.filesystem-workspace",
+      "vault.github-write-token",
+    ];
+    const versions = await db.query<{ object_key: string; head_version_id: string }>(
+      "select object_key, head_version_id from southstar.library_objects where object_key = any($1::text[])",
+      [selectedRefs],
+    );
+    await captureRunLibrarySnapshotPg(db, {
+      runId: "run-envelope-canonical-refs",
+      manifestHash: "1".repeat(64),
+      libraryObjectVersionRefs: versions.rows.map((row) => ({ objectKey: row.object_key, versionRef: row.head_version_id })),
     });
     await upsertRuntimeResourcePg(db, {
       resourceType: "context_packet",

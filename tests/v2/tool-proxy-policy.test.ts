@@ -4,7 +4,7 @@ import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { openSouthstarDb } from "../../src/v2/db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../../src/v2/artifacts/types.ts";
 import { createExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
-import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
+import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../../src/v2/executor/postgres-tork-callback.ts";
 import {
   createWorkflowRunPg,
   createWorkflowTaskPg,
@@ -34,6 +34,15 @@ test("tool proxy policy scanner detects credential-shaped keys and tokens with r
   assert.match(openAiFinding?.redactedExcerpt ?? "", /\[REDACTED\]/);
 
   assert.equal(scanForCredentialLeak({ output: "safe artifact", metadata: { status: "ok" } }), null);
+});
+
+test("tool proxy policy scanner treats credential URL query keys as secrets even for short values", () => {
+  for (const key of ["token", "access_token", "api_key", "password", "secret"]) {
+    const finding = scanForCredentialLeak({ url: `https://example.test/result?${key}=x&view=summary` });
+    assert.equal(finding?.reason, "raw_credential_in_envelope", key);
+    assert.doesNotMatch(finding?.redactedExcerpt ?? "", new RegExp(`${key}=x`));
+  }
+  assert.equal(scanForCredentialLeak({ url: "https://example.test/result?view=summary" }), null);
 });
 
 test("tool proxy policy redacts entire sensitive-key subtrees before excerpt persistence", () => {
@@ -289,6 +298,77 @@ test("callback artifact leak persists violation and does not write accepted arti
       ["run-callback-policy-leak", "task-1"],
     );
     assert.equal(task.status, "running");
+  });
+});
+
+test("callback URL credentials are rejected before callback history, resources, or artifact blobs persist them", async () => {
+  await withDb(async (db) => {
+    const runId = "run-callback-policy-url-leak";
+    const leakedUrl = "https://example.test/result?access_token=x&view=summary";
+    await seedRunTask(db, runId, "task-1");
+
+    await assert.rejects(
+      () => ingestTaskRunResultPg(db, {
+        runId,
+        taskId: "task-1",
+        rootSessionId: "session-1",
+        ok: true,
+        attempts: 1,
+        attemptId: "attempt-1",
+        artifact: { kind: "implementation_report", browserEvidence: { url: leakedUrl } },
+        metrics: {},
+        events: [],
+      }),
+      /raw credential detected/i,
+    );
+
+    const blobs = await db.query<{ body: Buffer }>("select body from southstar.artifact_blobs where run_id = $1", [runId]);
+    const history = await listHistoryForRunPg(db, runId);
+    const resources = (await listResourcesPg(db, {})).filter((resource) => resource.runId === runId);
+    assert.equal(blobs.rows.length, 0);
+    assert.equal(history.some((event) => event.eventType === "executor.callback_received"), false);
+    assert.doesNotMatch(JSON.stringify(history), /access_token|\?access_token=x/);
+    assert.doesNotMatch(JSON.stringify(resources), /access_token|\?access_token=x/);
+  });
+});
+
+test("callback identity and event metadata surfaces are scanned before persistence", async () => {
+  await withDb(async (db) => {
+    const secretUrl = "https://example.test/callback?token=x";
+    const cases: Array<{ name: string; patch: Record<string, unknown> }> = [
+      { name: "root-session", patch: { rootSessionId: secretUrl } },
+      { name: "attempt", patch: { attemptId: secretUrl } },
+      {
+        name: "event-metadata",
+        patch: { events: [{ eventType: secretUrl, actorType: "hand", sessionId: secretUrl, payload: {} }] },
+      },
+    ];
+
+    for (const item of cases) {
+      const runId = `run-callback-policy-${item.name}`;
+      await seedRunTask(db, runId, "task-1");
+      await assert.rejects(
+        () => ingestTaskRunResultPg(db, {
+          runId,
+          taskId: "task-1",
+          rootSessionId: "session-1",
+          ok: true,
+          attempts: 1,
+          attemptId: "attempt-1",
+          artifact: { kind: "implementation_report", summary: "safe" },
+          metrics: {},
+          events: [],
+          ...item.patch,
+        } as PostgresTaskRunCallbackResult),
+        /raw credential detected/i,
+        item.name,
+      );
+      const persisted = JSON.stringify({
+        history: await listHistoryForRunPg(db, runId),
+        resources: (await listResourcesPg(db, {})).filter((resource) => resource.runId === runId),
+      });
+      assert.doesNotMatch(persisted, /token=x/, item.name);
+    }
   });
 });
 

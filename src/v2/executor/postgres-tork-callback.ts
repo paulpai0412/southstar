@@ -51,6 +51,12 @@ export async function ingestTaskRunResultPg(
     );
     if (!run) throw new Error(`callback run not found: ${result.runId}`);
 
+    try {
+      await assertCallbackMetadataSafePg(tx, result);
+    } catch (error) {
+      return { kind: "error" as const, error };
+    }
+
     const existingReceipt = await findCallbackReceiptPg(tx, result.runId, receipt.idempotencyKey);
     if (existingReceipt) {
       return {
@@ -667,11 +673,38 @@ async function assertCallbackPersistedSurfacesSafePg(
   });
 }
 
+async function assertCallbackMetadataSafePg(
+  db: SouthstarDb,
+  result: PostgresTaskRunCallbackResult,
+): Promise<void> {
+  await assertNoRawCredentialPayloadPg(db, {
+    runId: result.runId,
+    taskId: result.taskId,
+    evidenceRef: `callback:${result.runId}:${result.taskId}:metadata`,
+    value: {
+      rootSessionId: result.rootSessionId,
+      attemptId: result.attemptId,
+      events: result.events.map(({ eventType, actorType, sessionId }) => ({ eventType, actorType, sessionId })),
+    },
+  });
+}
+
 function callbackReceiptToken(result: PostgresTaskRunCallbackResult, handExecutionId: string): { idempotencyKey: string; artifactHash: string } {
   const artifactHash = createHash("sha256").update(stableStringify(result.artifact)).digest("hex");
+  const semanticHash = createHash("sha256").update(stableStringify({
+    runId: result.runId,
+    taskId: result.taskId,
+    rootSessionId: result.rootSessionId,
+    attemptId: normalizedAttemptId(result),
+    ok: result.ok,
+    attempts: result.attempts,
+    artifact: result.artifact,
+    events: result.events,
+    metrics: result.metrics,
+  })).digest("hex");
   return {
     artifactHash,
-    idempotencyKey: `${handExecutionId}:callback:${artifactHash}`,
+    idempotencyKey: `${handExecutionId}:callback:${semanticHash}`,
   };
 }
 

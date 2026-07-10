@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, getResourceByKeyPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
@@ -55,7 +58,7 @@ test("Postgres Tork callback route ingests task result, artifacts, binding statu
         artifact: { kind: "implementation_report", summary: "done", filesChanged: ["src/calc.ts"] },
         metrics: { tokens: 12 },
         receivedAt: "2026-06-19T10:05:00.000Z",
-        events: [],
+        events: [{ eventType: "session.entry", actorType: "root-session", sessionId: "session-1", payload: { message: "started" } }],
       });
 
       assert.equal(first.result.accepted, true);
@@ -504,6 +507,29 @@ test("invalid verifier evidence produces a failed requirement evaluator result",
   });
 });
 
+test("blocking verifier callbacks reject command results without a passing outcome", async () => {
+  await withDb(async (db) => {
+    for (const [suffix, testResult] of [
+      ["missing", { command: "npm test" }],
+      ["unknown", { command: "npm test", status: "unknown" }],
+      ["failed", { command: "npm test", exitCode: 1 }],
+    ] as const) {
+      const fixture = await seedRequirementEvidenceRun(db, `run-requirement-command-${suffix}`);
+      const result = await ingestTaskRunResultPg(db, verifierCallback({
+        runId: fixture.runId,
+        artifact: {
+          kind: "verification_report",
+          pass: true,
+          testResults: [testResult],
+          verifiedArtifactRefs: [fixture.producerArtifactRefId],
+        },
+      }));
+      assert.equal(result.accepted, false, suffix);
+      assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-offline"))?.status, "failed", suffix);
+    }
+  });
+});
+
 test("one evaluator task persists distinct evidence packets for multiple requirements", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-multiple", {
@@ -683,24 +709,99 @@ test("a Goal Contract run missing its frozen coverage fails closed", async () =>
 test("browser verifier evidence passes only with valid structured URL and screenshot evidence", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-browser-requirement-evidence");
+    const workspace = await mkdtemp(join(tmpdir(), "southstar-screenshot-"));
     const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
     coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "url", "screenshot"];
     await replaceRequirementCoverage(db, fixture.runId, coverage);
+    try {
+      const screenshotBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x01]);
+      await mkdir(join(workspace, "artifacts"));
+      await writeFile(join(workspace, "artifacts/subscription-page.png"), screenshotBytes);
+      await db.query(
+        "update southstar.workflow_runs set runtime_context_json = jsonb_set(runtime_context_json, '{projectRoot}', to_jsonb($2::text)) where id = $1",
+        [fixture.runId, workspace],
+      );
 
-    const result = await ingestTaskRunResultPg(db, verifierCallback({
-      runId: fixture.runId,
-      artifact: {
-        kind: "verification_report",
-        pass: true,
-        verifiedArtifactRefs: [fixture.producerArtifactRefId],
-        browserEvidence: {
-          url: "https://example.test/subscriptions?token=redact-me",
-          screenshots: [{ path: "artifacts/subscription-page.png" }],
+      const result = await ingestTaskRunResultPg(db, verifierCallback({
+        runId: fixture.runId,
+        artifact: {
+          kind: "verification_report",
+          pass: true,
+          verifiedArtifactRefs: [fixture.producerArtifactRefId],
+          browserEvidence: {
+            url: "https://example.test/subscriptions?view=summary#details",
+            screenshots: [{ path: "artifacts/subscription-page.png" }],
+          },
         },
-      },
-    }));
+      }));
 
-    assert.equal(result.accepted, true);
+      assert.equal(result.accepted, true);
+      const evidence = (await listResourcesPg(db, { resourceType: "evidence_packet" }))
+        .find((resource) => resource.runId === fixture.runId);
+      const screenshot = (evidence?.payload as { evidenceItems?: Array<{ kind: string; sha256?: string }> })
+        .evidenceItems?.find((item) => item.kind === "screenshot");
+      assert.equal(screenshot?.sha256, createHash("sha256").update(screenshotBytes).digest("hex"));
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+test("workspace screenshot evidence rejects a non-image file with an image extension", async () => {
+  await withDb(async (db) => {
+    const runId = "run-browser-fake-image";
+    const fixture = await seedRequirementEvidenceRun(db, runId);
+    const workspace = await mkdtemp(join(tmpdir(), "southstar-fake-screenshot-"));
+    const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
+    coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "screenshot"];
+    await replaceRequirementCoverage(db, runId, coverage);
+    try {
+      await writeFile(join(workspace, "fake.png"), "not an image");
+      await db.query(
+        "update southstar.workflow_runs set runtime_context_json = jsonb_set(runtime_context_json, '{projectRoot}', to_jsonb($2::text)) where id = $1",
+        [runId, workspace],
+      );
+      const result = await ingestTaskRunResultPg(db, verifierCallback({
+        runId,
+        artifact: {
+          kind: "verification_report",
+          pass: true,
+          verifiedArtifactRefs: [fixture.producerArtifactRefId],
+          screenshot: { path: "fake.png" },
+        },
+      }));
+      assert.equal(result.accepted, false);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});
+
+test("unverifiable canonical and relative screenshot claims block evaluator acceptance", async () => {
+  await withDb(async (db) => {
+    for (const [suffix, screenshot] of [
+      ["canonical", { artifactRef: `artifact_ref:run-browser-missing-canonical:task-build:attempt-1:${"a".repeat(64)}` }],
+      ["relative", { path: "artifacts/does-not-exist.png" }],
+    ] as const) {
+      const runId = `run-browser-missing-${suffix}`;
+      const fixture = await seedRequirementEvidenceRun(db, runId);
+      const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
+      coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref", "screenshot"];
+      await replaceRequirementCoverage(db, runId, coverage);
+
+      const result = await ingestTaskRunResultPg(db, verifierCallback({
+        runId,
+        artifact: {
+          kind: "verification_report",
+          pass: true,
+          verifiedArtifactRefs: [fixture.producerArtifactRefId],
+          screenshot,
+        },
+      }));
+
+      assert.equal(result.accepted, false, suffix);
+      assert.equal((await latestRequirementResultPg(db, runId, "req-offline"))?.status, "failed", suffix);
+    }
   });
 });
 
@@ -882,6 +983,30 @@ test("committed old-attempt callback replay remains duplicate after a newer eval
   });
 });
 
+test("callback receipts distinguish identical artifacts with different identity and result semantics", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-semantic-receipt");
+    const callback = validVerifierCallback(fixture);
+    const first = await ingestTaskRunResultPg(db, callback);
+    assert.equal(first.accepted, true);
+
+    await assert.rejects(
+      () => ingestTaskRunResultPg(db, { ...callback, rootSessionId: "session-spoofed" }),
+      /evaluator execution identity .*sessionId/,
+    );
+
+    for (const changed of [
+      { ...callback, ok: false },
+      { ...callback, events: [{ eventType: "agent.note", actorType: "hand" as const, payload: { note: "changed" } }] },
+      { ...callback, metrics: { durationMs: 9 } },
+    ]) {
+      const result = await ingestTaskRunResultPg(db, changed);
+      assert.notEqual(result.duplicate, true);
+      assert.equal(result.accepted, false);
+    }
+  });
+});
+
 test("second callback transaction checks a concurrently committed receipt before current attempt identity", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-receipt-race");
@@ -889,7 +1014,7 @@ test("second callback transaction checks a concurrently committed receipt before
     const attemptId = callback.attemptId!;
     const handExecutionId = `hand-execution:${fixture.runId}:task-verify:${attemptId}`;
     const artifactHash = createHash("sha256").update(stableStringify(callback.artifact)).digest("hex");
-    const receiptKey = `${handExecutionId}:callback:${artifactHash}`;
+    const receiptKey = `${handExecutionId}:callback:${callbackSemanticHash(callback)}`;
     let resourceCountAfterConcurrentCommit = 0;
     const racedDb = withBeforeTopLevelTransaction(db, 2, async () => {
       await acceptOrRejectArtifactRefPg(db, {
@@ -1553,6 +1678,20 @@ function stableStringify(value: unknown): string {
     return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
+}
+
+function callbackSemanticHash(callback: PostgresTaskRunCallbackResult): string {
+  return createHash("sha256").update(stableStringify({
+    runId: callback.runId,
+    taskId: callback.taskId,
+    rootSessionId: callback.rootSessionId,
+    attemptId: callback.attemptId ?? `attempt-${callback.attempts}`,
+    ok: callback.ok,
+    attempts: callback.attempts,
+    artifact: callback.artifact,
+    events: callback.events,
+    metrics: callback.metrics,
+  })).digest("hex");
 }
 
 async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {

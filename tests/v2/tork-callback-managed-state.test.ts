@@ -67,9 +67,11 @@ test("callback completes current hand execution and writes accepted artifact_ref
     const artifactPayload = asRecord(artifactRefs[0]?.payload);
     assert.equal(artifactPayload.handExecutionId, "hand-execution:run-callback-managed:task-a:attempt-1");
     assert.deepEqual(artifactPayload.producer, { actorType: "hand", providerId: "tork" });
-    assert.deepEqual(artifactPayload.sourceEventRefs, [
-      `hand-execution:run-callback-managed:task-a:attempt-1:callback:${artifactRefs[0]?.resourceKey.split(":").at(-1)}`,
-    ]);
+    assert.equal((artifactPayload.sourceEventRefs as string[]).length, 1);
+    assert.match(
+      (artifactPayload.sourceEventRefs as string[])[0]!,
+      /^hand-execution:run-callback-managed:task-a:attempt-1:callback:[a-f0-9]{64}$/,
+    );
 
     const duplicate = await ingestTaskRunResultPg(db, {
       runId: "run-callback-managed",
@@ -324,6 +326,43 @@ test("late heartbeat does not reopen completed hand_execution", async () => {
       assert.equal(payload.status, "completed");
       assert.equal(payload.terminalAt, "2026-06-20T08:03:00.000Z");
       assert.equal(payload.lastHeartbeatAt, undefined);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
+test("late legacy heartbeat does not downgrade an executor binding completed by callback", async () => {
+  await withDb(async (db) => {
+    const runId = "run-callback-before-legacy-heartbeat";
+    await seedRunTask(db, { runId, taskId: "task-a", runStatus: "running", taskStatus: "running" });
+    await seedExecutorBinding(db, { runId, taskId: "task-a", attemptId: "attempt-1", status: "running" });
+    await ingestTaskRunResultPg(db, {
+      runId,
+      taskId: "task-a",
+      rootSessionId: "session-a",
+      ok: true,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: { kind: "implementation_report", summary: "done" },
+      metrics: {},
+      events: [],
+      receivedAt: "2026-06-20T08:03:00.000Z",
+    });
+
+    const server = await createTestServer(db);
+    try {
+      const response = await post(server.url, "/api/v2/executor/heartbeat", {
+        runId,
+        taskId: "task-a",
+        sessionId: "session-a",
+        attemptId: "attempt-1",
+        observedAt: "2026-06-20T08:04:00.000Z",
+        heartbeatSeq: 9,
+        phase: "running",
+      });
+      assert.equal(response.result.status, "completed");
+      assert.equal((await getExecutorBindingPg(db, `executor-${runId}-task-a-attempt-1`))?.status, "completed");
     } finally {
       await server.close();
     }

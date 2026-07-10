@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
+import { readFile, realpath, stat } from "node:fs/promises";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { buildEvidencePacket } from "../artifacts/evidence.ts";
+import { buildEvidencePacket, screenshotEvidenceRef } from "../artifacts/evidence.ts";
 import type { EvidenceKind, EvidencePacket, ValidatorResult } from "../artifacts/types.ts";
 import { evidenceValidatorResult } from "../artifacts/validator-results.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
@@ -35,6 +38,7 @@ type FrozenCoverageContext = {
   coverage: GoalRequirementCoverageV1;
   manifest: SouthstarWorkflowManifest;
   blockingRequirementIds: Set<string>;
+  workspaceRoot?: string;
 };
 
 type EvaluatorCallbackIdentity = {
@@ -82,7 +86,7 @@ export async function recordRequirementEvaluatorResultsPg(
   let ok = true;
 
   for (const entry of entries) {
-    const evaluation = await evaluateEntry(db, input, entry, context.manifest);
+    const evaluation = await evaluateEntry(db, input, entry, context.manifest, context.workspaceRoot);
     await persistEvidencePacket(db, evaluation.evidence);
     await persistValidatorResult(db, evaluation.validator);
     await persistRequirementResult(db, input, evaluation.result, evaluation.resourceKey);
@@ -119,6 +123,7 @@ async function evaluateEntry(
   },
   entry: CoverageEntry,
   manifest: SouthstarWorkflowManifest,
+  workspaceRoot: string | undefined,
 ): Promise<{
   evidence: EvidencePacket;
   validator: ValidatorResult;
@@ -132,15 +137,17 @@ async function evaluateEntry(
     : [];
   const claimedRefs = claimedArtifactRefs(input.artifact);
   const artifactRefs = acceptedProducerRefs.filter((ref) => claimedRefs.has(ref));
+  const artifact = { ...asRecord(input.artifact), acceptedArtifacts: artifactRefs };
   const evidence = buildEvidencePacket({
     runId: input.runId,
     taskId: input.taskId,
     artifactRef: input.artifactRefId,
     requiredEvidenceKinds: entry.requiredEvidenceKinds,
-    artifact: { ...asRecord(input.artifact), acceptedArtifacts: artifactRefs },
+    artifact,
     identityScope: entry.requirementId,
     now: input.now,
   });
+  await verifyScreenshotEvidenceProvenancePg(db, input.runId, workspaceRoot, artifact, evidence);
   const contractRef = `requirement:${input.runId}:${entry.requirementId}`;
   const validator = evidenceValidatorResult({
     runId: input.runId,
@@ -222,6 +229,86 @@ async function acceptedProducerArtifactRefsPg(
         .some((ref) => requiredContracts.has(ref));
     })
     .map((row) => row.resource_key);
+}
+
+async function verifyScreenshotEvidenceProvenancePg(
+  db: SouthstarDb,
+  runId: string,
+  workspaceRoot: string | undefined,
+  artifact: Record<string, unknown>,
+  evidence: EvidencePacket,
+): Promise<void> {
+  const index = evidence.evidenceItems.findIndex((item) => item.kind === "screenshot" && item.status === "present");
+  if (index < 0) return;
+  const ref = screenshotEvidenceRef(artifact, runId);
+  const sha256 = ref?.startsWith("artifact_ref:")
+    ? await acceptedArtifactBlobHashPg(db, runId, ref)
+    : ref && !/^https?:/i.test(ref)
+      ? await workspaceScreenshotHash(workspaceRoot, ref)
+      : undefined;
+  evidence.evidenceItems[index] = sha256
+    ? { ...evidence.evidenceItems[index]!, sha256 }
+    : {
+      kind: "screenshot",
+      status: "invalid",
+      summary: "screenshot evidence has no verifiable run artifact or workspace file",
+      capturedAt: evidence.evidenceItems[index]!.capturedAt,
+      redactionApplied: true,
+    };
+  evidence.completeness.presentCount = evidence.evidenceItems.filter((item) => item.status === "present").length;
+}
+
+async function acceptedArtifactBlobHashPg(db: SouthstarDb, runId: string, artifactRefId: string): Promise<string | undefined> {
+  const resource = await db.maybeOne<{ status: string; payload_json: unknown }>(
+    `select status, payload_json
+       from southstar.runtime_resources
+      where run_id = $1 and resource_type = 'artifact_ref' and resource_key = $2`,
+    [runId, artifactRefId],
+  );
+  const payload = asRecord(resource?.payload_json);
+  const contentRef = asRecord(payload.contentRef);
+  const imageContract = [payload.artifactType, ...stringArray(payload.contractRefs)]
+    .some((value) => typeof value === "string" && /(screenshot|image)/i.test(value));
+  if (
+    resource?.status !== "accepted"
+    || payload.status !== "accepted"
+    || payload.runId !== runId
+    || payload.artifactRefId !== artifactRefId
+    || contentRef.kind !== "artifact_blob"
+    || typeof contentRef.ref !== "string"
+    || typeof contentRef.sha256 !== "string"
+    || !artifactRefId.endsWith(`:${contentRef.sha256}`)
+    || !imageContract
+  ) return undefined;
+  const blob = await db.maybeOne<{ sha256: string; body: Buffer }>(
+    "select sha256, body from southstar.artifact_blobs where id = $1 and run_id = $2",
+    [contentRef.ref, runId],
+  );
+  if (!blob || blob.sha256 !== contentRef.sha256 || !isSupportedImage(blob.body)) return undefined;
+  return createHash("sha256").update(blob.body).digest("hex") === blob.sha256 ? blob.sha256 : undefined;
+}
+
+async function workspaceScreenshotHash(workspaceRoot: string | undefined, screenshotPath: string): Promise<string | undefined> {
+  if (!workspaceRoot) return undefined;
+  try {
+    const root = await realpath(workspaceRoot);
+    const target = await realpath(resolve(root, screenshotPath));
+    const contained = relative(root, target);
+    if (contained.startsWith("..") || isAbsolute(contained)) return undefined;
+    const info = await stat(target);
+    if (!info.isFile() || info.size === 0 || info.size > 10 * 1024 * 1024) return undefined;
+    const content = await readFile(target);
+    if (content.byteLength === 0 || content.byteLength > 10 * 1024 * 1024 || !isSupportedImage(content)) return undefined;
+    return createHash("sha256").update(content).digest("hex");
+  } catch {
+    return undefined;
+  }
+}
+
+function isSupportedImage(content: Buffer): boolean {
+  return content.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+    || (content[0] === 0xff && content[1] === 0xd8 && content[2] === 0xff)
+    || (content.subarray(0, 4).toString("ascii") === "RIFF" && content.subarray(8, 12).toString("ascii") === "WEBP");
 }
 
 function claimedArtifactRefs(artifact: unknown): Set<string> {
@@ -333,6 +420,7 @@ async function loadFrozenCoverageContextPg(
   return {
     coverage,
     manifest,
+    workspaceRoot: nonEmptyString(runtimeContext.projectRoot) ?? nonEmptyString(runtimeContext.cwd),
     blockingRequirementIds: new Set(
       goalContract.requirements.filter((requirement) => requirement.blocking).map((requirement) => requirement.id),
     ),

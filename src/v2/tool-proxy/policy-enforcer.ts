@@ -158,6 +158,9 @@ function stringifyForScanning(value: unknown): string {
 
 function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): { value: unknown; foundSensitiveKey: boolean } {
   if (value === null) return { value: null, foundSensitiveKey: false };
+  if (typeof value === "string" && credentialBearingUrl(value)) {
+    return { value: "[REDACTED_URL]", foundSensitiveKey: true };
+  }
   if (typeof value !== "object") return { value, foundSensitiveKey: false };
   if (seen.has(value)) return { value: "[Circular]", foundSensitiveKey: false };
   seen.add(value);
@@ -185,6 +188,15 @@ function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): 
     foundSensitiveKey ||= redactedChild.foundSensitiveKey;
   }
   return { value: redacted, foundSensitiveKey };
+}
+
+function credentialBearingUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return Boolean(url.username || url.password || [...url.searchParams.keys()].some(isSensitivePolicyKey));
+  } catch {
+    return false;
+  }
 }
 
 function redactText(value: string): string {
