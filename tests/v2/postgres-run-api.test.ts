@@ -159,6 +159,32 @@ test("legacy planner draft missingInputs canonicalize validation to needs_input 
   });
 });
 
+test("direct run creation rejects a legacy validated draft with blocking inputs without materializing rows", async () => {
+  await withDb(async (db) => {
+    const draft = await createFixturePlannerDraft(db, "implement legacy direct run compatibility");
+    await stripGoalContractFromDraft(db, draft.draftId, {
+      missingInputs: ["Which API contract should be used?"],
+    });
+    const before = await db.one<{ runs: string; tasks: string }>(
+      `select
+        (select count(*)::text from southstar.workflow_runs) as runs,
+        (select count(*)::text from southstar.workflow_tasks) as tasks`,
+    );
+
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
+      /planner draft has blocking inputs/,
+    );
+
+    const after = await db.one<{ runs: string; tasks: string }>(
+      `select
+        (select count(*)::text from southstar.workflow_runs) as runs,
+        (select count(*)::text from southstar.workflow_tasks) as tasks`,
+    );
+    assert.deepEqual(after, before);
+  });
+});
+
 test("legacy planner draft revision adapts the previous Goal Contract without changing originalPrompt", async () => {
   await withDb(async (db) => {
     const goalPrompt = "implement legacy revision compatibility";

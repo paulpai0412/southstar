@@ -775,11 +775,16 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const draft = await getResourceByKeyPg(db, "planner_draft", input.draftId);
   if (!draft) throw new Error(`planner draft not found: ${input.draftId}`);
   if (draft.status !== "validated") throw new Error(`planner draft is not validated: ${input.draftId}`);
+  const draftPayload = asRecord(draft.payload);
+  const draftSummary = asRecord(draft.summary);
+  const contract = storedOrLegacyGoalContract(draftPayload, draftSummary, input.draftId);
+  if (contract.blockingInputs.length > 0) {
+    await validatePostgresPlannerDraft(db, input);
+    throw new Error(`planner draft has blocking inputs: ${input.draftId}`);
+  }
   const bundle = draft.payload as PlanBundle & { generationPlan?: { templateRef?: string } };
   const workflow = materializeWorkflowTaskProfileOverrides(bundle.workflow);
   const runId = await allocateRunId(db, workflow.workflowId);
-  const draftPayload = asRecord(draft.payload);
-  const draftSummary = asRecord(draft.summary);
   const plannerRequest = plannerRequestFromStored(draftSummary.plannerRequest) ?? plannerRequestFromStored(draftPayload.plannerRequest);
   const cwd = plannerRequest?.cwd;
   if (cwd) assertWorkspaceMountAllowed(cwd);
