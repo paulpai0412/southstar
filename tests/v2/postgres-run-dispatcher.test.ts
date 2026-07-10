@@ -8,12 +8,14 @@ import { dispatchPostgresRunExecutionPg } from "../../src/v2/executor/postgres-r
 import { listHistoryForRunPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 test("legacy Postgres whole-run dispatcher fails closed without executor submission", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement bounded CLI evidence",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement bounded CLI evidence")),
       composer: new DeterministicFixtureComposer(),
     });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });

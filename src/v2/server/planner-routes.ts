@@ -3,6 +3,10 @@ import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
 import {
+  interpretGoalContractWithLlm,
+  type GoalContractInterpreter,
+} from "../orchestration/goal-contract.ts";
+import {
   createPostgresPlannerDraft,
   createPostgresRunFromDraft,
   getPostgresPlannerDraftOrchestration,
@@ -26,8 +30,10 @@ export async function handlePlannerRoute(
       goalPrompt: body.goalPrompt,
       orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
       composerMode: optionalComposerMode(body.composerMode),
+      goalInterpreter: resolveGoalInterpreter(context),
       composer: resolvePlannerWorkflowComposer(context),
     });
+    if (draft.status === "needs_input") return json("run-goal", { draft });
     const run = await createPostgresRunFromDraft(context.db, { draftId: draft.draftId });
     return json("run-goal", { draft, ...run });
   }
@@ -64,6 +70,7 @@ export async function handlePlannerRoute(
       "planner-draft",
       await createPostgresPlannerDraft(context.db, {
         ...plannerRequest,
+        goalInterpreter: resolveGoalInterpreter(context),
         composer: resolvePlannerWorkflowComposer(context),
       }),
     );
@@ -79,6 +86,7 @@ export async function handlePlannerRoute(
         prompt: requiredString(body.prompt, "prompt"),
         orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
         composerMode: optionalComposerMode(body.composerMode),
+        goalInterpreter: resolveGoalInterpreter(context),
         composer: resolvePlannerWorkflowComposer(context),
       }),
     );
@@ -158,6 +166,7 @@ function createPlannerDraftStreamResponse(
         });
         const draft = await createPostgresPlannerDraft(context.db, {
           ...plannerRequest,
+          goalInterpreter: resolveGoalInterpreter(context),
           composer,
           onProgress(event) {
             send("planner.stage", event);
@@ -239,6 +248,7 @@ function createPlannerDraftRevisionStreamResponse(
           prompt: requiredString(body.prompt, "prompt"),
           orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
           composerMode: optionalComposerMode(body.composerMode),
+          goalInterpreter: resolveGoalInterpreter(context),
           composer,
           onProgress(event) {
             send("planner.stage", event);
@@ -407,6 +417,22 @@ function resolvePlannerWorkflowComposer(
       },
     },
   });
+}
+
+export function resolveGoalInterpreter(context: RuntimeServerContext): GoalContractInterpreter {
+  if (context.goalInterpreter) return context.goalInterpreter;
+  return {
+    interpret: (input) => interpretGoalContractWithLlm({
+      ...input,
+      model: process.env.SOUTHSTAR_GOAL_INTERPRETER_MODEL ?? "southstar-runtime-goal-interpreter",
+      client: {
+        generateText: ({ prompt }) => context.plannerClient.generate(prompt),
+        generateTextStream: context.plannerClient.generateStream
+          ? ({ prompt }, handlers) => context.plannerClient.generateStream!(prompt, { onDelta: handlers.onDelta })
+          : undefined,
+      },
+    }),
+  };
 }
 
 function requiredString(value: unknown, field: string): string {

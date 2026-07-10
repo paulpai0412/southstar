@@ -11,6 +11,7 @@ import {
 } from "../../src/v2/workflow-templates/template-api-service.ts";
 import { seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 test("searchWorkflowTemplatesPg returns approved workflow templates ranked by prompt text", async () => {
   const db = await createTestPostgresDb();
@@ -53,6 +54,7 @@ test("instantiateWorkflowTemplatePg creates planner draft from strict template c
     const result = await instantiateWorkflowTemplatePg(db, {
       templateRef: "template.software-dev-standard",
       goalPrompt: "build vocabulary app",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app")),
       constraints: { mode: "strict" },
     });
 
@@ -77,6 +79,7 @@ test("instantiateWorkflowTemplatePg reuses saved base64 template composition wit
     const result = await instantiateWorkflowTemplatePg(db, {
       templateRef: "template.software-dev-standard",
       goalPrompt: "build vocabulary app from saved template",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app from saved template")),
       constraints: { mode: "strict" },
     });
 
@@ -98,6 +101,7 @@ test("instantiateWorkflowTemplatePg asks composer to bind a skeleton-only templa
     const result = await instantiateWorkflowTemplatePg(db, {
       templateRef: "template.software-dev-standard",
       goalPrompt: "build vocabulary app",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app")),
       constraints: { mode: "strict" },
       composer,
     });

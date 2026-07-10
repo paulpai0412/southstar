@@ -15,8 +15,12 @@ import {
   type PlannerDraftValidationIssue,
 } from "../ui-api/postgres-run-api.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
-import { analyzeRequirementDeterministically } from "../orchestration/requirement-analyzer.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
+import {
+  requirementSpecFromGoalContract,
+  type GoalContractInterpreter,
+  type GoalContractV1,
+} from "../orchestration/goal-contract.ts";
 
 export type WorkflowTemplateSearchInput = {
   prompt: string;
@@ -75,6 +79,7 @@ export type InstantiateWorkflowTemplateInput = {
     maxNodes?: number;
     requireApproval?: boolean;
   };
+  goalInterpreter: GoalContractInterpreter;
   composer?: WorkflowComposer;
   onProgress?: PlannerDraftProgressListener;
   onLlmDelta?: (text: string) => void;
@@ -126,11 +131,19 @@ export async function instantiateWorkflowTemplatePg(
 ): Promise<InstantiateWorkflowTemplateResult> {
   const template = await requireApprovedWorkflowTemplate(db, input.templateRef);
   const state = template.state;
+  const goalInterpreter = memoizeGoalInterpreter(input.goalInterpreter);
+  const goalContract = await goalInterpreter.interpret({
+    goalPrompt: input.goalPrompt,
+    cwd: input.cwd ?? process.cwd(),
+    onDelta: input.onLlmDelta,
+  });
   const savedCompositionPlan = workflowCompositionPlanValue(state.compositionPlan)
     ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64)
-  const compositionPlan = savedCompositionPlan
-    ? instantiateSavedCompositionPlan(savedCompositionPlan, input)
-    : await composeSkeletonTemplate(db, input, template);
+  const compositionPlan = goalContract.blockingInputs.length > 0
+    ? undefined
+    : savedCompositionPlan
+      ? instantiateSavedCompositionPlan(savedCompositionPlan, input)
+      : await composeSkeletonTemplate(db, input, template, goalContract);
 
   input.onProgress?.({
     stage: "template.loaded",
@@ -140,7 +153,8 @@ export async function instantiateWorkflowTemplatePg(
     goalPrompt: input.goalPrompt,
     orchestrationMode: "llm-constrained",
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-    compositionPlan,
+    ...(compositionPlan ? { compositionPlan } : {}),
+    goalInterpreter,
     composer: input.composer,
     onProgress: input.onProgress,
     onLlmDelta: input.onLlmDelta,
@@ -164,6 +178,7 @@ async function composeSkeletonTemplate(
   db: SouthstarDb,
   input: InstantiateWorkflowTemplateInput,
   template: LibraryObjectSummary,
+  goalContract: GoalContractV1,
 ): Promise<WorkflowCompositionPlan> {
   if (!input.composer) {
     throw new Error(`workflow template requires a composer when compositionPlan is missing: ${input.templateRef}`);
@@ -172,9 +187,8 @@ async function composeSkeletonTemplate(
   if (!detail.canInstantiate) {
     throw new Error(`workflow template is not instantiable: ${input.templateRef}`);
   }
-  const scope = stringValue(template.state.scope) ?? "software";
-  const requirementSpec = analyzeRequirementDeterministically(input.goalPrompt);
-  input.onProgress?.({ stage: "requirement.analyzed", message: "Requirement analysis completed." });
+  const scope = goalContract.domain;
+  const requirementSpec = requirementSpecFromGoalContract(goalContract);
   input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
   const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope });
   input.onProgress?.({ stage: "candidate.resolved", message: "Workflow library candidates resolved." });
@@ -193,6 +207,16 @@ async function composeSkeletonTemplate(
     throw new Error(`workflow template composition failed validation: ${JSON.stringify(repair.validation.issues)}`);
   }
   return repair.composition;
+}
+
+function memoizeGoalInterpreter(interpreter: GoalContractInterpreter): GoalContractInterpreter {
+  let contract: Promise<GoalContractV1> | undefined;
+  return {
+    interpret(input) {
+      contract ??= interpreter.interpret(input);
+      return contract;
+    },
+  };
 }
 
 function renderTemplateInstantiationGoal(

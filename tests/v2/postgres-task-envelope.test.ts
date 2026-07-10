@@ -11,6 +11,7 @@ import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envel
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 import {
   contextPolicy,
   implementationReportContract,
@@ -133,6 +134,7 @@ test("Postgres server task envelope route uses new TaskEnvelope API", async () =
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -291,6 +293,7 @@ async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string, op
     goalPrompt,
     orchestrationMode: "llm-constrained",
     composerMode: "llm",
+    goalInterpreter: fixedGoalInterpreter(softwareGoalContract(goalPrompt)),
     composer: new DeterministicFixtureComposer(),
     ...(options.cwd ? { cwd: options.cwd } : {}),
   });

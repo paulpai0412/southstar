@@ -12,7 +12,13 @@ import {
   deterministicFixtureComposition,
   seedDeterministicWorkflowGraph,
 } from "./fixtures/deterministic-workflow-composer.ts";
-import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import {
+  finalizeGoalContract,
+  reviseGoalContract,
+  type GoalContractInterpreter,
+  type GoalContractV1,
+} from "../../src/v2/orchestration/goal-contract.ts";
 import {
   createPostgresPlannerDraft,
   createPostgresRunFromDraft,
@@ -23,6 +29,7 @@ import {
 } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { resolveTestPostgresAdminUrl } from "./postgres-test-utils.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 const FIXTURE_TASK_IDS = [
   "understand-repo",
@@ -32,6 +39,98 @@ const FIXTURE_TASK_IDS = [
   "review-code-quality",
   "summarize-completion",
 ];
+
+test("planner draft persists a design/article Goal Contract and uses its domain", async () => {
+  await withDb(async (db) => {
+    const goalPrompt = "Turn notes.md into an offline HTML article";
+    const goalContract = articleGoalContract(goalPrompt);
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt,
+      cwd: "/workspace/article",
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal((stored!.payload as any).goalContract.domain, "design/article");
+    assert.equal((stored!.payload as any).goalContract.originalPrompt, goalPrompt);
+    assert.equal((stored!.payload as any).workflow.domain, "design/article");
+    assert.equal((stored!.summary as any).goalContractHash, draft.goalContractHash);
+    assert.equal((stored!.summary as any).domain, "design/article");
+    assert.equal(draft.goalPrompt, goalPrompt);
+  });
+});
+
+test("blocking Goal Contract persists needs_input without compiling", async () => {
+  await withDb(async (db) => {
+    let composerCalled = false;
+    const goalContract = {
+      ...articleGoalContract("Publish my article"),
+      blockingInputs: ["Which source file should be used?"],
+    };
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: "/workspace/article",
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: {
+        async compose() {
+          composerCalled = true;
+          return deterministicFixtureComposition();
+        },
+      },
+    });
+
+    assert.equal(draft.status, "needs_input");
+    assert.deepEqual(draft.blockers, ["Which source file should be used?"]);
+    assert.equal(composerCalled, false);
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal((stored!.payload as any).workflow, undefined);
+    assert.equal((stored!.payload as any).composition, undefined);
+    await assert.rejects(() => createPostgresRunFromDraft(db, { draftId: draft.draftId }), /not validated/);
+  });
+});
+
+test("planner draft revision preserves the original prompt and revises the Goal Contract", async () => {
+  await withDb(async (db) => {
+    const goalPrompt = "Turn notes.md into an offline HTML article";
+    const baseContract = articleGoalContract(goalPrompt);
+    await seedDeterministicWorkflowGraph(db, baseContract.domain);
+    let calls = 0;
+    const goalInterpreter: GoalContractInterpreter = {
+      async interpret(input) {
+        calls += 1;
+        if (calls === 1) return structuredClone(baseContract);
+        assert.equal(input.goalPrompt, goalPrompt);
+        assert.equal(input.previousContract?.revision, 1);
+        assert.equal(input.revisionPrompt, "Include source citations");
+        return reviseArticleGoalContract(input.previousContract!, input.revisionPrompt!);
+      },
+    };
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt,
+      cwd: "/workspace/article",
+      goalInterpreter,
+      composer: new DeterministicFixtureComposer(),
+    });
+    const revised = await revisePostgresPlannerDraft(db, {
+      draftId: draft.draftId,
+      prompt: "Include source citations",
+      goalInterpreter,
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    const stored = await getResourceByKeyPg(db, "planner_draft", revised.draftId);
+    const revisedContract = (stored!.payload as any).goalContract as GoalContractV1;
+    assert.equal(calls, 2);
+    assert.equal(revised.goalPrompt, goalPrompt);
+    assert.equal(revisedContract.originalPrompt, goalPrompt);
+    assert.equal(revisedContract.revision, 2);
+    assert.match(revisedContract.requirements.at(-1)?.statement ?? "", /source citations/i);
+    assert.notEqual(revised.goalContractHash, draft.goalContractHash);
+  });
+});
 
 test("Postgres run API creates draft, run, tasks, and history without prebuilding task context", async () => {
   await withDb(async (db) => {
@@ -228,10 +327,12 @@ test("Postgres run from draft materializes task profile override into run manife
 test("Postgres planner draft revision preserves matching task profile overrides and requires validation", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);
+    const goalInterpreter = softwareRevisionInterpreter("implement calc sum with override preservation");
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with override preservation",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
+      goalInterpreter,
       composer: new DeterministicFixtureComposer(),
     });
 
@@ -252,6 +353,7 @@ test("Postgres planner draft revision preserves matching task profile overrides 
       draftId: draft.draftId,
       prompt: "also verify empty input behavior",
       composerMode: "llm",
+      goalInterpreter,
       composer: new DeterministicFixtureComposer(),
     });
 
@@ -282,6 +384,7 @@ test("Postgres run API supports llm-constrained planner drafts and preserves tas
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
       composer: new DeterministicFixtureComposer(),
     });
     assert.match(draft.draftId, /^draft-wf-composed-/);
@@ -324,6 +427,7 @@ test("llm-constrained planner drafts fail closed when llm composer is not config
       () => createPostgresPlannerDraft(db, {
         goalPrompt: "implement calc sum",
         orchestrationMode: "llm-constrained",
+        goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
       }),
       /LLM workflow composer is not configured/,
     );
@@ -336,6 +440,7 @@ test("planner draft creates from an existing composition without calling an LLM 
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "reuse visible DAG",
       orchestrationMode: "llm-constrained",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("reuse visible DAG")),
       compositionPlan: deterministicFixtureComposition(),
     });
 
@@ -371,6 +476,7 @@ test("llm-constrained planner trace records analyzer/composer and validation aud
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
       composer: new DeterministicFixtureComposer(),
     });
     const draftResource = await db.one<{
@@ -395,7 +501,7 @@ test("llm-constrained planner trace records analyzer/composer and validation aud
       [draft.draftId],
     );
     const trace = draftResource.payload_json.plannerTrace;
-    assert.equal(trace.analyzerType, "deterministic");
+    assert.equal(trace.analyzerType, "goal-contract-v1");
     assert.equal(trace.composerMode, "llm");
     assert.equal(trace.composerFallbackUsed, false);
     assert.equal(trace.validatorAttempts, 1);
@@ -420,6 +526,7 @@ test("llm-constrained planner does not fallback when primary composer fails", as
         goalPrompt: "implement calc sum",
         orchestrationMode: "llm-constrained",
         composerMode: "llm",
+        goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
         composer: failingComposer,
       }),
       /forced llm composer failure/,
@@ -443,6 +550,7 @@ test("llm-constrained planner passes requested cwd to workflow composer", async 
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
       cwd: "/home/timmypai/apps/southstar-vocab",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement vocab challenge")),
       composer,
     });
 
@@ -458,6 +566,7 @@ test("Postgres planner draft can use injected scripted LLM composer for non-fixt
       goalPrompt: "implement calc sum with a single exploration task",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum with a single exploration task")),
       composer,
     });
     const draftResource = await db.one<{ payload_json: { repairAttempts: Array<{ validation: { ok: boolean } }> } }>(
@@ -489,10 +598,11 @@ test("llm-constrained planner uses graph metadata even when legacy capability ca
       goalPrompt: "build a vocabulary learning feature",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build a vocabulary learning feature")),
       composer,
     });
 
-    assert.equal(draft.status, "validated");
+    assert.equal(draft.status, "validated", JSON.stringify(draft.validationIssues));
     assert.deepEqual(draft.validationIssues, []);
     assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), ["implement-vocab"]);
 
@@ -556,6 +666,7 @@ test("Postgres planner draft is invalid when repair loop remains invalid after m
       goalPrompt: "implement calc sum with invalid explorer profile",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum with invalid explorer profile")),
       composer,
     });
     assert.ok(draft.draftId.length > 0);
@@ -585,6 +696,7 @@ test("Postgres planner draft orchestration inspection helper returns public summ
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum",
       orchestrationMode: "llm-constrained",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
       composer: new DeterministicFixtureComposer(),
     });
     const inspection = await getPostgresPlannerDraftOrchestration(db, { draftId: draft.draftId });
@@ -622,6 +734,7 @@ test("Postgres server routes create planner drafts and runs through new API", as
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by Postgres constrained planner"); } },
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by created-state route"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -701,12 +814,44 @@ test("Postgres server routes create planner drafts and runs through new API", as
   });
 });
 
+test("run-goal returns a needs_input draft without materializing a run", async () => {
+  await withDb(async (db) => {
+    const goalContract = {
+      ...articleGoalContract("Publish my article"),
+      blockingInputs: ["Which source file should be used?"],
+    };
+    const server = await createSouthstarRuntimeServer({
+      db: db as never,
+      plannerClient: { generate: async () => { throw new Error("planner client not used by blocking run-goal"); } },
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      workflowComposer: new DeterministicFixtureComposer(),
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by blocking run-goal"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const result = await api<{
+        draft: { status: string; blockers: string[] };
+        runId?: string;
+      }>(server.url, "/api/v2/run-goal", {
+        method: "POST",
+        body: JSON.stringify({ goalPrompt: goalContract.originalPrompt }),
+      });
+      assert.equal(result.draft.status, "needs_input");
+      assert.deepEqual(result.draft.blockers, goalContract.blockingInputs);
+      assert.equal(result.runId, undefined);
+    } finally {
+      await server.close();
+    }
+  });
+});
+
 test("Postgres server planner draft route accepts and persists structured request hints", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by structured request contract test"); } },
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by planner route"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -785,6 +930,7 @@ test("Postgres planner draft snapshots structured request before async orchestra
     const expectedPlannerRequest = JSON.parse(JSON.stringify(request));
     const draftPromise = createPostgresPlannerDraft(db, {
       ...request,
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract(request.goalPrompt)),
       composer: new DeterministicFixtureComposer(),
     });
 
@@ -829,8 +975,10 @@ test("Postgres planner draft revision preserves structured request hints with ex
         },
       },
     };
+    const goalInterpreter = softwareRevisionInterpreter(baseRequest.goalPrompt);
     const draft = await createPostgresPlannerDraft(db, {
       ...baseRequest,
+      goalInterpreter,
       composer: new DeterministicFixtureComposer(),
     });
     const revised = await revisePostgresPlannerDraft(db, {
@@ -838,23 +986,21 @@ test("Postgres planner draft revision preserves structured request hints with ex
       prompt: "add explicit edge-case validation for empty inputs",
       orchestrationMode: "llm-constrained",
       composerMode: "llm",
+      goalInterpreter,
       composer: new DeterministicFixtureComposer(),
     });
 
-    const expectedPlannerRequest = {
-      ...baseRequest,
-      goalPrompt: revised.goalPrompt,
-      orchestrationMode: "llm-constrained",
-      composerMode: "llm",
-    };
+    const expectedPlannerRequest = baseRequest;
     const revisedRow = await db.one<{
       summary_json: { plannerRequest?: unknown };
-      payload_json: { plannerRequest?: unknown };
+      payload_json: { plannerRequest?: unknown; goalContract?: GoalContractV1 };
     }>(
       "select summary_json, payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
       [revised.draftId],
     );
-    assert.match(revised.goalPrompt, /Revision request:\nadd explicit edge-case validation/);
+    assert.equal(revised.goalPrompt, baseRequest.goalPrompt);
+    assert.equal(revisedRow.payload_json.goalContract?.originalPrompt, baseRequest.goalPrompt);
+    assert.equal(revisedRow.payload_json.goalContract?.revision, 2);
     assert.deepEqual(revisedRow.summary_json.plannerRequest, expectedPlannerRequest);
     assert.deepEqual(revisedRow.payload_json.plannerRequest, expectedPlannerRequest);
   });
@@ -866,6 +1012,7 @@ test("Postgres server routes revise planner drafts via planner pipeline", async 
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by planner route test"); } },
+      goalInterpreter: softwareRevisionInterpreter("implement calc sum"),
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by planner routes"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -894,8 +1041,8 @@ test("Postgres server routes revise planner drafts via planner pipeline", async 
 
       assert.notEqual(revised.draftId, draft.draftId);
       assert.equal(revised.status, "validated");
-      assert.match(revised.goalPrompt, /implement calc sum/);
-      assert.match(revised.goalPrompt, /add explicit edge-case validation for empty inputs/);
+      assert.equal(revised.goalPrompt, "implement calc sum");
+      assert.notEqual(revised.goalContractHash, draft.goalContractHash);
       assert.equal(revised.taskSummaries[0]?.taskId, "understand-repo");
       assert.equal(revised.taskSummaries.at(-1)?.taskId, "summarize-completion");
       assert.equal(revised.taskSummaries.length > 0, true);
@@ -941,6 +1088,7 @@ async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string) {
     goalPrompt,
     orchestrationMode: "llm-constrained",
     composerMode: "llm",
+    goalInterpreter: fixedGoalInterpreter(softwareGoalContract(goalPrompt)),
     composer: new DeterministicFixtureComposer(),
   });
 }
@@ -972,6 +1120,74 @@ function replaceDatabase(adminUrl: string, db: string): string {
 
 function quoteIdent(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
+}
+
+function articleGoalContract(goalPrompt: string): GoalContractV1 {
+  return finalizeGoalContract({
+    goalPrompt,
+    cwd: "/workspace/article",
+    interpretation: {
+      domain: "design/article",
+      intent: "publish_article",
+      summary: "Create an offline HTML article from the supplied notes",
+      requirements: [{
+        statement: "Create a readable offline HTML article from notes.md",
+        acceptanceCriteria: ["The article opens offline as a single HTML file"],
+        blocking: true,
+        source: "explicit",
+      }],
+      expectedArtifactRefs: ["artifact.completion_report"],
+      requiredCapabilities: ["capability.repo-read"],
+      nonGoals: [],
+      assumptions: ["notes.md exists in the workspace"],
+      blockingInputs: [],
+      riskTags: [],
+      requestedSideEffects: ["workspace-write"],
+    },
+  });
+}
+
+function softwareRevisionInterpreter(goalPrompt: string): GoalContractInterpreter {
+  const initialContract = softwareGoalContract(goalPrompt);
+  return {
+    async interpret(input) {
+      if (!input.previousContract) return structuredClone(initialContract);
+      return {
+        ...structuredClone(input.previousContract),
+        revision: input.previousContract.revision + 1,
+        summary: `${input.previousContract.summary}; ${input.revisionPrompt ?? "revised"}`,
+      };
+    },
+  };
+}
+
+function reviseArticleGoalContract(previousContract: GoalContractV1, revisionPrompt: string): GoalContractV1 {
+  return reviseGoalContract({
+    goalPrompt: previousContract.originalPrompt,
+    cwd: previousContract.workspace.cwd,
+    previousContract,
+    interpretation: {
+      domain: previousContract.domain,
+      intent: previousContract.intent,
+      summary: `${previousContract.summary}; ${revisionPrompt}`,
+      requirements: [
+        ...previousContract.requirements.map(({ id: _id, ...requirement }) => requirement),
+        {
+          statement: revisionPrompt,
+          acceptanceCriteria: ["The rendered article includes source citations"],
+          blocking: true,
+          source: "explicit",
+        },
+      ],
+      expectedArtifactRefs: previousContract.expectedArtifactRefs,
+      requiredCapabilities: previousContract.requiredCapabilities,
+      nonGoals: previousContract.nonGoals,
+      assumptions: previousContract.assumptions,
+      blockingInputs: [],
+      riskTags: previousContract.riskTags,
+      requestedSideEffects: previousContract.requestedSideEffects,
+    },
+  });
 }
 
 function invalidInspectOnlyPlan(): WorkflowCompositionPlan {
@@ -1097,14 +1313,14 @@ async function seedGraphMetadataOnlyWorkflowPrimitives(db: SouthstarDb): Promise
     objectKind: "skill_spec",
     status: "approved",
     headVersionId: "skill.react-ui@1",
-    state: { scope: "software", title: "React UI" },
+    state: { scope: "software", title: "React UI", body: "Build and verify React user interfaces." },
   });
   await upsertLibraryObject(db, {
     objectKey: "tool.workspace-write",
     objectKind: "tool_definition",
     status: "approved",
     headVersionId: "tool.workspace-write@1",
-    state: { scope: "global", title: "Workspace Write" },
+    state: { scope: "global", title: "Workspace Write", toolName: "workspace_write", proxyToolName: "workspace_write" },
   });
   await upsertLibraryObject(db, {
     objectKey: "mcp.filesystem-workspace",
@@ -1118,7 +1334,7 @@ async function seedGraphMetadataOnlyWorkflowPrimitives(db: SouthstarDb): Promise
     objectKind: "instruction_template",
     status: "approved",
     headVersionId: "instruction.react-review@1",
-    state: { scope: "software", title: "React Review" },
+    state: { scope: "software", title: "React Review", content: "Review the React implementation.", variables: [] },
   });
   await upsertLibraryObject(db, {
     objectKey: "artifact.vocab_feature",

@@ -8,6 +8,7 @@ import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, upsert
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 test("operator task debug route returns task detail, descending task history, resources, artifact refs, and actions", async () => {
   const db = await createTestPostgresDb();
@@ -245,6 +246,7 @@ test("run creation preserves planner draft cwd and operator overview exposes cwd
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with cwd",
       cwd: "/home/timmypai/apps/customer-todo-web",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum with cwd")),
       composer: new DeterministicFixtureComposer(),
     });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });

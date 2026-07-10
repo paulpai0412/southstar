@@ -6,6 +6,7 @@ import {
 import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
+import { resolveGoalInterpreter } from "./planner-routes.ts";
 import type { ApiEnvelope } from "./types.ts";
 
 export async function handleWorkflowTemplateRoute(
@@ -35,6 +36,7 @@ export async function handleWorkflowTemplateRoute(
       ...(optionalString(body.cwd) ? { cwd: optionalString(body.cwd) } : {}),
       ...(isRecord(body.repo) ? { repo: parseRepo(body.repo) } : {}),
       ...(isRecord(body.constraints) ? { constraints: parseConstraints(body.constraints) } : {}),
+      goalInterpreter: resolveGoalInterpreter(context),
       composer: resolveWorkflowTemplateComposer(context),
     }));
   }

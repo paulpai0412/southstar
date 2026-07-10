@@ -9,21 +9,18 @@ type SseFrame = { event: string; data: Record<string, unknown> };
 test("planner draft stream route emits true LLM deltas, backend stages, draft, orchestration, and done", async () => {
   const db = await createTestPostgresDb();
   try {
-    const fixturePlan = await new DeterministicFixtureComposer().compose({
-      goalPrompt: "generate todo webapp",
-      candidatePacket: {} as never,
-    });
-    const finalText = JSON.stringify(fixturePlan);
     const context = {
       db,
+      workflowComposer: new DeterministicFixtureComposer(),
       plannerClient: {
         async generate() {
           throw new Error("generate should not be used by streaming route");
         },
         async generateStream(_prompt: string, handlers?: { onDelta?: (text: string) => void }) {
-          handlers?.onDelta?.(finalText.slice(0, 32));
-          handlers?.onDelta?.(finalText.slice(32));
-          return finalText;
+          const text = goalInterpretation("Generate a todo webapp");
+          handlers?.onDelta?.(text.slice(0, 32));
+          handlers?.onDelta?.(text.slice(32));
+          return text;
         },
       },
       executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
@@ -44,6 +41,7 @@ test("planner draft stream route emits true LLM deltas, backend stages, draft, o
     const frames = parseSse(await response.text());
     assert.ok(frames.some((frame) => frame.event === "message.delta" && typeof frame.data.text === "string"));
     assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "composer.started"));
+    assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "goal_contract.interpreted"));
     assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "draft.persisted"));
     assert.ok(frames.some((frame) => frame.event === "draft" && typeof (frame.data.draft as { draftId?: unknown }).draftId === "string"));
     assert.ok(frames.some((frame) => frame.event === "orchestration" && Array.isArray((frame.data.orchestration as { taskSummaries?: unknown }).taskSummaries)));
@@ -53,26 +51,23 @@ test("planner draft stream route emits true LLM deltas, backend stages, draft, o
   }
 });
 
-test("planner draft revise stream route includes prior orchestration context and streams revised DAG", async () => {
+test("planner draft revise stream route includes the previous Goal Contract and streams the revised DAG", async () => {
   const db = await createTestPostgresDb();
   try {
-    const fixturePlan = await new DeterministicFixtureComposer().compose({
-      goalPrompt: "generate todo webapp",
-      candidatePacket: {} as never,
-    });
-    const finalText = JSON.stringify(fixturePlan);
-    const prompts: string[] = [];
+    const goalPrompts: string[] = [];
     const context = {
       db,
+      workflowComposer: new DeterministicFixtureComposer(),
       plannerClient: {
         async generate() {
           throw new Error("generate should not be used by streaming route");
         },
         async generateStream(prompt: string, handlers?: { onDelta?: (text: string) => void }) {
-          prompts.push(prompt);
-          handlers?.onDelta?.(finalText.slice(0, 24));
-          handlers?.onDelta?.(finalText.slice(24));
-          return finalText;
+          const text = goalInterpretation(prompt.includes("RevisionPrompt:") ? "Generate a todo webapp with parallel frontend and backend tasks" : "Generate a todo webapp");
+          goalPrompts.push(prompt);
+          handlers?.onDelta?.(text.slice(0, 24));
+          handlers?.onDelta?.(text.slice(24));
+          return text;
         },
       },
       executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
@@ -110,11 +105,9 @@ test("planner draft revise stream route includes prior orchestration context and
     assert.ok(reviseFrames.some((frame) => frame.event === "orchestration" && Array.isArray((frame.data.orchestration as { taskSummaries?: unknown }).taskSummaries)));
     assert.equal(reviseFrames.at(-1)?.event, "done");
 
-    assert.equal(prompts.length, 2);
-    assert.match(prompts[1] ?? "", /Prior planner draft context/);
-    assert.match(prompts[1] ?? "", /"taskSummaries"/);
-    assert.match(prompts[1] ?? "", /understand-repo/);
-    assert.match(prompts[1] ?? "", /Revision request:\nsplit frontend and backend into parallel tasks/);
+    assert.equal(goalPrompts.length, 2);
+    assert.match(goalPrompts[1] ?? "", /PreviousGoalContract:/);
+    assert.match(goalPrompts[1] ?? "", /RevisionPrompt: split frontend and backend into parallel tasks/);
   } finally {
     await db.close();
   }
@@ -129,5 +122,26 @@ function parseSse(text: string): SseFrame[] {
       .map((line) => line.slice("data:".length).trimStart())
       .join("\n");
     return { event, data: rawData ? JSON.parse(rawData) : {} };
+  });
+}
+
+function goalInterpretation(summary: string): string {
+  return JSON.stringify({
+    domain: "software",
+    intent: "implement_feature",
+    summary,
+    requirements: [{
+      statement: summary,
+      acceptanceCriteria: [summary],
+      blocking: true,
+      source: "explicit",
+    }],
+    expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
+    requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
+    nonGoals: [],
+    assumptions: [],
+    blockingInputs: [],
+    riskTags: [],
+    requestedSideEffects: ["workspace-write"],
   });
 }
