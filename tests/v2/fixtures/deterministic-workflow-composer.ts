@@ -49,7 +49,7 @@ export function deterministicFixtureComposition(goalContract: GoalContractV1 = s
       task(
         "verify-feature",
         requirementIds,
-        ["implement-feature"],
+        ["understand-repo", "implement-feature"],
         "agent.software-checker",
         "profile.generated.software-verify-feature",
         ["artifact.verification_report"],
@@ -58,7 +58,7 @@ export function deterministicFixtureComposition(goalContract: GoalContractV1 = s
       task(
         "review-code-quality",
         requirementIds,
-        ["implement-feature"],
+        ["understand-repo", "implement-feature"],
         "agent.software-code-quality-reviewer",
         "profile.generated.software-review-code-quality",
         ["artifact.verification_report"],
@@ -72,6 +72,7 @@ export function deterministicFixtureComposition(goalContract: GoalContractV1 = s
         "profile.generated.software-summarize-completion",
         ["artifact.completion_report"],
         "evaluator.software-completion-quality",
+        "summary",
       ),
     ],
     rejectedCandidates: [],
@@ -152,6 +153,7 @@ function task(
   agentProfileRef: string,
   outputArtifactRefs: string[],
   evaluatorProfileRef: string,
+  nodeType?: "summary",
 ): WorkflowCompositionTask {
   return {
     id,
@@ -161,6 +163,19 @@ function task(
       .join(" "),
     responsibility: id,
     requirementIds,
+    ...(nodeType ? {
+      nodePromptSpec: {
+        nodeType,
+        goal: "Summarize the completed workflow.",
+        requirements: [],
+        boundaries: [],
+        nonGoals: [],
+        deliverableDocuments: [],
+        expectedOutputs: outputArtifactRefs,
+        testCases: [],
+        acceptanceCriteria: ["Produce a concise workflow summary."],
+      },
+    } : {}),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,

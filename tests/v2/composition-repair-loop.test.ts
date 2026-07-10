@@ -188,7 +188,7 @@ function buildPlanTasks(input: { firstProfileRef?: string; generatedProfiles: bo
     ),
     task(
       "verify-feature",
-      ["implement-feature"],
+      ["understand-repo", "implement-feature"],
       "agent.software-checker",
       profileRefForTask("verify-feature", input.generatedProfiles, "profile.software-checker-codex"),
       ["skill.software-verification"],
@@ -199,7 +199,7 @@ function buildPlanTasks(input: { firstProfileRef?: string; generatedProfiles: bo
     ),
     task(
       "review-code-quality",
-      ["implement-feature"],
+      ["understand-repo", "implement-feature"],
       "agent.software-code-quality-reviewer",
       profileRefForTask("review-code-quality", input.generatedProfiles, "profile.software-code-quality-reviewer-codex"),
       ["skill.software-code-quality-review"],
@@ -317,6 +317,20 @@ function task(
     requirementIds: id === "summarize-completion"
       ? []
       : GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
+    ...(id === "summarize-completion" ? {
+      nodePromptSpec: {
+        nodeType: "summary" as const,
+        goal: "Summarize completed work and verification evidence.",
+        requirements: [],
+        boundaries: [],
+        nonGoals: [],
+        deliverableDocuments: [],
+        expectedOutputs: outputArtifactRefs,
+        testCases: [],
+        acceptanceCriteria: ["The summary records completed work, verification, and remaining risks."],
+        summarySections: ["completed work", "verification", "remaining risks"],
+      },
+    } : {}),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,

@@ -3,7 +3,10 @@ import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
-import { finalizeGoalContract } from "../orchestration/goal-contract.ts";
+import {
+  goalContractHash,
+  type GoalContractV1,
+} from "../orchestration/goal-contract.ts";
 import type { WorkflowCompositionPlan } from "../design-library/types.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
@@ -42,6 +45,7 @@ type RunRow = {
   domain: string;
   goal_prompt: string;
   workflow_manifest_json: SouthstarWorkflowManifest;
+  runtime_context_json: unknown;
 };
 
 export async function maybeApplyDynamicRepairRevisionPg(
@@ -54,7 +58,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
 
   return await db.tx(async (tx) => {
     const run = await tx.maybeOne<RunRow>(
-      `select status, domain, goal_prompt, workflow_manifest_json
+      `select status, domain, goal_prompt, workflow_manifest_json, runtime_context_json
          from southstar.workflow_runs
         where id = $1
         for update`,
@@ -63,6 +67,10 @@ export async function maybeApplyDynamicRepairRevisionPg(
     if (!run) throw new Error(`run not found: ${input.runId}`);
     if (!["running", "scheduling"].includes(run.status)) {
       return { status: "skipped", reason: `run-status:${run.status}` };
+    }
+    const goalContractLineage = await loadCanonicalGoalContractLineage(tx, run);
+    if ("reason" in goalContractLineage) {
+      return { status: "skipped", reason: goalContractLineage.reason };
     }
 
     const taskRows = await tx.query<TaskRow>(
@@ -103,7 +111,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       return { status: "skipped", reason: "dynamic-repair-revision-already-recorded" };
     }
 
-    const scope = run.domain || run.workflow_manifest_json.domain || "software";
+    const scope = run.domain || run.workflow_manifest_json.domain || goalContractLineage.goalContract.domain;
     const candidateScope = "all";
     const repairGoalPrompt = dynamicRepairGoalPrompt({
       goalPrompt: run.goal_prompt,
@@ -115,34 +123,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       round,
       maxRounds,
     });
-    const repairGoalContract = finalizeGoalContract({
-      goalPrompt: repairGoalPrompt,
-      cwd: process.cwd(),
-      interpretation: {
-        domain: scope,
-        intent: "repair",
-        summary: `Repair and independently reverify failed task ${input.failedTaskId}`,
-        requirements: [{
-          statement: `Repair and independently reverify failed task ${input.failedTaskId}`,
-          acceptanceCriteria: [
-            "The reported blocking failures are repaired without regressing preserved behavior.",
-            "An independent verifier reruns the failed and relevant regression checks.",
-          ],
-          blocking: true,
-          source: "inferred",
-        }],
-        expectedArtifactRefs: [...new Set([
-          ...(failedTask.requiredArtifactRefs ?? []),
-          "artifact.verification_report",
-        ])],
-        requiredCapabilities: [],
-        nonGoals: ["Do not replace or rerun the completed initial workflow."],
-        assumptions: [],
-        blockingInputs: [],
-        riskTags: ["runtime-repair"],
-        requestedSideEffects: ["workspace-write"],
-      },
-    });
+    const repairGoalContract = goalContractLineage.goalContract;
     const candidatePacket = await resolveWorkflowCandidates(tx, {
       requirementSpec: {
         summary: `Repair failed validation task ${input.failedTaskId}`,
@@ -275,6 +256,9 @@ export async function maybeApplyDynamicRepairRevisionPg(
         downstreamDependencyChanges,
         composition,
         compiledComposition: compositionForCompile,
+        goalContractHash: goalContractLineage.goalContractHash,
+        goalRequirementCoverage: compiled.goalRequirementCoverage,
+        orchestrationSnapshot: compiled.orchestrationSnapshot,
         repairLoopAttempts: repairLoop.attempts.map((attempt) => ({
           attempt: attempt.attempt,
           ok: attempt.validation.ok,
@@ -302,6 +286,79 @@ export async function maybeApplyDynamicRepairRevisionPg(
     });
     return { status: "applied", revisionId, newTaskIds: revision.newTaskIds };
   });
+}
+
+async function loadCanonicalGoalContractLineage(
+  db: SouthstarDb,
+  run: RunRow,
+): Promise<
+  | { goalContract: GoalContractV1; goalContractHash: string }
+  | { reason: string }
+> {
+  const runtimeContext = asRecord(run.runtime_context_json);
+  const draftId = nonEmptyString(runtimeContext.draftId);
+  if (!draftId) return { reason: "goal-contract-lineage-missing:draftId" };
+  const runGoalContractHash = nonEmptyString(runtimeContext.goalContractHash);
+  if (!runGoalContractHash) return { reason: "goal-contract-lineage-missing:goalContractHash" };
+
+  const plannerDraft = await getResourceByKeyPg(db, "planner_draft", draftId);
+  if (!plannerDraft || plannerDraft.status !== "validated") {
+    return { reason: "goal-contract-lineage-missing:plannerDraft" };
+  }
+  const payload = asRecord(plannerDraft.payload);
+  const goalContract = storedGoalContract(payload.goalContract);
+  if (!goalContract) return { reason: "goal-contract-lineage-missing:plannerDraft.goalContract" };
+  const plannerDraftGoalContractHash = nonEmptyString(payload.goalContractHash);
+  if (!plannerDraftGoalContractHash) {
+    return { reason: "goal-contract-lineage-missing:plannerDraft.goalContractHash" };
+  }
+  const recomputedGoalContractHash = goalContractHash(goalContract);
+  if (
+    runGoalContractHash !== plannerDraftGoalContractHash
+    || plannerDraftGoalContractHash !== recomputedGoalContractHash
+  ) {
+    return { reason: "goal-contract-hash-mismatch" };
+  }
+  return { goalContract, goalContractHash: recomputedGoalContractHash };
+}
+
+function storedGoalContract(value: unknown): GoalContractV1 | undefined {
+  const contract = asRecord(value);
+  const workspace = asRecord(contract.workspace);
+  if (contract.schemaVersion !== "southstar.goal_contract.v1") return undefined;
+  if (
+    !nonEmptyString(contract.originalPrompt)
+    || !nonEmptyString(contract.promptHash)
+    || !Number.isInteger(contract.revision)
+    || !nonEmptyString(workspace.cwd)
+    || !nonEmptyString(contract.domain)
+    || !nonEmptyString(contract.intent)
+    || !nonEmptyString(contract.summary)
+  ) return undefined;
+  if (workspace.projectRef !== undefined && !nonEmptyString(workspace.projectRef)) return undefined;
+  const stringArrayFields = [
+    "expectedArtifactRefs",
+    "requiredCapabilities",
+    "nonGoals",
+    "assumptions",
+    "blockingInputs",
+    "riskTags",
+    "requestedSideEffects",
+  ];
+  if (stringArrayFields.some((field) => !isStringArray(contract[field]))) return undefined;
+  if (!Array.isArray(contract.requirements) || contract.requirements.length === 0) return undefined;
+  if (!contract.requirements.every((value) => {
+    const requirement = asRecord(value);
+    return Boolean(
+      nonEmptyString(requirement.id)
+      && nonEmptyString(requirement.statement)
+      && isStringArray(requirement.acceptanceCriteria)
+      && (requirement.acceptanceCriteria as string[]).length > 0
+      && typeof requirement.blocking === "boolean"
+      && (requirement.source === "explicit" || requirement.source === "inferred"),
+    );
+  })) return undefined;
+  return contract as GoalContractV1;
 }
 
 function rewriteDynamicRepairTasks(
@@ -706,4 +763,18 @@ function mergeById<T extends { id: string }>(base: T[], generated: T[]): T[] {
 function required<T>(value: T | undefined | null, message: string): T {
   if (value === undefined || value === null) throw new Error(message);
   return value;
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }

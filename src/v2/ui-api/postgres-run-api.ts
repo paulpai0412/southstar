@@ -786,6 +786,7 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const draftPayload = asRecord(draft.payload);
   const draftSummary = asRecord(draft.summary);
   const contract = storedOrLegacyGoalContract(draftPayload, draftSummary, input.draftId);
+  const contractHash = storedGoalContractHash(draftSummary, draftPayload, contract);
   if (contract.blockingInputs.length > 0) {
     await validatePostgresPlannerDraft(db, input);
     throw new Error(`planner draft has blocking inputs: ${input.draftId}`);
@@ -807,6 +808,7 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
     snapshotJson: JSON.stringify({ activeTaskIds: [] }),
     runtimeContextJson: JSON.stringify({
       draftId: input.draftId,
+      goalContractHash: contractHash,
       scope: workflow.domain,
       ...(cwd ? { cwd, projectRoot: cwd } : {}),
     }),

@@ -109,18 +109,17 @@ function validateGoalRequirementCoverage(
         `blocking requirement has no verify or review evaluator task: ${requirement.id}`,
       ));
     }
-    const independentEvaluator = entry.evaluatorTaskIds.some((evaluatorTaskId) => {
+    const independentEvaluator = entry.producerTaskIds.length > 0 && entry.evaluatorTaskIds.some((evaluatorTaskId) => {
       if (entry.producerTaskIds.includes(evaluatorTaskId)) return false;
       const evaluatorTask = tasksById.get(evaluatorTaskId);
       if (!evaluatorTask) return false;
-      const upstreamTaskIds = collectUpstreamTaskIds(evaluatorTask, tasksById);
-      return entry.producerTaskIds.some((producerTaskId) => upstreamTaskIds.has(producerTaskId));
+      return entry.producerTaskIds.every((producerTaskId) => evaluatorTask.dependsOn.includes(producerTaskId));
     });
     if (!independentEvaluator) {
       issues.push(issue(
         "requirement_evaluator_not_independent",
         path,
-        `blocking requirement evaluator must be distinct from and downstream of a producer: ${requirement.id}`,
+        `blocking requirement evaluator must be distinct from and directly depend on every producer: ${requirement.id}`,
       ));
     }
     if (entry.requiredEvidenceKinds.length === 0) {

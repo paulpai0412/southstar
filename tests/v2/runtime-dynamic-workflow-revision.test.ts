@@ -10,14 +10,17 @@ import { createExecutorBindingPg } from "../../src/v2/executor/postgres-bindings
 import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
 import { maybeApplyDynamicRepairRevisionPg } from "../../src/v2/runtime-revision/dynamic-repair-revision.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 test("dynamic repair revision appends repair and reverify tasks for failed validation worker", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
+    const lineage = await seedPlannerDraftLineage(db, "run-dynamic-repair", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-dynamic-repair",
       status: "running",
@@ -26,7 +29,7 @@ test("dynamic repair revision appends repair and reverify tasks for failed valid
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -113,8 +116,113 @@ test("dynamic repair revision appends repair and reverify tasks for failed valid
     const resources = await listResourcesPg(db, { resourceType: "workflow_dynamic_repair_revision" });
     assert.equal(resources.length, 1);
     assert.equal(resources[0]?.status, "applied");
+    const revisionPayload = resources[0]?.payload as {
+      goalContractHash?: string;
+      goalRequirementCoverage?: { goalContractHash?: string };
+      orchestrationSnapshot?: { goalContractHash?: string };
+    };
+    assert.equal(revisionPayload.goalContractHash, lineage.goalContractHash);
+    assert.equal(revisionPayload.goalRequirementCoverage?.goalContractHash, lineage.goalContractHash);
+    assert.equal(revisionPayload.orchestrationSnapshot?.goalContractHash, lineage.goalContractHash);
     const history = await listHistoryForRunPg(db, "run-dynamic-repair");
     assert.equal(history.some((event) => event.eventType === "workflow.dynamic_repair_revision_applied"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair fails closed when the run has no planner draft Goal Contract lineage", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-missing-lineage",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({}),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-missing-lineage",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-missing-lineage",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-missing-lineage",
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.deepEqual(result, { status: "skipped", reason: "goal-contract-lineage-missing:draftId" });
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair fails closed when the run and planner draft Goal Contract hashes disagree", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const workflow = baseWorkflow();
+    const lineage = await seedPlannerDraftLineage(db, "run-dynamic-repair-hash-mismatch", workflow.goalPrompt);
+    const runtimeContext = JSON.parse(lineage.runtimeContextJson) as Record<string, unknown>;
+    runtimeContext.goalContractHash = "0".repeat(64);
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-hash-mismatch",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify(runtimeContext),
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-hash-mismatch",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-hash-mismatch",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-hash-mismatch",
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.deepEqual(result, { status: "skipped", reason: "goal-contract-hash-mismatch" });
   } finally {
     await db.close();
   }
@@ -125,6 +233,7 @@ test("dynamic repair prompt seeds repair from implement profile and reverify fro
   try {
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
+    const lineage = await seedPlannerDraftLineage(db, "run-dynamic-repair-profile-hints", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-dynamic-repair-profile-hints",
       status: "running",
@@ -133,7 +242,7 @@ test("dynamic repair prompt seeds repair from implement profile and reverify fro
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -192,6 +301,7 @@ test("dynamic repair revision reconnects pending downstream tasks after generate
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
     workflow.tasks.push(workflowTask("summarize-release", "Summarize Release", "implementer", "profile.impl", ["verify-feature"]));
+    const lineage = await seedPlannerDraftLineage(db, "run-dynamic-repair-downstream", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-dynamic-repair-downstream",
       status: "running",
@@ -200,7 +310,7 @@ test("dynamic repair revision reconnects pending downstream tasks after generate
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -279,6 +389,7 @@ test("dynamic repair limits consecutive reverify repair chain by root failed tas
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
     workflow.tasks.push(workflowTask("summarize-release", "Summarize Release", "implementer", "profile.impl", ["verify-feature"]));
+    const lineage = await seedPlannerDraftLineage(db, "run-dynamic-repair-chain-limit", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-dynamic-repair-chain-limit",
       status: "running",
@@ -287,7 +398,7 @@ test("dynamic repair limits consecutive reverify repair chain by root failed tas
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -406,6 +517,7 @@ test("failed validation callback applies dynamic repair revision before completi
   try {
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
+    const lineage = await seedPlannerDraftLineage(db, "run-callback-dynamic-repair", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-callback-dynamic-repair",
       status: "running",
@@ -414,7 +526,7 @@ test("failed validation callback applies dynamic repair revision before completi
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -486,6 +598,7 @@ test("failing verification report semantics apply dynamic repair revision", asyn
   try {
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
+    const lineage = await seedPlannerDraftLineage(db, "run-callback-semantic-verification-failure", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-callback-semantic-verification-failure",
       status: "running",
@@ -494,7 +607,7 @@ test("failing verification report semantics apply dynamic repair revision", asyn
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -571,6 +684,7 @@ test("direct verification report fields apply dynamic repair revision", async ()
   try {
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
+    const lineage = await seedPlannerDraftLineage(db, "run-callback-direct-verification-failure", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-callback-direct-verification-failure",
       status: "running",
@@ -579,7 +693,7 @@ test("direct verification report fields apply dynamic repair revision", async ()
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -655,6 +769,7 @@ test("failed callback advances dynamic repair round when prior repair task exist
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
     workflow.tasks.push(workflowTask("repair-verify-feature-attempt-1", "Existing Repair", "implementer", "profile.impl", ["implement-feature"]));
+    const lineage = await seedPlannerDraftLineage(db, "run-callback-invalid-dynamic-repair", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-callback-invalid-dynamic-repair",
       status: "running",
@@ -663,7 +778,7 @@ test("failed callback advances dynamic repair round when prior repair task exist
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -752,6 +867,7 @@ test("dynamic repair round advances when prior repair task exists without revisi
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
     workflow.tasks.push(workflowTask("repair-verify-feature-attempt-1", "Existing Repair", "implementer", "profile.impl", ["implement-feature"]));
+    const lineage = await seedPlannerDraftLineage(db, "run-dynamic-repair-existing-task-no-resource", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-dynamic-repair-existing-task-no-resource",
       status: "running",
@@ -760,7 +876,7 @@ test("dynamic repair round advances when prior repair task exists without revisi
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -814,6 +930,7 @@ test("dynamic repair revision retries invalid LLM composition before appending t
   try {
     await seedDynamicRepairPrimitives(db);
     const workflow = baseWorkflow();
+    const lineage = await seedPlannerDraftLineage(db, "run-dynamic-repair-composition-retry", workflow.goalPrompt);
     await createWorkflowRunPg(db, {
       id: "run-dynamic-repair-composition-retry",
       status: "running",
@@ -822,7 +939,7 @@ test("dynamic repair revision retries invalid LLM composition before appending t
       workflowManifestJson: JSON.stringify(workflow),
       executionProjectionJson: JSON.stringify({}),
       snapshotJson: JSON.stringify({}),
-      runtimeContextJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
       metricsJson: JSON.stringify({}),
     });
     await createWorkflowTaskPg(db, {
@@ -1153,4 +1270,29 @@ async function seedDynamicRepairPrimitives(db: Awaited<ReturnType<typeof createT
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "allows_mcp_grant", toObjectKey: "mcp.filesystem-workspace", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "skill.react-ui", edgeType: "uses_instruction", toObjectKey: "instruction.react-review", scope: "software" });
   await upsertLibraryEdge(db, { fromObjectKey: "evaluator.todo-quality", edgeType: "validates_artifact", toObjectKey: "artifact.todo_app", scope: "software" });
+}
+
+async function seedPlannerDraftLineage(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  runId: string,
+  goalPrompt: string,
+): Promise<{ goalContract: GoalContractV1; goalContractHash: string; runtimeContextJson: string }> {
+  const goalContract = softwareGoalContract(goalPrompt);
+  const contractHash = goalContractHash(goalContract);
+  const draftId = `draft-${runId}`;
+  await upsertRuntimeResourcePg(db, {
+    id: draftId,
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: "planner",
+    status: "validated",
+    title: `Planner draft for ${runId}`,
+    payload: { goalContract, goalContractHash: contractHash },
+    summary: { goalContractHash: contractHash },
+  });
+  return {
+    goalContract,
+    goalContractHash: contractHash,
+    runtimeContextJson: JSON.stringify({ draftId, goalContractHash: contractHash }),
+  };
 }

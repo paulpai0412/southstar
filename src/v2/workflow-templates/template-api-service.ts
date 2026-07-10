@@ -8,6 +8,8 @@ import {
 } from "../design-library/library-graph-store.ts";
 import type { WorkflowTaskDefinition } from "../manifests/types.ts";
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
+import { parseWorkflowCompositionPlanFromText } from "../orchestration/llm-composer.ts";
+import { isCoverageExceptionTask } from "../orchestration/goal-requirement-coverage.ts";
 import { getResourceByKeyPg } from "../stores/postgres-runtime-store.ts";
 import {
   createPostgresPlannerDraft,
@@ -141,11 +143,24 @@ export async function instantiateWorkflowTemplatePg(
   let compositionPlan: WorkflowCompositionPlan | undefined;
   if (goalContract.blockingInputs.length === 0) {
     await assertTemplateScopeCompatible(db, input.templateRef, goalContract.domain);
+    const hasSavedCompositionPlan = state.compositionPlan !== undefined
+      || (typeof state.compositionPlanJsonBase64 === "string" && state.compositionPlanJsonBase64.length > 0);
     const savedCompositionPlan = workflowCompositionPlanValue(state.compositionPlan)
       ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64);
-    compositionPlan = savedCompositionPlan
-      ? instantiateSavedCompositionPlan(savedCompositionPlan, input, goalContract)
-      : await composeSkeletonTemplate(db, input, template, goalContract);
+    if (savedCompositionPlan) {
+      try {
+        compositionPlan = instantiateSavedCompositionPlan(savedCompositionPlan, input, goalContract);
+      } catch (error) {
+        if (!input.composer) {
+          throw new Error(`saved workflow composition needs regeneration: ${errorMessage(error)}`);
+        }
+        compositionPlan = await composeSkeletonTemplate(db, input, template, goalContract);
+      }
+    } else if (hasSavedCompositionPlan && !input.composer) {
+      throw new Error("saved workflow composition needs regeneration: stored composition does not match the current strict schema");
+    } else {
+      compositionPlan = await composeSkeletonTemplate(db, input, template, goalContract);
+    }
   }
 
   input.onProgress?.(compositionPlan
@@ -267,19 +282,22 @@ function instantiateSavedCompositionPlan(
     ...plan,
     title: `${plan.title} - instantiated`,
     rationale: `${plan.rationale}\n\nInstantiated for: ${input.goalPrompt}`,
-    tasks: plan.tasks.map((task) => ({
-      ...task,
-      requirementIds: goalContract.requirements.map((requirement) => requirement.id),
-      nodePromptSpec: {
-        ...task.nodePromptSpec,
-        goal: `${task.nodePromptSpec.goal}\n\nInstantiation goal: ${input.goalPrompt}`,
-        requirements: uniqueStrings([goalRequirement, ...task.nodePromptSpec.requirements]),
-        acceptanceCriteria: uniqueStrings([
-          `Satisfy the instantiation goal: ${input.goalPrompt}`,
-          ...task.nodePromptSpec.acceptanceCriteria,
-        ]),
-      },
-    })),
+    tasks: plan.tasks.map((task) => {
+      const requirementIds = mapSavedTaskRequirementIds(task, goalContract);
+      return {
+        ...task,
+        requirementIds,
+        nodePromptSpec: {
+          ...task.nodePromptSpec,
+          goal: `${task.nodePromptSpec!.goal}\n\nInstantiation goal: ${input.goalPrompt}`,
+          requirements: uniqueStrings([goalRequirement, ...task.nodePromptSpec!.requirements]),
+          acceptanceCriteria: uniqueStrings([
+            `Satisfy the instantiation goal: ${input.goalPrompt}`,
+            ...task.nodePromptSpec!.acceptanceCriteria,
+          ]),
+        },
+      };
+    }),
     generatedComponentProposals: plan.generatedComponentProposals.map((proposal) => proposal.agentProfile
       ? {
         ...proposal,
@@ -290,6 +308,44 @@ function instantiateSavedCompositionPlan(
       }
       : proposal),
   };
+}
+
+function mapSavedTaskRequirementIds(
+  task: WorkflowCompositionPlan["tasks"][number],
+  goalContract: GoalContractV1,
+): string[] {
+  if (!task.nodePromptSpec) {
+    throw new Error(`task ${task.id} has no nodePromptSpec`);
+  }
+  const requirementIdsByText = new Map<string, Set<string>>();
+  for (const requirement of goalContract.requirements) {
+    for (const text of [requirement.statement, ...requirement.acceptanceCriteria]) {
+      const normalized = normalizeRequirementText(text);
+      const requirementIds = requirementIdsByText.get(normalized) ?? new Set<string>();
+      requirementIds.add(requirement.id);
+      requirementIdsByText.set(normalized, requirementIds);
+    }
+  }
+
+  const mappedRequirementIds = new Set<string>();
+  for (const text of [
+    ...task.nodePromptSpec.requirements,
+    ...task.nodePromptSpec.acceptanceCriteria,
+  ]) {
+    const matches = [...(requirementIdsByText.get(normalizeRequirementText(text)) ?? [])];
+    if (matches.length > 1) {
+      throw new Error(`task ${task.id} has ambiguous Goal Contract requirement text: ${text}`);
+    }
+    if (matches[0]) mappedRequirementIds.add(matches[0]);
+  }
+  if (mappedRequirementIds.size === 0 && !isCoverageExceptionTask(task)) {
+    throw new Error(`task ${task.id} cannot be mapped to a Goal Contract requirement by exact node prompt text`);
+  }
+  return [...mappedRequirementIds];
+}
+
+function normalizeRequirementText(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
 }
 
 function requireApprovedWorkflowTemplate(db: SouthstarDb, templateRef: string): Promise<LibraryObjectSummary> {
@@ -401,10 +457,13 @@ function scoreTemplate(template: LibraryObjectSummary, queryTokens: Set<string>)
 }
 
 function workflowCompositionPlanValue(value: unknown): WorkflowCompositionPlan | undefined {
-  const record = asRecord(value);
-  if (record.schemaVersion !== "southstar.workflow_composition_plan.v1") return undefined;
-  if (!Array.isArray(record.tasks)) return undefined;
-  return record as WorkflowCompositionPlan;
+  try {
+    const text = JSON.stringify(value);
+    if (!text) return undefined;
+    return parseWorkflowCompositionPlanFromText(text, 1_000_000);
+  } catch {
+    return undefined;
+  }
 }
 
 function workflowCompositionPlanBase64Value(value: unknown): WorkflowCompositionPlan | undefined {
@@ -442,4 +501,8 @@ function unique(values: string[]): string[] {
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter((value) => value.length > 0))];
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

@@ -276,8 +276,13 @@ test("Postgres run API creates draft, run, tasks, and history without prebuildin
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
     assert.match(run.runId, /^run-wf-composed-/);
 
-    const runRow = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = $1", [run.runId]);
+    const runRow = await db.one<{
+      status: string;
+      runtime_context_json: { draftId?: string; goalContractHash?: string };
+    }>("select status, runtime_context_json from southstar.workflow_runs where id = $1", [run.runId]);
     assert.equal(runRow.status, "created");
+    assert.equal(runRow.runtime_context_json.draftId, draft.draftId);
+    assert.equal(runRow.runtime_context_json.goalContractHash, draft.goalContractHash);
     const taskRows = await db.query<{ id: string }>("select id from southstar.workflow_tasks where run_id = $1 order by sort_order", [run.runId]);
     assert.deepEqual(taskRows.rows.map((row) => row.id), FIXTURE_TASK_IDS);
 

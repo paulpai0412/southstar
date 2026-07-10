@@ -6,6 +6,7 @@ import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
 import { buildGoalRequirementCoverage } from "../../src/v2/orchestration/goal-requirement-coverage.ts";
 import { requirementSpecFromGoalContract, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
+import { classifyWorkflowCompositionTask } from "../../src/v2/orchestration/workflow-node-classifier.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { articleGoalContract, softwareGoalContract, subscriptionGoalContract } from "./fixtures/goal-contract.ts";
 
@@ -237,6 +238,19 @@ test("coverage maps every blocking requirement to producer and independent evalu
   });
 });
 
+test("node classification gives explicit prompt type precedence over ambiguous structural text", () => {
+  const explicitVerifier = coverageTask({
+    id: "summarize-test-results",
+    requirementIds: ["requirement.test"],
+    nodeType: "verify",
+    outputArtifactRefs: ["artifact.verification_report"],
+  });
+  const inferredVerifier = { ...explicitVerifier, nodePromptSpec: undefined };
+
+  assert.equal(classifyWorkflowCompositionTask(explicitVerifier), "verify");
+  assert.equal(classifyWorkflowCompositionTask(inferredVerifier), "verify");
+});
+
 test("coverage rejects a producer as its only evaluator", async () => {
   const db = await createTestPostgresDb();
   const goalContract = softwareGoalContract();
@@ -258,6 +272,116 @@ test("coverage rejects a producer as its only evaluator", async () => {
     assert.equal(
       validation.issues.some((issue) => issue.code === "requirement_evaluator_not_independent"),
       true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("coverage rejects an evaluator that can only reach a producer transitively", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const composition = validComposition(goalContract);
+    const producer = composition.tasks.find((task) => task.id === "implement-feature")!;
+    const evaluator = composition.tasks.find((task) => task.id === "verify-feature")!;
+    const coordination: WorkflowCompositionTask = {
+      ...producer,
+      id: "coordinate-verification",
+      name: "Coordinate verification inputs",
+      responsibility: "Assemble producer outputs for later verification.",
+      requirementIds: [],
+      nodePromptSpec: nodePromptSpec("general", []),
+      templateSlotRef: "coordination",
+      dependsOn: [producer.id],
+      outputArtifactRefs: [],
+    };
+    evaluator.dependsOn = [coordination.id];
+    composition.tasks.splice(composition.tasks.indexOf(evaluator), 0, coordination);
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
+      scope: "software",
+      goalContract,
+    });
+
+    assert.equal(
+      validation.issues.some((issue) => issue.code === "requirement_evaluator_not_independent"),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("coverage does not exempt implementation work merely because its name says coordinate", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const composition = validComposition(goalContract);
+    const task = composition.tasks.find((item) => item.id === "implement-feature")!;
+    task.id = "implement-coordinate-state";
+    task.name = "Implement coordinated state updates";
+    task.responsibility = "Implement and coordinate state updates across modules.";
+    task.requirementIds = [];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
+      scope: "software",
+      goalContract,
+    });
+
+    assert.equal(
+      validation.issues.some((issue) => issue.code === "task_without_requirement_coverage"),
+      true,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("coverage exempts only an explicit general coordination slot", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const composition = validComposition(goalContract);
+    const producer = composition.tasks.find((task) => task.id === "implement-feature")!;
+    composition.tasks.push({
+      ...producer,
+      id: "coordinate-results",
+      name: "Coordinate results",
+      responsibility: "Fan in task metadata without evaluating requirements.",
+      requirementIds: [],
+      nodePromptSpec: nodePromptSpec("general", []),
+      templateSlotRef: "coordination",
+      dependsOn: [producer.id],
+      outputArtifactRefs: [],
+    });
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
+      scope: "software",
+      goalContract,
+    });
+
+    assert.equal(
+      validation.issues.some((issue) =>
+        issue.code === "task_without_requirement_coverage"
+        && issue.message.includes("coordinate-results")
+      ),
+      false,
     );
   } finally {
     await db.close();
@@ -397,6 +521,7 @@ function validComposition(goalContract = softwareGoalContract()): WorkflowCompos
         ["instruction.software-summarizer"],
         ["artifact.completion_report"],
         "evaluator.software-completion-quality",
+        "summary",
       ),
     ],
     rejectedCandidates: [],
@@ -547,7 +672,7 @@ function coverageTask(input: {
 }
 
 function nodePromptSpec(
-  nodeType: "implement" | "verify",
+  nodeType: "implement" | "verify" | "summary" | "general",
   expectedOutputs: string[],
 ): NonNullable<WorkflowCompositionTask["nodePromptSpec"]> {
   return {
@@ -574,12 +699,14 @@ function task(
   instructionRefs: string[],
   outputArtifactRefs: string[],
   evaluatorProfileRef: string,
+  nodeType?: "summary",
 ): WorkflowCompositionTask {
   return {
     id,
     name: id,
     responsibility: id,
     requirementIds,
+    ...(nodeType ? { nodePromptSpec: nodePromptSpec(nodeType, outputArtifactRefs) } : {}),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,

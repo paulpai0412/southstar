@@ -3,7 +3,9 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
+import type { GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import { getResourceByKeyPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import {
   getWorkflowTemplateDetailPg,
   instantiateWorkflowTemplatePg,
@@ -11,7 +13,7 @@ import {
 } from "../../src/v2/workflow-templates/template-api-service.ts";
 import { seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
-import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
+import { fixedGoalInterpreter, softwareGoalContract, subscriptionGoalContract } from "./fixtures/goal-contract.ts";
 
 test("searchWorkflowTemplatesPg returns approved workflow templates ranked by prompt text", async () => {
   const db = await createTestPostgresDb();
@@ -47,14 +49,15 @@ test("getWorkflowTemplateDetailPg returns template skeleton details", async () =
 
 test("instantiateWorkflowTemplatePg creates planner draft from strict template composition", async () => {
   const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract("build vocabulary app");
   try {
     await seedDeterministicWorkflowGraph(db);
-    await seedWorkflowTemplate(db, compositionPlan());
+    await seedWorkflowTemplate(db, compositionPlan(goalContract));
 
     const result = await instantiateWorkflowTemplatePg(db, {
       templateRef: "template.software-dev-standard",
       goalPrompt: "build vocabulary app",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app")),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
       constraints: { mode: "strict" },
     });
 
@@ -70,22 +73,82 @@ test("instantiateWorkflowTemplatePg creates planner draft from strict template c
 
 test("instantiateWorkflowTemplatePg reuses saved base64 template composition without composer", async () => {
   const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract("build vocabulary app from saved template");
   try {
     await seedDeterministicWorkflowGraph(db);
     await seedWorkflowTemplate(db, undefined, {
-      compositionPlanJsonBase64: Buffer.from(JSON.stringify(compositionPlan()), "utf8").toString("base64"),
+      compositionPlanJsonBase64: Buffer.from(JSON.stringify(compositionPlan(goalContract)), "utf8").toString("base64"),
     });
 
     const result = await instantiateWorkflowTemplatePg(db, {
       templateRef: "template.software-dev-standard",
       goalPrompt: "build vocabulary app from saved template",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app from saved template")),
+      goalInterpreter: fixedGoalInterpreter(goalContract),
       constraints: { mode: "strict" },
     });
 
     assert.equal(result.status, "validated");
     assert.equal(result.nodes.every((node) => node.nodePromptSpec), true);
     assert.match(JSON.stringify(result.nodes[0]?.nodePromptSpec), /build vocabulary app from saved template/);
+  } finally {
+    await db.close();
+  }
+});
+
+test("instantiateWorkflowTemplatePg binds saved compound branches only to their exact Goal Contract requirements", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = subscriptionGoalContract();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedWorkflowTemplate(db, compoundCompositionPlan(goalContract));
+
+    const result = await instantiateWorkflowTemplatePg(db, {
+      templateRef: "template.software-dev-standard",
+      goalPrompt: goalContract.summary,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      constraints: { mode: "strict" },
+    });
+
+    assert.equal(result.status, "validated");
+    const draft = await getResourceByKeyPg(db, "planner_draft", result.draftId);
+    const selectedPlan = (draft?.payload as {
+      orchestrationSnapshot?: { selectedCompositionPlan?: WorkflowCompositionPlan };
+    }).orchestrationSnapshot?.selectedCompositionPlan;
+    assert.ok(selectedPlan);
+    const producerTasks = selectedPlan.tasks.filter((task) => task.id.startsWith("produce-requirement-"));
+    assert.deepEqual(
+      producerTasks.map((task) => task.requirementIds),
+      goalContract.requirements.map((requirement) => [requirement.id]),
+    );
+    assert.deepEqual(
+      selectedPlan.tasks.find((task) => task.id === "verify-compound-goal")?.requirementIds,
+      goalContract.requirements.map((requirement) => requirement.id),
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("instantiateWorkflowTemplatePg rejects a legacy saved plan missing requirementIds as needing regeneration", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = softwareGoalContract("build a legacy migration fixture");
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    const legacyPlan = structuredClone(compositionPlan()) as unknown as {
+      tasks: Array<Record<string, unknown>>;
+    };
+    delete legacyPlan.tasks[0]!.requirementIds;
+    await seedWorkflowTemplate(db, legacyPlan as unknown as WorkflowCompositionPlan);
+
+    await assert.rejects(
+      () => instantiateWorkflowTemplatePg(db, {
+        templateRef: "template.software-dev-standard",
+        goalPrompt: goalContract.summary,
+        goalInterpreter: fixedGoalInterpreter(goalContract),
+        constraints: { mode: "strict" },
+      }),
+      /saved workflow composition needs regeneration/,
+    );
   } finally {
     await db.close();
   }
@@ -147,13 +210,13 @@ test("instantiateWorkflowTemplatePg accepts a template whose domainRefs include 
   try {
     const domain = "design/article";
     await seedDeterministicWorkflowGraph(db, domain);
-    await seedWorkflowTemplate(db, compositionPlan(), { domainRefs: [domain] });
     const goalPrompt = "Turn notes.md into an offline HTML article";
     const goalContract = {
       ...softwareGoalContract(goalPrompt),
       domain,
       workspace: { cwd: "/workspace/article" },
     };
+    await seedWorkflowTemplate(db, compositionPlan(goalContract), { domainRefs: [domain] });
 
     const result = await instantiateWorkflowTemplatePg(db, {
       templateRef: "template.software-dev-standard",
@@ -232,7 +295,8 @@ async function seedWorkflowTemplate(
   });
 }
 
-function compositionPlan(): WorkflowCompositionPlan {
+function compositionPlan(goalContract?: GoalContractV1): WorkflowCompositionPlan {
+  const requirement = goalContract?.requirements[0];
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Software Development Standard",
@@ -246,13 +310,14 @@ function compositionPlan(): WorkflowCompositionPlan {
       nodePromptSpec: {
         nodeType: "plan",
         goal: "Plan the requested software change.",
-        requirements: ["Understand the goal and produce an implementation plan."],
+        requirements: [requirement?.statement ?? "Understand the goal and produce an implementation plan."],
         boundaries: ["Do not edit files."],
         nonGoals: ["Do not implement."],
         deliverableDocuments: [{ kind: "design", title: "Implementation plan", required: true, format: "markdown", description: "Plan the change." }],
         expectedOutputs: ["artifact.implementation_plan"],
         testCases: [],
-        acceptanceCriteria: ["Plan identifies files, risks, and verification."],
+        acceptanceCriteria: requirement?.acceptanceCriteria ?? ["Plan identifies files, risks, and verification."],
+        planningQuestions: ["What must the implementation plan cover?"],
       },
       dependsOn: [],
       templateSlotRef: "understand-repo",
@@ -276,13 +341,14 @@ function compositionPlan(): WorkflowCompositionPlan {
       nodePromptSpec: {
         nodeType: "verify",
         goal: "Verify the implementation plan.",
-        requirements: ["Check that the plan satisfies the requested goal."],
+        requirements: [requirement?.statement ?? "Check that the plan satisfies the requested goal."],
         boundaries: ["Do not edit files."],
         nonGoals: ["Do not implement."],
         deliverableDocuments: [],
         expectedOutputs: ["artifact.implementation_plan"],
         testCases: [],
-        acceptanceCriteria: ["Plan covers requirements, risks, and verification."],
+        acceptanceCriteria: requirement?.acceptanceCriteria ?? ["Plan covers requirements, risks, and verification."],
+        verificationChecks: ["Check the implementation plan against the linked requirement."],
       },
       dependsOn: ["understand-repo"],
       templateSlotRef: "verify-plan",
@@ -332,6 +398,48 @@ function compositionPlan(): WorkflowCompositionPlan {
         },
       },
     }],
+  };
+}
+
+function compoundCompositionPlan(goalContract: ReturnType<typeof subscriptionGoalContract>): WorkflowCompositionPlan {
+  const base = compositionPlan();
+  const producerTemplate = base.tasks[0]!;
+  const producers = goalContract.requirements.map((requirement, index) => ({
+    ...structuredClone(producerTemplate),
+    id: `produce-requirement-${index + 1}`,
+    name: `Produce requirement ${index + 1}`,
+    responsibility: requirement.statement,
+    requirementIds: [],
+    dependsOn: [],
+    templateSlotRef: `produce-requirement-${index + 1}`,
+    nodePromptSpec: {
+      ...structuredClone(producerTemplate.nodePromptSpec!),
+      goal: requirement.statement,
+      requirements: [requirement.statement],
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+    },
+  }));
+  const verifierTemplate = base.tasks[1]!;
+  return {
+    ...base,
+    tasks: [
+      ...producers,
+      {
+        ...structuredClone(verifierTemplate),
+        id: "verify-compound-goal",
+        name: "Verify compound goal",
+        responsibility: "Verify every Goal Contract requirement.",
+        requirementIds: [],
+        dependsOn: producers.map((task) => task.id),
+        templateSlotRef: "verify-compound-goal",
+        nodePromptSpec: {
+          ...structuredClone(verifierTemplate.nodePromptSpec!),
+          goal: "Verify every Goal Contract requirement.",
+          requirements: goalContract.requirements.map((requirement) => requirement.statement),
+          acceptanceCriteria: goalContract.requirements.flatMap((requirement) => requirement.acceptanceCriteria),
+        },
+      },
+    ],
   };
 }
 

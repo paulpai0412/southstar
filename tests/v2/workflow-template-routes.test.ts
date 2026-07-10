@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
+import type { GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
@@ -31,7 +32,8 @@ test("runtime routes expose workflow template search, detail, and instantiation"
     assert.equal(detail.result.nodes[0]?.id, "plan");
     assert.equal(detail.result.canInstantiate, true);
 
-    await seedWorkflowTemplate(db, compositionPlan());
+    const goalContract = softwareGoalContract("build vocabulary app");
+    await seedWorkflowTemplate(db, compositionPlan(goalContract));
     const instantiated = await call<{ templateRef: string; draftId: string; status: string; nodes: Array<{ taskId: string; nodePromptSpec?: unknown }> }>(
       db,
       "/api/v2/workflow/templates/instantiate",
@@ -43,7 +45,7 @@ test("runtime routes expose workflow template search, detail, and instantiation"
           constraints: { mode: "strict" },
         }),
       },
-      { goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app")) },
+      { goalInterpreter: fixedGoalInterpreter(goalContract) },
     );
     assert.equal(instantiated.kind, "workflow-template-instantiate");
     assert.equal(instantiated.result.templateRef, "template.software-dev-standard");
@@ -124,7 +126,8 @@ async function seedWorkflowTemplate(db: Awaited<ReturnType<typeof createTestPost
   });
 }
 
-function compositionPlan(): WorkflowCompositionPlan {
+function compositionPlan(goalContract?: GoalContractV1): WorkflowCompositionPlan {
+  const requirement = goalContract?.requirements[0];
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Software Development Standard",
@@ -138,13 +141,14 @@ function compositionPlan(): WorkflowCompositionPlan {
       nodePromptSpec: {
         nodeType: "plan",
         goal: "Plan the requested software change.",
-        requirements: ["Understand the goal and produce an implementation plan."],
+        requirements: [requirement?.statement ?? "Understand the goal and produce an implementation plan."],
         boundaries: ["Do not edit files."],
         nonGoals: ["Do not implement."],
         deliverableDocuments: [{ kind: "design", title: "Implementation plan", required: true, format: "markdown", description: "Plan the change." }],
         expectedOutputs: ["artifact.implementation_plan"],
         testCases: [],
-        acceptanceCriteria: ["Plan identifies files, risks, and verification."],
+        acceptanceCriteria: requirement?.acceptanceCriteria ?? ["Plan identifies files, risks, and verification."],
+        planningQuestions: ["What must the implementation plan cover?"],
       },
       dependsOn: [],
       templateSlotRef: "understand-repo",
@@ -168,13 +172,14 @@ function compositionPlan(): WorkflowCompositionPlan {
       nodePromptSpec: {
         nodeType: "verify",
         goal: "Verify the implementation plan.",
-        requirements: ["Check that the plan satisfies the requested goal."],
+        requirements: [requirement?.statement ?? "Check that the plan satisfies the requested goal."],
         boundaries: ["Do not edit files."],
         nonGoals: ["Do not implement."],
         deliverableDocuments: [],
         expectedOutputs: ["artifact.implementation_plan"],
         testCases: [],
-        acceptanceCriteria: ["Plan covers requirements, risks, and verification."],
+        acceptanceCriteria: requirement?.acceptanceCriteria ?? ["Plan covers requirements, risks, and verification."],
+        verificationChecks: ["Check the implementation plan against the linked requirement."],
       },
       dependsOn: ["understand-repo"],
       templateSlotRef: "verify-plan",

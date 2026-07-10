@@ -38,6 +38,7 @@ import {
   requirementSpecFromGoalContract,
   type GoalContractV1,
 } from "./goal-contract.ts";
+import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 
 export type CompileWorkflowCompositionInput = {
   runId: string;
@@ -252,7 +253,7 @@ function nodePromptSpecForTask(
           acceptanceCriteria: linkedRequirements.flatMap((requirement) => requirement.acceptanceCriteria),
         };
   }
-  const nodeType = inferNodePromptType(task);
+  const nodeType = classifyWorkflowCompositionTask(task);
   return {
     nodeType,
     goal: `${titleFromTask(task)}: ${task.responsibility}`,
@@ -301,17 +302,6 @@ function deliverableDocumentsForNodeType(nodeType: WorkflowNodePromptSpec["nodeT
     return [{ kind: "summary", title: "Workflow summary", required: true, format: "markdown", description: "Summarize completed work, accepted artifacts, verification, and handoff notes." }];
   }
   return [];
-}
-
-function inferNodePromptType(task: WorkflowCompositionTask): WorkflowNodePromptSpec["nodeType"] {
-  const haystack = `${task.id} ${task.name} ${task.responsibility} ${task.evaluatorProfileRef}`.toLowerCase();
-  if (/\b(repair|fix)\b/.test(haystack)) return "repair";
-  if (/\b(verify|test|check|validation)\b/.test(haystack)) return "verify";
-  if (/\b(review|quality|risk)\b/.test(haystack)) return "review";
-  if (/\b(summary|summarize|completion|handoff)\b/.test(haystack)) return "summary";
-  if (/\b(plan|spec|understand|inspect|explore)\b/.test(haystack)) return "plan";
-  if (/\b(implement|build|code|create)\b/.test(haystack)) return "implement";
-  return "general";
 }
 
 function titleFromTask(task: WorkflowCompositionTask): string {
