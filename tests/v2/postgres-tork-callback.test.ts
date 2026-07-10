@@ -18,6 +18,7 @@ import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestratio
 import {
   inspectSupportedImage,
   prepareWorkspaceScreenshotProof,
+  recordRequirementEvaluatorResultsPg,
 } from "../../src/v2/evaluators/requirement-evaluator-results.ts";
 
 const ONE_PIXEL_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNgYAAAAAMAASsJTYQAAAAASUVORK5CYII=", "base64");
@@ -619,6 +620,38 @@ test("one evaluator task persists distinct evidence packets for multiple require
     );
     assert.equal(evaluators.rows.length, 2);
     assert.notEqual(evaluators.rows[0]?.payload_json.evidenceRefs[0], evaluators.rows[1]?.payload_json.evidenceRefs[0]);
+  });
+});
+
+test("requirement evaluation returns only failed blocking requirement ids for targeted repair", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-partial-failure", {
+      requirementIds: ["req-passed", "req-failed"],
+    });
+    const coverage = requirementCoverage(["req-passed", "req-failed"], fixture.goalContractHash);
+    coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref"];
+    coverage.entries[1]!.requiredEvidenceKinds = ["artifact-ref", "screenshot"];
+    await replaceRequirementCoverage(db, fixture.runId, coverage);
+
+    const result = await recordRequirementEvaluatorResultsPg(db, {
+      runId: fixture.runId,
+      taskId: "task-verify",
+      artifactRefId: "artifact-ref:partial-verification",
+      artifact: {
+        kind: "verification_report",
+        pass: true,
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+      },
+      callbackOk: true,
+      rootSessionId: "session-1",
+      attemptId: "attempt-1",
+      handExecutionId: `hand-execution:${fixture.runId}:task-verify:attempt-1`,
+    });
+
+    assert.equal(result.ok, false);
+    assert.deepEqual(result.failedBlockingRequirementIds, ["req-failed"]);
+    assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-passed"))?.status, "passed");
+    assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-failed"))?.status, "blocked");
   });
 });
 

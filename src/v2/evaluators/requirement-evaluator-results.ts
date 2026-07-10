@@ -31,6 +31,7 @@ export type RequirementEvaluatorResultV1 = {
 
 export type RequirementEvaluationWriteResult = {
   ok: boolean;
+  failedBlockingRequirementIds: string[];
   evidenceRefs: string[];
   evaluatorResultRefs: string[];
   findings: string[];
@@ -95,15 +96,16 @@ export async function recordRequirementEvaluatorResultsPg(
   },
 ): Promise<RequirementEvaluationWriteResult> {
   const context = await loadFrozenCoverageContextPg(db, input.runId);
-  if (!context) return { ok: true, evidenceRefs: [], evaluatorResultRefs: [], findings: [] };
+  if (!context) return { ok: true, failedBlockingRequirementIds: [], evidenceRefs: [], evaluatorResultRefs: [], findings: [] };
   const entries = context.coverage.entries.filter((entry) => entry.evaluatorTaskIds.includes(input.taskId));
-  if (entries.length === 0) return { ok: true, evidenceRefs: [], evaluatorResultRefs: [], findings: [] };
+  if (entries.length === 0) return { ok: true, failedBlockingRequirementIds: [], evidenceRefs: [], evaluatorResultRefs: [], findings: [] };
   await assertExecutionIdentityPg(db, input, context, entries);
 
   const evidenceRefs: string[] = [];
   const evaluatorResultRefs: string[] = [];
   const findings: string[] = [];
   let ok = true;
+  const failedBlockingRequirementIds: string[] = [];
 
   for (const entry of entries) {
     const evaluation = await evaluateEntry(db, input, entry, context.manifest, context.workspaceRoot);
@@ -117,11 +119,15 @@ export async function recordRequirementEvaluatorResultsPg(
     if (
       context.blockingRequirementIds.has(entry.requirementId)
       && evaluation.result.verdict !== "passed"
-    ) ok = false;
+    ) {
+      ok = false;
+      failedBlockingRequirementIds.push(entry.requirementId);
+    }
   }
 
   return {
     ok,
+    failedBlockingRequirementIds: uniqueSorted(failedBlockingRequirementIds),
     evidenceRefs: uniqueSorted(evidenceRefs),
     evaluatorResultRefs: uniqueSorted(evaluatorResultRefs),
     findings: uniqueSorted(findings),

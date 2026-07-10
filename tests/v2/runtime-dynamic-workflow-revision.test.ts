@@ -14,6 +14,8 @@ import { maybeApplyDynamicRepairRevisionPg } from "../../src/v2/runtime-revision
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
+import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
+import type { RuntimeServerContext } from "../../src/v2/server/runtime-context.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { softwareGoalContract, subscriptionGoalContract } from "./fixtures/goal-contract.ts";
@@ -140,10 +142,11 @@ test("dynamic repair scopes compound Goal Contract coverage to the failed task r
   try {
     await seedDynamicRepairPrimitives(db);
     const goalContract = subscriptionGoalContract();
+    const accessRequirement = goalContract.requirements[0]!;
     const billingRequirement = goalContract.requirements[1]!;
     const workflow = baseWorkflow();
     const failedTask = workflow.tasks.find((task) => task.id === "verify-feature")!;
-    failedTask.promptInputs = { requirementIds: [billingRequirement.id] };
+    failedTask.promptInputs = { requirementIds: [accessRequirement.id, billingRequirement.id] };
     const lineage = await seedPlannerDraftLineage(
       db,
       "run-dynamic-repair-compound-billing",
@@ -184,6 +187,7 @@ test("dynamic repair scopes compound Goal Contract coverage to the failed task r
     const result = await maybeApplyDynamicRepairRevisionPg(db, {
       runId: "run-dynamic-repair-compound-billing",
       failedTaskId: "verify-feature",
+      failedRequirementIds: [billingRequirement.id],
       workflowComposer: new GoalContractBindingWorkflowComposer(
         [repairCompositionPlan()],
         [billingRequirement.id],
@@ -205,6 +209,13 @@ test("dynamic repair scopes compound Goal Contract coverage to the failed task r
       payload.goalRequirementCoverage?.entries?.map((entry) => entry.requirementId),
       [billingRequirement.id],
     );
+    const coverageRevision = await db.one<{ payload_json: { effectiveCoverage: { entries: Array<{ requirementId: string; producerTaskIds: string[]; evaluatorTaskIds: string[] }> } } }>(
+      "select payload_json from southstar.runtime_resources where run_id = $1 and resource_type = 'goal_requirement_coverage_revision'",
+      ["run-dynamic-repair-compound-billing"],
+    );
+    const preservedAccess = coverageRevision.payload_json.effectiveCoverage.entries.find((entry) => entry.requirementId === accessRequirement.id);
+    assert.deepEqual(preservedAccess?.producerTaskIds, ["implement-feature"]);
+    assert.deepEqual(preservedAccess?.evaluatorTaskIds, ["verify-feature"]);
     const run = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
       "select workflow_manifest_json from southstar.workflow_runs where id = $1",
       ["run-dynamic-repair-compound-billing"],
@@ -268,6 +279,136 @@ test("dynamic repair waits for hash-bound approval before expanding frozen autho
   }
 });
 
+test("generic approval route resumes a persisted dynamic repair proposal without replaying the callback or LLM", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-route-continuation";
+    await seedFrozenDynamicRepairRun(db, runId, true);
+    const first = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      failedArtifactRefId: "artifact-ref-verify-failed",
+      failedArtifact: { summary: "verification failed" },
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+    assert.equal(first.status, "waiting_operator_approval");
+    assert.equal((await db.one<{ count: string }>(
+      "select count(*) as count from southstar.runtime_resources where run_id = $1 and resource_type = 'dynamic_repair_request' and status = 'waiting_operator_approval'",
+      [runId],
+    )).count, "1");
+    const context = {
+      db,
+      workflowComposer: {
+        async compose(): Promise<WorkflowCompositionPlan> {
+          throw new Error("approval continuation must not call the LLM composer");
+        },
+      },
+    } as unknown as RuntimeServerContext;
+    const decide = () => handleRuntimeRoute(context, new Request(
+      `http://southstar.test/api/v2/runs/${runId}/approvals/${encodeURIComponent(first.approvalId)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "approved", reason: "approve exact persisted repair" }),
+      },
+    ));
+
+    const approvals = await Promise.all([decide(), decide()]);
+    const approvalBodies = await Promise.all(approvals.map((response) => response.clone().json()));
+    assert.deepEqual(approvals.map((response) => response.status), [200, 200], JSON.stringify(approvalBodies));
+    const run = await db.one<{ status: string }>("select status from southstar.workflow_runs where id = $1", [runId]);
+    assert.equal(run.status, "running");
+    assert.equal((await db.one<{ count: string }>(
+      "select count(*) as count from southstar.workflow_tasks where run_id = $1 and id like 'repair-%'",
+      [runId],
+    )).count, "1");
+    assert.equal((await db.one<{ count: string }>(
+      "select count(*) as count from southstar.runtime_resources where run_id = $1 and resource_type = 'workflow_dynamic_repair_revision'",
+      [runId],
+    )).count, "1");
+  } finally {
+    await db.close();
+  }
+});
+
+test("rejecting a persisted dynamic repair proposal terminalizes the goal as unsatisfied", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-route-rejected";
+    await seedFrozenDynamicRepairRun(db, runId, true);
+    const first = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+    assert.equal(first.status, "waiting_operator_approval");
+    const response = await handleRuntimeRoute({ db } as unknown as RuntimeServerContext, new Request(
+      `http://southstar.test/api/v2/runs/${runId}/approvals/${encodeURIComponent(first.approvalId)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision: "rejected", reason: "authority expansion rejected" }),
+      },
+    ));
+
+    assert.equal(response.status, 200);
+    const run = await db.one<{ status: string; completed_at: string | null }>(
+      "select status, completed_at from southstar.workflow_runs where id = $1",
+      [runId],
+    );
+    assert.equal(run.status, "completed");
+    assert.ok(run.completed_at);
+    const outcome = await db.one<{ status: string; payload_json: { failedRequirementIds: string[] } }>(
+      "select status, payload_json from southstar.runtime_resources where run_id = $1 and resource_type = 'goal_outcome'",
+      [runId],
+    );
+    assert.equal(outcome.status, "unsatisfied");
+    assert.deepEqual(
+      outcome.payload_json.failedRequirementIds,
+      softwareGoalContract("Build a todo feature").requirements.map((requirement) => requirement.id),
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("concurrent opposite dynamic repair decisions commit exactly one continuation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-opposite-decision-race";
+    await seedFrozenDynamicRepairRun(db, runId, true);
+    const first = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+    assert.equal(first.status, "waiting_operator_approval");
+    const context = { db } as unknown as RuntimeServerContext;
+    const decide = (decision: "approved" | "rejected") => handleRuntimeRoute(context, new Request(
+      `http://southstar.test/api/v2/runs/${runId}/approvals/${encodeURIComponent(first.approvalId)}/decision`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ decision, reason: `${decision} race decision` }),
+      },
+    ));
+
+    const responses = await Promise.all([decide("approved"), decide("rejected")]);
+    assert.deepEqual(responses.map((response) => response.status).sort(), [200, 400]);
+    const repairCount = Number((await db.one<{ count: string }>(
+      "select count(*) as count from southstar.workflow_tasks where run_id = $1 and id like 'repair-%'",
+      [runId],
+    )).count);
+    const outcomeCount = Number((await db.one<{ count: string }>(
+      "select count(*) as count from southstar.runtime_resources where run_id = $1 and resource_type = 'goal_outcome'",
+      [runId],
+    )).count);
+    assert.equal(repairCount + outcomeCount, 1);
+  } finally {
+    await db.close();
+  }
+});
+
 test("dynamic repair fails closed when a composed primitive is absent from the run Library snapshot", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -282,7 +423,7 @@ test("dynamic repair fails closed when a composed primitive is absent from the r
       workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
-    assert.deepEqual(result, { status: "skipped", reason: "dynamic-repair-ref-not-in-run-snapshot:tool.workspace-write" });
+    assert.deepEqual(result, { status: "skipped", reason: "dynamic-repair-ref-version-not-in-run-snapshot:tool.workspace-write@1" });
     const current = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
       "select workflow_manifest_json from southstar.workflow_runs where id = $1",
       [runId],
@@ -305,7 +446,184 @@ test("current manifest Library refs do not bypass a missing frozen snapshot entr
       workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
     });
 
-    assert.deepEqual(result, { status: "skipped", reason: "dynamic-repair-ref-not-in-run-snapshot:tool.workspace-write" });
+    assert.deepEqual(result, { status: "skipped", reason: "dynamic-repair-ref-version-not-in-run-snapshot:tool.workspace-write@1" });
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair requires exact snapshotted object versions", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-snapshot-version-drift";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+    await upsertLibraryObject(db, {
+      objectKey: "tool.workspace-write",
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: "tool.workspace-write@2",
+      state: { scope: "global", title: "Workspace Write v2", toolName: "workspace-write", proxyToolName: "workspace-write-proxy" },
+    });
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.deepEqual(result, {
+      status: "skipped",
+      reason: "dynamic-repair-ref-version-not-in-run-snapshot:tool.workspace-write@2",
+    });
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair snapshot closure includes agents md and recovery context workspace policies", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-complete-snapshot-closure";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+    for (const objectKey of [
+      "instruction.repair-agents-md",
+      "policy.repair-recovery",
+      "policy.repair-context",
+      "policy.repair-workspace",
+    ]) {
+      await upsertLibraryObject(db, {
+        objectKey,
+        objectKind: objectKey.startsWith("instruction.") ? "instruction_template" : "policy_bundle",
+        status: "approved",
+        headVersionId: `${objectKey}@1`,
+        state: objectKey.startsWith("instruction.")
+          ? { scope: "software", title: objectKey, content: "Repair agents instructions", variables: [] }
+          : { scope: "software", title: objectKey },
+      });
+    }
+    const plan = repairCompositionPlan();
+    for (const task of plan.tasks) {
+      task.recoveryStrategyRefs = ["policy.repair-recovery"];
+      task.contextPolicyRef = "policy.repair-context";
+      task.workspacePolicyRef = "policy.repair-workspace";
+    }
+    for (const proposal of plan.generatedComponentProposals) {
+      if (proposal.agentProfile) proposal.agentProfile.agentsMdRefs = ["instruction.repair-agents-md"];
+    }
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([plan]),
+    });
+
+    assert.deepEqual(result, {
+      status: "skipped",
+      reason: "dynamic-repair-ref-version-not-in-run-snapshot:instruction.repair-agents-md@1",
+    });
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair treats removed tool approval requirements as authority relaxation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-tool-policy-relaxation";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+    await db.query(
+      `update southstar.workflow_runs
+          set workflow_manifest_json = jsonb_set(
+            workflow_manifest_json,
+            '{agentProfiles}',
+            (select jsonb_agg(jsonb_set(profile, '{toolPolicy}',
+              '{"allowedTools":["tool.workspace-write"],"deniedTools":[],"requiresApprovalFor":["tool.workspace-write"]}'::jsonb))
+               from jsonb_array_elements(workflow_manifest_json->'agentProfiles') profile)
+          )
+        where id = $1`,
+      [runId],
+    );
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+
+    assert.equal(result.status, "waiting_operator_approval");
+    const approval = await db.one<{ payload_json: { requestedAuthority: { removedDeniedTools?: string[]; removedApprovalRequirements?: string[] } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'approval' and resource_key = $1",
+      [result.approvalId],
+    );
+    assert.deepEqual(approval.payload_json.requestedAuthority.removedDeniedTools, []);
+    assert.deepEqual(approval.payload_json.requestedAuthority.removedApprovalRequirements, ["tool.workspace-write"]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair computes executable authority per profile instead of unioning tool policies", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-multi-profile-policy";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+    await db.query(
+      `update southstar.workflow_runs
+          set workflow_manifest_json = jsonb_set(
+            workflow_manifest_json,
+            '{agentProfiles}',
+            (select jsonb_agg(jsonb_set(profile, '{toolPolicy}',
+              '{"allowedTools":["tool.workspace-write"],"deniedTools":["tool.workspace-write"],"requiresApprovalFor":[]}'::jsonb))
+               from jsonb_array_elements(workflow_manifest_json->'agentProfiles') profile)
+          )
+        where id = $1`,
+      [runId],
+    );
+    const plan = repairCompositionPlan();
+    const reverify = plan.generatedComponentProposals.find((proposal) => proposal.id.includes("reverify"));
+    if (!reverify?.agentProfile) assert.fail("missing generated reverify profile");
+    reverify.agentProfile.toolPolicy = {
+      allowedTools: ["tool.workspace-write"],
+      deniedTools: ["tool.workspace-write"],
+      requiresApprovalFor: [],
+    };
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([plan]),
+    });
+
+    assert.equal(result.status, "waiting_operator_approval");
+    const approval = await db.one<{ payload_json: { requestedAuthority: { toolGrantRefs: string[]; removedDeniedTools: string[] } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'approval' and resource_key = $1",
+      [result.approvalId],
+    );
+    assert.deepEqual(approval.payload_json.requestedAuthority.toolGrantRefs, ["tool.workspace-write"]);
+    assert.deepEqual(approval.payload_json.requestedAuthority.removedDeniedTools, ["tool.workspace-write"]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair merges compiled artifact and evaluator definitions for managed context", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-dynamic-repair-runtime-definition-merge";
+    await seedFrozenDynamicRepairRun(db, runId, true, false);
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId,
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
+    });
+    assert.equal(result.status, "applied");
+    const run = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
+      "select workflow_manifest_json from southstar.workflow_runs where id = $1",
+      [runId],
+    );
+    assert.equal(run.workflow_manifest_json.artifactContracts?.some((contract) => contract.id === "todo_app"), true);
+    assert.equal(run.workflow_manifest_json.evaluatorPipelines?.some((pipeline) => pipeline.id === "todo-quality"), true);
   } finally {
     await db.close();
   }
@@ -386,6 +704,20 @@ test("callback waiting for dynamic repair approval stays nonterminal", async () 
       attemptId: "attempt-1",
       goalContract: softwareGoalContract(workflow.goalPrompt),
     });
+    await db.query(
+      "update southstar.workflow_tasks set status = 'running', root_session_id = 'session-implement', completed_at = null where run_id = $1 and id = 'implement-feature'",
+      [runId],
+    );
+    await createExecutorBindingPg(db, {
+      runId,
+      taskId: "implement-feature",
+      attemptId: "attempt-implement",
+      torkJobId: "job-implement-tail",
+      status: "running",
+      now: "2026-07-11T00:00:00.000Z",
+      queueTimeoutSeconds: 3600,
+      hardTimeoutSeconds: 600,
+    });
 
     const result = await ingestTaskRunResultPg(db, {
       runId,
@@ -404,6 +736,22 @@ test("callback waiting for dynamic repair approval stays nonterminal", async () 
     assert.equal((await db.one<{ status: string }>("select status from southstar.workflow_runs where id = $1", [runId])).status, "awaiting_approval");
     assert.equal((await db.one<{ count: string }>("select count(*) as count from southstar.runtime_resources where run_id = $1 and resource_type = 'goal_outcome'", [runId])).count, "0");
     assert.equal((await db.one<{ count: string }>("select count(*) as count from southstar.workflow_tasks where run_id = $1 and id like 'repair-%'", [runId])).count, "0");
+
+    await ingestTaskRunResultPg(db, {
+      runId,
+      taskId: "implement-feature",
+      rootSessionId: "session-implement",
+      ok: true,
+      attempts: 1,
+      attemptId: "attempt-implement",
+      artifact: { kind: "todo_app", summary: "parallel implementation tail completed" },
+      metrics: {},
+      receivedAt: "2026-07-11T00:06:00.000Z",
+      events: [],
+    });
+
+    assert.equal((await db.one<{ status: string }>("select status from southstar.workflow_runs where id = $1", [runId])).status, "awaiting_approval");
+    assert.equal((await db.one<{ count: string }>("select count(*) as count from southstar.runtime_resources where run_id = $1 and resource_type = 'goal_outcome'", [runId])).count, "0");
   } finally {
     await db.close();
   }
@@ -907,15 +1255,22 @@ test("dynamic repair limits consecutive reverify repair chain by root failed tas
     assert.equal(exhaustedOutcome.status, "unsatisfied");
     assert.equal(exhaustedOutcome.payload_json.outcomeStatus, "unsatisfied");
     assert.deepEqual(exhaustedOutcome.payload_json.failedRequirementIds, softwareGoalContract(workflow.goalPrompt).requirements.map((requirement) => requirement.id));
+    const exhaustedRun = await db.one<{ status: string; completed_at: Date | null }>(
+      "select status, completed_at from southstar.workflow_runs where id = $1",
+      ["run-dynamic-repair-chain-limit"],
+    );
+    assert.equal(exhaustedRun.status, "completed");
+    assert.ok(exhaustedRun.completed_at);
     const replay = await maybeApplyDynamicRepairRevisionPg(db, {
       runId: "run-dynamic-repair-chain-limit",
       failedTaskId: secondReverifyId,
       workflowComposer: new GoalContractBindingWorkflowComposer([repairCompositionPlan()]),
       maxDynamicRepairRounds: 2,
     });
-    assert.deepEqual(replay, { status: "skipped", reason: "dynamic-repair-round-limit" });
+    assert.deepEqual(replay, { status: "skipped", reason: "run-status:completed" });
     const history = await listHistoryForRunPg(db, "run-dynamic-repair-chain-limit");
     assert.equal(history.filter((event) => event.eventType === "workflow.dynamic_repair_exhausted").length, 1);
+    assert.equal(history.filter((event) => event.eventType === "run.completed").length, 1);
 
     const resources = await listResourcesPg(db, { resourceType: "workflow_dynamic_repair_revision" });
     const chainResources = resources.filter((resource) => resource.runId === "run-dynamic-repair-chain-limit");
@@ -1477,7 +1832,7 @@ function baseWorkflow(): SouthstarWorkflowManifest {
         vaultLeasePolicyRefs: [],
         memoryScopes: [],
         agentsMdRefs: [],
-        toolPolicy: { allowedTools: [], deniedTools: [], requiresApprovalFor: [] },
+        toolPolicy: { allowedTools: ["tool.workspace-write"], deniedTools: [], requiresApprovalFor: [] },
         budgetPolicy: { maxInputTokens: 1000, maxOutputTokens: 1000, maxWallTimeSeconds: 60 },
       },
       {
@@ -1496,7 +1851,7 @@ function baseWorkflow(): SouthstarWorkflowManifest {
         vaultLeasePolicyRefs: [],
         memoryScopes: [],
         agentsMdRefs: [],
-        toolPolicy: { allowedTools: [], deniedTools: [], requiresApprovalFor: [] },
+        toolPolicy: { allowedTools: ["tool.workspace-write"], deniedTools: [], requiresApprovalFor: [] },
         budgetPolicy: { maxInputTokens: 1000, maxOutputTokens: 1000, maxWallTimeSeconds: 60 },
       },
     ],
@@ -1710,6 +2065,11 @@ async function seedFrozenDynamicRepairRun(
   const workflow = baseWorkflow();
   if (clearCurrentAuthority) {
     workflow.tasks = workflow.tasks.map((task) => ({ ...task, toolGrantRefs: [], mcpGrantRefs: [] }));
+  } else {
+    workflow.agentProfiles = workflow.agentProfiles?.map((profile) => ({
+      ...profile,
+      toolPolicy: { ...profile.toolPolicy, allowedTools: ["tool.workspace-write"] },
+    }));
   }
   const lineage = await seedPlannerDraftLineage(db, runId, workflow.goalPrompt);
   const manifestHash = contentHashForPayload(workflow);

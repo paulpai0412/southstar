@@ -10,6 +10,8 @@ import {
 } from "../orchestration/goal-contract.ts";
 import type { WorkflowCompositionPlan } from "../design-library/types.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
+import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
+import { persistTerminalGoalOutcomePg } from "../evaluators/goal-outcome.ts";
 import { loadFrozenCoverageContextPg, type FrozenCoverageContext } from "../evaluators/requirement-evaluator-results.ts";
 import { applyWorkflowRevision } from "../manifests/workflow-revision.ts";
 import type { AgentProfile, RoleDefinition } from "../design-library/runtime-types.ts";
@@ -29,6 +31,7 @@ export type DynamicRepairRevisionInput = {
   failedTaskId: string;
   failedArtifactRefId?: string;
   failedArtifact?: unknown;
+  failedRequirementIds?: string[];
   workflowComposer?: WorkflowComposer;
   maxDynamicRepairRounds?: number;
 };
@@ -93,7 +96,17 @@ export async function maybeApplyDynamicRepairRevisionPg(
     if (!failedTaskRow) throw new Error(`failed task not found: ${input.runId}/${input.failedTaskId}`);
     const failedTask = run.workflow_manifest_json.tasks.find((task) => task.id === input.failedTaskId);
     if (!failedTask) throw new Error(`failed task missing from manifest: ${input.failedTaskId}`);
-    const targetRequirementIds = taskRequirementIds(failedTask);
+    const taskRequirements = taskRequirementIds(failedTask);
+    const explicitFailedRequirementIds = input.failedRequirementIds === undefined
+      ? undefined
+      : unique(input.failedRequirementIds).sort();
+    if (explicitFailedRequirementIds?.length === 0) {
+      return { status: "skipped", reason: "dynamic-repair-failed-requirements-empty" };
+    }
+    if (explicitFailedRequirementIds === undefined && taskRequirements.length > 1) {
+      return { status: "skipped", reason: "dynamic-repair-failed-requirements-required" };
+    }
+    const targetRequirementIds = explicitFailedRequirementIds ?? taskRequirements;
     if (targetRequirementIds.length === 0) {
       return { status: "skipped", reason: "dynamic-repair-target-requirements-missing" };
     }
@@ -102,6 +115,9 @@ export async function maybeApplyDynamicRepairRevisionPg(
     );
     if (targetRequirementIds.some((requirementId) => !knownRequirementIds.has(requirementId))) {
       return { status: "skipped", reason: "dynamic-repair-target-requirements-invalid" };
+    }
+    if (targetRequirementIds.some((requirementId) => !taskRequirements.includes(requirementId))) {
+      return { status: "skipped", reason: "dynamic-repair-failed-requirements-not-in-task" };
     }
     if (protection.coverageContext && targetRequirementIds.some((requirementId) =>
       !protection.coverageContext!.coverage.entries.some((entry) => entry.requirementId === requirementId)
@@ -215,17 +231,13 @@ export async function maybeApplyDynamicRepairRevisionPg(
       compiled.workflow.tasks,
       newTasks,
     );
+    let authorityApprovalId: string | undefined;
     if (protection.snapshot) {
-      const missingRef = firstRefMissingFromSnapshot(
-        run.workflow_manifest_json,
-        composition,
-        compiled.workflow,
-        newTasks,
-        protection.snapshot,
-      );
-      if (missingRef) return { status: "skipped", reason: `dynamic-repair-ref-not-in-run-snapshot:${missingRef}` };
+      const closureFailure = await compiledLibraryClosureFailurePg(tx, compiled.workflow, protection.snapshot);
+      if (closureFailure) return { status: "skipped", reason: closureFailure };
       const requestedAuthority = expandedRepairAuthority(run.workflow_manifest_json, compiled.workflow, newTasks);
       if (hasExpandedAuthority(requestedAuthority)) {
+        const compositionHash = contentHashForPayload(composition);
         const approval = await requireDynamicRepairAuthorityApprovalPg(tx, {
           runId: input.runId,
           failedTaskId: input.failedTaskId,
@@ -235,8 +247,23 @@ export async function maybeApplyDynamicRepairRevisionPg(
           baseManifestHash: contentHashForPayload(run.workflow_manifest_json),
           targetRequirementIds,
           requestedAuthority,
+          compositionHash,
         });
-        if (approval.status !== "approved") return approval;
+        if (approval.status === "waiting_operator_approval") {
+          await persistDynamicRepairRequestPg(tx, {
+            approvalId: approval.approvalId,
+            runId: input.runId,
+            failedTaskId: input.failedTaskId,
+            failedArtifactRefId: input.failedArtifactRefId,
+            failedRequirementIds: targetRequirementIds,
+            maxDynamicRepairRounds: maxRounds,
+            composition,
+            compositionHash,
+          });
+          return approval;
+        }
+        if (approval.status === "skipped") return approval;
+        authorityApprovalId = approval.approvalId;
       }
     }
     const reconnectTargetTaskId = dynamicRepairReconnectTargetTaskId(newTasks, compiled.workflow.agentProfiles);
@@ -376,7 +403,86 @@ export async function maybeApplyDynamicRepairRevisionPg(
       "update southstar.workflow_runs set status = 'running', updated_at = now() where id = $1 and status = 'awaiting_approval'",
       [input.runId],
     );
-    return { status: "applied", revisionId, newTaskIds: revision.newTaskIds };
+    const result = { status: "applied" as const, revisionId, newTaskIds: revision.newTaskIds };
+    if (authorityApprovalId) await completeDynamicRepairRequestPg(tx, authorityApprovalId, result);
+    return result;
+  });
+}
+
+export async function continueDynamicRepairApprovalPg(
+  db: SouthstarDb,
+  input: { runId: string; approvalId: string },
+): Promise<DynamicRepairRevisionResult> {
+  return await db.tx(async (tx) => {
+    if (!await tx.maybeOne("select id from southstar.workflow_runs where id = $1 for update", [input.runId])) {
+      throw new Error(`run not found: ${input.runId}`);
+    }
+    const request = await tx.maybeOne<{ status: string; payload_json: unknown }>(
+      `select status, payload_json from southstar.runtime_resources
+        where resource_type = 'dynamic_repair_request' and resource_key = $1 and run_id = $2
+        for update`,
+      [input.approvalId, input.runId],
+    );
+    if (!request) throw new Error(`dynamic repair request not found: ${input.approvalId}`);
+    const payload = parseDynamicRepairRequest(request.payload_json, input);
+    if (request.status === "applied") return parseAppliedRepairResult(payload.appliedResult, input.approvalId);
+    if (request.status === "rejected") return { status: "skipped", reason: `dynamic-repair-request-rejected:${input.approvalId}` };
+    const approval = await tx.maybeOne<{ status: string }>(
+      `select status from southstar.runtime_resources
+        where resource_type = 'approval' and resource_key = $1 and run_id = $2
+        for update`,
+      [input.approvalId, input.runId],
+    );
+    if (!approval || approval.status !== "approved") {
+      throw new Error(`dynamic repair approval is not approved: ${input.approvalId}`);
+    }
+    return await maybeApplyDynamicRepairRevisionPg(tx, {
+      runId: input.runId,
+      failedTaskId: payload.failedTaskId,
+      ...(payload.failedArtifactRefId ? { failedArtifactRefId: payload.failedArtifactRefId } : {}),
+      failedRequirementIds: payload.failedRequirementIds,
+      maxDynamicRepairRounds: payload.maxDynamicRepairRounds,
+      workflowComposer: {
+        async compose() {
+          return structuredClone(payload.composition);
+        },
+      },
+    });
+  });
+}
+
+export async function rejectDynamicRepairApprovalPg(
+  db: SouthstarDb,
+  input: { runId: string; approvalId: string; reason: string },
+): Promise<{ status: "unsatisfied" }> {
+  return await db.tx(async (tx) => {
+    const request = await getResourceByKeyPg(tx, "dynamic_repair_request", input.approvalId);
+    if (!request || request.runId !== input.runId) throw new Error(`dynamic repair request not found: ${input.approvalId}`);
+    const payload = parseDynamicRepairRequest(request.payload, input);
+    if (request.status !== "rejected") {
+      await upsertRuntimeResourcePg(tx, {
+        id: dynamicRepairRequestId(input.approvalId),
+        resourceType: "dynamic_repair_request",
+        resourceKey: input.approvalId,
+        runId: input.runId,
+        taskId: payload.failedTaskId,
+        scope: "workflow",
+        status: "rejected",
+        title: `Dynamic repair request for ${payload.failedTaskId}`,
+        payload: { ...payload, rejectionReason: input.reason },
+        summary: { approvalId: input.approvalId, failedRequirementIds: payload.failedRequirementIds },
+      });
+    }
+    await persistTerminalGoalOutcomePg(tx, {
+      runId: input.runId,
+      outcomeStatus: "unsatisfied",
+      failedRequirementIds: payload.failedRequirementIds,
+      findings: [`dynamic repair authority rejected: ${input.reason}`],
+      mergeExisting: true,
+      actorType: "operator",
+      idempotencyKey: `dynamic-repair-rejected:${input.approvalId}:completed`,
+    });
+    return { status: "unsatisfied" };
   });
 }
 
@@ -472,39 +578,27 @@ async function loadFrozenRepairProtectionPg(
   return { coverageContext, snapshot };
 }
 
-function firstRefMissingFromSnapshot(
-  current: SouthstarWorkflowManifest,
-  composition: WorkflowCompositionPlan,
+async function compiledLibraryClosureFailurePg(
+  db: SouthstarDb,
   compiled: SouthstarWorkflowManifest,
-  newTasks: WorkflowTaskDefinition[],
   snapshot: RunLibrarySnapshotV1,
-): string | undefined {
-  const selectedProfileIds = new Set(newTasks.map((task) => task.agentProfileRef).filter((ref): ref is string => Boolean(ref)));
-  const selectedProfiles = (compiled.agentProfiles ?? []).filter((profile) => selectedProfileIds.has(profile.id));
-  const selectedRefs = unique([
-    composition.selectedWorkflowTemplateRef,
-    ...composition.tasks.flatMap((task) => [
-      task.agentDefinitionRef,
-      ...task.skillRefs,
-      ...task.toolGrantRefs,
-      ...task.mcpGrantRefs,
-      ...task.instructionRefs,
-      task.evaluatorProfileRef,
-      ...task.inputArtifactRefs,
-      ...task.outputArtifactRefs,
-    ]),
-    ...selectedProfiles.flatMap((profile) => [
-      profile.agentRef,
-      profile.harnessRef,
-      ...profile.skillRefs,
-      ...profile.mcpGrantRefs,
-      ...(profile.vaultLeasePolicyRefs ?? []),
-      ...profile.toolPolicy.allowedTools,
-    ].filter((ref): ref is string => Boolean(ref))),
-  ]).sort();
-  const snapshotRefs = new Set(snapshot.objects.map((object) => object.objectKey));
-  const existingRuntimeRefs = new Set(current.harnessDefinitions.map((definition) => definition.id));
-  return selectedRefs.find((ref) => !snapshotRefs.has(ref) && !existingRuntimeRefs.has(ref));
+): Promise<string | undefined> {
+  const refs = compiled.compiledFrom?.libraryObjectVersionRefs;
+  if (!refs || refs.length === 0) return "dynamic-repair-compiled-library-refs-missing";
+  const snapshotByKey = new Map(snapshot.objects.map((object) => [object.objectKey, object]));
+  for (const pair of [...refs].sort((a, b) => a.objectKey.localeCompare(b.objectKey))) {
+    const frozen = snapshotByKey.get(pair.objectKey);
+    if (!frozen || frozen.versionRef !== pair.versionRef) {
+      return `dynamic-repair-ref-version-not-in-run-snapshot:${pair.versionRef}`;
+    }
+    const current = await findLibraryObjectByKey(db, pair.objectKey);
+    if (
+      !current
+      || current.headVersionId !== pair.versionRef
+      || contentHashForPayload(current.state) !== frozen.stateHash
+    ) return `dynamic-repair-ref-state-not-in-run-snapshot:${pair.versionRef}`;
+  }
+  return undefined;
 }
 
 type RepairAuthorityExpansion = {
@@ -512,6 +606,8 @@ type RepairAuthorityExpansion = {
   mcpGrantRefs: string[];
   vaultLeasePolicyRefs: string[];
   mounts: Array<{ source: string; target: string; readonly: boolean }>;
+  removedDeniedTools: string[];
+  removedApprovalRequirements: string[];
 };
 
 function expandedRepairAuthority(
@@ -522,10 +618,8 @@ function expandedRepairAuthority(
   const currentProfiles = current.agentProfiles ?? [];
   const newProfileIds = new Set(newTasks.map((task) => task.agentProfileRef).filter((ref): ref is string => Boolean(ref)));
   const proposedProfiles = (compiled.agentProfiles ?? []).filter((profile) => newProfileIds.has(profile.id));
-  const currentTools = new Set([
-    ...current.tasks.flatMap((task) => task.toolGrantRefs ?? []),
-    ...currentProfiles.flatMap((profile) => profile.toolPolicy.allowedTools),
-  ]);
+  const currentToolCapabilities = executableToolCapabilities(current.tasks, currentProfiles);
+  const proposedToolCapabilities = executableToolCapabilities(newTasks, proposedProfiles);
   const currentMcp = new Set([
     ...current.tasks.flatMap((task) => task.mcpGrantRefs ?? []),
     ...currentProfiles.flatMap((profile) => profile.mcpGrantRefs),
@@ -536,10 +630,10 @@ function expandedRepairAuthority(
   ]);
   const currentMounts = new Set(current.tasks.flatMap((task) => task.execution.mounts).map(mountKey));
   return {
-    toolGrantRefs: unique([
-      ...newTasks.flatMap((task) => task.toolGrantRefs ?? []),
-      ...proposedProfiles.flatMap((profile) => profile.toolPolicy.allowedTools),
-    ]).filter((ref) => !currentTools.has(ref)).sort(),
+    toolGrantRefs: [...proposedToolCapabilities.entries()]
+      .filter(([tool, proposed]) => proposed.executable && !currentToolCapabilities.get(tool)?.executable)
+      .map(([tool]) => tool)
+      .sort(),
     mcpGrantRefs: unique([
       ...newTasks.flatMap((task) => task.mcpGrantRefs ?? []),
       ...proposedProfiles.flatMap((profile) => profile.mcpGrantRefs),
@@ -551,14 +645,50 @@ function expandedRepairAuthority(
     mounts: newTasks.flatMap((task) => task.execution.mounts)
       .filter((mount) => !currentMounts.has(mountKey(mount)))
       .sort((a, b) => mountKey(a).localeCompare(mountKey(b))),
+    removedDeniedTools: [...proposedToolCapabilities.entries()]
+      .filter(([tool, proposed]) => proposed.executable && !currentToolCapabilities.get(tool)?.executable && currentToolCapabilities.get(tool)?.allowedButDenied)
+      .map(([tool]) => tool)
+      .sort(),
+    removedApprovalRequirements: [...proposedToolCapabilities.entries()]
+      .filter(([tool, proposed]) => proposed.noApproval && currentToolCapabilities.get(tool)?.executable && !currentToolCapabilities.get(tool)?.noApproval)
+      .map(([tool]) => tool)
+      .sort(),
   };
+}
+
+function executableToolCapabilities(
+  tasks: WorkflowTaskDefinition[],
+  profiles: AgentProfile[],
+): Map<string, { executable: boolean; noApproval: boolean; allowedButDenied: boolean }> {
+  const byProfile = new Map(profiles.map((profile) => [profile.id, profile]));
+  const capabilities = new Map<string, { executable: boolean; noApproval: boolean; allowedButDenied: boolean }>();
+  for (const task of tasks) {
+    const profile = task.agentProfileRef ? byProfile.get(task.agentProfileRef) : undefined;
+    if (!profile) continue;
+    const taskTools = new Set(task.toolGrantRefs ?? []);
+    const denied = new Set(profile.toolPolicy.deniedTools);
+    const requiresApproval = new Set(profile.toolPolicy.requiresApprovalFor);
+    for (const tool of profile.toolPolicy.allowedTools) {
+      if (!taskTools.has(tool)) continue;
+      const current = capabilities.get(tool) ?? { executable: false, noApproval: false, allowedButDenied: false };
+      const isDenied = denied.has(tool);
+      capabilities.set(tool, {
+        executable: current.executable || !isDenied,
+        noApproval: current.noApproval || (!isDenied && !requiresApproval.has(tool)),
+        allowedButDenied: current.allowedButDenied || isDenied,
+      });
+    }
+  }
+  return capabilities;
 }
 
 function hasExpandedAuthority(authority: RepairAuthorityExpansion): boolean {
   return authority.toolGrantRefs.length > 0
     || authority.mcpGrantRefs.length > 0
     || authority.vaultLeasePolicyRefs.length > 0
-    || authority.mounts.length > 0;
+    || authority.mounts.length > 0
+    || authority.removedDeniedTools.length > 0
+    || authority.removedApprovalRequirements.length > 0;
 }
 
 async function requireDynamicRepairAuthorityApprovalPg(
@@ -572,9 +702,10 @@ async function requireDynamicRepairAuthorityApprovalPg(
     baseManifestHash: string;
     targetRequirementIds: string[];
     requestedAuthority: RepairAuthorityExpansion;
+    compositionHash: string;
   },
 ): Promise<
-  | { status: "approved" }
+  | { status: "approved"; approvalId: string }
   | { status: "waiting_operator_approval"; approvalId: string }
   | { status: "skipped"; reason: string }
 > {
@@ -587,6 +718,7 @@ async function requireDynamicRepairAuthorityApprovalPg(
     baseManifestHash: input.baseManifestHash,
     targetRequirementIds: [...input.targetRequirementIds].sort(),
     requestedAuthority: input.requestedAuthority,
+    compositionHash: input.compositionHash,
   });
   const approvalId = `dynamic-repair-approval:${input.runId}:${proposalHash}`;
   const existing = await getResourceByKeyPg(db, "approval", approvalId);
@@ -605,12 +737,13 @@ async function requireDynamicRepairAuthorityApprovalPg(
       && payload.baseManifestHash === input.baseManifestHash
       && payload.goalContractHash === input.goalContractHash
       && payload.librarySnapshotHash === input.librarySnapshotHash
+      && payload.compositionHash === input.compositionHash
       && contentHashForPayload(payload.requestedAuthority) === contentHashForPayload(input.requestedAuthority)
       && contentHashForPayload(stringArray(payload.targetRequirementIds).sort())
         === contentHashForPayload([...input.targetRequirementIds].sort());
     if (!validTuple) return { status: "skipped", reason: `dynamic-repair-authority-approval-invalid:${approvalId}` };
   }
-  if (existing?.status === "approved") return { status: "approved" };
+  if (existing?.status === "approved") return { status: "approved", approvalId };
   if (existing?.status === "rejected") return { status: "skipped", reason: `dynamic-repair-authority-approval-rejected:${approvalId}` };
   if (!existing) {
     await upsertRuntimeResourcePg(db, {
@@ -635,6 +768,7 @@ async function requireDynamicRepairAuthorityApprovalPg(
         proposalHash,
         targetRequirementIds: [...input.targetRequirementIds].sort(),
         requestedAuthority: input.requestedAuthority,
+        compositionHash: input.compositionHash,
       },
       summary: { proposalHash, targetRequirementIds: input.targetRequirementIds },
     });
@@ -654,6 +788,105 @@ async function requireDynamicRepairAuthorityApprovalPg(
   return { status: "waiting_operator_approval", approvalId };
 }
 
+type DynamicRepairRequestPayloadV1 = {
+  schemaVersion: "southstar.dynamic_repair_request.v1";
+  approvalId: string;
+  runId: string;
+  failedTaskId: string;
+  failedArtifactRefId?: string;
+  failedRequirementIds: string[];
+  maxDynamicRepairRounds: number;
+  composition: WorkflowCompositionPlan;
+  compositionHash: string;
+  appliedResult?: unknown;
+  rejectionReason?: string;
+};
+
+async function persistDynamicRepairRequestPg(
+  db: SouthstarDb,
+  input: Omit<DynamicRepairRequestPayloadV1, "schemaVersion">,
+): Promise<void> {
+  const payload: DynamicRepairRequestPayloadV1 = {
+    schemaVersion: "southstar.dynamic_repair_request.v1",
+    ...input,
+  };
+  const existing = await getResourceByKeyPg(db, "dynamic_repair_request", input.approvalId);
+  if (existing && contentHashForPayload(existing.payload) !== contentHashForPayload(payload)) {
+    throw new Error(`dynamic repair request payload mismatch: ${input.approvalId}`);
+  }
+  if (existing) return;
+  await upsertRuntimeResourcePg(db, {
+    id: dynamicRepairRequestId(input.approvalId),
+    resourceType: "dynamic_repair_request",
+    resourceKey: input.approvalId,
+    runId: input.runId,
+    taskId: input.failedTaskId,
+    scope: "workflow",
+    status: "waiting_operator_approval",
+    title: `Dynamic repair request for ${input.failedTaskId}`,
+    payload,
+    summary: { approvalId: input.approvalId, failedRequirementIds: input.failedRequirementIds, compositionHash: input.compositionHash },
+  });
+}
+
+async function completeDynamicRepairRequestPg(
+  db: SouthstarDb,
+  approvalId: string,
+  result: Extract<DynamicRepairRevisionResult, { status: "applied" }>,
+): Promise<void> {
+  const request = await getResourceByKeyPg(db, "dynamic_repair_request", approvalId);
+  if (!request) return;
+  const payload = parseDynamicRepairRequest(request.payload, { runId: request.runId ?? "", approvalId });
+  await upsertRuntimeResourcePg(db, {
+    id: dynamicRepairRequestId(approvalId),
+    resourceType: "dynamic_repair_request",
+    resourceKey: approvalId,
+    runId: payload.runId,
+    taskId: payload.failedTaskId,
+    scope: "workflow",
+    status: "applied",
+    title: `Dynamic repair request for ${payload.failedTaskId}`,
+    payload: { ...payload, appliedResult: result },
+    summary: { approvalId, revisionId: result.revisionId, newTaskIds: result.newTaskIds },
+  });
+}
+
+function dynamicRepairRequestId(approvalId: string): string {
+  return `dynamic-repair-request:${approvalId}`;
+}
+
+function parseDynamicRepairRequest(
+  value: unknown,
+  input: { runId: string; approvalId: string },
+): DynamicRepairRequestPayloadV1 {
+  const payload = asRecord(value);
+  const failedRequirementIds = stringArray(payload.failedRequirementIds).sort();
+  if (
+    payload.schemaVersion !== "southstar.dynamic_repair_request.v1"
+    || payload.approvalId !== input.approvalId
+    || payload.runId !== input.runId
+    || !nonEmptyString(payload.failedTaskId)
+    || failedRequirementIds.length === 0
+    || typeof payload.maxDynamicRepairRounds !== "number"
+    || !Number.isInteger(payload.maxDynamicRepairRounds)
+    || payload.maxDynamicRepairRounds < 1
+    || !payload.composition
+    || payload.compositionHash !== contentHashForPayload(payload.composition)
+  ) throw new Error(`invalid dynamic repair request: ${input.approvalId}`);
+  return {
+    ...(payload as DynamicRepairRequestPayloadV1),
+    failedRequirementIds,
+  };
+}
+
+function parseAppliedRepairResult(value: unknown, approvalId: string): Extract<DynamicRepairRevisionResult, { status: "applied" }> {
+  const result = asRecord(value);
+  if (result.status !== "applied" || !nonEmptyString(result.revisionId) || !isStringArray(result.newTaskIds)) {
+    throw new Error(`invalid applied dynamic repair result: ${approvalId}`);
+  }
+  return { status: "applied", revisionId: result.revisionId as string, newTaskIds: result.newTaskIds as string[] };
+}
+
 async function persistExhaustedRepairOutcomePg(
   db: SouthstarDb,
   runId: string,
@@ -670,23 +903,6 @@ async function persistExhaustedRepairOutcomePg(
     ...stringArray(payload.findings),
     `dynamic repair round limit exhausted after ${maxRounds} rounds`,
   ]);
-  await upsertRuntimeResourcePg(db, {
-    id: `goal-outcome:${runId}`,
-    resourceType: "goal_outcome",
-    resourceKey: `goal-outcome:${runId}`,
-    runId,
-    scope: "outcome",
-    status: "unsatisfied",
-    title: `Goal outcome ${runId}`,
-    payload: {
-      schemaVersion: "southstar.goal_outcome.v1",
-      outcomeStatus: "unsatisfied",
-      coveredRequirementIds: stringArray(payload.coveredRequirementIds).filter((id) => !allFailedRequirementIds.includes(id)),
-      failedRequirementIds: allFailedRequirementIds,
-      findings,
-    },
-    summary: { failed: allFailedRequirementIds.length },
-  });
   const auditPayload = {
     outcomeStatus: "unsatisfied",
     failedRequirementIds: allFailedRequirementIds,
@@ -699,6 +915,16 @@ async function persistExhaustedRepairOutcomePg(
     actorType: "orchestrator",
     idempotencyKey: `dynamic-repair-exhausted:${runId}:${contentHashForPayload(auditPayload)}`,
     payload: auditPayload,
+  });
+  await persistTerminalGoalOutcomePg(db, {
+    runId,
+    outcomeStatus: "unsatisfied",
+    coveredRequirementIds: stringArray(payload.coveredRequirementIds),
+    failedRequirementIds: allFailedRequirementIds,
+    findings,
+    mergeExisting: true,
+    actorType: "orchestrator",
+    idempotencyKey: `dynamic-repair-exhausted:${runId}:completed`,
   });
 }
 
@@ -835,6 +1061,30 @@ function mergeRuntimeDefinitions(
     agentProfiles: mergeById(base.agentProfiles ?? [], generated.agentProfiles ?? []),
     harnessDefinitions: mergeById(base.harnessDefinitions, generated.harnessDefinitions),
     evaluators: mergeById(base.evaluators, generated.evaluators),
+    artifactContracts: mergeById(base.artifactContracts ?? [], generated.artifactContracts ?? []),
+    evaluatorPipelines: mergeById(base.evaluatorPipelines ?? [], generated.evaluatorPipelines ?? []),
+    contextPolicies: mergeById(base.contextPolicies ?? [], generated.contextPolicies ?? []),
+    sessionPolicies: mergeById(base.sessionPolicies ?? [], generated.sessionPolicies ?? []),
+    memoryPolicies: mergeById(base.memoryPolicies ?? [], generated.memoryPolicies ?? []),
+    workspacePolicies: mergeById(base.workspacePolicies ?? [], generated.workspacePolicies ?? []),
+    stopConditions: mergeById(base.stopConditions ?? [], generated.stopConditions ?? []),
+    compiledFrom: mergeCompiledFrom(base, generated),
+  };
+}
+
+function mergeCompiledFrom(
+  base: SouthstarWorkflowManifest,
+  generated: SouthstarWorkflowManifest,
+): SouthstarWorkflowManifest["compiledFrom"] {
+  if (!base.compiledFrom) return generated.compiledFrom;
+  if (!generated.compiledFrom) return base.compiledFrom;
+  const pairs = new Map(base.compiledFrom.libraryObjectVersionRefs.map((pair) => [pair.objectKey, pair]));
+  for (const pair of generated.compiledFrom.libraryObjectVersionRefs) pairs.set(pair.objectKey, pair);
+  const libraryObjectVersionRefs = [...pairs.values()].sort((a, b) => a.objectKey.localeCompare(b.objectKey));
+  return {
+    ...base.compiledFrom,
+    libraryObjectVersionRefs,
+    libraryVersionRefs: unique(libraryObjectVersionRefs.map((pair) => pair.versionRef)).sort(),
   };
 }
 

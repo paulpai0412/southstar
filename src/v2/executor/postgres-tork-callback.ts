@@ -357,6 +357,7 @@ export async function ingestTaskRunResultPg(
             evaluatorResultRefs: requirementEvaluation.evaluatorResultRefs,
           },
         },
+        failedRequirementIds: requirementEvaluation.failedBlockingRequirementIds,
         workflowComposer: options.workflowComposer,
         maxDynamicRepairRounds: options.maxDynamicRepairRounds,
       });

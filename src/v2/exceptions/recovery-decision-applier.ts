@@ -6,6 +6,7 @@ import {
   type RecoveryProviderActions,
 } from "../executor/provider-actions.ts";
 import type { HandProvider } from "../hands/types.ts";
+import { persistTerminalGoalOutcomePg } from "../evaluators/goal-outcome.ts";
 import { createPostgresRecoveryController } from "../session-recovery/postgres-controller.ts";
 import { applySessionRecoveryOperationPg } from "../session-recovery/session-operations.ts";
 import { createPostgresSessionStore } from "../session/postgres-session-store.ts";
@@ -914,11 +915,6 @@ async function applySimpleRecoveryMutation(
         "update southstar.workflow_tasks set status = 'failed', completed_at = null, updated_at = now() where run_id = $1 and id = $2",
         [decision.payload.runId, taskId],
       );
-    } else if (path === "fail-run") {
-      await tx.query(
-        "update southstar.workflow_runs set status = 'failed', completed_at = null, updated_at = now() where id = $1",
-        [decision.payload.runId],
-      );
     }
 
     if (path !== "block-for-operator") {
@@ -936,7 +932,19 @@ async function applySimpleRecoveryMutation(
         stateChanges: evidence.stateChanges,
         providerActions: evidence.providerActions,
       });
-      return await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+      const finalized = await finalizeRecoveryDecisionAppliedPg(tx, { decision, executionResourceKey: input.executionResourceKey, now });
+      if (path === "fail-run") {
+        await persistTerminalGoalOutcomePg(tx, {
+          runId: decision.payload.runId,
+          outcomeStatus: "unsatisfied",
+          failedRequirementIds: [],
+          findings: [`fail-run applied for runtime exception ${decision.payload.exceptionId}`],
+          mergeExisting: true,
+          actorType: "orchestrator",
+          idempotencyKey: `recovery-fail-run:${decision.decisionId}:completed`,
+        });
+      }
+      return finalized;
     }
 
     const blockedDecision = await writeTerminalDecisionPg(tx, {
@@ -1540,7 +1548,13 @@ function simpleRecoveryExecutionEvidence(input: {
       resourceType: "workflow_run",
       resourceKey: input.decision.payload.runId,
       fromStatus: input.context.run.status,
-      toStatus: "failed",
+      toStatus: "completed",
+      reason: path,
+    });
+    stateChanges.push({
+      resourceType: "goal_outcome",
+      resourceKey: `goal-outcome:${input.decision.payload.runId}`,
+      toStatus: "unsatisfied",
       reason: path,
     });
   }

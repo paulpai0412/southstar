@@ -7,8 +7,12 @@ import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approva
 import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import {
+  continueDynamicRepairApprovalPg,
+  rejectDynamicRepairApprovalPg,
+} from "../runtime-revision/dynamic-repair-revision.ts";
 import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } from "../read-models/agent-library.ts";
-import { appendHistoryEventPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { appendHistoryEventOncePg, appendHistoryEventPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
 import { materializeRunFromWorkItemPg } from "../work-items/run-materialization.ts";
 import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
@@ -462,24 +466,53 @@ async function createApprovalPg(context: RuntimeServerContext, input: { runId: s
 }
 
 async function decideApprovalPg(context: RuntimeServerContext, input: { runId: string; approvalId: string; decision: "approved" | "rejected"; reason: string }) {
-  const row = await context.db.maybeOne<{ payload_json: Record<string, unknown>; title: string | null; task_id: string | null }>(
-    "select payload_json, title, task_id from southstar.runtime_resources where resource_type = 'approval' and resource_key = $1 and run_id = $2",
-    [input.approvalId, input.runId],
-  );
-  if (!row) throw new Error(`approval not found: ${input.approvalId}`);
-  await upsertRuntimeResourcePg(context.db, {
-    id: input.approvalId,
-    resourceType: "approval",
-    resourceKey: input.approvalId,
-    runId: input.runId,
-    taskId: row.task_id ?? undefined,
-    scope: "approval",
-    status: input.decision,
-    title: row.title ?? "Approval",
-    payload: { ...row.payload_json, decision: input.decision, decisionReason: input.reason, decidedBy: "user" },
+  const decision = await context.db.tx(async (tx) => {
+    if (!await tx.maybeOne("select id from southstar.workflow_runs where id = $1 for update", [input.runId])) {
+      throw new Error(`run not found: ${input.runId}`);
+    }
+    const row = await tx.maybeOne<{ status: string; payload_json: Record<string, unknown>; title: string | null; task_id: string | null }>(
+      `select status, payload_json, title, task_id
+         from southstar.runtime_resources
+        where resource_type = 'approval' and resource_key = $1 and run_id = $2
+        for update`,
+      [input.approvalId, input.runId],
+    );
+    if (!row) throw new Error(`approval not found: ${input.approvalId}`);
+    const priorDecision = optionalString(row.payload_json.decision);
+    const priorReason = optionalString(row.payload_json.decisionReason);
+    if (priorDecision && (priorDecision !== input.decision || priorReason !== input.reason)) {
+      throw new Error(`approval already ${priorDecision}: ${input.approvalId}`);
+    }
+    await upsertRuntimeResourcePg(tx, {
+      id: input.approvalId,
+      resourceType: "approval",
+      resourceKey: input.approvalId,
+      runId: input.runId,
+      taskId: row.task_id ?? undefined,
+      scope: "approval",
+      status: input.decision,
+      title: row.title ?? "Approval",
+      payload: { ...row.payload_json, decision: input.decision, decisionReason: input.reason, decidedBy: "user" },
+    });
+    await appendHistoryEventOncePg(tx, {
+      runId: input.runId,
+      taskId: row.task_id ?? undefined,
+      eventType: "approval.decided",
+      actorType: "user",
+      idempotencyKey: `${input.approvalId}:decided:${input.decision}`,
+      payload: { approvalId: input.approvalId, decision: input.decision, reason: input.reason },
+    });
+    return {
+      dynamicRepairApproval: row.payload_json.schemaVersion === "southstar.dynamic_repair_authority_approval.v1"
+        && row.payload_json.actionType === "dynamic_repair_authority_expansion",
+    };
   });
-  await appendHistoryEventPg(context.db, { runId: input.runId, taskId: row.task_id ?? undefined, eventType: "approval.decided", actorType: "user", payload: { approvalId: input.approvalId, decision: input.decision, reason: input.reason } });
-  return { id: input.approvalId, status: input.decision };
+  const continuation = !decision.dynamicRepairApproval
+    ? undefined
+    : input.decision === "approved"
+      ? await continueDynamicRepairApprovalPg(context.db, { runId: input.runId, approvalId: input.approvalId })
+      : await rejectDynamicRepairApprovalPg(context.db, { runId: input.runId, approvalId: input.approvalId, reason: input.reason });
+  return { id: input.approvalId, status: input.decision, ...(continuation ? { continuation } : {}) };
 }
 
 async function readJsonBody<T>(request: Request): Promise<T> {

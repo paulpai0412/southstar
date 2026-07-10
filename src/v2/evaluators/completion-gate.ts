@@ -13,6 +13,7 @@ import {
   updateWorkflowRunStatusPg,
   upsertRuntimeResourcePg,
 } from "../stores/postgres-runtime-store.ts";
+import { persistTerminalGoalOutcomePg } from "./goal-outcome.ts";
 
 const TERMINAL_TASK_STATUSES = new Set(["completed", "failed", "cancelled", "lost", "blocked"]);
 const CRITICAL_EXCEPTION_SEVERITIES = new Set(["blocking", "terminal"]);
@@ -38,6 +39,9 @@ export async function evaluateRunCompletionGatePg(
     );
     if (!run) throw new Error(`run not found: ${input.runId}`);
     if (run.status === "cancelled") return notReady(input.runId, "run is cancelled");
+    if (run.status === "awaiting_approval" || await hasUnresolvedBlockingApprovalPg(tx, input.runId)) {
+      return notReady(input.runId, "run is awaiting blocking approval");
+    }
 
     const tasks = (await tx.query<{ id: string; status: string }>(
       "select id, status from southstar.workflow_tasks where run_id = $1 order by sort_order, id for update",
@@ -86,7 +90,6 @@ export async function evaluateRunCompletionGatePg(
         ? "unsatisfied" as const
         : "satisfied" as const;
     const outcomePayload = {
-      schemaVersion: "southstar.goal_outcome.v1",
       outcomeStatus,
       coveredRequirementIds: evaluation.coveredRequirementIds,
       failedRequirementIds: evaluation.failedRequirementIds,
@@ -103,17 +106,6 @@ export async function evaluateRunCompletionGatePg(
       payload: {},
     });
     await upsertRuntimeResourcePg(tx, {
-      id: `goal-outcome:${input.runId}`,
-      resourceType: "goal_outcome",
-      resourceKey: `goal-outcome:${input.runId}`,
-      runId: input.runId,
-      scope: "outcome",
-      status: outcomeStatus,
-      title: `Goal outcome ${input.runId}`,
-      payload: outcomePayload,
-      summary: { covered: evaluation.coveredRequirementIds.length, total: evaluation.totalBlockingRequirements },
-    });
-    await upsertRuntimeResourcePg(tx, {
       id: `completion-gate:${input.runId}`,
       resourceType: "evaluator_result",
       resourceKey: `completion-gate:${input.runId}`,
@@ -124,16 +116,28 @@ export async function evaluateRunCompletionGatePg(
       payload: { executionStatus: "completed", outcomeStatus, findings },
       summary: { findingCount: findings.length },
     });
-    await updateWorkflowRunStatusPg(tx, input.runId, "completed");
-    await appendHistoryEventOncePg(tx, {
+    await persistTerminalGoalOutcomePg(tx, {
       runId: input.runId,
-      eventType: "run.completed",
+      outcomeStatus,
+      coveredRequirementIds: evaluation.coveredRequirementIds,
+      failedRequirementIds: evaluation.failedRequirementIds,
+      findings,
       actorType: "evaluator",
       idempotencyKey: `completion-gate:${input.runId}:completed:${fingerprint}`,
-      payload: outcomePayload,
     });
     return { runId: input.runId, executionStatus: "completed", outcomeStatus, findings };
   });
+}
+
+async function hasUnresolvedBlockingApprovalPg(db: SouthstarDb, runId: string): Promise<boolean> {
+  return Boolean(await db.maybeOne(
+    `select id from southstar.runtime_resources
+      where run_id = $1 and resource_type = 'approval'
+        and status in ('pending', 'waiting_operator_approval')
+        and coalesce(payload_json->>'actionType', '') in ('dynamic_repair_authority_expansion', 'workflow_revision')
+      limit 1`,
+    [runId],
+  ));
 }
 
 async function evaluateCoveragePg(

@@ -90,6 +90,43 @@ test("terminal completion evaluation is deterministic and auditable", async () =
   }
 });
 
+test("completion remains in progress while a blocking repair approval is unresolved", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRun(db, "run-completion-awaiting-repair-approval");
+    await db.query("update southstar.workflow_runs set status = 'awaiting_approval', completed_at = null where id = $1", [runId]);
+    await upsertRuntimeResourcePg(db, {
+      id: `dynamic-repair-approval:${runId}:proposal`,
+      resourceType: "approval",
+      resourceKey: `dynamic-repair-approval:${runId}:proposal`,
+      runId,
+      taskId: "task-verify",
+      scope: "approval",
+      status: "waiting_operator_approval",
+      payload: {
+        schemaVersion: "southstar.dynamic_repair_authority_approval.v1",
+        actionType: "dynamic_repair_authority_expansion",
+      },
+    });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.deepEqual(result, {
+      runId,
+      executionStatus: "not_ready",
+      outcomeStatus: "in_progress",
+      findings: ["run is awaiting blocking approval"],
+    });
+    assert.equal((await runStatus(db, runId)).status, "awaiting_approval");
+    assert.equal((await db.one<{ count: string }>(
+      "select count(*) as count from southstar.runtime_resources where run_id = $1 and resource_type = 'goal_outcome'",
+      [runId],
+    )).count, "0");
+  } finally {
+    await db.close();
+  }
+});
+
 test("completion rejects frozen coverage with phantom producer tasks", async () => {
   const db = await createTestPostgresDb();
   try {
