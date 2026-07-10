@@ -9,6 +9,7 @@ import type {
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { validateWorkflowManifest } from "../manifests/validate.ts";
 import type { AgentProfile, PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
@@ -22,6 +23,7 @@ import {
   type GoalContractInterpreter,
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
+import { captureRunLibrarySnapshotPg } from "../orchestration/run-library-snapshot.ts";
 import {
   appendHistoryEventPg,
   createWorkflowRunPg,
@@ -799,58 +801,98 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const plannerRequest = plannerRequestFromStored(draftSummary.plannerRequest) ?? plannerRequestFromStored(draftPayload.plannerRequest);
   const cwd = plannerRequest?.cwd;
   if (cwd) assertWorkspaceMountAllowed(cwd);
-
-  await createWorkflowRunPg(db, {
-    id: runId,
-    status: "created",
-    domain: workflow.domain,
-    goalPrompt: workflow.goalPrompt,
-    workflowManifestJson: JSON.stringify(workflow),
-    executionProjectionJson: JSON.stringify({ executor: "pending" }),
-    snapshotJson: JSON.stringify({ activeTaskIds: [] }),
-    runtimeContextJson: JSON.stringify({
-      draftId: input.draftId,
-      goalContractHash: contractHash,
-      scope: workflow.domain,
-      ...(cwd ? { cwd, projectRoot: cwd } : {}),
-    }),
-    metricsJson: JSON.stringify({}),
-  });
-  await appendHistoryEventPg(db, {
-    runId,
-    eventType: "run.created",
-    actorType: "orchestrator",
-    payload: { draftId: input.draftId, workflowId: workflow.workflowId },
-  });
-
-  const taskIds: string[] = [];
-  for (const [index, task] of workflow.tasks.entries()) {
-    await createWorkflowTaskPg(db, {
-      id: task.id,
-      runId,
-      taskKey: task.name ?? task.id,
-      status: "pending",
-      sortOrder: index,
-      dependsOn: task.dependsOn,
-      snapshot: {
-        roleRef: task.roleRef,
-        agentProfileRef: task.agentProfileRef,
-        ...((task as WorkflowTaskWithProfileOverride).profileOverride
-          ? { profileOverride: (task as WorkflowTaskWithProfileOverride).profileOverride }
-          : {}),
-      },
-      metrics: {},
-    });
-    await appendHistoryEventPg(db, {
-      runId,
-      taskId: task.id,
-      eventType: "task.created",
-      actorType: "orchestrator",
-      payload: { taskKey: task.name ?? task.id, dependsOn: task.dependsOn },
-    });
-    taskIds.push(task.id);
+  const orchestrationCompiler = asRecord(asRecord(draftPayload.orchestrationSnapshot).compiler);
+  const selectedRefs = stringArrayValue(orchestrationCompiler.selectedLibraryRefs) ?? [];
+  const libraryVersionRefs = stringArrayValue(orchestrationCompiler.libraryVersionRefs) ?? [];
+  if (selectedRefs.length === 0 || libraryVersionRefs.length === 0) {
+    throw new Error(`planner draft is missing immutable Library selection metadata: ${input.draftId}`);
   }
+  const coverage = asRecord(draftPayload.goalRequirementCoverage);
+  if (coverage.schemaVersion !== "southstar.goal_requirement_coverage.v1") {
+    throw new Error(`planner draft is missing Goal Contract coverage: ${input.draftId}`);
+  }
+  const manifestHash = contentHashForPayload(workflow);
+  const runtimeContext = {
+    draftId: input.draftId,
+    goalContractHash: contractHash,
+    manifestHash,
+    scope: workflow.domain,
+    outcomeStatus: "in_progress",
+    ...(cwd ? { cwd, projectRoot: cwd } : {}),
+  };
+  const taskIds: string[] = [];
 
+  await db.tx(async (tx) => {
+    await createWorkflowRunPg(tx, {
+      id: runId,
+      status: "created",
+      domain: workflow.domain,
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({ executor: "pending" }),
+      snapshotJson: JSON.stringify({ activeTaskIds: [] }),
+      runtimeContextJson: JSON.stringify(runtimeContext),
+      metricsJson: JSON.stringify({}),
+    });
+    const librarySnapshot = await captureRunLibrarySnapshotPg(tx, {
+      runId,
+      goalContractHash: contractHash,
+      manifestHash,
+      selectedRefs,
+      libraryVersionRefs,
+      libraryRoot: process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
+    });
+    await tx.query(
+      `update southstar.workflow_runs
+          set runtime_context_json = $2::jsonb,
+              updated_at = now()
+        where id = $1`,
+      [runId, JSON.stringify({ ...runtimeContext, librarySnapshotHash: librarySnapshot.snapshotHash })],
+    );
+    await upsertRuntimeResourcePg(tx, {
+      id: `goal-requirement-coverage:${runId}`,
+      resourceType: "goal_requirement_coverage",
+      resourceKey: runId,
+      runId,
+      scope: "run",
+      status: "frozen",
+      title: "Goal Requirement Coverage",
+      payload: coverage,
+      summary: { goalContractHash: contractHash },
+    });
+    await appendHistoryEventPg(tx, {
+      runId,
+      eventType: "run.created",
+      actorType: "orchestrator",
+      payload: { draftId: input.draftId, workflowId: workflow.workflowId },
+    });
+    for (const [index, task] of workflow.tasks.entries()) {
+      await createWorkflowTaskPg(tx, {
+        id: task.id,
+        runId,
+        taskKey: task.name ?? task.id,
+        status: "pending",
+        sortOrder: index,
+        dependsOn: task.dependsOn,
+        snapshot: {
+          roleRef: task.roleRef,
+          agentProfileRef: task.agentProfileRef,
+          ...((task as WorkflowTaskWithProfileOverride).profileOverride
+            ? { profileOverride: (task as WorkflowTaskWithProfileOverride).profileOverride }
+            : {}),
+        },
+        metrics: {},
+      });
+      await appendHistoryEventPg(tx, {
+        runId,
+        taskId: task.id,
+        eventType: "task.created",
+        actorType: "orchestrator",
+        payload: { taskKey: task.name ?? task.id, dependsOn: task.dependsOn },
+      });
+      taskIds.push(task.id);
+    }
+  });
   return { runId, taskIds };
 }
 

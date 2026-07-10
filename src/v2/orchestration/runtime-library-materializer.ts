@@ -1,12 +1,13 @@
 import { createHash } from "node:crypto";
-import { readdir, readFile, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
-import type { LibraryDefinitionKind, LibraryObjectSummary } from "../design-library/types.ts";
 import type { McpGrantInput, McpRuntimeConfig, McpRuntimeServerConfig, VaultLeaseInput } from "../agent-runner/task-envelope.ts";
 import type { ResolvedSkillSnapshot } from "../skills/types.ts";
 import type { ToolProxyPolicyPayload } from "../tool-proxy/types.ts";
+import {
+  loadRunLibrarySnapshotPg,
+  requireSnapshotObject,
+  type RunLibrarySnapshotObjectV1,
+} from "./run-library-snapshot.ts";
 
 export type MaterializeTaskLibraryRefsInput = {
   runId: string;
@@ -49,9 +50,10 @@ export async function materializeTaskLibraryRefs(
   db: SouthstarDb,
   input: MaterializeTaskLibraryRefsInput,
 ): Promise<MaterializeTaskLibraryRefsResult> {
+  const snapshot = await loadRunLibrarySnapshotPg(db, input.runId);
   const instructions: ResolvedInstructionSnapshot[] = [];
   for (const instructionRef of unique(input.instructionRefs)) {
-    const object = await approvedObject(db, instructionRef, "instruction_template");
+    const object = requireSnapshotObject(snapshot, instructionRef, "instruction_template");
     instructions.push({
       instructionRef,
       content: stringField(object.state, "content"),
@@ -62,14 +64,14 @@ export async function materializeTaskLibraryRefs(
 
   const skills: ResolvedSkillSnapshot[] = [];
   for (const skillRef of unique(input.skillRefs)) {
-    const object = await approvedSkillObject(db, skillRef);
+    const object = requireSnapshotObject(snapshot, skillRef, ["skill_spec", "skill_definition"]);
     const instructionsText = skillInstructions(object.state);
     const sourcePath = optionalStringField(object.state, "sourcePath");
     const assetBundlePath = optionalStringField(object.state, "assetBundlePath") ?? defaultSkillAssetBundlePath(object.objectKey);
-    const bundleFiles = await readSkillBundleFiles(input.libraryRoot, assetBundlePath);
+    const bundleFiles = object.bundleFiles ?? [];
     skills.push({
       skillId: object.objectKey,
-      version: object.headVersionId ?? "runtime",
+      version: object.versionRef,
       instructions: instructionsText,
       allowedTools: optionalStringArray(object.state, "allowedTools"),
       requiredMounts: optionalStringArray(object.state, "requiredMounts"),
@@ -85,7 +87,7 @@ export async function materializeTaskLibraryRefs(
 
   const toolPolicyArtifacts = [];
   for (const toolRef of unique(input.toolGrantRefs)) {
-    const object = await approvedObject(db, toolRef, "tool_definition");
+    const object = requireSnapshotObject(snapshot, toolRef, "tool_definition");
     toolPolicyArtifacts.push({
       toolName: stringField(object.state, "toolName"),
       proxyToolName: stringField(object.state, "proxyToolName"),
@@ -108,7 +110,7 @@ export async function materializeTaskLibraryRefs(
   const mcpRuntimeServers: McpRuntimeServerConfig[] = [];
   const selectedVaultRefs = new Set(unique(input.vaultLeasePolicyRefs));
   for (const mcpGrantRef of unique(input.mcpGrantRefs)) {
-    const object = await approvedObject(db, mcpGrantRef, "mcp_tool_grant");
+    const object = requireSnapshotObject(snapshot, mcpGrantRef, "mcp_tool_grant");
     const serverId = stringField(object.state, "serverId");
     const allowedTools = stringArray(object.state, "allowedTools");
     mcpGrants.push({
@@ -121,7 +123,7 @@ export async function materializeTaskLibraryRefs(
   const vaultLeases: Array<Omit<VaultLeaseInput, "secretValue">> = [];
   let maxLeaseTtlSeconds = 0;
   for (const vaultRef of unique(input.vaultLeasePolicyRefs)) {
-    const object = await approvedObject(db, vaultRef, "vault_lease_policy");
+    const object = requireSnapshotObject(snapshot, vaultRef, "vault_lease_policy");
     vaultLeases.push({
       leaseRef: vaultRef,
       mountAs: resolveVaultMountAs(stringField(object.state, "mountMode")),
@@ -148,32 +150,6 @@ export async function materializeTaskLibraryRefs(
     },
     vaultLeases,
   };
-}
-
-async function approvedObject(
-  db: SouthstarDb,
-  objectKey: string,
-  objectKind: LibraryDefinitionKind,
-): Promise<LibraryObjectSummary> {
-  const object = await findLibraryObjectByKey(db, objectKey);
-  if (!object || object.status !== "approved") {
-    throw new Error(`missing approved library object: ${objectKey}`);
-  }
-  if (object.objectKind !== objectKind) {
-    throw new Error(`library object kind mismatch for ${objectKey}: expected ${objectKind}, got ${object.objectKind}`);
-  }
-  return object;
-}
-
-async function approvedSkillObject(db: SouthstarDb, objectKey: string): Promise<LibraryObjectSummary> {
-  const object = await findLibraryObjectByKey(db, objectKey);
-  if (!object || object.status !== "approved") {
-    throw new Error(`missing approved library object: ${objectKey}`);
-  }
-  if (object.objectKind !== "skill_spec" && object.objectKind !== "skill_definition") {
-    throw new Error(`library object kind mismatch for ${objectKey}: expected skill_spec, got ${object.objectKind}`);
-  }
-  return object;
 }
 
 function stringField(state: Record<string, unknown>, field: string): string {
@@ -203,7 +179,7 @@ function optionalStringField(state: Record<string, unknown>, field: string): str
 }
 
 function mcpRuntimeServerConfig(
-  object: LibraryObjectSummary,
+  object: RunLibrarySnapshotObjectV1,
   input: { serverId: string; allowedTools: string[]; selectedVaultRefs: Set<string> },
 ): McpRuntimeServerConfig {
   const transport = optionalStringField(object.state, "transport") ?? "stdio";
@@ -343,56 +319,6 @@ function defaultSkillAssetBundlePath(objectKey: string): string | undefined {
   if (!objectKey.startsWith("skill.")) return undefined;
   const slug = objectKey.slice("skill.".length).replaceAll(/[^A-Za-z0-9._-]+/g, "-").toLowerCase();
   return `library/skills/${slug}`;
-}
-
-async function readSkillBundleFiles(
-  libraryRoot: string | undefined,
-  assetBundlePath: string | undefined,
-): Promise<NonNullable<ResolvedSkillSnapshot["bundleFiles"]>> {
-  if (!libraryRoot || !assetBundlePath) return [];
-  const root = resolve(libraryRoot);
-  const relativeBundle = assetBundlePath.replace(/^library\//, "");
-  const bundleRoot = resolve(root, relativeBundle);
-  if (!isWithinRoot(bundleRoot, root)) {
-    throw new Error(`skill asset bundle escapes library root: ${assetBundlePath}`);
-  }
-  try {
-    const stats = await stat(bundleRoot);
-    if (!stats.isDirectory()) return [];
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-    throw error;
-  }
-  return await collectSkillBundleFiles(bundleRoot, bundleRoot);
-}
-
-async function collectSkillBundleFiles(
-  directory: string,
-  root: string,
-): Promise<NonNullable<ResolvedSkillSnapshot["bundleFiles"]>> {
-  const entries = await readdir(directory, { withFileTypes: true });
-  const files: NonNullable<ResolvedSkillSnapshot["bundleFiles"]> = [];
-  for (const entry of entries) {
-    if (entry.name === ".git" || entry.name === "node_modules") continue;
-    const absolutePath = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      files.push(...await collectSkillBundleFiles(absolutePath, root));
-      continue;
-    }
-    if (!entry.isFile()) continue;
-    const content = await readFile(absolutePath);
-    files.push({
-      relativePath: relative(root, absolutePath).split(/[\\/]+/g).join("/"),
-      contentBase64: content.toString("base64"),
-      contentHash: sha256(content),
-    });
-  }
-  return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath));
-}
-
-function isWithinRoot(candidate: string, root: string): boolean {
-  const relativePath = relative(root, candidate);
-  return relativePath === "" || (!relativePath.startsWith("..") && !isAbsolute(relativePath));
 }
 
 function numberField(state: Record<string, unknown>, field: string): number {

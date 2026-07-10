@@ -54,31 +54,20 @@ export function summarizeCandidates(packet: CandidatePacket): CandidateSelection
 
 export function collectSelectedVersionRefs(packet: CandidatePacket, composition: WorkflowCompositionPlan): string[] {
   const versionRefsByRef = new Map<string, string>();
-  for (const candidate of [
-    ...packet.workflowTemplateCandidates,
-    ...Object.values(packet.agentCandidatesByCapability).flat(),
-    ...Object.values(packet.profileCandidatesByAgent).flat(),
-    ...Object.values(packet.skillCandidatesByProfile).flat(),
-    ...Object.values(packet.toolCandidatesByProfile).flat(),
-    ...Object.values(packet.mcpGrantCandidatesByProfile).flat(),
-    ...Object.values(packet.vaultLeaseCandidatesByProfile).flat(),
-    ...Object.values(packet.instructionCandidatesByProfile).flat(),
-    ...packet.artifactContractCandidates,
-    ...Object.values(packet.evaluatorCandidatesByArtifact).flat(),
-    ...packet.policyConstraints,
-  ]) {
+  for (const candidate of candidateEntries(packet)) {
     if (candidate.versionRef) {
       versionRefsByRef.set(candidate.ref, candidate.versionRef);
     }
   }
-  for (const node of packet.graphMetadataCandidates?.nodes ?? []) {
-    if (node.versionRef) {
-      versionRefsByRef.set(node.ref, node.versionRef);
-    }
-  }
+  const selectedVersionRefs = collectSelectedRefs(packet, composition)
+    .map((ref) => versionRefsByRef.get(ref))
+    .filter((value): value is string => Boolean(value));
+  return uniqueSorted(selectedVersionRefs);
+}
 
-  const selectedRefs = new Set<string>();
-  selectedRefs.add(composition.selectedWorkflowTemplateRef);
+export function collectSelectedRefs(packet: CandidatePacket, composition: WorkflowCompositionPlan): string[] {
+  const availableRefs = new Set(candidateEntries(packet).map((candidate) => candidate.ref));
+  const selectedRefs = new Set<string>([composition.selectedWorkflowTemplateRef]);
   for (const task of composition.tasks) {
     selectedRefs.add(task.agentDefinitionRef);
     selectedRefs.add(task.agentProfileRef);
@@ -90,14 +79,28 @@ export function collectSelectedVersionRefs(packet: CandidatePacket, composition:
     addRefs(selectedRefs, task.instructionRefs);
     addRefs(selectedRefs, task.inputArtifactRefs);
     addRefs(selectedRefs, task.outputArtifactRefs);
+    addRefs(selectedRefs, task.recoveryStrategyRefs);
     if (task.contextPolicyRef) selectedRefs.add(task.contextPolicyRef);
     if (task.workspacePolicyRef) selectedRefs.add(task.workspacePolicyRef);
   }
+  return uniqueSorted([...selectedRefs].filter((ref) => availableRefs.has(ref)));
+}
 
-  const selectedVersionRefs = [...selectedRefs]
-    .map((ref) => versionRefsByRef.get(ref))
-    .filter((value): value is string => Boolean(value));
-  return uniqueSorted(selectedVersionRefs);
+function candidateEntries(packet: CandidatePacket): Array<{ ref: string; versionRef?: string }> {
+  return [
+    ...packet.workflowTemplateCandidates,
+    ...Object.values(packet.agentCandidatesByCapability).flat(),
+    ...Object.values(packet.profileCandidatesByAgent).flat(),
+    ...Object.values(packet.skillCandidatesByProfile).flat(),
+    ...Object.values(packet.toolCandidatesByProfile).flat(),
+    ...Object.values(packet.mcpGrantCandidatesByProfile).flat(),
+    ...Object.values(packet.vaultLeaseCandidatesByProfile).flat(),
+    ...Object.values(packet.instructionCandidatesByProfile).flat(),
+    ...packet.artifactContractCandidates,
+    ...Object.values(packet.evaluatorCandidatesByArtifact).flat(),
+    ...packet.policyConstraints,
+    ...(packet.graphMetadataCandidates?.nodes ?? []),
+  ];
 }
 
 function addRefs(target: Set<string>, refs: string[]): void {

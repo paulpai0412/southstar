@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createManagedContextAssembler } from "../../src/v2/context/managed-context-assembler.ts";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -19,6 +20,14 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
       snapshotJson: "{}",
       runtimeContextJson: "{}",
       metricsJson: "{}",
+    });
+    await captureManagedContextSnapshot(db, "run-managed-context");
+    await upsertLibraryObject(db, {
+      objectKey: "agent.software-maker",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.software-maker@mutated",
+      state: { scope: "software", title: "Mutated Maker", body: "MUTATED AFTER RUN CREATION" },
     });
     await createWorkflowTaskPg(db, {
       id: "implement-feature",
@@ -95,6 +104,7 @@ test("ManagedContextAssembler maps host project root into mounted container work
       }),
       metricsJson: "{}",
     });
+    await captureManagedContextSnapshot(db, "run-managed-context-workspace");
     await createWorkflowTaskPg(db, {
       id: "implement-feature",
       runId: "run-managed-context-workspace",
@@ -140,6 +150,7 @@ test("ManagedContextAssembler applies assembly policy to failure summaries", asy
       runtimeContextJson: "{}",
       metricsJson: "{}",
     });
+    await captureManagedContextSnapshot(db, "run-managed-context-failure-policy");
     await createWorkflowTaskPg(db, {
       id: "implement-feature",
       runId: "run-managed-context-failure-policy",
@@ -190,6 +201,7 @@ test("ManagedContextAssembler resolves runtime-only reviewer role/profile from w
       runtimeContextJson: "{}",
       metricsJson: "{}",
     });
+    await captureManagedContextSnapshot(db, "run-managed-context-runtime-reviewer", true);
     await createWorkflowTaskPg(db, {
       id: "review-spec",
       runId: "run-managed-context-runtime-reviewer",
@@ -597,5 +609,30 @@ async function seedManagedContextLibrary(db: Awaited<ReturnType<typeof createTes
     status: "approved",
     headVersionId: "mcp.filesystem-workspace@managed-context-test",
     state: { scope: "global", title: "Filesystem Workspace", serverId: "filesystem-workspace", allowedTools: ["read_file", "write_file"] },
+  });
+}
+
+async function captureManagedContextSnapshot(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  runId: string,
+  reviewer = false,
+): Promise<void> {
+  const selectedRefs = reviewer
+    ? ["instruction.software-spec-reviewer", "skill.software-spec-review", "tool.workspace-read"]
+    : [
+      "agent.software-maker",
+      "instruction.software-maker",
+      "skill.software-implementation",
+      "tool.workspace-read",
+      "tool.workspace-write",
+      "tool.shell-command",
+      "mcp.filesystem-workspace",
+    ];
+  await captureRunLibrarySnapshotPg(db, {
+    runId,
+    goalContractHash: "1".repeat(64),
+    manifestHash: "2".repeat(64),
+    selectedRefs,
+    libraryVersionRefs: selectedRefs.map((ref) => `${ref}@managed-context-test`),
   });
 }

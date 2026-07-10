@@ -10,6 +10,7 @@ import type {
   WorkflowCompositionValidationResult,
 } from "../design-library/types.ts";
 import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import type {
   AgentProfile,
   ArtifactContract,
@@ -24,6 +25,7 @@ import type {
 } from "../design-library/runtime-types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import {
+  collectSelectedRefs,
   collectSelectedVersionRefs,
   summarizeCandidates,
   type CandidateSelectionSummary,
@@ -63,6 +65,7 @@ export type OrchestrationSnapshotV1 = {
   compiler: {
     version: "library-constrained-compiler-v1";
     manifestHash: string;
+    selectedLibraryRefs: string[];
     libraryVersionRefs: string[];
   };
 };
@@ -92,7 +95,17 @@ export async function compileWorkflowComposition(
   const { byProfileRef: profilesByRef, byProfileId: resolvedProfiles } = await resolveRuntimeProfiles(db, input.composition);
   const artifactContracts = await resolveRuntimeArtifactContracts(db, input.composition);
   const evaluatorPipelines = await resolveRuntimeEvaluatorPipelines(db, input.composition);
-  const planHash = hash(JSON.stringify(input.composition));
+  const planHash = contentHashForPayload(input.composition);
+  const selectedLibraryRefs = collectSelectedRefs(input.candidatePacket, input.composition);
+  const libraryVersionRefs = collectSelectedVersionRefs(input.candidatePacket, input.composition);
+  const selectedTemplate = await findLibraryObjectByKey(db, input.composition.selectedWorkflowTemplateRef);
+  const templateVersionId = required(
+    selectedTemplate?.headVersionId,
+    `missing immutable version for ${input.composition.selectedWorkflowTemplateRef}`,
+  );
+  if (!libraryVersionRefs.includes(templateVersionId)) {
+    throw new Error(`selected workflow template version is not in compiler Library refs: ${templateVersionId}`);
+  }
   const taskDefinitions = input.composition.tasks.map((task): WorkflowTaskDefinition => {
     const role = required(rolesByAgentRef.get(task.agentDefinitionRef), `missing resolved role for ${task.agentDefinitionRef}`);
     const profile = required(
@@ -213,6 +226,13 @@ export async function compileWorkflowComposition(
     progressPolicy: { firstEventWithinSeconds: 10, minEventsPerLongTask: 3 },
     steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+    compiledFrom: {
+      templateDefinitionId: input.composition.selectedWorkflowTemplateRef,
+      templateVersionId,
+      compilerVersion: "library-constrained-compiler-v1",
+      inputHash: planHash,
+      libraryVersionRefs,
+    },
   };
   const goalRequirementCoverage = buildGoalRequirementCoverage({
     goalContract: input.goalContract,
@@ -234,8 +254,9 @@ export async function compileWorkflowComposition(
       validation,
       compiler: {
         version: "library-constrained-compiler-v1",
-        manifestHash: hash(JSON.stringify(workflow)),
-        libraryVersionRefs: collectSelectedVersionRefs(input.candidatePacket, input.composition),
+        manifestHash: contentHashForPayload(workflow),
+        selectedLibraryRefs,
+        libraryVersionRefs,
       },
     },
   };

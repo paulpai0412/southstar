@@ -9,6 +9,7 @@ import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-libr
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
+import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -74,6 +75,14 @@ test("graph metadata composition refs materialize into Docker-visible task bundl
       snapshotJson: "{}",
       runtimeContextJson: "{}",
       metricsJson: "{}",
+    });
+    await captureRunLibrarySnapshotPg(db, {
+      runId: "run-chain",
+      goalContractHash: compiled.orchestrationSnapshot.goalContractHash,
+      manifestHash: compiled.orchestrationSnapshot.compiler.manifestHash,
+      selectedRefs: compiled.orchestrationSnapshot.compiler.selectedLibraryRefs,
+      libraryVersionRefs: compiled.orchestrationSnapshot.compiler.libraryVersionRefs,
+      libraryRoot,
     });
     await createWorkflowTaskPg(db, {
       id: task.id,

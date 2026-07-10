@@ -54,6 +54,22 @@ test("validates compiledFrom metadata when present", () => {
   assert.match(invalid.issues.map((issue) => issue.path).join("\n"), /compiledFrom\.inputHash/);
 });
 
+test("compiledFrom includes its selected template version in immutable Library refs", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    templateDefinitionId: "template.software-feature",
+    templateVersionId: "template.software-feature@1",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["agent.software-maker@1"],
+  };
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /templateVersionId.*libraryVersionRefs/i);
+});
+
 function makeBundle(): PlanBundle {
   return {
     workflow: {

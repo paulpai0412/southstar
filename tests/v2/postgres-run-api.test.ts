@@ -280,11 +280,29 @@ test("Postgres run API creates draft, run, tasks, and history without prebuildin
 
     const runRow = await db.one<{
       status: string;
-      runtime_context_json: { draftId?: string; goalContractHash?: string };
-    }>("select status, runtime_context_json from southstar.workflow_runs where id = $1", [run.runId]);
+      workflow_manifest_json: {
+        compiledFrom?: { templateDefinitionId?: string; templateVersionId?: string; libraryVersionRefs?: string[] };
+      };
+      runtime_context_json: {
+        draftId?: string;
+        goalContractHash?: string;
+        manifestHash?: string;
+        librarySnapshotHash?: string;
+        outcomeStatus?: string;
+      };
+    }>("select status, workflow_manifest_json, runtime_context_json from southstar.workflow_runs where id = $1", [run.runId]);
     assert.equal(runRow.status, "created");
     assert.equal(runRow.runtime_context_json.draftId, draft.draftId);
     assert.equal(runRow.runtime_context_json.goalContractHash, draft.goalContractHash);
+    assert.match(runRow.runtime_context_json.manifestHash ?? "", /^[a-f0-9]{64}$/);
+    assert.match(runRow.runtime_context_json.librarySnapshotHash ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(runRow.runtime_context_json.outcomeStatus, "in_progress");
+    assert.equal(runRow.workflow_manifest_json.compiledFrom?.templateDefinitionId, "template.software-feature");
+    assert.equal(runRow.workflow_manifest_json.compiledFrom?.templateVersionId, "template.software-feature@test");
+    assert.equal(
+      runRow.workflow_manifest_json.compiledFrom?.libraryVersionRefs?.includes("template.software-feature@test"),
+      true,
+    );
     const taskRows = await db.query<{ id: string }>("select id from southstar.workflow_tasks where run_id = $1 order by sort_order", [run.runId]);
     assert.deepEqual(taskRows.rows.map((row) => row.id), FIXTURE_TASK_IDS);
 
@@ -296,6 +314,81 @@ test("Postgres run API creates draft, run, tasks, and history without prebuildin
       [run.runId],
     );
     assert.equal(prebuiltContextCount.count, "0");
+    const runResources = await db.query<{ resource_type: string; payload_json: Record<string, any> }>(
+      `select resource_type, payload_json
+         from southstar.runtime_resources
+        where run_id = $1
+        order by resource_type`,
+      [run.runId],
+    );
+    assert.deepEqual(runResources.rows.map((row) => row.resource_type), [
+      "goal_requirement_coverage",
+      "run_library_snapshot",
+    ]);
+    const librarySnapshot = runResources.rows.find((row) => row.resource_type === "run_library_snapshot")!.payload_json;
+    assert.equal(librarySnapshot.schemaVersion, "southstar.run_library_snapshot.v1");
+    assert.equal(librarySnapshot.runId, run.runId);
+    assert.equal(librarySnapshot.goalContractHash, draft.goalContractHash);
+    assert.equal(librarySnapshot.snapshotHash, runRow.runtime_context_json.librarySnapshotHash);
+    assert.equal(
+      librarySnapshot.objects.some((object: { objectKey?: string }) => object.objectKey === "template.software-feature"),
+      true,
+    );
+  });
+});
+
+test("missing selected Library version rolls back run creation atomically", async () => {
+  await withDb(async (db) => {
+    const draft = await createFixturePlannerDraft(db, "reject missing selected Library version");
+    await upsertLibraryObject(db, {
+      objectKey: "template.software-feature",
+      objectKind: "workflow_template",
+      status: "approved",
+      state: { scope: "software", title: "Software Feature Test Template" },
+    });
+
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
+      /missing.*version|version.*mismatch/i,
+    );
+
+    const counts = await db.one<{ runs: string; tasks: string; history: string; resources: string }>(
+      `select
+         (select count(*)::text from southstar.workflow_runs) as runs,
+         (select count(*)::text from southstar.workflow_tasks) as tasks,
+         (select count(*)::text from southstar.workflow_history) as history,
+         (select count(*)::text from southstar.runtime_resources where run_id is not null) as resources`,
+    );
+    assert.deepEqual(counts, { runs: "0", tasks: "0", history: "0", resources: "0" });
+  });
+});
+
+test("credential-looking Library state rolls back run creation atomically", async () => {
+  await withDb(async (db) => {
+    const draft = await createFixturePlannerDraft(db, "reject raw Library credentials");
+    await upsertLibraryObject(db, {
+      objectKey: "template.software-feature",
+      objectKind: "workflow_template",
+      status: "approved",
+      headVersionId: "template.software-feature@test",
+      state: {
+        scope: "software",
+        title: "Software Feature Test Template",
+        apiKey: "sk-live-secret-value",
+      },
+    });
+
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
+      /credential|secret/i,
+    );
+    const counts = await db.one<{ runs: string; tasks: string; resources: string }>(
+      `select
+         (select count(*)::text from southstar.workflow_runs) as runs,
+         (select count(*)::text from southstar.workflow_tasks) as tasks,
+         (select count(*)::text from southstar.runtime_resources where run_id is not null) as resources`,
+    );
+    assert.deepEqual(counts, { runs: "0", tasks: "0", resources: "0" });
   });
 });
 

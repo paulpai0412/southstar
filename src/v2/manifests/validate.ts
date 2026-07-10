@@ -35,6 +35,13 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
     }
     if (!Array.isArray(workflow.compiledFrom.libraryVersionRefs) || workflow.compiledFrom.libraryVersionRefs.length === 0) {
       issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must contain at least one immutable library version ref" });
+    } else {
+      if (workflow.compiledFrom.libraryVersionRefs.some((ref) => typeof ref !== "string" || ref.length === 0)) {
+        issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must contain only non-empty immutable library version refs" });
+      }
+      if (!workflow.compiledFrom.libraryVersionRefs.includes(workflow.compiledFrom.templateVersionId)) {
+        issues.push({ path: "workflow.compiledFrom.templateVersionId", message: "must be included in compiledFrom.libraryVersionRefs" });
+      }
     }
   }
 
