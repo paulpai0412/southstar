@@ -272,6 +272,9 @@ test("snapshot capture rejects normalized credential keys but preserves vault re
       { label: "client-nested", state: { oauth: { clientSecret: "plain-sensitive-value" } } },
       { label: "bearer-nested", state: { auth: { bearerToken: "plain-sensitive-value" } } },
       { label: "aws-nested", state: { aws: { AWS_SECRET_ACCESS_KEY: "plain-sensitive-value" } } },
+      { label: "access-token-invalid-ref", state: { accessTokenRef: "plain-sensitive-value" } },
+      { label: "refresh-token-invalid-refs", state: { refreshTokenRefs: ["plain-sensitive-value"] } },
+      { label: "credentials-under-policy", state: { toolPolicy: { credentials: { value: "plain-sensitive-value" } } } },
     ];
     for (const [index, fixture] of sensitiveStates.entries()) {
       const objectKey = `instruction.secret-key-${fixture.label}`;
@@ -291,7 +294,7 @@ test("snapshot capture rejects normalized credential keys but preserves vault re
           manifestHash: "2".repeat(64),
           libraryObjectVersionRefs: [{ objectKey, versionRef }],
         }),
-        /credential-looking Library state/i,
+        /credential-looking Library (?:state|reference metadata)/i,
       );
     }
 
@@ -303,9 +306,10 @@ test("snapshot capture rejects normalized credential keys but preserves vault re
       state: {
         secretGroupRef: "github.write",
         leaseRef: "vault.github-write-token",
-        vaultLeasePolicyRef: "vault.policy.github",
         accessTokenRef: "vault.github-access-token",
         passwordPolicyRef: "policy.password-rotation",
+        vaultLeasePolicyRef: "vault.policy.default",
+        instructionRefs: ["instruction.safe"],
       },
     });
     await createSnapshotRun(db, "run-safe-refs");
@@ -316,6 +320,8 @@ test("snapshot capture rejects normalized credential keys but preserves vault re
     });
     assert.equal(snapshot.objects[0]?.state.secretGroupRef, "github.write");
     assert.equal(snapshot.objects[0]?.state.accessTokenRef, "vault.github-access-token");
+    assert.equal(snapshot.objects[0]?.state.vaultLeasePolicyRef, "vault.policy.default");
+    assert.deepEqual(snapshot.objects[0]?.state.instructionRefs, ["instruction.safe"]);
   } finally {
     await db.close();
   }

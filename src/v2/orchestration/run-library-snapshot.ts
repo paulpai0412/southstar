@@ -205,6 +205,11 @@ function visitCredentialValues(value: unknown, path: string): void {
     return;
   }
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    const sensitiveReferenceMetadata = sensitiveReferenceMetadataStatus(key, child);
+    if (sensitiveReferenceMetadata === "valid") continue;
+    if (sensitiveReferenceMetadata === "invalid") {
+      throw new Error(`credential-looking Library reference metadata is forbidden: ${path}.${key}`);
+    }
     if (child !== null && child !== undefined && isCredentialValueKey(key)) {
       throw new Error(`credential-looking Library state is forbidden: ${path}.${key}`);
     }
@@ -214,7 +219,29 @@ function visitCredentialValues(value: unknown, path: string): void {
 
 function isCredentialValueKey(key: string): boolean {
   const normalized = key.replaceAll(/[^A-Za-z0-9]+/g, "").toLowerCase();
-  if (normalized.endsWith("ref") || normalized.endsWith("refs") || normalized.endsWith("policy")) return false;
+  return isNormalizedCredentialValueKey(normalized);
+}
+
+function sensitiveReferenceMetadataStatus(key: string, value: unknown): "valid" | "invalid" | undefined {
+  const normalized = key.replaceAll(/[^A-Za-z0-9]+/g, "").toLowerCase();
+  const suffix = normalized.endsWith("refs") ? "refs" : normalized.endsWith("ref") ? "ref" : undefined;
+  if (!suffix) return undefined;
+  const baseKey = normalized.slice(0, -suffix.length);
+  if (!isNormalizedCredentialValueKey(baseKey)) return undefined;
+  if (value === null || value === undefined) return undefined;
+  if (suffix === "ref") {
+    return typeof value === "string" && isNamespacedLibraryRef(value) ? "valid" : "invalid";
+  }
+  return Array.isArray(value) && value.every((ref) => typeof ref === "string" && isNamespacedLibraryRef(ref))
+    ? "valid"
+    : "invalid";
+}
+
+function isNamespacedLibraryRef(value: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9_-]*[.:][A-Za-z0-9][A-Za-z0-9._:@/-]*$/.test(value);
+}
+
+function isNormalizedCredentialValueKey(normalized: string): boolean {
   return [
     "secretaccesskey",
     "apikey",
