@@ -14,6 +14,7 @@ import { compileWorkflowComposition } from "../orchestration/composition-compile
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { createWorkflowComposerRegistry, type WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
+import { parseWorkflowCompositionPlanFromText } from "../orchestration/llm-composer.ts";
 import {
   finalizeGoalContract,
   goalContractHash,
@@ -786,7 +787,8 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const draftPayload = asRecord(draft.payload);
   const draftSummary = asRecord(draft.summary);
   const contract = storedOrLegacyGoalContract(draftPayload, draftSummary, input.draftId);
-  const contractHash = storedGoalContractHash(draftSummary, draftPayload, contract);
+  const contractHash = goalContractHash(contract);
+  assertStoredGoalContractHashes(draftPayload, draftSummary, contractHash);
   if (contract.blockingInputs.length > 0) {
     await validatePostgresPlannerDraft(db, input);
     throw new Error(`planner draft has blocking inputs: ${input.draftId}`);
@@ -850,6 +852,32 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   }
 
   return { runId, taskIds };
+}
+
+function assertStoredGoalContractHashes(
+  payload: Record<string, unknown>,
+  summary: Record<string, unknown>,
+  canonicalHash: string,
+): void {
+  const hashes = [
+    { label: "payload.goalContractHash", value: payload.goalContractHash },
+    { label: "summary.goalContractHash", value: summary.goalContractHash },
+    {
+      label: "goalRequirementCoverage.goalContractHash",
+      value: asRecord(payload.goalRequirementCoverage).goalContractHash,
+    },
+    {
+      label: "orchestrationSnapshot.goalContractHash",
+      value: asRecord(payload.orchestrationSnapshot).goalContractHash,
+    },
+  ];
+  for (const hash of hashes) {
+    if (hash.value === undefined) continue;
+    if (hash.value === canonicalHash) continue;
+    throw new Error(
+      `Goal Contract hash mismatch at ${hash.label}: expected ${canonicalHash}, received ${String(hash.value)}`,
+    );
+  }
 }
 
 export async function getPostgresPlannerDraftOrchestration(
@@ -1000,7 +1028,21 @@ async function refreshPlannerDraftCompilation(
   const candidatePacket = maybeCandidatePacket(input.payload.candidatePacket);
   const currentSnapshot = input.payload.orchestrationSnapshot;
   const currentCoverage = input.payload.goalRequirementCoverage;
-  const composition = maybeWorkflowCompositionPlan(asRecord(currentSnapshot).selectedCompositionPlan);
+  let composition: WorkflowCompositionPlan | null;
+  try {
+    composition = maybeWorkflowCompositionPlan(asRecord(currentSnapshot).selectedCompositionPlan);
+  } catch (error) {
+    return {
+      workflow: input.workflow,
+      orchestrationSnapshot: currentSnapshot,
+      goalRequirementCoverage: currentCoverage,
+      issues: [{
+        path: "orchestrationSnapshot.selectedCompositionPlan",
+        code: "composition_needs_regeneration",
+        message: error instanceof Error ? error.message : String(error),
+      }],
+    };
+  }
   if (!candidatePacket || !composition) {
     return {
       workflow: input.workflow,
@@ -1264,10 +1306,14 @@ function maybeCandidatePacket(value: unknown): CandidatePacket | null {
 }
 
 function maybeWorkflowCompositionPlan(value: unknown): WorkflowCompositionPlan | null {
-  const record = asRecord(value);
-  if (record.schemaVersion !== "southstar.workflow_composition_plan.v1") return null;
-  if (!Array.isArray(record.tasks)) return null;
-  return record as WorkflowCompositionPlan;
+  if (value === undefined || value === null) return null;
+  try {
+    return parseWorkflowCompositionPlanFromText(JSON.stringify(value), 1_000_000);
+  } catch (error) {
+    throw new Error(
+      `persisted workflow composition needs regeneration: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
 }
 
 type WorkflowTaskWithProfileOverride = SouthstarWorkflowManifest["tasks"][number] & {

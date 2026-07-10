@@ -7,6 +7,7 @@ import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
 import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import {
   DeterministicFixtureComposer,
   deterministicFixtureComposition,
@@ -16,6 +17,7 @@ import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores
 import {
   finalizeGoalContract,
   goalContractHash,
+  requirementSpecFromGoalContract,
   reviseGoalContract,
   type GoalContractInterpreter,
   type GoalContractV1,
@@ -159,7 +161,7 @@ test("legacy planner draft missingInputs canonicalize validation to needs_input 
   });
 });
 
-test("direct run creation rejects a legacy validated draft with blocking inputs without materializing rows", async () => {
+test("direct run creation rejects a legacy validated draft with stale canonical lineage without materializing rows", async () => {
   await withDb(async (db) => {
     const draft = await createFixturePlannerDraft(db, "implement legacy direct run compatibility");
     await stripGoalContractFromDraft(db, draft.draftId, {
@@ -173,7 +175,7 @@ test("direct run creation rejects a legacy validated draft with blocking inputs 
 
     await assert.rejects(
       () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
-      /planner draft has blocking inputs/,
+      /Goal Contract hash mismatch/,
     );
 
     const after = await db.one<{ runs: string; tasks: string }>(
@@ -294,6 +296,71 @@ test("Postgres run API creates draft, run, tasks, and history without prebuildin
       [run.runId],
     );
     assert.equal(prebuiltContextCount.count, "0");
+  });
+});
+
+test("Postgres run creation rejects any stale canonical Goal Contract hash before writing run state", async () => {
+  await withDb(async (db) => {
+    const draft = await createFixturePlannerDraft(db, "reject stale run contract lineage");
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.ok(stored);
+    const originalPayload = structuredClone(stored.payload) as Record<string, any>;
+    const originalSummary = structuredClone(stored.summary) as Record<string, any>;
+    const staleHash = "0".repeat(64);
+    const cases = [
+      {
+        label: "payload.goalContractHash",
+        mutate(payload: Record<string, any>, _summary: Record<string, any>) {
+          payload.goalContractHash = staleHash;
+        },
+      },
+      {
+        label: "summary.goalContractHash",
+        mutate(_payload: Record<string, any>, summary: Record<string, any>) {
+          summary.goalContractHash = staleHash;
+        },
+      },
+      {
+        label: "goalRequirementCoverage.goalContractHash",
+        mutate(payload: Record<string, any>, _summary: Record<string, any>) {
+          payload.goalRequirementCoverage.goalContractHash = staleHash;
+        },
+      },
+      {
+        label: "orchestrationSnapshot.goalContractHash",
+        mutate(payload: Record<string, any>, _summary: Record<string, any>) {
+          payload.orchestrationSnapshot.goalContractHash = staleHash;
+        },
+      },
+    ];
+
+    for (const testCase of cases) {
+      const payload = structuredClone(originalPayload);
+      const summary = structuredClone(originalSummary);
+      testCase.mutate(payload, summary);
+      await upsertRuntimeResourcePg(db, {
+        id: stored.id,
+        resourceType: "planner_draft",
+        resourceKey: draft.draftId,
+        scope: stored.scope,
+        status: "validated",
+        ...(stored.title ? { title: stored.title } : {}),
+        payload,
+        summary,
+        metrics: stored.metrics,
+      });
+
+      await assert.rejects(
+        () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
+        new RegExp(`Goal Contract hash mismatch.*${testCase.label}`),
+      );
+      const counts = await db.one<{ runs: string; tasks: string }>(
+        `select
+           (select count(*)::text from southstar.workflow_runs) as runs,
+           (select count(*)::text from southstar.workflow_tasks) as tasks`,
+      );
+      assert.deepEqual(counts, { runs: "0", tasks: "0" });
+    }
   });
 });
 
@@ -607,6 +674,43 @@ test("planner draft creates from an existing composition without calling an LLM 
     assert.equal(draftResource.payload_json.plannerTrace?.composerFallbackUsed, false);
     assert.equal(draftResource.payload_json.orchestrationSnapshot?.selectedCompositionPlan?.title, "Software Dynamic Feature Workflow");
     assert.equal(draftResource.payload_json.goalRequirementCoverage?.goalContractHash, goalContractHash(goalContract));
+  });
+});
+
+test("planner draft validation marks a persisted summary task missing requirementIds for regeneration", async () => {
+  await withDb(async (db) => {
+    const draft = await createFixturePlannerDraft(db, "validate strict persisted composition");
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.ok(stored);
+    const payload = structuredClone(stored.payload) as Record<string, any>;
+    const goalContract = payload.goalContract as GoalContractV1;
+    payload.candidatePacket = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: goalContract.domain,
+    });
+    const selectedPlan = payload.orchestrationSnapshot.selectedCompositionPlan as WorkflowCompositionPlan;
+    const summaryTask = selectedPlan.tasks.find((task) => task.id === "summarize-completion") as unknown as Record<string, unknown>;
+    delete summaryTask.requirementIds;
+    await upsertRuntimeResourcePg(db, {
+      id: stored.id,
+      resourceType: "planner_draft",
+      resourceKey: draft.draftId,
+      scope: stored.scope,
+      status: "needs_validation",
+      ...(stored.title ? { title: stored.title } : {}),
+      payload,
+      summary: stored.summary,
+      metrics: stored.metrics,
+    });
+
+    const validated = await validatePostgresPlannerDraft(db, { draftId: draft.draftId });
+
+    assert.equal(validated.status, "invalid");
+    const issue = validated.validationIssues.find((item) => item.code === "composition_needs_regeneration");
+    assert.ok(issue);
+    assert.match(issue.message, /persisted workflow composition needs regeneration/i);
+    assert.match(issue.message, /requirementIds/);
+    assert.doesNotMatch(issue.message, /Cannot read properties|\.includes/);
   });
 });
 

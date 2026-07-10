@@ -13,7 +13,7 @@ import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orches
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
-import { softwareGoalContract } from "./fixtures/goal-contract.ts";
+import { softwareGoalContract, subscriptionGoalContract } from "./fixtures/goal-contract.ts";
 
 test("dynamic repair revision appends repair and reverify tasks for failed validation worker", async () => {
   const db = await createTestPostgresDb();
@@ -126,6 +126,91 @@ test("dynamic repair revision appends repair and reverify tasks for failed valid
     assert.equal(revisionPayload.orchestrationSnapshot?.goalContractHash, lineage.goalContractHash);
     const history = await listHistoryForRunPg(db, "run-dynamic-repair");
     assert.equal(history.some((event) => event.eventType === "workflow.dynamic_repair_revision_applied"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair scopes compound Goal Contract coverage to the failed task requirement ids", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const goalContract = subscriptionGoalContract();
+    const billingRequirement = goalContract.requirements[1]!;
+    const workflow = baseWorkflow();
+    const failedTask = workflow.tasks.find((task) => task.id === "verify-feature")!;
+    failedTask.promptInputs = { requirementIds: [billingRequirement.id] };
+    const lineage = await seedPlannerDraftLineage(
+      db,
+      "run-dynamic-repair-compound-billing",
+      workflow.goalPrompt,
+      goalContract,
+    );
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-compound-billing",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
+      metricsJson: JSON.stringify({}),
+    });
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-compound-billing",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-compound-billing",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-compound-billing",
+      failedTaskId: "verify-feature",
+      workflowComposer: new GoalContractBindingWorkflowComposer(
+        [repairCompositionPlan()],
+        [billingRequirement.id],
+      ),
+    });
+
+    assert.equal(result.status, "applied", JSON.stringify(result));
+    const resources = await listResourcesPg(db, { resourceType: "workflow_dynamic_repair_revision" });
+    const payload = resources.find((resource) => resource.runId === "run-dynamic-repair-compound-billing")?.payload as {
+      goalContractHash?: string;
+      goalRequirementCoverage?: {
+        goalContractHash?: string;
+        entries?: Array<{ requirementId?: string }>;
+      };
+    };
+    assert.equal(payload.goalContractHash, goalContractHash(goalContract));
+    assert.equal(payload.goalRequirementCoverage?.goalContractHash, goalContractHash(goalContract));
+    assert.deepEqual(
+      payload.goalRequirementCoverage?.entries?.map((entry) => entry.requirementId),
+      [billingRequirement.id],
+    );
+    const run = await db.one<{ workflow_manifest_json: SouthstarWorkflowManifest }>(
+      "select workflow_manifest_json from southstar.workflow_runs where id = $1",
+      ["run-dynamic-repair-compound-billing"],
+    );
+    const appendedTasks = run.workflow_manifest_json.tasks.filter((task) =>
+      task.id.includes("verify-feature-attempt-1")
+    );
+    assert.equal(appendedTasks.length, 2);
+    assert.equal(appendedTasks.every((task) =>
+      JSON.stringify(task.promptInputs?.requirementIds) === JSON.stringify([billingRequirement.id])
+    ), true);
   } finally {
     await db.close();
   }
@@ -1086,6 +1171,9 @@ function workflowTask(id: string, name: string, roleRef: string, agentProfileRef
     requiredArtifactRefs: id.startsWith("verify") ? ["verification_report"] : ["todo_app"],
     evaluatorPipelineRef: "schema-evaluator-v1",
     recoveryStrategyRefs: ["request-workflow-revision"],
+    promptInputs: {
+      requirementIds: softwareGoalContract("Build a todo feature").requirements.map((requirement) => requirement.id),
+    },
     execution: {
       engine: "tork" as const,
       image: "southstar/pi-agent:local",
@@ -1221,13 +1309,16 @@ function generatedProfile(id: string, workerKind: "repair_worker" | "validation_
 class GoalContractBindingWorkflowComposer implements WorkflowComposer {
   private index = 0;
 
-  constructor(private readonly plans: WorkflowCompositionPlan[]) {}
+  constructor(
+    private readonly plans: WorkflowCompositionPlan[],
+    private readonly targetRequirementIds?: string[],
+  ) {}
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
     const plan = this.plans[Math.min(this.index, this.plans.length - 1)];
     this.index += 1;
     if (!plan) throw new Error("GoalContractBindingWorkflowComposer has no plans");
-    return bindRequirementIds(plan, input);
+    return bindRequirementIds(plan, input, this.targetRequirementIds);
   }
 }
 
@@ -1245,9 +1336,11 @@ class CapturingWorkflowComposer implements WorkflowComposer {
 function bindRequirementIds(
   plan: WorkflowCompositionPlan,
   input: ComposeWorkflowInput,
+  targetRequirementIds?: string[],
 ): WorkflowCompositionPlan {
   const copy = structuredClone(plan);
-  const requirementIds = input.goalContract.requirements.map((requirement) => requirement.id);
+  const requirementIds = targetRequirementIds
+    ?? input.goalContract.requirements.map((requirement) => requirement.id);
   copy.tasks.forEach((task) => {
     task.requirementIds = requirementIds;
   });
@@ -1276,8 +1369,8 @@ async function seedPlannerDraftLineage(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   runId: string,
   goalPrompt: string,
+  goalContract: GoalContractV1 = softwareGoalContract(goalPrompt),
 ): Promise<{ goalContract: GoalContractV1; goalContractHash: string; runtimeContextJson: string }> {
-  const goalContract = softwareGoalContract(goalPrompt);
   const contractHash = goalContractHash(goalContract);
   const draftId = `draft-${runId}`;
   await upsertRuntimeResourcePg(db, {

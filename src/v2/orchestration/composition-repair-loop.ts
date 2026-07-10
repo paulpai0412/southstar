@@ -20,6 +20,7 @@ export type RunCompositionRepairLoopInput = {
   db: SouthstarDb;
   goalPrompt: string;
   goalContract: GoalContractV1;
+  targetRequirementIds?: string[];
   candidatePacket: CandidatePacket;
   composer: WorkflowComposer;
   cwd?: string;
@@ -55,7 +56,11 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
         input.db,
         input.candidatePacket,
         composition,
-        { scope: input.scope, goalContract: input.goalContract },
+        {
+          scope: input.scope,
+          goalContract: input.goalContract,
+          targetRequirementIds: input.targetRequirementIds,
+        },
       );
       input.onProgress?.({
         stage: "validation.completed",

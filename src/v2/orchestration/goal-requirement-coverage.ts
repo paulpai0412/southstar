@@ -22,11 +22,13 @@ export type GoalRequirementCoverageV1 = {
 export function buildGoalRequirementCoverage(input: {
   goalContract: GoalContractV1;
   composition: WorkflowCompositionPlan;
+  targetRequirementIds?: string[];
 }): GoalRequirementCoverageV1 {
+  const requirements = coverageRequirements(input.goalContract, input.targetRequirementIds);
   return {
     schemaVersion: "southstar.goal_requirement_coverage.v1",
     goalContractHash: goalContractHash(input.goalContract),
-    entries: input.goalContract.requirements.map((requirement) => {
+    entries: requirements.map((requirement) => {
       const linkedTasks = input.composition.tasks.filter((task) => task.requirementIds?.includes(requirement.id));
       const producerTasks = linkedTasks.filter((task) => !isEvaluatorTask(task) && !isCoverageExceptionTask(task));
       const evaluatorTasks = linkedTasks.filter(isEvaluatorTask);
@@ -42,6 +44,20 @@ export function buildGoalRequirementCoverage(input: {
       };
     }),
   };
+}
+
+function coverageRequirements(
+  goalContract: GoalContractV1,
+  targetRequirementIds: string[] | undefined,
+): GoalContractV1["requirements"] {
+  if (targetRequirementIds === undefined) return goalContract.requirements;
+  const targetIds = new Set(targetRequirementIds);
+  if (targetIds.size === 0) throw new Error("targetRequirementIds must contain at least one requirement id");
+  const knownIds = new Set(goalContract.requirements.map((requirement) => requirement.id));
+  for (const targetId of targetIds) {
+    if (!knownIds.has(targetId)) throw new Error(`unknown target Goal Contract requirement: ${targetId}`);
+  }
+  return goalContract.requirements.filter((requirement) => targetIds.has(requirement.id));
 }
 
 export function isEvaluatorTask(task: WorkflowCompositionTask): boolean {

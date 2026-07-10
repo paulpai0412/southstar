@@ -407,6 +407,43 @@ test("compound requirements form parallel producer branches and a dependent veri
   );
 });
 
+test("target requirement scope rejects empty, unknown, and out-of-scope requirement ids", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = subscriptionGoalContract();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const composition = subscriptionCompositionWithRequirementIds(goalContract);
+    const billingRequirementId = goalContract.requirements[1]!.id;
+
+    const emptyScope = await validateWorkflowCompositionPlan(db, packet, composition, {
+      scope: "software",
+      goalContract,
+      targetRequirementIds: [],
+    });
+    assert.equal(emptyScope.issues.some((issue) => issue.code === "target_requirement_scope_empty"), true);
+
+    const unknownScope = await validateWorkflowCompositionPlan(db, packet, composition, {
+      scope: "software",
+      goalContract,
+      targetRequirementIds: ["requirement.unknown"],
+    });
+    assert.equal(unknownScope.issues.some((issue) => issue.code === "unknown_target_requirement_id"), true);
+
+    const billingScope = await validateWorkflowCompositionPlan(db, packet, composition, {
+      scope: "software",
+      goalContract,
+      targetRequirementIds: [billingRequirementId],
+    });
+    assert.equal(billingScope.issues.some((issue) => issue.code === "requirement_outside_target_scope"), true);
+  } finally {
+    await db.close();
+  }
+});
+
 test("validator reports unknown and incomplete blocking requirement coverage", async () => {
   const db = await createTestPostgresDb();
   const goalContract = softwareGoalContract();

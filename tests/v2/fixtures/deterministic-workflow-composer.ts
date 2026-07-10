@@ -72,7 +72,6 @@ export function deterministicFixtureComposition(goalContract: GoalContractV1 = s
         "profile.generated.software-summarize-completion",
         ["artifact.completion_report"],
         "evaluator.software-completion-quality",
-        "summary",
       ),
     ],
     rejectedCandidates: [],
@@ -153,29 +152,17 @@ function task(
   agentProfileRef: string,
   outputArtifactRefs: string[],
   evaluatorProfileRef: string,
-  nodeType?: "summary",
 ): WorkflowCompositionTask {
+  const name = id
+    .split("-")
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
   return {
     id,
-    name: id
-      .split("-")
-      .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-      .join(" "),
+    name,
     responsibility: id,
     requirementIds,
-    ...(nodeType ? {
-      nodePromptSpec: {
-        nodeType,
-        goal: "Summarize the completed workflow.",
-        requirements: [],
-        boundaries: [],
-        nonGoals: [],
-        deliverableDocuments: [],
-        expectedOutputs: outputArtifactRefs,
-        testCases: [],
-        acceptanceCriteria: ["Produce a concise workflow summary."],
-      },
-    } : {}),
+    nodePromptSpec: fixtureNodePromptSpec(id, name, outputArtifactRefs),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,
@@ -190,6 +177,40 @@ function task(
     evaluatorProfileRef,
     recoveryStrategyRefs: ["retry-same-agent"],
     rationale: `Select ${agentProfileRef} for ${id}`,
+  };
+}
+
+function fixtureNodePromptSpec(
+  id: string,
+  name: string,
+  expectedOutputs: string[],
+): NonNullable<WorkflowCompositionTask["nodePromptSpec"]> {
+  const nodeType = id.startsWith("understand-")
+    ? "plan"
+    : id.startsWith("implement-")
+      ? "implement"
+      : id.startsWith("verify-")
+        ? "verify"
+        : id.startsWith("review-")
+          ? "review"
+          : id.startsWith("summarize-")
+            ? "summary"
+            : "general";
+  return {
+    nodeType,
+    goal: `${name}: complete the task responsibility.`,
+    requirements: ["Satisfy the linked Goal Contract requirement."],
+    boundaries: ["Stay within the declared task responsibility."],
+    nonGoals: ["Do not perform unrelated workflow work."],
+    deliverableDocuments: [],
+    expectedOutputs,
+    testCases: [],
+    acceptanceCriteria: ["Produce the declared task output with evidence."],
+    ...(nodeType === "plan" ? { planningQuestions: ["What work and evidence are required?"] } : {}),
+    ...(nodeType === "implement" ? { implementationScope: ["Implement only the linked requirement."] } : {}),
+    ...(nodeType === "verify" ? { verificationChecks: ["Verify the linked requirement and its artifacts."] } : {}),
+    ...(nodeType === "review" ? { reviewChecklist: ["Review requirement coverage, quality, and risk."] } : {}),
+    ...(nodeType === "summary" ? { summarySections: ["completed work", "verification", "risks"] } : {}),
   };
 }
 

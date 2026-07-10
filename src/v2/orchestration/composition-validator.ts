@@ -28,6 +28,7 @@ import type { GoalContractV1 } from "./goal-contract.ts";
 export type ValidateWorkflowCompositionOptions = {
   scope?: string;
   goalContract?: GoalContractV1;
+  targetRequirementIds?: string[];
 };
 
 export async function validateWorkflowCompositionPlan(
@@ -46,7 +47,14 @@ export async function validateWorkflowCompositionPlan(
   }
   const constraints = compositionConstraintsForTemplate(packet, plan.selectedWorkflowTemplateRef);
   validateTaskDependencies(plan, issues);
-  if (options.goalContract) validateGoalRequirementCoverage(options.goalContract, plan, issues);
+  if (options.goalContract) {
+    validateGoalRequirementCoverage(
+      options.goalContract,
+      plan,
+      issues,
+      options.targetRequirementIds,
+    );
+  }
   validateCoverageConstraints(constraints, plan, issues);
   validateInputArtifactsAreSatisfied(plan, constraints, issues);
   validateTemplateSlotConstraints(plan.selectedWorkflowTemplateRef, constraints, plan, issues);
@@ -60,19 +68,48 @@ function validateGoalRequirementCoverage(
   goalContract: GoalContractV1,
   plan: WorkflowCompositionPlan,
   issues: WorkflowCompositionValidationIssue[],
+  targetRequirementIds: string[] | undefined,
 ): void {
   const knownRequirementIds = new Set(goalContract.requirements.map((requirement) => requirement.id));
+  const targetRequirementIdSet = targetRequirementIds === undefined
+    ? knownRequirementIds
+    : new Set(targetRequirementIds);
+  if (targetRequirementIds !== undefined && targetRequirementIdSet.size === 0) {
+    issues.push(issue(
+      "target_requirement_scope_empty",
+      "targetRequirementIds",
+      "targetRequirementIds must contain at least one Goal Contract requirement id",
+    ));
+  }
+  for (const targetRequirementId of targetRequirementIdSet) {
+    if (knownRequirementIds.has(targetRequirementId)) continue;
+    issues.push(issue(
+      "unknown_target_requirement_id",
+      "targetRequirementIds",
+      `targetRequirementIds references unknown Goal Contract requirement: ${targetRequirementId}`,
+    ));
+  }
+  const validTargetRequirementIds = new Set(
+    [...targetRequirementIdSet].filter((requirementId) => knownRequirementIds.has(requirementId)),
+  );
   for (const [taskIndex, task] of plan.tasks.entries()) {
     const requirementIds = task.requirementIds ?? [];
     for (const requirementId of requirementIds) {
-      if (knownRequirementIds.has(requirementId)) continue;
-      issues.push(issue(
-        "unknown_requirement_id",
-        `tasks.${taskIndex}.requirementIds`,
-        `task ${task.id} references unknown Goal Contract requirement: ${requirementId}`,
-      ));
+      if (!knownRequirementIds.has(requirementId)) {
+        issues.push(issue(
+          "unknown_requirement_id",
+          `tasks.${taskIndex}.requirementIds`,
+          `task ${task.id} references unknown Goal Contract requirement: ${requirementId}`,
+        ));
+      } else if (!validTargetRequirementIds.has(requirementId)) {
+        issues.push(issue(
+          "requirement_outside_target_scope",
+          `tasks.${taskIndex}.requirementIds`,
+          `task ${task.id} references Goal Contract requirement outside targetRequirementIds: ${requirementId}`,
+        ));
+      }
     }
-    if (requirementIds.some((requirementId) => knownRequirementIds.has(requirementId))) continue;
+    if (requirementIds.some((requirementId) => validTargetRequirementIds.has(requirementId))) continue;
     if (isCoverageExceptionTask(task)) continue;
     issues.push(issue(
       "task_without_requirement_coverage",
@@ -81,10 +118,16 @@ function validateGoalRequirementCoverage(
     ));
   }
 
-  const coverage = buildGoalRequirementCoverage({ goalContract, composition: plan });
+  if (validTargetRequirementIds.size === 0) return;
+  const coverage = buildGoalRequirementCoverage({
+    goalContract,
+    composition: plan,
+    targetRequirementIds: [...validTargetRequirementIds],
+  });
   const coverageByRequirementId = new Map(coverage.entries.map((entry) => [entry.requirementId, entry]));
   const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
   for (const [requirementIndex, requirement] of goalContract.requirements.entries()) {
+    if (!validTargetRequirementIds.has(requirement.id)) continue;
     if (!requirement.blocking) continue;
     const entry = coverageByRequirementId.get(requirement.id)!;
     const path = `goalContract.requirements.${requirementIndex}`;

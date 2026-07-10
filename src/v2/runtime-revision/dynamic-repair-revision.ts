@@ -85,6 +85,16 @@ export async function maybeApplyDynamicRepairRevisionPg(
     if (!failedTaskRow) throw new Error(`failed task not found: ${input.runId}/${input.failedTaskId}`);
     const failedTask = run.workflow_manifest_json.tasks.find((task) => task.id === input.failedTaskId);
     if (!failedTask) throw new Error(`failed task missing from manifest: ${input.failedTaskId}`);
+    const targetRequirementIds = taskRequirementIds(failedTask);
+    if (targetRequirementIds.length === 0) {
+      return { status: "skipped", reason: "dynamic-repair-target-requirements-missing" };
+    }
+    const knownRequirementIds = new Set(
+      goalContractLineage.goalContract.requirements.map((requirement) => requirement.id),
+    );
+    if (targetRequirementIds.some((requirementId) => !knownRequirementIds.has(requirementId))) {
+      return { status: "skipped", reason: "dynamic-repair-target-requirements-invalid" };
+    }
     const failedProfile = run.workflow_manifest_json.agentProfiles?.find((profile) => profile.id === failedTask.agentProfileRef);
     if (failedProfile?.workerKind !== "validation_worker") {
       return { status: "skipped", reason: "failed-task-is-not-validation-worker" };
@@ -120,6 +130,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       failedArtifactRefId: input.failedArtifactRefId,
       failedArtifact: input.failedArtifact,
       profileHints,
+      targetRequirementIds,
       round,
       maxRounds,
     });
@@ -150,6 +161,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       db: tx,
       goalPrompt: repairGoalPrompt,
       goalContract: repairGoalContract,
+      targetRequirementIds,
       candidatePacket,
       composer: repairLoopComposer,
       scope: candidateScope,
@@ -170,6 +182,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       goalContract: repairGoalContract,
       candidatePacket,
       composition: compositionForCompile,
+      targetRequirementIds,
       scope: candidateScope,
       manifestDomain: run.workflow_manifest_json.domain ?? scope,
     });
@@ -178,6 +191,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       rootFailedTaskId,
       failedTaskDependsOn: dependencyList(failedTaskRow.depends_on_json),
       failedArtifactRefId: input.failedArtifactRefId,
+      targetRequirementIds,
       round,
     });
     const reconnectTargetTaskId = dynamicRepairReconnectTargetTaskId(newTasks, compiled.workflow.agentProfiles);
@@ -368,6 +382,7 @@ function rewriteDynamicRepairTasks(
     rootFailedTaskId: string;
     failedTaskDependsOn: string[];
     failedArtifactRefId?: string;
+    targetRequirementIds: string[];
     round: number;
   },
 ): WorkflowTaskDefinition[] {
@@ -388,6 +403,7 @@ function rewriteDynamicRepairTasks(
       dependsOn,
       promptInputs: {
         ...(task.promptInputs ?? {}),
+        requirementIds: [...input.targetRequirementIds],
         dynamicRepair: {
           originalFailedTaskId: input.rootFailedTaskId,
           rootFailedTaskId: input.rootFailedTaskId,
@@ -498,6 +514,7 @@ function dynamicRepairGoalPrompt(input: {
   failedArtifactRefId?: string;
   failedArtifact?: unknown;
   profileHints: DynamicRepairProfileHints;
+  targetRequirementIds: string[];
   round: number;
   maxRounds: number;
 }): string {
@@ -508,8 +525,10 @@ function dynamicRepairGoalPrompt(input: {
     `Failed validation task: ${input.failedTask.id}`,
     `Root failed validation task: ${input.rootFailedTaskId}`,
     `Repair round: ${input.round} of ${input.maxRounds}`,
+    `Target Goal Contract requirement ids: ${input.targetRequirementIds.join(", ")}`,
     input.failedArtifactRefId ? `Failed artifact ref: ${input.failedArtifactRefId}` : "",
     "Generate only appended runtime repair nodes, not a replacement initial workflow.",
+    "Every repair/reverify task must reference only the target Goal Contract requirement ids listed above.",
     "Generate one bounded repair task followed by one reverify task unless the failure evidence clearly requires a smaller or larger bounded set.",
     "The repair task must use workerKind=repair_worker, consume the failed verification report and prior implementation artifacts, preserve existing behavior, fix only reported blocking failures, and output a repaired implementation artifact.",
     "The reverify task must use workerKind=validation_worker, depend on the repair task, rerun the failed checks plus relevant regression checks, and output artifact.verification_report with pass, safeToSave, blockingTests/testResults, evidence, and remaining failures.",
@@ -735,6 +754,13 @@ function dynamicRevisionResourceKey(runId: string, failedTaskId: string, round: 
 
 function dependencyList(value: unknown): string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string") ? value : [];
+}
+
+function taskRequirementIds(task: WorkflowTaskDefinition): string[] {
+  const requirementIds = task.promptInputs?.requirementIds;
+  return Array.isArray(requirementIds) && requirementIds.every((item) => typeof item === "string")
+    ? unique(requirementIds)
+    : [];
 }
 
 function unique(values: string[]): string[] {

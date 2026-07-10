@@ -46,6 +46,7 @@ export type CompileWorkflowCompositionInput = {
   goalContract: GoalContractV1;
   candidatePacket: CandidatePacket;
   composition: WorkflowCompositionPlan;
+  targetRequirementIds?: string[];
   scope?: string;
   manifestDomain?: string;
 };
@@ -81,6 +82,7 @@ export async function compileWorkflowComposition(
   const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, {
     scope: libraryScope,
     goalContract: input.goalContract,
+    targetRequirementIds: input.targetRequirementIds,
   });
   if (!validation.ok) {
     throw new Error(`workflow composition failed validation: ${JSON.stringify(validation.issues)}`);
@@ -215,6 +217,7 @@ export async function compileWorkflowComposition(
   const goalRequirementCoverage = buildGoalRequirementCoverage({
     goalContract: input.goalContract,
     composition: input.composition,
+    targetRequirementIds: input.targetRequirementIds,
   });
 
   return {
