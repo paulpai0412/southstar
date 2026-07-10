@@ -1,10 +1,11 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { acceptOrRejectArtifactRefPg } from "../artifacts/artifact-ref-store.ts";
+import { acceptOrRejectArtifactRefPg, artifactRefIdentity } from "../artifacts/artifact-ref-store.ts";
 import { recordArtifactRepairMarkerPg } from "../artifacts/lineage.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
+import { recordRequirementEvaluatorResultsPg } from "../evaluators/requirement-evaluator-results.ts";
 import { writeCallbackMemoryPg } from "../memory/writeback-policy.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
@@ -169,6 +170,28 @@ export async function ingestTaskRunResultPg(
     }
 
     const effectiveResult = semanticCallbackResult(result);
+    const identity = artifactRefIdentity({
+      runId: effectiveResult.runId,
+      taskId: effectiveResult.taskId,
+      attemptId,
+      content: effectiveResult.artifact,
+    });
+    const requirementEvaluation = await recordRequirementEvaluatorResultsPg(tx, {
+      runId: effectiveResult.runId,
+      taskId: effectiveResult.taskId,
+      artifactRefId: identity.artifactRefId,
+      artifact: effectiveResult.artifact,
+      callbackOk: effectiveResult.ok,
+      now: effectiveResult.receivedAt,
+    });
+    const accepted = effectiveResult.ok && requirementEvaluation.ok;
+    const evaluatedResult = accepted === effectiveResult.ok ? effectiveResult : { ...effectiveResult, ok: accepted };
+    const semanticOutcome = effectiveResult.ok !== result.ok
+      ? "verification_failed"
+      : accepted !== result.ok
+        ? "requirement_evidence_failed"
+        : undefined;
+    const contractRefs = await artifactContractRefsForTaskPg(tx, effectiveResult.runId, effectiveResult.taskId);
 
     const artifactRef = await acceptOrRejectArtifactRefPg(tx, {
       runId: effectiveResult.runId,
@@ -178,13 +201,13 @@ export async function ingestTaskRunResultPg(
       handExecutionId,
       producer: { actorType: "hand", providerId: "tork" },
       artifactType: artifactType(effectiveResult.artifact),
-      status: effectiveResult.ok ? "accepted" : "rejected",
+      status: accepted ? "accepted" : "rejected",
       content: effectiveResult.artifact,
-      contractRefs: [`task:${effectiveResult.taskId}:completion`],
+      contractRefs,
       summary: `Callback artifact ${effectiveResult.taskId}`,
       failedArtifactRefs: failedArtifactRefIds(effectiveResult.artifact),
-      evidenceRefs: [],
-      evaluatorResultRefs: [],
+      evidenceRefs: requirementEvaluation.evidenceRefs,
+      evaluatorResultRefs: requirementEvaluation.evaluatorResultRefs,
       sourceEventRefs: [receipt.idempotencyKey],
     });
 
@@ -198,8 +221,8 @@ export async function ingestTaskRunResultPg(
         artifactResourceId: artifactRef.resourceId,
         artifactRefId: artifactRef.artifactRefId,
         attempts: effectiveResult.attempts,
-        accepted: effectiveResult.ok,
-        ...(effectiveResult.ok !== result.ok ? { semanticOutcome: "verification_failed" } : {}),
+        accepted,
+        ...(semanticOutcome ? { semanticOutcome } : {}),
       },
     });
 
@@ -207,13 +230,13 @@ export async function ingestTaskRunResultPg(
       runId: effectiveResult.runId,
       taskId: effectiveResult.taskId,
       sessionId: effectiveResult.rootSessionId,
-      ok: effectiveResult.ok,
+      ok: accepted,
       artifact: effectiveResult.artifact,
       artifactRefId: artifactRef.artifactRefId,
       artifactResourceId: artifactRef.resourceId,
     });
     await recordCallbackArtifactRepairMarkersPg(tx, {
-      result: effectiveResult,
+      result: evaluatedResult,
       rejectedArtifactRefId: artifactRef.artifactRefId,
       rejectedArtifactResourceId: artifactRef.resourceId,
     });
@@ -224,17 +247,17 @@ export async function ingestTaskRunResultPg(
       if (binding) {
         await updateExecutorBindingStatusPg(tx, {
           bindingId,
-          status: effectiveResult.ok ? "completed" : "failed",
+          status: accepted ? "completed" : "failed",
           eventType: "executor.callback_completed",
           payloadPatch: {
             callbackReceivedAt: effectiveResult.receivedAt ?? new Date().toISOString(),
             terminalObservedAt: effectiveResult.receivedAt ?? new Date().toISOString(),
           },
           eventPayload: {
-            accepted: effectiveResult.ok,
+            accepted,
             artifactResourceId: artifactRef.resourceId,
             artifactRefId: artifactRef.artifactRefId,
-            ...(effectiveResult.ok !== result.ok ? { semanticOutcome: "verification_failed" } : {}),
+            ...(semanticOutcome ? { semanticOutcome } : {}),
           },
         });
       } else {
@@ -245,11 +268,11 @@ export async function ingestTaskRunResultPg(
           eventType: "executor.callback_completed",
           actorType: "orchestrator",
           payload: {
-            accepted: effectiveResult.ok,
+            accepted,
             artifactResourceId: artifactRef.resourceId,
             artifactRefId: artifactRef.artifactRefId,
             legacyBindingMissing: true,
-            ...(effectiveResult.ok !== result.ok ? { semanticOutcome: "verification_failed" } : {}),
+            ...(semanticOutcome ? { semanticOutcome } : {}),
           },
         });
       }
@@ -261,16 +284,16 @@ export async function ingestTaskRunResultPg(
         eventType: "executor.callback_completed",
         actorType: "orchestrator",
         payload: {
-          accepted: effectiveResult.ok,
+          accepted,
           artifactResourceId: artifactRef.resourceId,
           artifactRefId: artifactRef.artifactRefId,
-          ...(effectiveResult.ok !== result.ok ? { semanticOutcome: "verification_failed" } : {}),
+          ...(semanticOutcome ? { semanticOutcome } : {}),
         },
       });
     }
 
     await patchManagedHandExecutionTerminalPg(tx, {
-      result: effectiveResult,
+      result: evaluatedResult,
       attemptId,
       handExecutionId,
       artifactRefId: artifactRef.artifactRefId,
@@ -279,20 +302,27 @@ export async function ingestTaskRunResultPg(
 
     await tx.query(
       "update southstar.workflow_tasks set status = $1, updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $2 and id = $3",
-      [effectiveResult.ok ? "completed" : "failed", effectiveResult.runId, effectiveResult.taskId],
+      [accepted ? "completed" : "failed", effectiveResult.runId, effectiveResult.taskId],
     );
 
-    const dynamicRepairRevision = effectiveResult.ok || !options.workflowComposer
+    const dynamicRepairRevision = accepted || !options.workflowComposer
       ? undefined
       : await safeApplyDynamicRepairRevisionPg(tx, {
         runId: effectiveResult.runId,
         failedTaskId: effectiveResult.taskId,
         failedArtifactRefId: artifactRef.artifactRefId,
-        failedArtifact: effectiveResult.artifact,
+        failedArtifact: {
+          ...asRecord(effectiveResult.artifact),
+          requirementEvaluation: {
+            findings: requirementEvaluation.findings,
+            evidenceRefs: requirementEvaluation.evidenceRefs,
+            evaluatorResultRefs: requirementEvaluation.evaluatorResultRefs,
+          },
+        },
         workflowComposer: options.workflowComposer,
         maxDynamicRepairRounds: options.maxDynamicRepairRounds,
       });
-    if (!effectiveResult.ok) {
+    if (!accepted) {
       await appendHistoryEventPg(tx, {
         runId: effectiveResult.runId,
         taskId: effectiveResult.taskId,
@@ -320,7 +350,7 @@ export async function ingestTaskRunResultPg(
     }
 
     return {
-      accepted: effectiveResult.ok,
+      accepted,
       artifactResourceId: artifactRef.resourceId,
       artifactRefId: artifactRef.artifactRefId,
       ...(dynamicRepairRevision ? { dynamicRepairRevision } : {}),
@@ -614,6 +644,21 @@ function normalizedAttemptId(result: PostgresTaskRunCallbackResult): string {
 
 function canonicalHandExecutionId(runId: string, taskId: string, attemptId: string): string {
   return `hand-execution:${runId}:${taskId}:${attemptId}`;
+}
+
+async function artifactContractRefsForTaskPg(db: SouthstarDb, runId: string, taskId: string): Promise<string[]> {
+  const run = await db.one<{ workflow_manifest_json: unknown }>(
+    "select workflow_manifest_json from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  const tasks = asRecord(run.workflow_manifest_json).tasks;
+  const task = Array.isArray(tasks)
+    ? tasks.map(asRecord).find((candidate) => candidate.id === taskId)
+    : undefined;
+  return [...new Set([
+    ...stringArray(task?.requiredArtifactRefs),
+    `task:${taskId}:completion`,
+  ])].sort();
 }
 
 function artifactType(artifact: unknown): string {

@@ -11,6 +11,7 @@ export type BuildEvidencePacketInput = {
   artifactRef: string;
   requiredEvidenceKinds: EvidenceKind[];
   artifact: Record<string, unknown>;
+  identityScope?: string;
   now?: string;
 };
 
@@ -22,7 +23,11 @@ export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePa
   const presentCount = evidenceItems.filter((item) => item.status === "present").length;
   return {
     schemaVersion: EVIDENCE_PACKET_SCHEMA_VERSION,
-    id: `evidence-${input.runId}-${input.taskId}-${shortHash(`${input.artifactRef}:${requiredKinds.join(",")}`)}`,
+    id: `evidence-${input.runId}-${input.taskId}-${shortHash([
+      input.artifactRef,
+      ...(input.identityScope ? [input.identityScope] : []),
+      requiredKinds.join(","),
+    ].join(":"))}`,
     runId: input.runId,
     taskId: input.taskId,
     artifactRef: input.artifactRef,

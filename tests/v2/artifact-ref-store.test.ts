@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   acceptOrRejectArtifactRefPg,
   acceptedArtifactTaskIdsForRunPg,
+  artifactRefIdentity,
   sha256Stable,
 } from "../../src/v2/artifacts/artifact-ref-store.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
@@ -336,6 +337,26 @@ test("sha256Stable sorts object keys, preserves array order, and omits object un
   assert.equal(sha256Stable({ b: 2, a: 1 }), sha256Stable({ a: 1, b: 2 }));
   assert.notEqual(sha256Stable(["a", "b"]), sha256Stable(["b", "a"]));
   assert.equal(sha256Stable({ a: 1, b: undefined }), sha256Stable({ a: 1 }));
+});
+
+test("artifactRefIdentity matches the identity persisted by acceptOrRejectArtifactRefPg", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-artifact-ref-identity";
+    const taskId = "task-a";
+    const content = { b: 2, a: 1 };
+    await seedRun(db, runId);
+
+    const identity = artifactRefIdentity({ runId, taskId, attemptId: "attempt-1", content });
+    const persisted = await acceptOrRejectArtifactRefPg(db, artifactRefInput({ runId, taskId, content }));
+
+    assert.deepEqual(identity, {
+      artifactRefId: persisted.artifactRefId,
+      contentHash: persisted.contentHash,
+    });
+  } finally {
+    await db.close();
+  }
 });
 
 async function seedRun(db: Awaited<ReturnType<typeof createTestPostgresDb>>, runId: string): Promise<void> {

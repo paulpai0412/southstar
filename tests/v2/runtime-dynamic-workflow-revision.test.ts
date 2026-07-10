@@ -1348,6 +1348,7 @@ function bindRequirementIds(
 }
 
 async function seedDynamicRepairPrimitives(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
+  await upsertLibraryObject(db, { objectKey: "template.graph-dynamic-workflow", objectKind: "workflow_template", status: "approved", headVersionId: "template.graph-dynamic-workflow@1", state: { scope: "software", title: "Dynamic repair workflow" } });
   await upsertLibraryObject(db, { objectKey: "capability.frontend-ui", objectKind: "capability_spec", status: "approved", headVersionId: "capability.frontend-ui@1", state: { scope: "software", title: "Frontend UI" } });
   await upsertLibraryObject(db, { objectKey: "agent.frontend-developer", objectKind: "agent_definition", status: "approved", headVersionId: "agent.frontend-developer@1", state: { scope: "software", title: "Frontend Developer" } });
   await upsertLibraryObject(db, { objectKey: "skill.react-ui", objectKind: "skill_spec", status: "approved", headVersionId: "skill.react-ui@1", state: { scope: "software", title: "React UI", body: "# Instructions\n\nBuild React UI." } });
