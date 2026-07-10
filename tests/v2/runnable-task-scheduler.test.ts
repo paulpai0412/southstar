@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import type { QueryResultRow } from "pg";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
@@ -483,13 +484,18 @@ test("runnable scheduler records runtime exception and reprovision decision when
     const fixture = scheduler(db, { executeTaskFailureOutput: rawFailure });
     await assert.rejects(
       () => fixture.scheduler.runOnce({ runId: "run-scheduler-hand-submit-exception" }),
-      /provider unreachable/,
+      (error: unknown) => {
+        assert.match((error as Error).message, /provider unreachable/);
+        assert.doesNotMatch((error as Error).message, /sk-1234567890abcdefghijklmnopqrstuvwxyz/);
+        return true;
+      },
     );
 
     assert.deepEqual(fixture.executeTaskCalls.map((call) => call.taskId), ["task-a"]);
     assert.equal((await taskRow(db, "run-scheduler-hand-submit-exception", "task-a")).status, "failed");
     const history = await listHistoryForRunPg(db, "run-scheduler-hand-submit-exception");
     assert.equal(history.some((event) => event.eventType === "hand.execute_failed" && event.taskId === "task-a"), true);
+    assert.doesNotMatch(JSON.stringify(history), /sk-1234567890abcdefghijklmnopqrstuvwxyz/);
 
     const exceptions = (await listResourcesPg(db, { resourceType: "runtime_exception" }))
       .filter((resource) => resource.runId === "run-scheduler-hand-submit-exception");
@@ -508,6 +514,7 @@ test("runnable scheduler records runtime exception and reprovision decision when
     assert.equal(decisions.length, 1);
     assert.equal(decisions[0]?.payload.path, "reprovision-hand");
     assert.equal(decisions[0]?.payload.exceptionId, exceptions[0]?.payload.exceptionId);
+    assert.doesNotMatch(JSON.stringify([...exceptions, ...decisions]), /sk-1234567890abcdefghijklmnopqrstuvwxyz/);
   } finally {
     await db.close();
   }
@@ -524,10 +531,15 @@ test("runnable scheduler terminalizes the pre-persisted hand execution when prov
     });
     await seedContextPacket(db, "run-scheduler-provider-throws", "task-a");
 
-    const fixture = scheduler(db, { throwExecuteTask: true });
+    const rawSecret = "sk-throw1234567890abcdefghijklmnopqrstuvwxyz";
+    const fixture = scheduler(db, { throwExecuteTask: true, throwExecuteTaskMessage: `provider submit threw ${rawSecret}` });
     await assert.rejects(
       fixture.scheduler.runOnce({ runId: "run-scheduler-provider-throws" }),
-      /provider submit threw/,
+      (error: unknown) => {
+        assert.match((error as Error).message, /provider submit threw/);
+        assert.doesNotMatch((error as Error).message, new RegExp(rawSecret));
+        return true;
+      },
     );
 
     const handExecution = (await listResourcesPg(db, { resourceType: "hand_execution" }))
@@ -535,6 +547,11 @@ test("runnable scheduler terminalizes the pre-persisted hand execution when prov
     assert.equal(handExecution?.status, "failed");
     assert.equal(handExecution?.payload.status, "failed");
     assert.equal((await taskRow(db, "run-scheduler-provider-throws", "task-a")).status, "failed");
+    const persisted = [
+      ...(await listHistoryForRunPg(db, "run-scheduler-provider-throws")),
+      ...(await listResourcesPg(db, {})).filter((resource) => resource.runId === "run-scheduler-provider-throws"),
+    ];
+    assert.doesNotMatch(JSON.stringify(persisted), new RegExp(rawSecret));
   } finally {
     await db.close();
   }
@@ -565,6 +582,83 @@ test("runnable scheduler does not reopen task or hand state after a fast callbac
   } finally {
     await db.close();
   }
+});
+
+test("runnable scheduler ignores a provider rejection after a fast callback completed the task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    const runId = "run-scheduler-fast-callback-provider-rejects";
+    await seedRun(db, {
+      runId,
+      maxParallelTasks: 1,
+      tasks: [{ id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] }],
+    });
+    await seedContextPacket(db, runId, "task-a");
+
+    const fixture = scheduler(db, { fastCallback: true, failExecuteTask: true });
+    await assert.rejects(fixture.scheduler.runOnce({ runId }), /hand execution failed/);
+
+    assert.equal((await taskRow(db, runId, "task-a")).status, "completed");
+    const handExecution = (await listResourcesPg(db, { resourceType: "hand_execution" }))
+      .find((resource) => resource.runId === runId && resource.taskId === "task-a");
+    assert.equal(handExecution?.status, "completed");
+    const bindings = await listManagedBindingsForRunPg(db, runId);
+    assert.equal(bindings.brainBindings[0]?.status, "succeeded");
+    assert.equal(bindings.handBindings[0]?.status, "succeeded");
+    assert.equal((await listResourcesPg(db, { resourceType: "runtime_exception" })).filter((resource) => resource.runId === runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_decision" })).filter((resource) => resource.runId === runId).length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler ignores a provider throw after a fast callback completed the task", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    const runId = "run-scheduler-fast-callback-provider-throws";
+    await seedRun(db, {
+      runId,
+      maxParallelTasks: 1,
+      tasks: [{ id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] }],
+    });
+    await seedContextPacket(db, runId, "task-a");
+
+    const fixture = scheduler(db, { fastCallback: true, throwExecuteTask: true });
+    await assert.rejects(fixture.scheduler.runOnce({ runId }), /provider submit threw/);
+
+    assert.equal((await taskRow(db, runId, "task-a")).status, "completed");
+    const handExecution = (await listResourcesPg(db, { resourceType: "hand_execution" }))
+      .find((resource) => resource.runId === runId && resource.taskId === "task-a");
+    assert.equal(handExecution?.status, "completed");
+    const bindings = await listManagedBindingsForRunPg(db, runId);
+    assert.equal(bindings.brainBindings[0]?.status, "succeeded");
+    assert.equal(bindings.handBindings[0]?.status, "succeeded");
+    assert.equal((await listResourcesPg(db, { resourceType: "runtime_exception" })).filter((resource) => resource.runId === runId).length, 0);
+    assert.equal((await listResourcesPg(db, { resourceType: "recovery_decision" })).filter((resource) => resource.runId === runId).length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("scheduler finalization paths share workflow run, task, hand execution, then binding lock order", () => {
+  const source = readFileSync(new URL("../../src/v2/scheduler/runnable-task-scheduler.ts", import.meta.url), "utf8");
+  const helperStart = source.indexOf("async function lockDispatchFinalizationPg");
+  const helperEnd = source.indexOf("\nasync function", helperStart + 1);
+  assert.notEqual(helperStart, -1, "missing shared dispatch finalization lock helper");
+  const helper = source.slice(helperStart, helperEnd);
+  const positions = [
+    helper.indexOf("southstar.workflow_runs"),
+    helper.indexOf("southstar.workflow_tasks"),
+    helper.indexOf("resource_type = 'hand_execution'"),
+    helper.indexOf("resource_type = 'brain_binding'"),
+    helper.indexOf("resource_type = 'hand_binding'"),
+  ];
+  assert.equal(positions.every((position) => position >= 0), true, "all finalization locks must be explicit");
+  assert.deepEqual([...positions].sort((left, right) => left - right), positions);
+  assert.match(source.slice(source.indexOf("async function finalizeSubmittedHandExecutionPg"), helperStart), /lockDispatchFinalizationPg/);
+  assert.match(source.slice(source.indexOf("async function markTaskDispatchFailed")), /lockDispatchFinalizationPg/);
 });
 
 test("runnable scheduler blocks pre-execution tool proxy violations without persisting leaked intent or retrying", async () => {
@@ -658,6 +752,7 @@ function scheduler(
     brainProviderId?: string;
     assertHandExecutionBeforeProvider?: boolean;
     throwExecuteTask?: boolean;
+    throwExecuteTaskMessage?: string;
     fastCallback?: boolean;
   } = {},
 ) {
@@ -678,7 +773,6 @@ function scheduler(
         assert.equal((persisted?.payload_json as { externalJobId?: string } | undefined)?.externalJobId, undefined);
         persistedBeforeProvider = true;
       }
-      if (input.throwExecuteTask) throw new Error("provider submit threw");
       if (input.fastCallback) {
         await ingestTaskRunResultPg(db, {
           runId: executeTaskInput.runId,
@@ -693,6 +787,7 @@ function scheduler(
           receivedAt: "2026-07-11T00:00:00.000Z",
         });
       }
+      if (input.throwExecuteTask) throw new Error(input.throwExecuteTaskMessage ?? "provider submit threw");
       if (input.failExecuteTask || input.executeTaskFailureOutput) {
         return { ok: false, output: input.executeTaskFailureOutput ?? `hand execution failed for ${executeTaskInput.taskId}`, metadata: {} };
       }

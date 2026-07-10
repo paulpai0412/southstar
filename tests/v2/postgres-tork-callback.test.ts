@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
-import { createWorkflowRunPg, createWorkflowTaskPg, getResourceByKeyPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, getResourceByKeyPg, listHistoryForRunPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createExecutorBindingPg, getExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../../src/v2/artifacts/types.ts";
-import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref-store.ts";
+import { acceptOrRejectArtifactRefPg, artifactRefIdentity } from "../../src/v2/artifacts/artifact-ref-store.ts";
 import { ingestTaskRunResultPg, type PostgresTaskRunCallbackResult } from "../../src/v2/executor/postgres-tork-callback.ts";
 import { persistBrainBindingPg, persistHandBindingPg } from "../../src/v2/meta-harness/postgres-bindings.ts";
 import { createRuntimeServerClient } from "../../src/v2/server/client.ts";
@@ -358,6 +358,35 @@ test("Postgres Tork callback ignores non-identical callback for an already termi
     } finally {
       await server.close();
     }
+  });
+});
+
+test("cancelled callback replay returns the durable receipt without duplicating audit rows", async () => {
+  await withDb(async (db) => {
+    const runId = "run-callback-cancelled-replay";
+    await seedRunTask(db, runId, "task-1");
+    await db.query("update southstar.workflow_runs set status = 'cancelled' where id = $1", [runId]);
+    const callback: PostgresTaskRunCallbackResult = {
+      runId,
+      taskId: "task-1",
+      rootSessionId: "session-1",
+      ok: false,
+      attempts: 1,
+      attemptId: "attempt-1",
+      artifact: { kind: "implementation_report", summary: "cancelled" },
+      metrics: {},
+      events: [],
+    };
+
+    const first = await ingestTaskRunResultPg(db, callback);
+    const replay = await ingestTaskRunResultPg(db, callback);
+
+    assert.equal(first.ignoredRunStatus, "cancelled");
+    assert.equal(replay.duplicate, true);
+    assert.equal(replay.ignoredRunStatus, "cancelled");
+    const history = await listHistoryForRunPg(db, runId);
+    assert.equal(history.filter((event) => event.eventType === "executor.callback_received").length, 1);
+    assert.equal(history.filter((event) => event.eventType === "executor.callback_ignored_cancelled_run").length, 1);
   });
 });
 
@@ -827,6 +856,92 @@ test("retry keeps old rejected evaluator resources immutable", async () => {
   });
 });
 
+test("committed old-attempt callback replay remains duplicate after a newer evaluator attempt exists", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-old-attempt-replay");
+    const callback = validVerifierCallback(fixture);
+    const first = await ingestTaskRunResultPg(db, callback);
+    await db.query(
+      "update southstar.workflow_tasks set status = 'running', root_session_id = 'session-2', completed_at = null where run_id = $1 and id = 'task-verify'",
+      [fixture.runId],
+    );
+    await seedEvaluatorAttempt(db, {
+      runId: fixture.runId,
+      taskId: "task-verify",
+      sessionId: "session-2",
+      attemptId: "attempt-2",
+      evaluatorPipelineRef: "software-verification-quality",
+    });
+    const before = await evaluatorResourceCount(db, fixture.runId);
+
+    const replay = await ingestTaskRunResultPg(db, callback);
+
+    assert.equal(replay.duplicate, true);
+    assert.equal(replay.artifactRefId, first.artifactRefId);
+    assert.equal(await evaluatorResourceCount(db, fixture.runId), before);
+  });
+});
+
+test("second callback transaction checks a concurrently committed receipt before current attempt identity", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-receipt-race");
+    const callback = validVerifierCallback(fixture);
+    const attemptId = callback.attemptId!;
+    const handExecutionId = `hand-execution:${fixture.runId}:task-verify:${attemptId}`;
+    const artifactHash = createHash("sha256").update(stableStringify(callback.artifact)).digest("hex");
+    const receiptKey = `${handExecutionId}:callback:${artifactHash}`;
+    let resourceCountAfterConcurrentCommit = 0;
+    const racedDb = withBeforeTopLevelTransaction(db, 2, async () => {
+      await acceptOrRejectArtifactRefPg(db, {
+        runId: fixture.runId,
+        taskId: "task-verify",
+        sessionId: "session-1",
+        attemptId,
+        handExecutionId,
+        producer: { actorType: "hand", providerId: "tork" },
+        artifactType: "verification_report",
+        status: "accepted",
+        content: callback.artifact,
+        contractRefs: ["implementation_report", "task:task-verify:completion"],
+        summary: "Concurrent callback artifact",
+        sourceEventRefs: [receiptKey],
+      });
+      await appendHistoryEventPg(db, {
+        runId: fixture.runId,
+        taskId: "task-verify",
+        sessionId: "session-1",
+        eventType: "executor.callback_received",
+        actorType: "executor",
+        idempotencyKey: receiptKey,
+        payload: { attempts: 1, attemptId, artifactHash },
+      });
+      await db.query(
+        "update southstar.workflow_tasks set status = 'running', root_session_id = 'session-2', completed_at = null where run_id = $1 and id = 'task-verify'",
+        [fixture.runId],
+      );
+      await seedEvaluatorAttempt(db, {
+        runId: fixture.runId,
+        taskId: "task-verify",
+        sessionId: "session-2",
+        attemptId: "attempt-2",
+        evaluatorPipelineRef: "software-verification-quality",
+      });
+      resourceCountAfterConcurrentCommit = (await listResourcesPg(db, {})).filter((resource) => resource.runId === fixture.runId).length;
+    });
+
+    const replay = await ingestTaskRunResultPg(racedDb, callback);
+
+    assert.equal(replay.duplicate, true);
+    assert.equal(replay.artifactRefId, artifactRefIdentity({
+      runId: fixture.runId,
+      taskId: "task-verify",
+      attemptId,
+      content: callback.artifact,
+    }).artifactRefId);
+    assert.equal((await listResourcesPg(db, {})).filter((resource) => resource.runId === fixture.runId).length, resourceCountAfterConcurrentCommit);
+  });
+});
+
 test("frozen coverage must match canonical Goal Contract hash and manifest task membership", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-hash-mismatch");
@@ -845,12 +960,44 @@ test("frozen coverage must match canonical Goal Contract hash and manifest task 
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-manifest-task-missing");
     await db.query(
-      "update southstar.workflow_runs set workflow_manifest_json = jsonb_set(workflow_manifest_json, '{tasks}', '[]'::jsonb) where id = $1",
+      `update southstar.workflow_runs
+          set workflow_manifest_json = jsonb_set(
+            workflow_manifest_json,
+            '{tasks}',
+            '[{"id":"task-build","requiredArtifactRefs":["implementation_report"]}]'::jsonb
+          )
+        where id = $1`,
       [fixture.runId],
     );
     await assert.rejects(
       ingestTaskRunResultPg(db, validVerifierCallback(fixture)),
       /manifest is missing evaluator task task-verify/,
+    );
+  });
+});
+
+test("frozen coverage rejects phantom producer tasks", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-phantom-producer");
+    const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
+    coverage.entries[0]!.producerTaskIds = ["task-phantom"];
+    await replaceRequirementCoverage(db, fixture.runId, coverage);
+    await assert.rejects(
+      ingestTaskRunResultPg(db, validVerifierCallback(fixture)),
+      /manifest is missing producer task task-phantom/,
+    );
+  });
+});
+
+test("frozen coverage rejects undeclared producer artifact contracts", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-undeclared-artifact");
+    const coverage = requirementCoverage(["req-offline"], fixture.goalContractHash);
+    coverage.entries[0]!.artifactRefs = ["artifact.not-declared-by-producer"];
+    await replaceRequirementCoverage(db, fixture.runId, coverage);
+    await assert.rejects(
+      ingestTaskRunResultPg(db, validVerifierCallback(fixture)),
+      /artifact ref artifact\.not-declared-by-producer is not declared by producer task/,
     );
   });
 });
@@ -874,6 +1021,32 @@ test("non-blocking uncovered Goal Contract entries do not block a valid evaluato
 
     const result = await ingestTaskRunResultPg(db, validVerifierCallback(fixture));
     assert.equal(result.accepted, true);
+  });
+});
+
+test("optional evaluator evidence is persisted without failing a passing blocking requirement", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-optional-evidence", {
+      requirementIds: ["req-blocking", "req-optional"],
+      nonBlockingRequirementIds: ["req-optional"],
+    });
+    const coverage = requirementCoverage(["req-blocking", "req-optional"], fixture.goalContractHash);
+    coverage.entries[0]!.requiredEvidenceKinds = ["artifact-ref"];
+    coverage.entries[1]!.requiredEvidenceKinds = ["artifact-ref", "screenshot"];
+    await replaceRequirementCoverage(db, fixture.runId, coverage);
+
+    const result = await ingestTaskRunResultPg(db, verifierCallback({
+      runId: fixture.runId,
+      artifact: {
+        kind: "verification_report",
+        pass: true,
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+      },
+    }));
+
+    assert.equal(result.accepted, true);
+    assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-blocking"))?.status, "passed");
+    assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-optional"))?.status, "blocked");
   });
 });
 
@@ -1034,12 +1207,28 @@ async function seedRequirementEvidenceRun(
   await db.query(
     `update southstar.workflow_runs
         set runtime_context_json = $2::jsonb,
-            workflow_manifest_json = workflow_manifest_json || $3::jsonb
+            workflow_manifest_json = jsonb_set(
+              workflow_manifest_json || $3::jsonb,
+              '{tasks}',
+              $4::jsonb
+            )
       where id = $1`,
     [
       runId,
       JSON.stringify({ draftId, goalContractHash: contractHash }),
       JSON.stringify(options.manifestArtifactContracts ? { artifactContracts: options.manifestArtifactContracts } : {}),
+      JSON.stringify([
+        {
+          id: "task-verify",
+          requiredArtifactRefs: ["implementation_report"],
+          evaluatorPipelineRef: "software-verification-quality",
+        },
+        {
+          id: "task-build",
+          requiredArtifactRefs: (options.coverageArtifactRefs ?? ["artifact.implementation_report"])
+            .map((ref) => ref.replace(/^artifact[.:]/, "")),
+        },
+      ]),
     ],
   );
   await createWorkflowTaskPg(db, {
@@ -1336,6 +1525,34 @@ function assertOrder(eventTypes: string[], before: string, after: string): void 
   assert.notEqual(beforeIndex, -1, `missing event ${before}`);
   assert.notEqual(afterIndex, -1, `missing event ${after}`);
   assert.equal(beforeIndex < afterIndex, true, `${before} should come before ${after}`);
+}
+
+function withBeforeTopLevelTransaction(
+  db: SouthstarDb,
+  transactionNumber: number,
+  before: () => Promise<void>,
+): SouthstarDb {
+  let count = 0;
+  return {
+    query: db.query.bind(db),
+    one: db.one.bind(db),
+    maybeOne: db.maybeOne.bind(db),
+    tx: async (run) => {
+      count += 1;
+      if (count === transactionNumber) await before();
+      return await db.tx(run);
+    },
+    close: async () => {},
+  };
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
 }
 
 async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {

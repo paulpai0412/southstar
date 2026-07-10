@@ -51,6 +51,18 @@ export async function ingestTaskRunResultPg(
     );
     if (!run) throw new Error(`callback run not found: ${result.runId}`);
 
+    const existingReceipt = await findCallbackReceiptPg(tx, result.runId, receipt.idempotencyKey);
+    if (existingReceipt) {
+      return {
+        kind: "result" as const,
+        result: {
+          ...(await duplicateCallbackOutcome(tx, result, receipt.idempotencyKey)),
+          duplicate: true,
+          ...(run.status === "cancelled" ? { ignoredRunStatus: run.status } : {}),
+        },
+      };
+    }
+
     if (run.status === "cancelled") {
       return { kind: "result" as const, result: await recordCancelledRunCallbackAuditPg(tx, result, receipt) };
     }
@@ -65,21 +77,6 @@ export async function ingestTaskRunResultPg(
       });
     } catch (error) {
       return { kind: "error" as const, error };
-    }
-
-    const existingReceipt = await tx.maybeOne<{ id: string }>(
-      "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
-      [result.runId, receipt.idempotencyKey],
-    );
-    if (existingReceipt) {
-      return {
-        kind: "result" as const,
-        result: {
-          ...(await duplicateCallbackOutcome(tx, result, receipt.idempotencyKey)),
-          duplicate: true,
-          ...(run.status === "cancelled" ? { ignoredRunStatus: run.status } : {}),
-        },
-      };
     }
 
     try {
@@ -100,6 +97,15 @@ export async function ingestTaskRunResultPg(
       [result.runId],
     );
     if (!run) throw new Error(`callback run not found: ${result.runId}`);
+
+    const existingReceipt = await findCallbackReceiptPg(tx, result.runId, receipt.idempotencyKey);
+    if (existingReceipt) {
+      return {
+        ...(await duplicateCallbackOutcome(tx, result, receipt.idempotencyKey)),
+        duplicate: true,
+        ...(run.status === "cancelled" ? { ignoredRunStatus: run.status } : {}),
+      };
+    }
     if (run.status === "cancelled") return await recordCancelledRunCallbackAuditPg(tx, result, receipt);
 
     const task = await tx.maybeOne<{ status: string; root_session_id: string | null }>(
@@ -115,12 +121,6 @@ export async function ingestTaskRunResultPg(
       attemptId: result.attemptId,
       handExecutionId,
     });
-
-    const existingReceipt = await tx.maybeOne<{ id: string }>(
-      "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
-      [result.runId, receipt.idempotencyKey],
-    );
-    if (existingReceipt) return { ...(await duplicateCallbackOutcome(tx, result, receipt.idempotencyKey)), duplicate: true };
 
     await appendHistoryEventPg(tx, {
       runId: result.runId,
@@ -382,6 +382,17 @@ export async function ingestTaskRunResultPg(
       ...(dynamicRepairRevision ? { dynamicRepairRevision } : {}),
     };
   });
+}
+
+async function findCallbackReceiptPg(
+  db: SouthstarDb,
+  runId: string,
+  idempotencyKey: string,
+): Promise<{ id: string } | null> {
+  return await db.maybeOne<{ id: string }>(
+    "select id from southstar.workflow_history where run_id = $1 and idempotency_key = $2",
+    [runId, idempotencyKey],
+  );
 }
 
 async function safeApplyDynamicRepairRevisionPg(

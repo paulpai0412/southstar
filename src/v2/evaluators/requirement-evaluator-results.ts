@@ -34,6 +34,7 @@ type CoverageEntry = GoalRequirementCoverageV1["entries"][number];
 type FrozenCoverageContext = {
   coverage: GoalRequirementCoverageV1;
   manifest: SouthstarWorkflowManifest;
+  blockingRequirementIds: Set<string>;
 };
 
 type EvaluatorCallbackIdentity = {
@@ -89,7 +90,10 @@ export async function recordRequirementEvaluatorResultsPg(
     evidenceRefs.push(evaluation.evidence.id);
     evaluatorResultRefs.push(evaluation.validator.id, evaluation.resourceKey);
     findings.push(...evaluation.result.findings);
-    if (evaluation.result.verdict !== "passed") ok = false;
+    if (
+      context.blockingRequirementIds.has(entry.requirementId)
+      && evaluation.result.verdict !== "passed"
+    ) ok = false;
   }
 
   return {
@@ -326,7 +330,13 @@ async function loadFrozenCoverageContextPg(
   if (coverage.goalContractHash !== canonicalHash) {
     throw new Error(`Goal Requirement Coverage for run ${runId} goalContractHash does not match canonical Goal Contract`);
   }
-  return { coverage, manifest };
+  return {
+    coverage,
+    manifest,
+    blockingRequirementIds: new Set(
+      goalContract.requirements.filter((requirement) => requirement.blocking).map((requirement) => requirement.id),
+    ),
+  };
 }
 
 function parseCoverage(
@@ -354,7 +364,9 @@ function parseCoverage(
     "policy-decision",
   ]);
   const requirements = new Map(goalContract.requirements.map((requirement) => [requirement.id, requirement]));
-  const manifestTaskIds = new Set(manifest.tasks.map((task) => task.id));
+  const manifestTasks = new Map(manifest.tasks.map((task) => [task.id, task]));
+  const manifestTaskIds = new Set(manifestTasks.keys());
+  const aliases = artifactContractAliases(manifest);
   const seenRequirements = new Set<string>();
   for (const [index, rawEntry] of coverage.entries.entries()) {
     const entry = asRecord(rawEntry);
@@ -378,6 +390,20 @@ function parseCoverage(
       fail(`${path}.requiredEvidenceKinds`);
     }
     if (requirement.blocking && entry.requiredEvidenceKinds.length === 0) fail(`${path}.requiredEvidenceKinds`);
+    for (const producerTaskId of entry.producerTaskIds as string[]) {
+      if (!manifestTaskIds.has(producerTaskId)) fail(`manifest is missing producer task ${producerTaskId}`);
+    }
+    const producerArtifactRefs = new Set(
+      (entry.producerTaskIds as string[]).flatMap((producerTaskId) =>
+        (manifestTasks.get(producerTaskId)?.requiredArtifactRefs ?? [])
+          .map((ref) => canonicalContractRef(ref, aliases))
+      ),
+    );
+    for (const artifactRef of entry.artifactRefs as string[]) {
+      if (!producerArtifactRefs.has(canonicalContractRef(artifactRef, aliases))) {
+        fail(`artifact ref ${artifactRef} is not declared by producer task`);
+      }
+    }
     for (const evaluatorTaskId of entry.evaluatorTaskIds as string[]) {
       if (!manifestTaskIds.has(evaluatorTaskId)) fail(`manifest is missing evaluator task ${evaluatorTaskId}`);
     }

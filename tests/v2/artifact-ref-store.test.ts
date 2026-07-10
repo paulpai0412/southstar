@@ -59,6 +59,35 @@ test("buildEvidencePacket marks malformed browser evidence invalid without expos
   assert.doesNotMatch(JSON.stringify(packet), /home\/user|id_rsa/);
 });
 
+test("buildEvidencePacket accepts only canonical artifact identities as screenshot artifact refs", () => {
+  const canonicalRef = `artifact_ref:run-browser-evidence:task-browser:attempt-1:${"a".repeat(64)}`;
+  const canonical = buildEvidencePacket({
+    runId: "run-browser-evidence",
+    taskId: "task-browser-verify",
+    artifactRef: "artifact-ref-browser",
+    requiredEvidenceKinds: ["screenshot"],
+    artifact: { screenshot: { artifactRef: canonicalRef } },
+  });
+  assert.equal(canonical.evidenceItems[0]?.status, "present");
+
+  for (const artifactRef of [
+    "artifact_ref:file:///home/user/screenshot.png",
+    "artifact_ref:artifacts/screenshot.png",
+    "artifact_ref:secret-token",
+    `artifact_ref:other-run:task-browser:attempt-1:${"b".repeat(64)}`,
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-browser-evidence",
+      taskId: "task-browser-verify",
+      artifactRef: "artifact-ref-browser",
+      requiredEvidenceKinds: ["screenshot"],
+      artifact: { screenshot: { artifactRef } },
+    });
+    assert.equal(packet.evidenceItems[0]?.status, "invalid", artifactRef);
+    assert.doesNotMatch(JSON.stringify(packet), /home\/user|secret-token|other-run/);
+  }
+});
+
 test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref runtime resources", async () => {
   const db = await createTestPostgresDb();
   try {

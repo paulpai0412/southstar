@@ -18,7 +18,7 @@ export type BuildEvidencePacketInput = {
 export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePacket {
   const now = input.now ?? new Date().toISOString();
   const requiredKinds = [...new Set(input.requiredEvidenceKinds)];
-  const available = evidenceByKind(input.artifact, now);
+  const available = evidenceByKind(input.artifact, now, input.runId);
   const evidenceItems = requiredKinds.map((kind) => available.get(kind) ?? missingEvidence(kind, now));
   const presentCount = evidenceItems.filter((item) => item.status === "present").length;
   return {
@@ -42,7 +42,11 @@ export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePa
   };
 }
 
-function evidenceByKind(artifact: Record<string, unknown>, now: string): Map<EvidenceKind, EvidencePacket["evidenceItems"][number]> {
+function evidenceByKind(
+  artifact: Record<string, unknown>,
+  now: string,
+  runId: string,
+): Map<EvidenceKind, EvidencePacket["evidenceItems"][number]> {
   const byKind = new Map<EvidenceKind, EvidencePacket["evidenceItems"][number]>();
 
   const commandResults = firstCommandResult(artifact.testResults)
@@ -165,7 +169,7 @@ function evidenceByKind(artifact: Record<string, unknown>, now: string): Map<Evi
     artifact.screenshot,
   );
   if (screenshot !== undefined) {
-    const safeScreenshot = safeScreenshotRef(screenshot);
+    const safeScreenshot = safeScreenshotRef(screenshot, runId);
     byKind.set("screenshot", safeScreenshot
       ? {
         kind: "screenshot",
@@ -203,12 +207,21 @@ function safeHttpUrl(value: unknown): string | undefined {
   }
 }
 
-function safeScreenshotRef(value: unknown): string | undefined {
+function safeScreenshotRef(value: unknown, runId: string): string | undefined {
   const candidate = isRecord(value)
     ? firstDefined(value.artifactRef, value.ref, value.path, value.url)
     : value;
   if (typeof candidate !== "string" || candidate.length === 0 || candidate.length > 1_024) return undefined;
-  if (candidate.startsWith("artifact_ref:")) return candidate;
+  if (candidate.startsWith("artifact_ref:")) {
+    const parts = candidate.slice(`artifact_ref:${runId}:`.length).split(":");
+    return candidate.startsWith(`artifact_ref:${runId}:`)
+      && parts.length === 3
+      && parts[0]!.length > 0
+      && parts[1]!.length > 0
+      && /^[a-f0-9]{64}$/.test(parts[2]!)
+      ? candidate
+      : undefined;
+  }
   const url = safeHttpUrl(candidate);
   if (url) return url;
   if (

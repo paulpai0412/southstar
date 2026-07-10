@@ -287,7 +287,7 @@ async function dispatchTask(
       });
     } catch (error) {
       handRejected = true;
-      await markTaskDispatchFailed(db, {
+      const persistedErrorMessage = await markTaskDispatchFailed(db, {
         runId: input.runId,
         taskId: input.taskId,
         sessionId: input.sessionId,
@@ -301,12 +301,11 @@ async function dispatchTask(
         recoveryKey,
         errorMessage: errorMessage(error),
       });
-      throw error;
+      throw new Error(persistedErrorMessage);
     }
     if (!handResult.ok) {
       handRejected = true;
-      await persistHandBindingPg(db, handBinding);
-      await markTaskDispatchFailed(db, {
+      const persistedErrorMessage = await markTaskDispatchFailed(db, {
         runId: input.runId,
         taskId: input.taskId,
         sessionId: input.sessionId,
@@ -320,7 +319,7 @@ async function dispatchTask(
         recoveryKey,
         errorMessage: handResult.output,
       });
-      throw new Error(handResult.output);
+      throw new Error(persistedErrorMessage);
     }
     handAccepted = true;
     const externalJobId = stringValue(handResult.metadata.externalJobId) ?? handResult.output;
@@ -393,18 +392,12 @@ async function finalizeSubmittedHandExecutionPg(
   },
 ): Promise<boolean> {
   return await db.tx(async (tx) => {
-    const handExecution = await tx.maybeOne<{ status: string }>(
-      `select status
-         from southstar.runtime_resources
-        where resource_type = 'hand_execution' and resource_key = $1
-        for update`,
-      [input.handExecutionId],
-    );
-    if (!handExecution) throw new Error(`hand execution disappeared after provider submit: ${input.handExecutionId}`);
-    const task = await tx.one<{ status: string }>(
-      "select status from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
-      [input.runId, input.taskId],
-    );
+    const locked = await lockDispatchFinalizationPg(tx, {
+      runId: input.runId,
+      taskId: input.taskId,
+      handExecutionId: input.handExecutionId,
+      handBindingId: input.handBinding.id,
+    });
     await tx.query(
       `update southstar.runtime_resources
           set payload_json = jsonb_set(payload_json, '{externalJobId}', to_jsonb($2::text), true),
@@ -412,13 +405,9 @@ async function finalizeSubmittedHandExecutionPg(
         where resource_type = 'hand_execution' and resource_key = $1`,
       [input.handExecutionId, input.externalJobId],
     );
-    if (isTerminalHandExecutionStatus(handExecution.status) || isTerminalTaskStatus(task.status)) return false;
+    if (isTerminalHandExecutionStatus(locked.handExecutionStatus) || isTerminalTaskStatus(locked.taskStatus)) return false;
 
-    const persistedHandBinding = await tx.maybeOne<{ status: string }>(
-      "select status from southstar.runtime_resources where resource_type = 'hand_binding' and resource_key = $1 for update",
-      [input.handBinding.id],
-    );
-    if (!persistedHandBinding || !isTerminalBindingStatus(persistedHandBinding.status)) {
+    if (!locked.handBindingStatus || !isTerminalBindingStatus(locked.handBindingStatus)) {
       await persistHandBindingPg(tx, input.handBinding);
     }
     const updated = await tx.query<{ id: string }>(
@@ -439,6 +428,60 @@ function isTerminalTaskStatus(status: string): boolean {
 
 function isTerminalBindingStatus(status: string): boolean {
   return ["succeeded", "failed", "cancelled", "lost", "destroyed"].includes(status);
+}
+
+async function lockDispatchFinalizationPg(
+  db: SouthstarDb,
+  input: {
+    runId: string;
+    taskId: string;
+    handExecutionId: string;
+    brainBindingId?: string;
+    handBindingId?: string;
+  },
+): Promise<{
+  taskStatus: string;
+  handExecutionStatus: string;
+  brainBindingStatus?: string;
+  handBindingStatus?: string;
+}> {
+  await db.one<{ id: string }>(
+    "select id from southstar.workflow_runs where id = $1 for update",
+    [input.runId],
+  );
+  const task = await db.one<{ status: string }>(
+    "select status from southstar.workflow_tasks where run_id = $1 and id = $2 for update",
+    [input.runId, input.taskId],
+  );
+  const handExecution = await db.maybeOne<{ status: string; payload_json: unknown }>(
+    `select status, payload_json
+       from southstar.runtime_resources
+      where resource_type = 'hand_execution' and resource_key = $1
+      for update`,
+    [input.handExecutionId],
+  );
+  if (!handExecution) throw new Error(`hand execution disappeared after provider submit: ${input.handExecutionId}`);
+  const handPayload = asRecord(handExecution.payload_json);
+  const brainBindingId = input.brainBindingId ?? stringValue(handPayload.brainBindingId);
+  const handBindingId = input.handBindingId ?? stringValue(handPayload.handBindingId);
+  const brainBinding = brainBindingId
+    ? await db.maybeOne<{ status: string }>(
+      "select status from southstar.runtime_resources where resource_type = 'brain_binding' and resource_key = $1 for update",
+      [brainBindingId],
+    )
+    : null;
+  const handBinding = handBindingId
+    ? await db.maybeOne<{ status: string }>(
+      "select status from southstar.runtime_resources where resource_type = 'hand_binding' and resource_key = $1 for update",
+      [handBindingId],
+    )
+    : null;
+  return {
+    taskStatus: task.status,
+    handExecutionStatus: handExecution.status,
+    ...(brainBinding ? { brainBindingStatus: brainBinding.status } : {}),
+    ...(handBinding ? { handBindingStatus: handBinding.status } : {}),
+  };
 }
 
 async function latestSessionRecoveryCheckpointRefsForTask(
@@ -667,46 +710,60 @@ async function markTaskDispatchFailed(
     recoveryKey: string;
     errorMessage: string;
   },
-): Promise<void> {
-  await persistHandExecution(db, {
-    runId: input.runId,
-    taskId: input.taskId,
-    sessionId: input.sessionId,
-    attemptId: input.attemptId,
-    handExecutionId: input.handExecutionId,
-    providerId: input.providerId,
-    brainBindingId: input.brainBindingId,
-    handBindingId: input.handBindingId,
-    status: "failed",
-    queueTimeoutSeconds: input.queueTimeoutSeconds,
-    heartbeatTimeoutSeconds: input.heartbeatTimeoutSeconds,
-  });
-  const controller = createRuntimeExceptionController({ db });
-  const exception = await controller.observe({
-    runId: input.runId,
-    taskId: input.taskId,
-    sessionId: input.sessionId,
-    attemptId: input.attemptId,
-    handExecutionId: input.handExecutionId,
-    brainBindingId: input.brainBindingId,
-    handBindingId: input.handBindingId,
-    source: "scheduler",
-    kind: "hand_submit_failed",
-    severity: "recoverable",
-    observedAt: new Date().toISOString(),
-    evidenceRefs: [input.handExecutionId],
-    providerEvidence: { errorExcerpt: redactProviderErrorExcerpt(input.errorMessage) },
-  });
-  await controller.decide(await controller.classify(exception));
-  await db.query("update southstar.workflow_tasks set status = 'failed', updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $1 and id = $2 and status = 'claimed'", [input.runId, input.taskId]);
-  await appendHistoryEventOnce(db, {
-    runId: input.runId,
-    taskId: input.taskId,
-    sessionId: input.sessionId,
-    eventType: "hand.execute_failed",
-    actorType: "hand",
-    idempotencyKey: `${input.recoveryKey}:hand-execute-failed`,
-    payload: { attemptId: input.attemptId, handExecutionId: input.handExecutionId, error: input.errorMessage },
+): Promise<string> {
+  const persistedErrorMessage = redactProviderErrorExcerpt(input.errorMessage);
+  return await db.tx(async (tx) => {
+    const locked = await lockDispatchFinalizationPg(tx, {
+      runId: input.runId,
+      taskId: input.taskId,
+      handExecutionId: input.handExecutionId,
+      brainBindingId: input.brainBindingId,
+      handBindingId: input.handBindingId,
+    });
+    if (isTerminalTaskStatus(locked.taskStatus) || isTerminalHandExecutionStatus(locked.handExecutionStatus)) {
+      return persistedErrorMessage;
+    }
+    await persistHandExecution(tx, {
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId: input.attemptId,
+      handExecutionId: input.handExecutionId,
+      providerId: input.providerId,
+      brainBindingId: input.brainBindingId,
+      handBindingId: input.handBindingId,
+      status: "failed",
+      queueTimeoutSeconds: input.queueTimeoutSeconds,
+      heartbeatTimeoutSeconds: input.heartbeatTimeoutSeconds,
+    });
+    const controller = createRuntimeExceptionController({ db: tx });
+    const exception = await controller.observe({
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId: input.attemptId,
+      handExecutionId: input.handExecutionId,
+      brainBindingId: input.brainBindingId,
+      handBindingId: input.handBindingId,
+      source: "scheduler",
+      kind: "hand_submit_failed",
+      severity: "recoverable",
+      observedAt: new Date().toISOString(),
+      evidenceRefs: [input.handExecutionId],
+      providerEvidence: { errorExcerpt: persistedErrorMessage },
+    });
+    await controller.decide(await controller.classify(exception));
+    await tx.query("update southstar.workflow_tasks set status = 'failed', updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $1 and id = $2 and status = 'claimed'", [input.runId, input.taskId]);
+    await appendHistoryEventOnce(tx, {
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      eventType: "hand.execute_failed",
+      actorType: "hand",
+      idempotencyKey: `${input.recoveryKey}:hand-execute-failed`,
+      payload: { attemptId: input.attemptId, handExecutionId: input.handExecutionId, error: persistedErrorMessage },
+    });
+    return persistedErrorMessage;
   });
 }
 
