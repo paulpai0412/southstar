@@ -380,11 +380,14 @@ function parseInterpretation(text: string): GoalContractInterpretation {
   } catch {
     throw new Error("Goal Contract interpreter returned invalid JSON");
   }
-  return validateInterpretation(parsed);
+  return validateInterpretation(parsed, { requireWorkType: true });
 }
 
-function validateInterpretation(value: unknown): GoalContractInterpretation {
+function validateInterpretation(value: unknown, options: { requireWorkType?: boolean } = {}): GoalContractInterpretation {
   const object = requiredObject(value, "$");
+  if (options.requireWorkType && !("workType" in object)) {
+    throw new Error("$ is missing required fields: workType");
+  }
   const allowedKeys = "workType" in object ? INTERPRETATION_KEYS : LEGACY_INTERPRETATION_KEYS;
   exactKeys(object, allowedKeys, "$");
   const requirements = requiredArray(object.requirements, "requirements");

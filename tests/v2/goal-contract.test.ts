@@ -17,6 +17,7 @@ test("LLM interpretation produces a host-owned GoalContractV1", async () => {
       generateText: async () => JSON.stringify({
         domain: "design/article",
         intent: "create_offline_article",
+        workType: "general",
         summary: "Create an offline HTML article from notes.md",
         requirements: [{
           statement: "The result opens without network access",
@@ -52,6 +53,7 @@ test("Goal Contract rejects blocking requirements without acceptance criteria", 
       client: { generateText: async () => JSON.stringify({
         domain: "software",
         intent: "implement_feature",
+        workType: "software_feature",
         summary: "Build it",
         requirements: [{ statement: "Build it", acceptanceCriteria: [], blocking: true, source: "explicit" }],
         expectedArtifactRefs: [],
@@ -125,9 +127,10 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
       async generateText(input) {
         prompts.push(input.prompt);
         return JSON.stringify({
-          domain: "software",
-          intent: "implement_feature",
-          summary: "Deliver a production-ready membership subscription flow",
+        domain: "software",
+        intent: "implement_feature",
+        workType: "software_feature",
+        summary: "Deliver a production-ready membership subscription flow",
           requirements: [
             { statement: "Authorized members can access subscription-only features", acceptanceCriteria: ["Unauthorized users are denied and authorized members are allowed"], blocking: true, source: "explicit" },
             { statement: "Members can purchase a subscription and payment state is persisted", acceptanceCriteria: ["A successful payment activates exactly one subscription"], blocking: true, source: "explicit" },
@@ -159,6 +162,21 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
   assert.equal(contract.requirements.length, 4);
   assert.equal(contract.requirements.every((requirement) => requirement.acceptanceCriteria.length > 0), true);
   assert.equal(contract.requirements.some((requirement) => /^(plan|implement|verify|review)\b/i.test(requirement.statement)), false);
+});
+
+test("Goal interpreter requires workType in new LLM schema", async () => {
+  await assert.rejects(
+    () => interpretGoalContractWithLlm({
+      goalPrompt: "Build it",
+      cwd: "/workspace/project",
+      client: { generateText: async () => JSON.stringify({
+        ...interpretation("Build it"),
+        workType: undefined,
+      }) },
+      model: "test-goal-interpreter",
+    }),
+    /workType/,
+  );
 });
 
 test("Goal interpreter relays streaming deltas", async () => {
