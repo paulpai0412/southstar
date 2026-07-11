@@ -156,6 +156,7 @@ function goalInterpretation(summary: string): string {
   return JSON.stringify({
     domain: "software",
     intent: "implement_feature",
+    workType: "software_feature",
     summary,
     requirements: [{
       statement: summary,

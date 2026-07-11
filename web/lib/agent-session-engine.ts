@@ -1,5 +1,6 @@
 import type { AgentMessage, AssistantMessage } from "./types";
 import type { SessionStatsInfo } from "./pi-types";
+import type { WorkflowTemplatePolicyV1 } from "./workflow/types";
 
 export interface CompactResultInfo {
   reason: "manual" | "threshold" | "overflow" | "auto" | string;
@@ -76,6 +77,18 @@ export function workflowTemplateIdFrom(template: unknown): string | null {
   if (!template || typeof template !== "object") return null;
   const id = (template as { id?: unknown }).id;
   return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+export function workflowTemplatePolicyFrom(template: unknown): WorkflowTemplatePolicyV1 {
+  if (!template || typeof template !== "object") return { mode: "auto" };
+  const record = template as { id?: unknown; versionRef?: unknown; headVersionId?: unknown };
+  const templateRef = typeof record.id === "string" && record.id.length > 0 ? record.id : undefined;
+  const versionRef = typeof record.versionRef === "string" && record.versionRef.length > 0
+    ? record.versionRef
+    : typeof record.headVersionId === "string" && record.headVersionId.length > 0
+      ? record.headVersionId
+      : undefined;
+  return templateRef && versionRef ? { mode: "prefer", templateRef, versionRef } : { mode: "auto" };
 }
 
 export function latestWorkflowDraftId(messages: AgentMessage[]): string | null {

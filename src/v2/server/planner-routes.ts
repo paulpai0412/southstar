@@ -3,6 +3,11 @@ import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
 import {
+  createLlmGoalDesigner,
+  type GoalDesignMode,
+  type WorkflowTemplatePolicyV1,
+} from "../orchestration/goal-design.ts";
+import {
   interpretGoalContractWithLlm,
   type GoalContractInterpreter,
 } from "../orchestration/goal-contract.ts";
@@ -36,6 +41,8 @@ export async function handlePlannerRoute(
       goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
       cwd: requiredString(body.cwd, "cwd"),
       idempotencyKey: requiredString(body.idempotencyKey, "idempotencyKey"),
+      goalDesignMode: optionalGoalDesignMode(body.goalDesignMode),
+      templatePolicy: optionalWorkflowTemplatePolicy(body.templatePolicy),
     };
     let claim: GoalSubmissionClaim;
     try {
@@ -52,6 +59,7 @@ export async function handlePlannerRoute(
     return json("run-goal", await submitClaimedGoalPg({
       db: context.db,
       goalInterpreter: resolveGoalInterpreter(context),
+      goalDesigner: resolveGoalDesigner(context),
       composer: resolvePlannerWorkflowComposer(context),
     }, runGoalRequest, claim));
   }
@@ -170,9 +178,11 @@ function createRunGoalStreamResponse(
         const result = await submitClaimedGoalPg({
           db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
+          goalDesigner: resolveGoalDesigner(context),
           composer: resolvePlannerWorkflowComposer(context),
-          onStage(stage) {
-            if (stage !== "done") send("planner.stage", { stage });
+          onStage(stage, data) {
+            if (stage === "goal_design.persisted") send("goal_design", data ?? {});
+            if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
           },
         }, request, claim);
         send("done", result);
@@ -480,6 +490,26 @@ function optionalComposerMode(value: unknown): WorkflowComposerMode | undefined 
   throw new Error("composerMode must be llm");
 }
 
+function optionalGoalDesignMode(value: unknown): GoalDesignMode | undefined {
+  if (value === undefined) return undefined;
+  if (value === "review_before_compose" || value === "auto_until_blocked") return value;
+  throw new Error("goalDesignMode must be review_before_compose or auto_until_blocked");
+}
+
+function optionalWorkflowTemplatePolicy(value: unknown): WorkflowTemplatePolicyV1 | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("templatePolicy must be an object");
+  if (value.mode === "auto") return { mode: "auto" };
+  if (value.mode === "prefer" || value.mode === "require") {
+    return {
+      mode: value.mode,
+      templateRef: requiredString(value.templateRef, "templatePolicy.templateRef"),
+      versionRef: requiredString(value.versionRef, "templatePolicy.versionRef"),
+    };
+  }
+  throw new Error("templatePolicy.mode must be auto, prefer, or require");
+}
+
 function resolvePlannerWorkflowComposer(
   context: RuntimeServerContext,
   options: { onStreamDegraded?: (message: string) => void } = {},
@@ -516,6 +546,19 @@ export function resolveGoalInterpreter(context: RuntimeServerContext): GoalContr
       },
     }),
   };
+}
+
+export function resolveGoalDesigner(context: RuntimeServerContext) {
+  if (context.goalDesigner) return context.goalDesigner;
+  return createLlmGoalDesigner(context.db, {
+    model: process.env.SOUTHSTAR_GOAL_DESIGN_MODEL ?? "southstar-runtime-goal-designer",
+    client: {
+      generateText: ({ prompt }) => context.plannerClient.generate(prompt),
+      generateTextStream: context.plannerClient.generateStream
+        ? ({ prompt }, handlers) => context.plannerClient.generateStream!(prompt, { onDelta: handlers.onDelta })
+        : undefined,
+    },
+  });
 }
 
 function requiredString(value: unknown, field: string): string {

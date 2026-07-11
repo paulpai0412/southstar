@@ -15,7 +15,7 @@ import {
   buildSessionStats,
   latestWorkflowDraftId,
   readCompactResult,
-  workflowTemplateIdFrom,
+  workflowTemplatePolicyFrom,
 } from "@/lib/agent-session-engine";
 import type { CompactResultInfo } from "@/lib/agent-session-engine";
 import { generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
@@ -901,6 +901,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       let rawStreamedText = "";
       let generatedDag: WorkflowDag | null = null;
       let recoverableIdentity: { draftId: string; runId?: string; error: string } | null = null;
+      let reviewDraftIdentity: { draftId: string; status?: string } | null = null;
       const workflowAbortController = new AbortController();
       workflowAbortControllerRef.current?.abort();
       workflowAbortControllerRef.current = workflowAbortController;
@@ -941,7 +942,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           draftId: revisionDraftId,
           cwd: workflowCwd,
           ...(!revisionDraftId && workflowSubmissionRef.current ? { idempotencyKey: workflowSubmissionRef.current.idempotencyKey } : {}),
-          templateId: workflowTemplateIdFrom(opts.workflowTemplate),
+          goalDesignMode: "review_before_compose",
+          templatePolicy: workflowTemplatePolicyFrom(opts.workflowTemplate),
           signal: workflowAbortController.signal,
           onMessage(text, event) {
             appendWorkflowText(text, event === "message.delta" ? "message.delta" : "line");
@@ -955,6 +957,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           },
           onDraft(draft) {
             if (draft.draftId) appendWorkflowText(`[draft] ${draft.draftId}${draft.status ? ` ${draft.status}` : ""}`);
+            if (draft.draftId && (draft.status === "ready_for_review" || draft.status === "needs_input")) {
+              reviewDraftIdentity = { draftId: draft.draftId, status: draft.status };
+            }
           },
           onGoalContract(mission) {
             appendWorkflowText(`[goal] ${mission.goalContract.summary}`);
@@ -979,6 +984,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         });
 
         if (!generatedDag) {
+          if (reviewDraftIdentity) {
+            const streamedText = normalizeWorkflowStreamText(rawStreamedText);
+            const statusText = reviewDraftIdentity.status === "needs_input" ? "needs more input" : "is ready for review";
+            setMessages((prev) => [...prev, {
+              role: "assistant",
+              content: [{ type: "text", text: streamedText || `Goal draft ${reviewDraftIdentity!.draftId} ${statusText}.` }],
+              model: "workflow-generate",
+              provider: "southstar",
+              timestamp: Date.now(),
+            } as AgentMessage]);
+            addNotice({ type: "info", message: `Goal draft ${statusText}.` });
+            workflowSubmissionRef.current = null;
+            return;
+          }
           if (recoverableIdentity) {
             const streamedText = normalizeWorkflowStreamText(rawStreamedText);
             setMessages((prev) => [...prev, {

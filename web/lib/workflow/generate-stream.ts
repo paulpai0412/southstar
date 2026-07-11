@@ -1,4 +1,10 @@
-import type { GoalMissionReadModel, WorkflowCommandDescriptor, WorkflowDag } from "./types";
+import type {
+  GoalDesignMode,
+  GoalMissionReadModel,
+  WorkflowCommandDescriptor,
+  WorkflowDag,
+  WorkflowTemplatePolicyV1,
+} from "./types";
 
 export type WorkflowGenerateMessageEvent = "message" | "message.delta";
 
@@ -13,6 +19,7 @@ export type WorkflowGenerateStageEvent = {
 export type WorkflowGenerateDraftEvent = {
   draftId?: string;
   status?: string;
+  goalDesignPackageHash?: string;
   validationIssues?: unknown[];
 };
 
@@ -38,6 +45,7 @@ export type WorkflowGenerateStreamHandlers = {
   onStage?: (stage: WorkflowGenerateStageEvent) => void;
   onHeartbeat?: (heartbeat: WorkflowGenerateHeartbeatEvent) => void;
   onDraft?: (draft: WorkflowGenerateDraftEvent) => void;
+  onGoalDesign?: (goalDesign: Record<string, unknown>) => void;
   onDag?: (dag: WorkflowDag) => void;
   onGoalContract?: (mission: GoalMissionReadModel) => void;
   onCoverage?: (mission: GoalMissionReadModel) => void;
@@ -74,7 +82,8 @@ export async function generateWorkflowDagStream(input: {
   prompt: string;
   draftId?: string | null;
   cwd?: string | null;
-  templateId?: string | null;
+  goalDesignMode?: GoalDesignMode;
+  templatePolicy?: WorkflowTemplatePolicyV1;
   idempotencyKey?: string;
   signal?: AbortSignal;
 } & WorkflowGenerateStreamHandlers): Promise<void> {
@@ -89,7 +98,8 @@ export async function generateWorkflowDagStream(input: {
       prompt: input.prompt,
       ...(input.cwd ? { cwd: input.cwd } : {}),
       ...(!input.draftId ? { idempotencyKey: input.idempotencyKey ?? crypto.randomUUID() } : {}),
-      ...(!input.draftId && input.templateId ? { templateId: input.templateId } : {}),
+      ...(!input.draftId && input.goalDesignMode ? { goalDesignMode: input.goalDesignMode } : {}),
+      ...(!input.draftId && input.templatePolicy ? { templatePolicy: input.templatePolicy } : {}),
     }),
   });
 
@@ -176,6 +186,10 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
   if (event === "draft") {
     const draft = data.draft && typeof data.draft === "object" ? data.draft : data;
     handlers.onDraft?.(draft as WorkflowGenerateDraftEvent);
+    return;
+  }
+  if (event === "goal_design") {
+    handlers.onGoalDesign?.(data);
     return;
   }
   if (event === "dag") {

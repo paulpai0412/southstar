@@ -13,6 +13,7 @@ import type {
 type RunGoalResult = {
   draftId: string;
   draftStatus: string;
+  goalDesignPackageHash?: string;
   runId?: string;
   runStatus?: string;
 };
@@ -29,6 +30,8 @@ export async function POST(request: NextRequest) {
     cwd?: string | null;
     prompt?: string;
     idempotencyKey?: string;
+    goalDesignMode?: unknown;
+    templatePolicy?: unknown;
   };
   const prompt = body.prompt?.trim();
   const cwd = body.cwd?.trim();
@@ -50,6 +53,8 @@ export async function POST(request: NextRequest) {
       goalPrompt: prompt,
       cwd,
       idempotencyKey,
+      ...(isGoalDesignMode(body.goalDesignMode) ? { goalDesignMode: body.goalDesignMode } : {}),
+      ...(isTemplatePolicy(body.templatePolicy) ? { templatePolicy: body.templatePolicy } : {}),
     }),
   });
   const isEventStream = upstream.headers.get("content-type")?.includes("text/event-stream") ?? false;
@@ -109,7 +114,7 @@ async function proxyRunGoalStream(
       await sendGoalReceipt(data as RunGoalResult, send);
       return;
     }
-    if (["message", "message.delta", "planner.stage", "heartbeat", "draft", "dag", "error"].includes(event)) {
+    if (["message", "message.delta", "planner.stage", "heartbeat", "goal_design", "draft", "dag", "error"].includes(event)) {
       send(event, data);
     }
   };
@@ -131,8 +136,12 @@ async function proxyRunGoalStream(
 }
 
 async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerateEvent): Promise<void> {
-  send("draft", { draft: { draftId: result.draftId, status: result.draftStatus } });
+  send("draft", { draft: { draftId: result.draftId, status: result.draftStatus, goalDesignPackageHash: result.goalDesignPackageHash } });
   if (result.runId) send("run", { runId: result.runId, runStatus: result.runStatus });
+  if (!result.runId && (result.draftStatus === "ready_for_review" || result.draftStatus === "needs_input")) {
+    send("done", result);
+    return;
+  }
   const missionQuery = result.runId
     ? `runId=${encodeURIComponent(result.runId)}`
     : `draftId=${encodeURIComponent(result.draftId)}`;
@@ -169,6 +178,19 @@ async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerate
   if (mission?.approval || approvalCommand) send("approval", { mission, command: approvalCommand });
   send("dag", { dag });
   send("done", result);
+}
+
+function isGoalDesignMode(value: unknown): value is "review_before_compose" | "auto_until_blocked" {
+  return value === "review_before_compose" || value === "auto_until_blocked";
+}
+
+function isTemplatePolicy(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const policy = value as Record<string, unknown>;
+  if (policy.mode === "auto") return true;
+  return (policy.mode === "prefer" || policy.mode === "require")
+    && typeof policy.templateRef === "string"
+    && typeof policy.versionRef === "string";
 }
 
 async function fetchJson<T>(path: string): Promise<T> {

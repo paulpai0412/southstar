@@ -4,6 +4,13 @@ import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-s
 import type { WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { finalizeGoalContract, type GoalContractInterpreter, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
+  finalizeGoalDesignPackage,
+  type GoalDesigner,
+  type GoalDesignMode,
+  type ResolvedGoalDesignSkillV1,
+  type WorkflowTemplatePolicyV1,
+} from "../../src/v2/orchestration/goal-design.ts";
+import {
   GoalSubmissionConflictError,
   GoalSubmissionPendingError,
   submitGoalPg,
@@ -212,6 +219,37 @@ test("ambiguous run-goal persists needs_input without creating a run", async () 
     assert.equal(result.draftStatus, "needs_input");
     assert.deepEqual(result.blockers, contract.blockingInputs);
     assert.equal(result.runId, undefined);
+    assert.equal(await runCount(db), 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("run-goal defaults to ready_for_review without composer or run rows", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedGoalDesignSkill(db);
+    let composerCalls = 0;
+    const contract = goalContract("Deliver the requested outcome");
+    const result = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(contract),
+      goalDesigner: inlineGoalDesigner(),
+      composer: {
+        async compose() {
+          composerCalls += 1;
+          throw new Error("composer must not run");
+        },
+      },
+    }, {
+      ...request("Deliver the requested outcome", "goal-review-default-1"),
+      cwd: process.cwd(),
+    });
+
+    assert.equal(result.draftStatus, "ready_for_review");
+    assert.equal(composerCalls, 0);
+    assert.equal(result.runId, undefined);
+    assert.match(result.goalDesignPackageHash ?? "", /^[a-f0-9]{64}$/);
     assert.equal(await runCount(db), 0);
   } finally {
     await db.close();
@@ -666,16 +704,18 @@ test("POST /api/v2/run-goal requires the one-prompt ingress contract and returns
   const db = await createTestPostgresDb();
   try {
     await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
     const response = await handleRuntimeRoute(runtimeContext(db, "Add parser tests"), new Request("http://127.0.0.1/api/v2/run-goal", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(request("Add parser tests", "goal-json-route-1")),
+      body: JSON.stringify({ ...request("Add parser tests", "goal-json-route-1"), cwd: process.cwd() }),
     }));
     assert.equal(response.status, 200);
-    const envelope = await response.json() as { ok: true; kind: string; result: { runStatus: string; draftStatus: string } };
+    const envelope = await response.json() as { ok: true; kind: string; result: { runStatus?: string; draftStatus: string; goalDesignPackageHash?: string } };
     assert.equal(envelope.kind, "run-goal");
-    assert.equal(envelope.result.draftStatus, "validated");
-    assert.equal(envelope.result.runStatus, "scheduling");
+    assert.equal(envelope.result.draftStatus, "ready_for_review");
+    assert.equal(envelope.result.runStatus, undefined);
+    assert.match(envelope.result.goalDesignPackageHash ?? "", /^[a-f0-9]{64}$/);
 
     const invalid = await handleRuntimeRoute(runtimeContext(db, "Add parser tests"), new Request("http://127.0.0.1/api/v2/run-goal", {
       method: "POST",
@@ -693,25 +733,30 @@ test("POST /api/v2/run-goal streams persisted stages and the JSON-equivalent don
   const db = await createTestPostgresDb();
   try {
     await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
     const response = await handleRuntimeRoute(runtimeContext(db, "Add parser tests"), new Request("http://127.0.0.1/api/v2/run-goal", {
       method: "POST",
       headers: { "content-type": "application/json", accept: "text/event-stream" },
-      body: JSON.stringify(request("Add parser tests", "goal-sse-route-1")),
+      body: JSON.stringify({ ...request("Add parser tests", "goal-sse-route-1"), cwd: process.cwd() }),
     }));
     assert.equal(response.status, 200);
     assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
     const frames = parseFrames(await response.text());
-    assert.deepEqual(frames.slice(0, -1).map((frame) => frame.event), Array(6).fill("planner.stage"));
-    assert.deepEqual(frames.slice(0, -1).map((frame) => (frame.data as { stage: string }).stage), [
+    assert.deepEqual(frames.slice(0, -1).map((frame) => frame.event), [
+      "planner.stage",
+      "goal_design",
+      "planner.stage",
+      "planner.stage",
+    ]);
+    assert.match(String((frames[1]?.data as { goalDesignPackageHash?: string }).goalDesignPackageHash), /^[a-f0-9]{64}$/);
+    assert.deepEqual(frames.slice(0, -1).filter((frame) => frame.event === "planner.stage").map((frame) => (frame.data as { stage: string }).stage), [
       "goal_contract.interpreted",
-      "draft.persisted",
-      "coverage.validated",
-      "library_snapshot.persisted",
-      "approval.persisted",
-      "run.scheduling_started",
+      "goal_design.persisted",
+      "draft.ready_for_review",
     ]);
     assert.equal(frames.at(-1)?.event, "done");
-    assert.equal((frames.at(-1)?.data as { runStatus?: string }).runStatus, "scheduling");
+    assert.equal((frames.at(-1)?.data as { draftStatus?: string; runStatus?: string }).draftStatus, "ready_for_review");
+    assert.equal((frames.at(-1)?.data as { runStatus?: string }).runStatus, undefined);
   } finally {
     await db.close();
   }
@@ -724,6 +769,7 @@ test("JSON run-goal returns HTTP 202 for an active replay and 409 for a conflict
   let first: Promise<Response> | undefined;
   try {
     await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
     const context = runtimeContextWithInterpreter(db, {
       async interpret() {
         entered.resolve();
@@ -731,7 +777,7 @@ test("JSON run-goal returns HTTP 202 for an active replay and 409 for a conflict
         return goalContract("Add parser tests");
       },
     });
-    const activeRequest = request("Add parser tests", "goal-json-status-1");
+    const activeRequest = { ...request("Add parser tests", "goal-json-status-1"), cwd: process.cwd() };
     first = handleRuntimeRoute(context, runGoalRequest(activeRequest));
     await entered.promise;
 
@@ -762,6 +808,7 @@ test("SSE run-goal returns HTTP 202 or 409 before constructing a stream for an o
   const extraResponses: Response[] = [];
   try {
     await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
     const context = runtimeContextWithInterpreter(db, {
       async interpret() {
         entered.resolve();
@@ -769,7 +816,7 @@ test("SSE run-goal returns HTTP 202 or 409 before constructing a stream for an o
         return goalContract("Add parser tests");
       },
     });
-    const activeRequest = request("Add parser tests", "goal-sse-status-1");
+    const activeRequest = { ...request("Add parser tests", "goal-sse-status-1"), cwd: process.cwd() };
     firstResponse = await handleRuntimeRoute(context, runGoalRequest(activeRequest, true));
     assert.equal(firstResponse.status, 200);
     firstBody = firstResponse.text();
@@ -820,6 +867,87 @@ function goalContract(goalPrompt: string, riskTags: string[] = []): GoalContract
       riskTags,
       requestedSideEffects: ["workspace-write"],
     },
+  });
+}
+
+async function seedGoalDesignSkill(db: Awaited<ReturnType<typeof createTestPostgresDb>>): Promise<void> {
+  await upsertLibraryObject(db, {
+    objectKey: "skill.southstar-goal-design",
+    objectKind: "skill_spec",
+    status: "approved",
+    headVersionId: "skill.southstar-goal-design@test",
+    state: {
+      purpose: "goal_design",
+      body: "Design the smallest cohesive outcome slices and return the host schema.",
+    },
+  });
+}
+
+function inlineGoalDesigner(): GoalDesigner {
+  return {
+    async design(input) {
+      return goalDesignPackage({
+        goalContract: input.goalContract,
+        mode: input.mode,
+        templatePolicy: input.templatePolicy,
+        skill: input.skill,
+        workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
+      });
+    },
+    async revise() {
+      throw new Error("revise not used");
+    },
+  };
+}
+
+function goalDesignPackage(input: {
+  goalContract: GoalContractV1;
+  mode: GoalDesignMode;
+  templatePolicy: WorkflowTemplatePolicyV1;
+  skill: ResolvedGoalDesignSkillV1;
+  workspaceDiscoveryHash: string;
+}) {
+  const requirement = input.goalContract.requirements[0]!;
+  const artifactRef = input.goalContract.expectedArtifactRefs[0]!;
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision: 1,
+    goalContract: input.goalContract,
+    evaluatorContracts: [{
+      schemaVersion: "southstar.requirement_evaluator_contract.v1",
+      id: "eval-implementation",
+      requirementId: requirement.id,
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      requiredEvidenceKinds: ["test_result"],
+      independence: "independent",
+      failureClassifications: ["implementation_gap"],
+    }],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [{
+        id: "slice-implementation",
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: artifactRef,
+        mutationBoundary: "one cohesive implementation boundary",
+        expectedArtifactRefs: [artifactRef],
+        evaluatorContractRefs: ["eval-implementation"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-implementation"],
+      rationale: "one atomic requirement boundary",
+    },
+    templatePolicy: input.templatePolicy,
+    goalDesignSkillRef: input.skill.objectKey,
+    goalDesignSkillVersionRef: input.skill.versionRef,
+    workspaceDiscoveryHash: input.workspaceDiscoveryHash,
+    mode: input.mode,
   });
 }
 
@@ -1002,6 +1130,7 @@ function runtimeContextWithInterpreter(
   return {
     db,
     goalInterpreter,
+    goalDesigner: inlineGoalDesigner(),
     workflowComposer: new DeterministicFixtureComposer(),
     plannerClient: { generate: async () => { throw new Error("planner not used"); } },
     executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },

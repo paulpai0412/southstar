@@ -22,6 +22,11 @@ import {
   type GoalContractInterpreter,
   type GoalContractV1,
 } from "../../src/v2/orchestration/goal-contract.ts";
+import { finalizeGoalDesignPackage } from "../../src/v2/orchestration/goal-design.ts";
+import {
+  loadCurrentGoalDesignPackagePg,
+  persistGoalDesignPackageRevisionPg,
+} from "../../src/v2/orchestration/goal-design-draft-service.ts";
 import {
   createPostgresPlannerDraft,
   createPostgresRunFromDraft,
@@ -104,6 +109,43 @@ test("planner draft gives the Goal interpreter approved Library vocabulary", asy
   });
 });
 
+test("Goal Design package revisions are immutable resources", async () => {
+  await withDb(async (db) => {
+    const first = packageRevision(1);
+    const second = packageRevision(2, 1);
+
+    await persistGoalDesignPackageRevisionPg(db, { draftId: "draft-1", package: first });
+    await persistGoalDesignPackageRevisionPg(db, { draftId: "draft-1", package: first });
+    await persistGoalDesignPackageRevisionPg(db, { draftId: "draft-1", package: second });
+
+    const rows = await db.query<{ resource_key: string }>(
+      "select resource_key from southstar.runtime_resources where resource_type = 'goal_design_package_revision' order by resource_key",
+    );
+    assert.deepEqual(rows.rows.map((row) => row.resource_key), ["draft-1:revision:1", "draft-1:revision:2"]);
+
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: "draft-1",
+      scope: "planner",
+      status: "ready_for_review",
+      payload: { goalDesignPackage: second },
+      summary: { goalDesignPackageHash: second.packageHash },
+    });
+    assert.equal((await loadCurrentGoalDesignPackagePg(db, "draft-1")).packageHash, second.packageHash);
+
+    await assert.rejects(
+      () => persistGoalDesignPackageRevisionPg(db, {
+        draftId: "draft-1",
+        package: {
+          ...first,
+          packageHash: second.packageHash,
+        },
+      }),
+      /goal_design_revision_conflict/,
+    );
+  });
+});
+
 test("run materialization restores a missing manifest domain from the validated Goal Contract", async () => {
   await withDb(async (db) => {
     const goalPrompt = "Turn notes.md into an offline HTML article";
@@ -163,6 +205,16 @@ test("blocking Goal Contract persists needs_input without compiling", async () =
 
 test("validating a durable needs_input draft preserves needs_input without requiring a workflow", async () => {
   await withDb(async (db) => {
+    await upsertLibraryObject(db, {
+      objectKey: "skill.southstar-goal-design",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.southstar-goal-design@test",
+      state: {
+        purpose: "goal_design",
+        body: "Design the smallest cohesive outcome slices and return the host schema.",
+      },
+    });
     const goalContract = {
       ...articleGoalContract("Publish my article"),
       blockingInputs: ["Which source file should be used?"],
@@ -1226,6 +1278,16 @@ test("Postgres server routes create planner drafts and runs through new API", as
 
 test("run-goal returns a needs_input draft without materializing a run", async () => {
   await withDb(async (db) => {
+    await upsertLibraryObject(db, {
+      objectKey: "skill.southstar-goal-design",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.southstar-goal-design@test",
+      state: {
+        purpose: "goal_design",
+        body: "Design the smallest cohesive outcome slices and return the host schema.",
+      },
+    });
     const goalContract = {
       ...articleGoalContract("Publish my article"),
       blockingInputs: ["Which source file should be used?"],
@@ -1247,7 +1309,7 @@ test("run-goal returns a needs_input draft without materializing a run", async (
         method: "POST",
         body: JSON.stringify({
           goalPrompt: goalContract.originalPrompt,
-          cwd: "/workspace/article",
+          cwd: process.cwd(),
           idempotencyKey: "goal-needs-input-route-1",
         }),
       });
@@ -1600,6 +1662,53 @@ function articleGoalContract(goalPrompt: string): GoalContractV1 {
       riskTags: [],
       requestedSideEffects: ["workspace-write"],
     },
+  });
+}
+
+function packageRevision(revision: number, parentRevision?: number) {
+  const contract = softwareGoalContract(`goal design revision ${revision}`);
+  const requirement = contract.requirements[0]!;
+  const artifactRef = contract.expectedArtifactRefs[0]!;
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision,
+    ...(parentRevision !== undefined ? { parentRevision } : {}),
+    goalContract: contract,
+    evaluatorContracts: [{
+      schemaVersion: "southstar.requirement_evaluator_contract.v1",
+      id: `eval-${revision}`,
+      requirementId: requirement.id,
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      requiredEvidenceKinds: ["test_result"],
+      independence: "independent",
+      failureClassifications: ["implementation_gap"],
+    }],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision,
+      slices: [{
+        id: `slice-${revision}`,
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: artifactRef,
+        mutationBoundary: "one cohesive implementation boundary",
+        expectedArtifactRefs: [artifactRef],
+        evaluatorContractRefs: [`eval-${revision}`],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: [`slice-${revision}`],
+      rationale: "one atomic requirement boundary",
+    },
+    templatePolicy: { mode: "auto" },
+    goalDesignSkillRef: "skill.southstar-goal-design",
+    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
+    workspaceDiscoveryHash: `workspace-${revision}`,
+    mode: "review_before_compose",
   });
 }
 

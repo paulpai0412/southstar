@@ -47,11 +47,15 @@ const PLANNER_DRAFT_STATUS_VALIDATED = "validated";
 const PLANNER_DRAFT_STATUS_INVALID = "invalid";
 const PLANNER_DRAFT_STATUS_NEEDS_VALIDATION = "needs_validation";
 const PLANNER_DRAFT_STATUS_NEEDS_INPUT = "needs_input";
+const PLANNER_DRAFT_STATUS_READY_FOR_REVIEW = "ready_for_review";
+const PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE = "template_incompatible";
 
-type PostgresPlannerDraftStatus =
+export type PostgresPlannerDraftStatus =
   | typeof PLANNER_DRAFT_STATUS_NEEDS_INPUT
   | typeof PLANNER_DRAFT_STATUS_INVALID
   | typeof PLANNER_DRAFT_STATUS_NEEDS_VALIDATION
+  | typeof PLANNER_DRAFT_STATUS_READY_FOR_REVIEW
+  | typeof PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE
   | typeof PLANNER_DRAFT_STATUS_VALIDATED;
 
 export type PostgresPlannerDraftResult = {
@@ -60,6 +64,7 @@ export type PostgresPlannerDraftResult = {
   workflowId: string;
   status: PostgresPlannerDraftStatus;
   goalContractHash: string;
+  goalDesignPackageHash?: string;
   blockers: string[];
   validationIssues: PlannerDraftValidationIssue[];
   taskSummaries: PlannerDraftTaskSummary[];
@@ -1382,6 +1387,8 @@ function plannerDraftStatus(value: string): PostgresPlannerDraftStatus {
     value === PLANNER_DRAFT_STATUS_NEEDS_INPUT
     || value === PLANNER_DRAFT_STATUS_INVALID
     || value === PLANNER_DRAFT_STATUS_NEEDS_VALIDATION
+    || value === PLANNER_DRAFT_STATUS_READY_FOR_REVIEW
+    || value === PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE
     || value === PLANNER_DRAFT_STATUS_VALIDATED
   ) return value;
   throw new Error(`unsupported planner draft status: ${value}`);

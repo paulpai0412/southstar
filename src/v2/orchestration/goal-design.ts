@@ -133,6 +133,7 @@ type DesignGoalWithLlmInput = {
   workspaceDiscovery: WorkspaceGoalDiscoveryV1;
   mode: GoalDesignMode;
   templatePolicy: WorkflowTemplatePolicyV1;
+  skill?: ResolvedGoalDesignSkillV1;
   client: LlmTextClient;
   model: string;
 };
@@ -172,7 +173,7 @@ export async function designGoalWithLlm(
   db: SouthstarDb,
   input: DesignGoalWithLlmInput,
 ): Promise<{ package: GoalDesignPackageV1; skill: ResolvedGoalDesignSkillV1 }> {
-  const skill = await loadGoalDesignSkillPg(db);
+  const skill = input.skill ?? await loadGoalDesignSkillPg(db);
   const basePrompt = renderDesignPrompt({ ...input, skill });
   let prompt = basePrompt;
   for (let attempt = 1; attempt <= MAX_DESIGN_ATTEMPTS; attempt += 1) {
@@ -218,6 +219,28 @@ export async function designGoalWithLlm(
     }
   }
   throw new Error("Goal Design exhausted attempts");
+}
+
+export function createLlmGoalDesigner(
+  db: SouthstarDb,
+  input: { client: LlmTextClient; model: string },
+): GoalDesigner {
+  return {
+    async design(designInput) {
+      return (await designGoalWithLlm(db, {
+        goalContract: designInput.goalContract,
+        workspaceDiscovery: designInput.workspaceDiscovery,
+        mode: designInput.mode,
+        templatePolicy: designInput.templatePolicy,
+        skill: designInput.skill,
+        client: input.client,
+        model: input.model,
+      })).package;
+    },
+    async revise() {
+      throw new Error("Goal Design revision LLM flow is not implemented yet");
+    },
+  };
 }
 
 export function finalizeGoalDesignPackage(

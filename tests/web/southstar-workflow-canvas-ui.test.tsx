@@ -53,7 +53,8 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
     await generateWorkflowDagStream({
       prompt: "todo",
       cwd: "/workspace/todo",
-      templateId: "template.software-feature",
+      goalDesignMode: "review_before_compose",
+      templatePolicy: { mode: "prefer", templateRef: "template.software-feature", versionRef: "template.software-feature@v1" },
       onMessage(text: string, event: string) {
         events.push(`${event}:${text}`);
       },
@@ -97,7 +98,8 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
     assert.deepEqual(body, {
       prompt: "todo",
       cwd: "/workspace/todo",
-      templateId: "template.software-feature",
+      goalDesignMode: "review_before_compose",
+      templatePolicy: { mode: "prefer", templateRef: "template.software-feature", versionRef: "template.software-feature@v1" },
     });
     assert.deepEqual(events, [
       "message:Creating planner draft",
@@ -170,6 +172,54 @@ test("workflow generate proxy preserves terminal identity when enrichment fails"
     assert.match(stream, /event: run\ndata: .*run-terminal/);
     assert.match(stream, /event: recoverable\ndata: .*read model unavailable/);
     assert.match(stream, /event: done\ndata: .*run-terminal/);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.SOUTHSTAR_V2_API_BASE_URL;
+    else process.env.SOUTHSTAR_V2_API_BASE_URL = originalBaseUrl;
+  }
+});
+
+test("workflow generate proxy forwards Goal Design controls without browser skill execution", async () => {
+  const originalFetch = global.fetch;
+  const originalBaseUrl = process.env.SOUTHSTAR_V2_API_BASE_URL;
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://runtime.test";
+  const upstreamBodies: Record<string, unknown>[] = [];
+  global.fetch = (async (url, init) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === "/api/v2/run-goal") {
+      upstreamBodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('event: done\ndata: {"draftId":"draft-review","draftStatus":"ready_for_review","goalDesignPackageHash":"abc123"}\n\n'));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }) as typeof fetch;
+  try {
+    const { POST } = await import("../../web/app/api/workflow/generate/route.ts");
+    const response = await POST(new Request("http://southstar.test/api/workflow/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        prompt: "build",
+        cwd: "/workspace/project",
+        idempotencyKey: "stable-key",
+        goalDesignMode: "review_before_compose",
+        templatePolicy: { mode: "require", templateRef: "template.software", versionRef: "template.software@v1" },
+      }),
+    }) as never);
+    assert.equal(response.status, 200);
+    assert.deepEqual(upstreamBodies[0], {
+      goalPrompt: "build",
+      cwd: "/workspace/project",
+      idempotencyKey: "stable-key",
+      goalDesignMode: "review_before_compose",
+      templatePolicy: { mode: "require", templateRef: "template.software", versionRef: "template.software@v1" },
+    });
+    const route = source("web/app/api/workflow/generate/route.ts");
+    assert.doesNotMatch(route, /southstar-goal-design\.skill|loadGoalDesignSkillPg|designGoalWithLlm/);
   } finally {
     global.fetch = originalFetch;
     if (originalBaseUrl === undefined) delete process.env.SOUTHSTAR_V2_API_BASE_URL;

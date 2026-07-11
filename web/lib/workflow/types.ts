@@ -17,11 +17,19 @@ export interface WorkflowTemplateSummary {
   domainId: string;
   title: string;
   description: string;
+  versionRef?: string;
+  headVersionId?: string;
   nodes: WorkflowTemplateNodeSummary[];
   agentRefs: string[];
   stageRefs: string[];
   status: "draft" | "approved";
 }
+
+export type GoalDesignMode = "review_before_compose" | "auto_until_blocked";
+
+export type WorkflowTemplatePolicyV1 =
+  | { mode: "auto" }
+  | { mode: "prefer" | "require"; templateRef: string; versionRef: string };
 
 export interface WorkflowTemplateNodeSummary {
   id: string;
