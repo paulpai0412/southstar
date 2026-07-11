@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { persistTerminalGoalOutcomePg } from "../../src/v2/evaluators/goal-outcome.ts";
 import { finalizeGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import { buildOperatorOverviewReadModelPg } from "../../src/v2/read-models/operator-overview.ts";
@@ -99,6 +100,49 @@ test("operator overview exposes mission axes and attention for goal approvals un
       assert.equal(attention?.commands.find((command) => command.id === "approval.approve")?.enabled, true);
       assert.equal(attention?.commands.find((command) => command.id === "approval.reject")?.enabled, true);
     }
+  } finally {
+    await db.close();
+  }
+});
+
+test("operator overview mission query count stays bounded as run count grows", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = finalizeGoalContract({
+      goalPrompt: "Build bounded mission projections",
+      cwd: "/workspace/query-count",
+      interpretation: {
+        domain: "software",
+        intent: "implement_feature",
+        summary: "Build bounded mission projections",
+        requirements: [{ statement: "Mission projections remain bounded", acceptanceCriteria: ["Twenty runs do not add per-run queries"], blocking: true, source: "explicit" }],
+        expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
+        requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
+        nonGoals: [], assumptions: [], blockingInputs: [], riskTags: [], requestedSideEffects: [],
+      },
+    });
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const runIds: string[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      runIds.push((await createPostgresRunFromDraft(db, { draftId: draft.draftId })).runId);
+    }
+    await db.query(
+      "update southstar.workflow_runs set runtime_context_json = jsonb_set(runtime_context_json, '{projectRoot}', to_jsonb('/workspace/query-count-two'::text)) where id = any($1::text[])",
+      [runIds.slice(0, 2)],
+    );
+
+    const two = countingDb(db);
+    await buildOperatorOverviewReadModelPg(two.db, { projectRoot: "/workspace/query-count-two" });
+    const twenty = countingDb(db);
+    await buildOperatorOverviewReadModelPg(twenty.db);
+
+    assert.ok(twenty.count() <= two.count() + 3, `query count grew from ${two.count()} for 2 runs to ${twenty.count()} for 20 runs`);
   } finally {
     await db.close();
   }
@@ -636,3 +680,76 @@ test("ui route exposes /api/v2/ui/operator-overview", async () => {
     await db.close();
   }
 });
+
+test("operator overview route forwards projectRoot and isolates runs attention and command results", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    for (const project of ["A", "B"] as const) {
+      const runId = `run-route-project-${project}`;
+      await createWorkflowRunPg(db, {
+        id: runId,
+        status: "running",
+        domain: "software",
+        goalPrompt: `project ${project}`,
+        workflowManifestJson: "{}",
+        executionProjectionJson: "{}",
+        snapshotJson: "{}",
+        runtimeContextJson: JSON.stringify({ cwd: `/workspace/${project}`, projectRoot: `/workspace/${project}` }),
+        metricsJson: "{}",
+      });
+      await upsertRuntimeResourcePg(db, {
+        resourceType: "runtime_exception",
+        resourceKey: `route-project-${project}-exception`,
+        runId,
+        scope: "runtime",
+        status: "observed",
+        payload: { kind: "scheduler_claim_stale", severity: "blocking" },
+      });
+      await upsertRuntimeResourcePg(db, {
+        resourceType: "runtime_command",
+        resourceKey: `route-project-${project}-command`,
+        runId,
+        scope: "operator",
+        status: "accepted",
+        payload: { result: { commandId: `project-${project}`, accepted: true, status: "accepted", affectedRunId: runId, resourceRefs: [], eventRefs: [], nextSuggestedActions: [] } },
+      });
+    }
+    const server = await createSouthstarRuntimeServer({
+      db,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const response = await fetch(`${server.url}/api/v2/ui/operator-overview?projectRoot=${encodeURIComponent("/workspace/A")}`);
+      const envelope = await response.json() as { result: Awaited<ReturnType<typeof buildOperatorOverviewReadModelPg>> };
+      assert.deepEqual(envelope.result.scope, { kind: "project", projectRoot: "/workspace/A" });
+      assert.deepEqual(envelope.result.activeRuns.map((run) => run.runId), ["run-route-project-A"]);
+      assert.deepEqual([...new Set(envelope.result.attentionItems.map((item) => item.runId))], ["run-route-project-A"]);
+      assert.deepEqual(envelope.result.commandResults.map((result) => result.affectedRunId), ["run-route-project-A"]);
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+function countingDb(db: SouthstarDb): { db: SouthstarDb; count(): number } {
+  let count = 0;
+  return {
+    db: new Proxy(db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if ((property === "query" || property === "one" || property === "maybeOne") && typeof value === "function") {
+          return (...args: unknown[]) => {
+            count += 1;
+            return Reflect.apply(value, target, args);
+          };
+        }
+        return value;
+      },
+    }),
+    count: () => count,
+  };
+}

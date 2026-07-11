@@ -14,7 +14,7 @@ import {
   type RuntimeCommandRow,
   type OperatorRunRow,
 } from "./operator-attention.ts";
-import { buildGoalMissionReadModelPg } from "./workflow-ui.ts";
+import { buildGoalMissionReadModelsPg } from "./workflow-ui.ts";
 
 export async function buildOperatorOverviewReadModelPg(db: SouthstarDb, input: { projectRoot?: string } = {}) {
   const baseRuns = (await db.query<OperatorRunRow>(
@@ -50,8 +50,9 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb, input: {
     activeRunIds.length > 0 ? readAttentionTaskRows(db, activeRunIds) : Promise.resolve([]),
     input.projectRoot && activeRunIds.length === 0 ? Promise.resolve([]) : readRuntimeCommandRows(db, input.projectRoot ? activeRunIds : undefined),
   ]);
-  const activeRuns = await Promise.all(baseRuns.map(async (run) => {
-    const mission = await buildGoalMissionReadModelPg(db, { runId: run.runId });
+  const missions = await buildGoalMissionReadModelsPg(db, activeRunIds);
+  const activeRuns = baseRuns.map((run) => {
+    const mission = missions.get(run.runId) ?? null;
     const legacyHealth = resourceRows.some((row) => row.run_id === run.runId && (
       row.resource_type === "runtime_exception"
       || ((row.resource_type === "executor_binding" || row.resource_type === "hand_execution")
@@ -64,7 +65,7 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb, input: {
       outcomeStatus: mission?.status.outcome ?? "in_progress",
       healthStatus: mission?.status.health ?? legacyHealth,
     };
-  }));
+  });
 
   const attentionItems = buildOperatorAttentionItems({ resourceRows, taskRows, activeRuns });
   const commandResults = commandRows.map(commandResultView).filter((result): result is RuntimeCommandResultView => result !== null);

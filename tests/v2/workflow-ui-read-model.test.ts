@@ -102,6 +102,66 @@ test("workflow read model exposes the same answer-first mission for draft and ru
   }
 });
 
+test("workflow mission health uses only the latest provider attempt observation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = softwareGoalContract("Recover with a successful second attempt");
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const task = await db.one<{ id: string }>(
+      "select id from southstar.workflow_tasks where run_id = $1 order by sort_order, id limit 1",
+      [run.runId],
+    );
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "executor_binding",
+      resourceKey: "mission-attempt-1",
+      runId: run.runId,
+      taskId: task.id,
+      scope: "executor",
+      status: "orphaned",
+      payload: { attemptId: "attempt-1" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "executor_binding",
+      resourceKey: "mission-attempt-2",
+      runId: run.runId,
+      taskId: task.id,
+      scope: "executor",
+      status: "completed",
+      payload: { attemptId: "attempt-2" },
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set updated_at = case resource_key
+            when 'mission-attempt-1' then '2026-07-11T00:00:00.000Z'::timestamptz
+            else '2026-07-11T00:01:00.000Z'::timestamptz
+          end
+        where resource_type = 'executor_binding' and resource_key in ('mission-attempt-1', 'mission-attempt-2')`,
+    );
+
+    assert.equal((await buildWorkflowUiReadModelPg(db, { runId: run.runId })).mission!.status.health, "healthy");
+
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "executor_binding",
+      resourceKey: "mission-attempt-2",
+      runId: run.runId,
+      taskId: task.id,
+      scope: "executor",
+      status: "hard-timeout",
+      payload: { attemptId: "attempt-2" },
+    });
+    assert.equal((await buildWorkflowUiReadModelPg(db, { runId: run.runId })).mission!.status.health, "degraded");
+  } finally {
+    await db.close();
+  }
+});
+
 test("workflow ui read model exposes runtime DAG and selected definition", async () => {
   const db = await createTestPostgresDb();
   try {

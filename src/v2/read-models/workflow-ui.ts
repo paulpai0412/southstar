@@ -1,7 +1,7 @@
 import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { listUnresolvedRuntimeExceptionsPg } from "../exceptions/postgres-runtime-exceptions.ts";
-import { loadFrozenCoverageContextPg } from "../evaluators/requirement-evaluator-results.ts";
+import { listUnresolvedRuntimeExceptionsForRunsPg } from "../exceptions/postgres-runtime-exceptions.ts";
+import { loadFrozenCoverageContextsPg } from "../evaluators/requirement-evaluator-results.ts";
 import {
   goalContractHash,
   storedGoalContract,
@@ -171,9 +171,16 @@ export async function buildGoalMissionReadModelPg(
   db: SouthstarDb,
   input: { draftId?: string; runId?: string },
 ): Promise<GoalMissionReadModel | null> {
-  if (input.runId) return await buildRuntimeGoalMissionReadModel(db, input.runId);
+  if (input.runId) return (await buildGoalMissionReadModelsPg(db, [input.runId])).get(input.runId) ?? null;
   if (input.draftId) return await buildDraftGoalMissionReadModel(db, input.draftId);
   throw new Error("runId or draftId is required");
+}
+
+export async function buildGoalMissionReadModelsPg(
+  db: SouthstarDb,
+  runIds: string[],
+): Promise<Map<string, GoalMissionReadModel | null>> {
+  return await buildRuntimeGoalMissionReadModels(db, [...new Set(runIds)]);
 }
 
 async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, preferredTaskId?: string): Promise<WorkflowUiReadModel> {
@@ -375,62 +382,131 @@ async function buildDraftGoalMissionReadModel(db: SouthstarDb, draftId: string):
   });
 }
 
-async function buildRuntimeGoalMissionReadModel(db: SouthstarDb, runId: string): Promise<GoalMissionReadModel | null> {
-  const run = await db.maybeOne<{ status: string; runtime_context_json: unknown }>(
-    "select status, runtime_context_json from southstar.workflow_runs where id = $1",
-    [runId],
+type MissionResourceRow = {
+  resource_type: string;
+  resource_key: string;
+  run_id: string | null;
+  task_id: string | null;
+  status: string;
+  payload_json: unknown;
+  created_at: Date;
+  updated_at: Date;
+};
+
+async function buildRuntimeGoalMissionReadModels(
+  db: SouthstarDb,
+  runIds: string[],
+): Promise<Map<string, GoalMissionReadModel | null>> {
+  if (runIds.length === 0) return new Map();
+  const runs = await db.query<{ id: string; status: string; runtime_context_json: unknown }>(
+    "select id, status, runtime_context_json from southstar.workflow_runs where id = any($1::text[])",
+    [runIds],
   );
-  if (!run) throw new Error(`run not found: ${runId}`);
-  const context = await loadFrozenCoverageContextPg(db, runId);
-  if (!context) return null;
-  const runtimeContext = asRecord(run.runtime_context_json);
-  const [outcomeResource, exceptions, evidenceRows, approvalRow, staleProvider] = await Promise.all([
-    getResourceByKeyPg(db, "goal_outcome", `goal-outcome:${runId}`),
-    listUnresolvedRuntimeExceptionsPg(db, { runId }),
-    db.query<{ payload_json: unknown }>(
-      `select payload_json from southstar.runtime_resources
-        where run_id = $1 and resource_type in ('requirement_evaluator_result', 'evaluator_result')
-        order by created_at, resource_key`,
-      [runId],
-    ),
-    db.maybeOne<{ resource_key: string; status: string; payload_json: unknown }>(
-      `select resource_key, status, payload_json
-         from southstar.runtime_resources
-        where run_id = $1 and resource_type = 'approval' and payload_json->>'actionType' = 'goalExecution'
-        order by created_at desc, resource_key desc
-        limit 1`,
-      [runId],
-    ),
-    db.maybeOne<{ resource_key: string }>(
-      `select resource_key from southstar.runtime_resources
-        where run_id = $1 and resource_type in ('executor_binding', 'hand_execution')
-          and status in ('heartbeat-lost', 'queue-timeout', 'hard-timeout', 'callback-missing', 'orphaned')
-        limit 1`,
-      [runId],
-    ),
-  ]);
-  const outcomePayload = asRecord(outcomeResource?.payload);
-  const outcome = outcomeResource
-    ? goalOutcomeStatus(outcomeResource.status) ?? goalOutcomeStatus(outcomePayload.outcomeStatus)
-    : "in_progress";
-  if (!outcome) throw new Error(`invalid goal outcome for run ${runId}`);
-  const health = exceptions.some((exception) => ["blocking", "terminal", "critical"].includes(exception.payload.severity))
-    ? "critical" as const
-    : exceptions.length > 0 || staleProvider
-      ? "degraded" as const
-      : "healthy" as const;
-  return goalMissionProjection({
-    goalContract: context.goalContract,
-    coverage: context.coverage,
-    execution: run.status,
-    outcome,
-    health,
-    approval: missionApproval(approvalRow),
-    evaluatorResults: evidenceRows.rows.map((row) => row.payload_json),
-    failedRequirementIds: stringArray(outcomePayload.failedRequirementIds),
-    manifestHash: stringValue(runtimeContext.manifestHash),
-    librarySnapshotHash: stringValue(runtimeContext.librarySnapshotHash),
+  const contexts = await loadFrozenCoverageContextsPg(db, runIds);
+  const resourceRows = await db.query<MissionResourceRow>(
+    `select resource_type, resource_key, run_id, task_id, status, payload_json, created_at, updated_at
+       from southstar.runtime_resources
+      where run_id = any($1::text[])
+        and resource_type in ('goal_outcome', 'requirement_evaluator_result', 'evaluator_result', 'approval', 'executor_binding', 'hand_execution')
+      order by updated_at desc, created_at desc, resource_key desc`,
+    [runIds],
+  );
+  const exceptions = await listUnresolvedRuntimeExceptionsForRunsPg(db, runIds);
+  const resourcesByRun = new Map<string, MissionResourceRow[]>();
+  for (const row of resourceRows.rows) {
+    if (!row.run_id) continue;
+    const rows = resourcesByRun.get(row.run_id) ?? [];
+    rows.push(row);
+    resourcesByRun.set(row.run_id, rows);
+  }
+  const exceptionsByRun = new Map<string, typeof exceptions>();
+  for (const exception of exceptions) {
+    const rows = exceptionsByRun.get(exception.runId) ?? [];
+    rows.push(exception);
+    exceptionsByRun.set(exception.runId, rows);
+  }
+  const result = new Map<string, GoalMissionReadModel | null>();
+  for (const run of runs.rows) {
+    const context = contexts.get(run.id);
+    if (!context) {
+      result.set(run.id, null);
+      continue;
+    }
+    const rows = resourcesByRun.get(run.id) ?? [];
+    const outcomeResource = rows.find((row) => row.resource_type === "goal_outcome");
+    const outcomePayload = asRecord(outcomeResource?.payload_json);
+    const outcome = outcomeResource
+      ? goalOutcomeStatus(outcomeResource.status) ?? goalOutcomeStatus(outcomePayload.outcomeStatus)
+      : "in_progress";
+    if (!outcome) throw new Error(`invalid goal outcome for run ${run.id}`);
+    const runExceptions = exceptionsByRun.get(run.id) ?? [];
+    const health = runExceptions.some((exception) => ["blocking", "terminal", "critical"].includes(exception.payload.severity))
+      ? "critical" as const
+      : runExceptions.length > 0 || hasDegradedProviderHealth(providerObservations(rows))
+        ? "degraded" as const
+        : "healthy" as const;
+    const runtimeContext = asRecord(run.runtime_context_json);
+    result.set(run.id, goalMissionProjection({
+      goalContract: context.goalContract,
+      coverage: context.coverage,
+      execution: run.status,
+      outcome,
+      health,
+      approval: missionApproval(rows.find((row) => row.resource_type === "approval" && asRecord(row.payload_json).actionType === "goalExecution") ?? null),
+      evaluatorResults: rows
+        .filter((row) => row.resource_type === "requirement_evaluator_result" || row.resource_type === "evaluator_result")
+        .map((row) => row.payload_json),
+      failedRequirementIds: stringArray(outcomePayload.failedRequirementIds),
+      manifestHash: stringValue(runtimeContext.manifestHash),
+      librarySnapshotHash: stringValue(runtimeContext.librarySnapshotHash),
+    }));
+  }
+  return result;
+}
+
+export type ProviderHealthObservation = {
+  resourceType: string;
+  resourceKey: string;
+  taskId?: string;
+  status: string;
+  payload: unknown;
+  updatedAt: string;
+};
+
+export function hasDegradedProviderHealth(observations: ProviderHealthObservation[]): boolean {
+  const ordered = [...observations].sort((left, right) =>
+    right.updatedAt.localeCompare(left.updatedAt) || right.resourceKey.localeCompare(left.resourceKey)
+  );
+  const latestAttemptByTask = new Map<string, string>();
+  for (const observation of ordered) {
+    const attemptId = stringValue(asRecord(observation.payload).attemptId);
+    if (observation.taskId && attemptId && !latestAttemptByTask.has(observation.taskId)) {
+      latestAttemptByTask.set(observation.taskId, attemptId);
+    }
+  }
+  return ordered.some((observation) => {
+    if (!isDegradedProviderStatus(observation.status)) return false;
+    const attemptId = stringValue(asRecord(observation.payload).attemptId);
+    if (!observation.taskId || !attemptId) return true;
+    return latestAttemptByTask.get(observation.taskId) === attemptId;
   });
+}
+
+function providerObservations(rows: MissionResourceRow[]): ProviderHealthObservation[] {
+  return rows
+    .filter((row) => row.resource_type === "executor_binding" || row.resource_type === "hand_execution")
+    .map((row) => ({
+      resourceType: row.resource_type,
+      resourceKey: row.resource_key,
+      ...(row.task_id ? { taskId: row.task_id } : {}),
+      status: row.status,
+      payload: row.payload_json,
+      updatedAt: row.updated_at.toISOString(),
+    }));
+}
+
+function isDegradedProviderStatus(status: string): boolean {
+  return ["heartbeat-lost", "queue-timeout", "hard-timeout", "callback-missing", "orphaned", "failed", "lost"].includes(status);
 }
 
 function goalMissionProjection(input: {

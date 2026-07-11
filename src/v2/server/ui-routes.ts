@@ -34,7 +34,9 @@ export async function handleUiRoute(context: RuntimeServerContext, request: Requ
     }));
   }
   if (request.method === "GET" && url.pathname === "/api/v2/ui/operator-overview") {
-    return json("ui-operator-overview", await buildOperatorOverviewReadModelPg(context.db));
+    return json("ui-operator-overview", await buildOperatorOverviewReadModelPg(context.db, {
+      projectRoot: url.searchParams.get("projectRoot") ?? undefined,
+    }));
   }
   if (request.method === "GET" && url.pathname === "/api/v2/ui/operator-task-debug") {
     return json("ui-operator-task-debug", await buildOperatorTaskDebugReadModelPg(context.db, {

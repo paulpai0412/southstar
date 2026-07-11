@@ -660,81 +660,123 @@ export async function loadFrozenCoverageContextPg(
   db: SouthstarDb,
   runId: string,
 ): Promise<FrozenCoverageContext | undefined> {
-  const run = await db.one<{ runtime_context_json: unknown; workflow_manifest_json: unknown }>(
-    "select runtime_context_json, workflow_manifest_json from southstar.workflow_runs where id = $1",
-    [runId],
-  );
-  const runtimeContext = asRecord(run.runtime_context_json);
-  const runContractHash = nonEmptyString(runtimeContext.goalContractHash);
-  const coverageResource = await getResourceByKeyPg(db, "goal_requirement_coverage", runId);
-  if (!coverageResource) {
-    if (runContractHash) throw new Error(`Goal Contract run ${runId} is missing frozen requirement coverage`);
-    return undefined;
-  }
-  if (
-    coverageResource.runId !== runId
-    || coverageResource.resourceKey !== runId
-    || coverageResource.scope !== "run"
-    || coverageResource.status !== "frozen"
-  ) {
-    throw new Error(`invalid Goal Requirement Coverage for run ${runId}: resource must be run-scoped and frozen`);
-  }
-  if (!runContractHash) {
-    throw new Error(`invalid Goal Requirement Coverage for run ${runId}: runtimeContext.goalContractHash`);
-  }
-  const draftId = nonEmptyString(runtimeContext.draftId);
-  if (!draftId) throw new Error(`invalid Goal Requirement Coverage for run ${runId}: runtimeContext.draftId`);
-  const plannerDraft = await getResourceByKeyPg(db, "planner_draft", draftId);
-  if (!plannerDraft || plannerDraft.status !== "validated") {
-    throw new Error(`invalid Goal Requirement Coverage for run ${runId}: canonical planner draft`);
-  }
-  const draftPayload = asRecord(plannerDraft.payload);
-  const goalContract = storedGoalContract(draftPayload.goalContract);
-  if (!goalContract) throw new Error(`invalid Goal Requirement Coverage for run ${runId}: plannerDraft.goalContract`);
-  const canonicalHash = goalContractHash(goalContract);
-  if (
-    runContractHash !== canonicalHash
-    || nonEmptyString(draftPayload.goalContractHash) !== canonicalHash
-  ) {
-    throw new Error(`invalid Goal Requirement Coverage for run ${runId}: canonical Goal Contract hash mismatch`);
-  }
-  const manifest = parseManifest(run.workflow_manifest_json, runId);
-  const baseCoverage = parseCoverage(coverageResource.payload, runId, goalContract, manifest);
-  const coverage = await loadEffectiveCoveragePg(db, runId, goalContract, manifest, baseCoverage);
-  if (coverage.goalContractHash !== canonicalHash) {
-    throw new Error(`Goal Requirement Coverage for run ${runId} goalContractHash does not match canonical Goal Contract`);
-  }
-  return {
-    coverage,
-    manifest,
-    goalContract,
-    workspaceRoot: nonEmptyString(runtimeContext.projectRoot) ?? nonEmptyString(runtimeContext.cwd),
-    blockingRequirementIds: new Set(
-      goalContract.requirements.filter((requirement) => requirement.blocking).map((requirement) => requirement.id),
-    ),
-  };
+  return (await loadFrozenCoverageContextsPg(db, [runId])).get(runId);
 }
 
-async function loadEffectiveCoveragePg(
+export async function loadFrozenCoverageContextsPg(
   db: SouthstarDb,
+  runIds: string[],
+): Promise<Map<string, FrozenCoverageContext>> {
+  const ids = [...new Set(runIds)];
+  if (ids.length === 0) return new Map();
+  const runs = (await db.query<{
+    id: string;
+    runtime_context_json: unknown;
+    workflow_manifest_json: unknown;
+  }>(
+    "select id, runtime_context_json, workflow_manifest_json from southstar.workflow_runs where id = any($1::text[])",
+    [ids],
+  )).rows;
+  if (runs.length !== ids.length) {
+    const found = new Set(runs.map((run) => run.id));
+    throw new Error(`run not found: ${ids.find((id) => !found.has(id))}`);
+  }
+  const draftIds = runs
+    .map((run) => nonEmptyString(asRecord(run.runtime_context_json).draftId))
+    .filter((value): value is string => Boolean(value));
+  const coverageRows = await db.query<CoverageResourceRow>(
+    `select resource_key, run_id, scope, status, payload_json
+       from southstar.runtime_resources
+      where run_id = any($1::text[]) and resource_type = 'goal_requirement_coverage'`,
+    [ids],
+  );
+  const draftRows = draftIds.length === 0
+    ? { rows: [], rowCount: 0 }
+    : await db.query<{ resource_key: string; status: string; payload_json: unknown }>(
+      `select resource_key, status, payload_json
+         from southstar.runtime_resources
+        where resource_type = 'planner_draft' and resource_key = any($1::text[])`,
+      [draftIds],
+    );
+  const revisionRows = await db.query<CoverageResourceRow>(
+    `select resource_key, run_id, scope, status, payload_json
+       from southstar.runtime_resources
+      where run_id = any($1::text[]) and resource_type = 'goal_requirement_coverage_revision'
+      order by created_at, resource_key`,
+    [ids],
+  );
+  const coverageByRun = new Map(coverageRows.rows.map((row) => [row.run_id, row]));
+  const draftById = new Map(draftRows.rows.map((row) => [row.resource_key, row]));
+  const revisionsByRun = new Map<string, CoverageResourceRow[]>();
+  for (const row of revisionRows.rows) {
+    if (!row.run_id) continue;
+    const rows = revisionsByRun.get(row.run_id) ?? [];
+    rows.push(row);
+    revisionsByRun.set(row.run_id, rows);
+  }
+  const result = new Map<string, FrozenCoverageContext>();
+  for (const run of runs) {
+    const runtimeContext = asRecord(run.runtime_context_json);
+    const runContractHash = nonEmptyString(runtimeContext.goalContractHash);
+    const coverageResource = coverageByRun.get(run.id);
+    if (!coverageResource) {
+      if (runContractHash) throw new Error(`Goal Contract run ${run.id} is missing frozen requirement coverage`);
+      continue;
+    }
+    if (
+      coverageResource.run_id !== run.id
+      || coverageResource.resource_key !== run.id
+      || coverageResource.scope !== "run"
+      || coverageResource.status !== "frozen"
+    ) throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: resource must be run-scoped and frozen`);
+    if (!runContractHash) throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: runtimeContext.goalContractHash`);
+    const draftId = nonEmptyString(runtimeContext.draftId);
+    if (!draftId) throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: runtimeContext.draftId`);
+    const plannerDraft = draftById.get(draftId);
+    if (!plannerDraft || plannerDraft.status !== "validated") {
+      throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: canonical planner draft`);
+    }
+    const draftPayload = asRecord(plannerDraft.payload_json);
+    const goalContract = storedGoalContract(draftPayload.goalContract);
+    if (!goalContract) throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: plannerDraft.goalContract`);
+    const canonicalHash = goalContractHash(goalContract);
+    if (runContractHash !== canonicalHash || nonEmptyString(draftPayload.goalContractHash) !== canonicalHash) {
+      throw new Error(`invalid Goal Requirement Coverage for run ${run.id}: canonical Goal Contract hash mismatch`);
+    }
+    const manifest = parseManifest(run.workflow_manifest_json, run.id);
+    const baseCoverage = parseCoverage(coverageResource.payload_json, run.id, goalContract, manifest);
+    const coverage = loadEffectiveCoverage(revisionsByRun.get(run.id) ?? [], run.id, goalContract, manifest, baseCoverage);
+    if (coverage.goalContractHash !== canonicalHash) {
+      throw new Error(`Goal Requirement Coverage for run ${run.id} goalContractHash does not match canonical Goal Contract`);
+    }
+    result.set(run.id, {
+      coverage,
+      manifest,
+      goalContract,
+      workspaceRoot: nonEmptyString(runtimeContext.projectRoot) ?? nonEmptyString(runtimeContext.cwd),
+      blockingRequirementIds: new Set(
+        goalContract.requirements.filter((requirement) => requirement.blocking).map((requirement) => requirement.id),
+      ),
+    });
+  }
+  return result;
+}
+
+type CoverageResourceRow = {
+  resource_key: string;
+  run_id: string | null;
+  scope: string;
+  status: string;
+  payload_json: unknown;
+};
+
+function loadEffectiveCoverage(
+  rows: CoverageResourceRow[],
   runId: string,
   goalContract: GoalContractV1,
   manifest: SouthstarWorkflowManifest,
   baseCoverage: GoalRequirementCoverageV1,
-): Promise<GoalRequirementCoverageV1> {
-  const rows = (await db.query<{
-    resource_key: string;
-    run_id: string | null;
-    scope: string;
-    status: string;
-    payload_json: unknown;
-  }>(
-    `select resource_key, run_id, scope, status, payload_json
-       from southstar.runtime_resources
-      where run_id = $1 and resource_type = 'goal_requirement_coverage_revision'
-      order by created_at, resource_key`,
-    [runId],
-  )).rows;
+): GoalRequirementCoverageV1 {
   let effective = baseCoverage;
   for (const row of rows) {
     const payload = asRecord(row.payload_json);
