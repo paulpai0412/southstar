@@ -1,7 +1,15 @@
 import { createHash } from "node:crypto";
 import { canonicalJson as stableStringify } from "../design-library/canonical-json.ts";
 import type { RequirementSpecV2 } from "../design-library/types.ts";
+import type { ResolvedGoalDesignSkillV1 } from "./goal-design.ts";
+import type { WorkspaceGoalDiscoveryV1 } from "./goal-workspace-discovery.ts";
 import type { LlmTextClient } from "./llm-composer.ts";
+
+export type GoalExpectedArtifactV1 = {
+  description: string;
+  path?: string;
+  mediaType?: string;
+};
 
 export type GoalRequirementV1 = {
   id: string;
@@ -9,6 +17,7 @@ export type GoalRequirementV1 = {
   acceptanceCriteria: string[];
   blocking: boolean;
   source: "explicit" | "inferred";
+  expectedArtifacts: GoalExpectedArtifactV1[];
 };
 
 export type GoalContractV1 = {
@@ -19,6 +28,7 @@ export type GoalContractV1 = {
   workspace: { cwd: string; projectRef?: string };
   domain: string;
   intent: string;
+  workType: RequirementSpecV2["workType"];
   summary: string;
   requirements: GoalRequirementV1[];
   expectedArtifactRefs: string[];
@@ -38,6 +48,8 @@ export type GoalContractInterpreter = {
     previousContract?: GoalContractV1;
     revisionPrompt?: string;
     libraryVocabulary?: GoalContractLibraryVocabulary;
+    goalDesignSkill?: ResolvedGoalDesignSkillV1;
+    workspaceDiscovery?: WorkspaceGoalDiscoveryV1;
     onDelta?: (text: string) => void;
   }): Promise<GoalContractV1>;
 };
@@ -48,11 +60,14 @@ export type GoalContractLibraryVocabulary = {
   artifactRefs: string[];
 };
 
-type GoalRequirementInterpretation = Omit<GoalRequirementV1, "id">;
+type GoalRequirementInterpretation = Omit<GoalRequirementV1, "id" | "expectedArtifacts"> & {
+  expectedArtifacts?: GoalExpectedArtifactV1[];
+};
 
 type GoalContractInterpretation = {
   domain: string;
   intent: string;
+  workType?: RequirementSpecV2["workType"];
   summary: string;
   requirements: GoalRequirementInterpretation[];
   expectedArtifactRefs: string[];
@@ -82,12 +97,28 @@ type InterpretGoalContractWithLlmInput = {
   previousContract?: GoalContractV1;
   revisionPrompt?: string;
   libraryVocabulary?: GoalContractLibraryVocabulary;
+  goalDesignSkill?: ResolvedGoalDesignSkillV1;
+  workspaceDiscovery?: WorkspaceGoalDiscoveryV1;
   onDelta?: (text: string) => void;
   client: LlmTextClient;
   model: string;
 };
 
 const INTERPRETATION_KEYS = [
+  "domain",
+  "intent",
+  "workType",
+  "summary",
+  "requirements",
+  "expectedArtifactRefs",
+  "requiredCapabilities",
+  "nonGoals",
+  "assumptions",
+  "blockingInputs",
+  "riskTags",
+  "requestedSideEffects",
+] as const;
+const LEGACY_INTERPRETATION_KEYS = [
   "domain",
   "intent",
   "summary",
@@ -101,7 +132,17 @@ const INTERPRETATION_KEYS = [
   "requestedSideEffects",
 ] as const;
 
-const REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source"] as const;
+const REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source", "expectedArtifacts"] as const;
+const LEGACY_REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source"] as const;
+const WORK_TYPES = new Set<RequirementSpecV2["workType"]>([
+  "software_feature",
+  "bugfix",
+  "research",
+  "data_analysis",
+  "migration",
+  "ops_recovery",
+  "general",
+]);
 
 const INTERPRETER_INSTRUCTION = "Decompose compound outcomes into independently verifiable requirements. Requirements describe observable outcome slices; plan, implement, verify, repair, review, and release sequencing belong to workflow composition, not the Goal Contract.";
 const MAX_INTERPRETER_ATTEMPTS = 2;
@@ -186,6 +227,7 @@ export function storedGoalContract(value: unknown): GoalContractV1 | undefined {
     || !nonEmptyString(workspace.cwd)
     || !nonEmptyString(contract.domain)
     || !nonEmptyString(contract.intent)
+    || !WORK_TYPES.has(contract.workType as RequirementSpecV2["workType"])
     || !nonEmptyString(contract.summary)
   ) return undefined;
   if (workspace.projectRef !== undefined && !nonEmptyString(workspace.projectRef)) return undefined;
@@ -208,7 +250,8 @@ export function storedGoalContract(value: unknown): GoalContractV1 | undefined {
       && isStringArray(requirement.acceptanceCriteria)
       && (requirement.acceptanceCriteria as string[]).length > 0
       && typeof requirement.blocking === "boolean"
-      && (requirement.source === "explicit" || requirement.source === "inferred"),
+      && (requirement.source === "explicit" || requirement.source === "inferred")
+      && Array.isArray(requirement.expectedArtifacts),
     );
   })) return undefined;
   return contract as GoalContractV1;
@@ -217,7 +260,7 @@ export function storedGoalContract(value: unknown): GoalContractV1 | undefined {
 export function requirementSpecFromGoalContract(contract: GoalContractV1): RequirementSpecV2 {
   return {
     summary: contract.summary,
-    workType: workTypeFromContract(contract),
+    workType: contract.workType,
     requiredCapabilities: [...contract.requiredCapabilities],
     expectedArtifacts: [...contract.expectedArtifactRefs],
     acceptanceCriteria: contract.requirements.flatMap((requirement) => requirement.acceptanceCriteria),
@@ -233,6 +276,7 @@ function materializeContract(
   interpretation: GoalContractInterpretation | (Omit<GoalContractInterpretation, "requirements"> & { requirements: GoalRequirementV1[] }),
   revision: number,
 ): GoalContractV1 {
+  const requirements = materializedRequirements(interpretation.requirements);
   return {
     schemaVersion: "southstar.goal_contract.v1",
     originalPrompt: input.goalPrompt,
@@ -244,13 +288,10 @@ function materializeContract(
     },
     domain: interpretation.domain,
     intent: interpretation.intent,
+    workType: interpretation.workType ?? "general",
     summary: interpretation.summary,
-    requirements: interpretation.requirements.map((requirement) => ({
-      ...requirement,
-      id: "id" in requirement ? requirement.id : requirementId(requirement.statement),
-      acceptanceCriteria: [...requirement.acceptanceCriteria],
-    })),
-    expectedArtifactRefs: [...interpretation.expectedArtifactRefs],
+    requirements,
+    expectedArtifactRefs: expectedArtifactRefsForRequirements(requirements, interpretation.expectedArtifactRefs),
     requiredCapabilities: [...interpretation.requiredCapabilities],
     nonGoals: [...interpretation.nonGoals],
     assumptions: [...interpretation.assumptions],
@@ -264,12 +305,38 @@ function requirementId(statement: string): string {
   return `req-${createHash("sha256").update(statement.trim()).digest("hex").slice(0, 12)}`;
 }
 
+function materializedRequirements(
+  requirements: Array<GoalRequirementInterpretation | GoalRequirementV1>,
+): GoalRequirementV1[] {
+  const materialized = requirements.map((requirement) => ({
+    ...requirement,
+    id: "id" in requirement ? requirement.id : requirementId(requirement.statement),
+    acceptanceCriteria: [...requirement.acceptanceCriteria],
+    expectedArtifacts: [...(requirement.expectedArtifacts ?? [])],
+  }));
+  const ids = new Set<string>();
+  for (const requirement of materialized) {
+    if (ids.has(requirement.id)) throw new Error(`duplicate requirement id: ${requirement.id}`);
+    ids.add(requirement.id);
+  }
+  return materialized;
+}
+
+function expectedArtifactRefsForRequirements(requirements: GoalRequirementV1[], fallbackRefs: string[]): string[] {
+  const derived = requirements.flatMap((requirement) =>
+    requirement.expectedArtifacts.map((_artifact, index) => `artifact.goal.${requirement.id}.${index + 1}`)
+  );
+  return derived.length > 0 ? derived : [...fallbackRefs];
+}
+
 function renderInterpreterPrompt(input: InterpretGoalContractWithLlmInput): string {
   return [
     "Interpret the user's goal as a strict Southstar Goal Contract JSON object.",
     INTERPRETER_INSTRUCTION,
-    "Return JSON only. Include exactly these fields: domain, intent, summary, requirements, expectedArtifactRefs, requiredCapabilities, nonGoals, assumptions, blockingInputs, riskTags, requestedSideEffects.",
-    "Each requirement must contain exactly statement, acceptanceCriteria, blocking, and source. Every requirement needs at least one observable acceptance criterion. source must be explicit or inferred.",
+    "Return JSON only. Include exactly these fields: domain, intent, workType, summary, requirements, expectedArtifactRefs, requiredCapabilities, nonGoals, assumptions, blockingInputs, riskTags, requestedSideEffects.",
+    "Each requirement must contain statement, acceptanceCriteria, blocking, source, and expectedArtifacts. Every requirement needs at least one observable acceptance criterion. source must be explicit or inferred.",
+    "workType must be one of software_feature, bugfix, research, data_analysis, migration, ops_recovery, or general.",
+    "expectedArtifacts are descriptions with optional relative paths and media types, not Library object refs.",
     "Set blocking=true for every requirement needed to satisfy the requested outcome; use blocking=false only when the user explicitly marks that requirement optional.",
     "Do not put details discoverable from the local workspace or Library in blockingInputs; workflow discovery tasks can inspect those sources.",
     "blockingInputs are only for information unavailable from the prompt, workspace, and Library that cannot be safely inferred without a user decision.",
@@ -279,6 +346,15 @@ function renderInterpreterPrompt(input: InterpretGoalContractWithLlmInput): stri
     ...(input.projectRef ? [`ProjectRef: ${input.projectRef}`] : []),
     ...(input.previousContract ? [`PreviousGoalContract: ${stableStringify(input.previousContract)}`] : []),
     ...(input.revisionPrompt ? [`RevisionPrompt: ${input.revisionPrompt}`] : []),
+    ...(input.goalDesignSkill ? [
+      `GoalDesignSkillRef: ${input.goalDesignSkill.objectKey}`,
+      `GoalDesignSkillVersionRef: ${input.goalDesignSkill.versionRef}`,
+      input.goalDesignSkill.body,
+    ] : []),
+    ...(input.workspaceDiscovery ? [
+      "WorkspaceDiscovery:",
+      stableStringify(input.workspaceDiscovery),
+    ] : []),
     ...(input.libraryVocabulary ? [
       "AvailableLibraryVocabulary:",
       stableStringify(input.libraryVocabulary),
@@ -309,12 +385,14 @@ function parseInterpretation(text: string): GoalContractInterpretation {
 
 function validateInterpretation(value: unknown): GoalContractInterpretation {
   const object = requiredObject(value, "$");
-  exactKeys(object, INTERPRETATION_KEYS, "$");
+  const allowedKeys = "workType" in object ? INTERPRETATION_KEYS : LEGACY_INTERPRETATION_KEYS;
+  exactKeys(object, allowedKeys, "$");
   const requirements = requiredArray(object.requirements, "requirements");
   if (requirements.length === 0) throw new Error("requirements must contain at least one requirement");
   return {
     domain: requiredString(object.domain, "domain"),
     intent: requiredString(object.intent, "intent"),
+    workType: optionalWorkType(object.workType),
     summary: requiredString(object.summary, "summary"),
     requirements: requirements.map((requirement, index) => validateRequirement(requirement, index)),
     expectedArtifactRefs: stringArray(object.expectedArtifactRefs, "expectedArtifactRefs"),
@@ -330,7 +408,8 @@ function validateInterpretation(value: unknown): GoalContractInterpretation {
 function validateRequirement(value: unknown, index: number): GoalRequirementInterpretation {
   const path = `requirements.${index}`;
   const object = requiredObject(value, path);
-  exactKeys(object, REQUIREMENT_KEYS, path);
+  const allowedKeys = "expectedArtifacts" in object ? REQUIREMENT_KEYS : LEGACY_REQUIREMENT_KEYS;
+  exactKeys(object, allowedKeys, path);
   const acceptanceCriteria = stringArray(object.acceptanceCriteria, `${path}.acceptanceCriteria`);
   if (acceptanceCriteria.length === 0) {
     throw new Error(`${path}.acceptanceCriteria must contain at least one criterion`);
@@ -344,6 +423,7 @@ function validateRequirement(value: unknown, index: number): GoalRequirementInte
     acceptanceCriteria,
     blocking: object.blocking,
     source: object.source,
+    expectedArtifacts: expectedArtifactsArray(object.expectedArtifacts, `${path}.expectedArtifacts`),
   };
 }
 
@@ -372,6 +452,39 @@ function stringArray(value: unknown, path: string): string[] {
   return requiredArray(value, path).map((entry, index) => requiredString(entry, `${path}.${index}`));
 }
 
+function optionalWorkType(value: unknown): RequirementSpecV2["workType"] | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !WORK_TYPES.has(value as RequirementSpecV2["workType"])) {
+    throw new Error("workType must be one of software_feature, bugfix, research, data_analysis, migration, ops_recovery, or general");
+  }
+  return value as RequirementSpecV2["workType"];
+}
+
+function expectedArtifactsArray(value: unknown, path: string): GoalExpectedArtifactV1[] {
+  if (value === undefined) return [];
+  return requiredArray(value, path).map((entry, index) => {
+    const object = requiredObject(entry, `${path}.${index}`);
+    const artifact: GoalExpectedArtifactV1 = {
+      description: requiredString(object.description, `${path}.${index}.description`),
+    };
+    if (object.path !== undefined) artifact.path = safeRelativePath(object.path, `${path}.${index}.path`);
+    if (object.mediaType !== undefined) artifact.mediaType = requiredString(object.mediaType, `${path}.${index}.mediaType`);
+    return artifact;
+  });
+}
+
+function safeRelativePath(value: unknown, path: string): string {
+  const text = requiredString(value, path);
+  if (
+    text.startsWith("/")
+    || text.includes("\0")
+    || text.split(/[\\/]+/).some((part) => part === ".." || part.length === 0)
+  ) {
+    throw new Error(`${path} must be a safe relative path`);
+  }
+  return text;
+}
+
 function exactKeys(object: Record<string, unknown>, allowedKeys: readonly string[], path: string): void {
   const unexpected = Object.keys(object).filter((key) => !allowedKeys.includes(key));
   if (unexpected.length > 0) throw new Error(`${path} contains unexpected fields: ${unexpected.join(", ")}`);
@@ -393,15 +506,4 @@ function nonEmptyString(value: unknown): string | undefined {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.length > 0);
-}
-
-function workTypeFromContract(contract: GoalContractV1): RequirementSpecV2["workType"] {
-  const classifier = `${contract.domain} ${contract.intent}`.toLowerCase();
-  if (/bug|fix|repair/.test(classifier)) return "bugfix";
-  if (/research|investigat/.test(classifier)) return "research";
-  if (/data[_ /-]?analysis|analytics/.test(classifier)) return "data_analysis";
-  if (/migrat/.test(classifier)) return "migration";
-  if (/ops|operation|recover/.test(classifier)) return "ops_recovery";
-  if (/software|implement|feature/.test(classifier)) return "software_feature";
-  return "general";
 }

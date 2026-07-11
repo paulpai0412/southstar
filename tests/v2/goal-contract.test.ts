@@ -106,6 +106,21 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
       capabilityRefs: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
       artifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
     },
+    goalDesignSkill: {
+      objectKey: "skill.southstar-goal-design",
+      versionRef: "skill.southstar-goal-design@v1",
+      stateHash: "skill-state",
+      body: "# Southstar Goal Design",
+    },
+    workspaceDiscovery: {
+      schemaVersion: "southstar.workspace_goal_discovery.v1",
+      cwd: "/workspace/subscription",
+      entries: [],
+      instructionDocuments: [],
+      projectMetadata: [],
+      truncated: false,
+      discoveryHash: "workspace-discovery",
+    },
     client: {
       async generateText(input) {
         prompts.push(input.prompt);
@@ -139,6 +154,8 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
   assert.match(prompts[0] ?? "", /AvailableLibraryVocabulary:/);
   assert.match(prompts[0] ?? "", /Choose domain exactly from scopes/i);
   assert.match(prompts[0] ?? "", /design\/article/);
+  assert.match(prompts[0] ?? "", /GoalDesignSkillVersionRef: skill\.southstar-goal-design@v1/);
+  assert.match(prompts[0] ?? "", /WorkspaceDiscovery:/);
   assert.equal(contract.requirements.length, 4);
   assert.equal(contract.requirements.every((requirement) => requirement.acceptanceCriteria.length > 0), true);
   assert.equal(contract.requirements.some((requirement) => /^(plan|implement|verify|review)\b/i.test(requirement.statement)), false);
@@ -307,10 +324,26 @@ test("Goal Contract projects to RequirementSpecV2", () => {
   });
 });
 
+test("Goal Contract workType is schema output rather than a domain regex", () => {
+  const contract = finalizeGoalContract({
+    goalPrompt: "Investigate the source",
+    cwd: "/workspace/project",
+    interpretation: {
+      ...interpretation("Investigate the source"),
+      domain: "custom/domain",
+      intent: "unfamiliar_intent",
+      workType: "research",
+    },
+  });
+
+  assert.equal(requirementSpecFromGoalContract(contract).workType, "research");
+});
+
 function interpretation(summary: string) {
   return {
     domain: "software",
     intent: "implement_feature",
+    workType: "software_feature" as const,
     summary,
     requirements: [{
       statement: summary,

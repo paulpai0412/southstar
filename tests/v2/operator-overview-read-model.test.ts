@@ -20,6 +20,7 @@ test("operator overview exposes mission axes and attention for goal approvals un
       interpretation: {
         domain: "software",
         intent: "implement_feature",
+        workType: "software_feature",
         summary: "Ship an offline article",
         requirements: [
           { statement: "The offline article renders", acceptanceCriteria: ["The article opens without network access"], blocking: true, source: "explicit" },
@@ -114,6 +115,7 @@ test("operator overview mission query count stays bounded as run count grows", a
       interpretation: {
         domain: "software",
         intent: "implement_feature",
+        workType: "software_feature",
         summary: "Build bounded mission projections",
         requirements: [{ statement: "Mission projections remain bounded", acceptanceCriteria: ["Twenty runs do not add per-run queries"], blocking: true, source: "explicit" }],
         expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],

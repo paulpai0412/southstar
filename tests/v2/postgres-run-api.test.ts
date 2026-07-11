@@ -1584,6 +1584,7 @@ function articleGoalContract(goalPrompt: string): GoalContractV1 {
     interpretation: {
       domain: "design/article",
       intent: "publish_article",
+      workType: "general",
       summary: "Create an offline HTML article from the supplied notes",
       requirements: [{
         statement: "Create a readable offline HTML article from notes.md",

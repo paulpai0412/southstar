@@ -1326,6 +1326,7 @@ function legacyGoalContractFromStored(
     interpretation: {
       domain: stringValue(workflow.domain) ?? stringValue(summary.domain) ?? "general",
       intent: stringValue(workflow.intent) ?? "legacy_planner_draft",
+      workType: workTypeValue(requirementSpec.workType) ?? "general",
       summary: stringValue(requirementSpec.summary) ?? goalPrompt,
       requirements: (acceptanceCriteria.length > 0 ? acceptanceCriteria : [fallbackRequirement]).map((criterion) => ({
         statement: criterion,
@@ -1342,6 +1343,18 @@ function legacyGoalContractFromStored(
       requestedSideEffects: [],
     },
   });
+}
+
+function workTypeValue(value: unknown): GoalContractV1["workType"] | undefined {
+  return value === "software_feature"
+    || value === "bugfix"
+    || value === "research"
+    || value === "data_analysis"
+    || value === "migration"
+    || value === "ops_recovery"
+    || value === "general"
+    ? value
+    : undefined;
 }
 
 function legacyRequirementSpec(payload: Record<string, unknown>): Partial<RequirementSpecV2> & Record<string, unknown> {

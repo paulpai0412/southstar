@@ -809,6 +809,7 @@ function goalContract(goalPrompt: string, riskTags: string[] = []): GoalContract
     interpretation: {
       domain: "software",
       intent: "implement_feature",
+      workType: "software_feature",
       summary: goalPrompt,
       requirements: [{ statement: goalPrompt, acceptanceCriteria: [goalPrompt], blocking: true, source: "explicit" }],
       expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],

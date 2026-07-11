@@ -12,6 +12,7 @@ export function softwareGoalContract(goalPrompt = "implement calc sum"): GoalCon
     interpretation: {
       domain: "software",
       intent: "implement_feature",
+      workType: "software_feature",
       summary: goalPrompt,
       requirements: [{
         statement: goalPrompt,
@@ -37,6 +38,7 @@ export function articleGoalContract(): GoalContractV1 {
     interpretation: {
       domain: "article",
       intent: "publish",
+      workType: "general",
       summary: "Build and publish a browser-verifiable article",
       requirements: [{
         statement: "The article is complete, readable, and available at a URL",
@@ -65,6 +67,7 @@ export function subscriptionGoalContract(
     interpretation: {
       domain: "software",
       intent: "implement_feature",
+      workType: "software_feature",
       summary: "Deliver a production-ready local membership subscription flow",
       requirements: [
         { statement: "Authorized members can access subscription-only features", acceptanceCriteria: ["Unauthorized users are denied and authorized members are allowed"], blocking: true, source: "explicit" },
