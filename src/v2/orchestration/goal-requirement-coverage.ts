@@ -19,6 +19,52 @@ export type GoalRequirementCoverageV1 = {
   }>;
 };
 
+const EVIDENCE_KINDS: readonly EvidenceKind[] = [
+  "file-diff",
+  "test-result",
+  "command-output",
+  "url",
+  "screenshot",
+  "human-approval",
+  "artifact-ref",
+  "workspace-snapshot",
+  "policy-decision",
+];
+
+export function storedGoalRequirementCoverage(value: unknown): GoalRequirementCoverageV1 | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const coverage = value as Record<string, unknown>;
+  if (coverage.schemaVersion !== "southstar.goal_requirement_coverage.v1") return undefined;
+  if (typeof coverage.goalContractHash !== "string" || coverage.goalContractHash.length === 0) return undefined;
+  if (!Array.isArray(coverage.entries)) return undefined;
+  const requirementIds = new Set<string>();
+  const entries: GoalRequirementCoverageV1["entries"] = [];
+  for (const value of coverage.entries) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+    const entry = value as Record<string, unknown>;
+    if (typeof entry.requirementId !== "string" || entry.requirementId.length === 0 || requirementIds.has(entry.requirementId)) return undefined;
+    requirementIds.add(entry.requirementId);
+    if (!isStringArray(entry.producerTaskIds)
+      || !isStringArray(entry.artifactRefs)
+      || !isStringArray(entry.evaluatorTaskIds)
+      || !isStringArray(entry.evaluatorProfileRefs)
+      || !isEvidenceKindArray(entry.requiredEvidenceKinds)) return undefined;
+    entries.push({
+      requirementId: entry.requirementId,
+      producerTaskIds: entry.producerTaskIds,
+      artifactRefs: entry.artifactRefs,
+      evaluatorTaskIds: entry.evaluatorTaskIds,
+      evaluatorProfileRefs: entry.evaluatorProfileRefs,
+      requiredEvidenceKinds: entry.requiredEvidenceKinds,
+    });
+  }
+  return {
+    schemaVersion: "southstar.goal_requirement_coverage.v1",
+    goalContractHash: coverage.goalContractHash,
+    entries,
+  };
+}
+
 export function buildGoalRequirementCoverage(input: {
   goalContract: GoalContractV1;
   composition: WorkflowCompositionPlan;
@@ -84,4 +130,12 @@ function requiredEvidenceKindsForTask(task: WorkflowCompositionTask): EvidenceKi
 
 function uniqueSorted(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string" && item.length > 0);
+}
+
+function isEvidenceKindArray(value: unknown): value is EvidenceKind[] {
+  return Array.isArray(value) && value.every((kind) => typeof kind === "string" && EVIDENCE_KINDS.some((candidate) => candidate === kind));
 }

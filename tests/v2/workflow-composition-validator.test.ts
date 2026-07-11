@@ -4,11 +4,25 @@ import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import type { WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
-import { buildGoalRequirementCoverage } from "../../src/v2/orchestration/goal-requirement-coverage.ts";
+import {
+  buildGoalRequirementCoverage,
+  storedGoalRequirementCoverage,
+} from "../../src/v2/orchestration/goal-requirement-coverage.ts";
 import { requirementSpecFromGoalContract, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import { classifyWorkflowCompositionTask } from "../../src/v2/orchestration/workflow-node-classifier.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { articleGoalContract, softwareGoalContract, subscriptionGoalContract } from "./fixtures/goal-contract.ts";
+
+test("stored Goal Requirement Coverage parser rejects malformed persisted projections", () => {
+  const contract = softwareGoalContract();
+  const coverage = buildGoalRequirementCoverage({ goalContract: contract, composition: validComposition() });
+
+  assert.deepEqual(storedGoalRequirementCoverage(coverage), coverage);
+  assert.equal(storedGoalRequirementCoverage({
+    ...coverage,
+    entries: [{ ...coverage.entries[0], producerTaskIds: "implement" }],
+  }), undefined);
+});
 
 test("validator rejects legacy stored-profile compositions when graph metadata is active", async () => {
   const db = await createTestPostgresDb();

@@ -14,7 +14,10 @@ import {
   storedGoalContract,
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
-import type { GoalRequirementCoverageV1 } from "../orchestration/goal-requirement-coverage.ts";
+import {
+  storedGoalRequirementCoverage,
+  type GoalRequirementCoverageV1,
+} from "../orchestration/goal-requirement-coverage.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 
 export type RequirementEvaluatorResultV1 = {
@@ -777,66 +780,41 @@ function parseCoverage(
   goalContract: GoalContractV1,
   manifest: SouthstarWorkflowManifest,
 ): GoalRequirementCoverageV1 {
-  const coverage = asRecord(value);
   const fail = (path: string): never => {
     throw new Error(`invalid Goal Requirement Coverage for run ${runId}: ${path}`);
   };
-  if (coverage.schemaVersion !== "southstar.goal_requirement_coverage.v1") fail("schemaVersion");
-  if (typeof coverage.goalContractHash !== "string" || coverage.goalContractHash.length === 0) fail("goalContractHash");
-  if (!Array.isArray(coverage.entries)) fail("entries");
-  const evidenceKinds = new Set<EvidenceKind>([
-    "file-diff",
-    "test-result",
-    "command-output",
-    "url",
-    "screenshot",
-    "human-approval",
-    "artifact-ref",
-    "workspace-snapshot",
-    "policy-decision",
-  ]);
+  const coverage = storedGoalRequirementCoverage(value);
+  if (!coverage) fail("stored projection");
   const requirements = new Map(goalContract.requirements.map((requirement) => [requirement.id, requirement]));
   const manifestTasks = new Map(manifest.tasks.map((task) => [task.id, task]));
   const manifestTaskIds = new Set(manifestTasks.keys());
   const aliases = artifactContractAliases(manifest);
   const seenRequirements = new Set<string>();
-  for (const [index, rawEntry] of coverage.entries.entries()) {
-    const entry = asRecord(rawEntry);
+  for (const [index, entry] of coverage.entries.entries()) {
     const path = `entries[${index}]`;
-    if (typeof entry.requirementId !== "string" || entry.requirementId.length === 0) fail(`${path}.requirementId`);
     const requirement = requirements.get(entry.requirementId);
     if (!requirement) fail(`${path}.requirementId references unknown Goal Contract requirement`);
-    if (seenRequirements.has(entry.requirementId)) fail(`${path}.requirementId is duplicated`);
     seenRequirements.add(entry.requirementId);
     for (const key of ["producerTaskIds", "artifactRefs", "evaluatorTaskIds", "evaluatorProfileRefs"] as const) {
       const values = entry[key];
-      if (!Array.isArray(values) || values.some((item) => typeof item !== "string" || item.length === 0)) {
-        fail(`${path}.${key}`);
-      }
       if (requirement.blocking && values.length === 0) fail(`${path}.${key}`);
     }
-    if (
-      !Array.isArray(entry.requiredEvidenceKinds)
-      || entry.requiredEvidenceKinds.some((kind) => typeof kind !== "string" || !evidenceKinds.has(kind as EvidenceKind))
-    ) {
-      fail(`${path}.requiredEvidenceKinds`);
-    }
     if (requirement.blocking && entry.requiredEvidenceKinds.length === 0) fail(`${path}.requiredEvidenceKinds`);
-    for (const producerTaskId of entry.producerTaskIds as string[]) {
+    for (const producerTaskId of entry.producerTaskIds) {
       if (!manifestTaskIds.has(producerTaskId)) fail(`manifest is missing producer task ${producerTaskId}`);
     }
     const producerArtifactRefs = new Set(
-      (entry.producerTaskIds as string[]).flatMap((producerTaskId) =>
+      entry.producerTaskIds.flatMap((producerTaskId) =>
         (manifestTasks.get(producerTaskId)?.requiredArtifactRefs ?? [])
           .map((ref) => canonicalContractRef(ref, aliases))
       ),
     );
-    for (const artifactRef of entry.artifactRefs as string[]) {
+    for (const artifactRef of entry.artifactRefs) {
       if (!producerArtifactRefs.has(canonicalContractRef(artifactRef, aliases))) {
         fail(`artifact ref ${artifactRef} is not declared by producer task`);
       }
     }
-    for (const evaluatorTaskId of entry.evaluatorTaskIds as string[]) {
+    for (const evaluatorTaskId of entry.evaluatorTaskIds) {
       if (!manifestTaskIds.has(evaluatorTaskId)) fail(`manifest is missing evaluator task ${evaluatorTaskId}`);
     }
   }
@@ -845,7 +823,7 @@ function parseCoverage(
       fail(`missing blocking requirement ${requirement.id}`);
     }
   }
-  return value as GoalRequirementCoverageV1;
+  return coverage;
 }
 
 function resolveEvaluatorProfileRef(

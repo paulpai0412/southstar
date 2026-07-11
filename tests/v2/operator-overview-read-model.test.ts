@@ -1,9 +1,108 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { persistTerminalGoalOutcomePg } from "../../src/v2/evaluators/goal-outcome.ts";
+import { finalizeGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import { buildOperatorOverviewReadModelPg } from "../../src/v2/read-models/operator-overview.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
+import { fixedGoalInterpreter } from "./fixtures/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("operator overview exposes mission axes and attention for goal approvals uncovered requirements failed requirements and dynamic repair approval", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = finalizeGoalContract({
+      goalPrompt: "Ship an offline article and optional print stylesheet",
+      cwd: "/workspace/article",
+      interpretation: {
+        domain: "software",
+        intent: "implement_feature",
+        summary: "Ship an offline article",
+        requirements: [
+          { statement: "The offline article renders", acceptanceCriteria: ["The article opens without network access"], blocking: true, source: "explicit" },
+          { statement: "A print stylesheet is available", acceptanceCriteria: ["Printing uses a readable layout"], blocking: false, source: "explicit" },
+        ],
+        expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
+        requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
+        nonGoals: [],
+        assumptions: [],
+        blockingInputs: [],
+        riskTags: [],
+        requestedSideEffects: ["workspace-write"],
+      },
+    });
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const [blockingRequirement, optionalRequirement] = goalContract.requirements;
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(payload_json, '{entries}',
+            (select coalesce(jsonb_agg(entry), '[]'::jsonb)
+               from jsonb_array_elements(payload_json->'entries') entry
+              where entry->>'requirementId' <> $2))
+        where resource_type = 'goal_requirement_coverage' and resource_key = $1`,
+      [run.runId, optionalRequirement!.id],
+    );
+    await persistTerminalGoalOutcomePg(db, {
+      runId: run.runId,
+      outcomeStatus: "unsatisfied",
+      failedRequirementIds: [blockingRequirement!.id],
+      findings: ["blocking requirement failed"],
+      actorType: "test",
+      idempotencyKey: "operator-mission:unsatisfied",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "goal-approval",
+      runId: run.runId,
+      scope: "approval",
+      status: "pending",
+      payload: { approvalId: "goal-approval", actionType: "goalExecution" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "repair-approval",
+      runId: run.runId,
+      scope: "approval",
+      status: "pending",
+      payload: {
+        approvalId: "repair-approval",
+        actionType: "dynamic_repair_authority_expansion",
+        schemaVersion: "southstar.dynamic_repair_authority_approval.v1",
+      },
+    });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+    const runRow = model.activeRuns.find((candidate) => candidate.runId === run.runId)!;
+    assert.deepEqual({
+      executionStatus: runRow.executionStatus,
+      outcomeStatus: runRow.outcomeStatus,
+      healthStatus: runRow.healthStatus,
+    }, {
+      executionStatus: "completed",
+      outcomeStatus: "unsatisfied",
+      healthStatus: "healthy",
+    });
+    assert.equal(runRow.mission!.goalContractHash, draft.goalContractHash);
+    assert.equal(model.attentionItems.some((item) => item.id === `goal-requirement-uncovered:${run.runId}:${optionalRequirement!.id}`), true);
+    assert.equal(model.attentionItems.some((item) => item.id === `goal-requirement-failed:${run.runId}:${blockingRequirement!.id}`), true);
+    for (const approvalId of ["goal-approval", "repair-approval"]) {
+      const attention = model.attentionItems.find((item) => item.id === `approval:${approvalId}`);
+      assert.equal(attention?.commands.find((command) => command.id === "approval.approve")?.enabled, true);
+      assert.equal(attention?.commands.find((command) => command.id === "approval.reject")?.enabled, true);
+    }
+  } finally {
+    await db.close();
+  }
+});
 
 test("operator overview returns active runs and attention items", async () => {
   const db = await createTestPostgresDb();

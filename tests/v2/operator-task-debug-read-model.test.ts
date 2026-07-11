@@ -266,6 +266,41 @@ test("run creation preserves planner draft cwd and operator overview exposes cwd
   }
 });
 
+test("operator overview reports an explicit empty project-filtered scope without leaking other projects", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-other-project";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "other project run",
+      workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", tasks: [] }),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({ cwd: "/workspace/other", projectRoot: "/workspace/other" }),
+      metricsJson: JSON.stringify({}),
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "runtime_exception",
+      resourceKey: "other-project-exception",
+      runId,
+      scope: "runtime",
+      status: "observed",
+      payload: { kind: "callback_missing", severity: "blocking" },
+    });
+
+    const overview = await buildOperatorOverviewReadModelPg(db, { projectRoot: "/workspace/selected" });
+
+    assert.deepEqual(overview.scope, { kind: "project", projectRoot: "/workspace/selected" });
+    assert.deepEqual(overview.activeRuns, []);
+    assert.deepEqual(overview.attentionItems, []);
+    assert.equal(overview.defaultSelection, null);
+  } finally {
+    await db.close();
+  }
+});
+
 test("operator task debug disables task recovery actions for completed tasks", async () => {
   const db = await createTestPostgresDb();
   try {

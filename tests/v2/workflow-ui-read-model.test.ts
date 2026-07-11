@@ -1,9 +1,106 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { persistTerminalGoalOutcomePg } from "../../src/v2/evaluators/goal-outcome.ts";
+import { recordRuntimeExceptionPg } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
 import { buildWorkflowUiReadModelPg } from "../../src/v2/read-models/workflow-ui.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("workflow read model exposes the same answer-first mission for draft and runtime while keeping satisfied outcome degraded health", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = softwareGoalContract("Create an offline HTML article");
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    const draftModel = await buildWorkflowUiReadModelPg(db, { draftId: draft.draftId });
+    assert.equal(draftModel.mission!.goalContract.summary, "Create an offline HTML article");
+    assert.deepEqual(draftModel.mission!.status, {
+      execution: "validated",
+      outcome: "in_progress",
+      health: "healthy",
+    });
+
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const runtimeContext = await db.one<{ runtime_context_json: Record<string, string> }>(
+      "select runtime_context_json from southstar.workflow_runs where id = $1",
+      [run.runId],
+    );
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "approval-mission",
+      runId: run.runId,
+      scope: "approval",
+      status: "approved",
+      payload: {
+        approvalId: "approval-mission",
+        actionType: "goalExecution",
+        goalContractHash: runtimeContext.runtime_context_json.goalContractHash,
+        manifestHash: runtimeContext.runtime_context_json.manifestHash,
+        librarySnapshotHash: runtimeContext.runtime_context_json.librarySnapshotHash,
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "requirement_evaluator_result",
+      resourceKey: "mission-evaluator",
+      runId: run.runId,
+      scope: "evaluator",
+      status: "passed",
+      payload: { schemaVersion: "southstar.requirement_evaluator_result.v1", verdict: "passed" },
+    });
+    await persistTerminalGoalOutcomePg(db, {
+      runId: run.runId,
+      outcomeStatus: "satisfied",
+      coveredRequirementIds: goalContract.requirements.map((requirement) => requirement.id),
+      actorType: "test",
+      idempotencyKey: "mission:satisfied",
+    });
+    await recordRuntimeExceptionPg(db, {
+      runId: run.runId,
+      source: "scheduler",
+      kind: "provider_unreachable",
+      severity: "warning",
+      observedAt: "2026-07-11T00:00:00.000Z",
+      evidenceRefs: ["scheduler:mission-warning"],
+    });
+
+    const runtimeModel = await buildWorkflowUiReadModelPg(db, { runId: run.runId });
+    assert.deepEqual(runtimeModel.mission!.status, {
+      execution: "completed",
+      outcome: "satisfied",
+      health: "degraded",
+    });
+    assert.deepEqual(runtimeModel.mission!.coverage, {
+      covered: 1,
+      total: 1,
+      failedRequirementIds: [],
+      entries: runtimeModel.mission!.coverage.entries,
+    });
+    assert.equal(runtimeModel.mission!.approval!.goalContractHash, runtimeModel.mission!.goalContractHash);
+    assert.equal(runtimeModel.mission!.evaluatorResults.length, 1);
+    assert.deepEqual(runtimeModel.mission!.goalContract, draftModel.mission!.goalContract);
+    assert.equal(runtimeModel.mission!.goalContractHash, draftModel.mission!.goalContractHash);
+    assert.deepEqual(runtimeModel.mission!.coverage.entries, draftModel.mission!.coverage.entries);
+    assert.deepEqual(runtimeModel.mission!.provenance, {
+      originalPrompt: goalContract.originalPrompt,
+      revision: goalContract.revision,
+      promptHash: goalContract.promptHash,
+      manifestHash: runtimeContext.runtime_context_json.manifestHash,
+      librarySnapshotHash: runtimeContext.runtime_context_json.librarySnapshotHash,
+    });
+  } finally {
+    await db.close();
+  }
+});
 
 test("workflow ui read model exposes runtime DAG and selected definition", async () => {
   const db = await createTestPostgresDb();

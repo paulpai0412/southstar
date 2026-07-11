@@ -1,5 +1,17 @@
 import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { listUnresolvedRuntimeExceptionsPg } from "../exceptions/postgres-runtime-exceptions.ts";
+import { loadFrozenCoverageContextPg } from "../evaluators/requirement-evaluator-results.ts";
+import {
+  goalContractHash,
+  storedGoalContract,
+  type GoalContractV1,
+} from "../orchestration/goal-contract.ts";
+import {
+  storedGoalRequirementCoverage,
+  type GoalRequirementCoverageV1,
+} from "../orchestration/goal-requirement-coverage.ts";
+import { getResourceByKeyPg } from "../stores/postgres-runtime-store.ts";
 import {
   buildRuntimeWorkflowCanvasProjection,
   workflowTasksFromUnknown,
@@ -59,6 +71,7 @@ type WorkflowTaskDefinitionSummary = {
 };
 
 export type WorkflowUiReadModel = {
+  mission: GoalMissionReadModel | null;
   activeDraft: null | {
     draftId: string;
     workflowId: string;
@@ -97,6 +110,38 @@ export type WorkflowUiReadModel = {
   }>;
 };
 
+export type GoalMissionReadModel = {
+  goalContract: GoalContractV1;
+  goalContractHash: string;
+  coverage: {
+    covered: number;
+    total: number;
+    failedRequirementIds: string[];
+    entries: GoalRequirementCoverageV1["entries"];
+  };
+  status: {
+    execution: string;
+    outcome: "in_progress" | "satisfied" | "unsatisfied" | "blocked";
+    health: "healthy" | "degraded" | "critical";
+  };
+  approval: null | {
+    id: string;
+    status: string;
+    goalContractHash: string;
+    manifestHash: string;
+    librarySnapshotHash: string;
+  };
+  evaluatorResults: unknown[];
+  blockers: string[];
+  provenance: {
+    originalPrompt: string;
+    revision: number;
+    promptHash: string;
+    manifestHash?: string;
+    librarySnapshotHash?: string;
+  };
+};
+
 type RuntimeRunRow = {
   id: string;
   status: string;
@@ -119,6 +164,15 @@ type TaskEnvelopeRow = {
 export async function buildWorkflowUiReadModelPg(db: SouthstarDb, input: WorkflowUiInput): Promise<WorkflowUiReadModel> {
   if (input.runId) return await buildRuntimeWorkflowUiReadModel(db, input.runId, input.taskId);
   if (input.draftId) return await buildDraftWorkflowUiReadModel(db, input.draftId, input.taskId);
+  throw new Error("runId or draftId is required");
+}
+
+export async function buildGoalMissionReadModelPg(
+  db: SouthstarDb,
+  input: { draftId?: string; runId?: string },
+): Promise<GoalMissionReadModel | null> {
+  if (input.runId) return await buildRuntimeGoalMissionReadModel(db, input.runId);
+  if (input.draftId) return await buildDraftGoalMissionReadModel(db, input.draftId);
   throw new Error("runId or draftId is required");
 }
 
@@ -159,8 +213,10 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
   const runtimeContext = asRecord(run.runtime_context_json);
   const runtimeDraftId = stringValue(runtimeContext.draftId);
   const librarySummary = agentLibrarySummary(domain, run.workflow_manifest_json);
+  const mission = await buildGoalMissionReadModelPg(db, { runId });
 
   return {
+    mission,
     activeDraft: null,
     canvasModel: {
       graphId: runId,
@@ -218,6 +274,7 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
   const domain = stringValue(workflow.domain) ?? "software";
   const issues = validationIssues(summary.validationIssues ?? payload.validationIssues);
   const repairDetails = repairAttemptDetails(payload.repairAttempts ?? summary.repairAttempts);
+  const mission = await buildGoalMissionReadModelPg(db, { draftId });
 
   const nodes: WorkflowCanvasNode[] = workflowTasks.map((task, index) => {
     const nodeIssues = validationIssuesForTask(issues, task.id, index);
@@ -243,6 +300,7 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
   })));
 
   return {
+    mission,
     activeDraft: {
       draftId,
       workflowId: stringValue(summary.workflowId) ?? stringValue(workflow.workflowId) ?? draftId,
@@ -290,6 +348,145 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
       },
     ],
   };
+}
+
+async function buildDraftGoalMissionReadModel(db: SouthstarDb, draftId: string): Promise<GoalMissionReadModel | null> {
+  const draft = await getResourceByKeyPg(db, "planner_draft", draftId);
+  if (!draft) throw new Error(`planner draft not found: ${draftId}`);
+  const payload = asRecord(draft.payload);
+  const goalContract = storedGoalContract(payload.goalContract);
+  if (!goalContract) return null;
+  const coverage = storedGoalRequirementCoverage(payload.goalRequirementCoverage);
+  if (!coverage) throw new Error(`planner draft Goal Requirement Coverage is invalid: ${draftId}`);
+  const contractHash = goalContractHash(goalContract);
+  if (stringValue(payload.goalContractHash) !== contractHash || coverage.goalContractHash !== contractHash) {
+    throw new Error(`planner draft Goal Contract lineage mismatch: ${draftId}`);
+  }
+  const compiler = asRecord(asRecord(payload.orchestrationSnapshot).compiler);
+  return goalMissionProjection({
+    goalContract,
+    coverage,
+    execution: draft.status,
+    outcome: "in_progress",
+    health: "healthy",
+    approval: null,
+    evaluatorResults: [],
+    manifestHash: stringValue(compiler.manifestHash),
+  });
+}
+
+async function buildRuntimeGoalMissionReadModel(db: SouthstarDb, runId: string): Promise<GoalMissionReadModel | null> {
+  const run = await db.maybeOne<{ status: string; runtime_context_json: unknown }>(
+    "select status, runtime_context_json from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  if (!run) throw new Error(`run not found: ${runId}`);
+  const context = await loadFrozenCoverageContextPg(db, runId);
+  if (!context) return null;
+  const runtimeContext = asRecord(run.runtime_context_json);
+  const [outcomeResource, exceptions, evidenceRows, approvalRow, staleProvider] = await Promise.all([
+    getResourceByKeyPg(db, "goal_outcome", `goal-outcome:${runId}`),
+    listUnresolvedRuntimeExceptionsPg(db, { runId }),
+    db.query<{ payload_json: unknown }>(
+      `select payload_json from southstar.runtime_resources
+        where run_id = $1 and resource_type in ('requirement_evaluator_result', 'evaluator_result')
+        order by created_at, resource_key`,
+      [runId],
+    ),
+    db.maybeOne<{ resource_key: string; status: string; payload_json: unknown }>(
+      `select resource_key, status, payload_json
+         from southstar.runtime_resources
+        where run_id = $1 and resource_type = 'approval' and payload_json->>'actionType' = 'goalExecution'
+        order by created_at desc, resource_key desc
+        limit 1`,
+      [runId],
+    ),
+    db.maybeOne<{ resource_key: string }>(
+      `select resource_key from southstar.runtime_resources
+        where run_id = $1 and resource_type in ('executor_binding', 'hand_execution')
+          and status in ('heartbeat-lost', 'queue-timeout', 'hard-timeout', 'callback-missing', 'orphaned')
+        limit 1`,
+      [runId],
+    ),
+  ]);
+  const outcomePayload = asRecord(outcomeResource?.payload);
+  const outcome = outcomeResource
+    ? goalOutcomeStatus(outcomeResource.status) ?? goalOutcomeStatus(outcomePayload.outcomeStatus)
+    : "in_progress";
+  if (!outcome) throw new Error(`invalid goal outcome for run ${runId}`);
+  const health = exceptions.some((exception) => ["blocking", "terminal", "critical"].includes(exception.payload.severity))
+    ? "critical" as const
+    : exceptions.length > 0 || staleProvider
+      ? "degraded" as const
+      : "healthy" as const;
+  return goalMissionProjection({
+    goalContract: context.goalContract,
+    coverage: context.coverage,
+    execution: run.status,
+    outcome,
+    health,
+    approval: missionApproval(approvalRow),
+    evaluatorResults: evidenceRows.rows.map((row) => row.payload_json),
+    failedRequirementIds: stringArray(outcomePayload.failedRequirementIds),
+    manifestHash: stringValue(runtimeContext.manifestHash),
+    librarySnapshotHash: stringValue(runtimeContext.librarySnapshotHash),
+  });
+}
+
+function goalMissionProjection(input: {
+  goalContract: GoalContractV1;
+  coverage: GoalRequirementCoverageV1;
+  execution: string;
+  outcome: GoalMissionReadModel["status"]["outcome"];
+  health: GoalMissionReadModel["status"]["health"];
+  approval: GoalMissionReadModel["approval"];
+  evaluatorResults: unknown[];
+  failedRequirementIds?: string[];
+  manifestHash?: string;
+  librarySnapshotHash?: string;
+}): GoalMissionReadModel {
+  const coveredRequirementIds = new Set(input.coverage.entries.map((entry) => entry.requirementId));
+  return {
+    goalContract: input.goalContract,
+    goalContractHash: goalContractHash(input.goalContract),
+    coverage: {
+      covered: input.goalContract.requirements.filter((requirement) => coveredRequirementIds.has(requirement.id)).length,
+      total: input.goalContract.requirements.length,
+      failedRequirementIds: [...new Set(input.failedRequirementIds ?? [])].sort(),
+      entries: input.coverage.entries,
+    },
+    status: { execution: input.execution, outcome: input.outcome, health: input.health },
+    approval: input.approval,
+    evaluatorResults: input.evaluatorResults,
+    blockers: [...input.goalContract.blockingInputs],
+    provenance: {
+      originalPrompt: input.goalContract.originalPrompt,
+      revision: input.goalContract.revision,
+      promptHash: input.goalContract.promptHash,
+      ...(input.manifestHash ? { manifestHash: input.manifestHash } : {}),
+      ...(input.librarySnapshotHash ? { librarySnapshotHash: input.librarySnapshotHash } : {}),
+    },
+  };
+}
+
+function missionApproval(row: { resource_key: string; status: string; payload_json: unknown } | null): GoalMissionReadModel["approval"] {
+  if (!row) return null;
+  const payload = asRecord(row.payload_json);
+  const approvalGoalContractHash = stringValue(payload.goalContractHash);
+  const manifestHash = stringValue(payload.manifestHash);
+  const librarySnapshotHash = stringValue(payload.librarySnapshotHash);
+  if (!approvalGoalContractHash || !manifestHash || !librarySnapshotHash) return null;
+  return {
+    id: stringValue(payload.approvalId) ?? row.resource_key,
+    status: row.status,
+    goalContractHash: approvalGoalContractHash,
+    manifestHash,
+    librarySnapshotHash,
+  };
+}
+
+function goalOutcomeStatus(value: unknown): GoalMissionReadModel["status"]["outcome"] | undefined {
+  return value === "in_progress" || value === "satisfied" || value === "unsatisfied" || value === "blocked" ? value : undefined;
 }
 
 async function runtimeSelectedDefinition(
