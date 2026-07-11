@@ -308,6 +308,38 @@ test("scheduler failure commits its exception and final goal result atomically",
   }
 });
 
+test("auto scheduling handoff rolls back and replay resumes its durable request", async () => {
+  const db = await createTestPostgresDb();
+  const idempotencyKey = "goal-scheduler-handoff-replay-1";
+  const input = request("Add parser tests", idempotencyKey);
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await installRejectGoalCompletionConstraint(db, idempotencyKey);
+    const context = {
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      composer: new DeterministicFixtureComposer(),
+      startScheduling: startRunSchedulingPg,
+    };
+
+    await assert.rejects(() => submitGoalPg(context, input), /forced goal handoff rollback/);
+    assert.equal((await runRowByGoal(db, "Add parser tests")).status, "created");
+    const requested = await submissionRow(db, idempotencyKey);
+    assert.equal(requested.status, "processing");
+    assert.equal(requested.payload_json.schedulingState, "requested");
+
+    await removeRejectGoalCompletionConstraint(db);
+    const replay = await submitGoalPg(context, input);
+    assert.equal(replay.runStatus, "scheduling");
+    assert.equal((await runRow(db, replay.runId!)).status, "scheduling");
+    assert.equal((await submissionRow(db, idempotencyKey)).status, "completed");
+    assert.equal(await schedulingStartedCount(db, replay.runId!), 1);
+  } finally {
+    await removeRejectGoalCompletionConstraint(db).catch(() => undefined);
+    await db.close();
+  }
+});
+
 test("a reused idempotency key with a different request returns 409", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -426,6 +458,88 @@ test("manual goal approval commits created state before scheduling", async () =>
   }
 });
 
+test("manual approval replay resumes a requested handoff after interruption before scheduling", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    const result = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Deploy production", ["deployment"])),
+      composer: new DeterministicFixtureComposer(),
+    }, request("Deploy production", "goal-manual-interrupted-1"));
+
+    await assert.rejects(() => decideApprovalPg(db, {
+      runId: result.runId!,
+      approvalId: result.approvalId!,
+      decision: "approved",
+      reason: "operator approved",
+      async startScheduling(runDb) {
+        await runDb.query("select 1 / 0");
+        throw new Error("unreachable");
+      },
+    }));
+    const requested = await approvalResource(db, result.approvalId!);
+    assert.equal(requested.status, "approved");
+    assert.equal(requested.payload_json.schedulingState, "requested");
+    assert.equal(requested.payload_json.schedulingResult, undefined);
+    assert.equal((await runRow(db, result.runId!)).status, "created");
+
+    const replay = await decideApprovalPg(db, {
+      runId: result.runId!,
+      approvalId: result.approvalId!,
+      decision: "approved",
+      reason: "operator approved",
+    });
+    assert.equal(replay.runStatus, "scheduling");
+    assert.equal((await runRow(db, result.runId!)).status, "scheduling");
+    const completed = await approvalResource(db, result.approvalId!);
+    assert.equal(completed.payload_json.schedulingState, "completed");
+    assert.equal((completed.payload_json.schedulingResult as { runStatus?: string }).runStatus, "scheduling");
+  } finally {
+    await db.close();
+  }
+});
+
+test("manual scheduling and approval outcome roll back together and replay completes", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    const result = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Deploy production", ["deployment"])),
+      composer: new DeterministicFixtureComposer(),
+    }, request("Deploy production", "goal-manual-outcome-rollback-1"));
+    await installRejectApprovalOutcomeConstraint(db, result.approvalId!);
+
+    await assert.rejects(() => decideApprovalPg(db, {
+      runId: result.runId!,
+      approvalId: result.approvalId!,
+      decision: "approved",
+      reason: "operator approved",
+      startScheduling: startRunSchedulingPg,
+    }), /forced approval handoff rollback/);
+    assert.equal((await runRow(db, result.runId!)).status, "created");
+    const requested = await approvalResource(db, result.approvalId!);
+    assert.equal(requested.payload_json.schedulingState, "requested");
+    assert.equal(requested.payload_json.schedulingResult, undefined);
+
+    await removeRejectApprovalOutcomeConstraint(db);
+    const replay = await decideApprovalPg(db, {
+      runId: result.runId!,
+      approvalId: result.approvalId!,
+      decision: "approved",
+      reason: "operator approved",
+    });
+    assert.equal(replay.runStatus, "scheduling");
+    assert.equal((await runRow(db, result.runId!)).status, "scheduling");
+    assert.equal((await approvalResource(db, result.approvalId!)).payload_json.schedulingState, "completed");
+    assert.equal(await schedulingStartedCount(db, result.runId!), 1);
+  } finally {
+    await removeRejectApprovalOutcomeConstraint(db).catch(() => undefined);
+    await db.close();
+  }
+});
+
 test("replaying the same manual goal approval does not schedule or record an exception twice", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -492,7 +606,7 @@ test("concurrent identical manual approvals schedule exactly once", async () => 
       },
     });
     await entered.promise;
-    const concurrentReplay = await decideApprovalPg(db, {
+    const concurrentReplayPromise = decideApprovalPg(db, {
       runId: result.runId!,
       approvalId: result.approvalId!,
       decision: "approved",
@@ -503,7 +617,7 @@ test("concurrent identical manual approvals schedule exactly once", async () => 
       },
     });
     release.resolve();
-    const firstResult = await first;
+    const [firstResult, concurrentReplay] = await Promise.all([first, concurrentReplayPromise]);
 
     assert.equal(firstResult.status, "approved");
     assert.equal(concurrentReplay.status, "approved");
@@ -802,6 +916,74 @@ async function installAtomicSchedulerFailureConstraint(
        deferrable initially deferred
        for each row execute function southstar.assert_goal_scheduler_failure_atomic()`,
   );
+}
+
+async function installRejectGoalCompletionConstraint(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  idempotencyKey: string,
+): Promise<void> {
+  await db.query(
+    `create or replace function southstar.reject_goal_handoff_completion()
+       returns trigger
+       language plpgsql
+       as $function$
+       begin
+         if new.resource_type = 'goal_submission'
+            and new.resource_key = ${sqlLiteral(idempotencyKey)}
+            and new.status = 'completed' then
+           raise exception 'forced goal handoff rollback';
+         end if;
+         return new;
+       end
+       $function$`,
+  );
+  await db.query(
+    `create constraint trigger reject_goal_handoff_completion
+       after update on southstar.runtime_resources
+       deferrable initially deferred
+       for each row execute function southstar.reject_goal_handoff_completion()`,
+  );
+}
+
+async function removeRejectGoalCompletionConstraint(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+): Promise<void> {
+  await db.query("drop trigger if exists reject_goal_handoff_completion on southstar.runtime_resources");
+  await db.query("drop function if exists southstar.reject_goal_handoff_completion()");
+}
+
+async function installRejectApprovalOutcomeConstraint(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  approvalId: string,
+): Promise<void> {
+  await db.query(
+    `create or replace function southstar.reject_approval_handoff_completion()
+       returns trigger
+       language plpgsql
+       as $function$
+       begin
+         if new.resource_type = 'approval'
+            and new.resource_key = ${sqlLiteral(approvalId)}
+            and new.payload_json->>'schedulingState' = 'completed' then
+           raise exception 'forced approval handoff rollback';
+         end if;
+         return new;
+       end
+       $function$`,
+  );
+  await db.query(
+    `create constraint trigger reject_approval_handoff_completion
+       after update on southstar.runtime_resources
+       deferrable initially deferred
+       for each row execute function southstar.reject_approval_handoff_completion()`,
+  );
+}
+
+async function removeRejectApprovalOutcomeConstraint(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+): Promise<void> {
+  await db.query("drop trigger if exists reject_approval_handoff_completion on southstar.runtime_resources");
+  await db.query("drop function if exists southstar.reject_approval_handoff_completion()");
 }
 
 function sqlLiteral(value: string): string {

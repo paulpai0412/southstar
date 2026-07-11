@@ -102,11 +102,14 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
     const dynamicRepairApproval = row.payload_json.schemaVersion === "southstar.dynamic_repair_authority_approval.v1"
       && row.payload_json.actionType === "dynamic_repair_authority_expansion";
     if (priorDecision) {
+      const schedulingResult = asRecord(row.payload_json.schedulingResult);
       return {
-        shouldSchedule: false,
+        shouldSchedule: goalExecutionApproval
+          && input.decision === "approved"
+          && row.payload_json.schedulingState === "requested",
         goalExecutionApproval,
         dynamicRepairApproval,
-        schedulingResult: asRecord(row.payload_json.schedulingResult),
+        schedulingResult,
       };
     }
     if (goalExecutionApproval && input.decision === "approved") {
@@ -150,8 +153,7 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
   });
 
   if (decision.shouldSchedule) {
-    const scheduling = await scheduleRunOrRecordExceptionPg(db, input.runId, input.startScheduling ?? startRunSchedulingPg);
-    await persistApprovalSchedulingResultPg(db, input, scheduling);
+    const scheduling = await completeApprovalSchedulingHandoffPg(db, input, input.startScheduling ?? startRunSchedulingPg);
     return { id: input.approvalId, status: input.decision, ...scheduling };
   }
   if (decision.goalExecutionApproval) {
@@ -165,12 +167,17 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
   return { id: input.approvalId, status: input.decision, ...(continuation ? { continuation } : {}) };
 }
 
-async function persistApprovalSchedulingResultPg(
+async function completeApprovalSchedulingHandoffPg(
   db: SouthstarDb,
   input: { runId: string; approvalId: string },
-  schedulingResult: { runStatus: "created" | "scheduling"; schedulerExceptionId?: string },
-): Promise<void> {
-  await db.tx(async (tx) => {
+  startScheduling: (db: SouthstarDb, input: { runId: string }) => Promise<StartRunSchedulingResult>,
+): Promise<{ runStatus: "created" | "scheduling"; schedulerExceptionId?: string }> {
+  return await db.tx(async (tx) => {
+    const run = await tx.maybeOne<{ status: string }>(
+      "select status from southstar.workflow_runs where id = $1 for update",
+      [input.runId],
+    );
+    if (!run) throw new Error(`run not found: ${input.runId}`);
     const row = await tx.one<{ payload_json: Record<string, unknown> }>(
       `select payload_json
          from southstar.runtime_resources
@@ -178,10 +185,39 @@ async function persistApprovalSchedulingResultPg(
         for update`,
       [input.approvalId, input.runId],
     );
+    if (row.payload_json.schedulingState === "completed") {
+      return requireSchedulingResult(row.payload_json.schedulingResult, input.approvalId);
+    }
+    if (row.payload_json.schedulingState !== "requested") {
+      throw new Error(`approval scheduling was not requested: ${input.approvalId}`);
+    }
+    let schedulingError: unknown;
+    try {
+      await startScheduling(tx, { runId: input.runId });
+    } catch (error) {
+      schedulingError = error;
+      await tx.query("update southstar.workflow_runs set status = 'created', updated_at = now() where id = $1", [input.runId]);
+    }
+    const exception = schedulingError === undefined
+      ? undefined
+      : await recordRuntimeExceptionPg(tx, {
+        runId: input.runId,
+        source: "scheduler",
+        kind: "provider_unreachable",
+        severity: "blocking",
+        observedAt: new Date().toISOString(),
+        evidenceRefs: [`run:${input.runId}:scheduling-wakeup`],
+        providerEvidence: { error: schedulingError instanceof Error ? schedulingError.message : String(schedulingError) },
+      });
+    const schedulingResult = {
+      runStatus: exception ? "created" as const : "scheduling" as const,
+      ...(exception ? { schedulerExceptionId: exception.id } : {}),
+    };
     await tx.query(
       "update southstar.runtime_resources set payload_json = $3::jsonb, updated_at = now() where resource_type = 'approval' and resource_key = $1 and run_id = $2",
       [input.approvalId, input.runId, JSON.stringify({ ...row.payload_json, schedulingState: "completed", schedulingResult })],
     );
+    return schedulingResult;
   });
 }
 
@@ -245,28 +281,6 @@ async function assertGoalExecutionHashesCurrent(
   }
 }
 
-export async function scheduleRunOrRecordExceptionPg(
-  db: SouthstarDb,
-  runId: string,
-  startScheduling: (db: SouthstarDb, input: { runId: string }) => Promise<StartRunSchedulingResult>,
-): Promise<{ runStatus: "created" | "scheduling"; schedulerExceptionId?: string }> {
-  try {
-    await startScheduling(db, { runId });
-    return { runStatus: "scheduling" };
-  } catch (error) {
-    const exception = await recordRuntimeExceptionPg(db, {
-      runId,
-      source: "scheduler",
-      kind: "provider_unreachable",
-      severity: "blocking",
-      observedAt: new Date().toISOString(),
-      evidenceRefs: [`run:${runId}:scheduling-wakeup`],
-      providerEvidence: { error: error instanceof Error ? error.message : String(error) },
-    });
-    return { runStatus: "created", schedulerExceptionId: exception.id };
-  }
-}
-
 function authorityEnvelope(workflow: SouthstarWorkflowManifest, snapshot: RunLibrarySnapshotV1) {
   const taskRefs = workflow.tasks.flatMap((task) => [
     ...(task.toolGrantRefs ?? []),
@@ -310,4 +324,18 @@ function optionalString(value: unknown): string | undefined {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function requireSchedulingResult(
+  value: unknown,
+  approvalId: string,
+): { runStatus: "created" | "scheduling"; schedulerExceptionId?: string } {
+  const result = asRecord(value);
+  if (result.runStatus !== "created" && result.runStatus !== "scheduling") {
+    throw new Error(`approval scheduling result missing: ${approvalId}`);
+  }
+  return {
+    runStatus: result.runStatus,
+    ...(typeof result.schedulerExceptionId === "string" ? { schedulerExceptionId: result.schedulerExceptionId } : {}),
+  };
 }

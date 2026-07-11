@@ -57,6 +57,7 @@ export class GoalSubmissionPendingError extends Error {
 export type GoalSubmissionClaim = {
   submissionId: string;
   result?: RunGoalResult;
+  schedulingRequest?: RunGoalResult;
   stages: string[];
 };
 
@@ -74,6 +75,10 @@ export async function submitClaimedGoalPg(
   if (claim.result) {
     for (const stage of claim.stages) context.onStage?.(stage);
     return claim.result;
+  }
+  if (claim.schedulingRequest) {
+    for (const stage of claim.stages) context.onStage?.(stage);
+    return await completeGoalSchedulingHandoffPg(context, claim.submissionId);
   }
 
   const observedStages: string[] = [];
@@ -182,7 +187,7 @@ export async function submitClaimedGoalPg(
         "approval.persisted",
         ...(policy.status === "pending" ? ["run.awaiting_approval", "done"] : []),
       ];
-      if (policy.status === "approved") await persistStagesPg(tx, claim.submissionId, stages);
+      if (policy.status === "approved") await requestGoalSchedulingPg(tx, claim.submissionId, result, stages);
       else await completeSubmissionPg(tx, claim.submissionId, result, stages);
       return { result, stages, autoSchedule: policy.status === "approved" };
     });
@@ -193,35 +198,55 @@ export async function submitClaimedGoalPg(
   transaction.stages.forEach((stage) => context.onStage?.(stage));
   if (!transaction.autoSchedule || !transaction.result.runId) return transaction.result;
 
-  let schedulingError: unknown;
-  try {
-    await (context.startScheduling ?? startRunSchedulingPg)(context.db, { runId: transaction.result.runId });
-  } catch (error) {
-    schedulingError = error;
-  }
+  return await completeGoalSchedulingHandoffPg(context, claim.submissionId);
+}
+
+async function completeGoalSchedulingHandoffPg(
+  context: SubmitGoalContext,
+  submissionId: string,
+): Promise<RunGoalResult> {
   const finalized = await context.db.tx(async (tx) => {
+    const submission = await tx.one<{ status: string; payload_json: Record<string, unknown> }>(
+      "select status, payload_json from southstar.runtime_resources where id = $1 for update",
+      [submissionId],
+    );
+    if (submission.status === "completed") return {
+      result: requireRunGoalResult(submission.payload_json.result),
+      finalStages: [] as string[],
+    };
+    if (submission.status !== "processing" || submission.payload_json.schedulingState !== "requested") {
+      throw new Error(`goal submission scheduling was not requested: ${submissionId}`);
+    }
+    const requestedResult = requireRunGoalResult(submission.payload_json.schedulingRequest);
+    const runId = requiredString(requestedResult.runId, "runId");
+    let schedulingError: unknown;
+    try {
+      await (context.startScheduling ?? startRunSchedulingPg)(tx, { runId });
+    } catch (error) {
+      schedulingError = error;
+      await tx.query("update southstar.workflow_runs set status = 'created', updated_at = now() where id = $1", [runId]);
+    }
     const exception = schedulingError === undefined
       ? undefined
       : await recordRuntimeExceptionPg(tx, {
-        runId: transaction.result.runId!,
+        runId,
         source: "scheduler",
         kind: "provider_unreachable",
         severity: "blocking",
         observedAt: new Date().toISOString(),
-        evidenceRefs: [`run:${transaction.result.runId}:scheduling-wakeup`],
+        evidenceRefs: [`run:${runId}:scheduling-wakeup`],
         providerEvidence: { error: schedulingError instanceof Error ? schedulingError.message : String(schedulingError) },
       });
     const result: RunGoalResult = {
-      ...transaction.result,
+      ...requestedResult,
       runStatus: exception ? "created" : "scheduling",
       ...(exception ? { schedulerExceptionId: exception.id } : {}),
     };
     const finalStages = exception ? ["done"] : ["run.scheduling_started", "done"];
-    await completeSubmissionPg(tx, claim.submissionId, result, finalStages);
+    await completeSubmissionPg(tx, submissionId, result, finalStages);
     return { result, finalStages };
   });
-  const finalStages = finalized.finalStages;
-  finalStages.forEach((stage) => context.onStage?.(stage));
+  finalized.finalStages.forEach((stage) => context.onStage?.(stage));
   return finalized.result;
 }
 
@@ -239,16 +264,40 @@ export async function claimGoalSubmissionPg(db: SouthstarDb, request: RunGoalReq
       [submissionId, request.idempotencyKey, JSON.stringify({ requestHash, request, stages: [] })],
     );
     if (inserted) return { submissionId: inserted.id, stages: [] };
-    const existing = await tx.one<{ id: string; status: string; payload_json: Record<string, unknown> }>(
-      "select id, status, payload_json from southstar.runtime_resources where resource_type = 'goal_submission' and resource_key = $1 for update",
+    const observed = await tx.one<{ id: string; status: string; payload_json: Record<string, unknown> }>(
+      "select id, status, payload_json from southstar.runtime_resources where resource_type = 'goal_submission' and resource_key = $1",
       [request.idempotencyKey],
     );
-    if (existing.payload_json.requestHash !== requestHash) {
+    if (observed.payload_json.requestHash !== requestHash) {
       throw new GoalSubmissionConflictError(`idempotency key already belongs to a different goal submission: ${request.idempotencyKey}`);
+    }
+    const observedStages = stringArray(observed.payload_json.stages);
+    if (observed.status === "completed") {
+      return { submissionId: observed.id, result: requireRunGoalResult(observed.payload_json.result), stages: observedStages };
+    }
+    if (observed.status === "processing" && observed.payload_json.schedulingState !== "requested") {
+      throw new GoalSubmissionPendingError(observed.id);
+    }
+    let existing: typeof observed;
+    try {
+      existing = await tx.one<typeof observed>(
+        "select id, status, payload_json from southstar.runtime_resources where resource_type = 'goal_submission' and resource_key = $1 for update nowait",
+        [request.idempotencyKey],
+      );
+    } catch (error) {
+      if (postgresErrorCode(error) === "55P03") throw new GoalSubmissionPendingError(observed.id);
+      throw error;
     }
     const stages = stringArray(existing.payload_json.stages);
     if (existing.status === "completed") {
       return { submissionId: existing.id, result: requireRunGoalResult(existing.payload_json.result), stages };
+    }
+    if (existing.status === "processing" && existing.payload_json.schedulingState === "requested") {
+      return {
+        submissionId: existing.id,
+        schedulingRequest: requireRunGoalResult(existing.payload_json.schedulingRequest),
+        stages,
+      };
     }
     if (existing.status === "failed") {
       const { failure: _failure, failedAt: _failedAt, retryable: _retryable, result: _result, ...payload } = existing.payload_json;
@@ -260,6 +309,27 @@ export async function claimGoalSubmissionPg(db: SouthstarDb, request: RunGoalReq
     }
     throw new GoalSubmissionPendingError(existing.id);
   });
+}
+
+async function requestGoalSchedulingPg(
+  db: SouthstarDb,
+  submissionId: string,
+  schedulingRequest: RunGoalResult,
+  stages: string[],
+): Promise<void> {
+  const row = await db.one<{ payload_json: Record<string, unknown> }>(
+    "select payload_json from southstar.runtime_resources where id = $1 for update",
+    [submissionId],
+  );
+  await db.query(
+    "update southstar.runtime_resources set payload_json = $2::jsonb, updated_at = now() where id = $1",
+    [submissionId, JSON.stringify({
+      ...row.payload_json,
+      stages: [...stringArray(row.payload_json.stages), ...stages],
+      schedulingState: "requested",
+      schedulingRequest,
+    })],
+  );
 }
 
 async function persistStagesPg(db: SouthstarDb, submissionId: string, stages: string[]): Promise<void> {
@@ -350,4 +420,10 @@ function requiredString(value: unknown, label: string): string {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function postgresErrorCode(error: unknown): string | undefined {
+  return error && typeof error === "object" && "code" in error && typeof error.code === "string"
+    ? error.code
+    : undefined;
 }
