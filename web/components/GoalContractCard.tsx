@@ -9,13 +9,15 @@ export function GoalContractCard({
   onOpenDetails,
   onReviseGoal,
   onApprove,
+  approvalPending = false,
 }: {
   mission: GoalMissionReadModel;
   runStatus?: "awaiting_approval" | "scheduling";
   approvalCommand?: WorkflowCommandDescriptor;
   onOpenDetails: () => void;
-  onReviseGoal: () => void;
+  onReviseGoal: (choice?: string) => void;
   onApprove: (command: WorkflowCommandDescriptor) => void;
+  approvalPending?: boolean;
 }) {
   const contract = mission.goalContract;
   const acceptanceCriteria = contract.requirements.flatMap((requirement) => requirement.acceptanceCriteria).slice(0, 3);
@@ -39,7 +41,7 @@ export function GoalContractCard({
         <div className="goal-contract-blocking" data-testid="goal-contract-clarifications">
           <strong>Needs input</strong>
           <div className="goal-contract-choice-list">
-            {contract.blockingInputs.map((choice) => <button type="button" key={choice} onClick={onReviseGoal}>{choice}</button>)}
+            {contract.blockingInputs.map((choice) => <button type="button" key={choice} onClick={() => onReviseGoal(choice)}>{choice}</button>)}
           </div>
         </div>
       ) : null}
@@ -49,13 +51,18 @@ export function GoalContractCard({
         <Status label="Health" value={mission.status.health} />
         {runStatus === "scheduling" ? <span className="goal-contract-note">Scheduled automatically</span> : null}
         {runStatus === "awaiting_approval" && approvalCommand ? (
-          <button type="button" disabled={!approvalCommand.enabled} onClick={() => onApprove(approvalCommand)}>
+          <button
+            type="button"
+            data-testid="goal-contract-approve"
+            disabled={!approvalCommand.enabled || approvalPending}
+            onClick={() => onApprove(approvalCommand)}
+          >
             {approvalCommand.label}
           </button>
         ) : null}
       </div>
       <footer className="goal-contract-actions">
-        <button type="button" onClick={onReviseGoal}>Revise goal</button>
+        <button type="button" onClick={() => onReviseGoal()}>Revise goal</button>
         <button type="button" data-testid="goal-contract-open-details" onClick={onOpenDetails}>View details</button>
       </footer>
     </section>

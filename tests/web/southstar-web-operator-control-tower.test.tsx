@@ -141,8 +141,29 @@ test("Operator renders execution, outcome, and health as separate mission badges
   assert.match(normalizers, /const outcomeStatus = goalOutcomeStatus\(run\.outcomeStatus\)/);
   assert.match(normalizers, /const healthStatus = goalHealthStatus\(run\.healthStatus\)/);
   assert.doesNotMatch(normalizers, /outcomeStatus:\s*stringValue\(run\.status\)/);
+  assert.doesNotMatch(normalizers, /executionStatus[\s\S]{0,160}stringValue\(run\.status\)/);
+  assert.match(workspace, /data-testid="operator-run-execution"/);
   assert.match(workspace, /data-testid="operator-run-outcome"/);
   assert.match(workspace, /data-testid="operator-run-health"/);
+});
+
+test("operator normalizer safely defaults malformed and partial mission status", async () => {
+  const { normalizeOperatorOverview } = await import("../../web/lib/operator/normalizers.ts");
+  const overview = normalizeOperatorOverview({
+    activeRuns: [
+      { runId: "run-missing-status", status: "running", mission: {}, title: "Missing" },
+      { runId: "run-null-status", status: "failed", mission: { status: null }, title: "Null" },
+      { runId: "run-invalid-status", status: "completed", mission: { status: { execution: 42, outcome: "completed", health: "red" } }, title: "Invalid" },
+    ],
+  });
+  assert.deepEqual(
+    overview.runs.map((run) => [run.executionStatus, run.outcomeStatus, run.healthStatus, run.mission]),
+    [
+      ["unknown", "in_progress", "healthy", null],
+      ["unknown", "in_progress", "healthy", null],
+      ["unknown", "in_progress", "healthy", null],
+    ],
+  );
 });
 
 test("operator repo filter includes project-root parent and child matches", async () => {

@@ -33,7 +33,7 @@ interface Props {
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
-  onWorkflowGoalRevise?: (dag: WorkflowDag) => void;
+  onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
   onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }

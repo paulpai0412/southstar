@@ -16,15 +16,34 @@ export type WorkflowGenerateDraftEvent = {
   validationIssues?: unknown[];
 };
 
+export type WorkflowGenerateHeartbeatEvent = Record<string, unknown> & {
+  phase?: string;
+  elapsedMs?: number;
+};
+
+export type WorkflowGenerateIdentity = {
+  draftId: string;
+  draftStatus?: string;
+  runId?: string;
+  runStatus?: string;
+};
+
+export type WorkflowGenerateRecoverableEvent = {
+  result: WorkflowGenerateIdentity;
+  error: string;
+};
+
 export type WorkflowGenerateStreamHandlers = {
   onMessage?: (text: string, event: WorkflowGenerateMessageEvent) => void;
   onStage?: (stage: WorkflowGenerateStageEvent) => void;
+  onHeartbeat?: (heartbeat: WorkflowGenerateHeartbeatEvent) => void;
   onDraft?: (draft: WorkflowGenerateDraftEvent) => void;
   onDag?: (dag: WorkflowDag) => void;
   onGoalContract?: (mission: GoalMissionReadModel) => void;
   onCoverage?: (mission: GoalMissionReadModel) => void;
   onRun?: (run: { runId?: string; runStatus?: string }) => void;
   onApproval?: (approval: { mission?: GoalMissionReadModel; command?: WorkflowCommandDescriptor }) => void;
+  onRecoverable?: (recoverable: WorkflowGenerateRecoverableEvent) => void;
   onError?: (message: string) => void;
   onDone?: () => void;
 };
@@ -56,6 +75,7 @@ export async function generateWorkflowDagStream(input: {
   draftId?: string | null;
   cwd?: string | null;
   templateId?: string | null;
+  idempotencyKey?: string;
   signal?: AbortSignal;
 } & WorkflowGenerateStreamHandlers): Promise<void> {
   const endpoint = input.draftId
@@ -68,7 +88,7 @@ export async function generateWorkflowDagStream(input: {
     body: JSON.stringify({
       prompt: input.prompt,
       ...(input.cwd ? { cwd: input.cwd } : {}),
-      ...(!input.draftId ? { idempotencyKey: crypto.randomUUID() } : {}),
+      ...(!input.draftId ? { idempotencyKey: input.idempotencyKey ?? crypto.randomUUID() } : {}),
       ...(!input.draftId && input.templateId ? { templateId: input.templateId } : {}),
     }),
   });
@@ -149,6 +169,10 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
     handlers.onStage?.(data as WorkflowGenerateStageEvent);
     return;
   }
+  if (event === "heartbeat") {
+    handlers.onHeartbeat?.(data as WorkflowGenerateHeartbeatEvent);
+    return;
+  }
   if (event === "draft") {
     const draft = data.draft && typeof data.draft === "object" ? data.draft : data;
     handlers.onDraft?.(draft as WorkflowGenerateDraftEvent);
@@ -175,6 +199,10 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
   }
   if (event === "approval") {
     handlers.onApproval?.(data as { mission?: GoalMissionReadModel; command?: WorkflowCommandDescriptor });
+    return;
+  }
+  if (event === "recoverable") {
+    handlers.onRecoverable?.(data as WorkflowGenerateRecoverableEvent);
     return;
   }
   if (event === "error") {

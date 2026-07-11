@@ -13,13 +13,15 @@ type InspectorState =
   | { status: "error"; message: string }
   | { status: "ready"; model: WorkflowUiReadModel };
 
-export function GoalContractInspector({ draftId, runId }: { draftId?: string; runId?: string }) {
+export function GoalContractInspector({ draftId, runId, refreshKey = 0 }: { draftId?: string; runId?: string; refreshKey?: number }) {
   const [state, setState] = useState<InspectorState>({ status: "loading" });
+  const url = workflowUiUrl(draftId, runId);
 
   useEffect(() => {
+    if (!url) return;
     const controller = new AbortController();
     setState({ status: "loading" });
-    fetch(workflowUiUrl(draftId, runId), { cache: "no-store", signal: controller.signal })
+    fetch(url, { cache: "no-store", signal: controller.signal })
       .then(async (response) => {
         if (!response.ok) throw new Error(await response.text() || `HTTP ${response.status}`);
         const payload = await response.json() as { result?: WorkflowUiReadModel } & WorkflowUiReadModel;
@@ -30,8 +32,9 @@ export function GoalContractInspector({ draftId, runId }: { draftId?: string; ru
         if (!controller.signal.aborted) setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
       });
     return () => controller.abort();
-  }, [draftId, runId]);
+  }, [refreshKey, url]);
 
+  if (!url) return <div data-testid="goal-contract-inspector" className="goal-contract-inspector operator-danger">draftId or runId is required</div>;
   if (state.status === "loading") return <div data-testid="goal-contract-inspector" className="goal-contract-inspector">Loading Goal Contract…</div>;
   if (state.status === "error") return <div data-testid="goal-contract-inspector" className="goal-contract-inspector operator-danger">{state.message}</div>;
   const mission = state.model.mission;
@@ -55,11 +58,27 @@ export function GoalContractInspector({ draftId, runId }: { draftId?: string; ru
       <InspectorSection title="Assumptions / blocking inputs"><StringList values={[...contract.assumptions, ...contract.blockingInputs]} /></InspectorSection>
       <InspectorSection title="Risk / requested side effects"><StringList values={[...contract.riskTags, ...contract.requestedSideEffects]} /></InspectorSection>
       <InspectorSection title="Coverage / evaluator evidence">
-        <p>{mission.coverage.covered}/{mission.coverage.total} covered · {mission.evaluatorResults.length} evaluator results</p>
-        <StringList values={mission.coverage.entries.flatMap((entry) => [
-          `${entry.requirementId}: ${entry.producerTaskIds.join(", ") || "no producer"}`,
-          ...entry.requiredEvidenceKinds,
-        ])} />
+        <div data-testid="goal-contract-evaluator-evidence">
+          <p>{mission.coverage.covered}/{mission.coverage.total} covered · {mission.evaluatorResults.length} evaluator results</p>
+          <StringList values={[
+            ...(mission.coverage.failedRequirementIds.length > 0
+              ? [`failed requirements: ${mission.coverage.failedRequirementIds.join(", ")}`]
+              : ["failed requirements: none"]),
+            ...mission.coverage.entries.flatMap((entry) => [
+              `${entry.requirementId} producers: ${entry.producerTaskIds.join(", ") || "none"}`,
+              `${entry.requirementId} artifacts: ${entry.artifactRefs.join(", ") || "none"}`,
+              `${entry.requirementId} evaluator tasks: ${entry.evaluatorTaskIds.join(", ") || "none"}`,
+              `${entry.requirementId} evaluator profiles: ${entry.evaluatorProfileRefs.join(", ") || "none"}`,
+              `${entry.requirementId} evidence kinds: ${entry.requiredEvidenceKinds.join(", ") || "none"}`,
+            ]),
+          ]} />
+          {mission.evaluatorResults.map((result, index) => (
+            <article key={evaluatorResultKey(result, index)}>
+              <strong>Evaluator result {index + 1}</strong>
+              <StringList values={evaluatorEvidenceLines(result)} />
+            </article>
+          ))}
+        </div>
       </InspectorSection>
       <InspectorSection title="Provenance / hashes">
         <StringList values={[
@@ -74,10 +93,10 @@ export function GoalContractInspector({ draftId, runId }: { draftId?: string; ru
   );
 }
 
-function workflowUiUrl(draftId?: string, runId?: string): string {
+function workflowUiUrl(draftId?: string, runId?: string): string | null {
   if (runId) return `/api/workflow/ui?runId=${encodeURIComponent(runId)}`;
   if (draftId) return `/api/workflow/ui?draftId=${encodeURIComponent(draftId)}`;
-  throw new Error("draftId or runId is required");
+  return null;
 }
 
 function InspectorSection({ title, children }: { title: string; children: React.ReactNode }) {
@@ -86,4 +105,38 @@ function InspectorSection({ title, children }: { title: string; children: React.
 
 function StringList({ values }: { values: string[] }) {
   return values.length > 0 ? <ul>{values.map((value, index) => <li key={`${value}:${index}`}>{value}</li>)}</ul> : <p>None</p>;
+}
+
+function evaluatorResultKey(value: unknown, index: number): string {
+  const result = recordValue(value);
+  return `${stringValue(result?.evaluatorId) ?? stringValue(result?.evaluatorTaskId) ?? "evaluator"}:${index}`;
+}
+
+function evaluatorEvidenceLines(value: unknown): string[] {
+  const result = recordValue(value);
+  if (!result) return [String(value)];
+  return [
+    ...(stringValue(result.evaluatorId) ? [`evaluator: ${stringValue(result.evaluatorId)}`] : []),
+    ...(stringValue(result.evaluatorTaskId) ? [`evaluator task: ${stringValue(result.evaluatorTaskId)}`] : []),
+    ...(stringValue(result.evaluatorProfileRef) ? [`evaluator profile: ${stringValue(result.evaluatorProfileRef)}`] : []),
+    ...(stringValue(result.verdict) ? [`verdict: ${stringValue(result.verdict)}`] : []),
+    ...labeledValues("requirements", result.requirementIds),
+    ...labeledValues("artifacts", result.artifactRefs),
+    ...labeledValues("evidence", result.evidenceRefs),
+    ...labeledValues("findings / reason", result.findings),
+    ...(stringValue(result.reason) ? [`reason: ${stringValue(result.reason)}`] : []),
+  ];
+}
+
+function labeledValues(label: string, value: unknown): string[] {
+  const values = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
+  return values.length > 0 ? [`${label}: ${values.join(", ")}`] : [];
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }

@@ -52,9 +52,13 @@ export async function POST(request: NextRequest) {
       idempotencyKey,
     }),
   });
-  if (!upstream.ok || !upstream.headers.get("content-type")?.includes("text/event-stream")) {
+  const isEventStream = upstream.headers.get("content-type")?.includes("text/event-stream") ?? false;
+  if (!upstream.ok || !isEventStream) {
+    const status = upstream.ok && upstream.status !== 202 && upstream.status !== 409
+      ? 502
+      : upstream.status;
     return new Response(upstream.body, {
-      status: upstream.status,
+      status,
       headers: { "content-type": upstream.headers.get("content-type") ?? "application/json" },
     });
   }
@@ -127,13 +131,26 @@ async function proxyRunGoalStream(
 }
 
 async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerateEvent): Promise<void> {
+  send("draft", { draft: { draftId: result.draftId, status: result.draftStatus } });
+  if (result.runId) send("run", { runId: result.runId, runStatus: result.runStatus });
   const missionQuery = result.runId
     ? `runId=${encodeURIComponent(result.runId)}`
     : `draftId=${encodeURIComponent(result.draftId)}`;
-  const [orchestration, workflowUi] = await Promise.all([
-    fetchJson<V2PlannerDraftOrchestrationView>(`/api/v2/planner/drafts/${encodeURIComponent(result.draftId)}/orchestration`),
-    fetchJson<WorkflowUiReadModel>(`/api/v2/ui/workflow?${missionQuery}`),
-  ]);
+  let orchestration: V2PlannerDraftOrchestrationView;
+  let workflowUi: WorkflowUiReadModel;
+  try {
+    [orchestration, workflowUi] = await Promise.all([
+      fetchJson<V2PlannerDraftOrchestrationView>(`/api/v2/planner/drafts/${encodeURIComponent(result.draftId)}/orchestration`),
+      fetchJson<WorkflowUiReadModel>(`/api/v2/ui/workflow?${missionQuery}`),
+    ]);
+  } catch (error) {
+    send("recoverable", {
+      result,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    send("done", result);
+    return;
+  }
   const mission = workflowUi.mission ?? undefined;
   const approvalCommand = workflowUi.commands.find((command) => command.id === "approval.approve");
   const runStatus = result.runStatus === "awaiting_approval" || result.runStatus === "scheduling"
@@ -145,12 +162,10 @@ async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerate
     ...(mission ? { mission } : {}),
     ...(approvalCommand ? { approvalCommand } : {}),
   });
-  send("draft", { draft: { draftId: result.draftId, status: result.draftStatus } });
   if (mission) {
     send("goal_contract", { mission });
     send("coverage", { mission });
   }
-  if (result.runId) send("run", { runId: result.runId, runStatus: result.runStatus });
   if (mission?.approval || approvalCommand) send("approval", { mission, command: approvalCommand });
   send("dag", { dag });
   send("done", result);
@@ -158,8 +173,9 @@ async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerate
 
 async function fetchJson<T>(path: string): Promise<T> {
   const response = await fetch(buildWorkflowV2Url(path), { headers: { accept: "application/json" } });
-  if (!response.ok) throw new Error(`workflow read model request failed: HTTP ${response.status}`);
-  return unwrapV2Envelope<T>(await response.json());
+  const text = await response.text();
+  if (!response.ok) throw new Error(text || `workflow read model request failed: HTTP ${response.status}`);
+  return unwrapV2Envelope<T>(JSON.parse(text));
 }
 
 async function dispatchCompleteFrames(

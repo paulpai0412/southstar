@@ -346,6 +346,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const workflowAbortControllerRef = useRef<AbortController | null>(null);
+  const workflowSubmissionRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
   const agentRunningRef = useRef(false);
   const handleAgentEventRef = useRef<((event: AgentEvent) => void) | null>(null);
@@ -899,6 +900,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (opts.workflowMode && !images?.length && !isSlashCommandPrompt) {
       let rawStreamedText = "";
       let generatedDag: WorkflowDag | null = null;
+      let recoverableIdentity: { draftId: string; runId?: string; error: string } | null = null;
       const workflowAbortController = new AbortController();
       workflowAbortControllerRef.current?.abort();
       workflowAbortControllerRef.current = workflowAbortController;
@@ -929,10 +931,16 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       try {
         const workflowSessionId = sessionIdRef.current ?? await ensureNewSession();
         if (workflowSessionId) promoteNewSession(1, trimmedMessage);
+        const workflowCwd = opts.workflowCwd ?? session?.cwd ?? newSessionCwd;
+        const submissionFingerprint = `${workflowCwd ?? ""}\u0000${trimmedMessage}`;
+        if (!revisionDraftId && workflowSubmissionRef.current?.fingerprint !== submissionFingerprint) {
+          workflowSubmissionRef.current = { fingerprint: submissionFingerprint, idempotencyKey: crypto.randomUUID() };
+        }
         await generateWorkflowDagStream({
           prompt: trimmedMessage,
           draftId: revisionDraftId,
-          cwd: opts.workflowCwd ?? session?.cwd ?? newSessionCwd,
+          cwd: workflowCwd,
+          ...(!revisionDraftId && workflowSubmissionRef.current ? { idempotencyKey: workflowSubmissionRef.current.idempotencyKey } : {}),
           templateId: workflowTemplateIdFrom(opts.workflowTemplate),
           signal: workflowAbortController.signal,
           onMessage(text, event) {
@@ -941,6 +949,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           onStage(stage) {
             const label = stage.message || stage.stage;
             if (label) appendWorkflowText(`[${stage.stage ?? "planner.stage"}] ${label}`);
+          },
+          onHeartbeat(heartbeat) {
+            if (heartbeat.phase) appendWorkflowText(`[heartbeat] ${heartbeat.phase}`);
           },
           onDraft(draft) {
             if (draft.draftId) appendWorkflowText(`[draft] ${draft.draftId}${draft.status ? ` ${draft.status}` : ""}`);
@@ -957,6 +968,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           onApproval({ command }) {
             if (command) appendWorkflowText(`[approval] ${command.label}`);
           },
+          onRecoverable({ result, error }) {
+            recoverableIdentity = { draftId: result.draftId, runId: result.runId, error };
+            appendWorkflowText(`[recoverable] draft ${result.draftId}${result.runId ? ` · run ${result.runId}` : ""} · ${error}`);
+          },
           onDag(dag) {
             generatedDag = dag;
             updateStreamingMessage();
@@ -964,8 +979,21 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         });
 
         if (!generatedDag) {
+          if (recoverableIdentity) {
+            const streamedText = normalizeWorkflowStreamText(rawStreamedText);
+            setMessages((prev) => [...prev, {
+              role: "assistant",
+              content: [{ type: "text", text: streamedText || `Goal accepted as draft ${recoverableIdentity!.draftId}.` }],
+              model: "workflow-generate",
+              provider: "southstar",
+              timestamp: Date.now(),
+            } as AgentMessage]);
+            addNotice({ type: "info", message: "Goal accepted; workflow details can be recovered from the persisted identity." });
+            return;
+          }
           throw new Error("workflow generate completed without a DAG");
         }
+        workflowSubmissionRef.current = null;
 
         const streamedText = normalizeWorkflowStreamText(rawStreamedText);
         const assistantMsg: AgentMessage = {

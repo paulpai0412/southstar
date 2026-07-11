@@ -22,6 +22,7 @@ export interface Tab {
     | "operatorDebug";
   draftId?: string;
   runId?: string;
+  refreshKey?: number;
   taskId?: string;
   attentionId?: string;
   mode?: "draft" | "runtime";

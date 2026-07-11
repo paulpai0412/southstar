@@ -21,11 +21,13 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
     'event: message\ndata: {"text":"Creating planner draft"}\n\n',
     'event: message.delta\ndata: {"text":"Loading orchestration"}\n\n',
     'event: planner.stage\ndata: {"stage":"composer.started","message":"Streaming LLM workflow composition."}\n\n',
+    'event: heartbeat\ndata: {"phase":"composing","elapsedMs":1200}\n\n',
     'event: draft\ndata: {"draft":{"draftId":"draft-1","status":"validated"}}\n\n',
     'event: goal_contract\ndata: {"mission":{"goalContract":{"summary":"Todo app"}}}\n\n',
     'event: coverage\ndata: {"mission":{"coverage":{"covered":2,"total":2}}}\n\n',
     'event: run\ndata: {"runId":"run-1","runStatus":"scheduling"}\n\n',
     'event: approval\ndata: {"command":null}\n\n',
+    'event: recoverable\ndata: {"result":{"draftId":"draft-1","runId":"run-1"},"error":"read model unavailable"}\n\n',
     'event: dag\ndata: {"dag":{"id":"draft-1","templateId":"template.software-feature","templateTitle":"Todo app","prompt":"todo","expandedByDefault":true,"readiness":"ready","nodes":[],"edges":[],"createdAt":"2026-06-29T00:00:00.000Z"}}\n\n',
     "event: done\ndata: {}\n\n",
   ];
@@ -58,6 +60,9 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
       onStage(stage: { stage?: string; message?: string }) {
         events.push(`stage:${stage.stage}:${stage.message}`);
       },
+      onHeartbeat(heartbeat: { phase?: string }) {
+        events.push(`heartbeat:${heartbeat.phase}`);
+      },
       onDraft(draft: { draftId?: string }) {
         events.push(`draft:${draft.draftId}`);
       },
@@ -72,6 +77,9 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
       },
       onApproval() {
         receipts.push("approval");
+      },
+      onRecoverable(result: { result?: { draftId?: string; runId?: string } }) {
+        receipts.push(`recoverable:${result.result?.draftId}:${result.result?.runId}`);
       },
       onDag(dag: { id?: string }) {
         dagId = dag.id ?? null;
@@ -95,13 +103,102 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
       "message:Creating planner draft",
       "message.delta:Loading orchestration",
       "stage:composer.started:Streaming LLM workflow composition.",
+      "heartbeat:composing",
       "draft:draft-1",
       "done",
     ]);
     assert.equal(dagId, "draft-1");
-    assert.deepEqual(receipts, ["goal_contract", "coverage", "run:run-1", "approval"]);
+    assert.deepEqual(receipts, ["goal_contract", "coverage", "run:run-1", "approval", "recoverable:draft-1:run-1"]);
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+test("generateWorkflowDagStream reuses an explicit idempotency key for recoverable retries", async () => {
+  const originalFetch = global.fetch;
+  const keys: string[] = [];
+  global.fetch = (async (_url, init) => {
+    keys.push(String((JSON.parse(String(init?.body)) as Record<string, unknown>).idempotencyKey));
+    return new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('event: recoverable\ndata: {"result":{"draftId":"draft-recover","runId":"run-recover"},"error":"enrichment failed"}\n\nevent: done\ndata: {"draftId":"draft-recover","runId":"run-recover"}\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } });
+  }) as typeof fetch;
+  try {
+    const { generateWorkflowDagStream } = await import("../../web/lib/workflow/generate-stream.ts");
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      await generateWorkflowDagStream({
+        prompt: "recover this goal",
+        cwd: "/workspace/project",
+        idempotencyKey: "stable-submission-key",
+      });
+    }
+    assert.deepEqual(keys, ["stable-submission-key", "stable-submission-key"]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("workflow generate proxy preserves terminal identity when enrichment fails", async () => {
+  const originalFetch = global.fetch;
+  const originalBaseUrl = process.env.SOUTHSTAR_V2_API_BASE_URL;
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://runtime.test";
+  global.fetch = (async (url) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === "/api/v2/run-goal") {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('event: done\ndata: {"draftId":"draft-terminal","draftStatus":"validated","runId":"run-terminal","runStatus":"scheduling"}\n\n'));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    if (pathname.includes("/orchestration")) return new Response("read model unavailable", { status: 503 });
+    return new Response(JSON.stringify({ result: { mission: null, commands: [] } }), { status: 200, headers: { "content-type": "application/json" } });
+  }) as typeof fetch;
+  try {
+    const { POST } = await import("../../web/app/api/workflow/generate/route.ts");
+    const response = await POST(new Request("http://southstar.test/api/workflow/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "build", cwd: "/workspace/project", idempotencyKey: "stable-key" }),
+    }) as never);
+    const stream = await response.text();
+    assert.match(stream, /event: draft\ndata: .*draft-terminal/);
+    assert.match(stream, /event: run\ndata: .*run-terminal/);
+    assert.match(stream, /event: recoverable\ndata: .*read model unavailable/);
+    assert.match(stream, /event: done\ndata: .*run-terminal/);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.SOUTHSTAR_V2_API_BASE_URL;
+    else process.env.SOUTHSTAR_V2_API_BASE_URL = originalBaseUrl;
+  }
+});
+
+test("workflow generate proxy maps unexpected 2xx non-SSE to 502 while preserving 202 and 409", async () => {
+  const originalFetch = global.fetch;
+  const originalBaseUrl = process.env.SOUTHSTAR_V2_API_BASE_URL;
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://runtime.test";
+  try {
+    const { POST } = await import("../../web/app/api/workflow/generate/route.ts");
+    for (const [upstreamStatus, expectedStatus] of [[200, 502], [202, 202], [409, 409]] as const) {
+      global.fetch = (async () => new Response(JSON.stringify({ status: "not-streaming" }), {
+        status: upstreamStatus,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+      const response = await POST(new Request("http://southstar.test/api/workflow/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ prompt: "build", cwd: "/workspace/project", idempotencyKey: "stable-key" }),
+      }) as never);
+      assert.equal(response.status, expectedStatus, `upstream ${upstreamStatus}`);
+    }
+  } finally {
+    global.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.SOUTHSTAR_V2_API_BASE_URL;
+    else process.env.SOUTHSTAR_V2_API_BASE_URL = originalBaseUrl;
   }
 });
 
@@ -237,6 +334,218 @@ test("Goal Contract card opens the existing Sidecar inspector", async () => {
     await page.locator('[data-testid="goal-contract-open-details"]').click();
     await page.locator('[data-testid="goal-contract-inspector"]').waitFor();
     assert.match(await page.locator('[data-testid="goal-contract-requirements"]').textContent() ?? "", /opens without network access/);
+  });
+});
+
+test("Goal Contract clarification choice carries the selected value into a focused prefilled input", async () => {
+  const dag = scheduledDagWithMission();
+  dag.mission.goalContract.blockingInputs = ["Use PostgreSQL", "Use SQLite"];
+  const shell = source("web/components/AppShell.tsx");
+  assert.match(shell, /handleWorkflowGoalRevise[\s\S]*insertText\(/);
+  assert.doesNotMatch(shell, /handleWorkflowGoalRevise[\s\S]{0,500}insertIfEmpty\(/);
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { WorkflowDagBlock } from "./web/components/WorkflowDagBlock";
+    const dag = ${JSON.stringify(dag)};
+    function Harness() {
+      const [value, setValue] = useState("Existing goal notes");
+      return <><WorkflowDagBlock dag={dag} cwd="/workspace/project" onReviseGoal={(_dag, choice) => {
+        setValue((current) => current + " · " + choice);
+        requestAnimationFrame(() => document.querySelector("textarea")?.focus());
+      }} /><textarea value={value} readOnly /></>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.getByRole("button", { name: "Use SQLite" }).click();
+    assert.equal(await page.locator("textarea").inputValue(), "Existing goal notes · Use SQLite");
+    assert.equal(await page.locator("textarea").evaluate((element) => element === document.activeElement), true);
+  });
+});
+
+test("Goal Contract approval guards double-click and refreshes persisted mission once", async () => {
+  const dag = awaitingApprovalDag();
+  const pendingRoutes: import("playwright").Route[] = [];
+  let signalCommandStarted!: () => void;
+  const commandStarted = new Promise<void>((resolve) => { signalCommandStarted = resolve; });
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { WorkflowDagBlock } from "./web/components/WorkflowDagBlock";
+    const dag = ${JSON.stringify(dag)};
+    window.missionRefreshes = 0;
+    createRoot(document.getElementById("root")).render(<WorkflowDagBlock
+      dag={dag}
+      cwd="/workspace/project"
+      onMissionRefresh={async () => {
+        window.missionRefreshes += 1;
+        return { ...dag.mission, approval: { ...dag.mission.approval, status: "approved" } };
+      }}
+    />);
+  `, async (page) => {
+    await page.route("**/api/operator/command", async (route) => {
+      pendingRoutes.push(route);
+      signalCommandStarted();
+    });
+    await page.getByRole("button", { name: "Approve" }).waitFor();
+    await page.evaluate(`
+      window.prompt = function () { return "approved by operator"; };
+      window.confirm = function () { return true; };
+      Object.defineProperty(window.crypto, "randomUUID", { configurable: true, value: function () { return "00000000-0000-4000-8000-000000000001"; } });
+    `);
+    await page.evaluate(() => {
+      const button = [...document.querySelectorAll("button")].find((candidate) => candidate.textContent?.trim() === "Approve") as HTMLButtonElement;
+      button.click();
+      button.click();
+    });
+    await commandStarted;
+    await page.evaluate("new Promise(function (resolve) { requestAnimationFrame(function () { requestAnimationFrame(resolve); }); })");
+    assert.equal(pendingRoutes.length, 1, "double click must create one deferred command request");
+    for (const route of pendingRoutes) {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: true }) });
+    }
+    await page.locator('[aria-live="polite"]').filter({ hasText: "Approved" }).waitFor({ timeout: 1_000 });
+    assert.equal(await page.evaluate(() => window.missionRefreshes), 1);
+    assert.equal(await page.getByRole("button", { name: "Approve" }).count(), 0);
+    assert.match(await page.locator('[aria-live="polite"]').textContent() ?? "", /Approved/);
+  });
+});
+
+test("accepted Goal Contract approval stays completed when persisted mission refresh fails", async () => {
+  const dag = awaitingApprovalDag();
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { WorkflowDagBlock } from "./web/components/WorkflowDagBlock";
+    const dag = ${JSON.stringify(dag)};
+    createRoot(document.getElementById("root")).render(<WorkflowDagBlock
+      dag={dag}
+      cwd="/workspace/project"
+      onMissionRefresh={async () => { throw new Error("mission refresh unavailable"); }}
+    />);
+  `, async (page) => {
+    await page.route("**/api/operator/command", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: true }) });
+    });
+    await page.evaluate(`
+      window.prompt = function () { return "approve"; };
+      window.confirm = function () { return true; };
+      Object.defineProperty(window.crypto, "randomUUID", { configurable: true, value: function () { return "00000000-0000-4000-8000-000000000003"; } });
+    `);
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.locator('[aria-live="polite"]').filter({ hasText: "Approved" }).waitFor({ timeout: 1_000 });
+    assert.equal(await page.getByRole("button", { name: "Approve" }).count(), 0);
+    assert.match(await page.locator('[aria-live="polite"]').textContent() ?? "", /refresh unavailable/);
+  });
+});
+
+test("Goal Contract approval failure restores retry and a later success refreshes mission", async () => {
+  const dag = awaitingApprovalDag();
+  let calls = 0;
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { WorkflowDagBlock } from "./web/components/WorkflowDagBlock";
+    const dag = ${JSON.stringify(dag)};
+    window.missionRefreshes = 0;
+    createRoot(document.getElementById("root")).render(<WorkflowDagBlock
+      dag={dag}
+      cwd="/workspace/project"
+      onMissionRefresh={async () => {
+        window.missionRefreshes += 1;
+        return { ...dag.mission, approval: { ...dag.mission.approval, status: "approved" } };
+      }}
+    />);
+  `, async (page) => {
+    await page.route("**/api/operator/command", async (route) => {
+      calls += 1;
+      if (calls === 1) await route.fulfill({ status: 500, body: "failed" });
+      else await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ accepted: true }) });
+    });
+    await page.evaluate(`
+      window.prompt = function () { return "retry"; };
+      window.confirm = function () { return true; };
+      Object.defineProperty(window.crypto, "randomUUID", { configurable: true, value: function () { return "00000000-0000-4000-8000-000000000002"; } });
+    `);
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.locator('[aria-live="polite"]').filter({ hasText: "failed" }).waitFor({ timeout: 1_000 });
+    assert.equal(await page.getByRole("button", { name: "Approve" }).isEnabled(), true);
+    await page.getByRole("button", { name: "Approve" }).click();
+    await page.waitForFunction(() => window.missionRefreshes === 1, undefined, { timeout: 1_000 });
+    assert.equal(calls, 2);
+  });
+});
+
+test("Goal Contract inspector refresh generation refetches the same run", async () => {
+  const mission = scheduledDagWithMission().mission;
+  let requests = 0;
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalContractInspector } from "./web/components/GoalContractInspector";
+    function Harness() {
+      const [refreshKey, setRefreshKey] = useState(0);
+      return <><button data-testid="refresh" onClick={() => setRefreshKey((value) => value + 1)}>Refresh</button><GoalContractInspector runId="run-article" refreshKey={refreshKey} /></>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.route("**/api/workflow/ui?**", async (route) => {
+      requests += 1;
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ result: { mission: { ...mission, goalContract: { ...mission.goalContract, summary: "Revision " + requests } }, commands: [] } }) });
+    });
+    const summary = page.locator('[data-testid="goal-contract-inspector"] > header strong');
+    await summary.filter({ hasText: "Revision 1" }).waitFor();
+    await page.locator('[data-testid="refresh"]').click();
+    await summary.filter({ hasText: "Revision 2" }).waitFor({ timeout: 1_000 });
+    assert.equal(requests, 2);
+  });
+  const shell = source("web/components/AppShell.tsx");
+  assert.match(shell, /refreshKey/);
+  assert.match(shell, /workflowGoalContract[\s\S]{0,800}refreshKey/);
+});
+
+test("Goal Contract inspector renders failed coverage and evaluator evidence details", async () => {
+  const mission = scheduledDagWithMission().mission;
+  mission.coverage.failedRequirementIds = ["req-offline"];
+  mission.evaluatorResults = [{
+    schemaVersion: "southstar.requirement_evaluator_result.v1",
+    requirementIds: ["req-offline"],
+    artifactRefs: ["artifact://article.html"],
+    evaluatorId: "html-evaluator",
+    evaluatorTaskId: "verify-html",
+    evaluatorProfileRef: "evaluator.html",
+    verdict: "failed",
+    evidenceRefs: ["evidence://offline-check"],
+    findings: ["Network request remained"],
+  }];
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalContractInspector } from "./web/components/GoalContractInspector";
+    createRoot(document.getElementById("root")).render(<GoalContractInspector runId="run-article" />);
+  `, async (page) => {
+    await page.route("**/api/workflow/ui?**", async (route) => {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ result: { mission, commands: [] } }) });
+    });
+    const evidence = page.locator('[data-testid="goal-contract-evaluator-evidence"]');
+    await evidence.waitFor({ timeout: 1_000 });
+    const text = await evidence.textContent() ?? "";
+    for (const expected of ["req-offline", "article.html", "verify", "evaluator.html", "html-evaluator", "failed", "offline-check", "Network request remained"]) {
+      assert.match(text, new RegExp(expected));
+    }
+  });
+});
+
+test("Goal Contract inspector renders an inline error without an identity", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalContractInspector } from "./web/components/GoalContractInspector";
+    createRoot(document.getElementById("root")).render(<GoalContractInspector />);
+  `, async (page) => {
+    const inspector = page.locator('[data-testid="goal-contract-inspector"]');
+    await inspector.waitFor({ timeout: 1_000 });
+    assert.match(await inspector.textContent() ?? "", /draftId or runId is required/);
   });
 });
 
@@ -571,7 +880,7 @@ test("workflow node profile save marks its planner draft as needing validation",
   assert.match(editor, /needs_validation/);
 });
 
-function scheduledDagWithMission() {
+function scheduledDagWithMission(): any {
   const requirements = [
     { id: "req-offline", statement: "Works offline", acceptanceCriteria: ["opens without network access"], blocking: true, source: "explicit" },
     { id: "req-share", statement: "Can be shared", acceptanceCriteria: ["is a single HTML file"], blocking: true, source: "explicit" },
@@ -630,6 +939,31 @@ function scheduledDagWithMission() {
     nodes: [],
     edges: [],
     createdAt: "2026-07-11T00:00:00.000Z",
+  };
+}
+
+function awaitingApprovalDag() {
+  const dag = scheduledDagWithMission();
+  dag.runStatus = "awaiting_approval";
+  dag.mission.status.execution = "awaiting_approval";
+  dag.mission.approval = {
+    id: "approval-mission",
+    status: "pending",
+    goalContractHash: "contract-hash",
+    manifestHash: "manifest-hash",
+    librarySnapshotHash: "library-hash",
+  };
+  return {
+    ...dag,
+    approvalCommand: {
+      id: "approval.approve",
+      label: "Approve",
+      endpoint: "/api/v2/runs/run-article/approvals/approval-mission/decision",
+      method: "POST",
+      enabled: true,
+      requiresConfirmation: true,
+      body: { decision: "approved" },
+    },
   };
 }
 

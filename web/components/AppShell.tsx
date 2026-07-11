@@ -536,8 +536,11 @@ export function AppShell() {
 
   const openSidecarTab = useCallback((tab: Tab) => {
     setSidecarTabs((prev) => {
-      if (prev.find((item) => item.id === tab.id)) return prev;
-      return [...prev, tab];
+      const existing = prev.find((item) => item.id === tab.id);
+      if (!existing) return [...prev, { ...tab, refreshKey: 0 }];
+      return prev.map((item) => item.id === tab.id
+        ? { ...item, ...tab, refreshKey: (item.refreshKey ?? 0) + 1 }
+        : item);
     });
     setActiveSidecarTabId(tab.id);
     setSidecarMode((mode) => mode === "hidden" ? "floating" : mode);
@@ -661,10 +664,13 @@ export function AppShell() {
     });
   }, [openSidecarTab]);
 
-  const handleWorkflowGoalRevise = useCallback((dag: WorkflowDag) => {
+  const handleWorkflowGoalRevise = useCallback((dag: WorkflowDag, choice?: string) => {
     const summary = dag.mission?.goalContract.summary ?? dag.prompt;
     const inputRef = appMode === "workflow" ? workflowChatInputRef : chatInputRef;
-    inputRef.current?.insertIfEmpty(`Revise goal “${summary}”: `);
+    const revisionText = choice
+      ? `Clarification for “${summary}”: ${choice}`
+      : `Revise goal “${summary}”: `;
+    inputRef.current?.insertText(revisionText);
   }, [appMode]);
 
   const handleSidecarWidthCommit = useCallback((width: number) => {
@@ -727,7 +733,7 @@ export function AppShell() {
       );
     }
     if (activeSidecarTab.kind === "workflowGoalContract") {
-      return <GoalContractInspector draftId={activeSidecarTab.draftId} runId={activeSidecarTab.runId} />;
+      return <GoalContractInspector draftId={activeSidecarTab.draftId} runId={activeSidecarTab.runId} refreshKey={activeSidecarTab.refreshKey} />;
     }
     if (activeSidecarTab.kind === "workflowStaticNodeProfile" && activeSidecarTab.workflowNode) {
       return <WorkflowStaticNodeProfile node={activeSidecarTab.workflowNode} />;

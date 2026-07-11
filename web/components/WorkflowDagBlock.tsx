@@ -1,13 +1,13 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { SouthstarWorkflowCanvas } from "./workflow-canvas/SouthstarWorkflowCanvas";
 import { GoalContractCard } from "./GoalContractCard";
 import type { WorkflowCanvasModel, WorkflowDependencyModel, WorkflowTaskNodeModel } from "./workflow-canvas/types";
 import { useWorkflowLifecycle } from "@/hooks/useWorkflowLifecycle";
 import { buildWorkflowTemplateSaveRequest } from "@/lib/workflow/template-save";
 import { invokeOperatorCommand } from "@/lib/operator/invokeCommand";
-import type { WorkflowCommandDescriptor, WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
+import type { GoalMissionReadModel, WorkflowCommandDescriptor, WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
 
 type SaveTemplateStatus =
   | { phase: "idle" }
@@ -15,24 +15,32 @@ type SaveTemplateStatus =
   | { phase: "saved"; message: string }
   | { phase: "error"; message: string };
 
+type ApprovalStatus =
+  | { phase: "idle"; message: null }
+  | { phase: "pending" | "succeeded" | "error"; message: string };
+
 export function WorkflowDagBlock({
   dag,
   cwd,
   onNodeSelect,
   onGoalContractSelect,
   onReviseGoal,
+  onMissionRefresh,
 }: {
   dag: WorkflowDag;
   cwd?: string | null;
   onNodeSelect?: (node: WorkflowDagNode) => void;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
-  onReviseGoal?: (dag: WorkflowDag) => void;
+  onReviseGoal?: (dag: WorkflowDag, choice?: string) => void;
+  onMissionRefresh?: (dag: WorkflowDag) => Promise<GoalMissionReadModel | null>;
 }) {
   const [expanded, setExpanded] = useState<boolean>(dag.expandedByDefault);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saveTemplateStatus, setSaveTemplateStatus] = useState<SaveTemplateStatus>({ phase: "idle" });
   const [reviewMode, setReviewMode] = useState(false);
-  const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
+  const [approvalStatus, setApprovalStatus] = useState<ApprovalStatus>({ phase: "idle", message: null });
+  const [refreshedMission, setRefreshedMission] = useState<GoalMissionReadModel | null>(null);
+  const approvalInFlightRef = useRef(false);
   const { state, createDraft, validateDraft, runDraft, executeRun } = useWorkflowLifecycle(dag, cwd);
   const busy = state.phase === "drafting" || state.phase === "validating" || state.phase === "running" || state.phase === "executing";
   const activeDraftId = state.draft?.draftId ?? dag.draftId;
@@ -46,6 +54,8 @@ export function WorkflowDagBlock({
   const executeDisabled = busy || !activeRunId;
   const nodeById = useMemo(() => new Map(dag.nodes.map((node) => [node.id, node])), [dag.nodes]);
   const canvas = useMemo(() => workflowDagToCanvasModel(dag, selectedNodeId), [dag, selectedNodeId]);
+  const mission = refreshedMission?.goalContractHash === dag.mission?.goalContractHash ? refreshedMission : dag.mission;
+  const approvalComplete = approvalStatus.phase === "succeeded" || Boolean(mission?.approval && mission.approval.status !== "pending");
 
   const handleDraft = () => {
     void createDraft();
@@ -70,16 +80,28 @@ export function WorkflowDagBlock({
   };
 
   const handleApproval = async (command: WorkflowCommandDescriptor) => {
-    if (!dag.runId) return;
+    if (!dag.runId || approvalInFlightRef.current || approvalComplete) return;
     const reason = window.prompt(`Reason for ${command.label}`, "Approve Goal Contract execution");
     if (reason === null) return;
     if (command.requiresConfirmation && !window.confirm(`Run ${command.label}?`)) return;
-    setApprovalStatus("Approving…");
+    approvalInFlightRef.current = true;
+    setApprovalStatus({ phase: "pending", message: "Approving…" });
     try {
       await invokeOperatorCommand({ command, runId: dag.runId, reason: reason.trim() || command.label });
-      setApprovalStatus("Approved");
+      try {
+        const refreshed = onMissionRefresh
+          ? await onMissionRefresh(dag)
+          : await refreshGoalMission(dag);
+        if (refreshed) setRefreshedMission(refreshed);
+        setApprovalStatus({ phase: "succeeded", message: "Approved" });
+      } catch (refreshError) {
+        const message = refreshError instanceof Error ? refreshError.message : String(refreshError);
+        setApprovalStatus({ phase: "succeeded", message: `Approved · ${message}` });
+      }
     } catch (error) {
-      setApprovalStatus(error instanceof Error ? error.message : String(error));
+      setApprovalStatus({ phase: "error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      approvalInFlightRef.current = false;
     }
   };
 
@@ -157,17 +179,18 @@ export function WorkflowDagBlock({
       </button>
       {expanded && (
         <div style={{ padding: 10, background: "var(--bg)" }}>
-          {dag.mission ? (
+          {mission ? (
             <GoalContractCard
-              mission={dag.mission}
+              mission={mission}
               runStatus={dag.runStatus}
-              approvalCommand={dag.approvalCommand}
+              approvalCommand={approvalComplete ? undefined : dag.approvalCommand}
               onOpenDetails={() => onGoalContractSelect?.(dag)}
-              onReviseGoal={() => onReviseGoal?.(dag)}
+              onReviseGoal={(choice) => onReviseGoal?.(dag, choice)}
               onApprove={(command) => void handleApproval(command)}
+              approvalPending={approvalStatus.phase === "pending"}
             />
           ) : null}
-          {approvalStatus ? <p className="goal-contract-command-status">{approvalStatus}</p> : null}
+          {approvalStatus.message ? <p className="goal-contract-command-status" aria-live="polite">{approvalStatus.message}</p> : null}
           <button
             type="button"
             className="workflow-review-mode-toggle"
@@ -303,6 +326,19 @@ export function WorkflowDagBlock({
       )}
     </div>
   );
+}
+
+async function refreshGoalMission(dag: WorkflowDag): Promise<GoalMissionReadModel | null> {
+  const query = dag.runId
+    ? `runId=${encodeURIComponent(dag.runId)}`
+    : dag.draftId
+      ? `draftId=${encodeURIComponent(dag.draftId)}`
+      : null;
+  if (!query) return null;
+  const response = await fetch(`/api/workflow/ui?${query}`, { cache: "no-store" });
+  if (!response.ok) throw new Error(await response.text() || `Mission refresh failed with ${response.status}`);
+  const payload = await response.json() as { result?: { mission?: GoalMissionReadModel | null }; mission?: GoalMissionReadModel | null };
+  return payload.result?.mission ?? payload.mission ?? null;
 }
 
 function workflowDagToCanvasModel(dag: WorkflowDag, selectedNodeId: string | null): WorkflowCanvasModel {
