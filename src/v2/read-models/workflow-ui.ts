@@ -485,14 +485,14 @@ export function hasDegradedProviderHealth(observations: ProviderHealthObservatio
     byTask.set(observation.taskId, rows);
   }
   for (const rows of byTask.values()) {
-    const latestAttempt = Math.max(...rows.map(providerAttemptNumber));
+    const canonicalAttempts = rows.filter((row) => providerAttemptNumber(row) > 0);
+    const latestAttempt = Math.max(0, ...canonicalAttempts.map(providerAttemptNumber));
     if (latestAttempt > 0) {
-      const effective = rows.filter((row) => providerAttemptNumber(row) === latestAttempt);
+      const effective = canonicalAttempts.filter((row) => providerAttemptNumber(row) === latestAttempt);
       if (hasDegradedLatestProviderObservation(effective)) return true;
-      continue;
     }
     const legacyAttempts = new Map<string, ProviderHealthObservation[]>();
-    for (const row of rows) {
+    for (const row of rows.filter((candidate) => providerAttemptNumber(candidate) === 0)) {
       const identity = providerAttemptIdentity(row);
       const attemptRows = legacyAttempts.get(identity) ?? [];
       attemptRows.push(row);

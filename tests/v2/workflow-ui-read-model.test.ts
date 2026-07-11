@@ -37,6 +37,36 @@ test("provider health uses update order only within the effective attempt", () =
   ]), false);
 });
 
+test("provider health preserves noncanonical identities alongside canonical attempts", () => {
+  const observations = [
+    {
+      resourceKey: "binding-attempt-1",
+      taskId: "task-build",
+      status: "completed",
+      payload: { attemptId: "task-build-attempt-1" },
+      updatedAt: "2026-07-11T00:00:00.000Z",
+    },
+    {
+      resourceKey: "legacy-retry-timeout",
+      taskId: "task-build",
+      status: "hard-timeout",
+      payload: { attemptId: "legacy-retry" },
+      updatedAt: "2026-07-11T00:01:00.000Z",
+    },
+  ];
+
+  assert.equal(hasDegradedProviderHealth(observations), true);
+
+  observations.push({
+    resourceKey: "legacy-retry-completed",
+    taskId: "task-build",
+    status: "completed",
+    payload: { attemptId: "legacy-retry" },
+    updatedAt: "2026-07-11T00:02:00.000Z",
+  });
+  assert.equal(hasDegradedProviderHealth(observations), false);
+});
+
 test("workflow read model exposes the same answer-first mission for draft and runtime while keeping satisfied outcome degraded health", async () => {
   const db = await createTestPostgresDb();
   try {
