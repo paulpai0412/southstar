@@ -13,6 +13,7 @@ import {
 import {
   GoalSubmissionConflictError,
   GoalSubmissionPendingError,
+  confirmGoalDesignPg,
   submitGoalPg,
 } from "../../src/v2/orchestration/run-goal-service.ts";
 import { decideApprovalPg } from "../../src/v2/approvals/postgres-approval-service.ts";
@@ -250,6 +251,88 @@ test("run-goal defaults to ready_for_review without composer or run rows", async
     assert.equal(composerCalls, 0);
     assert.equal(result.runId, undefined);
     assert.match(result.goalDesignPackageHash ?? "", /^[a-f0-9]{64}$/);
+    assert.equal(await runCount(db), 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("confirmation composes the exact package hash and schedules once", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    let composerCalls = 0;
+    let schedulingCalls = 0;
+    const context = {
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Deliver the requested outcome")),
+      goalDesigner: inlineGoalDesigner(),
+      composer: {
+        async compose(input) {
+          composerCalls += 1;
+          return goalDesignAwareComposition(input.goalContract);
+        },
+      } satisfies WorkflowComposer,
+      async startScheduling(runDb: typeof db, input: { runId: string }) {
+        schedulingCalls += 1;
+        return await startRunSchedulingPg(runDb, input);
+      },
+    };
+    const prepared = await submitGoalPg(context, {
+      ...request("Deliver the requested outcome", "goal-confirm-prepare-1"),
+      cwd: "/tmp",
+    });
+
+    const first = await confirmGoalDesignPg(context, {
+      draftId: prepared.draftId,
+      expectedPackageHash: prepared.goalDesignPackageHash!,
+    });
+    const replay = await confirmGoalDesignPg(context, {
+      draftId: prepared.draftId,
+      expectedPackageHash: prepared.goalDesignPackageHash!,
+    });
+
+    assert.equal(first.runId, replay.runId);
+    assert.equal(first.runStatus, "scheduling");
+    assert.equal(composerCalls, 1);
+    assert.equal(schedulingCalls, 1);
+    assert.equal(await runCount(db), 1);
+  } finally {
+    await db.close();
+  }
+});
+
+test("stale confirmation fails before composer invocation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    let composerCalls = 0;
+    const context = {
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Deliver the requested outcome")),
+      goalDesigner: inlineGoalDesigner(),
+      composer: {
+        async compose(input) {
+          composerCalls += 1;
+          return goalDesignAwareComposition(input.goalContract);
+        },
+      } satisfies WorkflowComposer,
+    };
+    const prepared = await submitGoalPg(context, {
+      ...request("Deliver the requested outcome", "goal-confirm-stale-1"),
+      cwd: "/tmp",
+    });
+
+    await assert.rejects(
+      () => confirmGoalDesignPg(context, {
+        draftId: prepared.draftId,
+        expectedPackageHash: "0".repeat(64),
+      }),
+      /goal_design_package_stale/,
+    );
+    assert.equal(composerCalls, 0);
     assert.equal(await runCount(db), 0);
   } finally {
     await db.close();
@@ -762,6 +845,125 @@ test("POST /api/v2/run-goal streams persisted stages and the JSON-equivalent don
   }
 });
 
+test("POST /api/v2/planner/drafts/:draftId/confirm-goal-design returns the confirmed run result", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const prepared = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    }, {
+      ...request("Add parser tests", "goal-confirm-route-prepare-1"),
+      cwd: "/tmp",
+    });
+
+    const response = await handleRuntimeRoute(runtimeContextWithInterpreter(
+      db,
+      fixedGoalInterpreter(goalContract("Add parser tests")),
+      { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    ), new Request(
+      `http://127.0.0.1/api/v2/planner/drafts/${prepared.draftId}/confirm-goal-design`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedPackageHash: prepared.goalDesignPackageHash }),
+      },
+    ));
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json() as { ok: true; kind: string; result: { draftStatus: string; runStatus?: string; goalDesignPackageHash?: string } };
+    assert.equal(envelope.kind, "goal-design-confirmation");
+    assert.equal(envelope.result.draftStatus, "validated");
+    assert.equal(envelope.result.runStatus, "scheduling");
+    assert.equal(envelope.result.goalDesignPackageHash, prepared.goalDesignPackageHash);
+  } finally {
+    await db.close();
+  }
+});
+
+test("POST /api/v2/planner/drafts/:draftId/confirm-goal-design streams the same result envelope", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const prepared = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    }, {
+      ...request("Add parser tests", "goal-confirm-route-sse-prepare-1"),
+      cwd: "/tmp",
+    });
+
+    const response = await handleRuntimeRoute(runtimeContextWithInterpreter(
+      db,
+      fixedGoalInterpreter(goalContract("Add parser tests")),
+      { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    ), new Request(
+      `http://127.0.0.1/api/v2/planner/drafts/${prepared.draftId}/confirm-goal-design`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "text/event-stream" },
+        body: JSON.stringify({ expectedPackageHash: prepared.goalDesignPackageHash }),
+      },
+    ));
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get("content-type") ?? "", /text\/event-stream/);
+    const frames = parseFrames(await response.text());
+    assert.equal(frames.some((frame) => frame.event === "draft"), true);
+    assert.equal(frames.some((frame) => frame.event === "run"), true);
+    assert.equal(frames.some((frame) => frame.event === "approval"), true);
+    assert.equal(frames.some((frame) => frame.event === "dag"), true);
+    assert.equal(frames.at(-1)?.event, "done");
+    const done = frames.at(-1)?.data as { draftStatus?: string; runStatus?: string; goalDesignPackageHash?: string };
+    assert.equal(done.draftStatus, "validated");
+    assert.equal(done.runStatus, "scheduling");
+    assert.equal(done.goalDesignPackageHash, prepared.goalDesignPackageHash);
+  } finally {
+    await db.close();
+  }
+});
+
+test("POST /api/v2/planner/drafts/:draftId/confirm-goal-design maps stale hash to 409", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const prepared = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    }, {
+      ...request("Add parser tests", "goal-confirm-route-stale-prepare-1"),
+      cwd: "/tmp",
+    });
+
+    const response = await handleRuntimeRoute(runtimeContextWithInterpreter(
+      db,
+      fixedGoalInterpreter(goalContract("Add parser tests")),
+      { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    ), new Request(
+      `http://127.0.0.1/api/v2/planner/drafts/${prepared.draftId}/confirm-goal-design`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedPackageHash: "0".repeat(64) }),
+      },
+    ));
+
+    assert.equal(response.status, 409);
+    assert.match(await response.text(), /goal_design_package_stale/);
+  } finally {
+    await db.close();
+  }
+});
+
 test("JSON run-goal returns HTTP 202 for an active replay and 409 for a conflicting request", async () => {
   const db = await createTestPostgresDb();
   const entered = deferred();
@@ -964,6 +1166,14 @@ function deploymentComposer(): WorkflowComposer {
   };
 }
 
+function goalDesignAwareComposition(goalContract: GoalContractV1) {
+  const composition = deterministicFixtureComposition(goalContract);
+  for (const task of composition.tasks) {
+    (task as typeof task & { sliceId: string }).sliceId = "slice-implementation";
+  }
+  return composition;
+}
+
 async function approvalResource(db: Awaited<ReturnType<typeof createTestPostgresDb>>, approvalId: string) {
   return await db.one<{ status: string; payload_json: Record<string, unknown> }>(
     "select status, payload_json from southstar.runtime_resources where resource_type = 'approval' and resource_key = $1",
@@ -1126,12 +1336,13 @@ function runtimeContext(db: Awaited<ReturnType<typeof createTestPostgresDb>>, go
 function runtimeContextWithInterpreter(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   goalInterpreter: GoalContractInterpreter,
+  workflowComposer: WorkflowComposer = new DeterministicFixtureComposer(),
 ) {
   return {
     db,
     goalInterpreter,
     goalDesigner: inlineGoalDesigner(),
-    workflowComposer: new DeterministicFixtureComposer(),
+    workflowComposer,
     plannerClient: { generate: async () => { throw new Error("planner not used"); } },
     executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
   };

@@ -44,7 +44,7 @@ export function buildWorkflowCompositionPlanDisplay(text: string): WorkflowCompo
     id: `composition-${stableSlug(parsed.title)}`,
     mode: "draft",
     compositionPlan: parsed,
-    templateId: parsed.selectedWorkflowTemplateRef,
+    ...(parsed.selectedWorkflowTemplateRef ? { templateId: parsed.selectedWorkflowTemplateRef } : {}),
     templateTitle: parsed.title,
     prompt: parsed.title,
     expandedByDefault: true,
@@ -104,14 +104,14 @@ function parseJsonObject(text: string): unknown {
 
 function isWorkflowCompositionPlan(value: unknown): value is {
   title: string;
-  selectedWorkflowTemplateRef: string;
+  selectedWorkflowTemplateRef?: string;
   tasks: WorkflowCompositionPlanTask[];
 } {
   if (!value || typeof value !== "object") return false;
   const plan = value as WorkflowCompositionPlanLike;
   return plan.schemaVersion === "southstar.workflow_composition_plan.v1" &&
     typeof plan.title === "string" &&
-    typeof plan.selectedWorkflowTemplateRef === "string" &&
+    (plan.selectedWorkflowTemplateRef === undefined || typeof plan.selectedWorkflowTemplateRef === "string") &&
     Array.isArray(plan.tasks);
 }
 

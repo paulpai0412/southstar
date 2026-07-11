@@ -23,6 +23,7 @@ import {
   type GoalContractInterpreter,
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
+import { validateGoalDesignPackage, type GoalDesignPackageV1 } from "../orchestration/goal-design.ts";
 import { captureRunLibrarySnapshotPg } from "../orchestration/run-library-snapshot.ts";
 import {
   appendHistoryEventPg,
@@ -134,6 +135,7 @@ export type PlannerDraftPersistence = (resource: Parameters<typeof upsertRuntime
 
 export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
   goalInterpreter: GoalContractInterpreter;
+  goalDesignPackage?: GoalDesignPackageV1;
   composer?: WorkflowComposer;
   onProgress?: PlannerDraftProgressListener;
   onGoalContractDelta?: (text: string) => void;
@@ -176,6 +178,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
   const draftInput: InterpretedPlannerDraftInput = {
     ...plannerRequest,
     goalInterpreter: input.goalInterpreter,
+    goalDesignPackage: input.goalDesignPackage,
     goalContract,
     goalContractHash: contractHash,
     composer: input.composer,
@@ -556,6 +559,7 @@ async function createPlannerDraftFromComposition(
     goalContract: input.goalContract,
     candidatePacket,
     composition,
+    goalDesignPackage: input.goalDesignPackage,
     scope: input.goalContract.domain,
     manifestDomain: input.goalContract.domain,
   });
@@ -577,6 +581,12 @@ async function createPlannerDraftFromComposition(
     goalRequirementCoverage: compiled.goalRequirementCoverage,
     goalContract: input.goalContract,
     goalContractHash: input.goalContractHash,
+    ...(input.goalDesignPackage
+      ? {
+          goalDesignPackage: input.goalDesignPackage,
+          goalDesignPackageHash: input.goalDesignPackage.packageHash,
+        }
+      : {}),
     plannerTrace: {
       model: "southstar-existing-composition-compiler",
       promptHash: hash(input.goalPrompt),
@@ -691,6 +701,7 @@ async function createLibraryConstrainedPlannerDraft(
     db,
     goalPrompt: input.goalPrompt,
     goalContract: input.goalContract,
+    goalDesignPackage: input.goalDesignPackage,
     candidatePacket,
     composer,
     ...(input.cwd ? { cwd: input.cwd } : {}),
@@ -753,6 +764,7 @@ async function createLibraryConstrainedPlannerDraft(
     goalContract: input.goalContract,
     candidatePacket,
     composition,
+    goalDesignPackage: input.goalDesignPackage,
     scope: input.goalContract.domain,
     manifestDomain: input.goalContract.domain,
   });
@@ -767,9 +779,15 @@ async function createLibraryConstrainedPlannerDraft(
   } = {
     workflow: compiled.workflow,
     goalRequirementCoverage: compiled.goalRequirementCoverage,
-    goalContract: input.goalContract,
-    goalContractHash: input.goalContractHash,
-    plannerTrace: {
+      goalContract: input.goalContract,
+      goalContractHash: input.goalContractHash,
+      ...(input.goalDesignPackage
+        ? {
+            goalDesignPackage: input.goalDesignPackage,
+            goalDesignPackageHash: input.goalDesignPackage.packageHash,
+          }
+        : {}),
+      plannerTrace: {
       model: `southstar-library-constrained-${composerMode}-composer`,
       promptHash: hash(input.goalPrompt),
       generatedAt: new Date().toISOString(),
@@ -1141,6 +1159,7 @@ async function refreshPlannerDraftCompilation(
       goalContract: contract,
       candidatePacket,
       composition: applyWorkflowTaskSelectionsToComposition(composition, input.workflow),
+      goalDesignPackage: storedGoalDesignPackage(input.payload.goalDesignPackage),
       scope: contract.domain,
       manifestDomain: contract.domain,
     });
@@ -1300,6 +1319,12 @@ function requiredStoredGoalContract(value: unknown, draftId: string): GoalContra
   return contract;
 }
 
+function storedGoalDesignPackage(value: unknown): GoalDesignPackageV1 | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const pkg = value as GoalDesignPackageV1;
+  return validateGoalDesignPackage(pkg).length === 0 ? pkg : undefined;
+}
+
 function storedOrLegacyGoalContract(
   payload: Record<string, unknown>,
   summary: Record<string, unknown>,
@@ -1403,13 +1428,20 @@ function maybeCandidatePacket(value: unknown): CandidatePacket | null {
 
 function maybeWorkflowCompositionPlan(value: unknown): WorkflowCompositionPlan | null {
   if (value === undefined || value === null) return null;
-  try {
-    return parseWorkflowCompositionPlanFromText(JSON.stringify(value), 1_000_000);
-  } catch (error) {
-    throw new Error(
-      `persisted workflow composition needs regeneration: ${error instanceof Error ? error.message : String(error)}`,
-    );
+  const record = asRecord(value);
+  if (record.schemaVersion !== "southstar.workflow_composition_plan.v1") {
+    throw new Error("persisted workflow composition needs regeneration: invalid schemaVersion");
   }
+  if (typeof record.title !== "string" || typeof record.rationale !== "string" || !Array.isArray(record.tasks)) {
+    throw new Error("persisted workflow composition needs regeneration: invalid composition shape");
+  }
+  for (const [index, task] of record.tasks.entries()) {
+    const taskRecord = asRecord(task);
+    if (!Array.isArray(taskRecord.requirementIds)) {
+      throw new Error(`persisted workflow composition needs regeneration: tasks.${index}.requirementIds missing`);
+    }
+  }
+  return record as WorkflowCompositionPlan;
 }
 
 type WorkflowTaskWithProfileOverride = SouthstarWorkflowManifest["tasks"][number] & {

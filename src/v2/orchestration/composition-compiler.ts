@@ -41,6 +41,7 @@ import {
   requirementSpecFromGoalContract,
   type GoalContractV1,
 } from "./goal-contract.ts";
+import type { GoalDesignPackageV1 } from "./goal-design.ts";
 import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 
 export type CompileWorkflowCompositionInput = {
@@ -49,6 +50,7 @@ export type CompileWorkflowCompositionInput = {
   goalContract: GoalContractV1;
   candidatePacket: CandidatePacket;
   composition: WorkflowCompositionPlan;
+  goalDesignPackage?: GoalDesignPackageV1;
   targetRequirementIds?: string[];
   scope?: string;
   manifestDomain?: string;
@@ -88,6 +90,7 @@ export async function compileWorkflowComposition(
   const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, {
     scope: libraryScope,
     goalContract: input.goalContract,
+    goalDesignPackage: input.goalDesignPackage,
     targetRequirementIds: input.targetRequirementIds,
   });
   if (!validation.ok) {
@@ -96,8 +99,14 @@ export async function compileWorkflowComposition(
 
   const { byAgentRef: rolesByAgentRef, byRoleId: resolvedRoles } = await resolveRuntimeRoles(db, input.composition);
   const { byProfileRef: profilesByRef, byProfileId: resolvedProfiles } = await resolveRuntimeProfiles(db, input.composition);
-  const artifactContracts = await resolveRuntimeArtifactContracts(db, input.composition);
-  const evaluatorPipelines = await resolveRuntimeEvaluatorPipelines(db, input.composition);
+  const artifactContracts = mergeById(
+    await resolveRuntimeArtifactContracts(db, input.composition),
+    input.goalDesignPackage ? compileGoalDesignArtifactContracts(input.goalDesignPackage) : [],
+  );
+  const evaluatorPipelines = mergeById(
+    await resolveRuntimeEvaluatorPipelines(db, input.composition),
+    input.goalDesignPackage ? compileGoalDesignEvaluatorPipelines(input.goalDesignPackage) : [],
+  );
   const planHash = contentHashForPayload(input.composition);
   const profileRuntimeRefs = [...resolvedProfiles.values()].flatMap((profile) => [
     ...(profile.agentRef ? [profile.agentRef] : []),
@@ -121,16 +130,20 @@ export async function compileWorkflowComposition(
     profileLibraryRefs,
   );
   const libraryVersionRefs = [...new Set(libraryObjectVersionRefs.map((pair) => pair.versionRef))].sort();
-  const selectedTemplate = await findLibraryObjectByKey(db, input.composition.selectedWorkflowTemplateRef);
-  const templateVersionId = required(
-    selectedTemplate?.headVersionId,
-    `missing immutable version for ${input.composition.selectedWorkflowTemplateRef}`,
-  );
-  const selectedTemplatePair = libraryObjectVersionRefs.find((pair) =>
-    pair.objectKey === input.composition.selectedWorkflowTemplateRef
-  );
-  if (selectedTemplatePair?.versionRef !== templateVersionId) {
-    throw new Error(`selected workflow template object-version pair does not match current head: ${templateVersionId}`);
+  const selectedTemplateRef = input.composition.selectedWorkflowTemplateRef;
+  let templateVersionId: string | undefined;
+  if (selectedTemplateRef) {
+    const selectedTemplate = await findLibraryObjectByKey(db, selectedTemplateRef);
+    templateVersionId = required(
+      selectedTemplate?.headVersionId,
+      `missing immutable version for ${selectedTemplateRef}`,
+    );
+    const selectedTemplatePair = libraryObjectVersionRefs.find((pair) =>
+      pair.objectKey === selectedTemplateRef
+    );
+    if (selectedTemplatePair?.versionRef !== templateVersionId) {
+      throw new Error(`selected workflow template object-version pair does not match current head: ${templateVersionId}`);
+    }
   }
   const taskDefinitions = input.composition.tasks.map((task): WorkflowTaskDefinition => {
     const role = required(rolesByAgentRef.get(task.agentDefinitionRef), `missing resolved role for ${task.agentDefinitionRef}`);
@@ -153,6 +166,7 @@ export async function compileWorkflowComposition(
       promptInputs: {
         goalPrompt: input.goalPrompt,
         responsibility: task.responsibility,
+        sliceId: task.sliceId,
         requirementIds: task.requirementIds,
         instructionRefs: task.instructionRefs,
         nodePromptSpec,
@@ -254,14 +268,23 @@ export async function compileWorkflowComposition(
     progressPolicy: { firstEventWithinSeconds: 10, minEventsPerLongTask: 3 },
     steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
-    compiledFrom: {
-      templateDefinitionId: input.composition.selectedWorkflowTemplateRef,
-      templateVersionId,
-      compilerVersion: "library-constrained-compiler-v1",
-      inputHash: planHash,
-      libraryVersionRefs,
-      libraryObjectVersionRefs,
-    },
+    compiledFrom: selectedTemplateRef && templateVersionId
+      ? {
+          sourceKind: "workflow_template",
+          templateDefinitionId: selectedTemplateRef,
+          templateVersionId,
+          compilerVersion: "library-constrained-compiler-v1",
+          inputHash: planHash,
+          libraryVersionRefs,
+          libraryObjectVersionRefs,
+        }
+      : {
+          sourceKind: "library_primitives",
+          compilerVersion: "library-constrained-compiler-v1",
+          inputHash: planHash,
+          libraryVersionRefs,
+          libraryObjectVersionRefs,
+        },
   };
   const goalRequirementCoverage = buildGoalRequirementCoverage({
     goalContract: input.goalContract,
@@ -455,6 +478,54 @@ async function resolveRuntimeEvaluatorPipelines(
     pipelines.set(pipeline.id, pipeline);
   }
   return [...pipelines.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function compileGoalDesignArtifactContracts(
+  packageValue: GoalDesignPackageV1,
+): ArtifactContract[] {
+  const contracts = new Map<string, ArtifactContract>();
+  for (const artifactRef of uniqueSorted(packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs))) {
+    const id = normalizeArtifactRef(artifactRef);
+    contracts.set(id, {
+      id,
+      artifactType: artifactRef,
+      requiredFields: ["summary"],
+      evidenceFields: [
+        "summary",
+        "acceptanceCriteria",
+        "requiredEvidenceKinds",
+      ],
+    });
+  }
+  return [...contracts.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function compileGoalDesignEvaluatorPipelines(
+  packageValue: GoalDesignPackageV1,
+): EvaluatorPipelineDefinition[] {
+  return packageValue.evaluatorContracts.map((contract): EvaluatorPipelineDefinition => ({
+    id: normalizeEvaluatorRef(contract.id),
+    evaluators: [{
+      id: `${normalizeEvaluatorRef(contract.id)}-goal-design-contract`,
+      kind: "evidence",
+      required: true,
+      config: {
+        requirementId: contract.requirementId,
+        acceptanceCriteria: contract.acceptanceCriteria,
+        requiredEvidenceKinds: contract.requiredEvidenceKinds,
+        independence: contract.independence,
+        failureClassifications: contract.failureClassifications,
+      },
+    }],
+    onFailure: { defaultStrategy: "request-workflow-revision" },
+  })).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function mergeById<T extends { id: string }>(fallback: T[], preferred: T[]): T[] {
+  const valuesById = new Map<string, T>();
+  for (const value of fallback) valuesById.set(value.id, value);
+  for (const value of preferred) valuesById.set(value.id, value);
+  return [...valuesById.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function defaultContextPolicies(): ContextPolicyDefinition[] {

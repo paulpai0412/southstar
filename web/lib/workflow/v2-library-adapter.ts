@@ -135,7 +135,6 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
     ...(runtime?.mission ? { mission: runtime.mission } : {}),
     ...(runtime?.approvalCommand ? { approvalCommand: runtime.approvalCommand } : {}),
     mode: runtime?.runId ? "runtime" : "draft",
-    templateId: "template.graph-dynamic-workflow",
     templateTitle: input.workflowId || "Planner Draft",
     prompt: input.goalPrompt,
     expandedByDefault: true,

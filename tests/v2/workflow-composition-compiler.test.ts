@@ -5,8 +5,10 @@ import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
 import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { goalContractHash, requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
+import { finalizeGoalDesignPackage } from "../../src/v2/orchestration/goal-design.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
+import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowNodePromptSpec } from "../../src/v2/design-library/types.ts";
 
 test("compiler builds library-constrained workflow manifest and snapshot from approved candidates", async () => {
   const db = await createTestPostgresDb();
@@ -270,6 +272,99 @@ test("compiler preserves custom workflow scope while using general task domain",
   }
 });
 
+test("compiler materializes Goal Design host artifact and evaluator contracts without Library graph objects", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const goalContract = softwareGoalContract();
+    const requirement = goalContract.requirements[0]!;
+    const hostArtifactRef = goalContract.expectedArtifactRefs[0]!;
+    const hostEvaluatorRef = "evaluator.goal_design_requirement_check";
+    const packageValue = finalizeGoalDesignPackage({
+      schemaVersion: "southstar.goal_design_package.v1",
+      revision: 1,
+      goalContract,
+      evaluatorContracts: [{
+        schemaVersion: "southstar.requirement_evaluator_contract.v1",
+        id: hostEvaluatorRef,
+        requirementId: requirement.id,
+        acceptanceCriteria: [...requirement.acceptanceCriteria],
+        requiredEvidenceKinds: ["test_result"],
+        independence: "independent",
+        failureClassifications: ["implementation_gap"],
+      }],
+      slicePlan: {
+        schemaVersion: "southstar.goal_slice_plan.v1",
+        goalContractHash: "host-filled",
+        revision: 1,
+        slices: [{
+          id: "slice-main",
+          requirementIds: [requirement.id],
+          outcome: requirement.statement,
+          stateOrArtifactOwner: hostArtifactRef,
+          mutationBoundary: "single feature boundary",
+          expectedArtifactRefs: [hostArtifactRef],
+          evaluatorContractRefs: [hostEvaluatorRef],
+          dependsOnSliceIds: [],
+          dependencyArtifactRefs: [],
+        }],
+      },
+      compositionStrategy: {
+        mode: "single-run",
+        sliceIds: ["slice-main"],
+        rationale: "single cohesive requirement",
+      },
+      templatePolicy: { mode: "auto" },
+      goalDesignSkillRef: "skill.southstar-goal-design",
+      goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
+      workspaceDiscoveryHash: "1".repeat(64),
+      mode: "review_before_compose",
+    });
+    const requirementSpec = requirementSpecFromGoalContract(goalContract);
+    const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
+    await db.query(
+      "delete from southstar.library_edges where from_object_key = $1 or to_object_key = $1 or from_object_key = $2 or to_object_key = $2",
+      [hostArtifactRef, hostEvaluatorRef],
+    );
+    await db.query("delete from southstar.library_objects where object_key in ($1, $2)", [hostArtifactRef, hostEvaluatorRef]);
+    const hostOnlyCandidatePacket = withoutHostContractCandidates(candidatePacket, [hostArtifactRef, hostEvaluatorRef]);
+    const composition = hostContractComposition(goalContract, { hostArtifactRef, hostEvaluatorRef });
+
+    const compiled = await compileWorkflowComposition(db, {
+      runId: "draft-host-goal-design-contracts",
+      goalPrompt: goalContract.originalPrompt,
+      goalContract,
+      goalDesignPackage: packageValue,
+      candidatePacket: hostOnlyCandidatePacket,
+      composition,
+    });
+
+    assert.equal(compiled.workflow.compiledFrom?.sourceKind, "library_primitives");
+    assert.equal(compiled.workflow.compiledFrom && "templateDefinitionId" in compiled.workflow.compiledFrom, false);
+    assert.equal(compiled.workflow.artifactContracts?.some((contract) =>
+      contract.id === hostArtifactRef.replace(/^artifact\./, "")
+        && contract.artifactType === hostArtifactRef
+        && contract.evidenceFields.includes("requiredEvidenceKinds")
+    ), true);
+    assert.equal(compiled.workflow.evaluatorPipelines?.some((pipeline) =>
+      pipeline.id === "goal_design_requirement_check"
+        && pipeline.evaluators.some((evaluator) =>
+          evaluator.kind === "evidence"
+            && evaluator.config.requirementId === requirement.id
+            && evaluator.config.requiredEvidenceKinds?.includes("test_result")
+        )
+    ), true);
+    assert.equal(
+      compiled.workflow.compiledFrom?.libraryObjectVersionRefs.some((pair) =>
+        pair.objectKey === hostArtifactRef || pair.objectKey === hostEvaluatorRef
+      ),
+      false,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 async function mirrorLibraryScope(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   input: { fromScope: string; toScope: string },
@@ -323,4 +418,161 @@ async function mirrorLibraryScope(
      on conflict (id) do nothing`,
     [input.fromScope, input.toScope],
   );
+}
+
+function hostContractComposition(
+  goalContract: ReturnType<typeof softwareGoalContract>,
+  input: { hostArtifactRef: string; hostEvaluatorRef: string },
+): WorkflowCompositionPlan {
+  const requirementId = goalContract.requirements[0]!.id;
+  return {
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Host Goal Design Contract Workflow",
+    rationale: "Use graph-backed agents with host-owned Goal Design artifact and evaluator contracts.",
+    tasks: [
+      hostTask({
+        id: "implement-host-contract",
+        name: "Implement Host Contract",
+        nodeType: "implement",
+        sliceId: "slice-main",
+        requirementIds: [requirementId],
+        dependsOn: [],
+        agentDefinitionRef: "agent.software-maker",
+        agentProfileRef: "profile.generated.host-implement",
+        outputArtifactRefs: [input.hostArtifactRef],
+        evaluatorProfileRef: input.hostEvaluatorRef,
+      }),
+      hostTask({
+        id: "verify-host-contract",
+        name: "Verify Host Contract",
+        nodeType: "verify",
+        sliceId: "slice-main",
+        requirementIds: [requirementId],
+        dependsOn: ["implement-host-contract"],
+        agentDefinitionRef: "agent.software-checker",
+        agentProfileRef: "profile.generated.host-verify",
+        inputArtifactRefs: [input.hostArtifactRef],
+        outputArtifactRefs: [input.hostArtifactRef],
+        evaluatorProfileRef: input.hostEvaluatorRef,
+      }),
+    ],
+    rejectedCandidates: [],
+    generatedComponentProposals: [
+      hostGeneratedProfile("profile.generated.host-implement", "Implement the host Goal Design contract.", "execution_worker"),
+      hostGeneratedProfile("profile.generated.host-verify", "Verify the host Goal Design contract.", "validation_worker"),
+    ],
+  };
+}
+
+function withoutHostContractCandidates(
+  packet: Awaited<ReturnType<typeof resolveWorkflowCandidates>>,
+  refs: string[],
+): Awaited<ReturnType<typeof resolveWorkflowCandidates>> {
+  const refSet = new Set(refs);
+  return {
+    ...packet,
+    artifactContractCandidates: packet.artifactContractCandidates.filter((candidate) => !refSet.has(candidate.ref)),
+    evaluatorCandidatesByArtifact: Object.fromEntries(Object.entries(packet.evaluatorCandidatesByArtifact).map(([artifactRef, candidates]) => [
+      artifactRef,
+      candidates.filter((candidate) => !refSet.has(candidate.ref)),
+    ])),
+    graphMetadataCandidates: packet.graphMetadataCandidates
+      ? {
+          ...packet.graphMetadataCandidates,
+          nodes: packet.graphMetadataCandidates.nodes.filter((node) => !refSet.has(node.ref)),
+          edges: packet.graphMetadataCandidates.edges.filter((edge) =>
+            !refSet.has(edge.fromRef) && !refSet.has(edge.toRef)
+          ),
+        }
+      : undefined,
+  };
+}
+
+function hostTask(input: {
+  id: string;
+  name: string;
+  nodeType: WorkflowNodePromptSpec["nodeType"];
+  sliceId: string;
+  requirementIds: string[];
+  dependsOn: string[];
+  agentDefinitionRef: string;
+  agentProfileRef: string;
+  inputArtifactRefs?: string[];
+  outputArtifactRefs: string[];
+  evaluatorProfileRef: string;
+}): WorkflowCompositionPlan["tasks"][number] {
+  return {
+    id: input.id,
+    name: input.name,
+    responsibility: input.name,
+    sliceId: input.sliceId,
+    requirementIds: input.requirementIds,
+    nodePromptSpec: {
+      nodeType: input.nodeType,
+      goal: input.name,
+      requirements: ["Satisfy the Goal Design host contract."],
+      boundaries: ["Stay within this slice."],
+      nonGoals: [],
+      deliverableDocuments: [],
+      expectedOutputs: input.outputArtifactRefs,
+      testCases: [],
+      acceptanceCriteria: ["Host evidence is produced."],
+    },
+    dependsOn: input.dependsOn,
+    agentDefinitionRef: input.agentDefinitionRef,
+    agentProfileRef: input.agentProfileRef,
+    instructionRefs: [],
+    skillRefs: [],
+    toolGrantRefs: [],
+    mcpGrantRefs: [],
+    vaultLeasePolicyRefs: [],
+    inputArtifactRefs: input.inputArtifactRefs ?? [],
+    outputArtifactRefs: input.outputArtifactRefs,
+    evaluatorProfileRef: input.evaluatorProfileRef,
+    recoveryStrategyRefs: ["retry-same-agent"],
+    rationale: `Use ${input.agentDefinitionRef} for ${input.id}`,
+  };
+}
+
+function hostGeneratedProfile(
+  id: string,
+  instruction: string,
+  workerKind: NonNullable<GeneratedAgentProfile["workerKind"]>,
+): WorkflowCompositionPlan["generatedComponentProposals"][number] {
+  return {
+    id,
+    kind: "agent_profile",
+    risk: "medium",
+    reason: "Generated from graph-backed primitives and host Goal Design contracts.",
+    validationStatus: "validated",
+    agentProfile: {
+      workerKind,
+      provider: "pi",
+      model: "pi-agent-default",
+      thinkingLevel: "high",
+      harnessRef: "pi",
+      instruction,
+      promptTemplateRef: "graph-generated",
+      contextPolicyRef: "context.generated",
+      sessionPolicyRef: "session.generated",
+      memoryScopes: [],
+      agentsMdRefs: [],
+      vaultLeasePolicyRefs: [],
+      toolPolicy: { allowedTools: [], deniedTools: [], requiresApprovalFor: [] },
+      budgetPolicy: {
+        maxInputTokens: 120000,
+        maxOutputTokens: 8192,
+        maxWallTimeSeconds: 900,
+      },
+      execution: {
+        engine: "tork",
+        image: "southstar/pi-agent:local",
+        command: ["southstar-agent-runner"],
+        env: {},
+        mounts: [],
+        timeoutSeconds: 900,
+        infraRetry: { maxAttempts: 1 },
+      },
+    },
+  };
 }

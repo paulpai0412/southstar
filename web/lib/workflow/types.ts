@@ -90,7 +90,7 @@ export interface WorkflowDag {
   mission?: GoalMissionReadModel;
   approvalCommand?: WorkflowCommandDescriptor;
   compositionPlan?: unknown;
-  templateId: string;
+  templateId?: string;
   templateTitle: string;
   prompt: string;
   expandedByDefault: true;

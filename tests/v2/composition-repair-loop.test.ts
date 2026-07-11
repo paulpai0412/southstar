@@ -3,7 +3,7 @@ import test from "node:test";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
-import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { runCompositionRepairLoop } from "../../src/v2/orchestration/composition-repair-loop.ts";
 import { LlmComposerOutputError } from "../../src/v2/orchestration/llm-composer.ts";
 import { requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
@@ -11,6 +11,19 @@ import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 const GOAL_CONTRACT = softwareGoalContract();
+
+class ScriptedWorkflowComposer implements WorkflowComposer {
+  private index = 0;
+
+  constructor(private readonly plans: WorkflowCompositionPlan[]) {}
+
+  async compose(_input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    const plan = this.plans[Math.min(this.index, this.plans.length - 1)];
+    this.index += 1;
+    if (!plan) throw new Error("ScriptedWorkflowComposer has no plans");
+    return structuredClone(plan);
+  }
+}
 
 test("composition repair loop retries once and returns valid composition", async () => {
   const db = await createTestPostgresDb();
@@ -312,6 +325,7 @@ function task(
   const mcpGrantRefs = id === "implement-feature" ? ["mcp.filesystem-workspace"] : [];
   return {
     id,
+    sliceId: "slice-main",
     name: id,
     responsibility: id,
     requirementIds: id === "summarize-completion"

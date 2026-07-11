@@ -141,6 +141,51 @@ test("compiledFrom reports malformed version-ref containers without throwing", (
   }
 });
 
+test("compiledFrom validates library_primitives provenance without template fields", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    sourceKind: "library_primitives",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["agent.software-maker@1"],
+    libraryObjectVersionRefs: [{ objectKey: "agent.software-maker", versionRef: "agent.software-maker@1" }],
+  };
+
+  assert.deepEqual(validatePlanBundle(bundle), { ok: true, issues: [] });
+
+  bundle.workflow.compiledFrom = {
+    sourceKind: "library_primitives",
+    templateDefinitionId: "template.software-feature",
+    templateVersionId: "template.software-feature@1",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["template.software-feature@1"],
+    libraryObjectVersionRefs: [{ objectKey: "template.software-feature", versionRef: "template.software-feature@1" }],
+  } as never;
+
+  const primitiveWithTemplateFields = validatePlanBundle(bundle);
+  assert.equal(primitiveWithTemplateFields.ok, false);
+  assert.match(primitiveWithTemplateFields.issues.map((issue) => issue.message).join("\n"), /must not include template fields/);
+});
+
+test("compiledFrom rejects the legacy dynamic workflow template sentinel", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    sourceKind: "workflow_template",
+    templateDefinitionId: "template.graph-dynamic-workflow",
+    templateVersionId: "template.graph-dynamic-workflow",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["template.graph-dynamic-workflow"],
+    libraryObjectVersionRefs: [{ objectKey: "template.graph-dynamic-workflow", versionRef: "template.graph-dynamic-workflow" }],
+  };
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => issue.message).join("\n"), /sentinel workflow template ids/);
+});
+
 function makeBundle(): PlanBundle {
   return {
     workflow: {

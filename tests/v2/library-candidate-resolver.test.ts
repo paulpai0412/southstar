@@ -73,6 +73,27 @@ test("candidate resolver exposes MCP primitives without direct profile edges", a
   }
 });
 
+test("candidate resolver does not synthesize a workflow template when only primitives match", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    await db.query(
+      "delete from southstar.library_edges where from_object_key = $1 or to_object_key = $1",
+      ["template.software-feature"],
+    );
+    await db.query("delete from southstar.library_objects where object_key = $1", ["template.software-feature"]);
+    const requirement = requirementSpecFromGoalContract(softwareGoalContract());
+    const packet = await resolveWorkflowCandidates(db, { requirementSpec: requirement, scope: "software" });
+
+    assert.deepEqual(packet.workflowTemplateCandidates, []);
+    assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "template.graph-dynamic-workflow"), false);
+    assert.equal(packet.profilePrimitiveCandidates?.agents.includes("agent.software-maker"), true);
+    assert.equal(packet.profilePrimitiveCandidates?.tools.includes("tool.workspace-write"), true);
+  } finally {
+    await db.close();
+  }
+});
+
 test("candidate resolver prefers an approved authored template over the synthetic fallback", async () => {
   const db = await createTestPostgresDb();
   try {

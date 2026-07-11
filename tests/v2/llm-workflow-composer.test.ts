@@ -83,6 +83,10 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
     true,
   );
   assert.equal(
+    WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("sliceId"),
+    true,
+  );
+  assert.equal(
     WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("nodePromptSpec"),
     true,
   );
@@ -423,6 +427,7 @@ function task(
 ) {
   return {
     id,
+    sliceId: "slice-main",
     name: id,
     responsibility: id,
     requirementIds: GOAL_CONTRACT.requirements.map((requirement) => requirement.id),

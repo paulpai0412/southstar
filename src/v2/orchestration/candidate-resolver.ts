@@ -18,14 +18,7 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   const approvedWorkflowTemplateCandidates = (
     await findApprovedLibraryObjectsByKind(db, "workflow_template", input.scope)
   ).map((object) => summary(object.objectKey, object.headVersionId, object.objectKind, object.state, "approved workflow template"));
-  const approvedDynamicTemplate = approvedWorkflowTemplateCandidates.find((candidate) => (
-    candidate.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF
-  ));
-  const workflowTemplateCandidates = approvedDynamicTemplate
-    ? [approvedDynamicTemplate, ...approvedWorkflowTemplateCandidates.filter((candidate) => candidate.ref !== GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)]
-    : approvedWorkflowTemplateCandidates.length > 0
-      ? approvedWorkflowTemplateCandidates
-      : [graphDynamicWorkflowTemplateCandidate(input.scope)];
+  const workflowTemplateCandidates = approvedWorkflowTemplateCandidates;
 
   const unavailableRequirements: CandidatePacket["unavailableRequirements"] = [];
   const agentCandidatesByCapability: Record<string, CandidateSummary[]> = {};
@@ -82,21 +75,6 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     ).filter(isRuntimeProfilePrimitiveCandidate).map((object) => object.objectKey).sort(),
   };
   const graphMetadataCandidates = await buildGraphMetadataCandidatePacket(db, { scope: input.scope });
-  if (
-    workflowTemplateCandidates.some((candidate) => candidate.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)
-    && !graphMetadataCandidates.nodes.some((node) => node.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)
-  ) {
-    graphMetadataCandidates.nodes.unshift({
-      ref: GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF,
-      kind: "workflow_template",
-      status: "approved",
-      versionRef: null,
-      scope: input.scope,
-      title: "Graph Dynamic Workflow",
-      description: "Graph-native workflow template for LLM-generated DAGs and generated agent profiles.",
-      aliases: ["dynamic workflow", "graph workflow", "generated agent profiles"],
-    });
-  }
 
   return {
     requirementSpec: input.requirementSpec,
@@ -114,31 +92,6 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     profilePrimitiveCandidates,
     graphMetadataCandidates,
     unavailableRequirements,
-  };
-}
-
-const GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF = "template.graph-dynamic-workflow";
-
-function graphDynamicWorkflowTemplateCandidate(scope: string): CandidateSummary {
-  return {
-    ref: GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF,
-    versionRef: null,
-    kind: "workflow_template",
-    displayName: "Graph Dynamic Workflow",
-    reason: "graph-native template for generated DAGs and generated agent profiles",
-    state: {
-      scope,
-      title: "Graph Dynamic Workflow",
-      templateType: "graph_dynamic",
-      description: "Use this template when composing a workflow directly from Postgres graph nodes/edges and generated agent profiles.",
-      compositionConstraints: {
-        schemaVersion: "southstar.composition_constraints.v1",
-        templateSlots: [],
-        requiredTaskGroups: [],
-        requiredGroupDependencies: [],
-        initialArtifactRefs: [],
-      },
-    },
   };
 }
 

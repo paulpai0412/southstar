@@ -14,10 +14,13 @@ import {
 import {
   GoalSubmissionPendingError,
   claimGoalSubmissionPg,
+  confirmGoalDesignPg,
   submitClaimedGoalPg,
   type GoalSubmissionClaim,
+  type RunGoalResult,
   type RunGoalRequest,
 } from "../orchestration/run-goal-service.ts";
+import { loadCurrentGoalDesignPackagePg } from "../orchestration/goal-design-draft-service.ts";
 import {
   createPostgresPlannerDraft,
   createPostgresRunFromDraft,
@@ -74,6 +77,28 @@ export async function handlePlannerRoute(
       libraryHints?: unknown;
     }>(request);
     return createPlannerDraftStreamResponse(context, body);
+  }
+
+  const goalDesignConfirmMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/confirm-goal-design$/);
+  if (request.method === "POST" && goalDesignConfirmMatch) {
+    const draftId = decodeURIComponent(goalDesignConfirmMatch[1]!);
+    const body = await readJsonBody<{ expectedPackageHash?: unknown }>(request);
+    const expectedPackageHash = requiredString(body.expectedPackageHash, "expectedPackageHash");
+    const occupied = await preflightGoalDesignConfirmation(context, { draftId, expectedPackageHash });
+    if (occupied) return occupied;
+    if (request.headers.get("accept")?.includes("text/event-stream")) {
+      return createGoalDesignConfirmationStreamResponse(context, { draftId, expectedPackageHash });
+    }
+    try {
+      return json("goal-design-confirmation", await confirmGoalDesignPg({
+        db: context.db,
+        goalInterpreter: resolveGoalInterpreter(context),
+        goalDesigner: resolveGoalDesigner(context),
+        composer: resolvePlannerWorkflowComposer(context),
+      }, { draftId, expectedPackageHash }));
+    } catch (error) {
+      return goalDesignConfirmationErrorResponse(error);
+    }
   }
 
   const draftReviseStreamMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/revise\/stream$/);
@@ -213,6 +238,136 @@ function createRunGoalStreamResponse(
       connection: "keep-alive",
     },
   });
+}
+
+function createGoalDesignConfirmationStreamResponse(
+  context: RuntimeServerContext,
+  input: { draftId: string; expectedPackageHash: string },
+): Response {
+  const encoder = new TextEncoder();
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  let closed = false;
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        if (closed) return;
+        try {
+          controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
+        } catch {
+          closed = true;
+          if (heartbeat) clearInterval(heartbeat);
+        }
+      };
+      heartbeat = startPlannerSseHeartbeat(context, send, {
+        phase: "goal_design_confirmation",
+        draftId: input.draftId,
+      });
+      try {
+        send("goal_design", {
+          draftId: input.draftId,
+          expectedPackageHash: input.expectedPackageHash,
+          status: "confirmed",
+        });
+        const result = await confirmGoalDesignPg({
+          db: context.db,
+          goalInterpreter: resolveGoalInterpreter(context),
+          goalDesigner: resolveGoalDesigner(context),
+          composer: resolvePlannerWorkflowComposer(context, {
+            onStreamDegraded(message) {
+              send("planner.stage", { stage: "planner.stream.degraded", message });
+            },
+          }),
+          onStage(stage, data) {
+            if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
+          },
+        }, input);
+        sendGoalDesignConfirmationResultFrames(send, result);
+        send("done", result);
+      } catch (error) {
+        send("error", { error: error instanceof Error ? error.message : String(error) });
+      } finally {
+        const wasClosed = closed;
+        closed = true;
+        if (heartbeat) clearInterval(heartbeat);
+        if (!wasClosed) {
+          try {
+            controller.close();
+          } catch {
+            // The browser or CLI client may have cancelled the stream already.
+          }
+        }
+      }
+    },
+    cancel() {
+      closed = true;
+      if (heartbeat) clearInterval(heartbeat);
+    },
+  });
+  return new Response(stream, {
+    headers: {
+      "content-type": "text/event-stream",
+      "cache-control": "no-cache, no-transform",
+      connection: "keep-alive",
+    },
+  });
+}
+
+async function preflightGoalDesignConfirmation(
+  context: RuntimeServerContext,
+  input: { draftId: string; expectedPackageHash: string },
+): Promise<Response | undefined> {
+  try {
+    const pkg = await loadCurrentGoalDesignPackagePg(context.db, input.draftId);
+    if (pkg.packageHash !== input.expectedPackageHash) {
+      return errorJson("goal_design_package_stale", 409);
+    }
+    const existing = await context.db.maybeOne<{
+      id: string;
+      status: string;
+      payload_json: Record<string, unknown>;
+    }>(
+      "select id, status, payload_json from southstar.runtime_resources where resource_type = 'goal_design_confirmation' and resource_key = $1",
+      [input.draftId],
+    );
+    if (!existing || existing.status === "completed" || existing.status === "failed") return undefined;
+    if (existing.payload_json.packageHash !== input.expectedPackageHash) {
+      return errorJson("goal_design_confirmation_conflict", 409);
+    }
+    return json("goal-design-confirmation", { confirmationId: existing.id, status: "processing" }, 202);
+  } catch (error) {
+    return goalDesignConfirmationErrorResponse(error);
+  }
+}
+
+function goalDesignConfirmationErrorResponse(error: unknown): Response {
+  if (error instanceof GoalSubmissionPendingError) {
+    return json("goal-design-confirmation", { confirmationId: error.submissionId, status: "processing" }, 202);
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("goal_design_package_stale") || message.includes("goal_design_confirmation_conflict")) {
+    return errorJson(message, 409);
+  }
+  throw error;
+}
+
+function sendGoalDesignConfirmationResultFrames(
+  send: (event: string, data: unknown) => void,
+  result: RunGoalResult,
+): void {
+  send("draft", {
+    draftId: result.draftId,
+    draftStatus: result.draftStatus,
+    goalContractHash: result.goalContractHash,
+    goalDesignPackageHash: result.goalDesignPackageHash,
+    blockers: result.blockers,
+  });
+  if (result.runId) {
+    send("run", { runId: result.runId, runStatus: result.runStatus });
+    send("dag", { runId: result.runId, draftId: result.draftId, status: result.runStatus });
+  }
+  if (result.approvalId) {
+    send("approval", { approvalId: result.approvalId, runId: result.runId });
+  }
 }
 
 function createPlannerDraftStreamResponse(
@@ -436,8 +591,11 @@ function optionalWorkflowCompositionPlan(value: unknown): WorkflowCompositionPla
   if (typeof value.title !== "string" || value.title.length === 0) {
     throw new Error("compositionPlan.title is required");
   }
-  if (typeof value.selectedWorkflowTemplateRef !== "string" || value.selectedWorkflowTemplateRef.length === 0) {
-    throw new Error("compositionPlan.selectedWorkflowTemplateRef is required");
+  if (
+    value.selectedWorkflowTemplateRef !== undefined
+    && (typeof value.selectedWorkflowTemplateRef !== "string" || value.selectedWorkflowTemplateRef.length === 0)
+  ) {
+    throw new Error("compositionPlan.selectedWorkflowTemplateRef must be a non-empty string when provided");
   }
   if (!Array.isArray(value.tasks) || value.tasks.length === 0) {
     throw new Error("compositionPlan.tasks is required");
@@ -585,6 +743,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function json<T>(kind: string, result: T, status = 200): Response {
   const envelope: ApiEnvelope<T> = { ok: true, kind, result };
   return new Response(JSON.stringify(envelope), { status, headers: { "content-type": "application/json", ...corsHeaders() } });
+}
+
+function errorJson(error: string, status: number): Response {
+  return new Response(JSON.stringify({ ok: false, error }), {
+    status,
+    headers: { "content-type": "application/json", ...corsHeaders() },
+  });
 }
 
 function corsHeaders(): Record<string, string> {

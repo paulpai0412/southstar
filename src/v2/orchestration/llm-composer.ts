@@ -65,7 +65,6 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
   required: [
     "schemaVersion",
     "title",
-    "selectedWorkflowTemplateRef",
     "rationale",
     "tasks",
     "rejectedCandidates",
@@ -96,6 +95,7 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
       additionalProperties: false,
       required: [
         "id",
+        "sliceId",
         "name",
         "responsibility",
         "requirementIds",
@@ -117,6 +117,7 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
       ],
       properties: {
         id: { type: "string", minLength: 1 },
+        sliceId: { type: "string", minLength: 1 },
         name: { type: "string", minLength: 1 },
         responsibility: { type: "string", minLength: 1 },
         requirementIds: { type: "array", items: { type: "string", minLength: 1 } },
@@ -334,7 +335,7 @@ export class LlmWorkflowComposer implements WorkflowComposer {
   constructor(private readonly options: LlmWorkflowComposerOptions) {}
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
-    const prompt = renderComposerPrompt(input.goalPrompt, input.goalContract, input.candidatePacket);
+    const prompt = renderComposerPrompt(input.goalPrompt, input.goalContract, input.candidatePacket, input.goalDesignPackage);
     const textInput = {
       model: this.options.model,
       prompt,
@@ -389,8 +390,21 @@ export function renderComposerPrompt(
   goalPrompt: string,
   goalContract: GoalContractV1,
   candidatePacket: CandidatePacket,
+  goalDesignPackage?: ComposeWorkflowInput["goalDesignPackage"],
 ): string {
   const boundedPacket = boundCandidatePacket(candidatePacket);
+  const sliceConstraints = goalDesignPackage
+    ? [
+        "GoalDesignPackage is authoritative.",
+        "Every producer, evaluator, repair, review, and summary task must name one existing sliceId.",
+        "A task may use only requirementIds owned by its sliceId.",
+        "Do not merge slices, move requirement ownership, or invent slice ids.",
+        "A dependency is valid only when inputArtifactRefs consumes an upstream outputArtifactRef.",
+        "If the Slice Plan cannot be compiled, return slice_plan_revision_required instead of rewriting it.",
+      ]
+    : [
+        "Use the Goal Contract and candidate graph to choose the smallest executable DAG.",
+      ];
   return [
     "You are Southstar's library-constrained workflow architect.",
     "Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1.",
@@ -416,12 +430,17 @@ export function renderComposerPrompt(
     "Validation-oriented agent profiles may use a lightweight/no-reasoning model profile when deterministic shell/test verification is sufficient, but must still include provider, harnessRef, instruction, toolPolicy, and budgetPolicy.",
     "Never create cyclic dependencies. Runtime dynamic repair is represented by appended repair/reverify nodes, not by back edges to earlier nodes.",
     "Every task must include nodePromptSpec. Treat nodePromptSpec as the per-node prompt contract that the Docker worker will see: nodeType, goal, requirements, boundaries, nonGoals, deliverableDocuments, expectedOutputs, testCases, acceptanceCriteria, and optional failureReportContract.",
+    "Every task must include sliceId. When GoalDesignPackage is provided, sliceId must come from GoalDesignPackage.slicePlan.slices.",
     "Every task must include requirementIds selected from GoalContractRequirements, except explicit coordination or summary nodes may use an empty array.",
     "Every blocking Goal Contract requirement must have an executable producer with an output artifact and a distinct independent evaluator task using verify or review that produces evidence.",
-    "Turn each observable requirement into one or more executable producer work packages.",
-    "Before creating tasks, partition Goal Contract requirements into outcome slices by state or artifact owner, independently verifiable output, mutation boundary, and required upstream artifacts.",
-    "Merge requirements into one producer slice only when they share the same atomic consistency boundary; explain that shared boundary in the task rationale.",
-    "Do not create a catch-all producer for requirements with different state owners, mutation boundaries, or independently verifiable outputs.",
+    ...(goalDesignPackage
+      ? sliceConstraints
+      : [
+          "Turn each observable requirement into one or more executable producer work packages.",
+          "Before creating tasks, partition Goal Contract requirements into outcome slices by state or artifact owner, independently verifiable output, mutation boundary, and required upstream artifacts.",
+          "Merge requirements into one producer slice only when they share the same atomic consistency boundary; explain that shared boundary in the task rationale.",
+          "Do not create a catch-all producer for requirements with different state owners, mutation boundaries, or independently verifiable outputs.",
+        ]),
     "A dependency is valid only when the consumer names an upstream outputArtifactRef in inputArtifactRefs; otherwise keep the producer slices dependency-independent.",
     "Preserve independent branches as tasks without artificial dependencies so the scheduler can run them in parallel.",
     "Before returning, self-check that producer tasks are dependency-independent unless a declared input artifact requires ordering.",
@@ -444,6 +463,16 @@ export function renderComposerPrompt(
       blocking: requirement.blocking,
     }))),
     "",
+    ...(goalDesignPackage
+      ? [
+          "GoalDesignPackage:",
+          JSON.stringify(goalDesignPackage),
+          "",
+          "SliceConstraints:",
+          JSON.stringify(sliceConstraints),
+          "",
+        ]
+      : []),
     "DagAndAgentProfileSop:",
     renderDagAndAgentProfileSop(),
     "",
@@ -522,7 +551,6 @@ function validateStrictWorkflowCompositionPlan(value: unknown): WorkflowComposit
     [
       "schemaVersion",
       "title",
-      "selectedWorkflowTemplateRef",
       "rationale",
       "tasks",
       "rejectedCandidates",
@@ -542,7 +570,9 @@ function validateStrictWorkflowCompositionPlan(value: unknown): WorkflowComposit
     );
   }
   requireString(value.title, "title", issues);
-  requireString(value.selectedWorkflowTemplateRef, "selectedWorkflowTemplateRef", issues);
+  if (value.selectedWorkflowTemplateRef !== undefined) {
+    requireString(value.selectedWorkflowTemplateRef, "selectedWorkflowTemplateRef", issues);
+  }
   requireString(value.rationale, "rationale", issues);
 
   if (!Array.isArray(value.tasks)) {
@@ -1140,6 +1170,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const TASK_STRING_FIELDS: Array<keyof WorkflowCompositionTask> = [
   "id",
+  "sliceId",
   "name",
   "responsibility",
   "templateSlotRef",

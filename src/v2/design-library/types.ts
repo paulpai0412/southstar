@@ -357,6 +357,7 @@ export type GeneratedAgentProfile = {
 
 export type WorkflowCompositionTask = {
   id: string;
+  sliceId?: string;
   name: string;
   responsibility: string;
   requirementIds: string[];
@@ -428,7 +429,7 @@ export type WorkflowNodePromptTestCase = {
 export type WorkflowCompositionPlan = {
   schemaVersion: "southstar.workflow_composition_plan.v1";
   title: string;
-  selectedWorkflowTemplateRef: string;
+  selectedWorkflowTemplateRef?: string;
   rationale: string;
   tasks: WorkflowCompositionTask[];
   rejectedCandidates: Array<{ ref: string; reason: string }>;
@@ -457,6 +458,11 @@ export type WorkflowCompositionValidationIssueCode =
   | "duplicate_task_id"
   | "unknown_dependency"
   | "dependency_cycle"
+  | "unknown_slice_id"
+  | "requirement_not_owned_by_slice"
+  | "slice_without_producer"
+  | "slice_without_evaluator"
+  | "slice_plan_revision_required"
   | "producer_dependency_without_artifact_flow"
   | "missing_required_task_group"
   | "insufficient_task_group_count"

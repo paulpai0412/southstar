@@ -6,7 +6,7 @@ import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
-import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import {
   DeterministicFixtureComposer,
@@ -38,6 +38,19 @@ import {
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { resolveTestPostgresAdminUrl } from "./postgres-test-utils.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
+
+class ScriptedWorkflowComposer implements WorkflowComposer {
+  private index = 0;
+
+  constructor(private readonly plans: WorkflowCompositionPlan[]) {}
+
+  async compose(_input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    const plan = this.plans[Math.min(this.index, this.plans.length - 1)];
+    this.index += 1;
+    if (!plan) throw new Error("ScriptedWorkflowComposer has no plans");
+    return structuredClone(plan);
+  }
+}
 
 const FIXTURE_TASK_IDS = [
   "understand-repo",
@@ -839,6 +852,7 @@ test("Postgres run API supports llm-constrained planner drafts and preserves tas
 
 test("llm-constrained planner drafts fail closed when llm composer is not configured", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     await assert.rejects(
       () => createPostgresPlannerDraft(db, {
         goalPrompt: "implement calc sum",
@@ -972,6 +986,7 @@ test("llm-constrained planner trace records analyzer/composer and validation aud
 
 test("llm-constrained planner does not fallback when primary composer fails", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const failingComposer = {
       async compose() {
         throw new Error("forced llm composer failure");
@@ -1118,6 +1133,7 @@ test("llm-constrained planner uses graph metadata even when legacy capability ca
 
 test("Postgres planner draft is invalid when repair loop remains invalid after max attempts", async () => {
   await withDb(async (db) => {
+    await seedDeterministicWorkflowGraph(db);
     const goalContract = softwareGoalContract("implement calc sum with invalid explorer profile");
     const composer = new ScriptedWorkflowComposer([
       invalidInspectOnlyPlan(goalContract),

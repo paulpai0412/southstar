@@ -146,7 +146,7 @@ test("dynamic repair scopes compound Goal Contract coverage to the failed task r
     const billingRequirement = goalContract.requirements[1]!;
     const workflow = baseWorkflow();
     const failedTask = workflow.tasks.find((task) => task.id === "verify-feature")!;
-    failedTask.promptInputs = { requirementIds: [accessRequirement.id, billingRequirement.id] };
+    failedTask.promptInputs = { requirementIds: [accessRequirement.id, billingRequirement.id], sliceId: "slice-billing" };
     const lineage = await seedPlannerDraftLineage(
       db,
       "run-dynamic-repair-compound-billing",
@@ -227,6 +227,64 @@ test("dynamic repair scopes compound Goal Contract coverage to the failed task r
     assert.equal(appendedTasks.every((task) =>
       JSON.stringify(task.promptInputs?.requirementIds) === JSON.stringify([billingRequirement.id])
     ), true);
+    assert.equal(appendedTasks.every((task) => task.promptInputs?.sliceId === "slice-billing"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("dynamic repair rejects proposals that move failed task slice or requirement ownership", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicRepairPrimitives(db);
+    const goalContract = subscriptionGoalContract();
+    const billingRequirement = goalContract.requirements[1]!;
+    const workflow = baseWorkflow();
+    const failedTask = workflow.tasks.find((task) => task.id === "verify-feature")!;
+    failedTask.promptInputs = { requirementIds: [billingRequirement.id], sliceId: "slice-billing" };
+    const lineage = await seedPlannerDraftLineage(db, "run-dynamic-repair-moved-slice", workflow.goalPrompt, goalContract);
+    await createWorkflowRunPg(db, {
+      id: "run-dynamic-repair-moved-slice",
+      status: "running",
+      domain: "software",
+      goalPrompt: workflow.goalPrompt,
+      workflowManifestJson: JSON.stringify(workflow),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: lineage.runtimeContextJson,
+      metricsJson: JSON.stringify({}),
+    });
+    await seedActiveRepairProtection(db, "run-dynamic-repair-moved-slice", workflow, lineage);
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-dynamic-repair-moved-slice",
+      taskKey: "Implement Feature",
+      status: "completed",
+      sortOrder: 0,
+      dependsOn: [],
+      snapshot: { agentProfileRef: "profile.impl" },
+    });
+    await createWorkflowTaskPg(db, {
+      id: "verify-feature",
+      runId: "run-dynamic-repair-moved-slice",
+      taskKey: "Verify Feature",
+      status: "failed",
+      sortOrder: 1,
+      dependsOn: ["implement-feature"],
+      snapshot: { agentProfileRef: "profile.verify" },
+    });
+    const moved = repairCompositionPlan();
+    moved.tasks[0]!.sliceId = "slice-admin";
+
+    const result = await maybeApplyDynamicRepairRevisionPg(db, {
+      runId: "run-dynamic-repair-moved-slice",
+      failedTaskId: "verify-feature",
+      failedRequirementIds: [billingRequirement.id],
+      workflowComposer: new GoalContractBindingWorkflowComposer([moved], [billingRequirement.id]),
+    });
+
+    assert.equal(result.status, "skipped");
+    assert.match(result.reason ?? "", /dynamic repair proposal moved sliceId/);
   } finally {
     await db.close();
   }
@@ -2023,6 +2081,7 @@ function workflowTask(id: string, name: string, roleRef: string, agentProfileRef
     recoveryStrategyRefs: ["request-workflow-revision"],
     promptInputs: {
       requirementIds: softwareGoalContract("Build a todo feature").requirements.map((requirement) => requirement.id),
+      sliceId: "slice-main",
     },
     execution: {
       engine: "tork" as const,
@@ -2067,7 +2126,6 @@ function repairCompositionPlan(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Dynamic verifier repair",
-    selectedWorkflowTemplateRef: "template.graph-dynamic-workflow",
     rationale: "Repair and reverify the failed verifier report.",
     tasks: [
       {

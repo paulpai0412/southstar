@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { CandidatePacket, WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
-import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { createWorkflowComposerRegistry } from "../../src/v2/orchestration/composer-registry.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 const GOAL_CONTRACT = softwareGoalContract("x");
+
+class ScriptedWorkflowComposer implements WorkflowComposer {
+  private index = 0;
+
+  constructor(private readonly plans: WorkflowCompositionPlan[]) {}
+
+  async compose(_input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    const plan = this.plans[Math.min(this.index, this.plans.length - 1)];
+    this.index += 1;
+    if (!plan) throw new Error("ScriptedWorkflowComposer has no plans");
+    return structuredClone(plan);
+  }
+}
 
 test("composer registry defaults to llm mode when composerMode is omitted", () => {
   const registry = createWorkflowComposerRegistry();
@@ -95,6 +108,7 @@ function minimalPlan(taskId: string): WorkflowCompositionPlan {
     tasks: [
       {
         id: taskId,
+        sliceId: "slice-main",
         name: "Mock Task",
         responsibility: "mock",
         requirementIds: GOAL_CONTRACT.requirements.map((requirement) => requirement.id),

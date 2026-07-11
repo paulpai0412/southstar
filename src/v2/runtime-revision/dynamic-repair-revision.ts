@@ -188,19 +188,31 @@ export async function maybeApplyDynamicRepairRevisionPg(
     });
     const repairLoopComposer: WorkflowComposer = {
       async compose(composeInput) {
-        return prepareDynamicRepairCompositionForCompile(await input.workflowComposer!.compose(composeInput));
+        return prepareDynamicRepairCompositionForCompile(await input.workflowComposer!.compose(composeInput), {
+          sliceId: taskSliceId(failedTask),
+          requirementIds: targetRequirementIds,
+        });
       },
     };
-    const repairLoop = await runCompositionRepairLoop({
-      db: tx,
-      goalPrompt: repairGoalPrompt,
-      goalContract: repairGoalContract,
-      targetRequirementIds,
-      candidatePacket,
-      composer: repairLoopComposer,
-      scope: candidateScope,
-      maxRepairAttempts: 2,
-    });
+    let repairLoop: Awaited<ReturnType<typeof runCompositionRepairLoop>>;
+    try {
+      repairLoop = await runCompositionRepairLoop({
+        db: tx,
+        goalPrompt: repairGoalPrompt,
+        goalContract: repairGoalContract,
+        targetRequirementIds,
+        candidatePacket,
+        composer: repairLoopComposer,
+        scope: candidateScope,
+        maxRepairAttempts: 2,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.startsWith("dynamic repair proposal moved ")) {
+        return { status: "skipped", reason: message };
+      }
+      throw error;
+    }
     if (!repairLoop.validation.ok || !repairLoop.composition) {
       const firstIssue = repairLoop.validation.issues[0];
       return {
@@ -226,6 +238,7 @@ export async function maybeApplyDynamicRepairRevisionPg(
       failedTaskDependsOn: dependencyList(failedTaskRow.depends_on_json),
       failedArtifactRefId: input.failedArtifactRefId,
       targetRequirementIds,
+      failedSliceId: taskSliceId(failedTask),
       round,
     });
     const repairCoverage = rewriteRepairCoverageTaskIds(
@@ -1011,6 +1024,7 @@ function rewriteDynamicRepairTasks(
     failedTaskDependsOn: string[];
     failedArtifactRefId?: string;
     targetRequirementIds: string[];
+    failedSliceId?: string;
     round: number;
   },
 ): WorkflowTaskDefinition[] {
@@ -1031,6 +1045,7 @@ function rewriteDynamicRepairTasks(
       dependsOn,
       promptInputs: {
         ...(task.promptInputs ?? {}),
+        ...(input.failedSliceId ? { sliceId: input.failedSliceId } : {}),
         requirementIds: [...input.targetRequirementIds],
         dynamicRepair: {
           originalFailedTaskId: input.rootFailedTaskId,
@@ -1048,10 +1063,19 @@ function rewriteDynamicRepairTasks(
   });
 }
 
-function prepareDynamicRepairCompositionForCompile(composition: WorkflowCompositionPlan): WorkflowCompositionPlan {
+function prepareDynamicRepairCompositionForCompile(
+  composition: WorkflowCompositionPlan,
+  expected: { sliceId?: string; requirementIds: string[] },
+): WorkflowCompositionPlan {
   const taskIds = new Set(composition.tasks.map((task) => task.id));
   let previousTaskId: string | undefined;
   const tasksWithInternalDependencies = composition.tasks.map((task) => {
+    if (expected.sliceId && task.sliceId && task.sliceId !== expected.sliceId) {
+      throw new Error(`dynamic repair proposal moved sliceId: ${task.id}`);
+    }
+    if (task.requirementIds.length > 0 && !sameStringSet(task.requirementIds, expected.requirementIds)) {
+      throw new Error(`dynamic repair proposal moved requirementIds: ${task.id}`);
+    }
     const internalDependsOn = unique(task.dependsOn.filter((dependency) => taskIds.has(dependency)));
     const dependsOn = internalDependsOn.length > 0
       ? internalDependsOn
@@ -1059,7 +1083,12 @@ function prepareDynamicRepairCompositionForCompile(composition: WorkflowComposit
         ? [previousTaskId]
         : [];
     previousTaskId = task.id;
-    return { ...task, dependsOn };
+    return {
+      ...task,
+      ...(expected.sliceId ? { sliceId: expected.sliceId } : {}),
+      requirementIds: task.requirementIds.length > 0 ? task.requirementIds : [...expected.requirementIds],
+      dependsOn,
+    };
   });
   return {
     ...composition,
@@ -1070,6 +1099,12 @@ function prepareDynamicRepairCompositionForCompile(composition: WorkflowComposit
       ),
     })),
   };
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  const leftSorted = [...new Set(left)].sort();
+  const rightSorted = [...new Set(right)].sort();
+  return JSON.stringify(leftSorted) === JSON.stringify(rightSorted);
 }
 
 function upstreamOutputArtifactRefs(tasks: WorkflowCompositionPlan["tasks"], taskId: string): Set<string> {
@@ -1416,6 +1451,11 @@ function taskRequirementIds(task: WorkflowTaskDefinition): string[] {
   return Array.isArray(requirementIds) && requirementIds.every((item) => typeof item === "string")
     ? unique(requirementIds)
     : [];
+}
+
+function taskSliceId(task: WorkflowTaskDefinition): string | undefined {
+  const sliceId = task.promptInputs?.sliceId;
+  return typeof sliceId === "string" && sliceId.length > 0 ? sliceId : undefined;
 }
 
 function unique(values: string[]): string[] {

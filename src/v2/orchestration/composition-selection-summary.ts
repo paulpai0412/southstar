@@ -81,7 +81,7 @@ export function collectSelectedRefs(
   additionalRefs: string[] = [],
 ): string[] {
   const availableRefs = new Set(candidateEntries(packet).map((candidate) => candidate.ref));
-  const selectedRefs = new Set<string>([composition.selectedWorkflowTemplateRef]);
+  const selectedRefs = new Set<string>(composition.selectedWorkflowTemplateRef ? [composition.selectedWorkflowTemplateRef] : []);
   for (const task of composition.tasks) {
     selectedRefs.add(task.agentDefinitionRef);
     selectedRefs.add(task.agentProfileRef);

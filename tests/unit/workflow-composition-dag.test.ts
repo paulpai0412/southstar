@@ -75,3 +75,23 @@ test("buildWorkflowCompositionPlanDisplay pretty prints compact composer JSON", 
   assert.match(display.formattedText, /\n```\n?$/);
   assert.equal(display.dag.nodes[0]?.label, "Task A");
 });
+
+test("buildWorkflowDagFromCompositionPlanText accepts template-free primitive composition plans", () => {
+  const dag = buildWorkflowDagFromCompositionPlanText(JSON.stringify({
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Primitive Workflow",
+    rationale: "Build from Library primitives without selecting a template.",
+    tasks: [{
+      id: "task-a",
+      name: "Task A",
+      dependsOn: [],
+      agentDefinitionRef: "agent.software-maker",
+      agentProfileRef: "profile.generated.task-a",
+    }],
+  }));
+
+  assert.ok(dag);
+  assert.equal(dag.templateId, undefined);
+  assert.equal(dag.templateTitle, "Primitive Workflow");
+  assert.equal(dag.nodes[0]?.profileRef, "profile.generated.task-a");
+});
