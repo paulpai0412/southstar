@@ -1174,14 +1174,19 @@ test("run-goal returns a needs_input draft without materializing a run", async (
     });
     try {
       const result = await api<{
-        draft: { status: string; blockers: string[] };
+        draftStatus: string;
+        blockers: string[];
         runId?: string;
       }>(server.url, "/api/v2/run-goal", {
         method: "POST",
-        body: JSON.stringify({ goalPrompt: goalContract.originalPrompt }),
+        body: JSON.stringify({
+          goalPrompt: goalContract.originalPrompt,
+          cwd: "/workspace/article",
+          idempotencyKey: "goal-needs-input-route-1",
+        }),
       });
-      assert.equal(result.draft.status, "needs_input");
-      assert.deepEqual(result.draft.blockers, goalContract.blockingInputs);
+      assert.equal(result.draftStatus, "needs_input");
+      assert.deepEqual(result.blockers, goalContract.blockingInputs);
       assert.equal(result.runId, undefined);
     } finally {
       await server.close();

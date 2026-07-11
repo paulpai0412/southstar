@@ -99,7 +99,17 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
       throw new Error(`approval already ${priorDecision}: ${input.approvalId}`);
     }
     const goalExecutionApproval = row.payload_json.actionType === "goalExecution";
-    if (goalExecutionApproval && input.decision === "approved" && !priorDecision) {
+    const dynamicRepairApproval = row.payload_json.schemaVersion === "southstar.dynamic_repair_authority_approval.v1"
+      && row.payload_json.actionType === "dynamic_repair_authority_expansion";
+    if (priorDecision) {
+      return {
+        shouldSchedule: false,
+        goalExecutionApproval,
+        dynamicRepairApproval,
+        schedulingResult: asRecord(row.payload_json.schedulingResult),
+      };
+    }
+    if (goalExecutionApproval && input.decision === "approved") {
       await assertGoalExecutionHashesCurrent(tx, input.runId, row.payload_json);
       if (run.status !== "awaiting_approval") {
         throw new Error(`goal execution approval cannot schedule run from status ${run.status}`);
@@ -115,7 +125,13 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
       scope: "approval",
       status: input.decision,
       title: row.title ?? "Approval",
-      payload: { ...row.payload_json, decision: input.decision, decisionReason: input.reason, decidedBy: "user" },
+      payload: {
+        ...row.payload_json,
+        decision: input.decision,
+        decisionReason: input.reason,
+        decidedBy: "user",
+        ...(goalExecutionApproval && input.decision === "approved" ? { schedulingState: "requested" } : {}),
+      },
     });
     await appendHistoryEventOncePg(tx, {
       runId: input.runId,
@@ -126,15 +142,20 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
       payload: { approvalId: input.approvalId, decision: input.decision, reason: input.reason },
     });
     return {
+      shouldSchedule: goalExecutionApproval && input.decision === "approved",
       goalExecutionApproval,
-      dynamicRepairApproval: row.payload_json.schemaVersion === "southstar.dynamic_repair_authority_approval.v1"
-        && row.payload_json.actionType === "dynamic_repair_authority_expansion",
+      dynamicRepairApproval,
+      schedulingResult: {},
     };
   });
 
-  if (decision.goalExecutionApproval && input.decision === "approved") {
+  if (decision.shouldSchedule) {
     const scheduling = await scheduleRunOrRecordExceptionPg(db, input.runId, input.startScheduling ?? startRunSchedulingPg);
+    await persistApprovalSchedulingResultPg(db, input, scheduling);
     return { id: input.approvalId, status: input.decision, ...scheduling };
+  }
+  if (decision.goalExecutionApproval) {
+    return { id: input.approvalId, status: input.decision, ...decision.schedulingResult };
   }
   const continuation = !decision.dynamicRepairApproval
     ? undefined
@@ -142,6 +163,26 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
       ? await continueDynamicRepairApprovalPg(db, { runId: input.runId, approvalId: input.approvalId })
       : await rejectDynamicRepairApprovalPg(db, { runId: input.runId, approvalId: input.approvalId, reason: input.reason });
   return { id: input.approvalId, status: input.decision, ...(continuation ? { continuation } : {}) };
+}
+
+async function persistApprovalSchedulingResultPg(
+  db: SouthstarDb,
+  input: { runId: string; approvalId: string },
+  schedulingResult: { runStatus: "created" | "scheduling"; schedulerExceptionId?: string },
+): Promise<void> {
+  await db.tx(async (tx) => {
+    const row = await tx.one<{ payload_json: Record<string, unknown> }>(
+      `select payload_json
+         from southstar.runtime_resources
+        where resource_type = 'approval' and resource_key = $1 and run_id = $2
+        for update`,
+      [input.approvalId, input.runId],
+    );
+    await tx.query(
+      "update southstar.runtime_resources set payload_json = $3::jsonb, updated_at = now() where resource_type = 'approval' and resource_key = $1 and run_id = $2",
+      [input.approvalId, input.runId, JSON.stringify({ ...row.payload_json, schedulingState: "completed", schedulingResult })],
+    );
+  });
 }
 
 export function deriveGoalExecutionRisk(input: {
@@ -208,7 +249,7 @@ export async function scheduleRunOrRecordExceptionPg(
   db: SouthstarDb,
   runId: string,
   startScheduling: (db: SouthstarDb, input: { runId: string }) => Promise<StartRunSchedulingResult>,
-): Promise<{ runStatus: "scheduling"; schedulerExceptionId?: string }> {
+): Promise<{ runStatus: "created" | "scheduling"; schedulerExceptionId?: string }> {
   try {
     await startScheduling(db, { runId });
     return { runStatus: "scheduling" };
@@ -222,7 +263,7 @@ export async function scheduleRunOrRecordExceptionPg(
       evidenceRefs: [`run:${runId}:scheduling-wakeup`],
       providerEvidence: { error: error instanceof Error ? error.message : String(error) },
     });
-    return { runStatus: "scheduling", schedulerExceptionId: exception.id };
+    return { runStatus: "created", schedulerExceptionId: exception.id };
   }
 }
 

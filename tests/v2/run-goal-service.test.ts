@@ -17,6 +17,93 @@ import {
 } from "./fixtures/deterministic-workflow-composer.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
+import { startRunSchedulingPg } from "../../src/v2/server/run-execution-controller.ts";
+
+test("materialization failure rolls back the prepared draft and leaves a retryable submission", async () => {
+  const db = await createTestPostgresDb();
+  const input = request("Add parser tests", "goal-materialization-retry-1");
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await upsertLibraryObject(db, {
+      objectKey: "template.software-feature",
+      objectKind: "workflow_template",
+      status: "approved",
+      headVersionId: "template.software-feature@test",
+      state: { scope: "software", title: "Unsafe template", apiKey: "sk-live-must-not-snapshot" },
+    });
+
+    await assert.rejects(
+      () => submitGoalPg({
+        db,
+        goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+        composer: new DeterministicFixtureComposer(),
+      }, input),
+      /credential-looking Library state/i,
+    );
+    assert.deepEqual(await durableCounts(db), { drafts: 0, runs: 0 });
+    const failed = await submissionRow(db, input.idempotencyKey);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.payload_json.retryable, true);
+
+    await upsertLibraryObject(db, {
+      objectKey: "template.software-feature",
+      objectKind: "workflow_template",
+      status: "approved",
+      headVersionId: "template.software-feature@test",
+      state: { scope: "software", title: "Software Feature Test Template" },
+    });
+    const retried = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      composer: new DeterministicFixtureComposer(),
+    }, input);
+    assert.equal(retried.runStatus, "scheduling");
+    assert.deepEqual(await durableCounts(db), { drafts: 1, runs: 1 });
+  } finally {
+    await db.close();
+  }
+});
+
+test("planner failure persists a retryable claim instead of leaving permanent processing", async () => {
+  const db = await createTestPostgresDb();
+  const input = request("Add parser tests", "goal-planner-retry-1");
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await assert.rejects(
+      () => submitGoalPg({
+        db,
+        goalInterpreter: { interpret: async () => { throw new Error("interpreter unavailable"); } },
+        composer: new DeterministicFixtureComposer(),
+      }, input),
+      /interpreter unavailable/,
+    );
+    const failed = await submissionRow(db, input.idempotencyKey);
+    assert.equal(failed.status, "failed");
+    assert.equal(failed.payload_json.retryable, true);
+    assert.match(String(failed.payload_json.failure), /interpreter unavailable/);
+
+    await assert.rejects(
+      () => submitGoalPg({
+        db,
+        goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+        composer: { compose: async () => { throw new Error("composer unavailable"); } },
+      }, input),
+      /composer unavailable/,
+    );
+    const composerFailed = await submissionRow(db, input.idempotencyKey);
+    assert.equal(composerFailed.status, "failed");
+    assert.match(String(composerFailed.payload_json.failure), /composer unavailable/);
+
+    const retried = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      composer: new DeterministicFixtureComposer(),
+    }, input);
+    assert.equal(retried.runStatus, "scheduling");
+  } finally {
+    await db.close();
+  }
+});
 
 test("low-risk run-goal auto-schedules in one call after its durable transaction commits", async () => {
   const db = await createTestPostgresDb();
@@ -151,6 +238,76 @@ test("replaying an idempotency key returns the same result and creates one run",
   }
 });
 
+test("a replay stays active while post-commit scheduling is pending", async () => {
+  const db = await createTestPostgresDb();
+  const entered = deferred();
+  const release = deferred();
+  const input = request("Add parser tests", "goal-scheduling-pending-1");
+  let first: Promise<Awaited<ReturnType<typeof submitGoalPg>>> | undefined;
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    const context = {
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      composer: new DeterministicFixtureComposer(),
+      async startScheduling(runDb: typeof db, schedulingInput: { runId: string }) {
+        entered.resolve();
+        await release.promise;
+        return await startRunSchedulingPg(runDb, schedulingInput);
+      },
+    };
+    first = submitGoalPg(context, input);
+    await entered.promise;
+
+    assert.equal((await runRowByGoal(db, "Add parser tests")).status, "created");
+    await assert.rejects(
+      () => submitGoalPg(context, input),
+      (error: unknown) => error instanceof GoalSubmissionPendingError && error.status === 202,
+    );
+    const processing = await submissionRow(db, input.idempotencyKey);
+    assert.equal(processing.status, "processing");
+    assert.equal(processing.payload_json.result, undefined);
+
+    release.resolve();
+    const result = await first;
+    assert.equal(result.runStatus, "scheduling");
+    const completed = await submissionRow(db, input.idempotencyKey);
+    assert.equal(completed.status, "completed");
+    assert.equal((completed.payload_json.stages as string[]).at(-1), "done");
+  } finally {
+    release.resolve();
+    await first?.catch(() => undefined);
+    await db.close();
+  }
+});
+
+test("scheduler failure commits its exception and final goal result atomically", async () => {
+  const db = await createTestPostgresDb();
+  const idempotencyKey = "goal-scheduler-atomic-1";
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await installAtomicSchedulerFailureConstraint(db, idempotencyKey);
+
+    const result = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      composer: new DeterministicFixtureComposer(),
+      async startScheduling() {
+        throw new Error("scheduler unavailable");
+      },
+    }, request("Add parser tests", idempotencyKey));
+
+    assert.equal(result.runStatus, "created");
+    assert.ok(result.schedulerExceptionId);
+    const completed = await submissionRow(db, idempotencyKey);
+    assert.equal(completed.status, "completed");
+    assert.equal((completed.payload_json.result as { schedulerExceptionId?: string }).schedulerExceptionId, result.schedulerExceptionId);
+    assert.equal((completed.payload_json.stages as string[]).at(-1), "done");
+  } finally {
+    await db.close();
+  }
+});
+
 test("a reused idempotency key with a different request returns 409", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -269,6 +426,96 @@ test("manual goal approval commits created state before scheduling", async () =>
   }
 });
 
+test("replaying the same manual goal approval does not schedule or record an exception twice", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    const result = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Deploy production", ["deployment"])),
+      composer: new DeterministicFixtureComposer(),
+    }, request("Deploy production", "goal-manual-replay-1"));
+    let schedulingCalls = 0;
+    const first = await decideApprovalPg(db, {
+      runId: result.runId!,
+      approvalId: result.approvalId!,
+      decision: "approved",
+      reason: "operator approved",
+      async startScheduling(runDb, input) {
+        schedulingCalls += 1;
+        return await startRunSchedulingPg(runDb, input);
+      },
+    });
+    const replay = await decideApprovalPg(db, {
+      runId: result.runId!,
+      approvalId: result.approvalId!,
+      decision: "approved",
+      reason: "operator approved",
+      async startScheduling() {
+        schedulingCalls += 1;
+        throw new Error("replay must not schedule");
+      },
+    });
+
+    assert.equal(schedulingCalls, 1);
+    assert.equal(first.status, "approved");
+    assert.equal(replay.status, "approved");
+    assert.equal(await runtimeExceptionCount(db, result.runId!), 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("concurrent identical manual approvals schedule exactly once", async () => {
+  const db = await createTestPostgresDb();
+  const entered = deferred();
+  const release = deferred();
+  let first: Promise<Awaited<ReturnType<typeof decideApprovalPg>>> | undefined;
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    const result = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Deploy production", ["deployment"])),
+      composer: new DeterministicFixtureComposer(),
+    }, request("Deploy production", "goal-manual-concurrent-1"));
+    let schedulingCalls = 0;
+    first = decideApprovalPg(db, {
+      runId: result.runId!,
+      approvalId: result.approvalId!,
+      decision: "approved",
+      reason: "operator approved",
+      async startScheduling(runDb, input) {
+        schedulingCalls += 1;
+        entered.resolve();
+        await release.promise;
+        return await startRunSchedulingPg(runDb, input);
+      },
+    });
+    await entered.promise;
+    const concurrentReplay = await decideApprovalPg(db, {
+      runId: result.runId!,
+      approvalId: result.approvalId!,
+      decision: "approved",
+      reason: "operator approved",
+      async startScheduling() {
+        schedulingCalls += 1;
+        throw new Error("concurrent replay must not schedule");
+      },
+    });
+    release.resolve();
+    const firstResult = await first;
+
+    assert.equal(firstResult.status, "approved");
+    assert.equal(concurrentReplay.status, "approved");
+    assert.equal(schedulingCalls, 1);
+    assert.equal(await runtimeExceptionCount(db, result.runId!), 0);
+  } finally {
+    release.resolve();
+    await first?.catch(() => undefined);
+    await db.close();
+  }
+});
+
 test("scheduler wakeup failure records an exception against the existing run", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -356,6 +603,87 @@ test("POST /api/v2/run-goal streams persisted stages and the JSON-equivalent don
   }
 });
 
+test("JSON run-goal returns HTTP 202 for an active replay and 409 for a conflicting request", async () => {
+  const db = await createTestPostgresDb();
+  const entered = deferred();
+  const release = deferred();
+  let first: Promise<Response> | undefined;
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    const context = runtimeContextWithInterpreter(db, {
+      async interpret() {
+        entered.resolve();
+        await release.promise;
+        return goalContract("Add parser tests");
+      },
+    });
+    const activeRequest = request("Add parser tests", "goal-json-status-1");
+    first = handleRuntimeRoute(context, runGoalRequest(activeRequest));
+    await entered.promise;
+
+    const active = await handleRuntimeRoute(context, runGoalRequest(activeRequest));
+    assert.equal(active.status, 202);
+    assert.match(await active.text(), /goal-submission-/);
+    const conflict = await handleRuntimeRoute(context, runGoalRequest({
+      ...activeRequest,
+      goalPrompt: "Delete production",
+    }));
+    assert.equal(conflict.status, 409);
+
+    release.resolve();
+    assert.equal((await first).status, 200);
+  } finally {
+    release.resolve();
+    await first?.catch(() => undefined);
+    await db.close();
+  }
+});
+
+test("SSE run-goal returns HTTP 202 or 409 before constructing a stream for an occupied key", async () => {
+  const db = await createTestPostgresDb();
+  const entered = deferred();
+  const release = deferred();
+  let firstResponse: Response | undefined;
+  let firstBody: Promise<string> | undefined;
+  const extraResponses: Response[] = [];
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    const context = runtimeContextWithInterpreter(db, {
+      async interpret() {
+        entered.resolve();
+        await release.promise;
+        return goalContract("Add parser tests");
+      },
+    });
+    const activeRequest = request("Add parser tests", "goal-sse-status-1");
+    firstResponse = await handleRuntimeRoute(context, runGoalRequest(activeRequest, true));
+    assert.equal(firstResponse.status, 200);
+    firstBody = firstResponse.text();
+    await entered.promise;
+
+    const active = await handleRuntimeRoute(context, runGoalRequest(activeRequest, true));
+    extraResponses.push(active);
+    assert.equal(active.status, 202);
+    assert.match(active.headers.get("content-type") ?? "", /application\/json/);
+    const conflict = await handleRuntimeRoute(context, runGoalRequest({
+      ...activeRequest,
+      goalPrompt: "Delete production",
+    }, true));
+    extraResponses.push(conflict);
+    assert.equal(conflict.status, 409);
+    assert.match(conflict.headers.get("content-type") ?? "", /application\/json/);
+
+    release.resolve();
+    const frames = parseFrames(await firstBody);
+    assert.equal(frames.at(-1)?.event, "done");
+  } finally {
+    release.resolve();
+    await firstBody?.catch(() => undefined);
+    await Promise.all(extraResponses.map((response) => response.body?.cancel().catch(() => undefined)));
+    await db.close();
+  }
+});
+
 function request(goalPrompt: string, idempotencyKey: string) {
   return { goalPrompt, cwd: "/workspace/software", idempotencyKey };
 }
@@ -404,6 +732,10 @@ async function runRow(db: Awaited<ReturnType<typeof createTestPostgresDb>>, runI
   return await db.one<{ status: string }>("select status from southstar.workflow_runs where id = $1", [runId]);
 }
 
+async function runRowByGoal(db: Awaited<ReturnType<typeof createTestPostgresDb>>, goalPrompt: string) {
+  return await db.one<{ status: string }>("select status from southstar.workflow_runs where goal_prompt = $1", [goalPrompt]);
+}
+
 async function schedulingStartedCount(db: Awaited<ReturnType<typeof createTestPostgresDb>>, runId: string): Promise<number> {
   const row = await db.one<{ count: string }>(
     "select count(*)::text as count from southstar.workflow_history where run_id = $1 and event_type = 'run.scheduling_started'",
@@ -412,18 +744,93 @@ async function schedulingStartedCount(db: Awaited<ReturnType<typeof createTestPo
   return Number(row.count);
 }
 
+async function runtimeExceptionCount(db: Awaited<ReturnType<typeof createTestPostgresDb>>, runId: string): Promise<number> {
+  return Number((await db.one<{ count: string }>(
+    "select count(*)::text as count from southstar.runtime_resources where run_id = $1 and resource_type = 'runtime_exception'",
+    [runId],
+  )).count);
+}
+
 async function runCount(db: Awaited<ReturnType<typeof createTestPostgresDb>>): Promise<number> {
   return Number((await db.one<{ count: string }>("select count(*)::text as count from southstar.workflow_runs")).count);
 }
 
+async function durableCounts(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {
+  const row = await db.one<{ drafts: string; runs: string }>(
+    `select
+       (select count(*)::text from southstar.runtime_resources where resource_type = 'planner_draft') as drafts,
+       (select count(*)::text from southstar.workflow_runs) as runs`,
+  );
+  return { drafts: Number(row.drafts), runs: Number(row.runs) };
+}
+
+async function submissionRow(db: Awaited<ReturnType<typeof createTestPostgresDb>>, idempotencyKey: string) {
+  return await db.one<{ status: string; payload_json: Record<string, unknown> }>(
+    "select status, payload_json from southstar.runtime_resources where resource_type = 'goal_submission' and resource_key = $1",
+    [idempotencyKey],
+  );
+}
+
+async function installAtomicSchedulerFailureConstraint(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  idempotencyKey: string,
+): Promise<void> {
+  await db.query(
+    `create or replace function southstar.assert_goal_scheduler_failure_atomic()
+       returns trigger
+       language plpgsql
+       as $function$
+       declare submission jsonb;
+       begin
+         if new.resource_type <> 'runtime_exception' or new.payload_json->>'source' <> 'scheduler' then
+           return new;
+         end if;
+         select payload_json into submission
+           from southstar.runtime_resources
+          where resource_type = 'goal_submission' and resource_key = ${sqlLiteral(idempotencyKey)};
+         if submission #>> '{result,schedulerExceptionId}' is distinct from new.id
+            or submission->'stages'->>(jsonb_array_length(submission->'stages') - 1) is distinct from 'done' then
+           raise exception 'scheduler exception and goal result were not committed atomically';
+         end if;
+         return new;
+       end
+       $function$`,
+  );
+  await db.query(
+    `create constraint trigger assert_goal_scheduler_failure_atomic
+       after insert on southstar.runtime_resources
+       deferrable initially deferred
+       for each row execute function southstar.assert_goal_scheduler_failure_atomic()`,
+  );
+}
+
+function sqlLiteral(value: string): string {
+  return `'${value.replaceAll("'", "''")}'`;
+}
+
 function runtimeContext(db: Awaited<ReturnType<typeof createTestPostgresDb>>, goalPrompt: string) {
+  return runtimeContextWithInterpreter(db, fixedGoalInterpreter(goalContract(goalPrompt)));
+}
+
+function runtimeContextWithInterpreter(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  goalInterpreter: GoalContractInterpreter,
+) {
   return {
     db,
-    goalInterpreter: fixedGoalInterpreter(goalContract(goalPrompt)),
+    goalInterpreter,
     workflowComposer: new DeterministicFixtureComposer(),
     plannerClient: { generate: async () => { throw new Error("planner not used"); } },
     executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
   };
+}
+
+function runGoalRequest(input: ReturnType<typeof request>, sse = false): Request {
+  return new Request("http://127.0.0.1/api/v2/run-goal", {
+    method: "POST",
+    headers: { "content-type": "application/json", ...(sse ? { accept: "text/event-stream" } : {}) },
+    body: JSON.stringify(input),
+  });
 }
 
 function parseFrames(text: string): Array<{ event: string; data: unknown }> {

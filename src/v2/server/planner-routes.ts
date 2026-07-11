@@ -8,7 +8,9 @@ import {
 } from "../orchestration/goal-contract.ts";
 import {
   GoalSubmissionPendingError,
-  submitGoalPg,
+  claimGoalSubmissionPg,
+  submitClaimedGoalPg,
+  type GoalSubmissionClaim,
   type RunGoalRequest,
 } from "../orchestration/run-goal-service.ts";
 import {
@@ -35,21 +37,23 @@ export async function handlePlannerRoute(
       cwd: requiredString(body.cwd, "cwd"),
       idempotencyKey: requiredString(body.idempotencyKey, "idempotencyKey"),
     };
-    if (request.headers.get("accept")?.includes("text/event-stream")) {
-      return createRunGoalStreamResponse(context, runGoalRequest);
-    }
+    let claim: GoalSubmissionClaim;
     try {
-      return json("run-goal", await submitGoalPg({
-        db: context.db,
-        goalInterpreter: resolveGoalInterpreter(context),
-        composer: resolvePlannerWorkflowComposer(context),
-      }, runGoalRequest));
+      claim = await claimGoalSubmissionPg(context.db, runGoalRequest);
     } catch (error) {
       if (error instanceof GoalSubmissionPendingError) {
         return json("run-goal", { submissionId: error.submissionId, status: "processing" }, 202);
       }
       throw error;
     }
+    if (request.headers.get("accept")?.includes("text/event-stream")) {
+      return createRunGoalStreamResponse(context, runGoalRequest, claim);
+    }
+    return json("run-goal", await submitClaimedGoalPg({
+      db: context.db,
+      goalInterpreter: resolveGoalInterpreter(context),
+      composer: resolvePlannerWorkflowComposer(context),
+    }, runGoalRequest, claim));
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts/stream") {
@@ -142,7 +146,11 @@ export async function handlePlannerRoute(
   return undefined;
 }
 
-function createRunGoalStreamResponse(context: RuntimeServerContext, request: RunGoalRequest): Response {
+function createRunGoalStreamResponse(
+  context: RuntimeServerContext,
+  request: RunGoalRequest,
+  claim: GoalSubmissionClaim,
+): Response {
   const encoder = new TextEncoder();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let closed = false;
@@ -159,21 +167,17 @@ function createRunGoalStreamResponse(context: RuntimeServerContext, request: Run
       };
       heartbeat = startPlannerSseHeartbeat(context, send, { phase: "run_goal", idempotencyKey: request.idempotencyKey });
       try {
-        const result = await submitGoalPg({
+        const result = await submitClaimedGoalPg({
           db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
           composer: resolvePlannerWorkflowComposer(context),
           onStage(stage) {
             if (stage !== "done") send("planner.stage", { stage });
           },
-        }, request);
+        }, request, claim);
         send("done", result);
       } catch (error) {
-        if (error instanceof GoalSubmissionPendingError) {
-          send("done", { submissionId: error.submissionId, status: "processing" });
-        } else {
-          send("error", { error: error instanceof Error ? error.message : String(error) });
-        }
+        send("error", { error: error instanceof Error ? error.message : String(error) });
       } finally {
         const wasClosed = closed;
         closed = true;

@@ -125,6 +125,7 @@ export type PlannerDraftProgressEvent = {
 };
 
 export type PlannerDraftProgressListener = (event: PlannerDraftProgressEvent) => void;
+export type PlannerDraftPersistence = (resource: Parameters<typeof upsertRuntimeResourcePg>[1]) => Promise<void>;
 
 export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
   goalInterpreter: GoalContractInterpreter;
@@ -132,6 +133,7 @@ export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
   onProgress?: PlannerDraftProgressListener;
   onGoalContractDelta?: (text: string) => void;
   onLlmDelta?: (text: string) => void;
+  persistDraft?: PlannerDraftPersistence;
 };
 
 export type RevisePostgresPlannerDraftInput = {
@@ -162,7 +164,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
   const contractHash = goalContractHash(goalContract);
   input.onProgress?.({ stage: "goal_contract.interpreted", message: "Goal Contract interpreted." });
   if (goalContract.blockingInputs.length > 0) {
-    return persistNeedsInputPlannerDraft(db, plannerRequest, goalContract, contractHash, input.onProgress);
+    return persistNeedsInputPlannerDraft(db, plannerRequest, goalContract, contractHash, input.onProgress, input.persistDraft);
   }
   const draftInput: InterpretedPlannerDraftInput = {
     ...plannerRequest,
@@ -173,11 +175,21 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
     onProgress: input.onProgress,
     onGoalContractDelta: input.onGoalContractDelta,
     onLlmDelta: input.onLlmDelta,
+    persistDraft: input.persistDraft,
   };
   if (plannerRequest.compositionPlan) {
     return createPlannerDraftFromComposition(db, draftInput, plannerRequest.compositionPlan);
   }
   return createLibraryConstrainedPlannerDraft(db, draftInput);
+}
+
+async function persistPlannerDraft(
+  db: SouthstarDb,
+  resource: Parameters<typeof upsertRuntimeResourcePg>[1],
+  persist?: PlannerDraftPersistence,
+): Promise<void> {
+  if (persist) return await persist(resource);
+  await upsertRuntimeResourcePg(db, resource);
 }
 
 async function persistNeedsInputPlannerDraft(
@@ -186,11 +198,12 @@ async function persistNeedsInputPlannerDraft(
   goalContract: GoalContractV1,
   contractHash: string,
   onProgress?: PlannerDraftProgressListener,
+  persistDraft?: PlannerDraftPersistence,
 ): Promise<PostgresPlannerDraftResult> {
   const draftId = `draft-goal-${contractHash.slice(0, 12)}`;
   const status = PLANNER_DRAFT_STATUS_NEEDS_INPUT;
   const blockers = [...goalContract.blockingInputs];
-  await upsertRuntimeResourcePg(db, {
+  await persistPlannerDraft(db, {
     id: draftId,
     resourceType: "planner_draft",
     resourceKey: draftId,
@@ -212,7 +225,7 @@ async function persistNeedsInputPlannerDraft(
       plannerRequest,
       ...goalContractSummary(goalContract, contractHash),
     },
-  });
+  }, persistDraft);
   onProgress?.({ stage: "draft.persisted", ok: false, issueCount: blockers.length, message: "Planner draft needs input." });
   return {
     draftId,
@@ -554,7 +567,7 @@ async function createPlannerDraftFromComposition(
     plannerRequest: plannerRequestSnapshot(input),
   };
 
-  await upsertRuntimeResourcePg(db, {
+  await persistPlannerDraft(db, {
     id: draftId,
     resourceType: "planner_draft",
     resourceKey: draftId,
@@ -572,7 +585,7 @@ async function createPlannerDraftFromComposition(
       plannerRequest: plannerRequestSnapshot(input),
       ...goalContractSummary(input.goalContract, input.goalContractHash),
     },
-  });
+  }, input.persistDraft);
   input.onProgress?.({ stage: "draft.persisted", ok: status === "validated", issueCount: validationIssues.length, message: "Planner draft persisted from existing DAG." });
   return {
     draftId,
@@ -605,7 +618,7 @@ async function createLibraryConstrainedPlannerDraft(
     const validationIssues = unavailableRequirementIssues(candidatePacket.unavailableRequirements);
     const status = "invalid";
     const taskSummaries: PlannerDraftTaskSummary[] = [];
-    await upsertRuntimeResourcePg(db, {
+    await persistPlannerDraft(db, {
       id: draftId,
       resourceType: "planner_draft",
       resourceKey: draftId,
@@ -630,7 +643,7 @@ async function createLibraryConstrainedPlannerDraft(
         plannerRequest: plannerRequestSnapshot(input),
         ...goalContractSummary(input.goalContract, input.goalContractHash),
       },
-    });
+    }, input.persistDraft);
     input.onProgress?.({ stage: "draft.persisted", ok: false, issueCount: validationIssues.length, message: "Invalid planner draft persisted." });
     return {
       draftId,
@@ -663,7 +676,7 @@ async function createLibraryConstrainedPlannerDraft(
     const validationIssues = toPlannerDraftValidationIssues(repairResult.validation.issues);
     const status = "invalid";
     const taskSummaries: PlannerDraftTaskSummary[] = [];
-    await upsertRuntimeResourcePg(db, {
+    await persistPlannerDraft(db, {
       id: draftId,
       resourceType: "planner_draft",
       resourceKey: draftId,
@@ -689,7 +702,7 @@ async function createLibraryConstrainedPlannerDraft(
         plannerRequest: plannerRequestSnapshot(input),
         ...goalContractSummary(input.goalContract, input.goalContractHash),
       },
-    });
+    }, input.persistDraft);
     input.onProgress?.({ stage: "draft.persisted", ok: false, issueCount: validationIssues.length, message: "Invalid planner draft persisted." });
     return {
       draftId,
@@ -750,7 +763,7 @@ async function createLibraryConstrainedPlannerDraft(
   const taskSummaries = summarizeWorkflowTasks(compiled.workflow);
   const status = "validated";
 
-  await upsertRuntimeResourcePg(db, {
+  await persistPlannerDraft(db, {
     id: draftId,
     resourceType: "planner_draft",
     resourceKey: draftId,
@@ -768,7 +781,7 @@ async function createLibraryConstrainedPlannerDraft(
       plannerRequest: plannerRequestSnapshot(input),
       ...goalContractSummary(input.goalContract, input.goalContractHash),
     },
-  });
+  }, input.persistDraft);
   input.onProgress?.({ stage: "draft.persisted", ok: true, issueCount: validationIssues.length, message: "Planner draft persisted." });
   return {
     draftId,
