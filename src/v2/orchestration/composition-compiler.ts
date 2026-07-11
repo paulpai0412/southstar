@@ -23,7 +23,7 @@ import type {
   StopConditionDefinition,
   WorkspacePolicyDefinition,
 } from "../design-library/runtime-types.ts";
-import type { LibraryObjectVersionRef, SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
+import type { LibraryObjectVersionRef, SouthstarWorkflowManifest, TaskExecutionSpec, WorkflowTaskDefinition } from "../manifests/types.ts";
 import {
   collectSelectedObjectVersionRefs,
   collectSelectedRefs,
@@ -84,6 +84,7 @@ export async function compileWorkflowComposition(
 ): Promise<CompiledWorkflowComposition> {
   const libraryScope = input.scope ?? "software";
   const manifestDomain = input.manifestDomain ?? (libraryScope === "all" ? "software" : libraryScope);
+  const taskDomain = workflowTaskDomain(manifestDomain);
   const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, {
     scope: libraryScope,
     goalContract: input.goalContract,
@@ -145,7 +146,7 @@ export async function compileWorkflowComposition(
     return {
       id: task.id,
       name: task.name,
-      domain: manifestDomain,
+      domain: taskDomain,
       roleRef: role.id,
       agentProfileRef: profile.id,
       dependsOn: task.dependsOn,
@@ -616,7 +617,7 @@ function synthesizeGeneratedRuntimeProfile(
   };
 }
 
-function executionForTask(task: WorkflowCompositionTask, plan: WorkflowCompositionPlan): Required<NonNullable<GeneratedAgentProfile["execution"]>> {
+function executionForTask(task: WorkflowCompositionTask, plan: WorkflowCompositionPlan): TaskExecutionSpec {
   const proposal = plan.generatedComponentProposals.find((candidate) =>
     candidate.id === task.agentProfileRef && candidate.kind === "agent_profile" && candidate.validationStatus === "validated"
   );
@@ -637,6 +638,12 @@ function executionForTask(task: WorkflowCompositionTask, plan: WorkflowCompositi
     timeoutSeconds: execution.timeoutSeconds ?? 900,
     infraRetry: { maxAttempts: execution.infraRetry?.maxAttempts ?? 1 },
   };
+}
+
+function workflowTaskDomain(value: string): WorkflowTaskDefinition["domain"] {
+  return value === "software" || value === "research" || value === "data-analysis" || value === "general"
+    ? value
+    : "general";
 }
 
 function synthesizeRuntimeRoleFromTask(task: WorkflowCompositionTask): RoleDefinition {

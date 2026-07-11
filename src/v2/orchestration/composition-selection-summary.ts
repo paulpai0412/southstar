@@ -107,7 +107,7 @@ function requiredVersionRef(versionRefsByRef: Map<string, string>, objectKey: st
   return versionRef;
 }
 
-function candidateEntries(packet: CandidatePacket): Array<{ ref: string; versionRef?: string }> {
+function candidateEntries(packet: CandidatePacket): Array<{ ref: string; versionRef?: string | null }> {
   return [
     ...packet.workflowTemplateCandidates,
     ...Object.values(packet.agentCandidatesByCapability).flat(),

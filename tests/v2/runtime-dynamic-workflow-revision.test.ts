@@ -10,7 +10,7 @@ import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts"
 import { createExecutorBindingPg } from "../../src/v2/executor/postgres-bindings.ts";
 import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref-store.ts";
 import { ingestTaskRunResultPg } from "../../src/v2/executor/postgres-tork-callback.ts";
-import { maybeApplyDynamicRepairRevisionPg } from "../../src/v2/runtime-revision/dynamic-repair-revision.ts";
+import { dynamicRepairReconnectTargetTaskId, maybeApplyDynamicRepairRevisionPg } from "../../src/v2/runtime-revision/dynamic-repair-revision.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
@@ -1249,6 +1249,15 @@ test("dynamic repair revision reconnects pending downstream tasks after generate
   } finally {
     await db.close();
   }
+});
+
+test("dynamic repair reconnect selection skips tasks without profiles and keeps the last-task fallback", () => {
+  const workflow = baseWorkflow();
+  const unprofiled = { ...workflowTask("summarize", "Summarize", "summary", "profile.impl", []), agentProfileRef: undefined };
+  const verifier = workflowTask("reverify", "Reverify", "verifier", "profile.verify", []);
+
+  assert.equal(dynamicRepairReconnectTargetTaskId([unprofiled, verifier], workflow.agentProfiles), verifier.id);
+  assert.equal(dynamicRepairReconnectTargetTaskId([verifier, unprofiled], undefined), unprofiled.id);
 });
 
 test("dynamic repair limits consecutive reverify repair chain by root failed task", async () => {

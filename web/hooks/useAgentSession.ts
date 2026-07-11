@@ -945,6 +945,18 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           onDraft(draft) {
             if (draft.draftId) appendWorkflowText(`[draft] ${draft.draftId}${draft.status ? ` ${draft.status}` : ""}`);
           },
+          onGoalContract(mission) {
+            appendWorkflowText(`[goal] ${mission.goalContract.summary}`);
+          },
+          onCoverage(mission) {
+            appendWorkflowText(`[coverage] ${mission.coverage.covered}/${mission.coverage.total}`);
+          },
+          onRun(run) {
+            if (run.runStatus) appendWorkflowText(`[run] ${run.runStatus}`);
+          },
+          onApproval({ command }) {
+            if (command) appendWorkflowText(`[approval] ${command.label}`);
+          },
           onDag(dag) {
             generatedDag = dag;
             updateStreamingMessage();

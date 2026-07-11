@@ -9,6 +9,7 @@ import { ChatWindow } from "./ChatWindow";
 import { FileViewer } from "./FileViewer";
 import { WorkflowResourceViewer } from "./WorkflowResourceViewer";
 import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
+import { GoalContractInspector } from "./GoalContractInspector";
 import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
@@ -25,7 +26,7 @@ import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
 import { buildOperatorIncidents } from "@/lib/operator/incidents";
 import type { SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
-import type { WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
+import type { WorkflowDag, WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
 import type { ReactNode } from "react";
@@ -646,6 +647,26 @@ export function AppShell() {
     });
   }, [openSidecarTab]);
 
+  const handleGoalContractSelect = useCallback((dag: WorkflowDag) => {
+    const scopeId = dag.runId ?? dag.draftId;
+    if (!scopeId) return;
+    setChatWorkspaceSurface("workflow");
+    openSidecarTab({
+      id: `workflow-goal-contract:${scopeId}`,
+      label: "Goal Contract",
+      filePath: scopeId,
+      kind: "workflowGoalContract",
+      draftId: dag.draftId,
+      runId: dag.runId,
+    });
+  }, [openSidecarTab]);
+
+  const handleWorkflowGoalRevise = useCallback((dag: WorkflowDag) => {
+    const summary = dag.mission?.goalContract.summary ?? dag.prompt;
+    const inputRef = appMode === "workflow" ? workflowChatInputRef : chatInputRef;
+    inputRef.current?.insertIfEmpty(`Revise goal “${summary}”: `);
+  }, [appMode]);
+
   const handleSidecarWidthCommit = useCallback((width: number) => {
     window.localStorage.setItem(SIDECAR_WIDTH_STORAGE_KEY, String(width));
   }, []);
@@ -704,6 +725,9 @@ export function AppShell() {
           mode={activeSidecarTab.mode}
         />
       );
+    }
+    if (activeSidecarTab.kind === "workflowGoalContract") {
+      return <GoalContractInspector draftId={activeSidecarTab.draftId} runId={activeSidecarTab.runId} />;
     }
     if (activeSidecarTab.kind === "workflowStaticNodeProfile" && activeSidecarTab.workflowNode) {
       return <WorkflowStaticNodeProfile node={activeSidecarTab.workflowNode} />;
@@ -1518,6 +1542,8 @@ export function AppShell() {
                 workflowMode={false}
                 workflowCwd={chatCurrentCwd}
                 onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
+                onGoalContractSelect={handleGoalContractSelect}
+                onWorkflowGoalRevise={handleWorkflowGoalRevise}
                 onLibraryGraphNodeSelect={handleLibraryGraphNodeSelect}
                 onWorkspaceSurfaceChange={handleChatWorkspaceSurfaceChange}
               />
@@ -1543,6 +1569,8 @@ export function AppShell() {
               workflowTemplate={selectedWorkflowTemplate}
               workflowCwd={workflowCurrentCwd}
               onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
+              onGoalContractSelect={handleGoalContractSelect}
+              onWorkflowGoalRevise={handleWorkflowGoalRevise}
             />
             ) : initialSessionRestored ? renderEmptyPlaceholder() : null}
           </div>

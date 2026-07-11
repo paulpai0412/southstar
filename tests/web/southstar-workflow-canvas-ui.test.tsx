@@ -1,9 +1,15 @@
 import assert from "node:assert/strict";
+import { createRequire } from "node:module";
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { mkdir, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { build } from "esbuild";
+import { chromium, type Page } from "playwright";
 
 const root = join(import.meta.dirname, "../..");
+const require = createRequire(import.meta.url);
 function source(path: string): string {
   return readFileSync(join(root, path), "utf8");
 }
@@ -16,6 +22,10 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
     'event: message.delta\ndata: {"text":"Loading orchestration"}\n\n',
     'event: planner.stage\ndata: {"stage":"composer.started","message":"Streaming LLM workflow composition."}\n\n',
     'event: draft\ndata: {"draft":{"draftId":"draft-1","status":"validated"}}\n\n',
+    'event: goal_contract\ndata: {"mission":{"goalContract":{"summary":"Todo app"}}}\n\n',
+    'event: coverage\ndata: {"mission":{"coverage":{"covered":2,"total":2}}}\n\n',
+    'event: run\ndata: {"runId":"run-1","runStatus":"scheduling"}\n\n',
+    'event: approval\ndata: {"command":null}\n\n',
     'event: dag\ndata: {"dag":{"id":"draft-1","templateId":"template.software-feature","templateTitle":"Todo app","prompt":"todo","expandedByDefault":true,"readiness":"ready","nodes":[],"edges":[],"createdAt":"2026-06-29T00:00:00.000Z"}}\n\n',
     "event: done\ndata: {}\n\n",
   ];
@@ -37,6 +47,7 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
     const { generateWorkflowDagStream } = await import("../../web/lib/workflow/generate-stream.ts");
     const events: string[] = [];
     let dagId: string | null = null;
+    const receipts: string[] = [];
     await generateWorkflowDagStream({
       prompt: "todo",
       cwd: "/workspace/todo",
@@ -50,6 +61,18 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
       onDraft(draft: { draftId?: string }) {
         events.push(`draft:${draft.draftId}`);
       },
+      onGoalContract() {
+        receipts.push("goal_contract");
+      },
+      onCoverage() {
+        receipts.push("coverage");
+      },
+      onRun(run: { runId?: string }) {
+        receipts.push(`run:${run.runId}`);
+      },
+      onApproval() {
+        receipts.push("approval");
+      },
       onDag(dag: { id?: string }) {
         dagId = dag.id ?? null;
       },
@@ -60,7 +83,10 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
 
     assert.equal(calls[0]?.url, "/api/workflow/generate");
     assert.equal(calls[0]?.init?.method, "POST");
-    assert.deepEqual(JSON.parse(String(calls[0]?.init?.body)), {
+    const body = JSON.parse(String(calls[0]?.init?.body)) as Record<string, unknown>;
+    assert.match(String(body.idempotencyKey), /^[0-9a-f-]{36}$/);
+    delete body.idempotencyKey;
+    assert.deepEqual(body, {
       prompt: "todo",
       cwd: "/workspace/todo",
       templateId: "template.software-feature",
@@ -73,9 +99,145 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
       "done",
     ]);
     assert.equal(dagId, "draft-1");
+    assert.deepEqual(receipts, ["goal_contract", "coverage", "run:run-1", "approval"]);
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+test("generateWorkflowDagStream reports active, conflict, and streamed error stages", async () => {
+  const originalFetch = global.fetch;
+  try {
+    for (const [status, expectedStage] of [[202, "submission.active"], [409, "submission.conflict"]] as const) {
+      global.fetch = (async () => new Response(JSON.stringify({ status: status === 202 ? "processing" : "conflict" }), {
+        status,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+      const { generateWorkflowDagStream } = await import("../../web/lib/workflow/generate-stream.ts");
+      const stages: string[] = [];
+      await assert.rejects(
+        () => generateWorkflowDagStream({
+          prompt: "build",
+          cwd: "/workspace/project",
+          onStage(stage) { if (stage.stage) stages.push(stage.stage); },
+        }),
+      );
+      assert.deepEqual(stages, [expectedStage]);
+    }
+
+    global.fetch = (async () => new Response(new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('event: error\ndata: {"error":"planner unavailable"}\n\n'));
+        controller.close();
+      },
+    }), { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+    const errors: string[] = [];
+    const { generateWorkflowDagStream } = await import("../../web/lib/workflow/generate-stream.ts");
+    await assert.rejects(
+      () => generateWorkflowDagStream({
+        prompt: "build",
+        cwd: "/workspace/project",
+        onError(message) { errors.push(message); },
+      }),
+      /planner unavailable/,
+    );
+    assert.deepEqual(errors, ["planner unavailable"]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("workflow generate proxy submits one prompt and adapts persisted mission truth", () => {
+  const route = source("web/app/api/workflow/generate/route.ts");
+  const readModel = source("src/v2/read-models/workflow-ui.ts");
+  assert.match(route, /buildWorkflowV2Url\("\/api\/v2\/run-goal"\)/);
+  assert.match(route, /goalPrompt:\s*prompt/);
+  assert.match(route, /goalPrompt:\s*prompt,\s*cwd,\s*idempotencyKey,/s);
+  assert.match(route, /\/api\/v2\/ui\/workflow\?/);
+  assert.match(route, /buildWorkflowDagFromPlannerDraft/);
+  assert.match(route, /"heartbeat"/);
+  assert.match(readModel, /approvalCommands\(runId, mission\.approval\.id\)/);
+  assert.doesNotMatch(route, /\/api\/v2\/planner\/drafts\/stream/);
+});
+
+test("Workflow renders Goal Contract receipt and hides launch controls until Review mode", () => {
+  assert.equal(existsSync(join(root, "web/components/GoalContractCard.tsx")), true);
+  const card = source("web/components/GoalContractCard.tsx");
+  const block = source("web/components/WorkflowDagBlock.tsx");
+  for (const token of [
+    'data-testid="goal-contract-card"',
+    'data-testid="goal-contract-summary"',
+    'data-testid="goal-coverage-count"',
+    'data-testid="goal-contract-open-details"',
+    "Revise goal",
+  ]) assert.match(card, new RegExp(token));
+  assert.match(card, /blockingInputs\.map/);
+  assert.match(card, /approvalCommand/);
+  assert.doesNotMatch(card, /api\/v2\/runs\/.*approvals/);
+  assert.match(block, /Review mode/);
+  assert.match(block, /reviewMode \?/);
+  assert.match(block, /data-testid="workflow-action-draft"/);
+  assert.match(block, /data-testid="workflow-action-run"/);
+  assert.match(block, /data-testid="workflow-action-execute"/);
+});
+
+test("Goal Contract opens the existing Sidecar inspector for draft or run truth", () => {
+  assert.equal(existsSync(join(root, "web/components/GoalContractInspector.tsx")), true);
+  const inspector = source("web/components/GoalContractInspector.tsx");
+  const shell = source("web/components/AppShell.tsx");
+  const tabBar = source("web/components/TabBar.tsx");
+  assert.match(inspector, /data-testid="goal-contract-inspector"/);
+  assert.match(inspector, /`\/api\/workflow\/ui\?draftId=\$\{encodeURIComponent\(draftId\)\}`/);
+  assert.match(inspector, /`\/api\/workflow\/ui\?runId=\$\{encodeURIComponent\(runId\)\}`/);
+  for (const label of ["Requirements", "Deliverables", "Boundaries", "Assumptions", "Risk", "Coverage", "Provenance"]) {
+    assert.match(inspector, new RegExp(label));
+  }
+  assert.match(tabBar, /"workflowGoalContract"/);
+  assert.match(shell, /GoalContractInspector/);
+  assert.match(shell, /onGoalContractSelect/);
+});
+
+test("Workflow renders Goal Contract receipt and no launch buttons after auto scheduling", async () => {
+  const dag = scheduledDagWithMission();
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { WorkflowDagBlock } from "./web/components/WorkflowDagBlock";
+    createRoot(document.getElementById("root")).render(<WorkflowDagBlock dag={${JSON.stringify(dag)}} cwd="/workspace/project" />);
+  `, async (page) => {
+    await page.locator('[data-testid="goal-contract-card"]').waitFor();
+    assert.match(await page.locator('[data-testid="goal-contract-summary"]').textContent() ?? "", /offline HTML article/);
+    assert.equal(await page.locator('[data-testid="workflow-action-draft"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="workflow-action-run"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="workflow-action-execute"]').count(), 0);
+    assert.match(await page.locator('[data-testid="goal-coverage-count"]').textContent() ?? "", /2\/2/);
+    await page.locator(".workflow-review-mode-toggle").click();
+    assert.equal(await page.locator('[data-testid="workflow-action-run"]').count(), 1);
+    assert.equal(await page.locator('[data-testid="workflow-action-execute"]').count(), 1);
+  });
+});
+
+test("Goal Contract card opens the existing Sidecar inspector", async () => {
+  const dag = scheduledDagWithMission();
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { WorkflowDagBlock } from "./web/components/WorkflowDagBlock";
+    import { GoalContractInspector } from "./web/components/GoalContractInspector";
+    const dag = ${JSON.stringify(dag)};
+    function Harness() {
+      const [open, setOpen] = useState(false);
+      return <><WorkflowDagBlock dag={dag} cwd="/workspace/project" onGoalContractSelect={() => setOpen(true)} />{open ? <aside data-testid="sidecar"><GoalContractInspector runId={dag.runId} /></aside> : null}</>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.route("**/api/workflow/ui?**", async (route) => {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ result: { mission: dag.mission, commands: [] } }) });
+    });
+    await page.locator('[data-testid="goal-contract-open-details"]').click();
+    await page.locator('[data-testid="goal-contract-inspector"]').waitFor();
+    assert.match(await page.locator('[data-testid="goal-contract-requirements"]').textContent() ?? "", /opens without network access/);
+  });
 });
 
 test("generateWorkflowDagStream posts revision prompts to the draft revise stream", async () => {
@@ -279,7 +441,8 @@ test("workflow template mention button is only visible while hovering or focusin
   assert.match(sourceText, /mentionVisible/);
   assert.match(sourceText, /onMouseEnter=\{\(\) => setMentionVisible\(true\)\}/);
   assert.match(sourceText, /onMouseLeave=\{\(\) => setMentionVisible\(false\)\}/);
-  assert.match(sourceText, /visibility:\s*mentionVisible \? "visible" : "hidden"/);
+  assert.match(sourceText, /display:\s*mentionVisible \? "inline-flex" : "none"/);
+  assert.match(sourceText, /tabIndex=\{mentionVisible \? 0 : -1\}/);
 });
 
 test("workflow lifecycle starts generated planner DAGs as backend drafts", () => {
@@ -407,3 +570,137 @@ test("workflow node profile save marks its planner draft as needing validation",
   assert.match(editor, /southstar:planner-draft-updated/);
   assert.match(editor, /needs_validation/);
 });
+
+function scheduledDagWithMission() {
+  const requirements = [
+    { id: "req-offline", statement: "Works offline", acceptanceCriteria: ["opens without network access"], blocking: true, source: "explicit" },
+    { id: "req-share", statement: "Can be shared", acceptanceCriteria: ["is a single HTML file"], blocking: true, source: "explicit" },
+  ];
+  return {
+    id: "draft-article",
+    draftId: "draft-article",
+    draftStatus: "validated",
+    runId: "run-article",
+    runStatus: "scheduling",
+    mode: "runtime",
+    mission: {
+      goalContract: {
+        schemaVersion: "southstar.goal_contract.v1",
+        originalPrompt: "Create an offline HTML article",
+        promptHash: "prompt-hash",
+        revision: 1,
+        workspace: { cwd: "/workspace/project" },
+        domain: "software",
+        intent: "create_article",
+        summary: "Create an offline HTML article",
+        requirements,
+        expectedArtifactRefs: ["article.html"],
+        requiredCapabilities: ["web-authoring"],
+        nonGoals: ["No hosted service"],
+        assumptions: ["Modern browser"],
+        blockingInputs: [],
+        riskTags: [],
+        requestedSideEffects: [],
+      },
+      goalContractHash: "contract-hash",
+      coverage: {
+        covered: 2,
+        total: 2,
+        failedRequirementIds: [],
+        entries: requirements.map((requirement) => ({
+          requirementId: requirement.id,
+          producerTaskIds: ["article"],
+          artifactRefs: ["article.html"],
+          evaluatorTaskIds: ["verify"],
+          evaluatorProfileRefs: ["evaluator.html"],
+          requiredEvidenceKinds: ["artifact-ref"],
+        })),
+      },
+      status: { execution: "scheduling", outcome: "in_progress", health: "healthy" },
+      approval: null,
+      evaluatorResults: [],
+      blockers: [],
+      provenance: { originalPrompt: "Create an offline HTML article", revision: 1, promptHash: "prompt-hash" },
+    },
+    templateId: "template.article",
+    templateTitle: "Offline article",
+    prompt: "Create an offline HTML article",
+    expandedByDefault: true,
+    readiness: "ready",
+    nodes: [],
+    edges: [],
+    createdAt: "2026-07-11T00:00:00.000Z",
+  };
+}
+
+async function withBrowserHarness(
+  entry: string,
+  run: (page: Page) => Promise<void>,
+): Promise<void> {
+  const dir = join(tmpdir(), `southstar-goal-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  await mkdir(dir, { recursive: true });
+  const outfile = join(dir, "bundle.js");
+  await build({
+    stdin: {
+      contents: entry,
+      resolveDir: root,
+      sourcefile: "goal-contract-harness.tsx",
+      loader: "tsx",
+    },
+    outfile,
+    bundle: true,
+    platform: "browser",
+    format: "iife",
+    jsx: "automatic",
+    plugins: [reactAliasPlugin(), webAliasPlugin()],
+  });
+
+  const browser = await chromium.launch();
+  const page = await browser.newPage();
+  const pageErrors: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.stack ?? error.message));
+  try {
+    const script = await readFile(outfile, "utf8");
+    await page.route("http://southstar.test/", async (route) => {
+      await route.fulfill({ contentType: "text/html", body: `<main id="root"></main><script>${script}</script>` });
+    });
+    await page.goto("http://southstar.test/");
+    await run(page);
+    assert.deepEqual(pageErrors, []);
+  } finally {
+    await browser.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+function reactAliasPlugin() {
+  return {
+    name: "react-alias",
+    setup(buildApi: any) {
+      buildApi.onResolve({ filter: /^react$/ }, () => ({ path: join(root, "node_modules/react/index.js") }));
+      buildApi.onResolve({ filter: /^react\/jsx-runtime$/ }, () => ({ path: join(root, "node_modules/react/jsx-runtime.js") }));
+      buildApi.onResolve({ filter: /^react-dom\/client$/ }, () => ({ path: join(root, "node_modules/react-dom/client.js") }));
+    },
+  };
+}
+
+function webAliasPlugin() {
+  return {
+    name: "web-alias",
+    setup(buildApi: any) {
+      buildApi.onResolve({ filter: /^@\// }, (args: any) => resolveWebPath(args.path.slice(2)));
+    },
+  };
+}
+
+function resolveWebPath(path: string): { path: string } {
+  const base = join(root, "web", path);
+  for (const candidate of [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, join(base, "index.ts"), join(base, "index.tsx")]) {
+    try {
+      return { path: require.resolve(candidate) };
+    } catch {
+      // Try the next extension.
+    }
+  }
+  return { path: base };
+}

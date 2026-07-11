@@ -90,11 +90,25 @@ test("web operator helpers normalize overview and build stream urls", async () =
   assert.equal(typeof sse.operatorRuntimeEventStreamUrl, "function");
 
   const overview = normalizers.normalizeOperatorOverview({
-    activeRuns: [{ runId: "run-a", status: "running", title: "Build", cwd: "/repo/a" }],
+    activeRuns: [{
+      runId: "run-a",
+      status: "completed",
+      executionStatus: "completed",
+      outcomeStatus: "unsatisfied",
+      healthStatus: "degraded",
+      title: "Build",
+      cwd: "/repo/a",
+      mission: { status: { execution: "completed", outcome: "unsatisfied", health: "degraded" } },
+    }],
     runtimeHealth: { activeRunCount: 0, attentionCount: 0, blockedCount: 0 },
     attentionItems: [{ id: "attn-a", severity: "blocked", title: "Task blocked", runId: "run-a", taskId: "task-a" }],
   });
   assert.equal(overview.runs[0].runId, "run-a");
+  assert.equal(overview.runs[0].status, "completed");
+  assert.equal(overview.runs[0].executionStatus, "completed");
+  assert.equal(overview.runs[0].outcomeStatus, "unsatisfied");
+  assert.equal(overview.runs[0].healthStatus, "degraded");
+  assert.equal(overview.runs[0].mission?.status.outcome, "unsatisfied");
   assert.equal(overview.runtimeHealth.activeRunCount, 0);
   assert.equal(overview.runtimeHealth.attentionCount, 0);
   assert.equal(overview.attentionItems[0].taskId, "task-a");
@@ -113,6 +127,22 @@ test("web operator helpers normalize overview and build stream urls", async () =
     }),
   });
   assert.equal(event?.text, "streamed token");
+});
+
+test("Operator renders execution, outcome, and health as separate mission badges", () => {
+  const types = source("web/lib/operator/types.ts");
+  const normalizers = source("web/lib/operator/normalizers.ts");
+  const workspace = source("web/components/operator/OperatorWorkspace.tsx");
+  assert.match(types, /executionStatus\?:\s*string/);
+  assert.match(types, /outcomeStatus\?:/);
+  assert.match(types, /healthStatus\?:/);
+  assert.match(types, /mission\?:/);
+  assert.match(normalizers, /const executionStatus = stringValue\(run\.executionStatus\)/);
+  assert.match(normalizers, /const outcomeStatus = goalOutcomeStatus\(run\.outcomeStatus\)/);
+  assert.match(normalizers, /const healthStatus = goalHealthStatus\(run\.healthStatus\)/);
+  assert.doesNotMatch(normalizers, /outcomeStatus:\s*stringValue\(run\.status\)/);
+  assert.match(workspace, /data-testid="operator-run-outcome"/);
+  assert.match(workspace, /data-testid="operator-run-health"/);
 });
 
 test("operator repo filter includes project-root parent and child matches", async () => {

@@ -77,7 +77,10 @@ export interface WorkflowDag {
   draftId?: string;
   draftStatus?: string;
   runId?: string;
+  runStatus?: "awaiting_approval" | "scheduling";
   mode?: "draft" | "runtime";
+  mission?: GoalMissionReadModel;
+  approvalCommand?: WorkflowCommandDescriptor;
   compositionPlan?: unknown;
   templateId: string;
   templateTitle: string;
@@ -88,6 +91,81 @@ export interface WorkflowDag {
   edges: WorkflowDagEdge[];
   createdAt: string;
 }
+
+export type GoalContractV1 = {
+  schemaVersion: "southstar.goal_contract.v1";
+  originalPrompt: string;
+  promptHash: string;
+  revision: number;
+  workspace: { cwd: string; projectRef?: string };
+  domain: string;
+  intent: string;
+  summary: string;
+  requirements: Array<{
+    id: string;
+    statement: string;
+    acceptanceCriteria: string[];
+    blocking: boolean;
+    source: "explicit" | "inferred";
+  }>;
+  expectedArtifactRefs: string[];
+  requiredCapabilities: string[];
+  nonGoals: string[];
+  assumptions: string[];
+  blockingInputs: string[];
+  riskTags: string[];
+  requestedSideEffects: string[];
+};
+
+export type GoalMissionReadModel = {
+  goalContract: GoalContractV1;
+  goalContractHash: string;
+  coverage: {
+    covered: number;
+    total: number;
+    failedRequirementIds: string[];
+    entries: Array<{
+      requirementId: string;
+      producerTaskIds: string[];
+      artifactRefs: string[];
+      evaluatorTaskIds: string[];
+      evaluatorProfileRefs: string[];
+      requiredEvidenceKinds: string[];
+    }>;
+  };
+  status: {
+    execution: string;
+    outcome: "in_progress" | "satisfied" | "unsatisfied" | "blocked";
+    health: "healthy" | "degraded" | "critical";
+  };
+  approval: null | {
+    id: string;
+    status: string;
+    goalContractHash: string;
+    manifestHash: string;
+    librarySnapshotHash: string;
+  };
+  evaluatorResults: unknown[];
+  blockers: string[];
+  provenance: {
+    originalPrompt: string;
+    revision: number;
+    promptHash: string;
+    manifestHash?: string;
+    librarySnapshotHash?: string;
+  };
+};
+
+export type WorkflowCommandDescriptor = {
+  id: string;
+  label: string;
+  endpoint?: string;
+  method: "GET" | "POST";
+  enabled: boolean;
+  requiresConfirmation: boolean;
+  disabledReason?: string;
+  body?: Record<string, unknown>;
+};
 
 export interface WorkflowDagNode {
   id: string;

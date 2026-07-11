@@ -1,4 +1,4 @@
-import type { WorkflowDag } from "./types";
+import type { GoalMissionReadModel, WorkflowCommandDescriptor, WorkflowDag } from "./types";
 
 export type WorkflowGenerateMessageEvent = "message" | "message.delta";
 
@@ -21,6 +21,10 @@ export type WorkflowGenerateStreamHandlers = {
   onStage?: (stage: WorkflowGenerateStageEvent) => void;
   onDraft?: (draft: WorkflowGenerateDraftEvent) => void;
   onDag?: (dag: WorkflowDag) => void;
+  onGoalContract?: (mission: GoalMissionReadModel) => void;
+  onCoverage?: (mission: GoalMissionReadModel) => void;
+  onRun?: (run: { runId?: string; runStatus?: string }) => void;
+  onApproval?: (approval: { mission?: GoalMissionReadModel; command?: WorkflowCommandDescriptor }) => void;
   onError?: (message: string) => void;
   onDone?: () => void;
 };
@@ -64,9 +68,17 @@ export async function generateWorkflowDagStream(input: {
     body: JSON.stringify({
       prompt: input.prompt,
       ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(!input.draftId ? { idempotencyKey: crypto.randomUUID() } : {}),
       ...(!input.draftId && input.templateId ? { templateId: input.templateId } : {}),
     }),
   });
+
+  if (!input.draftId && (response.status === 202 || response.status === 409)) {
+    const active = response.status === 202;
+    const stage = active ? "submission.active" : "submission.conflict";
+    input.onStage?.({ stage, message: active ? "An identical goal submission is still active." : "The goal submission key conflicts with another request." });
+    throw new Error(await response.text().catch(() => "") || (active ? "goal submission is active" : "goal submission conflicts with another request"));
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -147,6 +159,22 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
       throw new Error("workflow generate dag event is missing dag");
     }
     handlers.onDag?.(data.dag as WorkflowDag);
+    return;
+  }
+  if (event === "goal_contract") {
+    if (data.mission && typeof data.mission === "object") handlers.onGoalContract?.(data.mission as GoalMissionReadModel);
+    return;
+  }
+  if (event === "coverage") {
+    if (data.mission && typeof data.mission === "object") handlers.onCoverage?.(data.mission as GoalMissionReadModel);
+    return;
+  }
+  if (event === "run") {
+    handlers.onRun?.(data as { runId?: string; runStatus?: string });
+    return;
+  }
+  if (event === "approval") {
+    handlers.onApproval?.(data as { mission?: GoalMissionReadModel; command?: WorkflowCommandDescriptor });
     return;
   }
   if (event === "error") {

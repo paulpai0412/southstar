@@ -826,7 +826,7 @@ function parseCoverage(
     throw new Error(`invalid Goal Requirement Coverage for run ${runId}: ${path}`);
   };
   const coverage = storedGoalRequirementCoverage(value);
-  if (!coverage) fail("stored projection");
+  if (!coverage) throw new Error(`invalid Goal Requirement Coverage for run ${runId}: stored projection`);
   const requirements = new Map(goalContract.requirements.map((requirement) => [requirement.id, requirement]));
   const manifestTasks = new Map(manifest.tasks.map((task) => [task.id, task]));
   const manifestTaskIds = new Set(manifestTasks.keys());
@@ -835,7 +835,7 @@ function parseCoverage(
   for (const [index, entry] of coverage.entries.entries()) {
     const path = `entries[${index}]`;
     const requirement = requirements.get(entry.requirementId);
-    if (!requirement) fail(`${path}.requirementId references unknown Goal Contract requirement`);
+    if (!requirement) throw new Error(`invalid Goal Requirement Coverage for run ${runId}: ${path}.requirementId references unknown Goal Contract requirement`);
     seenRequirements.add(entry.requirementId);
     for (const key of ["producerTaskIds", "artifactRefs", "evaluatorTaskIds", "evaluatorProfileRefs"] as const) {
       const values = entry[key];

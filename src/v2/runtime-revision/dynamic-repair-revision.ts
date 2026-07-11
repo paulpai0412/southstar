@@ -1088,14 +1088,17 @@ function upstreamOutputArtifactRefs(tasks: WorkflowCompositionPlan["tasks"], tas
   return artifacts;
 }
 
-function dynamicRepairReconnectTargetTaskId(
+export function dynamicRepairReconnectTargetTaskId(
   newTasks: WorkflowTaskDefinition[],
   generatedProfiles: AgentProfile[] | undefined,
 ): string | undefined {
   const profileById = new Map((generatedProfiles ?? []).map((profile) => [profile.id, profile]));
   const validationTask = [...newTasks]
     .reverse()
-    .find((task) => profileById.get(task.agentProfileRef)?.workerKind === "validation_worker");
+    .find((task) => {
+      const profileRef = task.agentProfileRef;
+      return profileRef ? profileById.get(profileRef)?.workerKind === "validation_worker" : false;
+    });
   return validationTask?.id ?? newTasks.at(-1)?.id;
 }
 

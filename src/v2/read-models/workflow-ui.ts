@@ -13,6 +13,7 @@ import {
   type GoalRequirementCoverageV1,
 } from "../orchestration/goal-requirement-coverage.ts";
 import { getResourceByKeyPg } from "../stores/postgres-runtime-store.ts";
+import { approvalCommands } from "./operator-attention.ts";
 import {
   buildRuntimeWorkflowCanvasProjection,
   workflowTasksFromUnknown,
@@ -107,7 +108,9 @@ export type WorkflowUiReadModel = {
     endpoint: string;
     method: "GET" | "POST";
     enabled: boolean;
+    requiresConfirmation?: boolean;
     disabledReason?: string;
+    body?: Record<string, unknown>;
   }>;
 };
 
@@ -240,6 +243,7 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
     repairAttemptDetails: [],
     plannerTrace: null,
     commands: [
+      ...(mission?.approval?.status === "pending" ? approvalCommands(runId, mission.approval.id) : []),
       {
         id: "open-agent-library",
         label: "Open Agent Library",

@@ -1,6 +1,12 @@
+import type { GoalMissionReadModel } from "../workflow/types";
+
 export type OperatorRun = {
   runId: string;
   status: string;
+  executionStatus?: string;
+  outcomeStatus?: GoalMissionReadModel["status"]["outcome"];
+  healthStatus?: GoalMissionReadModel["status"]["health"];
+  mission?: GoalMissionReadModel | null;
   title: string;
   domain?: string;
   cwd?: string;

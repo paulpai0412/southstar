@@ -43,6 +43,8 @@ interface Props {
   prevTimestamp?: number;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onGoalContractSelect?: (dag: WorkflowDag) => void;
+  onWorkflowGoalRevise?: (dag: WorkflowDag) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
   onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }
@@ -79,19 +81,19 @@ function copyText(text: string): Promise<void> {
   }
 }
 
-export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function MessageView({ message, isStreaming, toolResults, modelNames, entryId, onFork, forking, onNavigate, prevAssistantEntryId, onEditContent, showTimestamp, prevTimestamp, workflowCwd, onWorkflowDagNodeSelect, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   if (message.role === "user") {
     return <UserMessageView message={message as UserMessage} entryId={entryId} onFork={onFork} forking={forking} onNavigate={onNavigate} prevAssistantEntryId={prevAssistantEntryId} onEditContent={onEditContent} />;
   }
   if (message.role === "assistant") {
-    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
+    return <AssistantMessageView message={message as AssistantMessage} isStreaming={isStreaming} toolResults={toolResults} modelNames={modelNames} showTimestamp={showTimestamp} prevTimestamp={prevTimestamp} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   if (message.role === "toolResult") {
     // Rendered inline under its toolCall — skip standalone rendering if paired
     return null;
   }
   if (message.role === "custom") {
-    return <CustomMessageView message={message as CustomMessage} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} />;
+    return <CustomMessageView message={message as CustomMessage} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} />;
   }
   return null;
 }
@@ -303,6 +305,8 @@ function AssistantMessageView({
   prevTimestamp,
   workflowCwd,
   onWorkflowDagNodeSelect,
+  onGoalContractSelect,
+  onWorkflowGoalRevise,
   onLibraryGraphNodeSelect,
   onWorkspaceSurfaceChange,
 }: {
@@ -314,6 +318,8 @@ function AssistantMessageView({
   prevTimestamp?: number;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onGoalContractSelect?: (dag: WorkflowDag) => void;
+  onWorkflowGoalRevise?: (dag: WorkflowDag) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
   onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }) {
@@ -475,7 +481,7 @@ function AssistantMessageView({
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {blocks.map((block, i) => (
-          <BlockView key={i} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(i) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+          <BlockView key={i} block={block} toolResults={toolResults} isStreaming={isStreaming} streamingDuration={streamingDurations.get(i) ?? (block.type === "thinking" ? thinkingDurationFromFile : undefined)} toolCallDurations={toolCallDurations} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
         ))}
       </div>
 
@@ -528,12 +534,12 @@ function AssistantMessageView({
   );
 }
 
-function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, workflowCwd, onWorkflowDagNodeSelect, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void; onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void; onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void }) {
+function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCallDurations, workflowCwd, onWorkflowDagNodeSelect, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: { block: AssistantContentBlock; toolResults?: Map<string, ToolResultMessage>; isStreaming?: boolean; streamingDuration?: number; toolCallDurations?: Map<string, number>; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void; onGoalContractSelect?: (dag: WorkflowDag) => void; onWorkflowGoalRevise?: (dag: WorkflowDag) => void; onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void; onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void }) {
   if (block.type === "text") {
     return <TextBlock block={block as TextContent} isStreaming={isStreaming} />;
   }
   if (block.type === "workflowDag") {
-    return <WorkflowDagBlock dag={(block as WorkflowDagContent).dag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} />;
+    return <WorkflowDagBlock dag={(block as WorkflowDagContent).dag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onReviseGoal={onWorkflowGoalRevise} />;
   }
   if (block.type === "libraryGraph") {
     const libraryGraph = block as LibraryGraphContent;
@@ -550,7 +556,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   return null;
 }
@@ -617,6 +623,8 @@ function ToolCallBlock({
   duration,
   workflowCwd,
   onWorkflowDagNodeSelect,
+  onGoalContractSelect,
+  onWorkflowGoalRevise,
   onLibraryGraphNodeSelect,
   onWorkspaceSurfaceChange,
 }: {
@@ -625,6 +633,8 @@ function ToolCallBlock({
   duration?: number;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onGoalContractSelect?: (dag: WorkflowDag) => void;
+  onWorkflowGoalRevise?: (dag: WorkflowDag) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
   onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }) {
@@ -636,6 +646,8 @@ function ToolCallBlock({
       result={result}
       workflowCwd={workflowCwd}
       onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
+      onGoalContractSelect={onGoalContractSelect}
+      onWorkflowGoalRevise={onWorkflowGoalRevise}
       onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
       onWorkspaceSurfaceChange={onWorkspaceSurfaceChange}
     />
@@ -729,6 +741,8 @@ function SouthstarToolResultBlock({
   result,
   workflowCwd,
   onWorkflowDagNodeSelect,
+  onGoalContractSelect,
+  onWorkflowGoalRevise,
   onLibraryGraphNodeSelect,
   onWorkspaceSurfaceChange,
 }: {
@@ -736,6 +750,8 @@ function SouthstarToolResultBlock({
   result: ToolResultMessage;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onGoalContractSelect?: (dag: WorkflowDag) => void;
+  onWorkflowGoalRevise?: (dag: WorkflowDag) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
   onWorkspaceSurfaceChange?: (surface: WorkspaceSurface) => void;
 }) {
@@ -772,7 +788,7 @@ function SouthstarToolResultBlock({
   if (workflowDag) {
     return (
       <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
-        <WorkflowDagBlock dag={workflowDag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} />
+        <WorkflowDagBlock dag={workflowDag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onReviseGoal={onWorkflowGoalRevise} />
       </div>
     );
   }
@@ -1133,7 +1149,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function CustomMessageView({ message, workflowCwd, onWorkflowDagNodeSelect }: { message: CustomMessage; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void }) {
+function CustomMessageView({ message, workflowCwd, onWorkflowDagNodeSelect, onGoalContractSelect, onWorkflowGoalRevise }: { message: CustomMessage; workflowCwd?: string | null; onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void; onGoalContractSelect?: (dag: WorkflowDag) => void; onWorkflowGoalRevise?: (dag: WorkflowDag) => void }) {
   const isHiddenDisplay = message.display === false;
   const [contentExpanded, setContentExpanded] = useState(!isHiddenDisplay);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
@@ -1150,7 +1166,7 @@ function CustomMessageView({ message, workflowCwd, onWorkflowDagNodeSelect }: { 
     if (details?.dag) {
       return (
         <div style={{ marginBottom: 16 }}>
-          <WorkflowDagBlock dag={details.dag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} />
+          <WorkflowDagBlock dag={details.dag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onReviseGoal={onWorkflowGoalRevise} />
         </div>
       );
     }

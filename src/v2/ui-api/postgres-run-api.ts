@@ -11,7 +11,7 @@ import { validateWorkflowManifest } from "../manifests/validate.ts";
 import type { AgentProfile, PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
-import { compileWorkflowComposition } from "../orchestration/composition-compiler.ts";
+import { compileWorkflowComposition, type CompiledWorkflowComposition } from "../orchestration/composition-compiler.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { createWorkflowComposerRegistry, type WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
@@ -540,8 +540,8 @@ async function createPlannerDraftFromComposition(
   const taskSummaries = summarizeWorkflowTasks(compiled.workflow);
   const status = validationIssues.length === 0 ? "validated" : "invalid";
   const bundle: PlanBundle & {
-    orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
-    goalRequirementCoverage: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["goalRequirementCoverage"] : never;
+    orchestrationSnapshot: CompiledWorkflowComposition["orchestrationSnapshot"];
+    goalRequirementCoverage: CompiledWorkflowComposition["goalRequirementCoverage"];
     plannerRequest: PlannerDraftRequestContract;
     goalContract: GoalContractV1;
     goalContractHash: string;
@@ -731,8 +731,8 @@ async function createLibraryConstrainedPlannerDraft(
   });
   input.onProgress?.({ stage: "composition.compiled", message: "Workflow composition compiled." });
   const bundle: PlanBundle & {
-    orchestrationSnapshot: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["orchestrationSnapshot"] : never;
-    goalRequirementCoverage: ReturnType<typeof compileWorkflowComposition> extends Promise<infer T> ? T["goalRequirementCoverage"] : never;
+    orchestrationSnapshot: CompiledWorkflowComposition["orchestrationSnapshot"];
+    goalRequirementCoverage: CompiledWorkflowComposition["goalRequirementCoverage"];
     repairAttempts: typeof repairResult.attempts;
     plannerRequest: PlannerDraftRequestContract;
     goalContract: GoalContractV1;
@@ -809,7 +809,8 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
     throw new Error(`planner draft has blocking inputs: ${input.draftId}`);
   }
   const bundle = draft.payload as PlanBundle & { generationPlan?: { templateRef?: string } };
-  const workflow = materializeWorkflowTaskProfileOverrides(bundle.workflow);
+  const materializedWorkflow = materializeWorkflowTaskProfileOverrides(bundle.workflow);
+  const workflow = { ...materializedWorkflow, domain: materializedWorkflow.domain ?? contract.domain };
   const runId = await allocateRunId(db, workflow.workflowId);
   const plannerRequest = plannerRequestFromStored(draftSummary.plannerRequest) ?? plannerRequestFromStored(draftPayload.plannerRequest);
   const cwd = plannerRequest?.cwd;

@@ -1,4 +1,4 @@
-import type { WorkflowDag } from "./types";
+import type { GoalMissionReadModel, WorkflowCommandDescriptor, WorkflowDag } from "./types";
 
 export type V2PlannerDraftTaskSummary = {
   taskId: string;
@@ -93,7 +93,12 @@ function dependencyLevels(tasks: V2PlannerDraftTaskSummary[]): Map<string, numbe
   return levels;
 }
 
-export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrationView): WorkflowDag {
+export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrationView, runtime?: {
+  runId?: string;
+  runStatus?: "awaiting_approval" | "scheduling";
+  mission?: GoalMissionReadModel;
+  approvalCommand?: WorkflowCommandDescriptor;
+}): WorkflowDag {
   const readiness = readinessFromDraftStatus(input.status, input.validationIssues.length);
   const levels = dependencyLevels(input.taskSummaries);
   const nodes = input.taskSummaries.map((task, index) => {
@@ -103,7 +108,8 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
       id: task.taskId,
       taskId: task.taskId,
       draftId: input.draftId,
-      mode: "draft" as const,
+      ...(runtime?.runId ? { runId: runtime.runId } : {}),
+      mode: runtime?.runId ? "runtime" as const : "draft" as const,
       label: task.taskName || task.taskId,
       role: task.roleRef ?? "maker",
       agentRef: `agent.${agentSegmentFromProfile(profileRef)}`,
@@ -124,7 +130,11 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
     id: input.draftId,
     draftId: input.draftId,
     draftStatus: input.status,
-    mode: "draft",
+    ...(runtime?.runId ? { runId: runtime.runId } : {}),
+    ...(runtime?.runStatus ? { runStatus: runtime.runStatus } : {}),
+    ...(runtime?.mission ? { mission: runtime.mission } : {}),
+    ...(runtime?.approvalCommand ? { approvalCommand: runtime.approvalCommand } : {}),
+    mode: runtime?.runId ? "runtime" : "draft",
     templateId: "template.graph-dynamic-workflow",
     templateTitle: input.workflowId || "Planner Draft",
     prompt: input.goalPrompt,

@@ -2,10 +2,12 @@
 
 import { useMemo, useState } from "react";
 import { SouthstarWorkflowCanvas } from "./workflow-canvas/SouthstarWorkflowCanvas";
+import { GoalContractCard } from "./GoalContractCard";
 import type { WorkflowCanvasModel, WorkflowDependencyModel, WorkflowTaskNodeModel } from "./workflow-canvas/types";
 import { useWorkflowLifecycle } from "@/hooks/useWorkflowLifecycle";
 import { buildWorkflowTemplateSaveRequest } from "@/lib/workflow/template-save";
-import type { WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
+import { invokeOperatorCommand } from "@/lib/operator/invokeCommand";
+import type { WorkflowCommandDescriptor, WorkflowDag, WorkflowDagNode } from "@/lib/workflow/types";
 
 type SaveTemplateStatus =
   | { phase: "idle" }
@@ -17,14 +19,20 @@ export function WorkflowDagBlock({
   dag,
   cwd,
   onNodeSelect,
+  onGoalContractSelect,
+  onReviseGoal,
 }: {
   dag: WorkflowDag;
   cwd?: string | null;
   onNodeSelect?: (node: WorkflowDagNode) => void;
+  onGoalContractSelect?: (dag: WorkflowDag) => void;
+  onReviseGoal?: (dag: WorkflowDag) => void;
 }) {
   const [expanded, setExpanded] = useState<boolean>(dag.expandedByDefault);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [saveTemplateStatus, setSaveTemplateStatus] = useState<SaveTemplateStatus>({ phase: "idle" });
+  const [reviewMode, setReviewMode] = useState(false);
+  const [approvalStatus, setApprovalStatus] = useState<string | null>(null);
   const { state, createDraft, validateDraft, runDraft, executeRun } = useWorkflowLifecycle(dag, cwd);
   const busy = state.phase === "drafting" || state.phase === "validating" || state.phase === "running" || state.phase === "executing";
   const activeDraftId = state.draft?.draftId ?? dag.draftId;
@@ -59,6 +67,20 @@ export function WorkflowDagBlock({
       return;
     }
     void executeRun();
+  };
+
+  const handleApproval = async (command: WorkflowCommandDescriptor) => {
+    if (!dag.runId) return;
+    const reason = window.prompt(`Reason for ${command.label}`, "Approve Goal Contract execution");
+    if (reason === null) return;
+    if (command.requiresConfirmation && !window.confirm(`Run ${command.label}?`)) return;
+    setApprovalStatus("Approving…");
+    try {
+      await invokeOperatorCommand({ command, runId: dag.runId, reason: reason.trim() || command.label });
+      setApprovalStatus("Approved");
+    } catch (error) {
+      setApprovalStatus(error instanceof Error ? error.message : String(error));
+    }
   };
 
   async function saveTemplate() {
@@ -135,6 +157,26 @@ export function WorkflowDagBlock({
       </button>
       {expanded && (
         <div style={{ padding: 10, background: "var(--bg)" }}>
+          {dag.mission ? (
+            <GoalContractCard
+              mission={dag.mission}
+              runStatus={dag.runStatus}
+              approvalCommand={dag.approvalCommand}
+              onOpenDetails={() => onGoalContractSelect?.(dag)}
+              onReviseGoal={() => onReviseGoal?.(dag)}
+              onApprove={(command) => void handleApproval(command)}
+            />
+          ) : null}
+          {approvalStatus ? <p className="goal-contract-command-status">{approvalStatus}</p> : null}
+          <button
+            type="button"
+            className="workflow-review-mode-toggle"
+            aria-expanded={reviewMode}
+            onClick={() => setReviewMode((value) => !value)}
+          >
+            Review mode
+          </button>
+          {reviewMode ? (
           <div
             style={{
               display: "flex",
@@ -236,6 +278,7 @@ export function WorkflowDagBlock({
               {renderLifecycleNotice(state)}
             </div>
           </div>
+          ) : null}
           <div
             data-testid="workflow-dag-scroll"
             style={{

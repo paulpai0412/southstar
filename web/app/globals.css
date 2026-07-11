@@ -1732,6 +1732,148 @@ span.linenumber {
   border-bottom: 1px solid var(--border);
 }
 
+.goal-contract-card,
+.goal-contract-inspector {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+}
+
+.goal-contract-card {
+  margin-bottom: 10px;
+  padding: 12px;
+}
+
+.goal-contract-card-header,
+.goal-contract-status-row,
+.goal-contract-actions,
+.operator-workflow-state-card-mission {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.goal-contract-card-header {
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.goal-contract-card-header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.goal-contract-eyebrow,
+.goal-contract-fact > span,
+.goal-contract-status small {
+  color: var(--text-dim);
+  font: 10px var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.goal-contract-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.goal-contract-fact {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.goal-contract-fact p,
+.goal-contract-inspector p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.goal-contract-blocking {
+  margin-top: 8px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: 6px;
+}
+
+.goal-contract-choice-list,
+.goal-contract-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+}
+
+.goal-contract-card button,
+.workflow-review-mode-toggle {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text-muted);
+  padding: 5px 9px;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.goal-contract-status-row {
+  margin-top: 10px;
+}
+
+.goal-contract-status {
+  display: grid;
+  gap: 2px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  background: var(--bg);
+  font: 11px var(--font-mono);
+}
+
+.goal-contract-actions {
+  justify-content: flex-end;
+}
+
+.workflow-review-mode-toggle {
+  margin-bottom: 10px;
+}
+
+.goal-contract-inspector {
+  min-height: 100%;
+  padding: 14px;
+  overflow: auto;
+}
+
+.goal-contract-inspector header,
+.goal-contract-inspector section {
+  display: grid;
+  gap: 6px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.goal-contract-inspector h3 {
+  margin: 0;
+  font-size: 12px;
+}
+
+.goal-contract-inspector ul {
+  margin: 4px 0;
+  padding-left: 18px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.operator-workflow-state-card-mission {
+  font: 10px var(--font-mono);
+  color: var(--text-muted);
+}
+
 .southstar-session-row-actions {
   display: inline-flex;
   align-items: center;

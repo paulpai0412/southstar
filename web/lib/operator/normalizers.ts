@@ -1,3 +1,4 @@
+import type { GoalMissionReadModel } from "../workflow/types";
 import type { OperatorAttentionItem, OperatorCommand, OperatorCommandResult, OperatorOverview, OperatorRun } from "./types";
 
 export function normalizeOperatorOverview(input: unknown): OperatorOverview {
@@ -36,9 +37,17 @@ function readRun(input: unknown): OperatorRun | null {
   const projectRoot = stringValue(run.projectRoot);
   const updatedAt = stringValue(run.updatedAt);
   const commands = coerceArray(run.commands).map(readCommand).filter((command): command is OperatorCommand => command !== null);
+  const mission = recordValue(run.mission) as GoalMissionReadModel | undefined;
+  const executionStatus = stringValue(run.executionStatus) || mission?.status.execution || stringValue(run.status) || "unknown";
+  const outcomeStatus = goalOutcomeStatus(run.outcomeStatus) || mission?.status.outcome || "in_progress";
+  const healthStatus = goalHealthStatus(run.healthStatus) || mission?.status.health || "healthy";
   return {
     runId,
     status: stringValue(run?.status) || "unknown",
+    executionStatus,
+    outcomeStatus,
+    healthStatus,
+    mission: mission ?? null,
     title: stringValue(run?.title || run?.goalPrompt) || runId,
     ...(domain ? { domain } : {}),
     ...(cwd ? { cwd } : {}),
@@ -46,6 +55,14 @@ function readRun(input: unknown): OperatorRun | null {
     ...(updatedAt ? { updatedAt } : {}),
     ...(commands.length ? { commands } : {}),
   };
+}
+
+function goalOutcomeStatus(value: unknown): GoalMissionReadModel["status"]["outcome"] | undefined {
+  return value === "in_progress" || value === "satisfied" || value === "unsatisfied" || value === "blocked" ? value : undefined;
+}
+
+function goalHealthStatus(value: unknown): GoalMissionReadModel["status"]["health"] | undefined {
+  return value === "healthy" || value === "degraded" || value === "critical" ? value : undefined;
 }
 
 function readAttention(input: unknown): OperatorAttentionItem | null {

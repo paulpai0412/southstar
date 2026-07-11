@@ -66,6 +66,34 @@ test("planner draft persists a design/article Goal Contract and uses its domain"
   });
 });
 
+test("run materialization restores a missing manifest domain from the validated Goal Contract", async () => {
+  await withDb(async (db) => {
+    const goalPrompt = "Turn notes.md into an offline HTML article";
+    const goalContract = articleGoalContract(goalPrompt);
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt,
+      cwd: "/workspace/article",
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json #- '{workflow,domain}'
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [draft.draftId],
+    );
+
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const storedRun = await db.one<{ domain: string; workflow_manifest_json: { domain?: string } }>(
+      "select domain, workflow_manifest_json from southstar.workflow_runs where id = $1",
+      [run.runId],
+    );
+    assert.equal(storedRun.domain, goalContract.domain);
+    assert.equal(storedRun.workflow_manifest_json.domain, goalContract.domain);
+  });
+});
+
 test("blocking Goal Contract persists needs_input without compiling", async () => {
   await withDb(async (db) => {
     let composerCalled = false;

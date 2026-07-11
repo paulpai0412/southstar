@@ -278,6 +278,10 @@ function WorkflowStateCard({
       }}
     >
       <span className="operator-workflow-state-card-status">{run.status}</span>
+      <span className="operator-workflow-state-card-mission">
+        <span data-testid="operator-run-outcome">outcome {run.outcomeStatus ?? "in_progress"}</span>
+        <span data-testid="operator-run-health">health {run.healthStatus ?? "healthy"}</span>
+      </span>
       <strong>{run.title}</strong>
       <span className="operator-workflow-state-card-meta">
         {projectLabel}

@@ -97,6 +97,44 @@ test("workflow read model exposes the same answer-first mission for draft and ru
       resourceKey: "approval-mission",
       runId: run.runId,
       scope: "approval",
+      status: "pending",
+      payload: {
+        approvalId: "approval-mission",
+        actionType: "goalExecution",
+        goalContractHash: runtimeContext.runtime_context_json.goalContractHash,
+        manifestHash: runtimeContext.runtime_context_json.manifestHash,
+        librarySnapshotHash: runtimeContext.runtime_context_json.librarySnapshotHash,
+      },
+    });
+    const pendingApprovalModel = await buildWorkflowUiReadModelPg(db, { runId: run.runId });
+    assert.deepEqual(
+      pendingApprovalModel.commands.filter((command) => command.id.startsWith("approval.")),
+      [
+        {
+          id: "approval.approve",
+          label: "Approve",
+          endpoint: `/api/v2/runs/${encodeURIComponent(run.runId)}/approvals/approval-mission/decision`,
+          method: "POST",
+          body: { decision: "approved" },
+          enabled: true,
+          requiresConfirmation: true,
+        },
+        {
+          id: "approval.reject",
+          label: "Reject",
+          endpoint: `/api/v2/runs/${encodeURIComponent(run.runId)}/approvals/approval-mission/decision`,
+          method: "POST",
+          body: { decision: "rejected" },
+          enabled: true,
+          requiresConfirmation: true,
+        },
+      ],
+    );
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "approval-mission",
+      runId: run.runId,
+      scope: "approval",
       status: "approved",
       payload: {
         approvalId: "approval-mission",

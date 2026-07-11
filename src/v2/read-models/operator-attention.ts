@@ -436,7 +436,7 @@ function runCommands(runId: string, status: string): OperatorCommand[] {
   ];
 }
 
-function approvalCommands(runId: string | undefined, approvalIdValue: string | undefined): OperatorCommand[] {
+export function approvalCommands(runId: string | undefined, approvalIdValue: string | undefined): OperatorCommand[] {
   const hasTarget = Boolean(runId && approvalIdValue);
   const endpoint = hasTarget ? `/api/v2/runs/${encodeURIComponent(runId!)}/approvals/${encodeURIComponent(approvalIdValue!)}/decision` : undefined;
   return [

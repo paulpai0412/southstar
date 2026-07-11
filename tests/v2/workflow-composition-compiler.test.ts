@@ -241,6 +241,35 @@ test("compiler threads explicit scope into workflow domain, task domain, and har
   }
 });
 
+test("compiler preserves custom workflow scope while using general task domain", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const goalContract = softwareGoalContract();
+    const requirementSpec = requirementSpecFromGoalContract(goalContract);
+    const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope: "software" });
+    const composition = await new DeterministicFixtureComposer().compose({
+      goalPrompt: "implement calc sum",
+      goalContract,
+      candidatePacket,
+    });
+    const compiled = await compileWorkflowComposition(db, {
+      runId: "draft-library-custom-domain",
+      goalPrompt: "implement calc sum",
+      goalContract,
+      candidatePacket,
+      composition,
+      manifestDomain: "design/article",
+    });
+
+    assert.equal(compiled.workflow.domain, "design/article");
+    assert.equal(compiled.workflow.tasks.every((task) => task.domain === "general"), true);
+    assert.equal(compiled.workflow.harnessDefinitions.every((harness) => harness.capabilities.includes("design/article")), true);
+  } finally {
+    await db.close();
+  }
+});
+
 async function mirrorLibraryScope(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   input: { fromScope: string; toScope: string },
