@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-10
 
-**Status:** Revised design; awaiting written-spec review
+**Status:** Approved design; implementation plan written, not yet implemented
 
 **Revision:** 2026-07-11
 
@@ -209,12 +209,12 @@ User prompt + selected workspace + client idempotency key
   -> if blocking missing input: persist draft(needs_input), return
   -> produce requirement evaluator contracts
   -> produce and validate GoalSlicePlan
-  -> select and validate batch | staged | child-runs composition strategy
+  -> select and validate single-run | per-slice-runs composition strategy
   -> persist versioned GoalDesignPackage
   -> if review_before_compose: render Goal message box and wait for confirmation
   -> resolve domain/global approved Library candidates
   -> validate executable closure and rank bounded candidates
-  -> compose current batch/stage DAG from the validated slices + generated run-scoped profiles + nodePromptSpec
+  -> compose one all-slice DAG or one DAG per slice + generated run-scoped profiles + nodePromptSpec
   -> validate composition
   -> compile manifest + requirement coverage + Library snapshot
   -> validate hashes, coverage, manifest, and risk envelope
@@ -247,11 +247,13 @@ type GoalContractV1 = {
   };
   domain: string;
   intent: string;
+  workType: "software_feature" | "bugfix" | "research" | "data_analysis" | "migration" | "ops_recovery" | "general";
   summary: string;
   requirements: Array<{
     id: string;
     statement: string;
     acceptanceCriteria: string[];
+    expectedArtifacts: Array<{ description: string; path?: string; mediaType?: string }>;
     blocking: boolean;
     source: "explicit" | "inferred";
   }>;
@@ -275,6 +277,9 @@ Rules:
 - The contract is stored inside the `planner_draft` payload and summary; no new table is required.
 - The contract hash is copied into run runtime context and all approvals.
 - `requiredCapabilities` contains semantic needs such as `code-review`, not concrete Agent, Skill, Tool, MCP, or Library object refs.
+- `workType` is a schema-constrained Goal interpretation output. Production code must not infer it from domain/intent keyword tables.
+- The LLM proposes artifact descriptions/optional safe relative paths per requirement; host finalization deterministically assigns `artifact.goal.<requirementId>.<index>` refs. A new deliverable does not require a pre-seeded Library artifact object.
+- Library domain/capability vocabulary guides interpretation but is not a closed enum. Safe normalized child scopes may be created by a Goal; candidate resolution searches exact scope, ancestor scopes, then `global` without a domain keyword table.
 - The original prompt is immutable. Steering creates a new revision and preserves prior revisions for audit.
 - A contract hash change invalidates prior coverage, manifest, Library snapshot, and approval projections before execution may continue.
 
@@ -294,6 +299,10 @@ Interpretation may use an LLM, but the output must pass deterministic schema and
 8. persist one hash-bound Goal Design Package.
 
 The skill does not select agents, skills, tools, MCP grants, vault policies, or execution profiles. Those decisions remain Library-constrained composer responsibilities.
+
+The SOP is authored through the existing Library skill-file/import/sync path and resolved from an approved `skill_spec` whose metadata declares `purpose: goal_design`. Production code does not embed the skill body or a concrete skill id. Zero or multiple active matching skills fails closed before Goal interpretation; the same resolved body/version guides contract interpretation and Slice design, and its `headVersionId` is recorded in the Goal Design Package provenance.
+
+Before the Goal LLM call, the host captures a bounded, read-only, secret-safe workspace discovery: sorted entries plus bounded instruction/project metadata documents, with symlink escapes, binary/cache/build/VCS content, and secret-looking files excluded. The discovery hash is package provenance. The LLM does not receive unrestricted filesystem tools during Goal Design; if the bounded evidence cannot resolve a product-significant ambiguity, it returns one blocking question.
 
 Workspace- or Library-discoverable detail is recorded as an assumption or discovery responsibility, not a blocking user question. High-impact choices that change acceptance, authority, money, deployment, deletion, or other irreversible effects remain blocking.
 
@@ -339,6 +348,8 @@ type GoalSlicePlanV1 = {
 
 Slice rules:
 
+The LLM executing the approved Goal Design skill proposes the evaluator contracts, natural Slice Plan, and composition strategy. It consumes only artifact refs already materialized by the Goal Contract host. That proposal becomes authoritative only after host-owned refs/hashes are inserted and deterministic validation passes; the workflow composer never performs a second Slice decomposition.
+
 - Every blocking requirement has exactly one owner slice. If one statement spans independent outcome boundaries, Goal Design first decomposes it into separately identified requirements.
 - Requirements may share a slice only when they share the same state/artifact owner, atomic mutation boundary, and compatible evaluator evidence boundary; `mergeReason` records why.
 - Slice dependencies exist only when the downstream slice consumes a declared upstream artifact. Preferred ordering alone is not a dependency.
@@ -350,30 +361,16 @@ Slice rules:
 
 ```ts
 type CompositionStrategyV1 =
-  | { mode: "batch"; sliceIds: string[] }
-  | {
-      mode: "staged";
-      stages: Array<{
-        id: string;
-        sliceIds: string[];
-        entryArtifactRefs: string[];
-      }>;
-    }
-  | {
-      mode: "child-runs";
-      groups: Array<{
-        id: string;
-        sliceIds: string[];
-        workspaceRef: string;
-      }>;
-    };
+  | { mode: "single-run"; sliceIds: string[]; rationale: string }
+  | { mode: "per-slice-runs"; sliceIds: string[]; rationale: string };
 ```
 
-- `batch` is the default when all slices, Library candidates, and dependencies are already knowable. The composer generates one manifest containing parallel subgraphs.
-- `staged` is used when accepted artifacts from an earlier stage materially affect later Library resolution or DAG design. Each stage appends a manifest revision to the same logical run; it does not create unrelated workflow truth.
-- `child-runs` is reserved for different workspace, authority, approval, deployment/rollback, cancellation, or independently terminal lifecycle boundaries. Slice count alone never selects this mode.
+- `single-run` is the default. The composer generates one manifest containing all Slice subgraphs; independent nodes may run in parallel under the existing scheduler.
+- `per-slice-runs` generates one manifest and one independent workflow run for each Slice. Every run uses the Goal Contract's same validated `cwd`; there is no parent/child run hierarchy.
+- A `goal_execution_set` runtime resource records `packageHash`, `sliceId -> runId`, the Slice dependency graph, topological launch order, accepted cross-run artifact refs, and aggregate outcome. It is a coordination projection, not an executable parent run.
+- Because all runs share one writable `cwd`, the first implementation launches per-Slice runs serially in deterministic topological order. A downstream run starts only after every upstream Slice outcome is satisfied and every declared dependency artifact is accepted. Independent-run parallelism is deferred until mutation-boundary isolation can be proven.
 
-The composer may split one slice into several tasks, but it may not merge unrelated slices or change requirement ownership. Every task carries `sliceId` and `requirementIds`. A producer-to-producer dependency is valid only when the consumer declares an upstream `outputArtifactRef` in its `inputArtifactRefs`. If the composer discovers that the Slice Plan is not executable, it returns `slice_plan_revision_required` instead of silently rewriting it.
+For `single-run`, the composer may split one slice into several tasks, but it may not merge unrelated slices or change requirement ownership. For `per-slice-runs`, each composer call receives exactly one Slice plus the full Goal Contract/evaluator context and may produce tasks only for that Slice. Every task carries `sliceId` and `requirementIds`. A producer dependency is valid only when the consumer declares an upstream `outputArtifactRef` in its `inputArtifactRefs`. If the composer discovers that the Slice Plan is not executable, it returns `slice_plan_revision_required` instead of silently rewriting it.
 
 ### 9.5 Goal Design Package And Versioning
 
@@ -386,15 +383,49 @@ type GoalDesignPackageV1 = {
   evaluatorContracts: RequirementEvaluatorContractV1[];
   slicePlan: GoalSlicePlanV1;
   compositionStrategy: CompositionStrategyV1;
+  templatePolicy: WorkflowTemplatePolicyV1;
   goalContractHash: string;
   evaluatorContractsHash: string;
   slicePlanHash: string;
   packageHash: string;
+  goalDesignSkillRef: string;
+  goalDesignSkillVersionRef: string;
+  workspaceDiscoveryHash: string;
   mode: "review_before_compose" | "auto_until_blocked";
 };
 ```
 
-The package is persisted in the existing planner/runtime resource model; no new table is required. Confirmation binds to `packageHash`. Contract, evaluator, Slice Plan, strategy, or mode changes create a new immutable package revision and invalidate derived composition, manifest, snapshot, and non-terminal confirmation state.
+The package is persisted in the existing planner/runtime resource model; no new table is required. Confirmation binds to `packageHash`, which also covers `workspaceDiscoveryHash` and Goal Design skill provenance. Contract, evaluator, Slice Plan, strategy, template policy, or mode changes create a new immutable package revision and invalidate derived composition, manifest, snapshot, and non-terminal confirmation state.
+
+### 9.6 Workflow Template Policy
+
+Workflow Templates remain approved Library recipes for composition. They do not interpret intent, own requirements, grant authority, or bypass the Goal Design Package.
+
+```ts
+type WorkflowTemplatePolicyV1 =
+  | { mode: "auto" }
+  | {
+      mode: "prefer" | "require";
+      templateRef: string;
+      versionRef: string;
+    };
+```
+
+- `auto` is the default. Candidate resolution ranks approved, domain-compatible templates, but a template is optional: the composer may select one or compose directly from the approved independent graph primitives.
+- `prefer` maps to adaptive use. The composer tries the pinned template/version, but may fall back to another compatible template or template-free primitive composition after persisting the incompatibility reason.
+- `require` maps to strict use. An incompatible pinned template/version produces `template_incompatible`; there is no fallback composition or run.
+
+There is no synthetic or fixed graph-dynamic Template candidate. Template-free composition is represented by an absent selected-template ref plus the exact primitive version refs in the Goal Design composition record and immutable run Library snapshot.
+
+Manifest provenance is a discriminated union: template-backed compilation records `sourceKind: workflow_template` plus pinned template ids; template-free compilation records `sourceKind: library_primitives` and has no template fields. Both record compiler/input hashes and exact Library object version refs. Existing manifests without `sourceKind` remain readable only when both legacy template ids are present.
+
+Template selection happens after Goal Contract, evaluator contracts, Slice Plan, and composition strategy exist, and before composition. A template may shape task groups, slots, and dependencies, but it cannot change slice ownership, remove evaluator coverage, add non-candidate Library refs, or create dependencies without artifact consumption. Validation remains authoritative.
+
+The first implementation supports Goal-level template policy only. Arbitrary whole-workflow templates are not attached to individual slices. Slice-level templates require a future explicit slice input/output contract and measured demand.
+
+The existing explicit template-instantiation API becomes a compatibility adapter into the same Goal Design pipeline with `templatePolicy`; it must not independently interpret the goal or create a parallel planner-draft path.
+
+Saving a validated generated DAG remains available through the existing DAG action, but creates a Library draft/proposal with complete `libraryVersionRefs`. Promotion to `approved` is a separate Library action. A browser request never marks a newly generated template approved directly.
 
 ## 10. Requirement Coverage
 
@@ -506,23 +537,33 @@ The existing route remains the single external submission seam for one-prompt Go
 type RunGoalRequest = {
   goalPrompt: string;
   cwd: string;
-  idempotencyKey?: string;
+  idempotencyKey: string;
   goalDesignMode?: "review_before_compose" | "auto_until_blocked";
+  templatePolicy?: WorkflowTemplatePolicyV1;
 };
 
 type RunGoalResult = {
   goalDesignPackageHash?: string;
   goalContractHash: string;
   draftId: string;
-  draftStatus: "needs_input" | "invalid" | "ready_for_review" | "validated";
+  draftStatus: "needs_input" | "invalid" | "template_incompatible" | "ready_for_review" | "validated";
   runId?: string;
-  runStatus?: "awaiting_approval" | "scheduling";
+  runStatus?: "created" | "awaiting_approval" | "scheduling";
   approvalId?: string;
+  executionSetId?: string;
+  sliceRuns?: Array<{
+    sliceId: string;
+    runId: string;
+    runStatus: "created" | "awaiting_approval" | "scheduling";
+    approvalId: string;
+  }>;
   blockers: string[];
 };
 ```
 
 The prompt remains the only required user-authored input. The UI supplies `cwd`, a client-generated idempotency key, and the current workspace/user Goal Design mode. Omitting the mode uses `review_before_compose`.
+
+The existing Workflow-tab ingress remains authoritative: `ChatWindow` calls `useAgentSession`, which calls `generateWorkflowDagStream`, then `POST /api/workflow/generate` proxies to `POST /api/v2/run-goal`. This chat path uses Goal Design by making the runtime resolve and execute the one approved Library skill with `purpose: goal_design`; the browser never loads or executes the skill body. The web proxy forwards structured `goalDesignMode` and `templatePolicy` values. A legacy `templateId` UI selection must be converted to a pinned Template policy before submission; it is never interpreted from prompt text.
 
 Behavior:
 
@@ -532,14 +573,20 @@ Behavior:
 - When the request accepts `text/event-stream`, the same route streams persisted stages and ends with the same result shape.
 - Reuse the existing planner SSE event utilities; do not create a second orchestration implementation.
 - Review mode persists `ready_for_review` after the complete Goal Design Package and returns without calling the composer or creating a run.
+- A review-mode SSE stream may end successfully with `goal_design`, `draft`, and `done` frames and no DAG. The existing DAG frame appears only after confirmation or Auto composition.
 - `POST /api/v2/planner/drafts/:draftId/confirm-goal-design` confirms the exact package hash, resumes candidate resolution/composition, and is idempotent. The planner draft remains the Goal Design identity; no parallel Goal Design aggregate or id is introduced.
 - `PATCH /api/v2/planner/drafts/:draftId/goal-design/slices/:sliceId` accepts a typed slice edit plus `expectedPackageHash`. It validates the complete Slice Plan and composition strategy, then creates a new Goal Design Package revision; it never overwrites a package resource in place.
+- `PATCH /api/v2/planner/drafts/:draftId/goal-design/template-policy` accepts a typed policy plus `expectedPackageHash`, validates the referenced approved template/version, and creates a new package revision.
+- While the draft is `ready_for_review` and has no run, the existing `POST /api/v2/planner/drafts/:draftId/revise/stream` chat path is Goal Design steering. It loads the current package, the user's message, and optional UI-selected `sliceId`, runs the same approved Goal Design skill, validates a complete proposed package, and persists it as the next immutable revision. Route selection is based on persisted draft lifecycle state, never prompt keywords.
+- Goal Design chat steering either returns a validated next package plus a human-readable revision summary, or a blocking clarification question with no package mutation. It never directly patches individual fields, calls the workflow composer, or creates a run.
 - Revising the Goal message creates a new package revision and invalidates the prior confirmation.
 - A validated low-risk goal calls the existing `startRunSchedulingPg()` before reporting `scheduling`.
 - A high-risk goal creates the run and pending approval but does not start scheduling.
 - Approval of the matching hashes starts scheduling through the same controller.
 
 Goal Design Package revisions are persisted on the planner draft before any run exists. After confirmation or Auto continuation, run rows, task rows, the run-scoped Library snapshot, and the approval decision are created atomically. Scheduling starts only after that run-creation transaction commits. If scheduler wakeup fails, the persisted run remains non-running and records an operational exception; the submission can retry the existing controller idempotently rather than creating another run.
+
+For `single-run`, `RunGoalResult.runId` and the existing run fields identify the one run. For `per-slice-runs`, the result returns `executionSetId` plus `sliceRuns` and omits the ambiguous top-level `runId`; every listed id is an ordinary workflow run and none has parent/child semantics.
 
 The Workflow UI default action remains one Goal submission. In review mode the only additional product gate is `Confirm & compose` on the Goal message box. Users do not press separate Draft, Validate, Run, and Execute actions. Auto mode removes the Goal Design confirmation but preserves any policy-required execution approval.
 
@@ -678,6 +725,8 @@ No production content is added through hardcoded seed code.
 | Slice edit is invalid | field/plan validation errors | no new package revision |
 | Slice edit package hash is stale | edit conflict and current revision reload | no new package revision |
 | Slice edit targets a materialized run | edit rejected; use goal steering | active run remains immutable |
+| Required template is incompatible | draft `template_incompatible` | no composition and no run |
+| Preferred template is incompatible | persisted fallback reason | composer may use another approved template |
 | No executable Library closure | draft `invalid` with unavailable requirements | no run |
 | Composer output invalid after repair limit | draft `invalid` with attempts | no run |
 | Draft Library snapshot stale | run creation error and draft `needs_validation` | no run |
@@ -719,18 +768,27 @@ The Goal message box shows:
 - expected deliverables;
 - risk tags and requested side effects;
 - Slice Plan as compact rows/cards with slice outcome, requirement count, output artifacts, and upstream dependencies;
-- composition strategy (`batch`, staged waves, or child-run groups) and its reason;
+- composition strategy (`single-run` or `per-slice-runs`) and its reason;
+- Workflow Template policy, selected template/version, and fallback reason when present;
 - Goal Design mode and package revision/hash;
-- status `designing | needs_input | ready_for_review | composing | awaiting_approval | scheduling | running | terminal`;
+- status `designing | needs_input | template_incompatible | ready_for_review | composing | awaiting_approval | scheduling | running | terminal`;
 - a `Revise goal` action;
 - in review mode, one `Confirm & compose` action bound to the displayed package hash;
 - the selected review/Auto mode as read-only package metadata.
 
 The Auto switch lives with the existing Goal input controls and selects the mode before submission. A user/workspace preference may set its default for future goals. Once a Goal Design Package exists, changing its mode goes through `Revise goal` and produces a new package revision/hash; the message never mutates the active package mode in place.
 
+The Goal message defaults Workflow Template to `Auto`. Selecting the Template row opens the existing right-side viewer with approved template search/detail and `Auto | Prefer | Require` controls. Saving the policy creates a new package revision/hash and invalidates prior confirmation. It does not instantiate a DAG from the browser.
+
 Each Slice Plan row/card is selectable. Selection uses the existing Workflow selected-item state and opens the existing right-side viewer; it does not navigate away, open a modal, or introduce another layout region. The selected row remains visibly active in the Goal message box.
 
 The Slice Plan appears in this Goal message box before DAG composition. It does not render a second canvas. After confirmation or Auto continuation, the generated DAG is emitted as the existing `WorkflowDagBlock` in the same message flow and uses the existing Workflow canvas/layout unchanged.
+
+For `per-slice-runs`, each Slice row shows its linked ordinary run status. Selecting one fetches that run's existing workflow UI read model and replaces the one selected `WorkflowDagBlock`; the execution set never becomes a parent DAG or a simultaneous multi-DAG canvas.
+
+While the Goal Design Package is still reviewable, the existing Workflow chat input remains active for natural-language discussion. A selected Slice supplies optional focus context, so a message such as moving an outcome boundary can revise that Slice and any affected dependency/evaluator mappings as one validated package revision. The assistant message shows the revision summary and changed Slice rows. This focus is not authority: the runtime still validates the whole package and may revise multiple affected Slices. The right-side editor is the precise typed-edit path; chat and editor converge on the same immutable revision/validation service.
+
+After any run is materialized, this pre-run Goal Design steering path is read-only. Later intent changes must enter the existing explicit workflow-revision/new-goal lifecycle; chat may not silently mutate the package or an executing DAG.
 
 In `review_before_compose`, the Goal Design Skill completes the entire package and pauses once at `ready_for_review`. It does not require confirmation after every internal phase. In `auto_until_blocked`, a valid package continues automatically. Blocking input expands the exact question in the same Goal message. High-risk effects show the existing durable approval UI after composition; Goal confirmation is not an authority approval.
 
@@ -811,8 +869,12 @@ Project scope must be explicit. A project-filtered empty Operator view must not 
 - **AC-20 No new layout:** Goal Design uses the existing Workflow message layout, `WorkflowDagBlock`, canvas, sidecar, and input placement; no standalone form, replacement canvas, Goal workbench layout, or duplicate Slice DAG is introduced.
 - **AC-21 Natural slicing:** software, article, research, or other contracts derive slice count from state/artifact ownership, atomic mutation boundary, evidence boundary, and artifact flow; no domain or requirement count hardcodes the result.
 - **AC-22 Slice dependency truth:** a producer slice/task dependency is rejected unless the downstream input explicitly consumes an upstream artifact.
-- **AC-23 Strategy versioning:** batch/staged/child-run strategy, Slice Plan, evaluator contracts, and package hashes are persisted and revisioned; staged composition appends manifest revisions to the same logical run.
+- **AC-23 Strategy versioning:** single-run/per-slice-runs strategy, Slice Plan, evaluator contracts, and package hashes are persisted and revisioned.
 - **AC-24 Slice viewer/editor:** selecting a Slice Plan item opens the existing right-side viewer, and saving a valid pre-run edit creates a new hash-bound package revision without changing the Workflow layout; invalid, stale, or post-run edits fail closed.
+- **AC-25 Template policy:** Goal Design defaults to optional automatic approved-template resolution; Auto may compose from approved primitives without a template, Prefer may fall back with a persisted reason, Require fails closed, and any selected template version is included in the persisted composition record and run Library snapshot.
+- **AC-26 No template bypass:** explicit template instantiation enters the same Goal Design Package path, and saving a generated DAG creates a draft/proposal rather than an approved Library object.
+- **AC-27 Same-cwd per-Slice runs:** per-slice-runs creates exactly one ordinary run per Slice, all with the Goal Contract `cwd`, no parent/child run ids, serial topological launch, accepted cross-run artifact refs, and one evidence-derived execution-set outcome.
+- **AC-28 Conversational Slice revision:** while a draft is reviewable, the existing Workflow chat input can produce one validated immutable Goal Design Package revision or one no-write clarification; it uses the same approved Goal Design skill and never invokes the composer or creates a run.
 
 ## 22. Verification Strategy
 
@@ -824,8 +886,10 @@ Project scope must be explicit. A project-filtered empty Operator view must not 
 - Goal Design mode defaults, per-goal override, package hashing, confirmation invalidation, and idempotent resume.
 - Evaluator-contract completeness and evidence-boundary validation.
 - Natural Slice Plan coverage, merge-boundary validation, stable slice ids, artifact-flow dependencies, and cycle rejection.
-- Batch/staged/child-run strategy validation without slice-count heuristics.
+- Single-run/per-slice-runs strategy validation without slice-count heuristics.
 - Slice edit optimistic concurrency, full-plan revalidation, confirmation invalidation, and post-run immutability.
+- Natural-language Goal Design steering through the existing draft revise stream, including selected-Slice focus, full-package validation, clarification-without-write, and stale-hash rejection.
+- Template Auto/Prefer/Require resolution, pinned-version validation, strict failure, adaptive fallback evidence, and package hash invalidation.
 - Deterministic candidate ranking and executable-closure rejection.
 - Coverage completeness and producer/evaluator separation.
 - Approval hash binding and invalidation.
@@ -840,6 +904,9 @@ Project scope must be explicit. A project-filtered empty Operator view must not 
 - `/api/v2/run-goal` default `ready_for_review` package persistence without composer/run creation.
 - Goal Design confirmation resumes the exact package once; stale package confirmation fails closed.
 - Typed Slice edit creates one new package revision; invalid ownership, artifact-flow, cycle, strategy, and stale-hash edits create none.
+- A reviewable draft chat message creates one validated package revision or one clarification response; it does not compose or create a run.
+- Explicit template instantiation and ordinary Goal submission persist the same Goal Design Package shape and gates.
+- Save-template writes draft/proposal state with complete Library version refs and cannot directly approve it.
 - `/api/v2/run-goal` high-risk pending approval.
 - Approval decision starts the exact approved run revision.
 - Planner draft becomes stale when selected Library heads change.
@@ -859,6 +926,9 @@ Run real infrastructure tests only when explicitly executing this implementation
 6. review-mode browser flow renders the Slice Plan in the existing Goal message box and reuses the unchanged Workflow DAG layout after one confirmation;
 7. Auto-mode browser flow skips only Goal Design confirmation and still honors high-risk approval.
 8. selecting a Slice Plan item opens the existing right-side viewer; a valid edit updates the Goal message with a new package revision while invalid and stale edits remain unsaved.
+9. Template Auto selects only approved compatible candidates; Prefer records fallback; Require blocks incompatibility; saving the resulting DAG creates an unapproved proposal.
+10. a reviewable Goal chat turn revises Slice boundaries through the existing revise stream, shows the package diff, and still requires confirmation before composition.
+11. the real Case 32 review flow executes one ordinary same-cwd run per naturally derived Slice in serial dependency order and reaches one evidence-derived execution-set outcome.
 
 ## 23. Implementation Boundaries
 
@@ -867,6 +937,7 @@ Expected existing seams to deepen:
 - Southstar Goal Design skill/SOP and typed Goal Design Package resources
 - Goal message rendering through the existing `MessageView` / Goal Contract card pattern
 - Slice selection/editing through the existing sidecar shell and viewer interaction pattern
+- existing workflow-template search/detail, candidate resolver, compatibility instantiation, and save-template seams
 - `src/v2/orchestration/requirement-analyzer.ts`
 - `src/v2/orchestration/candidate-resolver.ts`
 - `src/v2/orchestration/composition-validator.ts`
@@ -889,14 +960,16 @@ Large existing transaction functions should not be split merely because of line 
 The first releasable gate includes all safety and correctness prerequisites for one-prompt execution:
 
 1. Southstar Goal Design SOP, Goal Contract interpretation, `needs_input`, and Library-aware vocabulary discovery.
-2. Evaluator contracts, Goal Slice Plan, composition strategy, package hashing, and default review/optional Auto modes.
+2. Evaluator contracts, Goal Slice Plan, single-run/per-slice-runs strategy, package hashing, and default review/optional Auto modes.
 3. Domain-aware candidate ranking and executable closure.
-4. Slice-constrained composition, requirement coverage compilation, and artifact-flow validation.
+4. Slice-constrained single-run/per-Slice-run composition, requirement coverage compilation, and artifact-flow validation.
 5. Immutable run Library snapshot and snapshot-backed materialization.
 6. Hash-bound Goal Design confirmation, policy approval, and `/run-goal` scheduling.
 7. Evaluator evidence linkage and outcome/health separation.
-8. Goal message presentation and Slice viewer/editor interaction in the unchanged Workflow layout.
-9. Software plus `design/article` real E2E in review and Auto modes.
+8. Goal message presentation, Slice viewer/editor, and Template policy interaction in the unchanged Workflow layout.
+9. Same-cwd per-Slice execution-set coordination and aggregate outcome.
+10. Template compatibility adapter and draft/proposal-only Save Template behavior.
+11. Software plus `design/article` real E2E in review and Auto modes.
 
 Dynamic learning and broader domain expansion follow only after these acceptance criteria pass. They do not weaken this first release gate.
 
@@ -930,6 +1003,14 @@ Rejected because the existing Workflow message stream, Goal Contract card, DAG b
 
 Rejected because requirement count and domain labels do not determine cohesive delivery boundaries. Slice grouping must follow state/artifact ownership, atomic mutation, evaluator evidence, and actual artifact flow.
 
+### 25.8 Template-first goal interpretation
+
+Rejected because choosing a saved DAG before Goal Contract and Slice Plan would let historical topology shape or omit current intent. Templates are selected only after Goal Design and remain validator-constrained recipes.
+
+### 25.9 Parent/child run hierarchy
+
+Rejected for the current product scope. Per-Slice execution needs independent normal runs in the same workspace plus one Goal execution-set projection; parent/child lifecycle, nested controls, and multi-level run UI add no required execution truth.
+
 ## 26. Final Decision
 
 Southstar will use review-gated Goal Design plus policy-gated execution:
@@ -939,7 +1020,8 @@ Southstar will use review-gated Goal Design plus policy-gated execution:
 - blocking ambiguity: ask only the blocking question;
 - high-risk or expanded authority: durable approval;
 - slicing: derive cohesive slices from state/artifact ownership, atomic and evaluator boundaries, and artifact flow, never a fixed count;
-- composition: batch by default, staged revisions when later composition depends on accepted artifacts, child runs only for independent lifecycle boundaries;
+- composition: all Slices in one run by default, or one ordinary run per Slice in the same `cwd`; per-Slice runs launch serially by dependency order and are related only through the Goal execution set;
+- templates: Auto by default, optional Prefer/Require pinned versions after Goal Design, never a bypass around Slice Plan or evaluator coverage;
 - execution: current Postgres/scheduler/Tork runtime;
 - correctness: Goal Contract coverage plus independent evaluator evidence;
 - reproducibility: immutable run Library snapshot;
@@ -948,5 +1030,7 @@ Southstar will use review-gated Goal Design plus policy-gated execution:
 The existing Workflow layout remains the product shell. Goal Design appears as a structured Goal message, and the existing DAG block/canvas appears after composition; no new Goal workbench layout is introduced.
 
 Each Slice Plan item is selectable in the Goal message and opens the existing right-side viewer. Pre-run review-mode edits create validated package revisions; they never mutate confirmed or running workflow truth in place.
+
+Workflow Template selection uses the same Goal message and right-side viewer. Generated DAGs may be saved only as Library drafts/proposals and require separate approval.
 
 This is the product contract required before Southstar can truthfully promise “give it one prompt, review or auto-accept the intended outcome design, and get evidence for the result.”
