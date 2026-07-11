@@ -16,6 +16,7 @@ import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { maybeApplyDynamicRepairRevisionPg, type DynamicRepairRevisionResult } from "../runtime-revision/dynamic-repair-revision.ts";
 import { assertNoRawCredentialPayloadPg } from "../tool-proxy/policy-enforcer.ts";
+import { runtimeAttemptNumber } from "./attempt-identity.ts";
 import { getExecutorBindingPg, updateExecutorBindingStatusPg } from "./postgres-bindings.ts";
 import type { TaskRunCallbackResult } from "./tork-callback.ts";
 
@@ -828,10 +829,10 @@ async function staleAttemptReasonPg(
 
   if (!result.attemptId) {
     if (currentRootSessionId === result.rootSessionId) return undefined;
-    return attemptNumber(latestAttemptId) > 1 ? { callbackAttemptId: "unknown", latestAttemptId } : undefined;
+    return runtimeAttemptNumber(latestAttemptId) > 1 ? { callbackAttemptId: "unknown", latestAttemptId } : undefined;
   }
 
-  if (attemptNumber(result.attemptId) < attemptNumber(latestAttemptId)) {
+  if (runtimeAttemptNumber(result.attemptId) < runtimeAttemptNumber(latestAttemptId)) {
     return { callbackAttemptId: result.attemptId, latestAttemptId };
   }
   return undefined;
@@ -849,12 +850,7 @@ async function latestCallbackAttemptIdPg(db: SouthstarDb, runId: string, taskId:
   return rows.rows
     .map((row) => row.attempt_id)
     .filter((value): value is string => typeof value === "string" && value.length > 0)
-    .sort((left, right) => attemptNumber(right) - attemptNumber(left))[0];
-}
-
-function attemptNumber(value: string): number {
-  const match = value.match(/attempt-(\d+)/);
-  return match ? Number(match[1]) : 1;
+    .sort((left, right) => runtimeAttemptNumber(right) - runtimeAttemptNumber(left))[0];
 }
 
 function isTaskTerminalStatus(status: string): boolean {

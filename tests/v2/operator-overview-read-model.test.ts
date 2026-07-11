@@ -142,7 +142,7 @@ test("operator overview mission query count stays bounded as run count grows", a
     const twenty = countingDb(db);
     await buildOperatorOverviewReadModelPg(twenty.db);
 
-    assert.ok(twenty.count() <= two.count() + 3, `query count grew from ${two.count()} for 2 runs to ${twenty.count()} for 20 runs`);
+    assert.equal(twenty.count(), two.count(), `query count grew from ${two.count()} for 2 runs to ${twenty.count()} for 20 runs`);
   } finally {
     await db.close();
   }

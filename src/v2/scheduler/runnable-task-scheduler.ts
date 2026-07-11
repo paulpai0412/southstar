@@ -13,6 +13,7 @@ import { enforcePreExecutionToolProxyPolicyPg, isPreExecutionToolProxyPolicyErro
 import { observeDispatchPreparationException, redactProviderErrorExcerpt } from "./dispatch-preparation-exception.ts";
 import type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
 import { captureWorkspaceSnapshotForTaskPg } from "../session-recovery/workspace-snapshot.ts";
+import { runtimeAttemptNumber } from "../executor/attempt-identity.ts";
 
 export type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
 
@@ -518,8 +519,8 @@ async function nextDispatchAttemptId(db: SouthstarDb, runId: string, taskId: str
   for (const row of rows.rows) {
     maxAttemptNumber = Math.max(
       maxAttemptNumber,
-      attemptNumber(row.attempt_id),
-      attemptNumber(row.resource_key),
+      runtimeAttemptNumber(row.attempt_id),
+      runtimeAttemptNumber(row.resource_key),
     );
   }
   const nextAttemptNumber = maxAttemptNumber > 0 ? maxAttemptNumber + 1 : rows.rows.length + 1;
@@ -903,14 +904,6 @@ function firstDispatchAttemptId(taskId: string): string {
 
 function dispatchAttemptId(taskId: string, attemptNumberValue: number): string {
   return `${taskId}-attempt-${attemptNumberValue}`;
-}
-
-function attemptNumber(value: string | null | undefined): number {
-  const matches = [...(value ?? "").matchAll(/(?:^|-)attempt-(\d+)(?=$|[:_-])/g)];
-  const match = matches[matches.length - 1];
-  if (!match?.[1]) return 0;
-  const parsed = Number(match[1]);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 0;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

@@ -2,13 +2,40 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { persistTerminalGoalOutcomePg } from "../../src/v2/evaluators/goal-outcome.ts";
 import { recordRuntimeExceptionPg } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
-import { buildWorkflowUiReadModelPg } from "../../src/v2/read-models/workflow-ui.ts";
+import { runtimeAttemptNumber } from "../../src/v2/executor/attempt-identity.ts";
+import { buildWorkflowUiReadModelPg, hasDegradedProviderHealth } from "../../src/v2/read-models/workflow-ui.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("runtime attempt identity extracts the canonical monotonic attempt number", () => {
+  assert.equal(runtimeAttemptNumber("task-build-attempt-2"), 2);
+  assert.equal(runtimeAttemptNumber("hand-execution:run:task:task-build-attempt-12"), 12);
+  assert.equal(runtimeAttemptNumber("task-attempt-2:retry-attempt-3"), 3);
+  assert.equal(runtimeAttemptNumber("legacy-attempt"), 0);
+});
+
+test("provider health uses update order only within the effective attempt", () => {
+  assert.equal(hasDegradedProviderHealth([
+    {
+      resourceKey: "binding-attempt-2",
+      taskId: "task-build",
+      status: "hard-timeout",
+      payload: { attemptId: "task-build-attempt-2" },
+      updatedAt: "2026-07-11T00:00:00.000Z",
+    },
+    {
+      resourceKey: "hand-attempt-2",
+      taskId: "task-build",
+      status: "completed",
+      payload: { attemptId: "task-build-attempt-2" },
+      updatedAt: "2026-07-11T00:01:00.000Z",
+    },
+  ]), false);
+});
 
 test("workflow read model exposes the same answer-first mission for draft and runtime while keeping satisfied outcome degraded health", async () => {
   const db = await createTestPostgresDb();
@@ -139,7 +166,7 @@ test("workflow mission health uses only the latest provider attempt observation"
     await db.query(
       `update southstar.runtime_resources
           set updated_at = case resource_key
-            when 'mission-attempt-1' then '2026-07-11T00:00:00.000Z'::timestamptz
+            when 'mission-attempt-1' then '2026-07-11T00:02:00.000Z'::timestamptz
             else '2026-07-11T00:01:00.000Z'::timestamptz
           end
         where resource_type = 'executor_binding' and resource_key in ('mission-attempt-1', 'mission-attempt-2')`,

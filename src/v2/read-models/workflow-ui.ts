@@ -1,5 +1,6 @@
 import { acceptedArtifactTaskIdsForRunPg } from "../artifacts/artifact-ref-store.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
+import { runtimeAttemptNumber } from "../executor/attempt-identity.ts";
 import { listUnresolvedRuntimeExceptionsForRunsPg } from "../exceptions/postgres-runtime-exceptions.ts";
 import { loadFrozenCoverageContextsPg } from "../evaluators/requirement-evaluator-results.ts";
 import {
@@ -465,7 +466,6 @@ async function buildRuntimeGoalMissionReadModels(
 }
 
 export type ProviderHealthObservation = {
-  resourceType: string;
   resourceKey: string;
   taskId?: string;
   status: string;
@@ -474,29 +474,54 @@ export type ProviderHealthObservation = {
 };
 
 export function hasDegradedProviderHealth(observations: ProviderHealthObservation[]): boolean {
-  const ordered = [...observations].sort((left, right) =>
-    right.updatedAt.localeCompare(left.updatedAt) || right.resourceKey.localeCompare(left.resourceKey)
-  );
-  const latestAttemptByTask = new Map<string, string>();
-  for (const observation of ordered) {
-    const attemptId = stringValue(asRecord(observation.payload).attemptId);
-    if (observation.taskId && attemptId && !latestAttemptByTask.has(observation.taskId)) {
-      latestAttemptByTask.set(observation.taskId, attemptId);
+  const byTask = new Map<string, ProviderHealthObservation[]>();
+  for (const observation of observations) {
+    if (!observation.taskId) {
+      if (isDegradedProviderStatus(observation.status)) return true;
+      continue;
     }
+    const rows = byTask.get(observation.taskId) ?? [];
+    rows.push(observation);
+    byTask.set(observation.taskId, rows);
   }
-  return ordered.some((observation) => {
-    if (!isDegradedProviderStatus(observation.status)) return false;
-    const attemptId = stringValue(asRecord(observation.payload).attemptId);
-    if (!observation.taskId || !attemptId) return true;
-    return latestAttemptByTask.get(observation.taskId) === attemptId;
-  });
+  for (const rows of byTask.values()) {
+    const latestAttempt = Math.max(...rows.map(providerAttemptNumber));
+    if (latestAttempt > 0) {
+      const effective = rows.filter((row) => providerAttemptNumber(row) === latestAttempt);
+      if (hasDegradedLatestProviderObservation(effective)) return true;
+      continue;
+    }
+    const legacyAttempts = new Map<string, ProviderHealthObservation[]>();
+    for (const row of rows) {
+      const identity = providerAttemptIdentity(row);
+      const attemptRows = legacyAttempts.get(identity) ?? [];
+      attemptRows.push(row);
+      legacyAttempts.set(identity, attemptRows);
+    }
+    if ([...legacyAttempts.values()].some(hasDegradedLatestProviderObservation)) return true;
+  }
+  return false;
+}
+
+function providerAttemptNumber(observation: ProviderHealthObservation): number {
+  return runtimeAttemptNumber(providerAttemptIdentity(observation));
+}
+
+function providerAttemptIdentity(observation: ProviderHealthObservation): string {
+  return stringValue(asRecord(observation.payload).attemptId) ?? observation.resourceKey;
+}
+
+function hasDegradedLatestProviderObservation(observations: ProviderHealthObservation[]): boolean {
+  const latestUpdatedAt = Math.max(...observations.map((observation) => Date.parse(observation.updatedAt)));
+  return observations.some((observation) =>
+    Date.parse(observation.updatedAt) === latestUpdatedAt && isDegradedProviderStatus(observation.status)
+  );
 }
 
 function providerObservations(rows: MissionResourceRow[]): ProviderHealthObservation[] {
   return rows
     .filter((row) => row.resource_type === "executor_binding" || row.resource_type === "hand_execution")
     .map((row) => ({
-      resourceType: row.resource_type,
       resourceKey: row.resource_key,
       ...(row.task_id ? { taskId: row.task_id } : {}),
       status: row.status,
