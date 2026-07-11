@@ -48,6 +48,8 @@
     "test:e2e:postgres:28": "tsx tests/e2e-postgres/cases/28-llm-constrained-workflow-end-to-end.test.ts",
     "test:e2e:postgres:29": "tsx tests/e2e-postgres/cases/29-llm-dynamic-workflow-materialization.test.ts",
     "test:e2e:postgres:30": "node --test --test-force-exit --import tsx tests/e2e-postgres/cases/30-runtime-dynamic-repair-node-generation.test.ts",
+    "test:e2e:postgres:31": "tsx tests/e2e-postgres/cases/31-one-prompt-goal-contract-software.test.ts",
+    "test:e2e:postgres:32": "tsx tests/e2e-postgres/cases/32-one-prompt-goal-contract-article.test.ts",
     "test:e2e:browser:07": "tsx tests/e2e-browser/07-real-ui-postgres-browser.test.ts",
     "web:dev": "npm --prefix web run dev",
     "web:build": "npm --prefix web run build",

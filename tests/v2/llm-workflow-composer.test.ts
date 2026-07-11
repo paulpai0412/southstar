@@ -67,6 +67,12 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", new RegExp(GOAL_CONTRACT.requirements[0]!.id));
   assert.match(prompts[0] ?? "", /turn each observable requirement into one or more executable producer work packages/i);
   assert.match(prompts[0] ?? "", /preserve independent branches as tasks without artificial dependencies/i);
+  assert.match(prompts[0] ?? "", /producer tasks are dependency-independent unless a declared input artifact requires ordering/i);
+  assert.match(prompts[0] ?? "", /shared integration or evaluator task depends on every producer branch it evaluates/i);
+  assert.match(prompts[0] ?? "", /state or artifact owner/i);
+  assert.match(prompts[0] ?? "", /same atomic consistency boundary/i);
+  assert.match(prompts[0] ?? "", /do not create a catch-all producer/i);
+  assert.match(prompts[0] ?? "", /dependency is valid only when the consumer names an upstream outputArtifactRef in inputArtifactRefs/i);
   assert.match(prompts[0] ?? "", /never force one task per requirement/i);
   assert.match(prompts[0] ?? "", /independent evaluator/i);
   assert.equal(typeof WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.id.type, "string");

@@ -48,7 +48,6 @@ test("planner draft persists a design/article Goal Contract and uses its domain"
     const goalPrompt = "Turn notes.md into an offline HTML article";
     const goalContract = articleGoalContract(goalPrompt);
     await seedDeterministicWorkflowGraph(db, goalContract.domain);
-
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt,
       cwd: "/workspace/article",
@@ -63,6 +62,45 @@ test("planner draft persists a design/article Goal Contract and uses its domain"
     assert.equal((stored!.summary as any).goalContractHash, draft.goalContractHash);
     assert.equal((stored!.summary as any).domain, "design/article");
     assert.equal(draft.goalPrompt, goalPrompt);
+  });
+});
+
+test("planner draft gives the Goal interpreter approved Library vocabulary", async () => {
+  await withDb(async (db) => {
+    const goalPrompt = "Turn notes.md into an offline HTML article";
+    const goalContract = articleGoalContract(goalPrompt);
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    await upsertLibraryObject(db, {
+      objectKey: "capability.article-workspace-read",
+      objectKind: "capability_spec",
+      status: "approved",
+      headVersionId: "capability.article-workspace-read@v1",
+      state: { scope: "design/article" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.article_html",
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.article_html@v1",
+      state: { scope: "design/article" },
+    });
+    let vocabulary: Parameters<GoalContractInterpreter["interpret"]>[0]["libraryVocabulary"];
+
+    await createPostgresPlannerDraft(db, {
+      goalPrompt,
+      cwd: "/workspace/article",
+      goalInterpreter: {
+        async interpret(input) {
+          vocabulary = input.libraryVocabulary;
+          return structuredClone(goalContract);
+        },
+      },
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    assert.ok(vocabulary?.scopes.includes("design/article"));
+    assert.ok(vocabulary?.capabilityRefs.some((ref) => ref.startsWith("capability.")));
+    assert.ok(vocabulary?.artifactRefs.some((ref) => ref.startsWith("artifact.")));
   });
 });
 

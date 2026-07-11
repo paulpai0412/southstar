@@ -37,8 +37,15 @@ export type GoalContractInterpreter = {
     projectRef?: string;
     previousContract?: GoalContractV1;
     revisionPrompt?: string;
+    libraryVocabulary?: GoalContractLibraryVocabulary;
     onDelta?: (text: string) => void;
   }): Promise<GoalContractV1>;
+};
+
+export type GoalContractLibraryVocabulary = {
+  scopes: string[];
+  capabilityRefs: string[];
+  artifactRefs: string[];
 };
 
 type GoalRequirementInterpretation = Omit<GoalRequirementV1, "id">;
@@ -74,6 +81,7 @@ type InterpretGoalContractWithLlmInput = {
   projectRef?: string;
   previousContract?: GoalContractV1;
   revisionPrompt?: string;
+  libraryVocabulary?: GoalContractLibraryVocabulary;
   onDelta?: (text: string) => void;
   client: LlmTextClient;
   model: string;
@@ -96,25 +104,38 @@ const INTERPRETATION_KEYS = [
 const REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source"] as const;
 
 const INTERPRETER_INSTRUCTION = "Decompose compound outcomes into independently verifiable requirements. Requirements describe observable outcome slices; plan, implement, verify, repair, review, and release sequencing belong to workflow composition, not the Goal Contract.";
+const MAX_INTERPRETER_ATTEMPTS = 2;
+const MAX_REPAIR_RESPONSE_CHARS = 20_000;
 
 export async function interpretGoalContractWithLlm(
   input: InterpretGoalContractWithLlmInput,
 ): Promise<GoalContractV1> {
-  const prompt = renderInterpreterPrompt(input);
-  const textInput = { model: input.model, prompt, temperature: 0, cwd: input.cwd };
-  const text = input.client.generateTextStream
-    ? await input.client.generateTextStream(textInput, { onDelta: input.onDelta })
-    : await input.client.generateText(textInput);
-  const interpretation = parseInterpretation(text);
-  const finalizationInput = {
-    goalPrompt: input.goalPrompt,
-    cwd: input.cwd,
-    ...(input.projectRef ? { projectRef: input.projectRef } : {}),
-    interpretation,
-  };
-  return input.previousContract
-    ? reviseGoalContract({ ...finalizationInput, previousContract: input.previousContract })
-    : finalizeGoalContract(finalizationInput);
+  const originalPrompt = renderInterpreterPrompt(input);
+  let prompt = originalPrompt;
+  for (let attempt = 1; attempt <= MAX_INTERPRETER_ATTEMPTS; attempt += 1) {
+    const deltas: string[] = [];
+    const textInput = { model: input.model, prompt, temperature: 0, cwd: input.cwd };
+    const text = input.client.generateTextStream
+      ? await input.client.generateTextStream(textInput, { onDelta: (delta) => deltas.push(delta) })
+      : await input.client.generateText(textInput);
+    try {
+      const interpretation = parseInterpretation(text);
+      for (const delta of deltas) input.onDelta?.(delta);
+      const finalizationInput = {
+        goalPrompt: input.goalPrompt,
+        cwd: input.cwd,
+        ...(input.projectRef ? { projectRef: input.projectRef } : {}),
+        interpretation,
+      };
+      return input.previousContract
+        ? reviseGoalContract({ ...finalizationInput, previousContract: input.previousContract })
+        : finalizeGoalContract(finalizationInput);
+    } catch (error) {
+      if (attempt === MAX_INTERPRETER_ATTEMPTS) throw error;
+      prompt = renderInterpreterRepairPrompt(originalPrompt, text, error);
+    }
+  }
+  throw new Error("Goal Contract interpreter exhausted attempts");
 }
 
 export function finalizeGoalContract(input: FinalizeGoalContractInput): GoalContractV1 {
@@ -249,12 +270,30 @@ function renderInterpreterPrompt(input: InterpretGoalContractWithLlmInput): stri
     INTERPRETER_INSTRUCTION,
     "Return JSON only. Include exactly these fields: domain, intent, summary, requirements, expectedArtifactRefs, requiredCapabilities, nonGoals, assumptions, blockingInputs, riskTags, requestedSideEffects.",
     "Each requirement must contain exactly statement, acceptanceCriteria, blocking, and source. Every requirement needs at least one observable acceptance criterion. source must be explicit or inferred.",
+    "Set blocking=true for every requirement needed to satisfy the requested outcome; use blocking=false only when the user explicitly marks that requirement optional.",
+    "Do not put details discoverable from the local workspace or Library in blockingInputs; workflow discovery tasks can inspect those sources.",
+    "blockingInputs are only for information unavailable from the prompt, workspace, and Library that cannot be safely inferred without a user decision.",
     "Do not return host-owned fields such as schemaVersion, originalPrompt, promptHash, revision, workspace, or requirement ids.",
     `GoalPrompt: ${input.goalPrompt}`,
     `WorkspaceCwd: ${input.cwd}`,
     ...(input.projectRef ? [`ProjectRef: ${input.projectRef}`] : []),
     ...(input.previousContract ? [`PreviousGoalContract: ${stableStringify(input.previousContract)}`] : []),
     ...(input.revisionPrompt ? [`RevisionPrompt: ${input.revisionPrompt}`] : []),
+    ...(input.libraryVocabulary ? [
+      "AvailableLibraryVocabulary:",
+      stableStringify(input.libraryVocabulary),
+      "Choose domain exactly from scopes. Choose requiredCapabilities and expectedArtifactRefs only from the listed refs. Do not invent Library refs.",
+    ] : []),
+  ].join("\n");
+}
+
+function renderInterpreterRepairPrompt(originalPrompt: string, response: string, error: unknown): string {
+  return [
+    originalPrompt,
+    "",
+    `The previous response was invalid: ${error instanceof Error ? error.message : String(error)}`,
+    "Return one corrected JSON object only. Preserve valid goal meaning while fixing every schema error.",
+    `PreviousResponse: ${response.slice(0, MAX_REPAIR_RESPONSE_CHARS)}`,
   ].join("\n");
 }
 

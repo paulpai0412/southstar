@@ -76,7 +76,7 @@ export function buildGoalRequirementCoverage(input: {
     goalContractHash: goalContractHash(input.goalContract),
     entries: requirements.map((requirement) => {
       const linkedTasks = input.composition.tasks.filter((task) => task.requirementIds?.includes(requirement.id));
-      const producerTasks = linkedTasks.filter((task) => !isEvaluatorTask(task) && !isCoverageExceptionTask(task));
+      const producerTasks = linkedTasks.filter(isProducerTask);
       const evaluatorTasks = linkedTasks.filter(isEvaluatorTask);
       return {
         requirementId: requirement.id,
@@ -109,6 +109,12 @@ function coverageRequirements(
 export function isEvaluatorTask(task: WorkflowCompositionTask): boolean {
   const nodeType = classifyWorkflowCompositionTask(task);
   return nodeType === "verify" || nodeType === "review";
+}
+
+export function isProducerTask(task: WorkflowCompositionTask): boolean {
+  const nodeType = classifyWorkflowCompositionTask(task);
+  return (nodeType === "implement" || nodeType === "repair" || nodeType === "general")
+    && !isCoverageExceptionTask(task);
 }
 
 export function isCoverageExceptionTask(task: WorkflowCompositionTask): boolean {

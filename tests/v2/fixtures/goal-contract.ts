@@ -55,10 +55,13 @@ export function articleGoalContract(): GoalContractV1 {
   });
 }
 
-export function subscriptionGoalContract(): GoalContractV1 {
+export function subscriptionGoalContract(
+  goalPrompt = "Deliver a local membership subscription flow using the fake payment adapter",
+  cwd = "/workspace/subscription",
+): GoalContractV1 {
   return finalizeGoalContract({
-    goalPrompt: "Deliver a local membership subscription flow using the fake payment adapter",
-    cwd: "/workspace/subscription",
+    goalPrompt,
+    cwd,
     interpretation: {
       domain: "software",
       intent: "implement_feature",

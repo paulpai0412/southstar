@@ -156,9 +156,11 @@ type InterpretedPlannerDraftInput = CreatePostgresPlannerDraftInput & {
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
   const plannerRequest = plannerRequestSnapshot(input);
   input.onProgress?.({ stage: "request.normalized", message: "Planner draft request normalized." });
+  const libraryVocabulary = await loadGoalContractLibraryVocabularyPg(db);
   const goalContract = await input.goalInterpreter.interpret({
     goalPrompt: plannerRequest.goalPrompt,
     cwd: plannerRequest.cwd ?? process.cwd(),
+    libraryVocabulary,
     onDelta: input.onGoalContractDelta,
   });
   const contractHash = goalContractHash(goalContract);
@@ -181,6 +183,26 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
     return createPlannerDraftFromComposition(db, draftInput, plannerRequest.compositionPlan);
   }
   return createLibraryConstrainedPlannerDraft(db, draftInput);
+}
+
+async function loadGoalContractLibraryVocabularyPg(db: SouthstarDb): Promise<{
+  scopes: string[];
+  capabilityRefs: string[];
+  artifactRefs: string[];
+}> {
+  const result = await db.query<{ object_key: string; object_kind: string; scope: string | null }>(
+    `select object_key, object_kind, nullif(state_json->>'scope', '') as scope
+       from southstar.library_objects
+      where status = 'approved'
+        and (nullif(state_json->>'scope', '') is not null
+          or object_kind in ('capability_spec', 'artifact_contract'))
+      order by object_key`,
+  );
+  return {
+    scopes: [...new Set(result.rows.flatMap((row) => row.scope ? [row.scope] : []))].sort(),
+    capabilityRefs: result.rows.filter((row) => row.object_kind === "capability_spec").map((row) => row.object_key).sort(),
+    artifactRefs: result.rows.filter((row) => row.object_kind === "artifact_contract").map((row) => row.object_key).sort(),
+  };
 }
 
 async function persistPlannerDraft(

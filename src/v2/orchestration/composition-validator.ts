@@ -22,6 +22,7 @@ import {
 import {
   buildGoalRequirementCoverage,
   isCoverageExceptionTask,
+  isProducerTask,
 } from "./goal-requirement-coverage.ts";
 import type { GoalContractV1 } from "./goal-contract.ts";
 
@@ -47,6 +48,7 @@ export async function validateWorkflowCompositionPlan(
   }
   const constraints = compositionConstraintsForTemplate(packet, plan.selectedWorkflowTemplateRef);
   validateTaskDependencies(plan, issues);
+  validateProducerDependencyArtifactFlow(plan, issues);
   if (options.goalContract) {
     validateGoalRequirementCoverage(
       options.goalContract,
@@ -62,6 +64,26 @@ export async function validateWorkflowCompositionPlan(
   await validateGeneratedProfileClosure(db, plan, issues, options.scope ?? "software");
   await validateEdgeConstraints(db, plan, issues, options.scope ?? "software");
   return { ok: issues.length === 0, issues };
+}
+
+function validateProducerDependencyArtifactFlow(
+  plan: WorkflowCompositionPlan,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    if (!isProducerTask(task)) continue;
+    for (const dependencyId of task.dependsOn) {
+      const dependency = tasksById.get(dependencyId);
+      if (!dependency || !isProducerTask(dependency)) continue;
+      if (dependency.outputArtifactRefs.some((ref) => task.inputArtifactRefs.includes(ref))) continue;
+      issues.push(issue(
+        "producer_dependency_without_artifact_flow",
+        `tasks.${taskIndex}.dependsOn`,
+        `producer task ${task.id} depends on producer ${dependencyId} without consuming one of its output artifacts`,
+      ));
+    }
+  }
 }
 
 function validateGoalRequirementCoverage(

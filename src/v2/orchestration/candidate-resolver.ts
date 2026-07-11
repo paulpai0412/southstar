@@ -18,10 +18,14 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   const approvedWorkflowTemplateCandidates = (
     await findApprovedLibraryObjectsByKind(db, "workflow_template", input.scope)
   ).map((object) => summary(object.objectKey, object.headVersionId, object.objectKind, object.state, "approved workflow template"));
-  const workflowTemplateCandidates = [
-    graphDynamicWorkflowTemplateCandidate(input.scope),
-    ...approvedWorkflowTemplateCandidates.filter((candidate) => candidate.ref !== GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF),
-  ];
+  const approvedDynamicTemplate = approvedWorkflowTemplateCandidates.find((candidate) => (
+    candidate.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF
+  ));
+  const workflowTemplateCandidates = approvedDynamicTemplate
+    ? [approvedDynamicTemplate, ...approvedWorkflowTemplateCandidates.filter((candidate) => candidate.ref !== GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)]
+    : approvedWorkflowTemplateCandidates.length > 0
+      ? approvedWorkflowTemplateCandidates
+      : [graphDynamicWorkflowTemplateCandidate(input.scope)];
 
   const unavailableRequirements: CandidatePacket["unavailableRequirements"] = [];
   const agentCandidatesByCapability: Record<string, CandidateSummary[]> = {};
@@ -78,7 +82,10 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     ).filter(isRuntimeProfilePrimitiveCandidate).map((object) => object.objectKey).sort(),
   };
   const graphMetadataCandidates = await buildGraphMetadataCandidatePacket(db, { scope: input.scope });
-  if (!graphMetadataCandidates.nodes.some((node) => node.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)) {
+  if (
+    workflowTemplateCandidates.some((candidate) => candidate.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)
+    && !graphMetadataCandidates.nodes.some((node) => node.ref === GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF)
+  ) {
     graphMetadataCandidates.nodes.unshift({
       ref: GRAPH_DYNAMIC_WORKFLOW_TEMPLATE_REF,
       kind: "workflow_template",

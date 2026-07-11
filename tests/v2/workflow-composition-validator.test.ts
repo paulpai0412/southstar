@@ -304,6 +304,7 @@ test("coverage rejects an evaluator that can only reach a producer transitively"
     const composition = validComposition(goalContract);
     const producer = composition.tasks.find((task) => task.id === "implement-feature")!;
     const evaluator = composition.tasks.find((task) => task.id === "verify-feature")!;
+    const reviewer = composition.tasks.find((task) => task.id === "review-code-quality")!;
     const coordination: WorkflowCompositionTask = {
       ...producer,
       id: "coordinate-verification",
@@ -316,6 +317,7 @@ test("coverage rejects an evaluator that can only reach a producer transitively"
       outputArtifactRefs: [],
     };
     evaluator.dependsOn = [coordination.id];
+    reviewer.dependsOn = [coordination.id];
     composition.tasks.splice(composition.tasks.indexOf(evaluator), 0, coordination);
 
     const validation = await validateWorkflowCompositionPlan(db, packet, composition, {
@@ -419,6 +421,45 @@ test("compound requirements form parallel producer branches and a dependent veri
     new Set(verifier?.requirementIds),
     new Set(goalContract.requirements.map((requirement) => requirement.id)),
   );
+});
+
+test("planning artifacts do not count as observable outcome producers", () => {
+  const goalContract = subscriptionGoalContract();
+  const composition = subscriptionCompositionWithRequirementIds(goalContract);
+  const planTask = {
+    ...composition.tasks[0]!,
+    id: "task-plan-subscription",
+    requirementIds: goalContract.requirements.map((requirement) => requirement.id),
+    nodePromptSpec: nodePromptSpec("plan", ["artifact.implementation_plan"]),
+    outputArtifactRefs: ["artifact.implementation_plan"],
+  };
+  composition.tasks.unshift(planTask);
+
+  const coverage = buildGoalRequirementCoverage({ goalContract, composition });
+
+  assert.equal(coverage.entries.every((entry) => !entry.producerTaskIds.includes(planTask.id)), true);
+});
+
+test("producer dependencies require declared upstream artifact flow", async () => {
+  const db = await createTestPostgresDb();
+  const goalContract = subscriptionGoalContract();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const composition = subscriptionCompositionWithRequirementIds(goalContract);
+    const producers = composition.tasks.filter((task) => task.nodePromptSpec?.nodeType === "implement");
+    producers[1]!.dependsOn = [producers[0]!.id];
+    producers[1]!.inputArtifactRefs = [];
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, composition, { scope: "software", goalContract });
+
+    assert.equal(validation.issues.some((issue) => issue.code === "producer_dependency_without_artifact_flow"), true);
+  } finally {
+    await db.close();
+  }
 });
 
 test("target requirement scope rejects empty, unknown, and out-of-scope requirement ids", async () => {
@@ -723,7 +764,7 @@ function coverageTask(input: {
 }
 
 function nodePromptSpec(
-  nodeType: "implement" | "verify" | "summary" | "general",
+  nodeType: "plan" | "implement" | "verify" | "summary" | "general",
   expectedOutputs: string[],
 ): NonNullable<WorkflowCompositionTask["nodePromptSpec"]> {
   return {

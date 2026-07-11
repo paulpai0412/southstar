@@ -101,6 +101,11 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
   const contract = await interpretGoalContractWithLlm({
     goalPrompt: "Deliver a production-ready membership subscription flow in the local test workspace using the provided fake payment adapter, with access control, billing state, cancellation/refund behavior, and audit reporting; do not deploy or charge real accounts",
     cwd: "/workspace/subscription",
+    libraryVocabulary: {
+      scopes: ["software", "design/article"],
+      capabilityRefs: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
+      artifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
+    },
     client: {
       async generateText(input) {
         prompts.push(input.prompt);
@@ -128,6 +133,12 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
   });
 
   assert.match(prompts[0] ?? "", /decompose compound outcomes into independently verifiable requirements/i);
+  assert.match(prompts[0] ?? "", /do not put details discoverable from the local workspace or library in blockingInputs/i);
+  assert.match(prompts[0] ?? "", /blockingInputs are only for information unavailable from the prompt, workspace, and library/i);
+  assert.match(prompts[0] ?? "", /blocking=true for every requirement needed to satisfy the requested outcome/i);
+  assert.match(prompts[0] ?? "", /AvailableLibraryVocabulary:/);
+  assert.match(prompts[0] ?? "", /Choose domain exactly from scopes/i);
+  assert.match(prompts[0] ?? "", /design\/article/);
   assert.equal(contract.requirements.length, 4);
   assert.equal(contract.requirements.every((requirement) => requirement.acceptanceCriteria.length > 0), true);
   assert.equal(contract.requirements.some((requirement) => /^(plan|implement|verify|review)\b/i.test(requirement.statement)), false);
@@ -154,6 +165,58 @@ test("Goal interpreter relays streaming deltas", async () => {
 
   assert.equal(contract.summary, "Build it");
   assert.deepEqual(deltas, ["{", "\"domain\""]);
+});
+
+test("Goal interpreter repairs one schema-invalid LLM response", async () => {
+  const prompts: string[] = [];
+  let callCount = 0;
+
+  const contract = await interpretGoalContractWithLlm({
+    goalPrompt: "Build it",
+    cwd: "/workspace/project",
+    client: {
+      async generateText(input) {
+        prompts.push(input.prompt);
+        callCount += 1;
+        return JSON.stringify({
+          ...interpretation("Build it"),
+          requirements: [{
+            statement: "Build it",
+            acceptanceCriteria: ["Build it"],
+            blocking: true,
+            source: callCount === 1 ? "user" : "explicit",
+          }],
+        });
+      },
+    },
+    model: "test-goal-interpreter",
+  });
+
+  assert.equal(callCount, 2);
+  assert.equal(contract.requirements[0]?.source, "explicit");
+  assert.match(prompts[1] ?? "", /previous response was invalid/i);
+  assert.match(prompts[1] ?? "", /source must be explicit or inferred/i);
+  assert.match(prompts[1] ?? "", /\"source\":\"user\"/);
+});
+
+test("Goal interpreter fails closed after one bounded repair", async () => {
+  let callCount = 0;
+
+  await assert.rejects(
+    () => interpretGoalContractWithLlm({
+      goalPrompt: "Build it",
+      cwd: "/workspace/project",
+      client: {
+        async generateText() {
+          callCount += 1;
+          return "not json";
+        },
+      },
+      model: "test-goal-interpreter",
+    }),
+    /invalid JSON/,
+  );
+  assert.equal(callCount, 2);
 });
 
 test("Goal Contract hashing is independent of object key insertion order", () => {

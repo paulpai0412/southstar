@@ -457,6 +457,7 @@ export type WorkflowCompositionValidationIssueCode =
   | "duplicate_task_id"
   | "unknown_dependency"
   | "dependency_cycle"
+  | "producer_dependency_without_artifact_flow"
   | "missing_required_task_group"
   | "insufficient_task_group_count"
   | "missing_required_group_dependency"

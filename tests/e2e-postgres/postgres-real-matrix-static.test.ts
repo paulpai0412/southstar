@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
+const harnessModule = await import("./postgres-real-harness.ts") as Record<string, unknown>;
+
 const root = join(import.meta.dirname, "../..");
 function source(path: string): string { return readFileSync(join(root, path), "utf8"); }
 
@@ -38,6 +40,8 @@ const implementedCases = [
   "28-llm-constrained-workflow-end-to-end.test.ts",
   "29-llm-dynamic-workflow-materialization.test.ts",
   "30-runtime-dynamic-repair-node-generation.test.ts",
+  "31-one-prompt-goal-contract-software.test.ts",
+  "32-one-prompt-goal-contract-article.test.ts",
 ];
 
 test("canonical real E2E entrypoint is a static manifest and real cases run one at a time", () => {
@@ -75,8 +79,37 @@ test("Postgres real E2E suite contains no SQLite/local API coupling or fake shor
     assert.doesNotMatch(text, /stores\/sqlite|ui-api\/local-api|openSouthstarDb\(\":memory:\"|assertSqliteEvidence|node:sqlite/);
   }
   for (const path of executablePaths) {
-    assert.doesNotMatch(source(path), /fake|mock|smoke|test-only/i);
+    const text = source(path);
+    if (path.endsWith("31-one-prompt-goal-contract-software.test.ts")) {
+      assert.match(text, /provided fake payment adapter/);
+      assert.doesNotMatch(text, /fixedGoalInterpreter|(?:fake|mock)[^\n]*(?:composer|provider|interpreter)|(?:composer|provider|interpreter)[^\n]*(?:fake|mock)|smoke|test-only/i);
+      continue;
+    }
+    assert.doesNotMatch(text, /fake|mock|smoke|test-only/i);
   }
+});
+
+test("isolated Tork config grants only the three exact bind sources", () => {
+  const render = harnessModule.renderIsolatedTorkConfig as ((input: {
+    port: number;
+    materializationRoot: string;
+    workspace: string;
+    piConfigPath: string;
+  }) => string) | undefined;
+  assert.equal(typeof render, "function");
+  const config = render!({
+    port: 18031,
+    materializationRoot: "/tmp/case31-materialization",
+    workspace: "/tmp/case31-workspace",
+    piConfigPath: "/home/test/.pi/agent",
+  });
+  const sources = [...config.matchAll(/^\s+"([^"]+)",?$/gm)].map((match) => match[1]);
+  assert.deepEqual(sources, [
+    "/tmp/case31-materialization",
+    "/tmp/case31-workspace",
+    "/home/test/.pi/agent",
+  ]);
+  assert.match(config, /\[coordinator\]\naddress = "0\.0\.0\.0:18031"/);
 });
 
 test("managed context E2E cases use retrievable memory kinds and typed manifest policies", () => {
@@ -102,6 +135,8 @@ test("managed context E2E cases use retrievable memory kinds and typed manifest 
   assert.match(source("tests/e2e-postgres/README.md"), /\| 28 llm-constrained workflow end-to-end \| implemented \|/);
   assert.match(source("tests/e2e-postgres/README.md"), /\| 29 llm dynamic workflow materialization \| implemented \|/);
   assert.match(source("tests/e2e-postgres/README.md"), /\| 30 runtime dynamic repair node generation \| implemented \|/);
+  assert.match(source("tests/e2e-postgres/README.md"), /\| 31 one-prompt goal contract software delivery \| implemented \|/);
+  assert.match(source("tests/e2e-postgres/README.md"), /\| 32 one-prompt goal contract article delivery \| implemented \|/);
 });
 
 test("legacy SQLite real E2E suite is removed from the runnable tree", () => {
