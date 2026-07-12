@@ -19,9 +19,20 @@ import {
   isAllowedGeneratedAgentProfileValue,
   runtimeBindingForGeneratedProfileImage,
 } from "./generated-agent-profile-policy.ts";
+import {
+  buildGoalRequirementCoverage,
+  isCoverageExceptionTask,
+  isProducerTask,
+} from "./goal-requirement-coverage.ts";
+import type { GoalDesignPackageV1 } from "./goal-design.ts";
+import type { GoalContractV1 } from "./goal-contract.ts";
+import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 
 export type ValidateWorkflowCompositionOptions = {
   scope?: string;
+  goalContract?: GoalContractV1;
+  goalDesignPackage?: GoalDesignPackageV1;
+  targetRequirementIds?: string[];
 };
 
 export async function validateWorkflowCompositionPlan(
@@ -35,18 +46,234 @@ export async function validateWorkflowCompositionPlan(
     issues.push(issue("invalid_schema_version", "schemaVersion", "schemaVersion must be southstar.workflow_composition_plan.v1"));
   }
   const candidateRefSet = candidateRefs(packet);
-  if (!candidateRefSet.has(plan.selectedWorkflowTemplateRef)) {
-    issues.push(issue("unknown_template", "selectedWorkflowTemplateRef", `template is not an approved candidate: ${plan.selectedWorkflowTemplateRef}`));
+  const selectedTemplateRef = plan.selectedWorkflowTemplateRef;
+  const templatePolicy = options.goalDesignPackage?.templatePolicy;
+  if (selectedTemplateRef) {
+    if (!candidateRefSet.has(selectedTemplateRef)) {
+      issues.push(issue("unknown_template", "selectedWorkflowTemplateRef", `template is not an approved candidate: ${selectedTemplateRef}`));
+    } else if (templatePolicy?.mode === "require" && selectedTemplateRef !== templatePolicy.templateRef) {
+      issues.push(issue("required_template_mismatch", "selectedWorkflowTemplateRef", `required template policy must select ${templatePolicy.templateRef}`));
+    }
+  } else if (templatePolicy?.mode === "require") {
+    issues.push(issue("unknown_template", "selectedWorkflowTemplateRef", "required template policy must select an approved workflow template"));
   }
-  const constraints = compositionConstraintsForTemplate(packet, plan.selectedWorkflowTemplateRef);
+  const constraints = selectedTemplateRef ? compositionConstraintsForTemplate(packet, selectedTemplateRef) : null;
   validateTaskDependencies(plan, issues);
+  validateProducerDependencyArtifactFlow(plan, issues);
+  if (options.goalDesignPackage) {
+    validateGoalDesignSlicePlan(plan, options.goalDesignPackage, issues);
+  }
+  if (options.goalContract) {
+    validateGoalRequirementCoverage(
+      options.goalContract,
+      plan,
+      issues,
+      options.targetRequirementIds,
+    );
+  }
   validateCoverageConstraints(constraints, plan, issues);
   validateInputArtifactsAreSatisfied(plan, constraints, issues);
-  validateTemplateSlotConstraints(plan.selectedWorkflowTemplateRef, constraints, plan, issues);
-  validateCandidateMembership(plan, packet, candidateRefSet, issues);
-  await validateGeneratedProfileClosure(db, plan, issues, options.scope ?? "software");
-  await validateEdgeConstraints(db, plan, issues, options.scope ?? "software");
+  if (selectedTemplateRef) validateTemplateSlotConstraints(selectedTemplateRef, constraints, plan, issues);
+  const hostRefs = options.goalDesignPackage ? goalDesignHostRefs(options.goalDesignPackage) : new Set<string>();
+  validateCandidateMembership(plan, packet, candidateRefSet, hostRefs, issues);
+  const validationScope = workflowValidationScope(options);
+  await validateGeneratedProfileClosure(db, plan, issues, validationScope);
+  await validateEdgeConstraints(db, plan, issues, validationScope, options.goalDesignPackage);
   return { ok: issues.length === 0, issues };
+}
+
+function workflowValidationScope(options: ValidateWorkflowCompositionOptions): string {
+  return nonEmptyString(options.scope)
+    ?? nonEmptyString(options.goalContract?.domain)
+    ?? nonEmptyString(options.goalDesignPackage?.goalContract.domain)
+    ?? "all";
+}
+
+function validateGoalDesignSlicePlan(
+  plan: WorkflowCompositionPlan,
+  packageValue: GoalDesignPackageV1,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const slicesById = new Map(packageValue.slicePlan.slices.map((slice) => [slice.id, slice]));
+  const taskIdsBySlice = new Map<string, WorkflowCompositionPlan["tasks"]>();
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    const sliceId = task.sliceId;
+    const slice = typeof sliceId === "string" && sliceId.length > 0 ? slicesById.get(sliceId) : undefined;
+    const nodeType = classifyWorkflowCompositionTask(task);
+    if (!slice || !sliceId) {
+      issues.push(issue(
+        "unknown_slice_id",
+        `tasks.${taskIndex}.sliceId`,
+        `task ${task.id} must reference an existing Goal Design sliceId`,
+      ));
+      continue;
+    }
+    const tasks = taskIdsBySlice.get(sliceId) ?? [];
+    tasks.push(task);
+    taskIdsBySlice.set(sliceId, tasks);
+    const ownedRequirementIds = new Set(slice.requirementIds);
+    if (nodeType === "verify" || nodeType === "review") continue;
+    for (const requirementId of task.requirementIds) {
+      if (ownedRequirementIds.has(requirementId)) continue;
+      issues.push(issue(
+        "requirement_not_owned_by_slice",
+        `tasks.${taskIndex}.requirementIds`,
+        `task ${task.id} references requirement ${requirementId} outside slice ${sliceId}`,
+      ));
+    }
+  }
+  for (const [sliceIndex, slice] of packageValue.slicePlan.slices.entries()) {
+    const tasks = taskIdsBySlice.get(slice.id) ?? [];
+    if (!tasks.some((task) => isProducerTask(task))) {
+      issues.push(issue(
+        "slice_without_producer",
+        `goalDesignPackage.slicePlan.slices.${sliceIndex}`,
+        `slice has no producer task: ${slice.id}`,
+      ));
+    }
+    if (!plan.tasks.some((task) => {
+      const nodeType = classifyWorkflowCompositionTask(task);
+      return (nodeType === "verify" || nodeType === "review")
+        && task.requirementIds.some((requirementId) => slice.requirementIds.includes(requirementId));
+    })) {
+      issues.push(issue(
+        "slice_without_evaluator",
+        `goalDesignPackage.slicePlan.slices.${sliceIndex}`,
+        `slice has no verify or review evaluator task: ${slice.id}`,
+      ));
+    }
+  }
+}
+
+function validateProducerDependencyArtifactFlow(
+  plan: WorkflowCompositionPlan,
+  issues: WorkflowCompositionValidationIssue[],
+): void {
+  const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    if (!isProducerTask(task)) continue;
+    for (const dependencyId of task.dependsOn) {
+      const dependency = tasksById.get(dependencyId);
+      if (!dependency || !isProducerTask(dependency)) continue;
+      if (dependency.outputArtifactRefs.some((ref) => task.inputArtifactRefs.includes(ref))) continue;
+      issues.push(issue(
+        "producer_dependency_without_artifact_flow",
+        `tasks.${taskIndex}.dependsOn`,
+        `producer task ${task.id} depends on producer ${dependencyId} without consuming one of its output artifacts`,
+      ));
+    }
+  }
+}
+
+function validateGoalRequirementCoverage(
+  goalContract: GoalContractV1,
+  plan: WorkflowCompositionPlan,
+  issues: WorkflowCompositionValidationIssue[],
+  targetRequirementIds: string[] | undefined,
+): void {
+  const knownRequirementIds = new Set(goalContract.requirements.map((requirement) => requirement.id));
+  const targetRequirementIdSet = targetRequirementIds === undefined
+    ? knownRequirementIds
+    : new Set(targetRequirementIds);
+  if (targetRequirementIds !== undefined && targetRequirementIdSet.size === 0) {
+    issues.push(issue(
+      "target_requirement_scope_empty",
+      "targetRequirementIds",
+      "targetRequirementIds must contain at least one Goal Contract requirement id",
+    ));
+  }
+  for (const targetRequirementId of targetRequirementIdSet) {
+    if (knownRequirementIds.has(targetRequirementId)) continue;
+    issues.push(issue(
+      "unknown_target_requirement_id",
+      "targetRequirementIds",
+      `targetRequirementIds references unknown Goal Contract requirement: ${targetRequirementId}`,
+    ));
+  }
+  const validTargetRequirementIds = new Set(
+    [...targetRequirementIdSet].filter((requirementId) => knownRequirementIds.has(requirementId)),
+  );
+  for (const [taskIndex, task] of plan.tasks.entries()) {
+    const requirementIds = task.requirementIds ?? [];
+    for (const requirementId of requirementIds) {
+      if (!knownRequirementIds.has(requirementId)) {
+        issues.push(issue(
+          "unknown_requirement_id",
+          `tasks.${taskIndex}.requirementIds`,
+          `task ${task.id} references unknown Goal Contract requirement: ${requirementId}`,
+        ));
+      } else if (!validTargetRequirementIds.has(requirementId)) {
+        issues.push(issue(
+          "requirement_outside_target_scope",
+          `tasks.${taskIndex}.requirementIds`,
+          `task ${task.id} references Goal Contract requirement outside targetRequirementIds: ${requirementId}`,
+        ));
+      }
+    }
+    if (requirementIds.some((requirementId) => validTargetRequirementIds.has(requirementId))) continue;
+    if (isCoverageExceptionTask(task)) continue;
+    issues.push(issue(
+      "task_without_requirement_coverage",
+      `tasks.${taskIndex}.requirementIds`,
+      `task ${task.id} does not contribute to a Goal Contract requirement`,
+    ));
+  }
+
+  if (validTargetRequirementIds.size === 0) return;
+  const coverage = buildGoalRequirementCoverage({
+    goalContract,
+    composition: plan,
+    targetRequirementIds: [...validTargetRequirementIds],
+  });
+  const coverageByRequirementId = new Map(coverage.entries.map((entry) => [entry.requirementId, entry]));
+  const tasksById = new Map(plan.tasks.map((task) => [task.id, task]));
+  for (const [requirementIndex, requirement] of goalContract.requirements.entries()) {
+    if (!validTargetRequirementIds.has(requirement.id)) continue;
+    if (!requirement.blocking) continue;
+    const entry = coverageByRequirementId.get(requirement.id)!;
+    const path = `goalContract.requirements.${requirementIndex}`;
+    if (entry.producerTaskIds.length === 0) {
+      issues.push(issue(
+        "requirement_missing_producer",
+        path,
+        `blocking requirement has no producer task: ${requirement.id}`,
+      ));
+    }
+    if (entry.artifactRefs.length === 0) {
+      issues.push(issue(
+        "requirement_missing_artifact",
+        path,
+        `blocking requirement has no producer artifact: ${requirement.id}`,
+      ));
+    }
+    if (entry.evaluatorTaskIds.length === 0) {
+      issues.push(issue(
+        "requirement_missing_evaluator",
+        path,
+        `blocking requirement has no verify or review evaluator task: ${requirement.id}`,
+      ));
+    }
+    const independentEvaluator = entry.producerTaskIds.length > 0 && entry.evaluatorTaskIds.some((evaluatorTaskId) => {
+      if (entry.producerTaskIds.includes(evaluatorTaskId)) return false;
+      const evaluatorTask = tasksById.get(evaluatorTaskId);
+      if (!evaluatorTask) return false;
+      return entry.producerTaskIds.every((producerTaskId) => evaluatorTask.dependsOn.includes(producerTaskId));
+    });
+    if (!independentEvaluator) {
+      issues.push(issue(
+        "requirement_evaluator_not_independent",
+        path,
+        `blocking requirement evaluator must be distinct from and directly depend on every producer: ${requirement.id}`,
+      ));
+    }
+    if (entry.requiredEvidenceKinds.length === 0) {
+      issues.push(issue(
+        "requirement_missing_evidence",
+        path,
+        `blocking requirement evaluator has no required evidence: ${requirement.id}`,
+      ));
+    }
+  }
 }
 
 type CompositionTaskGroupMatcher = {
@@ -361,6 +588,7 @@ function validateCandidateMembership(
   plan: WorkflowCompositionPlan,
   packet: CandidatePacket,
   candidateRefSet: Set<string>,
+  hostRefs: Set<string>,
   issues: WorkflowCompositionValidationIssue[],
 ): void {
   const generatedRefs = new Set(plan.generatedComponentProposals.map((proposal) => proposal.id));
@@ -398,9 +626,9 @@ function validateCandidateMembership(
           ...task.vaultLeasePolicyRefs,
           ...task.inputArtifactRefs,
           ...task.outputArtifactRefs,
-        ];
+    ];
     for (const ref of selectedRefs) {
-      if (!candidateRefSet.has(ref)) {
+      if (!candidateRefSet.has(ref) && !hostRefs.has(ref)) {
         issues.push(issue("ref_not_in_candidate_packet", `tasks.${taskIndex}`, `ref is not in candidate packet: ${ref}`));
       }
     }
@@ -694,8 +922,11 @@ async function validateEdgeConstraints(
   plan: WorkflowCompositionPlan,
   issues: WorkflowCompositionValidationIssue[],
   scope: string,
+  packageValue?: GoalDesignPackageV1,
 ): Promise<void> {
   const generatedProfileRefs = validatedGeneratedAgentProfiles(plan);
+  const hostArtifactRefs = new Set(packageValue?.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs) ?? []);
+  const hostEvaluatorArtifactRefs = goalDesignEvaluatorArtifactRefs(packageValue);
   for (const [taskIndex, task] of plan.tasks.entries()) {
     if (!generatedProfileRefs.has(task.agentProfileRef)) {
       await requireOutgoingEdge(
@@ -770,7 +1001,7 @@ async function validateEdgeConstraints(
       }
     }
     for (const artifactRef of task.outputArtifactRefs) {
-      if (!generatedProfileRefs.has(task.agentProfileRef)) {
+      if (!generatedProfileRefs.has(task.agentProfileRef) && !hostArtifactRefs.has(artifactRef)) {
         await requireAnyOutgoingEdge(
           db,
           task.agentDefinitionRef,
@@ -782,6 +1013,8 @@ async function validateEdgeConstraints(
           `tasks.${taskIndex}.outputArtifactRefs`,
         );
       }
+      const hostArtifactsForEvaluator = hostEvaluatorArtifactRefs.get(task.evaluatorProfileRef);
+      if (hostArtifactsForEvaluator?.has(artifactRef)) continue;
       await requireAnyOutgoingEdge(
         db,
         task.evaluatorProfileRef,
@@ -830,7 +1063,10 @@ async function requireOutgoingEdge(
 
 function candidateRefs(packet: CandidatePacket): Set<string> {
   const metadataRefs = graphMetadataRefSet(packet);
-  if (metadataRefs) return metadataRefs;
+  if (metadataRefs) {
+    for (const candidate of packet.workflowTemplateCandidates) metadataRefs.add(candidate.ref);
+    return metadataRefs;
+  }
   const refs = new Set<string>();
   for (const candidate of packet.workflowTemplateCandidates) refs.add(candidate.ref);
   for (const candidates of Object.values(packet.agentCandidatesByCapability)) for (const candidate of candidates) refs.add(candidate.ref);
@@ -844,6 +1080,30 @@ function candidateRefs(packet: CandidatePacket): Set<string> {
   for (const candidates of Object.values(packet.evaluatorCandidatesByArtifact)) for (const candidate of candidates) refs.add(candidate.ref);
   for (const candidate of packet.policyConstraints) refs.add(candidate.ref);
   return refs;
+}
+
+function goalDesignHostRefs(packageValue: GoalDesignPackageV1): Set<string> {
+  return new Set([
+    ...packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs),
+    ...packageValue.evaluatorContracts.map((contract) => contract.id),
+  ]);
+}
+
+function goalDesignEvaluatorArtifactRefs(packageValue: GoalDesignPackageV1 | undefined): Map<string, Set<string>> {
+  const result = new Map<string, Set<string>>();
+  if (!packageValue) return result;
+  const artifactRefsByRequirementId = new Map<string, Set<string>>();
+  for (const slice of packageValue.slicePlan.slices) {
+    for (const requirementId of slice.requirementIds) {
+      const refs = artifactRefsByRequirementId.get(requirementId) ?? new Set<string>();
+      for (const artifactRef of slice.expectedArtifactRefs) refs.add(artifactRef);
+      artifactRefsByRequirementId.set(requirementId, refs);
+    }
+  }
+  for (const evaluator of packageValue.evaluatorContracts) {
+    result.set(evaluator.id, new Set(artifactRefsByRequirementId.get(evaluator.requirementId) ?? []));
+  }
+  return result;
 }
 
 function graphMetadataRefSet(packet: CandidatePacket): Set<string> | null {
@@ -878,6 +1138,10 @@ function issue(
   message: string,
 ): WorkflowCompositionValidationIssue {
   return { code, path, message };
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

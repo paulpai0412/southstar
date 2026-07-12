@@ -2,14 +2,17 @@ import type { SouthstarDb } from "../../../src/v2/db/postgres.ts";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../../src/v2/design-library/library-graph-store.ts";
 import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowCompositionTask } from "../../../src/v2/design-library/types.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../../src/v2/orchestration/composer.ts";
+import type { GoalContractV1 } from "../../../src/v2/orchestration/goal-contract.ts";
+import { softwareGoalContract } from "./goal-contract.ts";
 
 export class DeterministicFixtureComposer implements WorkflowComposer {
-  async compose(_input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
-    return deterministicFixtureComposition();
+  async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    return deterministicFixtureComposition(input.goalContract);
   }
 }
 
-export function deterministicFixtureComposition(): WorkflowCompositionPlan {
+export function deterministicFixtureComposition(goalContract: GoalContractV1 = softwareGoalContract()): WorkflowCompositionPlan {
+  const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Software Dynamic Feature Workflow",
@@ -18,6 +21,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
     tasks: [
       task(
         "understand-repo",
+        requirementIds,
         [],
         "agent.software-explorer",
         "profile.generated.software-understand-repo",
@@ -26,6 +30,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "review-spec",
+        requirementIds,
         ["understand-repo"],
         "agent.software-spec-reviewer",
         "profile.generated.software-review-spec",
@@ -34,6 +39,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "implement-feature",
+        requirementIds,
         ["review-spec"],
         "agent.software-maker",
         "profile.generated.software-implement-feature",
@@ -42,7 +48,8 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "verify-feature",
-        ["implement-feature"],
+        requirementIds,
+        ["understand-repo", "implement-feature"],
         "agent.software-checker",
         "profile.generated.software-verify-feature",
         ["artifact.verification_report"],
@@ -50,7 +57,8 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "review-code-quality",
-        ["implement-feature"],
+        requirementIds,
+        ["understand-repo", "implement-feature"],
         "agent.software-code-quality-reviewer",
         "profile.generated.software-review-code-quality",
         ["artifact.verification_report"],
@@ -58,6 +66,7 @@ export function deterministicFixtureComposition(): WorkflowCompositionPlan {
       ),
       task(
         "summarize-completion",
+        [],
         ["verify-feature", "review-code-quality"],
         "agent.software-summarizer",
         "profile.generated.software-summarize-completion",
@@ -137,19 +146,23 @@ export async function seedDeterministicWorkflowGraph(db: SouthstarDb, scope = "s
 
 function task(
   id: string,
+  requirementIds: string[],
   dependsOn: string[],
   agentDefinitionRef: string,
   agentProfileRef: string,
   outputArtifactRefs: string[],
   evaluatorProfileRef: string,
 ): WorkflowCompositionTask {
+  const name = id
+    .split("-")
+    .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
+    .join(" ");
   return {
     id,
-    name: id
-      .split("-")
-      .map((part) => `${part.charAt(0).toUpperCase()}${part.slice(1)}`)
-      .join(" "),
+    name,
     responsibility: id,
+    requirementIds,
+    nodePromptSpec: fixtureNodePromptSpec(id, name, outputArtifactRefs),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,
@@ -164,6 +177,40 @@ function task(
     evaluatorProfileRef,
     recoveryStrategyRefs: ["retry-same-agent"],
     rationale: `Select ${agentProfileRef} for ${id}`,
+  };
+}
+
+function fixtureNodePromptSpec(
+  id: string,
+  name: string,
+  expectedOutputs: string[],
+): NonNullable<WorkflowCompositionTask["nodePromptSpec"]> {
+  const nodeType = id.startsWith("understand-")
+    ? "plan"
+    : id.startsWith("implement-")
+      ? "implement"
+      : id.startsWith("verify-")
+        ? "verify"
+        : id.startsWith("review-")
+          ? "review"
+          : id.startsWith("summarize-")
+            ? "summary"
+            : "general";
+  return {
+    nodeType,
+    goal: `${name}: complete the task responsibility.`,
+    requirements: ["Satisfy the linked Goal Contract requirement."],
+    boundaries: ["Stay within the declared task responsibility."],
+    nonGoals: ["Do not perform unrelated workflow work."],
+    deliverableDocuments: [],
+    expectedOutputs,
+    testCases: [],
+    acceptanceCriteria: ["Produce the declared task output with evidence."],
+    ...(nodeType === "plan" ? { planningQuestions: ["What work and evidence are required?"] } : {}),
+    ...(nodeType === "implement" ? { implementationScope: ["Implement only the linked requirement."] } : {}),
+    ...(nodeType === "verify" ? { verificationChecks: ["Verify the linked requirement and its artifacts."] } : {}),
+    ...(nodeType === "review" ? { reviewChecklist: ["Review requirement coverage, quality, and risk."] } : {}),
+    ...(nodeType === "summary" ? { summarySections: ["completed work", "verification", "risks"] } : {}),
   };
 }
 

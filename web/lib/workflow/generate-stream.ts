@@ -1,4 +1,10 @@
-import type { WorkflowDag } from "./types";
+import type {
+  GoalDesignMode,
+  GoalMissionReadModel,
+  WorkflowCommandDescriptor,
+  WorkflowDag,
+  WorkflowTemplatePolicyV1,
+} from "./types";
 
 export type WorkflowGenerateMessageEvent = "message" | "message.delta";
 
@@ -13,14 +19,42 @@ export type WorkflowGenerateStageEvent = {
 export type WorkflowGenerateDraftEvent = {
   draftId?: string;
   status?: string;
+  goalDesignPackageHash?: string;
+  vocabularyGaps?: Array<{ kind: string; requestedRef: string; allowedRefs: string[] }>;
+  libraryImportDraftId?: string;
   validationIssues?: unknown[];
+};
+
+export type WorkflowGenerateHeartbeatEvent = Record<string, unknown> & {
+  phase?: string;
+  elapsedMs?: number;
+};
+
+export type WorkflowGenerateIdentity = {
+  draftId: string;
+  draftStatus?: string;
+  runId?: string;
+  runStatus?: string;
+};
+
+export type WorkflowGenerateRecoverableEvent = {
+  result: WorkflowGenerateIdentity;
+  error: string;
 };
 
 export type WorkflowGenerateStreamHandlers = {
   onMessage?: (text: string, event: WorkflowGenerateMessageEvent) => void;
   onStage?: (stage: WorkflowGenerateStageEvent) => void;
+  onHeartbeat?: (heartbeat: WorkflowGenerateHeartbeatEvent) => void;
   onDraft?: (draft: WorkflowGenerateDraftEvent) => void;
+  onGoalDesign?: (goalDesign: Record<string, unknown>) => void;
   onDag?: (dag: WorkflowDag) => void;
+  onGoalContract?: (mission: GoalMissionReadModel) => void;
+  onCoverage?: (mission: GoalMissionReadModel) => void;
+  onRun?: (run: { runId?: string; runStatus?: string }) => void;
+  onExecutionSet?: (executionSet: { executionSetId?: string; sliceRuns?: Array<{ sliceId?: string; runId?: string; runStatus?: string; approvalId?: string }> }) => void;
+  onApproval?: (approval: { mission?: GoalMissionReadModel; command?: WorkflowCommandDescriptor }) => void;
+  onRecoverable?: (recoverable: WorkflowGenerateRecoverableEvent) => void;
   onError?: (message: string) => void;
   onDone?: () => void;
 };
@@ -50,8 +84,12 @@ export async function createPlannerDraftStream(input: {
 export async function generateWorkflowDagStream(input: {
   prompt: string;
   draftId?: string | null;
+  expectedPackageHash?: string | null;
+  selectedSliceId?: string | null;
   cwd?: string | null;
-  templateId?: string | null;
+  goalDesignMode?: GoalDesignMode;
+  templatePolicy?: WorkflowTemplatePolicyV1;
+  idempotencyKey?: string;
   signal?: AbortSignal;
 } & WorkflowGenerateStreamHandlers): Promise<void> {
   const endpoint = input.draftId
@@ -64,9 +102,20 @@ export async function generateWorkflowDagStream(input: {
     body: JSON.stringify({
       prompt: input.prompt,
       ...(input.cwd ? { cwd: input.cwd } : {}),
-      ...(!input.draftId && input.templateId ? { templateId: input.templateId } : {}),
+      ...(!input.draftId ? { idempotencyKey: input.idempotencyKey ?? crypto.randomUUID() } : {}),
+      ...(!input.draftId && input.goalDesignMode ? { goalDesignMode: input.goalDesignMode } : {}),
+      ...(!input.draftId && input.templatePolicy ? { templatePolicy: input.templatePolicy } : {}),
+      ...(input.draftId && input.expectedPackageHash ? { expectedPackageHash: input.expectedPackageHash } : {}),
+      ...(input.draftId && input.selectedSliceId ? { selectedSliceId: input.selectedSliceId } : {}),
     }),
   });
+
+  if (!input.draftId && (response.status === 202 || response.status === 409)) {
+    const active = response.status === 202;
+    const stage = active ? "submission.active" : "submission.conflict";
+    input.onStage?.({ stage, message: active ? "An identical goal submission is still active." : "The goal submission key conflicts with another request." });
+    throw new Error(await response.text().catch(() => "") || (active ? "goal submission is active" : "goal submission conflicts with another request"));
+  }
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
@@ -76,6 +125,25 @@ export async function generateWorkflowDagStream(input: {
     throw new Error("workflow generate response is missing a stream body");
   }
 
+  await readWorkflowEventStream(response.body, input);
+}
+
+export async function confirmGoalDesignStream(input: {
+  draftId: string;
+  expectedPackageHash: string;
+  signal?: AbortSignal;
+} & WorkflowGenerateStreamHandlers): Promise<void> {
+  const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(input.draftId)}/confirm-goal-design/stream`, {
+    method: "POST",
+    signal: input.signal,
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify({ expectedPackageHash: input.expectedPackageHash }),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `goal design confirmation failed with HTTP ${response.status}`);
+  }
+  if (!response.body) throw new Error("goal design confirmation response is missing a stream body");
   await readWorkflowEventStream(response.body, input);
 }
 
@@ -137,9 +205,17 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
     handlers.onStage?.(data as WorkflowGenerateStageEvent);
     return;
   }
+  if (event === "heartbeat") {
+    handlers.onHeartbeat?.(data as WorkflowGenerateHeartbeatEvent);
+    return;
+  }
   if (event === "draft") {
     const draft = data.draft && typeof data.draft === "object" ? data.draft : data;
     handlers.onDraft?.(draft as WorkflowGenerateDraftEvent);
+    return;
+  }
+  if (event === "goal_design") {
+    handlers.onGoalDesign?.(data);
     return;
   }
   if (event === "dag") {
@@ -147,6 +223,30 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
       throw new Error("workflow generate dag event is missing dag");
     }
     handlers.onDag?.(data.dag as WorkflowDag);
+    return;
+  }
+  if (event === "goal_contract") {
+    if (data.mission && typeof data.mission === "object") handlers.onGoalContract?.(data.mission as GoalMissionReadModel);
+    return;
+  }
+  if (event === "coverage") {
+    if (data.mission && typeof data.mission === "object") handlers.onCoverage?.(data.mission as GoalMissionReadModel);
+    return;
+  }
+  if (event === "run") {
+    handlers.onRun?.(data as { runId?: string; runStatus?: string });
+    return;
+  }
+  if (event === "execution_set") {
+    handlers.onExecutionSet?.(data as { executionSetId?: string; sliceRuns?: Array<{ sliceId?: string; runId?: string; runStatus?: string; approvalId?: string }> });
+    return;
+  }
+  if (event === "approval") {
+    handlers.onApproval?.(data as { mission?: GoalMissionReadModel; command?: WorkflowCommandDescriptor });
+    return;
+  }
+  if (event === "recoverable") {
+    handlers.onRecoverable?.(data as WorkflowGenerateRecoverableEvent);
     return;
   }
   if (event === "error") {

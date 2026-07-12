@@ -1,6 +1,6 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import type { ExecutorBindingPayload, SouthstarExecutorStatus } from "./observability-types.ts";
+import { isExecutorTerminalStatus, type ExecutorBindingPayload, type SouthstarExecutorStatus } from "./observability-types.ts";
 
 export type ExecutorBindingRecordPg = {
   id: string;
@@ -95,12 +95,19 @@ export async function updateExecutorBindingStatusPg(db: SouthstarDb, input: {
   eventPayload?: Record<string, unknown>;
 }): Promise<ExecutorBindingRecordPg> {
   return await db.tx(async (tx) => {
+    const observed = await getExecutorBindingPg(tx, input.bindingId);
+    if (!observed) throw new Error(`executor binding not found: ${input.bindingId}`);
+    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [observed.runId]);
     await tx.query(
       "select id from southstar.runtime_resources where resource_type = 'executor_binding' and resource_key = $1 for update",
       [input.bindingId],
     );
     const current = await getExecutorBindingPg(tx, input.bindingId);
     if (!current) throw new Error(`executor binding not found: ${input.bindingId}`);
+    if (current.runId !== observed.runId) {
+      throw new Error(`executor binding ${input.bindingId} changed run while acquiring locks`);
+    }
+    if (isExecutorTerminalStatus(current.status)) return current;
     const status = current.status === "cancel_requested" && input.status !== "cancelled"
       ? "cancel_requested"
       : input.status;

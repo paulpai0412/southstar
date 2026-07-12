@@ -1,3 +1,4 @@
+import type { GoalMissionReadModel } from "../workflow/types";
 import type { OperatorAttentionItem, OperatorCommand, OperatorCommandResult, OperatorOverview, OperatorRun } from "./types";
 
 export function normalizeOperatorOverview(input: unknown): OperatorOverview {
@@ -36,9 +37,17 @@ function readRun(input: unknown): OperatorRun | null {
   const projectRoot = stringValue(run.projectRoot);
   const updatedAt = stringValue(run.updatedAt);
   const commands = coerceArray(run.commands).map(readCommand).filter((command): command is OperatorCommand => command !== null);
+  const mission = readGoalMission(run.mission);
+  const executionStatus = stringValue(run.executionStatus) || mission?.status.execution || "unknown";
+  const outcomeStatus = goalOutcomeStatus(run.outcomeStatus) || mission?.status.outcome || "in_progress";
+  const healthStatus = goalHealthStatus(run.healthStatus) || mission?.status.health || "healthy";
   return {
     runId,
     status: stringValue(run?.status) || "unknown",
+    executionStatus,
+    outcomeStatus,
+    healthStatus,
+    mission,
     title: stringValue(run?.title || run?.goalPrompt) || runId,
     ...(domain ? { domain } : {}),
     ...(cwd ? { cwd } : {}),
@@ -46,6 +55,24 @@ function readRun(input: unknown): OperatorRun | null {
     ...(updatedAt ? { updatedAt } : {}),
     ...(commands.length ? { commands } : {}),
   };
+}
+
+function readGoalMission(value: unknown): GoalMissionReadModel | null {
+  const mission = recordValue(value);
+  const status = recordValue(mission?.status);
+  const execution = stringValue(status?.execution);
+  const outcome = goalOutcomeStatus(status?.outcome);
+  const health = goalHealthStatus(status?.health);
+  if (!mission || !execution || !outcome || !health) return null;
+  return mission as unknown as GoalMissionReadModel;
+}
+
+function goalOutcomeStatus(value: unknown): GoalMissionReadModel["status"]["outcome"] | undefined {
+  return value === "in_progress" || value === "satisfied" || value === "unsatisfied" || value === "blocked" ? value : undefined;
+}
+
+function goalHealthStatus(value: unknown): GoalMissionReadModel["status"]["health"] | undefined {
+  return value === "healthy" || value === "degraded" || value === "critical" ? value : undefined;
 }
 
 function readAttention(input: unknown): OperatorAttentionItem | null {

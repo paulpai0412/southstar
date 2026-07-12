@@ -1,10 +1,10 @@
 import { buildTaskEnvelopeV2, type TaskEnvelopeV2 } from "../agent-runner/task-envelope.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
 import type { WorkflowNodePromptSpec } from "../design-library/types.ts";
 import type { ArtifactContract } from "../design-library/runtime-types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
+import { loadRunLibrarySnapshotPg, requireSnapshotObject } from "../orchestration/run-library-snapshot.ts";
 import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
 import { assembleContextBlocks } from "./assembly-policy.ts";
@@ -108,7 +108,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
       const taskEnvelopeId = `task-envelope-${input.runId}-${input.taskId}-${input.attemptId}`;
       const agentsMdBlocks = contextPolicy.includeAgentsMd === false
         ? []
-        : await buildAgentsMdBlocks(db, unique([agentProfile.agentRef, ...agentProfile.agentsMdRefs].filter((ref): ref is string => Boolean(ref))));
+        : await buildAgentsMdBlocks(db, input.runId, unique([agentProfile.agentRef, ...agentProfile.agentsMdRefs].filter((ref): ref is string => Boolean(ref))));
       const contextPacket: ContextPacket = {
         id: contextPacketId,
         runId: input.runId,
@@ -447,10 +447,15 @@ function inlineInstructionBlocks(instruction: string | undefined): ContextBlock[
   }];
 }
 
-async function buildAgentsMdBlocks(db: SouthstarDb, refs: string[]): Promise<ContextBlock[]> {
+async function buildAgentsMdBlocks(db: SouthstarDb, runId: string, refs: string[]): Promise<ContextBlock[]> {
+  const snapshot = refs.some((ref) => ref.startsWith("agent."))
+    ? await loadRunLibrarySnapshotPg(db, runId)
+    : null;
   const blocks: ContextBlock[] = [];
   for (const ref of refs) {
-    const object = ref.startsWith("agent.") ? await findLibraryObjectByKey(db, ref) : null;
+    const object = ref.startsWith("agent.")
+      ? requireSnapshotObject(snapshot!, ref, "agent_definition")
+      : null;
     const text = object?.objectKind === "agent_definition"
       ? agentDefinitionMarkdown(object.state, ref)
       : `Reference ${ref}.`;

@@ -115,12 +115,29 @@ export type ApprovalPolicy = {
 };
 
 export type CompiledFromTemplate = {
+  sourceKind?: "workflow_template";
   templateDefinitionId: string;
   templateVersionId: string;
   recipeVersionId?: string;
   compilerVersion: string;
   inputHash: string;
   libraryVersionRefs: string[];
+  libraryObjectVersionRefs: LibraryObjectVersionRef[];
+};
+
+export type CompiledFromLibraryPrimitives = {
+  sourceKind: "library_primitives";
+  compilerVersion: string;
+  inputHash: string;
+  libraryVersionRefs: string[];
+  libraryObjectVersionRefs: LibraryObjectVersionRef[];
+};
+
+export type CompiledFrom = CompiledFromTemplate | CompiledFromLibraryPrimitives;
+
+export type LibraryObjectVersionRef = {
+  objectKey: string;
+  versionRef: string;
 };
 
 export type EffortPolicy = {
@@ -181,7 +198,7 @@ export type SouthstarWorkflowManifest = {
     recordWorkflowLearnings: boolean;
   };
   approvalPolicy?: ApprovalPolicy;
-  compiledFrom?: CompiledFromTemplate;
+  compiledFrom?: CompiledFrom;
   effortPolicy?: EffortPolicy;
 };
 

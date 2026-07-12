@@ -10,6 +10,7 @@ import type {
   WorkflowCompositionValidationResult,
 } from "../design-library/types.ts";
 import { findLibraryObjectByKey } from "../design-library/library-graph-store.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import type {
   AgentProfile,
   ArtifactContract,
@@ -22,19 +23,35 @@ import type {
   StopConditionDefinition,
   WorkspacePolicyDefinition,
 } from "../design-library/runtime-types.ts";
-import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
+import type { LibraryObjectVersionRef, SouthstarWorkflowManifest, TaskExecutionSpec, WorkflowTaskDefinition } from "../manifests/types.ts";
 import {
-  collectSelectedVersionRefs,
+  collectSelectedObjectVersionRefs,
+  collectSelectedRefs,
+  isLibraryBackedRef,
   summarizeCandidates,
   type CandidateSelectionSummary,
 } from "./composition-selection-summary.ts";
 import { validateWorkflowCompositionPlan } from "./composition-validator.ts";
+import {
+  buildGoalRequirementCoverage,
+  type GoalRequirementCoverageV1,
+} from "./goal-requirement-coverage.ts";
+import {
+  goalContractHash,
+  requirementSpecFromGoalContract,
+  type GoalContractV1,
+} from "./goal-contract.ts";
+import type { GoalDesignPackageV1 } from "./goal-design.ts";
+import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 
 export type CompileWorkflowCompositionInput = {
   runId: string;
   goalPrompt: string;
+  goalContract: GoalContractV1;
   candidatePacket: CandidatePacket;
   composition: WorkflowCompositionPlan;
+  goalDesignPackage?: GoalDesignPackageV1;
+  targetRequirementIds?: string[];
   scope?: string;
   manifestDomain?: string;
 };
@@ -43,6 +60,7 @@ export type OrchestrationSnapshotV1 = {
   schemaVersion: "southstar.orchestration_snapshot.v1";
   draftId: string;
   requirementSpec: CandidatePacket["requirementSpec"];
+  goalContractHash: string;
   candidatePacketHash: string;
   candidateSummary: CandidateSelectionSummary;
   selectedCompositionPlan: WorkflowCompositionPlan;
@@ -50,12 +68,15 @@ export type OrchestrationSnapshotV1 = {
   compiler: {
     version: "library-constrained-compiler-v1";
     manifestHash: string;
+    selectedLibraryRefs: string[];
     libraryVersionRefs: string[];
+    libraryObjectVersionRefs: LibraryObjectVersionRef[];
   };
 };
 
 export type CompiledWorkflowComposition = {
   workflow: SouthstarWorkflowManifest;
+  goalRequirementCoverage: GoalRequirementCoverageV1;
   orchestrationSnapshot: OrchestrationSnapshotV1;
 };
 
@@ -63,18 +84,69 @@ export async function compileWorkflowComposition(
   db: SouthstarDb,
   input: CompileWorkflowCompositionInput,
 ): Promise<CompiledWorkflowComposition> {
-  const libraryScope = input.scope ?? "software";
-  const manifestDomain = input.manifestDomain ?? (libraryScope === "all" ? "software" : libraryScope);
-  const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, { scope: libraryScope });
+  const goalDomain = nonEmptyString(input.goalContract.domain)
+    ?? nonEmptyString(input.goalDesignPackage?.goalContract.domain);
+  const libraryScope = nonEmptyString(input.scope) ?? goalDomain ?? "all";
+  const manifestDomain = nonEmptyString(input.manifestDomain) ?? goalDomain ?? domainForManifestFallback(libraryScope);
+  const taskDomain = workflowTaskDomain(manifestDomain);
+  const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, {
+    scope: libraryScope,
+    goalContract: input.goalContract,
+    goalDesignPackage: input.goalDesignPackage,
+    targetRequirementIds: input.targetRequirementIds,
+  });
   if (!validation.ok) {
     throw new Error(`workflow composition failed validation: ${JSON.stringify(validation.issues)}`);
   }
 
   const { byAgentRef: rolesByAgentRef, byRoleId: resolvedRoles } = await resolveRuntimeRoles(db, input.composition);
   const { byProfileRef: profilesByRef, byProfileId: resolvedProfiles } = await resolveRuntimeProfiles(db, input.composition);
-  const artifactContracts = await resolveRuntimeArtifactContracts(db, input.composition);
-  const evaluatorPipelines = await resolveRuntimeEvaluatorPipelines(db, input.composition);
-  const planHash = hash(JSON.stringify(input.composition));
+  const artifactContracts = mergeById(
+    await resolveRuntimeArtifactContracts(db, input.composition),
+    input.goalDesignPackage ? compileGoalDesignArtifactContracts(input.goalDesignPackage) : [],
+  );
+  const evaluatorPipelines = mergeById(
+    await resolveRuntimeEvaluatorPipelines(db, input.composition),
+    input.goalDesignPackage ? compileGoalDesignEvaluatorPipelines(input.goalDesignPackage) : [],
+  );
+  const planHash = contentHashForPayload(input.composition);
+  const profileRuntimeRefs = [...resolvedProfiles.values()].flatMap((profile) => [
+    ...(profile.agentRef ? [profile.agentRef] : []),
+    ...profile.agentsMdRefs,
+    ...profile.skillRefs,
+    ...profile.mcpGrantRefs,
+    ...(profile.vaultLeasePolicyRefs ?? []),
+    ...profile.toolPolicy.allowedTools,
+    ...profile.toolPolicy.deniedTools,
+    ...profile.toolPolicy.requiresApprovalFor,
+    profile.contextPolicyRef,
+    profile.sessionPolicyRef,
+    ...(profile.systemPromptRef ? [profile.systemPromptRef] : []),
+  ]).filter(isLibraryBackedRef);
+  const selectedLibraryRefs = collectSelectedRefs(input.candidatePacket, input.composition, profileRuntimeRefs);
+  const selectedLibraryRefSet = new Set(selectedLibraryRefs);
+  const profileLibraryRefs = profileRuntimeRefs.filter((ref) => selectedLibraryRefSet.has(ref));
+  const libraryObjectVersionRefs = collectSelectedObjectVersionRefs(
+    input.candidatePacket,
+    input.composition,
+    profileLibraryRefs,
+  );
+  const libraryVersionRefs = [...new Set(libraryObjectVersionRefs.map((pair) => pair.versionRef))].sort();
+  const selectedTemplateRef = input.composition.selectedWorkflowTemplateRef;
+  let templateVersionId: string | undefined;
+  if (selectedTemplateRef) {
+    const selectedTemplate = await findLibraryObjectByKey(db, selectedTemplateRef);
+    templateVersionId = required(
+      selectedTemplate?.headVersionId,
+      `missing immutable version for ${selectedTemplateRef}`,
+    );
+    const selectedTemplatePair = libraryObjectVersionRefs.find((pair) =>
+      pair.objectKey === selectedTemplateRef
+    );
+    if (selectedTemplatePair?.versionRef !== templateVersionId) {
+      throw new Error(`selected workflow template object-version pair does not match current head: ${templateVersionId}`);
+    }
+  }
   const taskDefinitions = input.composition.tasks.map((task): WorkflowTaskDefinition => {
     const role = required(rolesByAgentRef.get(task.agentDefinitionRef), `missing resolved role for ${task.agentDefinitionRef}`);
     const profile = required(
@@ -85,23 +157,27 @@ export async function compileWorkflowComposition(
     const promptTemplateRef = normalizeInstructionRef(
       task.instructionRefs[0] ?? `instruction.${profile.promptTemplateRef}`,
     );
-    const nodePromptSpec = nodePromptSpecForTask(input.goalPrompt, task);
+    const nodePromptSpec = nodePromptSpecForTask(input.goalPrompt, input.goalContract, task);
     return {
       id: task.id,
       name: task.name,
-      domain: manifestDomain,
+      domain: taskDomain,
       roleRef: role.id,
       agentProfileRef: profile.id,
       dependsOn: task.dependsOn,
       promptInputs: {
         goalPrompt: input.goalPrompt,
         responsibility: task.responsibility,
+        sliceId: task.sliceId,
+        requirementIds: task.requirementIds,
         instructionRefs: task.instructionRefs,
         nodePromptSpec,
       },
       requiredArtifactRefs: task.outputArtifactRefs.map(normalizeArtifactRef),
       evaluatorPipelineRef: normalizeEvaluatorRef(task.evaluatorProfileRef),
       recoveryStrategyRefs: task.recoveryStrategyRefs,
+      ...(task.contextPolicyRef ? { contextPolicyRef: task.contextPolicyRef } : {}),
+      ...(task.workspacePolicyRef ? { workspacePolicyRef: task.workspacePolicyRef } : {}),
       execution: {
         engine: execution.engine ?? "tork",
         image: execution.image,
@@ -194,42 +270,85 @@ export async function compileWorkflowComposition(
     progressPolicy: { firstEventWithinSeconds: 10, minEventsPerLongTask: 3 },
     steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
     learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+    compiledFrom: selectedTemplateRef && templateVersionId
+      ? {
+          sourceKind: "workflow_template",
+          templateDefinitionId: selectedTemplateRef,
+          templateVersionId,
+          compilerVersion: "library-constrained-compiler-v1",
+          inputHash: planHash,
+          libraryVersionRefs,
+          libraryObjectVersionRefs,
+        }
+      : {
+          sourceKind: "library_primitives",
+          compilerVersion: "library-constrained-compiler-v1",
+          inputHash: planHash,
+          libraryVersionRefs,
+          libraryObjectVersionRefs,
+        },
   };
+  const goalRequirementCoverage = buildGoalRequirementCoverage({
+    goalContract: input.goalContract,
+    composition: input.composition,
+    targetRequirementIds: input.targetRequirementIds,
+  });
 
   return {
     workflow,
+    goalRequirementCoverage,
     orchestrationSnapshot: {
       schemaVersion: "southstar.orchestration_snapshot.v1",
       draftId: input.runId,
-      requirementSpec: input.candidatePacket.requirementSpec,
+      requirementSpec: requirementSpecFromGoalContract(input.goalContract),
+      goalContractHash: goalContractHash(input.goalContract),
       candidatePacketHash: hash(JSON.stringify(input.candidatePacket)),
       candidateSummary: summarizeCandidates(input.candidatePacket),
       selectedCompositionPlan: input.composition,
       validation,
       compiler: {
         version: "library-constrained-compiler-v1",
-        manifestHash: hash(JSON.stringify(workflow)),
-        libraryVersionRefs: collectSelectedVersionRefs(input.candidatePacket, input.composition),
+        manifestHash: contentHashForPayload(workflow),
+        selectedLibraryRefs,
+        libraryVersionRefs,
+        libraryObjectVersionRefs,
       },
     },
   };
 }
 
-function nodePromptSpecForTask(goalPrompt: string, task: WorkflowCompositionTask): WorkflowNodePromptSpec {
-  if (task.nodePromptSpec) return task.nodePromptSpec;
-  const nodeType = inferNodePromptType(task);
+function nodePromptSpecForTask(
+  goalPrompt: string,
+  goalContract: GoalContractV1,
+  task: WorkflowCompositionTask,
+): WorkflowNodePromptSpec {
+  const linkedRequirements = goalContract.requirements.filter((requirement) => task.requirementIds.includes(requirement.id));
+  if (task.nodePromptSpec) {
+    return linkedRequirements.length === 0
+      ? task.nodePromptSpec
+      : {
+          ...task.nodePromptSpec,
+          requirements: linkedRequirements.map((requirement) => requirement.statement),
+          acceptanceCriteria: linkedRequirements.flatMap((requirement) => requirement.acceptanceCriteria),
+        };
+  }
+  const nodeType = classifyWorkflowCompositionTask(task);
   return {
     nodeType,
     goal: `${titleFromTask(task)}: ${task.responsibility}`,
-    requirements: [`Advance the workflow goal: ${goalPrompt}`],
+    requirements: linkedRequirements.length > 0
+      ? linkedRequirements.map((requirement) => requirement.statement)
+      : [`Advance the workflow goal: ${goalPrompt}`],
     boundaries: ["Work only on this task's declared responsibility and artifacts."],
     nonGoals: ["Do not perform unrelated work outside this task."],
     deliverableDocuments: deliverableDocumentsForNodeType(nodeType),
     expectedOutputs: [...task.outputArtifactRefs],
     testCases: [],
-    acceptanceCriteria: task.outputArtifactRefs.length > 0
-      ? task.outputArtifactRefs.map((artifactRef) => `Produce ${artifactRef} with clear evidence.`)
-      : [`Complete ${task.id} and report evidence.`],
+    acceptanceCriteria: linkedRequirements.length > 0
+      ? linkedRequirements.flatMap((requirement) => requirement.acceptanceCriteria)
+      : task.outputArtifactRefs.length > 0
+        ? task.outputArtifactRefs.map((artifactRef) => `Produce ${artifactRef} with clear evidence.`)
+        : [`Complete ${task.id} and report evidence.`],
     ...(nodeType === "implement" ? { implementationScope: [task.responsibility] } : {}),
     ...(nodeType === "verify" ? { verificationChecks: ["Verify the declared task outputs and report evidence."] } : {}),
     ...(nodeType === "plan" ? { planningQuestions: ["What has to change to satisfy the goal?"], decisionCriteria: ["The plan is scoped, ordered, and testable."] } : {}),
@@ -262,17 +381,6 @@ function deliverableDocumentsForNodeType(nodeType: WorkflowNodePromptSpec["nodeT
     return [{ kind: "summary", title: "Workflow summary", required: true, format: "markdown", description: "Summarize completed work, accepted artifacts, verification, and handoff notes." }];
   }
   return [];
-}
-
-function inferNodePromptType(task: WorkflowCompositionTask): WorkflowNodePromptSpec["nodeType"] {
-  const haystack = `${task.id} ${task.name} ${task.responsibility} ${task.evaluatorProfileRef}`.toLowerCase();
-  if (/\b(repair|fix)\b/.test(haystack)) return "repair";
-  if (/\b(verify|test|check|validation)\b/.test(haystack)) return "verify";
-  if (/\b(review|quality|risk)\b/.test(haystack)) return "review";
-  if (/\b(summary|summarize|completion|handoff)\b/.test(haystack)) return "summary";
-  if (/\b(plan|spec|understand|inspect|explore)\b/.test(haystack)) return "plan";
-  if (/\b(implement|build|code|create)\b/.test(haystack)) return "implement";
-  return "general";
 }
 
 function titleFromTask(task: WorkflowCompositionTask): string {
@@ -372,6 +480,54 @@ async function resolveRuntimeEvaluatorPipelines(
     pipelines.set(pipeline.id, pipeline);
   }
   return [...pipelines.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function compileGoalDesignArtifactContracts(
+  packageValue: GoalDesignPackageV1,
+): ArtifactContract[] {
+  const contracts = new Map<string, ArtifactContract>();
+  for (const artifactRef of uniqueSorted(packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs))) {
+    const id = normalizeArtifactRef(artifactRef);
+    contracts.set(id, {
+      id,
+      artifactType: artifactRef,
+      requiredFields: ["summary"],
+      evidenceFields: [
+        "summary",
+        "acceptanceCriteria",
+        "requiredEvidenceKinds",
+      ],
+    });
+  }
+  return [...contracts.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+export function compileGoalDesignEvaluatorPipelines(
+  packageValue: GoalDesignPackageV1,
+): EvaluatorPipelineDefinition[] {
+  return packageValue.evaluatorContracts.map((contract): EvaluatorPipelineDefinition => ({
+    id: normalizeEvaluatorRef(contract.id),
+    evaluators: [{
+      id: `${normalizeEvaluatorRef(contract.id)}-goal-design-contract`,
+      kind: "evidence",
+      required: true,
+      config: {
+        requirementId: contract.requirementId,
+        acceptanceCriteria: contract.acceptanceCriteria,
+        requiredEvidenceKinds: contract.requiredEvidenceKinds,
+        independence: contract.independence,
+        failureClassifications: contract.failureClassifications,
+      },
+    }],
+    onFailure: { defaultStrategy: "request-workflow-revision" },
+  })).sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function mergeById<T extends { id: string }>(fallback: T[], preferred: T[]): T[] {
+  const valuesById = new Map<string, T>();
+  for (const value of fallback) valuesById.set(value.id, value);
+  for (const value of preferred) valuesById.set(value.id, value);
+  return [...valuesById.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
 function defaultContextPolicies(): ContextPolicyDefinition[] {
@@ -534,7 +690,7 @@ function synthesizeGeneratedRuntimeProfile(
   };
 }
 
-function executionForTask(task: WorkflowCompositionTask, plan: WorkflowCompositionPlan): Required<NonNullable<GeneratedAgentProfile["execution"]>> {
+function executionForTask(task: WorkflowCompositionTask, plan: WorkflowCompositionPlan): TaskExecutionSpec {
   const proposal = plan.generatedComponentProposals.find((candidate) =>
     candidate.id === task.agentProfileRef && candidate.kind === "agent_profile" && candidate.validationStatus === "validated"
   );
@@ -555,6 +711,16 @@ function executionForTask(task: WorkflowCompositionTask, plan: WorkflowCompositi
     timeoutSeconds: execution.timeoutSeconds ?? 900,
     infraRetry: { maxAttempts: execution.infraRetry?.maxAttempts ?? 1 },
   };
+}
+
+function workflowTaskDomain(value: string): WorkflowTaskDefinition["domain"] {
+  return value === "software" || value === "research" || value === "data-analysis" || value === "general"
+    ? value
+    : "general";
+}
+
+function domainForManifestFallback(scope: string): string {
+  return scope === "all" ? "general" : scope;
 }
 
 function synthesizeRuntimeRoleFromTask(task: WorkflowCompositionTask): RoleDefinition {
@@ -735,6 +901,10 @@ function required<T>(value: T | null | undefined, message: string): T {
     throw new Error(message);
   }
   return value;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

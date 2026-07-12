@@ -151,13 +151,26 @@ function runnerOutputContractDirective(envelope: HarnessRunInput["envelope"]): s
   const contractId = contract?.id;
   if (!contractId) return [];
   const fields = contractId === "verification_report"
-    ? ["summary", "pass", "safeToSave", "commandsRun", "testResults", "remainingFailures"]
+    ? ["summary", "pass", "safeToSave", "verifiedArtifactRefs", "commandsRun", "testResults", "remainingFailures"]
     : contract?.requiredFields ?? [];
   return [
     "Runner output contract:",
     "Return exactly one JSON object. Do not wrap it in markdown.",
     `Top-level shape: {"artifact": {...}, "progress": string[], "metrics": object}.`,
     `artifact must contain these fields at top level: ${fields.join(", ")}.`,
+    "pass and safeToSave must be booleans: true or false.",
+    "commandsRun entries must be executed command result objects, not bare strings.",
+    "commandsRun.status allowed values: passed, failed, blocked.",
+    `commandsRun item schema: {"command": "npm test" or ["npm","test"], "status": "passed", "exitCode": 0, "output": "bounded relevant output"}.`,
+    "Each commandsRun item must include status or exitCode; command records without an outcome do not satisfy command-output evidence.",
+    "exitCode must be an integer; use 0 for success and non-zero for failed command execution.",
+    "testResults.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap.",
+    "gating allowed values: blocking, non-gating.",
+    `testResults item schema: {"name": "check name", "command": "npm test", "status": "passed", "gating": "blocking", "details": "bounded evidence"}.`,
+    ...(contractId === "verification_report"
+      ? ["verifiedArtifactRefs must be an array of exact upstream ArtifactRef values evaluated by this verifier."]
+      : []),
+    "remainingFailures must be an array; use [] only when every blocking check passed.",
     `Do not put the report under artifact.${contractId}.`,
     `Do not return {"${contractId}": ...} as the primary artifact shape.`,
   ];

@@ -15,10 +15,9 @@ import {
 } from "../files/library-file-store.ts";
 import type { LibraryFileRecord } from "../files/library-file-types.ts";
 import { upsertRuntimeResourcePg } from "../../stores/postgres-runtime-store.ts";
-import type { LibraryPromptImportProposal } from "./prompt-library-importer.ts";
+import type { LibraryImportProposal } from "./library-import-proposal.ts";
 import {
   asImportSource,
-  extractLibraryImportProposal,
   type LibraryImportSource,
 } from "./library-import-extractor.ts";
 import {
@@ -48,7 +47,7 @@ const APPROVAL_LEASE_MS = 15 * 60 * 1000;
 export type LibraryImportDraftResult = {
   draftId: string;
   status: "draft";
-  proposal: LibraryPromptImportProposal;
+  proposal: LibraryImportProposal;
   documents?: LibraryImportSourceDocument[];
   candidates?: LibraryImportCandidate[];
   proposedEdges?: LibraryImportProposedEdge[];
@@ -58,7 +57,7 @@ export type LibraryImportDraftResult = {
 export type LibraryImportDraftApprovalResult = {
   draftId: string;
   status: "approved";
-  proposal: LibraryPromptImportProposal;
+  proposal: LibraryImportProposal;
   files: Array<{ relativePath: string }>;
   synced: Array<Awaited<ReturnType<typeof syncLibraryFileToGraph>>>;
 };
@@ -86,7 +85,7 @@ type LibraryImportDraftApplyReservation = {
   title: string;
   payload: Record<string, unknown>;
   summary: Record<string, unknown>;
-  proposal: LibraryPromptImportProposal;
+  proposal: LibraryImportProposal;
   approval: { actor: string; reason: string; approvedAt: string };
   approvalLease: { attemptId: string; startedAt: string; expiresAt: string };
 };
@@ -141,36 +140,20 @@ export async function createLibraryImportDraft(
       ...(sourceSnapshot.repoPath ? { sourceRepoPath: sourceSnapshot.repoPath } : {}),
     },
   });
-  const inlineSource = sourceHasInlineContent(source);
   input.progress?.({ event: "library.import.candidates.started", data: { sourceKind: source.kind } });
-  const analysis = input.llmProvider
-    ? await analyzeLibraryImportWithLlm({
-      documents,
-      scope: input.scope,
-      llmProvider: input.llmProvider,
-      requestPrompt: input.requestPrompt,
-      sourceRepoPath: sourceSnapshot.repoPath,
-    })
-    : inlineSource
-      ? { candidates: [], proposedEdges: [] }
-      : await analyzeLibraryImportWithLlm({
-        documents,
-        scope: input.scope,
-        llmProvider: input.llmProvider,
-        requestPrompt: input.requestPrompt,
-        sourceRepoPath: sourceSnapshot.repoPath,
-      });
+  const analysis = await analyzeLibraryImportWithLlm({
+    documents,
+    scope: input.scope,
+    llmProvider: input.llmProvider,
+    requestPrompt: input.requestPrompt,
+    sourceRepoPath: sourceSnapshot.repoPath,
+  });
   input.progress?.({
     event: "library.import.candidates.completed",
     data: { candidateCount: analysis.candidates.length },
   });
   const draftId = `library-import-draft-${randomUUID()}`;
-  const proposal = inlineSource
-    ? extractLibraryImportProposal({
-      source,
-      scope: input.scope,
-    })
-    : proposalFromCandidates(draftId, analysis.candidates);
+  const proposal = proposalFromCandidates(draftId, analysis.candidates);
   await upsertRuntimeResourcePg(db, {
     resourceType: LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE,
     resourceKey: draftId,
@@ -212,12 +195,7 @@ export async function createLibraryImportDraft(
   };
 }
 
-function sourceHasInlineContent(source: LibraryImportSource): boolean {
-  if (source.kind === "paste") return true;
-  return typeof source.content === "string" && source.content.length > 0;
-}
-
-function proposalFromCandidates(draftId: string, candidates: LibraryImportCandidate[]): LibraryPromptImportProposal {
+function proposalFromCandidates(draftId: string, candidates: LibraryImportCandidate[]): LibraryImportProposal {
   const files = candidates.map((candidate) => renderLibraryImportCandidate(draftId, candidate));
   return {
     files,
@@ -238,7 +216,11 @@ function candidateObjectKind(kind: LibraryImportCandidateKind): string {
   if (kind === "agent") return "agent_definition";
   if (kind === "skill") return "skill_spec";
   if (kind === "tool") return "tool_definition";
-  return "mcp_grant";
+  if (kind === "mcp") return "mcp_tool_grant";
+  if (kind === "domain") return "domain_taxonomy";
+  if (kind === "capability") return "capability_spec";
+  if (kind === "artifact") return "artifact_contract";
+  return "evaluator_profile";
 }
 
 export async function approveLibraryImportDraft(
@@ -251,7 +233,7 @@ export async function approveLibraryImportDraft(
 
   try {
     const preflighted = await preflightLibraryImportProposal(db, { root: input.root, proposal: reserved.proposal });
-    const files = [];
+    const files: Array<{ relativePath: string }> = [];
     for (const file of preflighted) {
       try {
         files.push(await writeNewLibraryFile({
@@ -351,7 +333,7 @@ export async function installLibraryImportCandidates(
     const ontologyAnalysis = input.llmProvider
       ? await analyzeLibraryImportOntologyResultWithLlm({
         candidates: selectedCandidates,
-        scope: selectedCandidates[0]?.scope ?? "software",
+        scope: selectedCandidates[0]?.scope ?? "general",
         llmProvider: input.llmProvider,
         requestPrompt: typeof draft.payload.requestPrompt === "string" ? draft.payload.requestPrompt : undefined,
         sourceRepoPath: typeof draft.payload.sourceRepoPath === "string" ? draft.payload.sourceRepoPath : undefined,
@@ -418,7 +400,7 @@ export async function installLibraryImportCandidates(
     }
 
     const result = await db.tx(async (tx) => {
-      const syncedFiles = [];
+      const syncedFiles: Array<Awaited<ReturnType<typeof syncLibraryFileRecordToGraph>>> = [];
       for (const file of preflighted) {
         syncedFiles.push(await syncLibraryFileRecordToGraph(tx, file.file));
       }
@@ -542,7 +524,7 @@ export async function installLibraryImportCandidates(
 
 async function preflightLibraryImportProposal(
   db: SouthstarDb,
-  input: { root: string; proposal: LibraryPromptImportProposal },
+  input: { root: string; proposal: LibraryImportProposal },
 ): Promise<PreflightedLibraryImportFile[]> {
   const seenPaths = new Set<string>();
   const seenObjectKeys = new Set<string>();
@@ -821,7 +803,25 @@ function renderLibraryImportCandidate(
     ...(candidate.sourcePath ? [`importSourcePath: ${yamlScalar(candidate.sourcePath)}`] : []),
   ].join("\n");
 
-  if (candidate.kind === "tool" || candidate.kind === "mcp") {
+  if (candidate.kind !== "agent" && candidate.kind !== "skill") {
+    const definitionLines = candidate.kind === "domain"
+      ? yamlArray("aliases", candidate.aliases)
+      : candidate.kind === "capability"
+        ? [
+          `description: ${yamlScalar(candidate.description ?? "")}`,
+          ...yamlArray("requiredOperations", candidate.requiredOperations),
+        ]
+        : candidate.kind === "artifact"
+          ? [
+            `artifactType: ${yamlScalar(candidate.artifactType ?? "")}`,
+            ...yamlArray("evidenceKinds", candidate.evidenceKinds),
+          ]
+          : candidate.kind === "evaluator"
+            ? [
+              ...yamlArray("validatesArtifactRefs", candidate.validatesArtifactRefs),
+              ...yamlArray("evidenceKinds", candidate.evidenceKinds),
+            ]
+            : [`description: ${yamlScalar(`Imported ${candidate.kind} candidate from library import draft.`)}`];
     return {
       relativePath,
       content: [
@@ -830,7 +830,7 @@ function renderLibraryImportCandidate(
         `title: ${title}`,
         `scope: ${scope}`,
         "status: approved",
-        `description: ${yamlScalar(`Imported ${candidate.kind} candidate from library import draft.`)}`,
+        ...definitionLines,
         provenance,
         "",
       ].join("\n"),
@@ -966,14 +966,22 @@ function candidateRelativePath(kind: LibraryImportCandidateKind, slug: string): 
   if (kind === "agent") return `agents/${slug}.agent.md`;
   if (kind === "skill") return `skills/${slug}.skill.md`;
   if (kind === "tool") return `tools/${slug}.tool.yaml`;
-  return `mcp/${slug}.mcp.yaml`;
+  if (kind === "mcp") return `mcp/${slug}.mcp.yaml`;
+  if (kind === "domain") return `domains/${slug}.domain.yaml`;
+  if (kind === "capability") return `capabilities/${slug}.capability.yaml`;
+  if (kind === "artifact") return `artifacts/${slug}.artifact.yaml`;
+  return `evaluators/${slug}.evaluator.yaml`;
 }
 
 function candidateSchemaVersion(kind: LibraryImportCandidateKind): string {
   if (kind === "agent") return "southstar.library.agent_definition_file.v1";
   if (kind === "skill") return "southstar.library.skill_spec_file.v1";
   if (kind === "tool") return "southstar.library.tool_definition_file.v1";
-  return "southstar.library.mcp_grant_file.v1";
+  if (kind === "mcp") return "southstar.library.mcp_grant_file.v1";
+  if (kind === "domain") return "southstar.library.domain_taxonomy_file.v1";
+  if (kind === "capability") return "southstar.library.capability_spec_file.v1";
+  if (kind === "artifact") return "southstar.library.artifact_contract_file.v1";
+  return "southstar.library.evaluator_profile_file.v1";
 }
 
 function asImportCandidates(value: unknown): LibraryImportCandidate[] {
@@ -993,6 +1001,14 @@ function asImportCandidates(value: unknown): LibraryImportCandidate[] {
       ...(typeof record.sourcePath === "string" && record.sourcePath.length > 0 ? { sourcePath: record.sourcePath } : {}),
       selectedByDefault: typeof record.selectedByDefault === "boolean" ? record.selectedByDefault : true,
       ...(typeof record.confidence === "number" ? { confidence: record.confidence } : {}),
+      ...(typeof record.description === "string" && record.description.length > 0 ? { description: record.description } : {}),
+      ...(stringArray(record.aliases).length > 0 ? { aliases: stringArray(record.aliases) } : {}),
+      ...(stringArray(record.requiredOperations).length > 0 ? { requiredOperations: stringArray(record.requiredOperations) } : {}),
+      ...(typeof record.artifactType === "string" && record.artifactType.length > 0 ? { artifactType: record.artifactType } : {}),
+      ...(stringArray(record.evidenceKinds).length > 0 ? { evidenceKinds: stringArray(record.evidenceKinds) } : {}),
+      ...(stringArray(record.validatesArtifactRefs).length > 0
+        ? { validatesArtifactRefs: stringArray(record.validatesArtifactRefs) }
+        : {}),
     };
   });
 }
@@ -1021,7 +1037,10 @@ function asImportProposedEdges(value: unknown): LibraryImportProposedEdge[] {
 }
 
 function requiredImportCandidateKind(value: unknown): LibraryImportCandidateKind {
-  if (value === "agent" || value === "skill" || value === "tool" || value === "mcp") return value;
+  if (
+    value === "agent" || value === "skill" || value === "tool" || value === "mcp"
+    || value === "domain" || value === "capability" || value === "artifact" || value === "evaluator"
+  ) return value;
   throw new Error(`library import candidate kind is invalid: ${String(value)}`);
 }
 
@@ -1055,6 +1074,16 @@ function requiredImportEdgeType(value: unknown): LibraryImportEdgeType {
 
 function yamlScalar(value: string): string {
   return JSON.stringify(value.replaceAll(/\r?\n/g, " ").trim());
+}
+
+function yamlArray(key: string, values: string[] | undefined): string[] {
+  if (!values || values.length === 0) return [`${key}: []`];
+  return [`${key}:`, ...values.map((value) => `  - ${yamlScalar(value)}`)];
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => typeof item === "string" && item.length > 0 ? [item] : []);
 }
 
 async function libraryFileExists(root: string, relativePath: string): Promise<boolean> {
@@ -1339,7 +1368,7 @@ async function markLibraryImportCandidateInstallFailed(
 function approvedResultFromPayload(
   draftId: string,
   payload: Record<string, unknown>,
-  proposal: LibraryPromptImportProposal,
+  proposal: LibraryImportProposal,
 ): LibraryImportDraftApprovalResult {
   const applied = asRecord(payload.applied);
   const files = Array.isArray(applied.files)
@@ -1389,7 +1418,7 @@ function withoutTransientApplyState(payload: Record<string, unknown>): Record<st
   return rest;
 }
 
-function asProposal(value: unknown): LibraryPromptImportProposal {
+function asProposal(value: unknown): LibraryImportProposal {
   const record = asRecord(value);
   const files = Array.isArray(record.files)
     ? record.files.map((file) => {
@@ -1437,6 +1466,6 @@ function requiredString(value: unknown, field: string): string {
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) return value;
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) return value as Record<string, unknown>;
   return {};
 }

@@ -1,0 +1,15 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.local-flashcard-system-verifier
+title: "Local Flashcard System Verifier"
+scope: "general"
+status: approved
+validatesArtifactRefs:
+  - "artifact.flashcard-deck-spec"
+  - "artifact.review-session-results"
+evidenceKinds:
+  - "test-result"
+  - "command-output"
+  - "workspace-snapshot"
+importDraftId: "library-import-draft-a50847a7-93f1-4a88-bb23-25a5b5947e52"
+importCandidateKey: "evaluator.local-flashcard-system-verifier"
+importSourcePath: "Library-chat-prompt.md"

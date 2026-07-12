@@ -1,4 +1,4 @@
-import type { WorkflowDag } from "./types";
+import type { GoalMissionReadModel, WorkflowCommandDescriptor, WorkflowDag } from "./types";
 
 export type V2PlannerDraftTaskSummary = {
   taskId: string;
@@ -47,6 +47,13 @@ function modelFromProvider(provider: "pi" | "codex"): string {
   return provider === "pi" ? "pi-agent-default" : "gpt-5-codex";
 }
 
+function profileResourcePathFromProfileRef(profileRef: string): string {
+  const segment = profileRef
+    .replace(/^profile\./, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-") || "agent";
+  return `profiles/${segment}.yaml`;
+}
+
 function readinessFromDraftStatus(
   status: string,
   validationIssueCount: number,
@@ -93,7 +100,12 @@ function dependencyLevels(tasks: V2PlannerDraftTaskSummary[]): Map<string, numbe
   return levels;
 }
 
-export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrationView): WorkflowDag {
+export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrationView, runtime?: {
+  runId?: string;
+  runStatus?: "awaiting_approval" | "scheduling";
+  mission?: GoalMissionReadModel;
+  approvalCommand?: WorkflowCommandDescriptor;
+}): WorkflowDag {
   const readiness = readinessFromDraftStatus(input.status, input.validationIssues.length);
   const levels = dependencyLevels(input.taskSummaries);
   const nodes = input.taskSummaries.map((task, index) => {
@@ -103,12 +115,13 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
       id: task.taskId,
       taskId: task.taskId,
       draftId: input.draftId,
-      mode: "draft" as const,
+      ...(runtime?.runId ? { runId: runtime.runId } : {}),
+      mode: runtime?.runId ? "runtime" as const : "draft" as const,
       label: task.taskName || task.taskId,
       role: task.roleRef ?? "maker",
       agentRef: `agent.${agentSegmentFromProfile(profileRef)}`,
       profileRef,
-      profileResourcePath: `software/agents/${agentSegmentFromProfile(profileRef)}/profile.json`,
+      profileResourcePath: profileResourcePathFromProfileRef(profileRef),
       provider,
       model: modelFromProvider(provider),
       level: levels.get(task.taskId) ?? index,
@@ -124,8 +137,11 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
     id: input.draftId,
     draftId: input.draftId,
     draftStatus: input.status,
-    mode: "draft",
-    templateId: "template.graph-dynamic-workflow",
+    ...(runtime?.runId ? { runId: runtime.runId } : {}),
+    ...(runtime?.runStatus ? { runStatus: runtime.runStatus } : {}),
+    ...(runtime?.mission ? { mission: runtime.mission } : {}),
+    ...(runtime?.approvalCommand ? { approvalCommand: runtime.approvalCommand } : {}),
+    mode: runtime?.runId ? "runtime" : "draft",
     templateTitle: input.workflowId || "Planner Draft",
     prompt: input.goalPrompt,
     expandedByDefault: true,

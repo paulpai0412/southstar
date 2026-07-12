@@ -45,6 +45,7 @@ test("validates compiledFrom metadata when present", () => {
     compilerVersion: "design-library-compiler-v1",
     inputHash: "1".repeat(64),
     libraryVersionRefs: ["ver-software-template-1"],
+    libraryObjectVersionRefs: [{ objectKey: "obj-software-template", versionRef: "ver-software-template-1" }],
   };
   assert.deepEqual(validatePlanBundle(bundle), { ok: true, issues: [] });
 
@@ -52,6 +53,137 @@ test("validates compiledFrom metadata when present", () => {
   const invalid = validatePlanBundle(bundle);
   assert.equal(invalid.ok, false);
   assert.match(invalid.issues.map((issue) => issue.path).join("\n"), /compiledFrom\.inputHash/);
+});
+
+test("compiledFrom includes its selected template version in immutable Library refs", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    templateDefinitionId: "template.software-feature",
+    templateVersionId: "template.software-feature@1",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["agent.software-maker@1"],
+    libraryObjectVersionRefs: [{ objectKey: "template.software-feature", versionRef: "agent.software-maker@1" }],
+  };
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /templateVersionId.*libraryVersionRefs/i);
+});
+
+test("compiledFrom rejects swapped Library object-version pairs", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    templateDefinitionId: "template.software-feature",
+    templateVersionId: "template.software-feature@1",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["template.software-feature@1", "agent.software-maker@1"],
+    libraryObjectVersionRefs: [
+      { objectKey: "template.software-feature", versionRef: "agent.software-maker@1" },
+      { objectKey: "agent.software-maker", versionRef: "template.software-feature@1" },
+    ],
+  };
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /object-version|templateDefinitionId/i);
+});
+
+test("compiledFrom reports malformed object-version pairs without throwing", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    templateDefinitionId: "template.software-feature",
+    templateVersionId: "template.software-feature@1",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["template.software-feature@1"],
+    libraryObjectVersionRefs: [null],
+  } as never;
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => `${issue.path}: ${issue.message}`).join("\n"), /object-version pair/i);
+});
+
+test("compiledFrom reports malformed version-ref containers without throwing", () => {
+  for (const malformed of [{}, 42, null]) {
+    const flatBundle = makeBundle();
+    flatBundle.workflow.compiledFrom = {
+      templateDefinitionId: "template.software-feature",
+      templateVersionId: "template.software-feature@1",
+      compilerVersion: "library-constrained-compiler-v1",
+      inputHash: "1".repeat(64),
+      libraryVersionRefs: malformed,
+      libraryObjectVersionRefs: [{ objectKey: "template.software-feature", versionRef: "template.software-feature@1" }],
+    } as never;
+
+    const flatResult = validatePlanBundle(flatBundle);
+    assert.equal(flatResult.ok, false);
+    assert.match(flatResult.issues.map((issue) => issue.path).join("\n"), /compiledFrom\.libraryVersionRefs/);
+
+    const pairBundle = makeBundle();
+    pairBundle.workflow.compiledFrom = {
+      templateDefinitionId: "template.software-feature",
+      templateVersionId: "template.software-feature@1",
+      compilerVersion: "library-constrained-compiler-v1",
+      inputHash: "1".repeat(64),
+      libraryVersionRefs: ["template.software-feature@1"],
+      libraryObjectVersionRefs: malformed,
+    } as never;
+
+    const pairResult = validatePlanBundle(pairBundle);
+    assert.equal(pairResult.ok, false);
+    assert.match(pairResult.issues.map((issue) => issue.path).join("\n"), /compiledFrom\.libraryObjectVersionRefs/);
+  }
+});
+
+test("compiledFrom validates library_primitives provenance without template fields", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    sourceKind: "library_primitives",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["agent.software-maker@1"],
+    libraryObjectVersionRefs: [{ objectKey: "agent.software-maker", versionRef: "agent.software-maker@1" }],
+  };
+
+  assert.deepEqual(validatePlanBundle(bundle), { ok: true, issues: [] });
+
+  bundle.workflow.compiledFrom = {
+    sourceKind: "library_primitives",
+    templateDefinitionId: "template.software-feature",
+    templateVersionId: "template.software-feature@1",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["template.software-feature@1"],
+    libraryObjectVersionRefs: [{ objectKey: "template.software-feature", versionRef: "template.software-feature@1" }],
+  } as never;
+
+  const primitiveWithTemplateFields = validatePlanBundle(bundle);
+  assert.equal(primitiveWithTemplateFields.ok, false);
+  assert.match(primitiveWithTemplateFields.issues.map((issue) => issue.message).join("\n"), /must not include template fields/);
+});
+
+test("compiledFrom rejects the legacy dynamic workflow template sentinel", () => {
+  const bundle = makeBundle();
+  bundle.workflow.compiledFrom = {
+    sourceKind: "workflow_template",
+    templateDefinitionId: "template.graph-dynamic-workflow",
+    templateVersionId: "template.graph-dynamic-workflow",
+    compilerVersion: "library-constrained-compiler-v1",
+    inputHash: "1".repeat(64),
+    libraryVersionRefs: ["template.graph-dynamic-workflow"],
+    libraryObjectVersionRefs: [{ objectKey: "template.graph-dynamic-workflow", versionRef: "template.graph-dynamic-workflow" }],
+  };
+
+  const result = validatePlanBundle(bundle);
+
+  assert.equal(result.ok, false);
+  assert.match(result.issues.map((issue) => issue.message).join("\n"), /sentinel workflow template ids/);
 });
 
 function makeBundle(): PlanBundle {

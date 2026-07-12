@@ -1,0 +1,14 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.progress-tracking
+title: "Progress Tracking"
+scope: "general"
+status: approved
+description: "Compute and persist learning progress metrics from study outcomes for local review cycles."
+requiredOperations:
+  - "computeSessionStats"
+  - "updateCardMastery"
+  - "summarizeProgress"
+  - "listDueCards"
+importDraftId: "library-import-draft-251a9454-7eb0-40e8-96da-6fb0e39c5bc3"
+importCandidateKey: "capability.progress-tracking"
+importSourcePath: "Library-chat-prompt.md"

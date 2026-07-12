@@ -1,3 +1,5 @@
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
+import { findApprovedLibraryObjectsByKind } from "../design-library/library-graph-store.ts";
 import type {
   CandidatePacket,
   LibraryDefinitionKind,
@@ -5,7 +7,10 @@ import type {
   WorkflowCompositionTask,
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
+import type { SouthstarDb } from "../db/postgres.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
+import type { GoalContractV1 } from "./goal-contract.ts";
+import type { GoalDesignPackageV1 } from "./goal-design.ts";
 import {
   GENERATED_AGENT_PROFILE_ALLOWED_VALUES,
   GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
@@ -32,6 +37,14 @@ export type LlmWorkflowComposerOptions = {
   client: LlmTextClient;
   maxOutputChars?: number;
   temperature?: number;
+  composerSop?: ResolvedWorkflowComposerSopV1 | (() => Promise<ResolvedWorkflowComposerSopV1>);
+};
+
+export type ResolvedWorkflowComposerSopV1 = {
+  objectKey: string;
+  versionRef: string;
+  stateHash: string;
+  body: string;
 };
 
 const LIBRARY_DEFINITION_KIND_VALUES: readonly LibraryDefinitionKind[] = [
@@ -64,7 +77,6 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
   required: [
     "schemaVersion",
     "title",
-    "selectedWorkflowTemplateRef",
     "rationale",
     "tasks",
     "rejectedCandidates",
@@ -95,8 +107,10 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
       additionalProperties: false,
       required: [
         "id",
+        "sliceId",
         "name",
         "responsibility",
+        "requirementIds",
         "nodePromptSpec",
         "dependsOn",
         "templateSlotRef",
@@ -115,8 +129,10 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
       ],
       properties: {
         id: { type: "string", minLength: 1 },
+        sliceId: { type: "string", minLength: 1 },
         name: { type: "string", minLength: 1 },
         responsibility: { type: "string", minLength: 1 },
+        requirementIds: { type: "array", items: { type: "string", minLength: 1 } },
         nodePromptSpec: { $ref: "#/$defs/nodePromptSpec" },
         dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
         templateSlotRef: { type: "string", minLength: 1 },
@@ -331,7 +347,10 @@ export class LlmWorkflowComposer implements WorkflowComposer {
   constructor(private readonly options: LlmWorkflowComposerOptions) {}
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
-    const prompt = renderComposerPrompt(input.goalPrompt, input.candidatePacket);
+    const composerSop = typeof this.options.composerSop === "function"
+      ? await this.options.composerSop()
+      : this.options.composerSop;
+    const prompt = renderComposerPrompt(input.goalPrompt, input.goalContract, input.candidatePacket, input.goalDesignPackage, composerSop);
     const textInput = {
       model: this.options.model,
       prompt,
@@ -343,6 +362,28 @@ export class LlmWorkflowComposer implements WorkflowComposer {
       : await this.options.client.generateText(textInput);
     return parseWorkflowCompositionPlanFromText(text, this.options.maxOutputChars ?? 100_000);
   }
+}
+
+export async function loadWorkflowComposerSopPg(db: SouthstarDb): Promise<ResolvedWorkflowComposerSopV1> {
+  const skills = (await findApprovedLibraryObjectsByKind(db, "skill_spec"))
+    .filter((skill) => skill.state.purpose === "composer_guidance");
+  if (skills.length !== 1) {
+    throw new Error(`expected exactly one approved Workflow Composer SOP skill, found ${skills.length}`);
+  }
+  const skill = skills[0]!;
+  if (!skill.headVersionId) throw new Error(`Workflow Composer SOP skill missing version ref: ${skill.objectKey}`);
+  const body = typeof skill.state.body === "string"
+    ? skill.state.body
+    : typeof skill.state.instructions === "string"
+      ? skill.state.instructions
+      : "";
+  if (body.trim().length === 0) throw new Error(`Workflow Composer SOP skill missing body: ${skill.objectKey}`);
+  return {
+    objectKey: skill.objectKey,
+    versionRef: skill.headVersionId,
+    stateHash: contentHashForPayload(skill.state),
+    body,
+  };
 }
 
 export function parseWorkflowCompositionPlanFromText(text: string, maxOutputChars: number): WorkflowCompositionPlan {
@@ -382,8 +423,29 @@ export function parseWorkflowCompositionPlanFromText(text: string, maxOutputChar
   return parsed as WorkflowCompositionPlan;
 }
 
-export function renderComposerPrompt(goalPrompt: string, candidatePacket: CandidatePacket): string {
+export function renderComposerPrompt(
+  goalPrompt: string,
+  goalContract: GoalContractV1,
+  candidatePacket: CandidatePacket,
+  goalDesignPackage?: ComposeWorkflowInput["goalDesignPackage"],
+  composerSop?: ResolvedWorkflowComposerSopV1,
+): string {
   const boundedPacket = boundCandidatePacket(candidatePacket);
+  const forbiddenGoalDesignRefs = goalDesignPackage ? goalDesignForbiddenRefs(goalDesignPackage) : [];
+  const sliceConstraints = goalDesignPackage
+      ? [
+        "GoalDesignPackage is authoritative.",
+        "GoalDesignPackage is a planning constraint, not a selectable Library primitive.",
+        "Never use GoalDesignPackage.goalDesignSkillRef, goalDesignSkillVersionRef, or any file/path alias of the Goal Design skill as agentDefinitionRef, skillRefs, instructionRefs, agentProfileRef, evaluatorProfileRef, toolGrantRefs, or mcpGrantRefs.",
+        "Every producer, evaluator, repair, review, and summary task must name one existing sliceId.",
+        "Producer tasks may use only requirementIds owned by their sliceId. Verify/review tasks may cover multiple slices when their dependencies and evaluator contracts justify it.",
+        "Do not merge slices, move requirement ownership, or invent slice ids.",
+        "A dependency is valid only when inputArtifactRefs consumes an upstream outputArtifactRef.",
+        "If the Slice Plan cannot be compiled, return slice_plan_revision_required instead of rewriting it.",
+      ]
+    : [
+        "Use the Goal Contract and candidate graph to choose the smallest executable DAG.",
+      ];
   return [
     "You are Southstar's library-constrained workflow architect.",
     "Return exactly one JSON object matching schemaVersion southstar.workflow_composition_plan.v1.",
@@ -409,14 +471,53 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
     "Validation-oriented agent profiles may use a lightweight/no-reasoning model profile when deterministic shell/test verification is sufficient, but must still include provider, harnessRef, instruction, toolPolicy, and budgetPolicy.",
     "Never create cyclic dependencies. Runtime dynamic repair is represented by appended repair/reverify nodes, not by back edges to earlier nodes.",
     "Every task must include nodePromptSpec. Treat nodePromptSpec as the per-node prompt contract that the Docker worker will see: nodeType, goal, requirements, boundaries, nonGoals, deliverableDocuments, expectedOutputs, testCases, acceptanceCriteria, and optional failureReportContract.",
+    "Every task must include sliceId. When GoalDesignPackage is provided, sliceId must come from GoalDesignPackage.slicePlan.slices.",
+    "Every task must include requirementIds selected from GoalContractRequirements, except explicit coordination or summary nodes may use an empty array.",
+    "Every blocking Goal Contract requirement must have an executable producer with an output artifact and a distinct independent evaluator task using verify or review that produces evidence.",
+    ...(goalDesignPackage ? sliceConstraints : ["Use the Goal Contract and WorkflowComposerSopSkill to choose the smallest executable DAG."]),
     "nodePromptSpec.nodeType must be one of plan, implement, verify, repair, review, summary, or general. Choose it from the node's role in the DAG, not from the worker profile name alone.",
     "nodePromptSpec must be specific to that node, not a copy of the global goal. Implementation nodes must include concrete boundaries and expected outputs. Validation/review nodes must include concrete testCases or verification checks and acceptanceCriteria.",
     "The generated profile instruction must explain the worker's exact responsibility, selected skills/tools/MCP grants, success criteria, and what artifact/error report it must produce.",
     "Generated component proposals are proposal-only unless they are validated agent_profile proposals selected as agentProfileRef.",
     "Use DagAndAgentProfileSop as the mandatory generation procedure.",
+    ...(composerSop ? ["Use WorkflowComposerSopSkill as the mandatory slice-to-DAG procedure."] : []),
     "",
     `Goal: ${goalPrompt}`,
     "",
+    "GoalContractRequirements:",
+    JSON.stringify(goalContract.requirements.map((requirement) => ({
+      id: requirement.id,
+      statement: requirement.statement,
+      acceptanceCriteria: requirement.acceptanceCriteria,
+      blocking: requirement.blocking,
+    }))),
+    "",
+    ...(composerSop
+      ? [
+          "WorkflowComposerSopSkill:",
+          JSON.stringify({
+            objectKey: composerSop.objectKey,
+            versionRef: composerSop.versionRef,
+            stateHash: composerSop.stateHash,
+            body: composerSop.body,
+          }),
+          "",
+        ]
+      : []),
+    ...(goalDesignPackage
+      ? [
+          "ForbiddenGoalDesignRefs:",
+          JSON.stringify(forbiddenGoalDesignRefs),
+          "These refs and aliases identify the Goal Design SOP used before composition. They must never be used as agentDefinitionRef, skillRefs, instructionRefs, agentProfileRef, evaluatorProfileRef, toolGrantRefs, or mcpGrantRefs.",
+          "",
+          "GoalDesignPackage:",
+          JSON.stringify(goalDesignPackage),
+          "",
+          "SliceConstraints:",
+          JSON.stringify(sliceConstraints),
+          "",
+        ]
+      : []),
     "DagAndAgentProfileSop:",
     renderDagAndAgentProfileSop(),
     "",
@@ -448,12 +549,31 @@ export function renderComposerPrompt(goalPrompt: string, candidatePacket: Candid
   ].join("\n");
 }
 
+function goalDesignForbiddenRefs(goalDesignPackage: GoalDesignPackageV1): string[] {
+  const refs = [
+    goalDesignPackage.goalDesignSkillRef,
+    goalDesignPackage.goalDesignSkillVersionRef,
+  ].filter((ref): ref is string => typeof ref === "string" && ref.trim().length > 0);
+  const slug = goalDesignPackage.goalDesignSkillRef?.startsWith("skill.")
+    ? goalDesignPackage.goalDesignSkillRef.slice("skill.".length).replace(/\./g, "-")
+    : undefined;
+  if (slug) {
+    refs.push(
+      `${slug}.skill.md`,
+      `skills/${slug}.skill.md`,
+      `library/skills/${slug}.skill.md`,
+    );
+  }
+  return [...new Set(refs)];
+}
+
 function renderDagAndAgentProfileSop(): string {
   return [
     "1. Interpret the user goal as the source of requirements, acceptance criteria, risk, and required deliverables.",
     "2. Use GraphMetadataCandidates.nodes and GraphMetadataCandidates.edges as the only library candidate source. Build a task-specific candidate subgraph by semantic fit to the goal and by edge closure.",
     "3. Do not select stored agent_profile refs. Every task must use a generated profile id, and that id must appear in generatedComponentProposals as kind agent_profile with validationStatus validated.",
     "4. Design a DAG, not a manifest. Use explicit dependsOn edges. Choose task count and workerKind dynamically from the goal, graph evidence, risk, and deliverables.",
+    "4a. Attach every task to the requirementIds it contributes to. Explicit coordination and summary nodes are the only exception. Every blocking requirement needs artifact-producing work and an independent verify/review evaluator with evidence.",
     "5. Execution workers create or modify requested artifacts. Validation, review, or deterministic-check workers positively verify artifacts when the workflow creates or modifies them.",
     "6. Initial workflow rule: when validation can fail, do not automatically add repair/reverify nodes. Instead, make the validation node produce an explicit repair-ready failure artifact with pass, safeToSave, blockingTests, failed commands, affected files, and concrete repair instructions.",
     "6a. Runtime dynamic repair rule: when the goal begins with a Runtime dynamic repair request, output a bounded appended flow: one repair node and one reverify node unless the failure evidence clearly requires more. The repair node consumes the failed verification artifact and prior implementation artifacts, preserves existing behavior, fixes only the reported failures, and outputs a repaired implementation artifact. The reverify node depends on the repair node, reruns the failed checks plus relevant regression checks, and outputs a verification_report with pass, safeToSave, blockingTests, evidence, and remaining failures.",
@@ -493,7 +613,6 @@ function validateStrictWorkflowCompositionPlan(value: unknown): WorkflowComposit
     [
       "schemaVersion",
       "title",
-      "selectedWorkflowTemplateRef",
       "rationale",
       "tasks",
       "rejectedCandidates",
@@ -513,7 +632,9 @@ function validateStrictWorkflowCompositionPlan(value: unknown): WorkflowComposit
     );
   }
   requireString(value.title, "title", issues);
-  requireString(value.selectedWorkflowTemplateRef, "selectedWorkflowTemplateRef", issues);
+  if (value.selectedWorkflowTemplateRef !== undefined) {
+    requireString(value.selectedWorkflowTemplateRef, "selectedWorkflowTemplateRef", issues);
+  }
   requireString(value.rationale, "rationale", issues);
 
   if (!Array.isArray(value.tasks)) {
@@ -1111,6 +1232,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 const TASK_STRING_FIELDS: Array<keyof WorkflowCompositionTask> = [
   "id",
+  "sliceId",
   "name",
   "responsibility",
   "templateSlotRef",
@@ -1121,6 +1243,7 @@ const TASK_STRING_FIELDS: Array<keyof WorkflowCompositionTask> = [
 ];
 
 const TASK_STRING_ARRAY_FIELDS: Array<keyof WorkflowCompositionTask> = [
+  "requirementIds",
   "dependsOn",
   "instructionRefs",
   "skillRefs",

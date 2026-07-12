@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { loadRealPostgresE2EEnv } from "../e2e-postgres/postgres-real-harness.ts";
+import { loadRealPostgresE2EEnv, realE2EPlannerTimeoutMs } from "../e2e-postgres/postgres-real-harness.ts";
 
 test("real E2E env fails closed when required env is missing", async () => {
   await assert.rejects(() => loadRealPostgresE2EEnv({}, {
@@ -67,6 +67,12 @@ test("real E2E env probes HTTP Pi config when endpoints are present", async () =
   assert.deepEqual(probes, ["docker", "containers-idle", "tork", "queue-idle", "pi-http"]);
   assert.equal(env.piPlannerMode, "http");
   assert.equal(env.piHarnessMode, "http");
+});
+
+test("real E2E runtime server uses canonical Pi planner timeout env parsing", () => {
+  assert.equal(realE2EPlannerTimeoutMs({}), 180_000);
+  assert.equal(realE2EPlannerTimeoutMs({ SOUTHSTAR_PI_PLANNER_TIMEOUT_MS: "600000" }), 600_000);
+  assert.equal(realE2EPlannerTimeoutMs({ SOUTHSTAR_PI_PLANNER_TIMEOUT_MS: "not-a-number" }), 180_000);
 });
 
 test("real E2E env fails closed when shared Tork queue is not idle", async () => {

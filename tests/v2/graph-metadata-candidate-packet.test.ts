@@ -84,6 +84,30 @@ test("workflow candidates exclude approved primitives that cannot materialize at
       state: { scope: "engineering", title: "Placeholder UI" },
     });
     await upsertLibraryObject(db, {
+      objectKey: "skill.goal-design-sop",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.goal-design-sop@1",
+      state: {
+        scope: "engineering",
+        title: "Goal Design SOP",
+        purpose: "goal_design",
+        body: "# Goal Design\n\nDesign goal contracts and slices before workflow composition.",
+      },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "skill.slice-to-dag-composer",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.slice-to-dag-composer@1",
+      state: {
+        scope: "engineering",
+        title: "Slice to DAG Composer",
+        purpose: "composer_guidance",
+        body: "# Slice to DAG\n\nTranslate slice plans into DAGs.",
+      },
+    });
+    await upsertLibraryObject(db, {
       objectKey: "instruction.placeholder-review",
       objectKind: "instruction_template",
       status: "approved",
@@ -101,6 +125,18 @@ test("workflow candidates exclude approved primitives that cannot materialize at
       fromObjectKey: "agent.frontend-developer",
       edgeType: "uses",
       toObjectKey: "skill.placeholder-ui",
+      scope: "engineering",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "uses",
+      toObjectKey: "skill.goal-design-sop",
+      scope: "engineering",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "agent.frontend-developer",
+      edgeType: "uses",
+      toObjectKey: "skill.slice-to-dag-composer",
       scope: "engineering",
     });
     await upsertLibraryEdge(db, {
@@ -132,12 +168,23 @@ test("workflow candidates exclude approved primitives that cannot materialize at
     });
 
     assert.equal(packet.profilePrimitiveCandidates?.skills.includes("skill.placeholder-ui"), false);
+    assert.equal(packet.profilePrimitiveCandidates?.skills.includes("skill.goal-design-sop"), false);
+    assert.equal(packet.profilePrimitiveCandidates?.skills.includes("skill.slice-to-dag-composer"), false);
     assert.equal(packet.profilePrimitiveCandidates?.instructions.includes("instruction.placeholder-review"), false);
     assert.equal(packet.profilePrimitiveCandidates?.mcpGrants.includes("mcp.placeholder-workspace"), false);
     assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "skill.placeholder-ui"), false);
+    assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "skill.goal-design-sop"), false);
+    assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "skill.slice-to-dag-composer"), false);
     assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "instruction.placeholder-review"), false);
     assert.equal(packet.graphMetadataCandidates?.nodes.some((node) => node.ref === "mcp.placeholder-workspace"), false);
-    assert.equal(packet.graphMetadataCandidates?.edges.some((edge) => edge.from === "skill.placeholder-ui" || edge.to === "skill.placeholder-ui"), false);
+    assert.equal(packet.graphMetadataCandidates?.edges.some((edge) =>
+      edge.from === "skill.placeholder-ui"
+      || edge.to === "skill.placeholder-ui"
+      || edge.from === "skill.goal-design-sop"
+      || edge.to === "skill.goal-design-sop"
+      || edge.from === "skill.slice-to-dag-composer"
+      || edge.to === "skill.slice-to-dag-composer"
+    ), false);
   } finally {
     await db.close();
   }

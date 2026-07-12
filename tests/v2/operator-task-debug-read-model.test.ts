@@ -8,6 +8,7 @@ import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, upsert
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
 import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 test("operator task debug route returns task detail, descending task history, resources, artifact refs, and actions", async () => {
   const db = await createTestPostgresDb();
@@ -245,6 +246,7 @@ test("run creation preserves planner draft cwd and operator overview exposes cwd
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt: "implement calc sum with cwd",
       cwd: "/home/timmypai/apps/customer-todo-web",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum with cwd")),
       composer: new DeterministicFixtureComposer(),
     });
     const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
@@ -259,6 +261,41 @@ test("run creation preserves planner draft cwd and operator overview exposes cwd
     assert.equal(overview.activeRuns[0]?.runId, run.runId);
     assert.equal(overview.activeRuns[0]?.cwd, "/home/timmypai/apps/customer-todo-web");
     assert.equal(overview.activeRuns[0]?.projectRoot, "/home/timmypai/apps/customer-todo-web");
+  } finally {
+    await db.close();
+  }
+});
+
+test("operator overview reports an explicit empty project-filtered scope without leaking other projects", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-other-project";
+    await createWorkflowRunPg(db, {
+      id: runId,
+      status: "running",
+      domain: "software",
+      goalPrompt: "other project run",
+      workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", tasks: [] }),
+      executionProjectionJson: JSON.stringify({}),
+      snapshotJson: JSON.stringify({}),
+      runtimeContextJson: JSON.stringify({ cwd: "/workspace/other", projectRoot: "/workspace/other" }),
+      metricsJson: JSON.stringify({}),
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "runtime_exception",
+      resourceKey: "other-project-exception",
+      runId,
+      scope: "runtime",
+      status: "observed",
+      payload: { kind: "callback_missing", severity: "blocking" },
+    });
+
+    const overview = await buildOperatorOverviewReadModelPg(db, { projectRoot: "/workspace/selected" });
+
+    assert.deepEqual(overview.scope, { kind: "project", projectRoot: "/workspace/selected" });
+    assert.deepEqual(overview.activeRuns, []);
+    assert.deepEqual(overview.attentionItems, []);
+    assert.equal(overview.defaultSelection, null);
   } finally {
     await db.close();
   }

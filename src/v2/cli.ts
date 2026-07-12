@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { loadSouthstarEnv } from "./config/env.ts";
 import { createCliRuntimeClient, type CliRuntimeClient } from "./cli-client.ts";
 import { initializeSouthstarSchema } from "./db/init.ts";
@@ -18,7 +19,7 @@ export type V2Command =
   | { command: "serve"; host?: string; port?: number; pidFilePath?: string }
   | { command: "start"; host?: string; port?: number; pidFilePath?: string }
   | { command: "stop"; pidFilePath?: string }
-  | { command: "run-goal"; goal: string }
+  | { command: "run-goal"; goal: string; cwd?: string }
   | { command: "wait"; runId: string }
   | { command: "tasks"; runId: string }
   | { command: "task"; runId: string; taskId: string }
@@ -79,8 +80,12 @@ export function parseV2Command(argv: string[]): V2Command {
       };
     case "stop":
       return { command, pidFilePath: optionalFlag(args, "--pid-file") };
-    case "run-goal":
-      return { command, goal: requireFlag(args, "--goal") };
+    case "run-goal": {
+      const cwd = optionalFlag(args, "--cwd");
+      return cwd
+        ? { command, goal: requireFlag(args, "--goal"), cwd }
+        : { command, goal: requireFlag(args, "--goal") };
+    }
     case "wait":
       return { command, runId: requireFlag(args, "--run-id") };
     case "tasks":
@@ -199,7 +204,11 @@ export async function executeV2Command(command: V2Command, dependencies: V2CliDe
     case "task-envelope":
       return unwrapServerEnvelope(await client.getTaskEnvelope({ runId: command.runId, taskId: command.taskId }));
     case "run-goal":
-      return unwrapServerEnvelope(await client.runGoal({ goalPrompt: command.goal }));
+      return unwrapServerEnvelope(await client.runGoal({
+        goalPrompt: command.goal,
+        cwd: command.cwd ?? process.cwd(),
+        idempotencyKey: randomUUID(),
+      }));
     case "tasks":
       return unwrapServerEnvelope(await client.listTasks(command.runId));
     case "task":

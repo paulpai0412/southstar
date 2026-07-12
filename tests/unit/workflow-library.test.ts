@@ -10,6 +10,7 @@ import { GET as getWorkflowResource, PUT as putWorkflowResource } from "../../we
 import { groupSkillResourcePaths } from "../../web/lib/workflow/skill-resource-tree";
 import { readWorkflowResource, writeWorkflowResource } from "../../web/lib/workflow/library-store";
 import { buildWorkflowDagFromPlannerDraft } from "../../web/lib/workflow/v2-library-adapter";
+import { buildWorkflowTemplateSaveRequest } from "../../web/lib/workflow/template-save";
 
 const originalFetch = global.fetch;
 const originalBase = process.env.SOUTHSTAR_V2_API_BASE_URL;
@@ -101,6 +102,43 @@ test("buildWorkflowDagFromPlannerDraft computes dependency-derived levels for pa
     backend: 2,
     integrate: 3,
   });
+});
+
+test("buildWorkflowTemplateSaveRequest creates draft proposals with explicit scope", () => {
+  const dag = buildWorkflowDagFromPlannerDraft({
+    draftId: "draft-template-save",
+    goalPrompt: "Ship feature",
+    workflowId: "wf-template-save",
+    status: "validated",
+    validationIssues: [],
+    taskSummaries: [
+      { taskId: "implement", taskName: "Implement", dependsOn: [], roleRef: "maker", agentProfileRef: "profile.software-maker-pi" },
+    ],
+  });
+
+  const request = buildWorkflowTemplateSaveRequest({ draftId: "draft-template-save", dag, scope: "design/article" });
+
+  assert.equal(request.body.status, "draft");
+  assert.equal(request.body.scope, "design/article");
+  assert.doesNotMatch(JSON.stringify(request.body), /approved/);
+});
+
+test("buildWorkflowTemplateSaveRequest rejects missing scope instead of defaulting to software", () => {
+  const dag = buildWorkflowDagFromPlannerDraft({
+    draftId: "draft-template-save",
+    goalPrompt: "Ship feature",
+    workflowId: "wf-template-save",
+    status: "validated",
+    validationIssues: [],
+    taskSummaries: [
+      { taskId: "implement", taskName: "Implement", dependsOn: [], roleRef: "maker", agentProfileRef: "profile.software-maker-pi" },
+    ],
+  });
+
+  assert.rejects(
+    async () => buildWorkflowTemplateSaveRequest({ draftId: "draft-template-save", dag }),
+    /requires an explicit scope/,
+  );
 });
 
 test("writeWorkflowResource rejects path traversal", async () => {
@@ -439,17 +477,31 @@ test("generate route proxies backend planner draft stream and converts orchestra
       method: init?.method ?? "GET",
       body: init?.body ? JSON.parse(String(init.body)) as unknown : undefined,
     });
-    if (href.endsWith("/api/v2/planner/drafts/stream")) {
+    if (href.endsWith("/api/v2/run-goal")) {
       return new Response([
         'event: planner.stage\ndata: {"stage":"composer.started","message":"Streaming LLM workflow composition."}\n\n',
         'event: message.delta\ndata: {"text":"{\\"schemaVersion\\""}\n\n',
-        'event: draft\ndata: {"draft":{"draftId":"draft-1","status":"validated"}}\n\n',
-        'event: orchestration\ndata: {"orchestration":{"draftId":"draft-1","goalPrompt":"Ship feature","workflowId":"wf-1","status":"validated","validationIssues":[],"taskSummaries":[{"taskId":"implement","taskName":"Implement change","dependsOn":[],"roleRef":"maker","agentProfileRef":"profile.software-maker-pi"}]}}\n\n',
-        'event: done\ndata: {}\n\n',
+        'event: done\ndata: {"draftId":"draft-1","draftStatus":"validated","goalContractHash":"goal-hash","blockers":[]}\n\n',
       ].join(""), {
         status: 200,
         headers: { "content-type": "text/event-stream" },
       });
+    }
+    if (href.endsWith("/api/v2/planner/drafts/draft-1/orchestration")) {
+      return Response.json({
+        ok: true,
+        result: {
+          draftId: "draft-1",
+          goalPrompt: "Ship feature",
+          workflowId: "wf-1",
+          status: "validated",
+          validationIssues: [],
+          taskSummaries: [{ taskId: "implement", taskName: "Implement change", dependsOn: [], roleRef: "maker", agentProfileRef: "profile.software-maker-pi" }],
+        },
+      });
+    }
+    if (href.endsWith("/api/v2/ui/workflow?draftId=draft-1")) {
+      return Response.json({ ok: true, result: { mission: null, commands: [] } });
     }
     throw new Error(`unexpected fetch: ${href}`);
   }) as typeof fetch;
@@ -457,7 +509,7 @@ test("generate route proxies backend planner draft stream and converts orchestra
   const response = await postWorkflowGenerate(new NextRequest("http://localhost/api/workflow/generate", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ prompt: "Ship feature", cwd: "/tmp/demo" }),
+    body: JSON.stringify({ prompt: "Ship feature", cwd: "/tmp/demo", idempotencyKey: "unit-key" }),
   }));
 
   assert.equal(response.status, 200);
@@ -467,18 +519,25 @@ test("generate route proxies backend planner draft stream and converts orchestra
   const dagPayload = events.find((event) => event.event === "dag")?.data as { dag?: { id?: string } };
   assert.equal(dagPayload.dag?.id, "draft-1");
   assert.deepEqual(calls, [{
-    url: "http://127.0.0.1:3000/api/v2/planner/drafts/stream",
+    url: "http://127.0.0.1:3000/api/v2/run-goal",
     method: "POST",
     body: {
       goalPrompt: "Ship feature",
       cwd: "/tmp/demo",
-      orchestrationMode: "llm-constrained",
-      composerMode: "llm",
+      idempotencyKey: "unit-key",
     },
+  }, {
+    url: "http://127.0.0.1:3000/api/v2/planner/drafts/draft-1/orchestration",
+    method: "GET",
+    body: undefined,
+  }, {
+    url: "http://127.0.0.1:3000/api/v2/ui/workflow?draftId=draft-1",
+    method: "GET",
+    body: undefined,
   }]);
 });
 
-test("generate route instantiates referenced workflow templates instead of planner stream", async () => {
+test("generate route forwards template policy through run-goal", async () => {
   process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
   const calls: Array<{ url: string; method: string; body?: unknown }> = [];
   global.fetch = (async (url, init) => {
@@ -488,16 +547,13 @@ test("generate route instantiates referenced workflow templates instead of plann
       method: init?.method ?? "GET",
       body: init?.body ? JSON.parse(String(init.body)) as unknown : undefined,
     });
-    if (href.endsWith("/api/v2/workflow/templates/instantiate")) {
-      return Response.json({
-        ok: true,
-        result: {
-          templateRef: "template.software-dev",
-          draftId: "draft-template-1",
-          workflowId: "wf-template-1",
-          status: "validated",
-          validationIssues: [],
-        },
+    if (href.endsWith("/api/v2/run-goal")) {
+      return new Response([
+        'event: planner.stage\ndata: {"stage":"goal_contract.interpreted"}\n\n',
+        'event: done\ndata: {"draftId":"draft-template-1","draftStatus":"validated","goalContractHash":"goal-hash","blockers":[]}\n\n',
+      ].join(""), {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
       });
     }
     if (href.endsWith("/api/v2/planner/drafts/draft-template-1/orchestration")) {
@@ -521,6 +577,9 @@ test("generate route instantiates referenced workflow templates instead of plann
         },
       });
     }
+    if (href.endsWith("/api/v2/ui/workflow?draftId=draft-template-1")) {
+      return Response.json({ ok: true, result: { mission: null, commands: [] } });
+    }
     throw new Error(`unexpected fetch: ${href}`);
   }) as typeof fetch;
 
@@ -530,28 +589,42 @@ test("generate route instantiates referenced workflow templates instead of plann
     body: JSON.stringify({
       prompt: "@workflow-template 前後台軟體開發流程 (template.software-dev)\n生成一個猜謎的webapp",
       cwd: "/tmp/demo",
+      idempotencyKey: "template-key",
+      templatePolicy: {
+        mode: "require",
+        templateRef: "template.software-dev",
+        versionRef: "template.software-dev@v1",
+      },
     }),
   }));
 
   assert.equal(response.status, 200);
   const events = readSse(await response.text());
-  assert.deepEqual(events.map((event) => event.event), ["planner.stage", "draft", "planner.stage", "dag", "done"]);
-  const dagPayload = events.find((event) => event.event === "dag")?.data as { dag?: { id?: string; templateId?: string } };
+  assert.deepEqual(events.map((event) => event.event), ["planner.stage", "draft", "dag", "done"]);
+  const dagPayload = events.find((event) => event.event === "dag")?.data as { dag?: { id?: string } };
   assert.equal(dagPayload.dag?.id, "draft-template-1");
-  assert.equal(dagPayload.dag?.templateId, "template.software-dev");
   assert.deepEqual(calls, [
     {
-      url: "http://127.0.0.1:3000/api/v2/workflow/templates/instantiate",
+      url: "http://127.0.0.1:3000/api/v2/run-goal",
       method: "POST",
       body: {
-        templateRef: "template.software-dev",
         goalPrompt: "@workflow-template 前後台軟體開發流程 (template.software-dev)\n生成一個猜謎的webapp",
         cwd: "/tmp/demo",
-        constraints: { mode: "strict" },
+        idempotencyKey: "template-key",
+        templatePolicy: {
+          mode: "require",
+          templateRef: "template.software-dev",
+          versionRef: "template.software-dev@v1",
+        },
       },
     },
     {
       url: "http://127.0.0.1:3000/api/v2/planner/drafts/draft-template-1/orchestration",
+      method: "GET",
+      body: undefined,
+    },
+    {
+      url: "http://127.0.0.1:3000/api/v2/ui/workflow?draftId=draft-template-1",
       method: "GET",
       body: undefined,
     },
@@ -570,14 +643,12 @@ test("generate route requires the v2 runtime planner instead of using local fall
     body: JSON.stringify({
       prompt: "生成 todo webapp 的並行 workflow DAG，frontend 與 backend 可以 parallel implement",
       cwd: "/tmp/demo",
+      idempotencyKey: "unit-key",
     }),
   }));
 
-  assert.equal(response.status, 200);
-  const events = readSse(await response.text());
-  assert.equal(events.some((event) => event.event === "dag"), false);
-  const error = events.find((event) => event.event === "error")?.data as { error?: string };
-  assert.match(error.error ?? "", /not configured/);
+  assert.equal(response.status, 503);
+  assert.match(await response.text(), /not configured/);
 });
 
 test("GET workflow resource route returns 404 for an unknown resource", async () => {

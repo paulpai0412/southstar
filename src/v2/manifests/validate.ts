@@ -21,11 +21,24 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
     issues.push({ path: "workflow.evaluators", message: "must be an array" });
   }
   if (workflow.compiledFrom) {
-    if (!workflow.compiledFrom.templateDefinitionId) {
-      issues.push({ path: "workflow.compiledFrom.templateDefinitionId", message: "is required when compiledFrom is present" });
+    const sourceKind = workflow.compiledFrom.sourceKind ?? "workflow_template";
+    const hasTemplateFields = "templateDefinitionId" in workflow.compiledFrom || "templateVersionId" in workflow.compiledFrom;
+    if (sourceKind === "library_primitives" && hasTemplateFields) {
+      issues.push({ path: "workflow.compiledFrom.sourceKind", message: "library_primitives provenance must not include template fields" });
     }
-    if (!workflow.compiledFrom.templateVersionId) {
-      issues.push({ path: "workflow.compiledFrom.templateVersionId", message: "is required when compiledFrom is present" });
+    if (sourceKind === "workflow_template") {
+      const templateCompiledFrom = workflow.compiledFrom as Extract<SouthstarWorkflowManifest["compiledFrom"], { sourceKind?: "workflow_template" }>;
+      if (!templateCompiledFrom.templateDefinitionId) {
+        issues.push({ path: "workflow.compiledFrom.templateDefinitionId", message: "is required when compiledFrom is present" });
+      }
+      if (!templateCompiledFrom.templateVersionId) {
+        issues.push({ path: "workflow.compiledFrom.templateVersionId", message: "is required when compiledFrom is present" });
+      }
+      if (templateCompiledFrom.templateDefinitionId === "template.graph-dynamic-workflow" || templateCompiledFrom.templateVersionId === "template.graph-dynamic-workflow") {
+        issues.push({ path: "workflow.compiledFrom.templateDefinitionId", message: "sentinel workflow template ids are not valid provenance" });
+      }
+    } else if (sourceKind !== "library_primitives") {
+      issues.push({ path: "workflow.compiledFrom.sourceKind", message: "must be workflow_template or library_primitives" });
     }
     if (!workflow.compiledFrom.compilerVersion) {
       issues.push({ path: "workflow.compiledFrom.compilerVersion", message: "is required when compiledFrom is present" });
@@ -33,8 +46,54 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
     if (!/^[a-f0-9]{64}$/.test(workflow.compiledFrom.inputHash ?? "")) {
       issues.push({ path: "workflow.compiledFrom.inputHash", message: "must be a 64-char lowercase sha256 hex string" });
     }
-    if (!Array.isArray(workflow.compiledFrom.libraryVersionRefs) || workflow.compiledFrom.libraryVersionRefs.length === 0) {
+    const libraryVersionRefs = workflow.compiledFrom.libraryVersionRefs;
+    const validLibraryVersionRefs: string[] = [];
+    if (!Array.isArray(libraryVersionRefs) || libraryVersionRefs.length === 0) {
       issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must contain at least one immutable library version ref" });
+    } else {
+      for (const [index, ref] of libraryVersionRefs.entries()) {
+        if (typeof ref !== "string" || ref.length === 0) {
+          issues.push({ path: `workflow.compiledFrom.libraryVersionRefs.${index}`, message: "must be a non-empty immutable library version ref" });
+          continue;
+        }
+        validLibraryVersionRefs.push(ref);
+      }
+      if (sourceKind === "workflow_template") {
+        const templateCompiledFrom = workflow.compiledFrom as Extract<SouthstarWorkflowManifest["compiledFrom"], { sourceKind?: "workflow_template" }>;
+        if (!validLibraryVersionRefs.includes(templateCompiledFrom.templateVersionId)) {
+          issues.push({ path: "workflow.compiledFrom.templateVersionId", message: "must be included in compiledFrom.libraryVersionRefs" });
+        }
+      }
+    }
+    const objectVersionRefs = workflow.compiledFrom.libraryObjectVersionRefs;
+    if (!Array.isArray(objectVersionRefs) || objectVersionRefs.length === 0) {
+      issues.push({ path: "workflow.compiledFrom.libraryObjectVersionRefs", message: "must contain exact Library object-version pairs" });
+    } else {
+      const seenObjectKeys = new Set<string>();
+      const validObjectVersionRefs: Array<{ objectKey: string; versionRef: string }> = [];
+      for (const [index, pair] of objectVersionRefs.entries()) {
+        if (!pair || typeof pair.objectKey !== "string" || pair.objectKey.length === 0 || typeof pair.versionRef !== "string" || pair.versionRef.length === 0) {
+          issues.push({ path: `workflow.compiledFrom.libraryObjectVersionRefs.${index}`, message: "must be a non-empty object-version pair" });
+          continue;
+        }
+        if (seenObjectKeys.has(pair.objectKey)) {
+          issues.push({ path: `workflow.compiledFrom.libraryObjectVersionRefs.${index}.objectKey`, message: "must be unique" });
+        }
+        seenObjectKeys.add(pair.objectKey);
+        validObjectVersionRefs.push(pair);
+      }
+      if (sourceKind === "workflow_template") {
+        const templateCompiledFrom = workflow.compiledFrom as Extract<SouthstarWorkflowManifest["compiledFrom"], { sourceKind?: "workflow_template" }>;
+        const templatePair = validObjectVersionRefs.find((pair) => pair.objectKey === templateCompiledFrom.templateDefinitionId);
+        if (templatePair?.versionRef !== templateCompiledFrom.templateVersionId) {
+          issues.push({ path: "workflow.compiledFrom.templateDefinitionId", message: "must map to templateVersionId in libraryObjectVersionRefs" });
+        }
+      }
+      const pairVersions = [...new Set(validObjectVersionRefs.map((pair) => pair.versionRef))].sort();
+      const compatibilityVersions = [...new Set(validLibraryVersionRefs)].sort();
+      if (JSON.stringify(pairVersions) !== JSON.stringify(compatibilityVersions)) {
+        issues.push({ path: "workflow.compiledFrom.libraryVersionRefs", message: "must match libraryObjectVersionRefs versions" });
+      }
     }
   }
 

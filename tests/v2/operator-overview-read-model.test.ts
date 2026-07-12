@@ -1,9 +1,154 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
+import { persistTerminalGoalOutcomePg } from "../../src/v2/evaluators/goal-outcome.ts";
+import { finalizeGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import { buildOperatorOverviewReadModelPg } from "../../src/v2/read-models/operator-overview.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
+import { fixedGoalInterpreter } from "./fixtures/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("operator overview exposes mission axes and attention for goal approvals uncovered requirements failed requirements and dynamic repair approval", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = finalizeGoalContract({
+      goalPrompt: "Ship an offline article and optional print stylesheet",
+      cwd: "/workspace/article",
+      interpretation: {
+        domain: "software",
+        intent: "implement_feature",
+        workType: "software_feature",
+        summary: "Ship an offline article",
+        requirements: [
+          { statement: "The offline article renders", acceptanceCriteria: ["The article opens without network access"], blocking: true, source: "explicit" },
+          { statement: "A print stylesheet is available", acceptanceCriteria: ["Printing uses a readable layout"], blocking: false, source: "explicit" },
+        ],
+        expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
+        requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
+        nonGoals: [],
+        assumptions: [],
+        blockingInputs: [],
+        riskTags: [],
+        requestedSideEffects: ["workspace-write"],
+      },
+    });
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const [blockingRequirement, optionalRequirement] = goalContract.requirements;
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(payload_json, '{entries}',
+            (select coalesce(jsonb_agg(entry), '[]'::jsonb)
+               from jsonb_array_elements(payload_json->'entries') entry
+              where entry->>'requirementId' <> $2))
+        where resource_type = 'goal_requirement_coverage' and resource_key = $1`,
+      [run.runId, optionalRequirement!.id],
+    );
+    await persistTerminalGoalOutcomePg(db, {
+      runId: run.runId,
+      outcomeStatus: "unsatisfied",
+      failedRequirementIds: [blockingRequirement!.id],
+      findings: ["blocking requirement failed"],
+      actorType: "test",
+      idempotencyKey: "operator-mission:unsatisfied",
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "goal-approval",
+      runId: run.runId,
+      scope: "approval",
+      status: "pending",
+      payload: { approvalId: "goal-approval", actionType: "goalExecution" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "repair-approval",
+      runId: run.runId,
+      scope: "approval",
+      status: "pending",
+      payload: {
+        approvalId: "repair-approval",
+        actionType: "dynamic_repair_authority_expansion",
+        schemaVersion: "southstar.dynamic_repair_authority_approval.v1",
+      },
+    });
+
+    const model = await buildOperatorOverviewReadModelPg(db);
+    const runRow = model.activeRuns.find((candidate) => candidate.runId === run.runId)!;
+    assert.deepEqual({
+      executionStatus: runRow.executionStatus,
+      outcomeStatus: runRow.outcomeStatus,
+      healthStatus: runRow.healthStatus,
+    }, {
+      executionStatus: "completed",
+      outcomeStatus: "unsatisfied",
+      healthStatus: "healthy",
+    });
+    assert.equal(runRow.mission!.goalContractHash, draft.goalContractHash);
+    assert.equal(model.attentionItems.some((item) => item.id === `goal-requirement-uncovered:${run.runId}:${optionalRequirement!.id}`), true);
+    assert.equal(model.attentionItems.some((item) => item.id === `goal-requirement-failed:${run.runId}:${blockingRequirement!.id}`), true);
+    for (const approvalId of ["goal-approval", "repair-approval"]) {
+      const attention = model.attentionItems.find((item) => item.id === `approval:${approvalId}`);
+      assert.equal(attention?.commands.find((command) => command.id === "approval.approve")?.enabled, true);
+      assert.equal(attention?.commands.find((command) => command.id === "approval.reject")?.enabled, true);
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+test("operator overview mission query count stays bounded as run count grows", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = finalizeGoalContract({
+      goalPrompt: "Build bounded mission projections",
+      cwd: "/workspace/query-count",
+      interpretation: {
+        domain: "software",
+        intent: "implement_feature",
+        workType: "software_feature",
+        summary: "Build bounded mission projections",
+        requirements: [{ statement: "Mission projections remain bounded", acceptanceCriteria: ["Twenty runs do not add per-run queries"], blocking: true, source: "explicit" }],
+        expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
+        requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
+        nonGoals: [], assumptions: [], blockingInputs: [], riskTags: [], requestedSideEffects: [],
+      },
+    });
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const runIds: string[] = [];
+    for (let index = 0; index < 20; index += 1) {
+      runIds.push((await createPostgresRunFromDraft(db, { draftId: draft.draftId })).runId);
+    }
+    await db.query(
+      "update southstar.workflow_runs set runtime_context_json = jsonb_set(runtime_context_json, '{projectRoot}', to_jsonb('/workspace/query-count-two'::text)) where id = any($1::text[])",
+      [runIds.slice(0, 2)],
+    );
+
+    const two = countingDb(db);
+    await buildOperatorOverviewReadModelPg(two.db, { projectRoot: "/workspace/query-count-two" });
+    const twenty = countingDb(db);
+    await buildOperatorOverviewReadModelPg(twenty.db);
+
+    assert.equal(twenty.count(), two.count(), `query count grew from ${two.count()} for 2 runs to ${twenty.count()} for 20 runs`);
+  } finally {
+    await db.close();
+  }
+});
 
 test("operator overview returns active runs and attention items", async () => {
   const db = await createTestPostgresDb();
@@ -537,3 +682,76 @@ test("ui route exposes /api/v2/ui/operator-overview", async () => {
     await db.close();
   }
 });
+
+test("operator overview route forwards projectRoot and isolates runs attention and command results", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    for (const project of ["A", "B"] as const) {
+      const runId = `run-route-project-${project}`;
+      await createWorkflowRunPg(db, {
+        id: runId,
+        status: "running",
+        domain: "software",
+        goalPrompt: `project ${project}`,
+        workflowManifestJson: "{}",
+        executionProjectionJson: "{}",
+        snapshotJson: "{}",
+        runtimeContextJson: JSON.stringify({ cwd: `/workspace/${project}`, projectRoot: `/workspace/${project}` }),
+        metricsJson: "{}",
+      });
+      await upsertRuntimeResourcePg(db, {
+        resourceType: "runtime_exception",
+        resourceKey: `route-project-${project}-exception`,
+        runId,
+        scope: "runtime",
+        status: "observed",
+        payload: { kind: "scheduler_claim_stale", severity: "blocking" },
+      });
+      await upsertRuntimeResourcePg(db, {
+        resourceType: "runtime_command",
+        resourceKey: `route-project-${project}-command`,
+        runId,
+        scope: "operator",
+        status: "accepted",
+        payload: { result: { commandId: `project-${project}`, accepted: true, status: "accepted", affectedRunId: runId, resourceRefs: [], eventRefs: [], nextSuggestedActions: [] } },
+      });
+    }
+    const server = await createSouthstarRuntimeServer({
+      db,
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
+      createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
+    });
+    try {
+      const response = await fetch(`${server.url}/api/v2/ui/operator-overview?projectRoot=${encodeURIComponent("/workspace/A")}`);
+      const envelope = await response.json() as { result: Awaited<ReturnType<typeof buildOperatorOverviewReadModelPg>> };
+      assert.deepEqual(envelope.result.scope, { kind: "project", projectRoot: "/workspace/A" });
+      assert.deepEqual(envelope.result.activeRuns.map((run) => run.runId), ["run-route-project-A"]);
+      assert.deepEqual([...new Set(envelope.result.attentionItems.map((item) => item.runId))], ["run-route-project-A"]);
+      assert.deepEqual(envelope.result.commandResults.map((result) => result.affectedRunId), ["run-route-project-A"]);
+    } finally {
+      await server.close();
+    }
+  } finally {
+    await db.close();
+  }
+});
+
+function countingDb(db: SouthstarDb): { db: SouthstarDb; count(): number } {
+  let count = 0;
+  return {
+    db: new Proxy(db, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if ((property === "query" || property === "one" || property === "maybeOne") && typeof value === "function") {
+          return (...args: unknown[]) => {
+            count += 1;
+            return Reflect.apply(value, target, args);
+          };
+        }
+        return value;
+      },
+    }),
+    count: () => count,
+  };
+}

@@ -31,6 +31,10 @@ const SUPPORTED_LIBRARY_FILE_SUFFIXES = [
   ".vault.yaml",
   ".profile.yaml",
   ".workflow.yaml",
+  ".capability.yaml",
+  ".artifact.yaml",
+  ".domain.yaml",
+  ".evaluator.yaml",
 ];
 
 const OBJECT_KIND_BY_FILE_KIND: Record<LibraryFileRecord["kind"], LibraryDefinitionKind> = {
@@ -41,6 +45,10 @@ const OBJECT_KIND_BY_FILE_KIND: Record<LibraryFileRecord["kind"], LibraryDefinit
   vault: "vault_lease_policy",
   generated_profile: "agent_profile",
   workflow_template: "workflow_template",
+  capability: "capability_spec",
+  artifact: "artifact_contract",
+  domain: "domain_taxonomy",
+  evaluator: "evaluator_profile",
 };
 
 const EDGE_REF_PROJECTIONS: Array<{ key: string; edgeType: LibraryEdgeType }> = [
@@ -54,6 +62,7 @@ const EDGE_REF_PROJECTIONS: Array<{ key: string; edgeType: LibraryEdgeType }> = 
   { key: "mcpGrantRefs", edgeType: "allows_mcp_grant" },
   { key: "skillRefs", edgeType: "uses" },
   { key: "instructionRefs", edgeType: "uses_instruction" },
+  { key: "validatesArtifactRefs", edgeType: "validates_artifact" },
 ];
 
 export async function listLibraryFiles(input: { root: string }): Promise<LibraryFileListItem[]> {
@@ -125,8 +134,8 @@ export async function syncLibraryFileToGraph(db: SouthstarDb, input: { root: str
       `library file is invalid: ${file.parsed.issues.map((issue) => `${issue.path}: ${issue.message}`).join("; ")}`,
     );
   }
-
-  return db.tx(async (tx) => syncLibraryFileRecordToGraph(tx, file.parsed.file));
+  const parsedFile = file.parsed.file;
+  return db.tx(async (tx) => syncLibraryFileRecordToGraph(tx, parsedFile));
 }
 
 export async function syncLibraryFileRecordToGraph(
@@ -319,8 +328,10 @@ async function ensureReferencedObject(db: SouthstarDb, objectKey: string, scope:
 
 function inferObjectKind(objectKey: string): LibraryDefinitionKind {
   if (objectKey.startsWith("agent.")) return "agent_definition";
+  if (objectKey.startsWith("artifact.")) return "artifact_contract";
   if (objectKey.startsWith("capability.")) return "capability_spec";
   if (objectKey.startsWith("domain.")) return "domain_taxonomy";
+  if (objectKey.startsWith("evaluator.")) return "evaluator_profile";
   if (objectKey.startsWith("instruction.")) return "instruction_template";
   if (objectKey.startsWith("mcp.")) return "mcp_tool_grant";
   if (objectKey.startsWith("profile.")) return "agent_profile";

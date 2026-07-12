@@ -14,12 +14,14 @@ import {
   type RuntimeCommandRow,
   type OperatorRunRow,
 } from "./operator-attention.ts";
+import { buildGoalMissionReadModelsPg } from "./workflow-ui.ts";
 
-export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
-  const activeRuns = (await db.query<OperatorRunRow>(
+export async function buildOperatorOverviewReadModelPg(db: SouthstarDb, input: { projectRoot?: string } = {}) {
+  const baseRuns = (await db.query<OperatorRunRow>(
     `select id, status, domain, goal_prompt, runtime_context_json, updated_at
        from southstar.workflow_runs
-      where status = any($1::text[])
+      where (
+        status = any($1::text[])
          or (
           status = any($2::text[])
           and exists (
@@ -35,22 +37,43 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
           )
         )
          or status = any($4::text[])
+      )
+        and ($6::text is null or coalesce(runtime_context_json->>'projectRoot', runtime_context_json->>'cwd') = $6)
       order by updated_at desc, id
       limit 50`,
-    [[...ACTIVE_RUN_STATUSES], [...TERMINAL_RUN_STATUSES], [...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES], [...NORMAL_EXECUTOR_RESOURCE_STATUSES]],
+    [[...ACTIVE_RUN_STATUSES], [...TERMINAL_RUN_STATUSES], [...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES], [...NORMAL_EXECUTOR_RESOURCE_STATUSES], input.projectRoot ?? null],
   )).rows.map(activeRunFromRow);
 
-  const activeRunIds = activeRuns.map((run) => run.runId);
+  const activeRunIds = baseRuns.map((run) => run.runId);
   const [resourceRows, taskRows, commandRows] = await Promise.all([
-    readAttentionResourceRows(db),
+    input.projectRoot && activeRunIds.length === 0 ? Promise.resolve([]) : readAttentionResourceRows(db, input.projectRoot ? activeRunIds : undefined),
     activeRunIds.length > 0 ? readAttentionTaskRows(db, activeRunIds) : Promise.resolve([]),
-    readRuntimeCommandRows(db),
+    input.projectRoot && activeRunIds.length === 0 ? Promise.resolve([]) : readRuntimeCommandRows(db, input.projectRoot ? activeRunIds : undefined),
   ]);
+  const missions = await buildGoalMissionReadModelsPg(db, activeRunIds);
+  const activeRuns = baseRuns.map((run) => {
+    const mission = missions.get(run.runId) ?? null;
+    const legacyHealth = resourceRows.some((row) => row.run_id === run.runId && (
+      row.resource_type === "runtime_exception"
+      || ((row.resource_type === "executor_binding" || row.resource_type === "hand_execution")
+        && !NORMAL_EXECUTOR_RESOURCE_STATUSES.some((status) => status === row.status))
+    )) ? "degraded" as const : "healthy" as const;
+    return {
+      ...run,
+      mission,
+      executionStatus: mission?.status.execution ?? run.status,
+      outcomeStatus: mission?.status.outcome ?? "in_progress",
+      healthStatus: mission?.status.health ?? legacyHealth,
+    };
+  });
 
   const attentionItems = buildOperatorAttentionItems({ resourceRows, taskRows, activeRuns });
   const commandResults = commandRows.map(commandResultView).filter((result): result is RuntimeCommandResultView => result !== null);
 
   return {
+    scope: input.projectRoot
+      ? { kind: "project" as const, projectRoot: input.projectRoot }
+      : { kind: "all" as const },
     activeRuns,
     runs: activeRuns,
     attentionItems,
@@ -68,7 +91,7 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb) {
   };
 }
 
-async function readAttentionResourceRows(db: SouthstarDb) {
+async function readAttentionResourceRows(db: SouthstarDb, runIds?: string[]) {
   return (await db.query<AttentionResourceRow>(
     `select resources.resource_type,
             resources.resource_key,
@@ -88,15 +111,20 @@ async function readAttentionResourceRows(db: SouthstarDb) {
        left join southstar.workflow_runs runs
          on runs.id = resources.run_id
       where resources.resource_type in ('runtime_exception', 'approval', 'recovery_decision', 'executor_binding', 'hand_execution')
+        and ($4::text[] is null or resources.run_id = any($4::text[]))
         and resources.status <> all($1::text[])
-        and (runs.status is null or runs.status <> all($2::text[]))
+        and (
+          runs.status is null
+          or runs.status <> all($2::text[])
+          or (runs.status = 'completed' and resources.resource_type = 'approval' and resources.status in ('pending', 'waiting_operator_approval'))
+        )
         and (
           resources.resource_type not in ('executor_binding', 'hand_execution')
           or resources.status <> all($3::text[])
         )
       order by resources.updated_at desc, resources.resource_key
       limit 100`,
-    [[...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES], [...NORMAL_EXECUTOR_RESOURCE_STATUSES]],
+    [[...TERMINAL_RESOURCE_STATUSES], [...RECENT_RESOLVED_RUN_STATUSES], [...NORMAL_EXECUTOR_RESOURCE_STATUSES], runIds ?? null],
   )).rows;
 }
 
@@ -111,12 +139,14 @@ async function readAttentionTaskRows(db: SouthstarDb, activeRunIds: string[]) {
   )).rows;
 }
 
-async function readRuntimeCommandRows(db: SouthstarDb) {
+async function readRuntimeCommandRows(db: SouthstarDb, runIds?: string[]) {
   return (await db.query<RuntimeCommandRow>(
     `select resource_key, run_id, task_id, status, title, payload_json, updated_at
        from southstar.runtime_resources
       where resource_type = 'runtime_command'
+        and ($1::text[] is null or run_id = any($1::text[]))
       order by updated_at desc, resource_key
       limit 50`,
+    [runIds ?? null],
   )).rows;
 }

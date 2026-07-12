@@ -357,8 +357,10 @@ export type GeneratedAgentProfile = {
 
 export type WorkflowCompositionTask = {
   id: string;
+  sliceId?: string;
   name: string;
   responsibility: string;
+  requirementIds: string[];
   nodePromptSpec?: WorkflowNodePromptSpec;
   dependsOn: string[];
   templateSlotRef: string;
@@ -427,7 +429,7 @@ export type WorkflowNodePromptTestCase = {
 export type WorkflowCompositionPlan = {
   schemaVersion: "southstar.workflow_composition_plan.v1";
   title: string;
-  selectedWorkflowTemplateRef: string;
+  selectedWorkflowTemplateRef?: string;
   rationale: string;
   tasks: WorkflowCompositionTask[];
   rejectedCandidates: Array<{ ref: string; reason: string }>;
@@ -453,9 +455,16 @@ export type WorkflowCompositionValidationIssueCode =
   | "composer_output_schema_violation"
   | "invalid_schema_version"
   | "unknown_template"
+  | "required_template_mismatch"
   | "duplicate_task_id"
   | "unknown_dependency"
   | "dependency_cycle"
+  | "unknown_slice_id"
+  | "requirement_not_owned_by_slice"
+  | "slice_without_producer"
+  | "slice_without_evaluator"
+  | "slice_plan_revision_required"
+  | "producer_dependency_without_artifact_flow"
   | "missing_required_task_group"
   | "insufficient_task_group_count"
   | "missing_required_group_dependency"
@@ -476,7 +485,17 @@ export type WorkflowCompositionValidationIssueCode =
   | "agent_does_not_use_skill"
   | "generated_profile_missing_agent_profile"
   | "generated_profile_incomplete_agent_profile"
-  | "generated_profile_invalid_value";
+  | "generated_profile_invalid_value"
+  | "target_requirement_scope_empty"
+  | "unknown_target_requirement_id"
+  | "requirement_outside_target_scope"
+  | "unknown_requirement_id"
+  | "requirement_missing_producer"
+  | "requirement_missing_artifact"
+  | "requirement_missing_evaluator"
+  | "requirement_evaluator_not_independent"
+  | "requirement_missing_evidence"
+  | "task_without_requirement_coverage";
 
 export type WorkflowCompositionValidationIssue = {
   code: WorkflowCompositionValidationIssueCode;

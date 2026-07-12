@@ -3,12 +3,321 @@ import assert from "node:assert/strict";
 import {
   acceptOrRejectArtifactRefPg,
   acceptedArtifactTaskIdsForRunPg,
+  artifactRefIdentity,
   sha256Stable,
 } from "../../src/v2/artifacts/artifact-ref-store.ts";
+import { buildEvidencePacket } from "../../src/v2/artifacts/evidence.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE, type ArtifactRefPayload } from "../../src/v2/artifacts/types.ts";
 import { createWorkflowRunPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("buildEvidencePacket captures redacted browser URL and screenshot evidence", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-browser-evidence",
+    taskId: "task-browser-verify",
+    artifactRef: "artifact-ref-browser",
+    requiredEvidenceKinds: ["url", "screenshot"],
+    artifact: {
+      browserEvidence: {
+        url: "https://example.test/subscriptions?view=summary#private",
+        screenshots: [{ path: "artifacts/subscription-page.png" }],
+      },
+    },
+    now: "2026-07-11T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.completeness.missingKinds, []);
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+    ["url", "present"],
+    ["screenshot", "present"],
+  ]);
+  assert.match(packet.evidenceItems[0]!.summary, /https:\/\/example\.test\/subscriptions/);
+  assert.doesNotMatch(JSON.stringify(packet), /view=summary|private/);
+  assert.equal(packet.evidenceItems.every((item) => item.redactionApplied), true);
+});
+
+test("buildEvidencePacket marks malformed browser evidence invalid without exposing host paths", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-browser-evidence-invalid",
+    taskId: "task-browser-verify",
+    artifactRef: "artifact-ref-browser-invalid",
+    requiredEvidenceKinds: ["url", "screenshot"],
+    artifact: {
+      browserEvidence: {
+        url: "file:///home/user/.ssh/id_rsa",
+        screenshots: [{ path: "../../home/user/.ssh/id_rsa" }],
+      },
+    },
+    now: "2026-07-11T00:00:00.000Z",
+  });
+
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+    ["url", "invalid"],
+    ["screenshot", "invalid"],
+  ]);
+  assert.doesNotMatch(JSON.stringify(packet), /home\/user|id_rsa/);
+});
+
+test("buildEvidencePacket accepts only canonical artifact identities as screenshot artifact refs", () => {
+  const canonicalRef = `artifact_ref:run-browser-evidence:task-browser:attempt-1:${"a".repeat(64)}`;
+  const canonical = buildEvidencePacket({
+    runId: "run-browser-evidence",
+    taskId: "task-browser-verify",
+    artifactRef: "artifact-ref-browser",
+    requiredEvidenceKinds: ["screenshot"],
+    artifact: { screenshot: { artifactRef: canonicalRef } },
+  });
+  assert.equal(canonical.evidenceItems[0]?.status, "present");
+
+  for (const artifactRef of [
+    "artifact_ref:file:///home/user/screenshot.png",
+    "artifact_ref:artifacts/screenshot.png",
+    "artifact_ref:secret-token",
+    `artifact_ref:other-run:task-browser:attempt-1:${"b".repeat(64)}`,
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-browser-evidence",
+      taskId: "task-browser-verify",
+      artifactRef: "artifact-ref-browser",
+      requiredEvidenceKinds: ["screenshot"],
+      artifact: { screenshot: { artifactRef } },
+    });
+    assert.equal(packet.evidenceItems[0]?.status, "invalid", artifactRef);
+    assert.doesNotMatch(JSON.stringify(packet), /home\/user|secret-token|other-run/);
+  }
+});
+
+test("buildEvidencePacket rejects command evidence without a trusted outcome", () => {
+  for (const testResult of [
+    { command: "npm test" },
+    { command: "npm test", status: "unknown" },
+    { command: "npm test", status: "failed" },
+    { command: "npm test", ok: false },
+    { command: "npm test", exitCode: 1 },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact: { testResults: [testResult] },
+    });
+
+    assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+      ["test-result", "invalid"],
+      ["command-output", "invalid"],
+    ]);
+  }
+
+  for (const testResult of [{ status: "failed" }, { status: "unknown" }]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact: { testResults: [testResult] },
+    });
+    assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+      ["test-result", "invalid"],
+      ["command-output", "missing"],
+    ]);
+  }
+
+  for (const command of [
+    { command: "npm test", status: "failed" },
+    { command: ["npm", "test"], exitCode: 1 },
+    { command: "npm test", status: "unknown" },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["command-output"],
+      artifact: { commandsRun: [command] },
+    });
+    assert.equal(packet.evidenceItems[0]?.status, "invalid");
+  }
+
+  const mixed = buildEvidencePacket({
+    runId: "run-command-evidence",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result", "command-output"],
+    artifact: {
+      testResults: [
+        { command: "npm test", status: "passed" },
+        { command: "npm run integration", status: "failed" },
+      ],
+    },
+  });
+  assert.deepEqual(mixed.evidenceItems.map((item) => [item.kind, item.status]), [
+    ["test-result", "invalid"],
+    ["command-output", "invalid"],
+  ]);
+
+  const mixedStatusOnly = buildEvidencePacket({
+    runId: "run-command-evidence",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: { testResults: [{ status: "passed" }, { status: "failed" }] },
+  });
+  assert.equal(mixedStatusOnly.evidenceItems[0]?.status, "invalid");
+
+  const mixedCommandKinds = buildEvidencePacket({
+    runId: "run-command-evidence",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["command-output"],
+    artifact: { commandsRun: [{ command: "npm test", status: "passed" }, "npm lint"] },
+  });
+  assert.equal(mixedCommandKinds.evidenceItems[0]?.status, "invalid");
+
+  const mixedTestKinds = buildEvidencePacket({
+    runId: "run-command-evidence",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result"],
+    artifact: { testResults: [{ status: "passed" }, "unknown"] },
+  });
+  assert.equal(mixedTestKinds.evidenceItems[0]?.status, "invalid");
+
+  for (const testResults of [
+    ["passed"],
+    "passed",
+    [{ status: "passed", failed: 1, passed: 1 }],
+    [{ status: "passed", ok: false }],
+    [{ status: "passed", exitCode: 1 }],
+    [{ status: "passed", suites: [{ status: "failed" }] }],
+    [{ status: "passed", suites: [{ failed: 1 }] }],
+    [{ status: "passed", suites: [{ ok: false }] }],
+    [{ status: "passed", suites: [{ exitCode: 1 }] }],
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-contradictory-test-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result"],
+      artifact: { testResults },
+    });
+    assert.equal(packet.evidenceItems[0]?.status, "invalid", JSON.stringify(testResults));
+  }
+
+  const cyclic: Record<string, unknown> = { status: "passed" };
+  cyclic.nested = cyclic;
+  const tooDeep: Record<string, unknown> = { status: "passed" };
+  let cursor = tooDeep;
+  for (let index = 0; index < 10; index += 1) {
+    cursor.nested = {};
+    cursor = cursor.nested as Record<string, unknown>;
+  }
+  for (const testResults of [[cyclic], [tooDeep]]) {
+    const packet = buildEvidencePacket({
+      runId: "run-bounded-test-evidence",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result"],
+      artifact: { testResults },
+    });
+    assert.equal(packet.evidenceItems[0]?.status, "invalid");
+  }
+});
+
+test("buildEvidencePacket never treats planned or unstructured commands as executed evidence", () => {
+  for (const artifact of [
+    { commandsToRun: [{ command: "npm test", status: "passed" }] },
+    { commandsRun: ["npm test"] },
+    { commandsRun: [{ command: "npm test" }] },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-boundary",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact,
+    });
+    assert.notEqual(packet.evidenceItems.find((item) => item.kind === "command-output")?.status, "present");
+    assert.notEqual(packet.evidenceItems.find((item) => item.kind === "test-result")?.status, "present");
+  }
+});
+
+test("buildEvidencePacket accepts structured executed commands without promoting them to test results", () => {
+  for (const command of [
+    { command: "npm test", status: "passed" },
+    { command: ["npm", "test"], exitCode: 0 },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-command-boundary",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact: { commandsRun: [command] },
+    });
+    assert.equal(packet.evidenceItems.find((item) => item.kind === "command-output")?.status, "present");
+    assert.equal(packet.evidenceItems.find((item) => item.kind === "test-result")?.status, "missing");
+  }
+});
+
+test("buildEvidencePacket supports structured test results with command strings or argv", () => {
+  for (const testResult of [
+    { command: "npm test", passed: true },
+    { command: ["npm", "test"], ok: true },
+  ]) {
+    const packet = buildEvidencePacket({
+      runId: "run-test-command-boundary",
+      taskId: "task-verify",
+      artifactRef: "artifact-ref-command",
+      requiredEvidenceKinds: ["test-result", "command-output"],
+      artifact: { testResults: [testResult] },
+    });
+    assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status]), [
+      ["test-result", "present"],
+      ["command-output", "present"],
+    ]);
+  }
+});
+
+test("buildEvidencePacket does not let unstructured commands shadow executed test command evidence", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-test-command-shadowing",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result", "command-output"],
+    artifact: {
+      commandsRun: ["cd /workspace/repo && npm test"],
+      testResults: [{ name: "local tests", command: "npm test", status: "passed", gating: "blocking" }],
+    },
+  });
+
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status, item.sourceRef]), [
+    ["test-result", "present", "artifact.testResults"],
+    ["command-output", "present", "artifact.testResults"],
+  ]);
+});
+
+test("buildEvidencePacket does not let command records without outcomes shadow executed test command evidence", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-test-command-record-shadowing",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result", "command-output"],
+    artifact: {
+      commandsRun: [{ command: "cd /workspace/repo && node --test tests/membership-subscription.test.mjs" }],
+      testResults: [{
+        name: "membership acceptance",
+        command: "node --test tests/membership-subscription.test.mjs",
+        status: "passed",
+        gating: "blocking",
+      }],
+    },
+  });
+
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status, item.sourceRef]), [
+    ["test-result", "present", "artifact.testResults"],
+    ["command-output", "present", "artifact.testResults"],
+  ]);
+});
 
 test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref runtime resources", async () => {
   const db = await createTestPostgresDb();
@@ -336,6 +645,26 @@ test("sha256Stable sorts object keys, preserves array order, and omits object un
   assert.equal(sha256Stable({ b: 2, a: 1 }), sha256Stable({ a: 1, b: 2 }));
   assert.notEqual(sha256Stable(["a", "b"]), sha256Stable(["b", "a"]));
   assert.equal(sha256Stable({ a: 1, b: undefined }), sha256Stable({ a: 1 }));
+});
+
+test("artifactRefIdentity matches the identity persisted by acceptOrRejectArtifactRefPg", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const runId = "run-artifact-ref-identity";
+    const taskId = "task-a";
+    const content = { b: 2, a: 1 };
+    await seedRun(db, runId);
+
+    const identity = artifactRefIdentity({ runId, taskId, attemptId: "attempt-1", content });
+    const persisted = await acceptOrRejectArtifactRefPg(db, artifactRefInput({ runId, taskId, content }));
+
+    assert.deepEqual(identity, {
+      artifactRefId: persisted.artifactRefId,
+      contentHash: persisted.contentHash,
+    });
+  } finally {
+    await db.close();
+  }
 });
 
 async function seedRun(db: Awaited<ReturnType<typeof createTestPostgresDb>>, runId: string): Promise<void> {

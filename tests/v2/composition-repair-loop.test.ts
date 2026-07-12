@@ -3,24 +3,41 @@ import test from "node:test";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowCompositionTask } from "../../src/v2/design-library/types.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
-import { ScriptedWorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { runCompositionRepairLoop } from "../../src/v2/orchestration/composition-repair-loop.ts";
 import { LlmComposerOutputError } from "../../src/v2/orchestration/llm-composer.ts";
-import { analyzeRequirementDeterministically } from "../../src/v2/orchestration/requirement-analyzer.ts";
+import { requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
+
+const GOAL_CONTRACT = softwareGoalContract();
+
+class ScriptedWorkflowComposer implements WorkflowComposer {
+  private index = 0;
+
+  constructor(private readonly plans: WorkflowCompositionPlan[]) {}
+
+  async compose(_input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
+    const plan = this.plans[Math.min(this.index, this.plans.length - 1)];
+    this.index += 1;
+    if (!plan) throw new Error("ScriptedWorkflowComposer has no plans");
+    return structuredClone(plan);
+  }
+}
 
 test("composition repair loop retries once and returns valid composition", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedSoftwareLibraryGraph(db);
     const candidatePacket = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(GOAL_CONTRACT),
       scope: "software",
     });
     const composer = new ScriptedWorkflowComposer([invalidPlan(), validPlan()]);
     const result = await runCompositionRepairLoop({
       db,
       goalPrompt: "implement calc sum",
+      goalContract: GOAL_CONTRACT,
       candidatePacket,
       composer,
       scope: "software",
@@ -40,7 +57,7 @@ test("composition repair loop retry prompt includes previous composition JSON an
   try {
     await seedSoftwareLibraryGraph(db);
     const candidatePacket = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(GOAL_CONTRACT),
       scope: "software",
     });
     const prompts: string[] = [];
@@ -53,6 +70,7 @@ test("composition repair loop retry prompt includes previous composition JSON an
     const result = await runCompositionRepairLoop({
       db,
       goalPrompt: "implement calc sum",
+      goalContract: GOAL_CONTRACT,
       candidatePacket,
       composer,
       scope: "software",
@@ -77,7 +95,7 @@ test("composition repair loop retries when composer output violates schema contr
   try {
     await seedSoftwareLibraryGraph(db);
     const candidatePacket = await resolveWorkflowCandidates(db, {
-      requirementSpec: analyzeRequirementDeterministically("implement calc sum"),
+      requirementSpec: requirementSpecFromGoalContract(GOAL_CONTRACT),
       scope: "software",
     });
     let attempt = 0;
@@ -101,6 +119,7 @@ test("composition repair loop retries when composer output violates schema contr
     const result = await runCompositionRepairLoop({
       db,
       goalPrompt: "implement calc sum",
+      goalContract: GOAL_CONTRACT,
       candidatePacket,
       composer,
       scope: "software",
@@ -182,7 +201,7 @@ function buildPlanTasks(input: { firstProfileRef?: string; generatedProfiles: bo
     ),
     task(
       "verify-feature",
-      ["implement-feature"],
+      ["understand-repo", "implement-feature"],
       "agent.software-checker",
       profileRefForTask("verify-feature", input.generatedProfiles, "profile.software-checker-codex"),
       ["skill.software-verification"],
@@ -193,7 +212,7 @@ function buildPlanTasks(input: { firstProfileRef?: string; generatedProfiles: bo
     ),
     task(
       "review-code-quality",
-      ["implement-feature"],
+      ["understand-repo", "implement-feature"],
       "agent.software-code-quality-reviewer",
       profileRefForTask("review-code-quality", input.generatedProfiles, "profile.software-code-quality-reviewer-codex"),
       ["skill.software-code-quality-review"],
@@ -306,8 +325,26 @@ function task(
   const mcpGrantRefs = id === "implement-feature" ? ["mcp.filesystem-workspace"] : [];
   return {
     id,
+    sliceId: "slice-main",
     name: id,
     responsibility: id,
+    requirementIds: id === "summarize-completion"
+      ? []
+      : GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
+    ...(id === "summarize-completion" ? {
+      nodePromptSpec: {
+        nodeType: "summary" as const,
+        goal: "Summarize completed work and verification evidence.",
+        requirements: [],
+        boundaries: [],
+        nonGoals: [],
+        deliverableDocuments: [],
+        expectedOutputs: outputArtifactRefs,
+        testCases: [],
+        acceptanceCriteria: ["The summary records completed work, verification, and remaining risks."],
+        summarySections: ["completed work", "verification", "remaining risks"],
+      },
+    } : {}),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,

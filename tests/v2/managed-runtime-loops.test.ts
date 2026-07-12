@@ -23,6 +23,8 @@ import { createDefaultManagedRuntimeLoop } from "../../src/v2/server/http-server
 import { createManagedRuntimeLoopController, createManagedRuntimeLoopPlan, createManagedRuntimeLoopRunners } from "../../src/v2/server/runtime-loops.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, getResourceByKeyPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb, initSouthstarSchema } from "./postgres-test-utils.ts";
+import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
+import { contentHashForPayload } from "../../src/v2/design-library/canonical-json.ts";
 
 test("managed runtime loop plan includes scheduler and recovery loops", () => {
   const plan = createManagedRuntimeLoopPlan({ schedulerIntervalMs: 1000, recoveryIntervalMs: 5000 });
@@ -103,17 +105,19 @@ test("managed runtime loop dispatches runnable Postgres tasks through scheduler"
   try {
     await initSouthstarSchema(db);
     await seedSoftwareLibraryGraph(db);
+    const manifest = managedLoopManifest("wf-managed-loop", "task-managed-loop-1");
     await createWorkflowRunPg(db, {
       id: "run-managed-loop-1",
       status: "running",
       domain: "software",
       goalPrompt: "managed loop",
-      workflowManifestJson: JSON.stringify(managedLoopManifest("wf-managed-loop", "task-managed-loop-1")),
+      workflowManifestJson: JSON.stringify(manifest),
       executionProjectionJson: "{}",
       snapshotJson: "{}",
       runtimeContextJson: "{}",
       metricsJson: "{}",
     });
+    await seedManagedLoopLibrarySnapshot(db, "run-managed-loop-1", manifest);
     await createWorkflowTaskPg(db, {
       id: "task-managed-loop-1",
       runId: "run-managed-loop-1",
@@ -158,17 +162,19 @@ test("managed runtime loop dispatches scheduling Postgres runs through scheduler
   try {
     await initSouthstarSchema(db);
     await seedSoftwareLibraryGraph(db);
+    const manifest = managedLoopManifest("wf-managed-loop-scheduling", "task-managed-loop-scheduling");
     await createWorkflowRunPg(db, {
       id: "run-managed-loop-scheduling",
       status: "scheduling",
       domain: "software",
       goalPrompt: "managed loop scheduling",
-      workflowManifestJson: JSON.stringify(managedLoopManifest("wf-managed-loop-scheduling", "task-managed-loop-scheduling")),
+      workflowManifestJson: JSON.stringify(manifest),
       executionProjectionJson: "{}",
       snapshotJson: "{}",
       runtimeContextJson: "{}",
       metricsJson: "{}",
     });
+    await seedManagedLoopLibrarySnapshot(db, "run-managed-loop-scheduling", manifest);
     await createWorkflowTaskPg(db, {
       id: "task-managed-loop-scheduling",
       runId: "run-managed-loop-scheduling",
@@ -396,17 +402,19 @@ async function seedManagedLoopRun(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   input: { runId: string; taskId: string },
 ): Promise<void> {
+  const manifest = managedLoopManifest(`wf-${input.runId}`, input.taskId);
   await createWorkflowRunPg(db, {
     id: input.runId,
     status: "running",
     domain: "software",
     goalPrompt: "managed loop",
-    workflowManifestJson: JSON.stringify(managedLoopManifest(`wf-${input.runId}`, input.taskId)),
+    workflowManifestJson: JSON.stringify(manifest),
     executionProjectionJson: "{}",
     snapshotJson: "{}",
     runtimeContextJson: "{}",
     metricsJson: "{}",
   });
+  await seedManagedLoopLibrarySnapshot(db, input.runId, manifest);
   await createWorkflowTaskPg(db, {
     id: input.taskId,
     runId: input.runId,
@@ -424,6 +432,26 @@ async function seedManagedLoopRun(
     status: "created",
     payload: { id: `ctx-${input.taskId}` },
   });
+}
+
+async function seedManagedLoopLibrarySnapshot(
+  db: Awaited<ReturnType<typeof createTestPostgresDb>>,
+  runId: string,
+  manifest: unknown,
+): Promise<void> {
+  const refs = (await db.query<{ object_key: string; head_version_id: string }>(
+    "select object_key, head_version_id from southstar.library_objects where status = 'approved' and head_version_id is not null order by object_key",
+  )).rows.map((row) => ({ objectKey: row.object_key, versionRef: row.head_version_id }));
+  const manifestHash = contentHashForPayload(manifest);
+  const snapshot = await captureRunLibrarySnapshotPg(db, {
+    runId,
+    manifestHash,
+    libraryObjectVersionRefs: refs,
+  });
+  await db.query(
+    "update southstar.workflow_runs set runtime_context_json = $2::jsonb, updated_at = now() where id = $1",
+    [runId, JSON.stringify({ manifestHash, librarySnapshotHash: snapshot.snapshotHash })],
+  );
 }
 
 function managedLoopManifest(workflowId: string, taskId: string): unknown {

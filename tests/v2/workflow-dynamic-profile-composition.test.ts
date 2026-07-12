@@ -9,6 +9,15 @@ import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
 import { validateWorkflowCompositionPlan } from "../../src/v2/orchestration/composition-validator.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
+
+const GOAL_CONTRACT = {
+  ...softwareGoalContract("Build a todo web app"),
+  requirements: softwareGoalContract("Build a todo web app").requirements.map((requirement) => ({
+    ...requirement,
+    blocking: false,
+  })),
+};
 
 test("workflow composition accepts generated profiles built from approved primitives", async () => {
   const db = await createTestPostgresDb();
@@ -46,6 +55,7 @@ test("compiler preserves generated profile and primitive refs in the manifest", 
     const compiled = await compileWorkflowComposition(db, {
       runId: "dynamic-profile-composition",
       goalPrompt: "Build a todo web app",
+      goalContract: GOAL_CONTRACT,
       candidatePacket: packet,
       composition,
       scope: "software",
@@ -377,6 +387,7 @@ function generatedProfilePlan(): WorkflowCompositionPlan {
       id: "implement-ui",
       name: "Implement UI",
       responsibility: "Build the todo web app",
+      requirementIds: GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
       dependsOn: [],
       templateSlotRef: "implement",
       agentDefinitionRef: "agent.frontend-developer",

@@ -1,0 +1,9 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.implementation_report
+title: Implementation Report
+scope: software
+status: approved
+artifactType: implementation_report
+evidenceKinds:
+  - artifact-ref
+  - file-diff

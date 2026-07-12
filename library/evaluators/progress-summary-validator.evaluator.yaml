@@ -1,0 +1,14 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.progress-summary-validator
+title: "Progress Summary Validator"
+scope: "general"
+status: approved
+validatesArtifactRefs:
+  - "artifact.progress-summary"
+evidenceKinds:
+  - "artifact-ref"
+  - "test-result"
+  - "workspace-snapshot"
+importDraftId: "library-import-draft-251a9454-7eb0-40e8-96da-6fb0e39c5bc3"
+importCandidateKey: "evaluator.progress-summary-validator"
+importSourcePath: "Library-chat-prompt.md"

@@ -1,0 +1,15 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.flashcard-deck-construction
+title: "Flashcard Deck Construction"
+scope: "general"
+status: approved
+description: "Transform vocabulary entries into structured flashcards and maintain a local deck artifact for study."
+requiredOperations:
+  - "generate-flashcard"
+  - "update-flashcard"
+  - "list-flashcards"
+  - "remove-flashcard"
+  - "export-flashcard-deck"
+importDraftId: "library-import-draft-3a8cdbc9-9097-4d06-9bb3-09577a8c436d"
+importCandidateKey: "capability.flashcard-deck-construction"
+importSourcePath: "Library-chat-prompt.md"

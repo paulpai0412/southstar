@@ -33,12 +33,24 @@ export type ArtifactRefWriteResult = {
   contentHash: string;
 };
 
+export function artifactRefIdentity(input: {
+  runId: string;
+  taskId: string;
+  attemptId: string;
+  content: unknown;
+}): { artifactRefId: string; contentHash: string } {
+  const contentHash = sha256Stable(input.content);
+  return {
+    contentHash,
+    artifactRefId: `artifact_ref:${input.runId}:${input.taskId}:${input.attemptId}:${contentHash}`,
+  };
+}
+
 export async function acceptOrRejectArtifactRefPg(
   db: SouthstarDb,
   input: ArtifactRefWriteInput,
 ): Promise<ArtifactRefWriteResult> {
-  const contentHash = sha256Stable(input.content);
-  const artifactRefId = `artifact_ref:${input.runId}:${input.taskId}:${input.attemptId}:${contentHash}`;
+  const { artifactRefId, contentHash } = artifactRefIdentity(input);
   const artifactBlobId = `${artifactRefId}:content`;
   const sortedContractRefs = [...input.contractRefs].sort();
 

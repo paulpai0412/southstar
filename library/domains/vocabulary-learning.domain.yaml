@@ -1,0 +1,11 @@
+schemaVersion: southstar.library.domain_taxonomy_file.v1
+id: domain.vocabulary-learning
+title: "Vocabulary Learning"
+scope: "general"
+status: approved
+aliases:
+  - "flashcard-learning"
+  - "lexical-study"
+importDraftId: "library-import-draft-a50847a7-93f1-4a88-bb23-25a5b5947e52"
+importCandidateKey: "domain.vocabulary-learning"
+importSourcePath: "Library-chat-prompt.md"

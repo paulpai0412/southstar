@@ -1,6 +1,14 @@
 import type { LibraryImportSourceDocument } from "./library-source-fetcher.ts";
 
-export type LibraryImportCandidateKind = "agent" | "skill" | "mcp" | "tool";
+export type LibraryImportCandidateKind =
+  | "agent"
+  | "skill"
+  | "mcp"
+  | "tool"
+  | "domain"
+  | "capability"
+  | "artifact"
+  | "evaluator";
 export type LibraryImportEdgeType =
   | "belongs_to_domain"
   | "has_capability"
@@ -34,6 +42,12 @@ export type LibraryImportCandidate = {
   sourcePath?: string;
   selectedByDefault: boolean;
   confidence?: number;
+  description?: string;
+  aliases?: string[];
+  requiredOperations?: string[];
+  artifactType?: string;
+  evidenceKinds?: string[];
+  validatesArtifactRefs?: string[];
 };
 
 export type LibraryImportProposedEdge = {
@@ -117,6 +131,10 @@ function kindFromDocumentPath(documentPath: string): LibraryImportCandidateKind 
   if (segments.includes("skills") || normalized.includes(".skill.")) return "skill";
   if (segments.includes("mcp") || normalized.includes(".mcp.")) return "mcp";
   if (segments.includes("tools") || normalized.includes(".tool.")) return "tool";
+  if (segments.includes("domains") || normalized.includes(".domain.")) return "domain";
+  if (segments.includes("capabilities") || normalized.includes(".capability.")) return "capability";
+  if (segments.includes("artifacts") || normalized.includes(".artifact.")) return "artifact";
+  if (segments.includes("evaluators") || normalized.includes(".evaluator.")) return "evaluator";
   return null;
 }
 
@@ -125,7 +143,7 @@ function slugFromDocumentPath(documentPath: string, kind: LibraryImportCandidate
   const basename = segments.at(-1) ?? documentPath;
   const stem = basename.replace(/\.(mdx?|ya?ml|json)$/i, "");
   const canonicalDefinitionNames = new Set([kind, kind.toUpperCase(), `${kind}s`, `${kind.toUpperCase()}S`]);
-  const folderName = kind === "mcp" ? "mcp" : `${kind}s`;
+  const folderName = kind === "mcp" ? "mcp" : kind === "capability" ? "capabilities" : `${kind}s`;
   const folderIndex = segments.findLastIndex((segment) => segment.toLowerCase() === folderName);
   const slugSource = canonicalDefinitionNames.has(stem) && folderIndex >= 0 && segments[folderIndex + 1]
     ? segments[folderIndex + 1]

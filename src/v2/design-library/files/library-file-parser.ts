@@ -61,6 +61,30 @@ const FILE_FORMATS: Array<{
     objectKind: "workflow_template",
     schemaVersion: "southstar.library.workflow_template_file.v1",
   },
+  {
+    suffix: ".capability.yaml",
+    kind: "capability",
+    objectKind: "capability_spec",
+    schemaVersion: "southstar.library.capability_spec_file.v1",
+  },
+  {
+    suffix: ".artifact.yaml",
+    kind: "artifact",
+    objectKind: "artifact_contract",
+    schemaVersion: "southstar.library.artifact_contract_file.v1",
+  },
+  {
+    suffix: ".domain.yaml",
+    kind: "domain",
+    objectKind: "domain_taxonomy",
+    schemaVersion: "southstar.library.domain_taxonomy_file.v1",
+  },
+  {
+    suffix: ".evaluator.yaml",
+    kind: "evaluator",
+    objectKind: "evaluator_profile",
+    schemaVersion: "southstar.library.evaluator_profile_file.v1",
+  },
 ];
 
 const VALID_STATUSES = new Set<LibraryFileRecord["status"]>(["draft", "approved", "deprecated", "blocked", "invalid"]);

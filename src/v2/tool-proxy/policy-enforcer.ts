@@ -158,6 +158,9 @@ function stringifyForScanning(value: unknown): string {
 
 function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): { value: unknown; foundSensitiveKey: boolean } {
   if (value === null) return { value: null, foundSensitiveKey: false };
+  if (typeof value === "string" && credentialBearingUrl(value)) {
+    return { value: "[REDACTED_URL]", foundSensitiveKey: true };
+  }
   if (typeof value !== "object") return { value, foundSensitiveKey: false };
   if (seen.has(value)) return { value: "[Circular]", foundSensitiveKey: false };
   seen.add(value);
@@ -185,6 +188,66 @@ function redactSensitiveSubtrees(value: unknown, seen = new WeakSet<object>()): 
     foundSensitiveKey ||= redactedChild.foundSensitiveKey;
   }
   return { value: redacted, foundSensitiveKey };
+}
+
+function credentialBearingUrl(
+  value: string,
+  depth = 0,
+  seen = new Set<string>(),
+  base?: string,
+): boolean {
+  try {
+    if (depth > 4 || seen.size >= 32) return true;
+    if (seen.has(value)) return false;
+    seen.add(value);
+    const url = new URL(value, base);
+    if (url.href.length > 16_384) return true;
+    if (url.username || url.password || [...url.searchParams.keys()].some(isSensitivePolicyKey)) return true;
+    const nestedValues = [...url.searchParams.values()];
+    const fragment = url.hash.slice(1);
+    if (fragment) {
+      let decodedFragment = fragment;
+      try {
+        decodedFragment = decodeURIComponent(fragment);
+      } catch {
+        // URLSearchParams still recognizes sensitive keys in malformed fragments.
+      }
+      const fragmentParams = new URLSearchParams(decodedFragment.includes("?")
+        ? decodedFragment.slice(decodedFragment.indexOf("?") + 1)
+        : decodedFragment);
+      if ([...fragmentParams.keys()].some(isSensitivePolicyKey)) return true;
+      nestedValues.push(...fragmentParams.values());
+      if (/^(?:https?:)?\/\//i.test(decodedFragment)) nestedValues.push(decodedFragment);
+    }
+    for (const nested of nestedValues) {
+      if (credentialBearingUrl(nested, depth + 1, seen, url.origin)) return true;
+      const decoded = decodedNestedUrl(nested);
+      if (decoded === "limit-exceeded") return true;
+      if (decoded && credentialBearingUrl(decoded.value, depth + 1 + decoded.layers, seen, url.origin)) return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+function decodedNestedUrl(value: string): { value: string; layers: number } | "limit-exceeded" | undefined {
+  let current = value;
+  for (let layers = 1; layers <= 4; layers += 1) {
+    if (!/%[0-9a-f]{2}/i.test(current)) return undefined;
+    try {
+      const decoded = decodeURIComponent(current);
+      if (decoded === current || decoded.length > 16_384) return decoded.length > 16_384 ? "limit-exceeded" : undefined;
+      current = decoded;
+      if (/^(?:https?:)?\/\//i.test(current)) return { value: current, layers };
+      if (/^[^#?=&]+=[^&]*(?:&|$)/.test(current)) return { value: `?${current}`, layers };
+    } catch {
+      return undefined;
+    }
+  }
+  return /^https?%[0-9a-f]{2}/i.test(current) || /%3d/i.test(current)
+    ? "limit-exceeded"
+    : undefined;
 }
 
 function redactText(value: string): string {

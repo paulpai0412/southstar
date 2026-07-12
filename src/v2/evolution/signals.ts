@@ -16,7 +16,7 @@ export async function recordLearningSignal(db: SouthstarDb, input: LearningSigna
   const sanitized = redactSecrets(input) as LearningSignalInput;
   const node = await createLearningNode(db, {
     nodeType: "learning_signal",
-    scope: typeof sanitized.scope === "string" ? sanitized.scope : "software",
+    scope: typeof sanitized.scope === "string" ? sanitized.scope : "general",
     status: "recorded",
     runId: sanitized.runId,
     taskId: sanitized.taskId,

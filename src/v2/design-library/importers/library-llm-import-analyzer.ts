@@ -37,6 +37,18 @@ const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
 ];
 const MAX_PROMPT_DOCUMENT_CHARS = 120_000;
 const MAX_DOCUMENT_EXCERPT_CHARS = 1_200;
+const VOCABULARY_CANDIDATE_KINDS = new Set<LibraryImportCandidateKind>(["domain", "capability", "artifact", "evaluator"]);
+const EVIDENCE_KINDS = new Set([
+  "file-diff",
+  "test-result",
+  "command-output",
+  "url",
+  "screenshot",
+  "human-approval",
+  "artifact-ref",
+  "workspace-snapshot",
+  "policy-decision",
+]);
 
 export type LibraryImportLlmProvider = (input: {
   prompt: string;
@@ -213,9 +225,13 @@ export function buildLibraryImportCandidatePrompt(
   return [
     "Classify the requested repository/library source into Southstar library candidates.",
     "Return exactly one JSON object. No markdown, comments, or prose outside JSON.",
-    "Use this shape: {\"candidates\":[{\"objectKey\":\"agent.example\",\"kind\":\"agent\",\"title\":\"Example\",\"domain\":\"engineering\",\"sourcePath\":\"relative/path.md\",\"selectedByDefault\":true,\"confidence\":0.9,\"classificationReason\":\"...\"}]}",
-    "Allowed candidate kinds: agent, skill, mcp, tool.",
-    "domain must be one canonical domain key from CanonicalDomainTaxonomy. Do not invent domains and do not use software unless it appears in the taxonomy.",
+    "Use this shape: {\"candidates\":[{\"objectKey\":\"agent.example\",\"kind\":\"agent\",\"title\":\"Example\",\"scope\":\"engineering\",\"sourcePath\":\"relative/path.md\",\"selectedByDefault\":true,\"confidence\":0.9,\"classificationReason\":\"...\"}]}",
+    "Allowed candidate kinds: agent, skill, mcp, tool, domain, capability, artifact, evaluator.",
+    "objectKey prefixes must match kind: agent.<slug>, skill.<slug>, mcp.<slug>, tool.<slug>, domain.<slug>, capability.<slug>, artifact.<slug>, evaluator.<slug>.",
+    "For agent, skill, mcp, and tool candidates, domain must be one canonical domain key from CanonicalDomainTaxonomy. Do not invent domains and do not use software unless it appears in the taxonomy.",
+    "Vocabulary candidates use these fields: domain may include aliases:string[]; capability requires description:string and requiredOperations:string[]; artifact requires artifactType:string and evidenceKinds:string[]; evaluator requires validatesArtifactRefs:string[] and evidenceKinds:string[].",
+    "evidenceKinds values are limited to: file-diff, test-result, command-output, url, screenshot, human-approval, artifact-ref, workspace-snapshot, policy-decision.",
+    "Vocabulary candidates describe only concepts evidenced by UserImportRequest or source documents. Do not invent organization policy. status, schemaVersion, file path, and graph version are host-owned and must be omitted.",
     "If source paths clearly map to a canonical domain prefix, use that domain even when the item is broadly useful.",
     "If the user asks to import agents from a repo catalog, inspect the repo and return one agent candidate per real agent definition. Do not collapse many agents into a summary candidate.",
     "If the source is a skill repository, return one skill candidate per real skills/<slug>/SKILL.md definition using objectKey skill.<slug> and that SKILL.md as sourcePath. Do not collapse many skills into a summary candidate.",
@@ -321,7 +337,7 @@ function normalizeLlmImportAnalysis(
 ): { candidates: LibraryImportCandidate[]; proposedEdges: LibraryImportProposedEdge[] } {
   const value = typeof raw === "string" ? safeJsonParse(raw) : raw;
   const record = isRecord(value) ? value : {};
-  const candidates = normalizeCandidates(record.candidates, options);
+  const candidates = normalizeLibraryImportCandidates(record.candidates, options);
   const candidateKeys = new Set(candidates.map((candidate) => candidate.objectKey));
   const proposedEdges = normalizeEdges(edgeArrayFromRecord(record), candidateKeys);
   return { candidates, proposedEdges };
@@ -341,7 +357,10 @@ function unwrapLibraryImportLlmOutput(raw: unknown): { output: unknown; piSessio
   return { output: raw, ...(piSessionId ? { piSessionId } : {}) };
 }
 
-function normalizeCandidates(value: unknown, options: { scope: string; sourcePaths: Set<string> }): LibraryImportCandidate[] {
+export function normalizeLibraryImportCandidates(
+  value: unknown,
+  options: { scope: string; sourcePaths: Set<string> },
+): LibraryImportCandidate[] {
   if (!Array.isArray(value)) return [];
   const candidates: LibraryImportCandidate[] = [];
   const seen = new Set<string>();
@@ -357,13 +376,25 @@ function normalizeCandidates(value: unknown, options: { scope: string; sourcePat
     if (!objectKey || !objectKey.startsWith(`${kind}.`) || seen.has(objectKey)) continue;
     const sourcePath = optionalString(candidate.sourcePath);
     if (sourcePath && options.sourcePaths.size > 0 && !options.sourcePaths.has(sourcePath)) continue;
-    const pathDomain = catalogDomainFromSourcePath(sourcePath);
+    const vocabularyCandidate = VOCABULARY_CANDIDATE_KINDS.has(kind);
+    const pathDomain = vocabularyCandidate ? undefined : catalogDomainFromSourcePath(sourcePath);
     const llmDomain = optionalString(candidate.domain) ?? optionalString(candidate.scope);
-    const invalidExplicitDomain = Boolean(llmDomain && !isCatalogCanonicalDomain(llmDomain));
+    const invalidExplicitDomain = Boolean(!vocabularyCandidate && llmDomain && !isCatalogCanonicalDomain(llmDomain));
     if (!pathDomain && invalidExplicitDomain) continue;
-    const domain = pathDomain?.key ?? (isCatalogCanonicalDomain(llmDomain) ? llmDomain : undefined);
-    const scope = domain ?? options.scope;
+    const domain = pathDomain?.key ?? (!vocabularyCandidate && isCatalogCanonicalDomain(llmDomain) ? llmDomain : undefined);
+    const scope = vocabularyCandidate ? (optionalString(candidate.scope) ?? options.scope) : (domain ?? options.scope);
     const title = optionalString(candidate.title);
+    const aliases = stringArray(candidate.aliases);
+    const requiredOperations = stringArray(candidate.requiredOperations);
+    const evidenceKinds = stringArray(candidate.evidenceKinds);
+    const validatesArtifactRefs = stringArray(candidate.validatesArtifactRefs);
+    const description = optionalString(candidate.description);
+    const artifactType = optionalString(candidate.artifactType);
+    if (kind === "capability" && (!description || requiredOperations.length === 0)) continue;
+    if (kind === "artifact" && (!artifactType || evidenceKinds.length === 0)) continue;
+    if (kind === "evaluator" && (validatesArtifactRefs.length === 0 || evidenceKinds.length === 0)) continue;
+    if (evidenceKinds.some((value) => !EVIDENCE_KINDS.has(value))) continue;
+    if (validatesArtifactRefs.some((value) => !value.startsWith("artifact."))) continue;
     seen.add(objectKey);
     candidates.push({
       objectKey,
@@ -375,6 +406,12 @@ function normalizeCandidates(value: unknown, options: { scope: string; sourcePat
       ...(sourcePath ? { sourcePath } : {}),
       selectedByDefault: typeof candidate.selectedByDefault === "boolean" ? candidate.selectedByDefault : true,
       confidence: clampConfidence(candidate.confidence),
+      ...(description ? { description } : {}),
+      ...(aliases.length > 0 ? { aliases } : {}),
+      ...(requiredOperations.length > 0 ? { requiredOperations } : {}),
+      ...(artifactType ? { artifactType } : {}),
+      ...(evidenceKinds.length > 0 ? { evidenceKinds } : {}),
+      ...(validatesArtifactRefs.length > 0 ? { validatesArtifactRefs } : {}),
     });
   }
   return candidates;
@@ -425,7 +462,10 @@ function safeJsonParse(value: string): unknown {
 }
 
 function normalizeKind(value: unknown): LibraryImportCandidateKind | null {
-  return value === "agent" || value === "skill" || value === "mcp" || value === "tool" ? value : null;
+  return value === "agent" || value === "skill" || value === "mcp" || value === "tool"
+    || value === "domain" || value === "capability" || value === "artifact" || value === "evaluator"
+    ? value
+    : null;
 }
 
 function normalizeEdgeType(value: unknown): LibraryImportEdgeType | null {
@@ -467,7 +507,7 @@ function canonicalizeObjectKeyFromSourcePath(
 
 function slugFromCanonicalDefinitionPath(kind: LibraryImportCandidateKind, segments: string[], stem: string): string {
   if (!isGenericDefinitionTitle(stem, kind)) return stem;
-  const folderName = kind === "mcp" ? "mcp" : `${kind}s`;
+  const folderName = kind === "mcp" ? "mcp" : kind === "capability" ? "capabilities" : `${kind}s`;
   const folderIndex = segments.findLastIndex((segment) => segment.toLowerCase() === folderName);
   return folderIndex >= 0 && segments[folderIndex + 1] ? segments[folderIndex + 1] : stem;
 }
@@ -487,6 +527,11 @@ function titleFromObjectKey(objectKey: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => typeof item === "string" && item.trim().length > 0 ? [item.trim()] : []);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

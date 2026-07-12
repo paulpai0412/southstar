@@ -9,7 +9,8 @@ export type ApprovalActionType =
   | "voiceCommand"
   | "vaultAccess"
   | "externalWrite"
-  | "deployment";
+  | "deployment"
+  | "goalExecution";
 
 export type ApprovalPolicyInput = {
   mode: ApprovalMode;

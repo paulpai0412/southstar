@@ -1,0 +1,9 @@
+schemaVersion: southstar.library.domain_taxonomy_file.v1
+id: domain.software
+title: Software
+scope: software
+status: approved
+aliases:
+  - software
+  - application
+  - codebase

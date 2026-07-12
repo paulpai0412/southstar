@@ -8,6 +8,7 @@ This directory is the canonical real E2E surface for the new Southstar v2 Postgr
 - Do **not** reintroduce legacy SQLite E2E or local API harnesses.
 - Do **not** add UI/browser flows here. Future UI flows will be redesigned separately.
 - No fake/mock/smoke/test-only shortcuts in real cases.
+- Case 31's local fake payment adapter is goal input and a delivered test fixture, not a composer/provider/interpreter shortcut.
 - Deterministic in-process providers are allowed only when the asserted behavior is Southstar's durable Postgres state, not external Tork/Pi provider behavior.
 - Cases must fail closed when required real infra is missing.
 - Prefer lifecycle evidence from Postgres tables/read-models over console output.
@@ -58,6 +59,8 @@ npm run test:e2e:postgres:27   # runtime API completeness across operator surfac
 npm run test:e2e:postgres:28   # llm-constrained workflow from planner draft to completed run
 npm run test:e2e:postgres:29   # llm dynamic workflow materialization + envelope library refs
 npm run test:e2e:postgres:30   # runtime verifier failure appends LLM-generated repair nodes
+npm run test:e2e:postgres:31   # one prompt membership goal contract through isolated Tork
+npm run test:e2e:postgres:32   # one prompt article goal with offline screenshot evidence
 ```
 
 `npm run test:e2e:postgres` intentionally runs only the static manifest/boundary checks. It does not run all real cases.
@@ -97,6 +100,8 @@ npm run test:e2e:postgres:30   # runtime verifier failure appends LLM-generated 
 | 28 llm-constrained workflow end-to-end | implemented | Planner draft uses llm-constrained orchestration, materializes reviewer tasks, and completes task callbacks through real Tork/Pi scheduling | planner draft snapshot, reviewer profiles, task order, per-task callback evidence, run.completed |
 | 29 llm dynamic workflow materialization | implemented | Planner draft/run from llm-constrained default llm path verifies pre-callback task envelope materialized refs, skills, and tool-proxy policy, then reaches passed without persisted plaintext secret markers | planner trace composerMode llm, reviewer profiles present, per-task `task_envelope` materialized refs before callback, run passed, persisted-surface `plaintextSecret` negative check |
 | 30 runtime dynamic repair node generation | implemented | Failed validation callback invokes the LLM workflow composer, appends bounded repair/reverify tasks, reconnects pending downstream tasks, and persists generated agent profiles into the live manifest | failed verifier hand, `workflow_dynamic_repair_revision`, new task rows, generated agent profiles, downstream dependency change, `workflow.dynamic_repair_revision_applied` |
+| 31 one-prompt goal contract software delivery | implemented | One user prompt is interpreted into a software Goal Contract, composed into a compound DAG, and completed through a dedicated Tork instance without orchestration shortcuts | production interpreter contract/coverage hashes, isolated Tork jobs, accepted dependency artifacts, passed requirement evaluators, satisfied goal outcome |
+| 32 one-prompt goal contract article delivery | implemented | One user prompt is interpreted into a design/article Goal Contract and produces a self-contained offline article through a dedicated Tork instance | accepted HTML and screenshot artifacts, network-disabled browser proof, frozen Library version/content hash after head mutation, satisfied goal outcome |
 
 ## Adding a new case
 
@@ -125,3 +130,23 @@ npm run test:e2e:postgres:30
 ```
 
 Case 30 validates that a failed validation callback keeps the run active, calls the runtime LLM workflow composer, appends new repair/reverify tasks to the persisted run, reconnects pending downstream tasks to the generated reverify task, and verifies the appended tasks use validated generated agent profiles from the LLM composition output.
+
+## Case 31
+
+One-prompt Goal Contract software delivery coverage command:
+
+```bash
+npm run test:e2e:postgres:31
+```
+
+Case 31 starts a dedicated Tork standalone process and database. Its bind allowlist contains only the exact task-envelope materialization root, exact workspace, and Pi agent config path; the production Goal Contract interpreter and LLM composer must produce the run from the single `/api/v2/run-goal` ingress.
+
+## Case 32
+
+One-prompt Goal Contract article delivery coverage command:
+
+```bash
+npm run test:e2e:postgres:32
+```
+
+Case 32 uses the same dedicated Tork isolation and production Goal Contract interpreter/composer path. It verifies a self-contained `article/article.html` with a network-disabled browser screenshot, accepted evidence, and TaskEnvelope Library refs frozen to the run snapshot even after the selected Library head changes.

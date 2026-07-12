@@ -1,6 +1,5 @@
 import type { BrainProvider, BrainSessionBinding, WakeBrainInput } from "../../src/v2/brain/types.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
-import { withMaterializationMount } from "../../src/v2/executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../../src/v2/executor/pi-agent-runtime.ts";
 import type { ExecutorProvider, ExecutorSubmitRequest, ExecutorSubmitResult } from "../../src/v2/executor/provider.ts";
 import { TorkClient } from "../../src/v2/executor/tork-client.ts";
@@ -10,8 +9,6 @@ import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts"
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
-import { materializeTaskEnvelope } from "../../src/v2/agent-runner/materializer.ts";
-import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envelope.ts";
 import type { RealPostgresInfra } from "./postgres-real-harness.ts";
 
 export function firstAttemptId(taskId: string): string {
@@ -78,13 +75,14 @@ export function createRealRecoveryScheduler(
     sessionStore: createPostgresSessionStore(db),
     brainProvider: deterministicBrainProvider(),
     handProvider: createTorkHandProvider({
-      executorProvider: materializingTorkExecutorProvider(db, {
+      executorProvider: runtimeTorkExecutorProvider({
         torkClient,
         runRoot: input.runRoot ?? "/tmp/southstar-runs",
         harnessEndpoint: input.infra.piHarnessEndpoint,
       }),
       callbackUrl: `${input.callbackBase}/api/v2/tork/callback`,
       heartbeatUrl: `${input.callbackBase}/api/v2/executor/heartbeat`,
+      runRoot: input.runRoot ?? "/tmp/southstar-runs",
     }),
   });
 }
@@ -132,8 +130,7 @@ export async function waitForHandExecutionStatus(
   throw new Error(`hand execution ${resourceKey} did not reach ${statuses.join("/")} within ${timeoutMs}ms`);
 }
 
-function materializingTorkExecutorProvider(
-  db: SouthstarDb,
+function runtimeTorkExecutorProvider(
   input: { torkClient: TorkClient; runRoot: string; harnessEndpoint?: string },
 ): ExecutorProvider {
   const delegate = new TorkExecutorProvider({ torkClient: input.torkClient });
@@ -144,15 +141,9 @@ function materializingTorkExecutorProvider(
         runRoot: input.runRoot,
         harnessEndpoint: input.harnessEndpoint,
       });
-      const mounted = withMaterializationMount(runtimeWorkflow, { runRoot: input.runRoot });
-      for (const task of mounted.workflow.tasks) {
-        const envelope = await getPostgresTaskEnvelope(db, { runId: request.runId, taskId: task.id });
-        await materializeTaskEnvelope(envelope, { runRoot: mounted.runRoot });
-      }
       return await delegate.submit({
         ...request,
-        workflow: mounted.workflow,
-        envelopeBasePath: mounted.envelopeBasePath,
+        workflow: runtimeWorkflow,
       });
     },
     cancel: (request) => input.torkClient.cancelJob(request.externalJobId).then(() => ({

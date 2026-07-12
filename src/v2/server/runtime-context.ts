@@ -6,6 +6,8 @@ import type { HandProvider } from "../hands/types.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
+import type { GoalDesigner } from "../orchestration/goal-design.ts";
+import type { GoalContractInterpreter } from "../orchestration/goal-contract.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
 import type { SessionStore } from "../session/types.ts";
 import type { RuntimeLoopController } from "./runtime-loops.ts";
@@ -14,6 +16,8 @@ import type { RuntimeLoopRegistry } from "./runtime-loop-registry.ts";
 export type RuntimeServerContext = {
   db: SouthstarDb;
   plannerClient: PiPlannerClient;
+  goalInterpreter?: GoalContractInterpreter;
+  goalDesigner?: GoalDesigner;
   workflowComposer?: WorkflowComposer;
   executorProvider: ExecutorProvider;
   torkObservationClient?: TorkObservationClient;

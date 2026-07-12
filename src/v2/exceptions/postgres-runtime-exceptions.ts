@@ -96,7 +96,27 @@ export async function listUnresolvedRuntimeExceptionsPg(
       order by created_at, resource_key`,
     [RUNTIME_EXCEPTION_RESOURCE_TYPE, input.runId ?? null],
   );
-  return rows.rows
+  return runtimeExceptionRecords(rows.rows);
+}
+
+export async function listUnresolvedRuntimeExceptionsForRunsPg(
+  db: SouthstarDb,
+  runIds: string[],
+): Promise<RuntimeExceptionRecord[]> {
+  if (runIds.length === 0) return [];
+  const rows = await db.query<RuntimeResourceRow>(
+    `select * from southstar.runtime_resources
+      where resource_type = $1
+        and run_id = any($2::text[])
+        and status <> 'resolved'
+      order by created_at, resource_key`,
+    [RUNTIME_EXCEPTION_RESOURCE_TYPE, [...new Set(runIds)]],
+  );
+  return runtimeExceptionRecords(rows.rows);
+}
+
+function runtimeExceptionRecords(rows: RuntimeResourceRow[]): RuntimeExceptionRecord[] {
+  return rows
     .map(mapRuntimeResourceRow)
     .map(toRuntimeExceptionRecord)
     .filter((record): record is RuntimeExceptionRecord => Boolean(record));

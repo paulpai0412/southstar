@@ -1613,9 +1613,10 @@ test("forced fail-task and fail-run prepare terminal state and resolve exception
       path: "fail-run",
       runId: "run-apply-forced-fail-run",
       expectedTaskStatus: "queued",
-      expectedRunStatus: "failed",
+      expectedRunStatus: "completed",
       expectedStateChanges: [
-        ["workflow_run", "failed", "fail-run"],
+        ["workflow_run", "completed", "fail-run"],
+        ["goal_outcome", "unsatisfied", "fail-run"],
         ["recovery_decision", "applied", "fail-run applied"],
         ["runtime_exception", "resolved", "fail-run applied"],
       ],
@@ -1642,12 +1643,19 @@ test("forced fail-task and fail-run prepare terminal state and resolve exception
         "select status from southstar.workflow_tasks where run_id = $1 and id = $2",
         [fixture.runId, fixture.taskId],
       );
-      const run = await db.one<{ status: string }>(
-        "select status from southstar.workflow_runs where id = $1",
+      const run = await db.one<{ status: string; completed_at: Date | null }>(
+        "select status, completed_at from southstar.workflow_runs where id = $1",
         [fixture.runId],
       );
       assert.equal(task.status, item.expectedTaskStatus, item.path);
       assert.equal(run.status, item.expectedRunStatus, item.path);
+      if (item.path === "fail-run") {
+        assert.ok(run.completed_at);
+        const outcome = await getResourceByKeyPg(db, "goal_outcome", `goal-outcome:${fixture.runId}`);
+        assert.equal(outcome?.status, "unsatisfied");
+        assert.equal((outcome?.payload as { schemaVersion?: string }).schemaVersion, "southstar.goal_outcome.v1");
+        assert.match(JSON.stringify((outcome?.payload as { findings?: string[] }).findings), /fail-run/);
+      }
 
       const execution = await getResourceByKeyPg(db, "recovery_execution", result.executionResourceKey ?? "");
       assert.equal(execution?.status, "succeeded", item.path);
@@ -1661,6 +1669,19 @@ test("forced fail-task and fail-run prepare terminal state and resolve exception
         item.path,
       );
       assert.deepEqual(executionPayload.providerActions, [], item.path);
+      if (item.path === "fail-run") {
+        const replay = await createRecoveryDecisionApplier({ db }).applyDecision({
+          decisionResourceKey: fixture.decision.resourceKey,
+          now: "2026-06-21T15:16:00.000Z",
+        });
+        assert.equal(replay.status, "applied");
+        const history = await listHistoryForRunPg(db, fixture.runId);
+        assert.equal(history.filter((event) => event.eventType === "run.completed").length, 1);
+        assert.equal((await db.one<{ completed_at: Date | null }>(
+          "select completed_at from southstar.workflow_runs where id = $1",
+          [fixture.runId],
+        )).completed_at?.toISOString(), run.completed_at?.toISOString());
+      }
     } finally {
       await db.close();
     }

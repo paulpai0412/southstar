@@ -48,6 +48,23 @@ export interface WorkflowDagContent {
   dag: import("@/lib/workflow/types").WorkflowDag;
 }
 
+export interface GoalDesignContent {
+  type: "goalDesign";
+  draftId: string;
+  status?: string;
+  goalDesignPackageHash?: string;
+  package?: unknown;
+  selectedSliceId?: string;
+}
+
+export type GoalSliceSelection = {
+  draftId: string;
+  status?: string;
+  goalDesignPackageHash?: string;
+  selectedSliceId: string;
+  package?: unknown;
+};
+
 export interface LibraryGraphContent {
   type: "libraryGraph";
   data: Record<string, unknown>;
@@ -66,7 +83,7 @@ export interface WorkflowDagCustomDetails {
   dag: import("@/lib/workflow/types").WorkflowDag;
 }
 
-export type AssistantContentBlock = TextContent | ImageContent | ThinkingContent | ToolCallContent | WorkflowDagContent | LibraryGraphContent | LibraryImportCandidatesContent;
+export type AssistantContentBlock = TextContent | ImageContent | ThinkingContent | ToolCallContent | WorkflowDagContent | GoalDesignContent | LibraryGraphContent | LibraryImportCandidatesContent;
 
 export interface UserMessage {
   role: "user";

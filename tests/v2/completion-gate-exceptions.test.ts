@@ -14,7 +14,7 @@ import {
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
-test("completion gate fails completed runs with unresolved blocking runtime exceptions", async () => {
+test("completion gate blocks completed runs with unresolved critical runtime exceptions", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedCompletedRunWithAcceptedArtifactRef(db, "run-gate-unresolved-runtime-exception");
@@ -35,7 +35,7 @@ test("completion gate fails completed runs with unresolved blocking runtime exce
 
     const result = await evaluateRunCompletionGatePg(db, { runId: "run-gate-unresolved-runtime-exception" });
 
-    assert.equal(result.status, "failed");
+    assert.equal(result.outcomeStatus, "blocked");
     assert.equal(result.findings.some((finding) => finding.includes(exception.resourceKey)), true);
   } finally {
     await db.close();
@@ -71,7 +71,8 @@ test("completion gate passes completed runs after runtime exceptions are resolve
 
     assert.deepEqual(result, {
       runId: "run-gate-resolved-runtime-exception",
-      status: "passed",
+      executionStatus: "completed",
+      outcomeStatus: "satisfied",
       findings: [],
     });
   } finally {
@@ -79,7 +80,35 @@ test("completion gate passes completed runs after runtime exceptions are resolve
   }
 });
 
-test("completion gate fails while recovery decision is unapplied", async () => {
+for (const severity of ["warning", "recoverable"] as const) {
+  test(`unresolved ${severity} runtime health does not change a satisfied logical outcome`, async () => {
+    const db = await createTestPostgresDb();
+    const runId = `run-gate-${severity}-health`;
+    try {
+      await seedCompletedRunWithAcceptedArtifactRef(db, runId);
+      await recordRuntimeExceptionPg(db, {
+        runId,
+        taskId: "task-a",
+        source: severity === "warning" ? "callback" : "tork-observer",
+        kind: severity === "warning" ? "late_callback" : "tork_running_hang",
+        severity,
+        status: "observed",
+        observedAt: "2026-07-11T00:00:00.000Z",
+        evidenceRefs: [`health:${severity}`],
+      });
+
+      const result = await evaluateRunCompletionGatePg(db, { runId });
+
+      assert.equal(result.executionStatus, "completed");
+      assert.equal(result.outcomeStatus, "satisfied");
+      assert.deepEqual(result.findings, []);
+    } finally {
+      await db.close();
+    }
+  });
+}
+
+test("unapplied recovery decisions do not replace logical outcome evidence", async () => {
   const db = await createTestPostgresDb();
   const runId = "run-gate-unapplied-recovery-decision";
   try {
@@ -108,8 +137,8 @@ test("completion gate fails while recovery decision is unapplied", async () => {
 
     const result = await evaluateRunCompletionGatePg(db, { runId });
 
-    assert.equal(result.status, "failed");
-    assert.equal(result.findings.some((finding) => finding.includes("unapplied recovery decision")), true);
+    assert.equal(result.outcomeStatus, "satisfied");
+    assert.deepEqual(result.findings, []);
   } finally {
     await db.close();
   }
@@ -143,7 +172,8 @@ test("completion gate ignores recorded managed recovery decisions", async () => 
 
     assert.deepEqual(result, {
       runId,
-      status: "passed",
+      executionStatus: "completed",
+      outcomeStatus: "satisfied",
       findings: [],
     });
   } finally {
@@ -151,7 +181,7 @@ test("completion gate ignores recorded managed recovery decisions", async () => 
   }
 });
 
-test("completion gate fails while recovery execution is started", async () => {
+test("started recovery execution does not replace logical outcome evidence", async () => {
   const db = await createTestPostgresDb();
   const runId = "run-gate-started-recovery-execution";
   try {
@@ -181,8 +211,8 @@ test("completion gate fails while recovery execution is started", async () => {
 
     const result = await evaluateRunCompletionGatePg(db, { runId });
 
-    assert.equal(result.status, "failed");
-    assert.equal(result.findings.some((finding) => finding.includes("started recovery execution")), true);
+    assert.equal(result.outcomeStatus, "satisfied");
+    assert.deepEqual(result.findings, []);
   } finally {
     await db.close();
   }

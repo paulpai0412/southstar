@@ -6,6 +6,8 @@ import type {
   ExtensionStatusItem,
   ExtensionUiRequest,
   ExtensionWidgetItem,
+  GoalDesignContent,
+  GoalSliceSelection,
   SessionInfo,
   SessionTreeNode,
 } from "@/lib/types";
@@ -13,12 +15,13 @@ import { normalizeToolCalls } from "@/lib/normalize";
 import { sendAgentCommand } from "@/lib/agent-client";
 import {
   buildSessionStats,
+  latestGoalDesignDraftIdentity,
   latestWorkflowDraftId,
   readCompactResult,
-  workflowTemplateIdFrom,
+  workflowTemplatePolicyFrom,
 } from "@/lib/agent-session-engine";
 import type { CompactResultInfo } from "@/lib/agent-session-engine";
-import { generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
+import { confirmGoalDesignStream, generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
 import { appendWorkflowStreamText, normalizeWorkflowStreamText } from "@/lib/workflow/stream-text";
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
 import type { ToolEntry } from "@/lib/tool-presets";
@@ -202,6 +205,7 @@ export interface UseAgentSessionOptions {
   workflowTemplate?: unknown;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: import("@/lib/workflow/types").WorkflowDagNode) => void;
+  goalDesignRevisionAnchor?: GoalSliceSelection | null;
   setToolPreset?: (preset: "none" | "default" | "full") => void;
 }
 
@@ -346,6 +350,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
 
   const eventSourceRef = useRef<EventSource | null>(null);
   const workflowAbortControllerRef = useRef<AbortController | null>(null);
+  const workflowSubmissionRef = useRef<{ fingerprint: string; idempotencyKey: string } | null>(null);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
   const agentRunningRef = useRef(false);
   const handleAgentEventRef = useRef<((event: AgentEvent) => void) | null>(null);
@@ -833,7 +838,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       try {
         await runLibraryChatCommand({
           prompt: trimmedMessage,
-          scope: opts.libraryScope ?? "software",
+          scope: opts.libraryScope ?? "all",
           signal: libraryAbortController.signal,
           onAccepted(sessionId) {
             sessionIdRef.current = sessionId;
@@ -899,10 +904,15 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (opts.workflowMode && !images?.length && !isSlashCommandPrompt) {
       let rawStreamedText = "";
       let generatedDag: WorkflowDag | null = null;
+      let recoverableIdentity: { draftId: string; runId?: string; error: string } | null = null;
+      let reviewDraftIdentity: { draftId: string; status?: string; goalDesignPackageHash?: string } | null = null;
+      let executionSetIdentity: { executionSetId: string; sliceRunCount: number } | null = null;
+      let goalDesignBlock: GoalDesignContent | null = null;
       const workflowAbortController = new AbortController();
       workflowAbortControllerRef.current?.abort();
       workflowAbortControllerRef.current = workflowAbortController;
-      const revisionDraftId = latestWorkflowDraftId(messages);
+      const goalDesignRevisionIdentity = opts.goalDesignRevisionAnchor ?? latestGoalDesignDraftIdentity(messages);
+      const revisionDraftId = goalDesignRevisionIdentity?.draftId ?? latestWorkflowDraftId(messages);
       const updateStreamingMessage = () => {
         const streamedText = normalizeWorkflowStreamText(rawStreamedText);
         const content = [
@@ -929,11 +939,20 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       try {
         const workflowSessionId = sessionIdRef.current ?? await ensureNewSession();
         if (workflowSessionId) promoteNewSession(1, trimmedMessage);
+        const workflowCwd = opts.workflowCwd ?? session?.cwd ?? newSessionCwd;
+        const submissionFingerprint = `${workflowCwd ?? ""}\u0000${trimmedMessage}`;
+        if (!revisionDraftId && workflowSubmissionRef.current?.fingerprint !== submissionFingerprint) {
+          workflowSubmissionRef.current = { fingerprint: submissionFingerprint, idempotencyKey: crypto.randomUUID() };
+        }
         await generateWorkflowDagStream({
           prompt: trimmedMessage,
           draftId: revisionDraftId,
-          cwd: opts.workflowCwd ?? session?.cwd ?? newSessionCwd,
-          templateId: workflowTemplateIdFrom(opts.workflowTemplate),
+          expectedPackageHash: goalDesignRevisionIdentity?.goalDesignPackageHash,
+          selectedSliceId: goalDesignRevisionIdentity?.selectedSliceId,
+          cwd: workflowCwd,
+          ...(!revisionDraftId && workflowSubmissionRef.current ? { idempotencyKey: workflowSubmissionRef.current.idempotencyKey } : {}),
+          goalDesignMode: "review_before_compose",
+          templatePolicy: workflowTemplatePolicyFrom(opts.workflowTemplate),
           signal: workflowAbortController.signal,
           onMessage(text, event) {
             appendWorkflowText(text, event === "message.delta" ? "message.delta" : "line");
@@ -942,8 +961,78 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             const label = stage.message || stage.stage;
             if (label) appendWorkflowText(`[${stage.stage ?? "planner.stage"}] ${label}`);
           },
+          onHeartbeat(heartbeat) {
+            if (heartbeat.phase) appendWorkflowText(`[heartbeat] ${heartbeat.phase}`);
+          },
           onDraft(draft) {
             if (draft.draftId) appendWorkflowText(`[draft] ${draft.draftId}${draft.status ? ` ${draft.status}` : ""}`);
+            if (draft.status === "needs_library_input") {
+              for (const gap of draft.vocabularyGaps ?? []) {
+                appendWorkflowText(`[library gap] ${gap.kind}: ${gap.requestedRef}`);
+              }
+              if (draft.libraryImportDraftId) appendWorkflowText(`[library import draft] ${draft.libraryImportDraftId}`);
+            }
+            if (draft.draftId && (
+              draft.status === "ready_for_review"
+              || draft.status === "needs_input"
+              || draft.status === "needs_library_input"
+            )) {
+              reviewDraftIdentity = {
+                draftId: draft.draftId,
+                status: draft.status,
+                ...(typeof draft.goalDesignPackageHash === "string" ? { goalDesignPackageHash: draft.goalDesignPackageHash } : {}),
+              };
+            }
+          },
+          onGoalDesign(goalDesign) {
+            const draftId = typeof goalDesign.draftId === "string" ? goalDesign.draftId : undefined;
+            if (!draftId) return;
+            const status = typeof goalDesign.status === "string"
+              ? goalDesign.status
+              : typeof goalDesign.draftStatus === "string"
+                ? goalDesign.draftStatus
+                : undefined;
+            const goalDesignPackageHash = typeof goalDesign.goalDesignPackageHash === "string"
+              ? goalDesign.goalDesignPackageHash
+              : undefined;
+            reviewDraftIdentity = {
+              draftId,
+              ...(status ? { status } : {}),
+              ...(goalDesignPackageHash ? { goalDesignPackageHash } : {}),
+            };
+            goalDesignBlock = {
+              type: "goalDesign",
+              draftId,
+              ...(status ? { status } : {}),
+              ...(goalDesignPackageHash ? { goalDesignPackageHash } : {}),
+              ...(goalDesign.package !== undefined ? { package: goalDesign.package } : {}),
+            };
+            appendWorkflowText(`[goal_design] ${draftId}${goalDesignPackageHash ? ` ${goalDesignPackageHash.slice(0, 12)}` : ""}`);
+          },
+          onGoalContract(mission) {
+            appendWorkflowText(`[goal] ${mission.goalContract.summary}`);
+          },
+          onCoverage(mission) {
+            appendWorkflowText(`[coverage] ${mission.coverage.covered}/${mission.coverage.total}`);
+          },
+          onRun(run) {
+            if (run.runStatus) appendWorkflowText(`[run] ${run.runStatus}`);
+          },
+          onExecutionSet(executionSet) {
+            if (executionSet.executionSetId) {
+              executionSetIdentity = {
+                executionSetId: executionSet.executionSetId,
+                sliceRunCount: executionSet.sliceRuns?.length ?? 0,
+              };
+              appendWorkflowText(`[execution_set] ${executionSet.executionSetId} · ${executionSet.sliceRuns?.length ?? 0} slice runs`);
+            }
+          },
+          onApproval({ command }) {
+            if (command) appendWorkflowText(`[approval] ${command.label}`);
+          },
+          onRecoverable({ result, error }) {
+            recoverableIdentity = { draftId: result.draftId, runId: result.runId, error };
+            appendWorkflowText(`[recoverable] draft ${result.draftId}${result.runId ? ` · run ${result.runId}` : ""} · ${error}`);
           },
           onDag(dag) {
             generatedDag = dag;
@@ -952,8 +1041,56 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         });
 
         if (!generatedDag) {
+          const completedReviewDraft = reviewDraftIdentity as { draftId: string; status?: string; goalDesignPackageHash?: string } | null;
+          if (completedReviewDraft) {
+            const streamedText = normalizeWorkflowStreamText(rawStreamedText);
+            const statusText = completedReviewDraft.status === "needs_library_input"
+              ? "needs approved Library vocabulary"
+              : completedReviewDraft.status === "needs_input"
+                ? "needs more input"
+                : "is ready for review";
+            setMessages((prev) => [...prev, {
+              role: "assistant",
+              content: [
+                { type: "text", text: streamedText || `Goal draft ${completedReviewDraft.draftId} ${statusText}.` },
+                ...(goalDesignBlock ? [goalDesignBlock] : []),
+              ],
+              model: "workflow-generate",
+              provider: "southstar",
+              timestamp: Date.now(),
+            } as AgentMessage]);
+            addNotice({ type: "info", message: `Goal draft ${statusText}.` });
+            workflowSubmissionRef.current = null;
+            return;
+          }
+          if (recoverableIdentity) {
+            const streamedText = normalizeWorkflowStreamText(rawStreamedText);
+            setMessages((prev) => [...prev, {
+              role: "assistant",
+              content: [{ type: "text", text: streamedText || `Goal accepted as draft ${recoverableIdentity!.draftId}.` }],
+              model: "workflow-generate",
+              provider: "southstar",
+              timestamp: Date.now(),
+            } as AgentMessage]);
+            addNotice({ type: "info", message: "Goal accepted; workflow details can be recovered from the persisted identity." });
+            return;
+          }
+          if (executionSetIdentity) {
+            const streamedText = normalizeWorkflowStreamText(rawStreamedText);
+            setMessages((prev) => [...prev, {
+              role: "assistant",
+              content: [{ type: "text", text: streamedText || `Goal execution set ${executionSetIdentity!.executionSetId} created with ${executionSetIdentity!.sliceRunCount} slice runs.` }],
+              model: "workflow-generate",
+              provider: "southstar",
+              timestamp: Date.now(),
+            } as AgentMessage]);
+            addNotice({ type: "success", message: "Goal execution set created." });
+            workflowSubmissionRef.current = null;
+            return;
+          }
           throw new Error("workflow generate completed without a DAG");
         }
+        workflowSubmissionRef.current = null;
 
         const streamedText = normalizeWorkflowStreamText(rawStreamedText);
         const assistantMsg: AgentMessage = {
@@ -1064,6 +1201,98 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       dispatch({ type: "end" });
     }
   }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, addNotice]);
+
+  const handleConfirmGoalDesign = useCallback(async (selection: GoalSliceSelection) => {
+    const packageHash = selection.goalDesignPackageHash;
+    if (!packageHash || agentRunningRef.current) return;
+    const controller = new AbortController();
+    workflowAbortControllerRef.current?.abort();
+    workflowAbortControllerRef.current = controller;
+    agentRunningRef.current = true;
+    setAgentRunning(true);
+    setAgentPhase({ kind: "waiting_model" });
+    dispatch({ type: "start" });
+    let streamedText = "";
+    let dag: WorkflowDag | null = null;
+    const append = (text: string) => {
+      if (!text) return;
+      streamedText = appendWorkflowStreamText(streamedText, text, "line");
+      dispatch({
+        type: "update",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: streamedText }],
+          model: "workflow-generate",
+          provider: "southstar",
+          timestamp: Date.now(),
+        },
+      });
+    };
+    try {
+      await confirmGoalDesignStream({
+        draftId: selection.draftId,
+        expectedPackageHash: packageHash,
+        signal: controller.signal,
+        onStage(stage) {
+          append(stage.message || stage.stage || "");
+        },
+        onMessage(text) {
+          append(text);
+        },
+        onRun(run) {
+          append(run.runId ? `[run] ${run.runId} ${run.runStatus ?? ""}` : "[run] created");
+        },
+        onDag(nextDag) {
+          dag = nextDag;
+          dispatch({
+            type: "update",
+            message: {
+              role: "assistant",
+              content: [
+                ...(streamedText ? [{ type: "text" as const, text: streamedText }] : []),
+                { type: "workflowDag" as const, dag: nextDag },
+              ],
+              model: "workflow-generate",
+              provider: "southstar",
+              timestamp: Date.now(),
+            },
+          });
+        },
+      });
+      if (!dag) throw new Error("goal design confirmation completed without a DAG");
+      const confirmedDag = dag as WorkflowDag;
+      setMessages((prev) => [...prev, {
+        role: "assistant",
+        content: [
+          ...(streamedText ? [{ type: "text" as const, text: streamedText }] : [{ type: "text" as const, text: "Goal design confirmed; DAG composed." }]),
+          { type: "workflowDag" as const, dag: confirmedDag },
+        ],
+        model: "workflow-generate",
+        provider: "southstar",
+        timestamp: Date.now(),
+      }]);
+      addNotice({ type: "success", message: "Goal design confirmed; DAG composed." });
+    } catch (error) {
+      if (!controller.signal.aborted) {
+        const message = error instanceof Error ? error.message : String(error);
+        addNotice({ type: "error", message });
+        setMessages((prev) => [...prev, {
+          role: "assistant",
+          content: [{ type: "text", text: `Goal design confirmation failed: ${message}` }],
+          model: "workflow-generate",
+          provider: "southstar",
+          errorMessage: message,
+          timestamp: Date.now(),
+        } as AgentMessage]);
+      }
+    } finally {
+      if (workflowAbortControllerRef.current === controller) workflowAbortControllerRef.current = null;
+      agentRunningRef.current = false;
+      setAgentRunning(false);
+      setAgentPhase(null);
+      dispatch({ type: "end" });
+    }
+  }, [addNotice]);
 
   const handleAbort = useCallback(async () => {
     if (workflowAbortControllerRef.current) {
@@ -1510,7 +1739,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     sessionIdRef, eventSourceRef, messagesEndRef, scrollContainerRef,
     lastUserMsgRef, pendingScrollToUserRef, initialScrollDoneRef,
     // Actions
-    handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
+    handleSend, handleConfirmGoalDesign, handleAbort, handleFork, handleNavigate, handleModelChange,
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, loadTools, loadSlashCommands, setActiveLeafId, setData, setMessages,

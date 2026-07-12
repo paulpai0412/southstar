@@ -1,9 +1,261 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildWorkflowUiReadModelPg } from "../../src/v2/read-models/workflow-ui.ts";
+import { persistTerminalGoalOutcomePg } from "../../src/v2/evaluators/goal-outcome.ts";
+import { recordRuntimeExceptionPg } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
+import { runtimeAttemptNumber } from "../../src/v2/executor/attempt-identity.ts";
+import { buildWorkflowUiReadModelPg, hasDegradedProviderHealth } from "../../src/v2/read-models/workflow-ui.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../../src/v2/ui-api/postgres-run-api.ts";
+import { DeterministicFixtureComposer, seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+
+test("runtime attempt identity extracts the canonical monotonic attempt number", () => {
+  assert.equal(runtimeAttemptNumber("task-build-attempt-2"), 2);
+  assert.equal(runtimeAttemptNumber("hand-execution:run:task:task-build-attempt-12"), 12);
+  assert.equal(runtimeAttemptNumber("task-attempt-2:retry-attempt-3"), 3);
+  assert.equal(runtimeAttemptNumber("legacy-attempt"), 0);
+});
+
+test("provider health uses update order only within the effective attempt", () => {
+  assert.equal(hasDegradedProviderHealth([
+    {
+      resourceKey: "binding-attempt-2",
+      taskId: "task-build",
+      status: "hard-timeout",
+      payload: { attemptId: "task-build-attempt-2" },
+      updatedAt: "2026-07-11T00:00:00.000Z",
+    },
+    {
+      resourceKey: "hand-attempt-2",
+      taskId: "task-build",
+      status: "completed",
+      payload: { attemptId: "task-build-attempt-2" },
+      updatedAt: "2026-07-11T00:01:00.000Z",
+    },
+  ]), false);
+});
+
+test("provider health preserves noncanonical identities alongside canonical attempts", () => {
+  const observations = [
+    {
+      resourceKey: "binding-attempt-1",
+      taskId: "task-build",
+      status: "completed",
+      payload: { attemptId: "task-build-attempt-1" },
+      updatedAt: "2026-07-11T00:00:00.000Z",
+    },
+    {
+      resourceKey: "legacy-retry-timeout",
+      taskId: "task-build",
+      status: "hard-timeout",
+      payload: { attemptId: "legacy-retry" },
+      updatedAt: "2026-07-11T00:01:00.000Z",
+    },
+  ];
+
+  assert.equal(hasDegradedProviderHealth(observations), true);
+
+  observations.push({
+    resourceKey: "legacy-retry-completed",
+    taskId: "task-build",
+    status: "completed",
+    payload: { attemptId: "legacy-retry" },
+    updatedAt: "2026-07-11T00:02:00.000Z",
+  });
+  assert.equal(hasDegradedProviderHealth(observations), false);
+});
+
+test("workflow read model exposes the same answer-first mission for draft and runtime while keeping satisfied outcome degraded health", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = softwareGoalContract("Create an offline HTML article");
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+
+    const draftModel = await buildWorkflowUiReadModelPg(db, { draftId: draft.draftId });
+    assert.equal(draftModel.mission!.goalContract.summary, "Create an offline HTML article");
+    assert.deepEqual(draftModel.mission!.status, {
+      execution: "validated",
+      outcome: "in_progress",
+      health: "healthy",
+    });
+
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const runtimeContext = await db.one<{ runtime_context_json: Record<string, string> }>(
+      "select runtime_context_json from southstar.workflow_runs where id = $1",
+      [run.runId],
+    );
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "approval-mission",
+      runId: run.runId,
+      scope: "approval",
+      status: "pending",
+      payload: {
+        approvalId: "approval-mission",
+        actionType: "goalExecution",
+        goalContractHash: runtimeContext.runtime_context_json.goalContractHash,
+        manifestHash: runtimeContext.runtime_context_json.manifestHash,
+        librarySnapshotHash: runtimeContext.runtime_context_json.librarySnapshotHash,
+      },
+    });
+    const pendingApprovalModel = await buildWorkflowUiReadModelPg(db, { runId: run.runId });
+    assert.deepEqual(
+      pendingApprovalModel.commands.filter((command) => command.id.startsWith("approval.")),
+      [
+        {
+          id: "approval.approve",
+          label: "Approve",
+          endpoint: `/api/v2/runs/${encodeURIComponent(run.runId)}/approvals/approval-mission/decision`,
+          method: "POST",
+          body: { decision: "approved" },
+          enabled: true,
+          requiresConfirmation: true,
+        },
+        {
+          id: "approval.reject",
+          label: "Reject",
+          endpoint: `/api/v2/runs/${encodeURIComponent(run.runId)}/approvals/approval-mission/decision`,
+          method: "POST",
+          body: { decision: "rejected" },
+          enabled: true,
+          requiresConfirmation: true,
+        },
+      ],
+    );
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "approval",
+      resourceKey: "approval-mission",
+      runId: run.runId,
+      scope: "approval",
+      status: "approved",
+      payload: {
+        approvalId: "approval-mission",
+        actionType: "goalExecution",
+        goalContractHash: runtimeContext.runtime_context_json.goalContractHash,
+        manifestHash: runtimeContext.runtime_context_json.manifestHash,
+        librarySnapshotHash: runtimeContext.runtime_context_json.librarySnapshotHash,
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "requirement_evaluator_result",
+      resourceKey: "mission-evaluator",
+      runId: run.runId,
+      scope: "evaluator",
+      status: "passed",
+      payload: { schemaVersion: "southstar.requirement_evaluator_result.v1", verdict: "passed" },
+    });
+    await persistTerminalGoalOutcomePg(db, {
+      runId: run.runId,
+      outcomeStatus: "satisfied",
+      coveredRequirementIds: goalContract.requirements.map((requirement) => requirement.id),
+      actorType: "test",
+      idempotencyKey: "mission:satisfied",
+    });
+    await recordRuntimeExceptionPg(db, {
+      runId: run.runId,
+      source: "scheduler",
+      kind: "provider_unreachable",
+      severity: "warning",
+      observedAt: "2026-07-11T00:00:00.000Z",
+      evidenceRefs: ["scheduler:mission-warning"],
+    });
+
+    const runtimeModel = await buildWorkflowUiReadModelPg(db, { runId: run.runId });
+    assert.deepEqual(runtimeModel.mission!.status, {
+      execution: "completed",
+      outcome: "satisfied",
+      health: "degraded",
+    });
+    assert.deepEqual(runtimeModel.mission!.coverage, {
+      covered: 1,
+      total: 1,
+      failedRequirementIds: [],
+      entries: runtimeModel.mission!.coverage.entries,
+    });
+    assert.equal(runtimeModel.mission!.approval!.goalContractHash, runtimeModel.mission!.goalContractHash);
+    assert.equal(runtimeModel.mission!.evaluatorResults.length, 1);
+    assert.deepEqual(runtimeModel.mission!.goalContract, draftModel.mission!.goalContract);
+    assert.equal(runtimeModel.mission!.goalContractHash, draftModel.mission!.goalContractHash);
+    assert.deepEqual(runtimeModel.mission!.coverage.entries, draftModel.mission!.coverage.entries);
+    assert.deepEqual(runtimeModel.mission!.provenance, {
+      originalPrompt: goalContract.originalPrompt,
+      revision: goalContract.revision,
+      promptHash: goalContract.promptHash,
+      manifestHash: runtimeContext.runtime_context_json.manifestHash,
+      librarySnapshotHash: runtimeContext.runtime_context_json.librarySnapshotHash,
+    });
+  } finally {
+    await db.close();
+  }
+});
+
+test("workflow mission health uses only the latest provider attempt observation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const goalContract = softwareGoalContract("Recover with a successful second attempt");
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const task = await db.one<{ id: string }>(
+      "select id from southstar.workflow_tasks where run_id = $1 order by sort_order, id limit 1",
+      [run.runId],
+    );
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "executor_binding",
+      resourceKey: "mission-attempt-1",
+      runId: run.runId,
+      taskId: task.id,
+      scope: "executor",
+      status: "orphaned",
+      payload: { attemptId: "attempt-1" },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "executor_binding",
+      resourceKey: "mission-attempt-2",
+      runId: run.runId,
+      taskId: task.id,
+      scope: "executor",
+      status: "completed",
+      payload: { attemptId: "attempt-2" },
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set updated_at = case resource_key
+            when 'mission-attempt-1' then '2026-07-11T00:02:00.000Z'::timestamptz
+            else '2026-07-11T00:01:00.000Z'::timestamptz
+          end
+        where resource_type = 'executor_binding' and resource_key in ('mission-attempt-1', 'mission-attempt-2')`,
+    );
+
+    assert.equal((await buildWorkflowUiReadModelPg(db, { runId: run.runId })).mission!.status.health, "healthy");
+
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "executor_binding",
+      resourceKey: "mission-attempt-2",
+      runId: run.runId,
+      taskId: task.id,
+      scope: "executor",
+      status: "hard-timeout",
+      payload: { attemptId: "attempt-2" },
+    });
+    assert.equal((await buildWorkflowUiReadModelPg(db, { runId: run.runId })).mission!.status.health, "degraded");
+  } finally {
+    await db.close();
+  }
+});
 
 test("workflow ui read model exposes runtime DAG and selected definition", async () => {
   const db = await createTestPostgresDb();

@@ -7,12 +7,22 @@ import {
   parseWorkflowCompositionPlanFromText,
   WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA,
 } from "../../src/v2/orchestration/llm-composer.ts";
+import { finalizeGoalDesignPackage } from "../../src/v2/orchestration/goal-design.ts";
+import { softwareGoalContract } from "./fixtures/goal-contract.ts";
+
+const GOAL_CONTRACT = softwareGoalContract();
 
 test("LLM composer sends bounded candidate packet and explicit output schema contract", async () => {
   const prompts: string[] = [];
   const composer = new LlmWorkflowComposer({
     model: "test-model",
     maxOutputChars: 20_000,
+    composerSop: {
+      objectKey: "skill.southstar-slice-to-dag-composer",
+      versionRef: "skill.southstar-slice-to-dag-composer@test",
+      stateHash: "composer-sop-state",
+      body: "# Slice to DAG Composer\n\nSLICE_TO_DAG_SOP_MARKER",
+    },
     client: {
       async generateText(input) {
         prompts.push(input.prompt);
@@ -21,12 +31,18 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
     },
   });
 
-  const plan = await composer.compose({ goalPrompt: "implement calc sum", candidatePacket: candidatePacket() });
+  const plan = await composer.compose({
+    goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
+    candidatePacket: candidatePacket(),
+  });
   assert.equal(plan.schemaVersion, "southstar.workflow_composition_plan.v1");
   assert.equal(prompts.length, 1);
   assert.match(prompts[0] ?? "", /OutputJsonSchema:/);
   assert.match(prompts[0] ?? "", /Do not use alias fields/i);
   assert.doesNotMatch(prompts[0] ?? "", /SkillGuidance:/);
+  assert.match(prompts[0] ?? "", /WorkflowComposerSopSkill:/);
+  assert.match(prompts[0] ?? "", /SLICE_TO_DAG_SOP_MARKER/);
   assert.match(prompts[0] ?? "", /DagAndAgentProfileSop:/);
   assert.match(prompts[0] ?? "", /Choose task count and workerKind dynamically/i);
   assert.match(prompts[0] ?? "", /do not pre-add repair\/reverify nodes/i);
@@ -56,13 +72,54 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /\"schemaVersion\":\{\"const\":\"southstar.workflow_composition_plan.v1\"\}/);
   assert.match(prompts[0] ?? "", /nodePromptSpec/);
   assert.match(prompts[0] ?? "", /acceptanceCriteria/);
+  assert.match(prompts[0] ?? "", /GoalContractRequirements:/);
+  assert.match(prompts[0] ?? "", new RegExp(GOAL_CONTRACT.requirements[0]!.id));
+  assert.match(prompts[0] ?? "", /independent evaluator/i);
   assert.equal(typeof WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.id.type, "string");
+  assert.equal(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.requirementIds.type, "array");
+  assert.equal("minItems" in WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.requirementIds, false);
+  assert.equal(
+    WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("requirementIds"),
+    true,
+  );
+  assert.equal(
+    WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("sliceId"),
+    true,
+  );
   assert.equal(
     WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("nodePromptSpec"),
     true,
   );
 });
 
+
+test("LLM composer prompt forbids using Goal Design skill refs as DAG primitives", async () => {
+  const prompts: string[] = [];
+  const composer = new LlmWorkflowComposer({
+    model: "test-model",
+    maxOutputChars: 20_000,
+    client: {
+      async generateText(input) {
+        prompts.push(input.prompt);
+        return JSON.stringify(validPlan());
+      },
+    },
+  });
+
+  await composer.compose({
+    goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
+    candidatePacket: candidatePacket(),
+    goalDesignPackage: goalDesignPackage(),
+  });
+
+  assert.match(prompts[0] ?? "", /ForbiddenGoalDesignRefs:/);
+  assert.match(prompts[0] ?? "", /skill\.southstar-goal-design/);
+  assert.match(prompts[0] ?? "", /skills\/southstar-goal-design\.skill\.md/);
+  assert.match(prompts[0] ?? "", /library\/skills\/southstar-goal-design\.skill\.md/);
+  assert.match(prompts[0] ?? "", /must never be used as agentDefinitionRef, skillRefs, instructionRefs, agentProfileRef, evaluatorProfileRef, toolGrantRefs, or mcpGrantRefs/i);
+  assert.match(prompts[0] ?? "", /GoalDesignPackage is a planning constraint, not a selectable Library primitive/i);
+});
 
 test("LLM composer uses streaming text client and relays true deltas", async () => {
   const deltas: string[] = [];
@@ -83,6 +140,7 @@ test("LLM composer uses streaming text client and relays true deltas", async () 
 
   const plan = await composer.compose({
     goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
     candidatePacket: candidatePacket(),
     onLlmDelta(delta) {
       deltas.push(delta);
@@ -107,6 +165,7 @@ test("LLM composer forwards requested cwd to the text client", async () => {
 
   await composer.compose({
     goalPrompt: "implement feature in selected project",
+    goalContract: GOAL_CONTRACT,
     candidatePacket: candidatePacket(),
     cwd: "/home/timmypai/apps/southstar-vocab",
   });
@@ -253,6 +312,34 @@ test("LLM composer parser rejects tasks without node prompt specs", () => {
   );
 });
 
+test("LLM composer parser rejects tasks without requirement ids", () => {
+  const plan = validPlan();
+  const { requirementIds: _requirementIds, ...taskWithoutRequirementIds } = plan.tasks[0] as Record<string, unknown>;
+
+  assert.throws(
+    () => parseWorkflowCompositionPlanFromText(JSON.stringify({
+      ...plan,
+      tasks: [taskWithoutRequirementIds, ...plan.tasks.slice(1)],
+    }), 20_000),
+    (error: unknown) =>
+      error instanceof LlmComposerOutputError
+      && error.issues.some((issue) =>
+        issue.path === "tasks.0.requirementIds"
+        && /missing required property/.test(issue.message)
+      ),
+  );
+});
+
+test("LLM composer parser allows an explicit summary task with empty requirement ids", () => {
+  const plan = validPlan();
+  plan.tasks[0]!.requirementIds = [];
+  plan.tasks[0]!.nodePromptSpec!.nodeType = "summary";
+  plan.tasks[0]!.nodePromptSpec!.summarySections = ["completed work"];
+  plan.tasks[0]!.nodePromptSpec!.handoffCriteria = ["Final state is clear."];
+
+  assert.doesNotThrow(() => parseWorkflowCompositionPlanFromText(JSON.stringify(plan), 20_000));
+});
+
 function validPlan(): WorkflowCompositionPlan {
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
@@ -368,8 +455,10 @@ function task(
 ) {
   return {
     id,
+    sliceId: "slice-main",
     name: id,
     responsibility: id,
+    requirementIds: GOAL_CONTRACT.requirements.map((requirement) => requirement.id),
     dependsOn,
     templateSlotRef: id,
     agentDefinitionRef,
@@ -473,6 +562,51 @@ function candidatePacket(): CandidatePacket {
     },
     unavailableRequirements: [],
   };
+}
+
+function goalDesignPackage() {
+  const requirement = GOAL_CONTRACT.requirements[0]!;
+  const artifactRef = GOAL_CONTRACT.expectedArtifactRefs[0]!;
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision: 1,
+    goalContract: GOAL_CONTRACT,
+    evaluatorContracts: [{
+      schemaVersion: "southstar.requirement_evaluator_contract.v1",
+      id: "eval-main",
+      requirementId: requirement.id,
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      requiredEvidenceKinds: ["test_result"],
+      independence: "independent",
+      failureClassifications: ["implementation_gap"],
+    }],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [{
+        id: "slice-main",
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: artifactRef,
+        mutationBoundary: "one cohesive implementation boundary",
+        expectedArtifactRefs: [artifactRef],
+        evaluatorContractRefs: ["eval-main"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-main"],
+      rationale: "one atomic requirement boundary",
+    },
+    templatePolicy: { mode: "auto" },
+    goalDesignSkillRef: "skill.southstar-goal-design",
+    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
+    workspaceDiscoveryHash: "workspace-test",
+    mode: "auto_until_blocked",
+  });
 }
 
 function candidateMap(

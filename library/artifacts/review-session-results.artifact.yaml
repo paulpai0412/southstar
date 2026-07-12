@@ -1,0 +1,13 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.review-session-results
+title: "Review Session Results"
+scope: "general"
+status: approved
+artifactType: "review-session-report"
+evidenceKinds:
+  - "command-output"
+  - "test-result"
+  - "artifact-ref"
+importDraftId: "library-import-draft-a50847a7-93f1-4a88-bb23-25a5b5947e52"
+importCandidateKey: "artifact.review-session-results"
+importSourcePath: "Library-chat-prompt.md"

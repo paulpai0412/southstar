@@ -1,0 +1,8 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.completion_report
+title: Completion Report
+scope: software
+status: approved
+artifactType: completion_report
+evidenceKinds:
+  - artifact-ref

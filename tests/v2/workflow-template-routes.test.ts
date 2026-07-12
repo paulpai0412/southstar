@@ -2,12 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
+import type { GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflow-composer.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 
-test("runtime routes expose workflow template search, detail, and instantiation", async () => {
+test("runtime routes expose workflow template search and detail", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDeterministicWorkflowGraph(db);
@@ -29,54 +31,6 @@ test("runtime routes expose workflow template search, detail, and instantiation"
     assert.equal(detail.result.templateRef, "template.software-dev-standard");
     assert.equal(detail.result.nodes[0]?.id, "plan");
     assert.equal(detail.result.canInstantiate, true);
-
-    await seedWorkflowTemplate(db, compositionPlan());
-    const instantiated = await call<{ templateRef: string; draftId: string; status: string; nodes: Array<{ taskId: string; nodePromptSpec?: unknown }> }>(
-      db,
-      "/api/v2/workflow/templates/instantiate",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          templateRef: "template.software-dev-standard",
-          goalPrompt: "build vocabulary app",
-          constraints: { mode: "strict" },
-        }),
-      },
-    );
-    assert.equal(instantiated.kind, "workflow-template-instantiate");
-    assert.equal(instantiated.result.templateRef, "template.software-dev-standard");
-    assert.match(instantiated.result.draftId, /^draft-wf-composed-/);
-    assert.equal(instantiated.result.status, "validated");
-    assert.equal(instantiated.result.nodes.every((node) => node.nodePromptSpec), true);
-  } finally {
-    await db.close();
-  }
-});
-
-test("runtime route can instantiate a skeleton template through workflowComposer", async () => {
-  const db = await createTestPostgresDb();
-  try {
-    await seedDeterministicWorkflowGraph(db);
-    await seedWorkflowTemplate(db);
-    const workflowComposer = new CapturingComposer(compositionPlan());
-
-    const instantiated = await call<{ status: string; nodes: Array<{ nodePromptSpec?: unknown }> }>(
-      db,
-      "/api/v2/workflow/templates/instantiate",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          templateRef: "template.software-dev-standard",
-          goalPrompt: "build vocabulary app",
-          constraints: { mode: "strict" },
-        }),
-      },
-      { workflowComposer },
-    );
-
-    assert.equal(instantiated.result.status, "validated");
-    assert.equal(instantiated.result.nodes.every((node) => node.nodePromptSpec), true);
-    assert.match(workflowComposer.lastGoalPrompt ?? "", /Template skeleton/);
   } finally {
     await db.close();
   }
@@ -119,7 +73,8 @@ async function seedWorkflowTemplate(db: Awaited<ReturnType<typeof createTestPost
   });
 }
 
-function compositionPlan(): WorkflowCompositionPlan {
+function compositionPlan(goalContract?: GoalContractV1): WorkflowCompositionPlan {
+  const requirement = goalContract?.requirements[0];
   return {
     schemaVersion: "southstar.workflow_composition_plan.v1",
     title: "Software Development Standard",
@@ -129,16 +84,18 @@ function compositionPlan(): WorkflowCompositionPlan {
       id: "understand-repo",
       name: "Understand Repo",
       responsibility: "Plan the requested software change.",
+      requirementIds: [],
       nodePromptSpec: {
         nodeType: "plan",
         goal: "Plan the requested software change.",
-        requirements: ["Understand the goal and produce an implementation plan."],
+        requirements: [requirement?.statement ?? "Understand the goal and produce an implementation plan."],
         boundaries: ["Do not edit files."],
         nonGoals: ["Do not implement."],
         deliverableDocuments: [{ kind: "design", title: "Implementation plan", required: true, format: "markdown", description: "Plan the change." }],
         expectedOutputs: ["artifact.implementation_plan"],
         testCases: [],
-        acceptanceCriteria: ["Plan identifies files, risks, and verification."],
+        acceptanceCriteria: requirement?.acceptanceCriteria ?? ["Plan identifies files, risks, and verification."],
+        planningQuestions: ["What must the implementation plan cover?"],
       },
       dependsOn: [],
       templateSlotRef: "understand-repo",
@@ -154,6 +111,37 @@ function compositionPlan(): WorkflowCompositionPlan {
       evaluatorProfileRef: "evaluator.software-plan-quality",
       recoveryStrategyRefs: ["retry-same-agent"],
       rationale: "Use software explorer.",
+    }, {
+      id: "verify-plan",
+      name: "Verify Plan",
+      responsibility: "Independently verify the implementation plan.",
+      requirementIds: [],
+      nodePromptSpec: {
+        nodeType: "verify",
+        goal: "Verify the implementation plan.",
+        requirements: [requirement?.statement ?? "Check that the plan satisfies the requested goal."],
+        boundaries: ["Do not edit files."],
+        nonGoals: ["Do not implement."],
+        deliverableDocuments: [],
+        expectedOutputs: ["artifact.implementation_plan"],
+        testCases: [],
+        acceptanceCriteria: requirement?.acceptanceCriteria ?? ["Plan covers requirements, risks, and verification."],
+        verificationChecks: ["Check the implementation plan against the linked requirement."],
+      },
+      dependsOn: ["understand-repo"],
+      templateSlotRef: "verify-plan",
+      agentDefinitionRef: "agent.software-explorer",
+      agentProfileRef: "profile.generated.software-understand-repo",
+      instructionRefs: [],
+      skillRefs: [],
+      toolGrantRefs: [],
+      mcpGrantRefs: [],
+      vaultLeasePolicyRefs: [],
+      inputArtifactRefs: ["artifact.implementation_plan"],
+      outputArtifactRefs: [],
+      evaluatorProfileRef: "evaluator.software-plan-quality",
+      recoveryStrategyRefs: ["retry-same-agent"],
+      rationale: "Use a separate downstream task to evaluate the plan artifact.",
     }],
     rejectedCandidates: [],
     generatedComponentProposals: [{
@@ -198,6 +186,11 @@ class CapturingComposer implements WorkflowComposer {
 
   async compose(input: ComposeWorkflowInput): Promise<WorkflowCompositionPlan> {
     this.lastGoalPrompt = input.goalPrompt;
-    return structuredClone(this.plan);
+    const plan = structuredClone(this.plan);
+    const requirementIds = input.goalContract.requirements.map((requirement) => requirement.id);
+    plan.tasks.forEach((task) => {
+      task.requirementIds = requirementIds;
+    });
+    return plan;
   }
 }

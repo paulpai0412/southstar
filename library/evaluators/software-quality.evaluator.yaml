@@ -1,0 +1,13 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.software-quality
+title: Software Quality
+scope: software
+status: approved
+validatesArtifactRefs:
+  - artifact.implementation_report
+  - artifact.verification_report
+  - artifact.completion_report
+evidenceKinds:
+  - test-result
+  - command-output
+  - file-diff

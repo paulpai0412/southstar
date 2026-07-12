@@ -120,7 +120,7 @@ export async function updateWorkflowManifestPg(db: SouthstarDb, runId: string, w
 }
 
 export async function updateWorkflowRunStatusPg(db: SouthstarDb, runId: string, status: string): Promise<boolean> {
-  const terminal = ["completed", "passed", "failed", "cancelled"].includes(status);
+  const terminal = ["completed", "cancelled"].includes(status);
   const result = await db.query(
     "update southstar.workflow_runs set status = $1, updated_at = now(), completed_at = case when $2 then coalesce(completed_at, now()) else completed_at end where id = $3",
     [status, terminal, runId],

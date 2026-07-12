@@ -1,0 +1,16 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.study-session-execution
+title: "Study Session Execution"
+scope: "general"
+status: approved
+description: "Run local study sessions by selecting cards, presenting prompts, capturing responses, and recording outcomes."
+requiredOperations:
+  - "startSession"
+  - "selectCardsForSession"
+  - "presentPrompt"
+  - "captureResponse"
+  - "recordOutcome"
+  - "endSession"
+importDraftId: "library-import-draft-251a9454-7eb0-40e8-96da-6fb0e39c5bc3"
+importCandidateKey: "capability.study-session-execution"
+importSourcePath: "Library-chat-prompt.md"

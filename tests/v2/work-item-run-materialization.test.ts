@@ -1,9 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { contentHashForPayload } from "../../src/v2/design-library/canonical-json.ts";
+import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { SouthstarWorkflowManifest } from "../../src/v2/manifests/types.ts";
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { getWorkItemPg } from "../../src/v2/work-items/postgres-work-items.ts";
 import { materializeRunFromWorkItemPg } from "../../src/v2/work-items/run-materialization.ts";
+import { loadRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 const executionProjection = { executor: "pending", queue: "managed-runtime" };
@@ -48,6 +54,12 @@ test("materializeRunFromWorkItemPg intakes work item, creates run, and links att
     assert.deepEqual(run.metrics_json, {});
     assert.equal(run.runtime_context_json.workItemRef?.workItemId, result.workItemId);
     assert.equal(run.runtime_context_json.workItemRef?.runAttempt, 1);
+    const librarySnapshot = await loadRunLibrarySnapshotPg(db, result.runId);
+    assert.equal(librarySnapshot.runId, result.runId);
+    assert.deepEqual(librarySnapshot.objects, []);
+    assert.equal(librarySnapshot.goalContractHash, undefined);
+    assert.equal(librarySnapshot.manifestHash, contentHashForPayload(workflowManifest()));
+    assert.match(librarySnapshot.snapshotHash, /^[a-f0-9]{64}$/);
   } finally {
     await db.close();
   }
@@ -78,6 +90,65 @@ test("materializeRunFromWorkItemPg retries same source and run id without duplic
     ]);
   } finally {
     await db.close();
+  }
+});
+
+test("materializeRunFromWorkItemPg captures exact compiled Library object-version refs", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-work-item-library-"));
+  try {
+    await mkdir(join(libraryRoot, "skills", "work-item", "references"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills", "work-item", "references", "guide.md"), "FROZEN WORK ITEM GUIDE", "utf8");
+    await upsertLibraryObject(db, {
+      objectKey: "template.work-item",
+      objectKind: "workflow_template",
+      status: "approved",
+      headVersionId: "template.work-item@1",
+      state: { title: "Work Item Template" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "skill.work-item",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.work-item@1",
+      state: { body: "Use the work-item skill.", assetBundlePath: "library/skills/work-item" },
+    });
+    const manifest = workflowManifest();
+    manifest.tasks[0]!.skillRefs = ["skill.work-item"];
+    manifest.compiledFrom = {
+      templateDefinitionId: "template.work-item",
+      templateVersionId: "template.work-item@1",
+      compilerVersion: "test-compiler-v1",
+      inputHash: "1".repeat(64),
+      libraryVersionRefs: ["template.work-item@1", "skill.work-item@1"],
+      libraryObjectVersionRefs: [
+        { objectKey: "template.work-item", versionRef: "template.work-item@1" },
+        { objectKey: "skill.work-item", versionRef: "skill.work-item@1" },
+      ],
+    };
+
+    const result = await materializeRunFromWorkItemPg(db, {
+      sourceProvider: "api",
+      sourceRef: "request-compiled-library-refs",
+      title: "Compiled Library refs",
+      body: "Materialize exact compiled Library refs",
+      domain: "software",
+      runId: "run-compiled-library-refs",
+      workflowManifest: manifest,
+      executionProjection,
+      libraryRoot,
+    });
+
+    const snapshot = await loadRunLibrarySnapshotPg(db, result.runId);
+    assert.deepEqual(
+      snapshot.objects.map((object) => ({ objectKey: object.objectKey, versionRef: object.versionRef })),
+      [...manifest.compiledFrom.libraryObjectVersionRefs].sort((left, right) => left.objectKey.localeCompare(right.objectKey)),
+    );
+    const skill = snapshot.objects.find((object) => object.objectKey === "skill.work-item");
+    assert.equal(Buffer.from(skill?.bundleFiles?.[0]?.contentBase64 ?? "", "base64").toString("utf8"), "FROZEN WORK ITEM GUIDE");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
   }
 });
 

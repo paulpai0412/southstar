@@ -77,6 +77,8 @@ test("TaskEnvelopeV2 carries resolved runtime inputs and renders prompt from Con
   assert.match(envelope.agentPrompt, /Materialized library refs: instruction\.software, skill\.react-ui, tool\.workspace-read, mcp\.filesystem-workspace/);
   assert.match(envelope.agentPrompt, /Memory:\n- Prefer tests around calc sum behavior/);
   assert.match(envelope.agentPrompt, /Artifact contracts:\n- implementation_report/);
+  assert.match(envelope.agentPrompt, /Prior artifacts:\n- ArtifactRef: artifact_ref:run-env2:task-build:attempt-1:abc/);
+  assert.match(envelope.agentPrompt, /verifiedArtifactRefs/);
   assert.doesNotMatch(JSON.stringify(envelope), /do-not-leak/);
 });
 
@@ -94,7 +96,14 @@ function contextPacket(budget: ContextPacket["budget"]): ContextPacket {
     agentsMdBlocks: [{ id: "agents", sourceType: "agents-md", title: "AGENTS", text: "Follow repo instructions.", tokenEstimate: 5 }],
     artifactContracts: [{ id: "artifact", sourceType: "artifact", title: "implementation_report", text: "Return summary, commandsRun, risks.", tokenEstimate: 7 }],
     selectedMemories: [{ id: "memory-preference", sourceType: "memory", title: "preference", text: "Prefer tests around calc sum behavior.", sourceRef: "mem-1", tokenEstimate: 9 }],
-    priorArtifacts: [],
+    priorArtifacts: [{
+      id: "artifact-build",
+      sourceType: "artifact",
+      title: "implementation_report",
+      text: "Accepted implementation artifact.",
+      sourceRef: "artifact_ref:run-env2:task-build:attempt-1:abc",
+      tokenEstimate: 6,
+    }],
     checkpointSummary: { id: "checkpoint", sourceType: "checkpoint", title: "Checkpoint", text: "base checkpoint", tokenEstimate: 4 },
     workspaceSummary: { id: "workspace", sourceType: "workspace", title: "Workspace", text: "fixture repo", tokenEstimate: 3 },
     skillInstructions: [{ id: "skill", sourceType: "skill", title: "software.calc-cli", text: "Use calc CLI skill.", tokenEstimate: 4 }],

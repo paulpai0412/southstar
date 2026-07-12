@@ -1,4 +1,5 @@
 import { isTaskRecoverableStatus } from "../task-recovery.ts";
+import type { GoalMissionReadModel } from "./workflow-ui.ts";
 
 export const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "scheduling", "running", "paused", "blocked"] as const;
 export const TERMINAL_RUN_STATUSES = ["completed", "passed", "failed", "cancelled"] as const;
@@ -62,6 +63,10 @@ export type RuntimeCommandResultView = {
 export type ActiveRun = {
   runId: string;
   status: string;
+  executionStatus: string;
+  outcomeStatus: GoalMissionReadModel["status"]["outcome"];
+  healthStatus: GoalMissionReadModel["status"]["health"];
+  mission: GoalMissionReadModel | null;
   domain?: string;
   title: string;
   cwd?: string;
@@ -121,6 +126,10 @@ export function activeRunFromRow(run: OperatorRunRow): ActiveRun {
   return {
     runId: run.id,
     status: run.status,
+    executionStatus: run.status,
+    outcomeStatus: "in_progress",
+    healthStatus: "healthy",
+    mission: null,
     domain: run.domain ?? undefined,
     title: run.goal_prompt,
     ...(cwd ? { cwd } : {}),
@@ -144,8 +153,60 @@ export function buildOperatorAttentionItems(input: {
   return [
     ...resourceAttention,
     ...taskAttention,
+    ...input.activeRuns.flatMap(goalRequirementAttentionItems),
     ...runAttention,
   ].sort(compareAttention);
+}
+
+function goalRequirementAttentionItems(run: ActiveRun): OperatorAttentionItem[] {
+  const mission = run.mission;
+  if (!mission) return [];
+  const covered = new Set(mission.coverage.entries.map((entry) => entry.requirementId));
+  const byId = new Map(mission.goalContract.requirements.map((requirement) => [requirement.id, requirement]));
+  const uncovered = mission.goalContract.requirements
+    .filter((requirement) => !covered.has(requirement.id))
+    .map((requirement): OperatorAttentionItem => ({
+      id: `goal-requirement-uncovered:${run.runId}:${requirement.id}`,
+      kind: "goal_requirement",
+      severity: requirement.blocking ? "blocked" : "warning",
+      interventionMode: "run",
+      source: {
+        resourceType: "goal_requirement_coverage",
+        resourceKey: run.runId,
+        ref: `southstar.runtime_resources:goal_requirement_coverage:${run.runId}`,
+      },
+      runId: run.runId,
+      title: `Uncovered requirement: ${requirement.statement}`,
+      status: "uncovered",
+      reason: "Goal Contract requirement has no frozen coverage entry",
+      detail: { requirement, goalContractHash: mission.goalContractHash },
+      updatedAt: run.updatedAt,
+      suggestedActions: ["inspect-workflow-coverage"],
+      commands: [],
+    }));
+  const failed = mission.coverage.failedRequirementIds.map((requirementId): OperatorAttentionItem => {
+    const requirement = byId.get(requirementId);
+    return {
+      id: `goal-requirement-failed:${run.runId}:${requirementId}`,
+      kind: "goal_requirement",
+      severity: requirement?.blocking === false ? "warning" : "error",
+      interventionMode: "run",
+      source: {
+        resourceType: "goal_outcome",
+        resourceKey: `goal-outcome:${run.runId}`,
+        ref: `southstar.runtime_resources:goal_outcome:goal-outcome:${run.runId}`,
+      },
+      runId: run.runId,
+      title: `Failed requirement: ${requirement?.statement ?? requirementId}`,
+      status: "failed",
+      reason: "Goal outcome evidence did not satisfy this requirement",
+      detail: { requirementId, ...(requirement ? { requirement } : {}), goalContractHash: mission.goalContractHash },
+      updatedAt: run.updatedAt,
+      suggestedActions: ["inspect-evaluator-evidence", "review-repair"],
+      commands: [],
+    };
+  });
+  return [...uncovered, ...failed];
 }
 
 export function commandResultView(row: RuntimeCommandRow): RuntimeCommandResultView | null {
@@ -375,7 +436,7 @@ function runCommands(runId: string, status: string): OperatorCommand[] {
   ];
 }
 
-function approvalCommands(runId: string | undefined, approvalIdValue: string | undefined): OperatorCommand[] {
+export function approvalCommands(runId: string | undefined, approvalIdValue: string | undefined): OperatorCommand[] {
   const hasTarget = Boolean(runId && approvalIdValue);
   const endpoint = hasTarget ? `/api/v2/runs/${encodeURIComponent(runId!)}/approvals/${encodeURIComponent(approvalIdValue!)}/decision` : undefined;
   return [

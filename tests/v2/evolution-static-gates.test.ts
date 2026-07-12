@@ -148,8 +148,8 @@ test("composition compiler delegates library selection summaries to focused help
 
   const compiler = source("src/v2/orchestration/composition-compiler.ts");
   assert.match(compiler, /summarizeCandidates/);
-  assert.match(compiler, /collectSelectedVersionRefs/);
-  assert.doesNotMatch(compiler, /function collectSelectedVersionRefs/);
+  assert.match(compiler, /collectSelectedObjectVersionRefs/);
+  assert.doesNotMatch(compiler, /function collectSelectedObjectVersionRefs/);
   assert.doesNotMatch(compiler, /function graphRefsByKind/);
 });
 

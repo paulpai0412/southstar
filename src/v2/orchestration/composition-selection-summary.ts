@@ -1,4 +1,5 @@
 import type { CandidatePacket, WorkflowCompositionPlan } from "../design-library/types.ts";
+import type { LibraryObjectVersionRef } from "../manifests/types.ts";
 
 export type CandidateSelectionSummary = {
   workflowTemplateRefs: string[];
@@ -11,6 +12,10 @@ export type CandidateSelectionSummary = {
   evaluatorProfileRefs: string[];
   policyRefs: string[];
 };
+
+export function isLibraryBackedRef(ref: string): boolean {
+  return !ref.startsWith("repo:");
+}
 
 export function summarizeCandidates(packet: CandidatePacket): CandidateSelectionSummary {
   return {
@@ -52,33 +57,31 @@ export function summarizeCandidates(packet: CandidatePacket): CandidateSelection
   };
 }
 
-export function collectSelectedVersionRefs(packet: CandidatePacket, composition: WorkflowCompositionPlan): string[] {
-  const versionRefsByRef = new Map<string, string>();
-  for (const candidate of [
-    ...packet.workflowTemplateCandidates,
-    ...Object.values(packet.agentCandidatesByCapability).flat(),
-    ...Object.values(packet.profileCandidatesByAgent).flat(),
-    ...Object.values(packet.skillCandidatesByProfile).flat(),
-    ...Object.values(packet.toolCandidatesByProfile).flat(),
-    ...Object.values(packet.mcpGrantCandidatesByProfile).flat(),
-    ...Object.values(packet.vaultLeaseCandidatesByProfile).flat(),
-    ...Object.values(packet.instructionCandidatesByProfile).flat(),
-    ...packet.artifactContractCandidates,
-    ...Object.values(packet.evaluatorCandidatesByArtifact).flat(),
-    ...packet.policyConstraints,
-  ]) {
-    if (candidate.versionRef) {
-      versionRefsByRef.set(candidate.ref, candidate.versionRef);
-    }
+export function collectSelectedObjectVersionRefs(
+  packet: CandidatePacket,
+  composition: WorkflowCompositionPlan,
+  additionalRefs: string[] = [],
+): LibraryObjectVersionRef[] {
+  const versionRefsByRef = new Map(candidateEntries(packet)
+    .filter((candidate): candidate is { ref: string; versionRef: string } => Boolean(candidate.versionRef))
+    .map((candidate) => [candidate.ref, candidate.versionRef]));
+  const missingAdditionalRefs = uniqueSorted(additionalRefs).filter((ref) => !versionRefsByRef.has(ref));
+  if (missingAdditionalRefs.length > 0) {
+    throw new Error(`missing immutable Library candidates for resolved profile refs: ${missingAdditionalRefs.join(", ")}`);
   }
-  for (const node of packet.graphMetadataCandidates?.nodes ?? []) {
-    if (node.versionRef) {
-      versionRefsByRef.set(node.ref, node.versionRef);
-    }
-  }
+  return collectSelectedRefs(packet, composition, additionalRefs).map((objectKey) => ({
+    objectKey,
+    versionRef: requiredVersionRef(versionRefsByRef, objectKey),
+  }));
+}
 
-  const selectedRefs = new Set<string>();
-  selectedRefs.add(composition.selectedWorkflowTemplateRef);
+export function collectSelectedRefs(
+  packet: CandidatePacket,
+  composition: WorkflowCompositionPlan,
+  additionalRefs: string[] = [],
+): string[] {
+  const availableRefs = new Set(candidateEntries(packet).map((candidate) => candidate.ref));
+  const selectedRefs = new Set<string>(composition.selectedWorkflowTemplateRef ? [composition.selectedWorkflowTemplateRef] : []);
   for (const task of composition.tasks) {
     selectedRefs.add(task.agentDefinitionRef);
     selectedRefs.add(task.agentProfileRef);
@@ -90,14 +93,35 @@ export function collectSelectedVersionRefs(packet: CandidatePacket, composition:
     addRefs(selectedRefs, task.instructionRefs);
     addRefs(selectedRefs, task.inputArtifactRefs);
     addRefs(selectedRefs, task.outputArtifactRefs);
+    addRefs(selectedRefs, task.recoveryStrategyRefs);
     if (task.contextPolicyRef) selectedRefs.add(task.contextPolicyRef);
     if (task.workspacePolicyRef) selectedRefs.add(task.workspacePolicyRef);
   }
+  addRefs(selectedRefs, additionalRefs);
+  return uniqueSorted([...selectedRefs].filter((ref) => availableRefs.has(ref)));
+}
 
-  const selectedVersionRefs = [...selectedRefs]
-    .map((ref) => versionRefsByRef.get(ref))
-    .filter((value): value is string => Boolean(value));
-  return uniqueSorted(selectedVersionRefs);
+function requiredVersionRef(versionRefsByRef: Map<string, string>, objectKey: string): string {
+  const versionRef = versionRefsByRef.get(objectKey);
+  if (!versionRef) throw new Error(`missing immutable Library version for selected object: ${objectKey}`);
+  return versionRef;
+}
+
+function candidateEntries(packet: CandidatePacket): Array<{ ref: string; versionRef?: string | null }> {
+  return [
+    ...packet.workflowTemplateCandidates,
+    ...Object.values(packet.agentCandidatesByCapability).flat(),
+    ...Object.values(packet.profileCandidatesByAgent).flat(),
+    ...Object.values(packet.skillCandidatesByProfile).flat(),
+    ...Object.values(packet.toolCandidatesByProfile).flat(),
+    ...Object.values(packet.mcpGrantCandidatesByProfile).flat(),
+    ...Object.values(packet.vaultLeaseCandidatesByProfile).flat(),
+    ...Object.values(packet.instructionCandidatesByProfile).flat(),
+    ...packet.artifactContractCandidates,
+    ...Object.values(packet.evaluatorCandidatesByArtifact).flat(),
+    ...packet.policyConstraints,
+    ...(packet.graphMetadataCandidates?.nodes ?? []),
+  ];
 }
 
 function addRefs(target: Set<string>, refs: string[]): void {

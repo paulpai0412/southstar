@@ -29,7 +29,7 @@ export const CATALOG_CANONICAL_DOMAINS = [
 export const CATALOG_CANONICAL_DOMAIN_KEYS = CATALOG_CANONICAL_DOMAINS.map((domain) => domain.key);
 
 export function isCatalogCanonicalDomain(value: string | undefined): value is typeof CATALOG_CANONICAL_DOMAIN_KEYS[number] {
-  return Boolean(value && CATALOG_CANONICAL_DOMAIN_KEYS.includes(value));
+  return Boolean(value && CATALOG_CANONICAL_DOMAIN_KEYS.some((key) => key === value));
 }
 
 export function catalogDomainFromSourcePath(sourcePath: string | undefined): CatalogCanonicalDomain | undefined {

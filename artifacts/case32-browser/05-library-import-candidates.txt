@@ -1,0 +1,255 @@
+Southstar
+New
+.../apps/southstar-vocab
+LIBRARY LLM SESSIONS
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+23m ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+23m ago
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+1h ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+1h ago
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+2h ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+2h ago
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+2h ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+2h ago
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+2h ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+2h ago
+{"proposedEdges":[{"fromObjectKey":"skill.karpathy-guidelines","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.97,"rationale":"The skill is explici...
+library
+2d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+2d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.97,"rationale":"The skill is explicitly for...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.beautiful-article","kind":"skill","title":"Beautiful Article","domain":"design","sourcePath":"skills/beautiful-article/SKILL.md","selectedByDefau...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.beautiful-article","kind":"skill","title":"Beautiful Article","domain":"design","sourcePath":"skills/beautiful-article/SKILL.md","selectedByDefau...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.beautiful-article","kind":"skill","title":"Beautiful Article","domain":"design","sourcePath":"skills/beautiful-article/SKILL.md","selectedByDefau...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.beautiful-article","kind":"skill","title":"Beautiful Article","domain":"design","sourcePath":"skills/beautiful-article/SKILL.md","selectedByDefau...
+library
+3d ago
+{"proposedEdges":[{"fromObjectKey":"skill.writing-beats","edgeType":"belongs_to_domain","toObjectKey":"domain.specialized","confidence":0.72,"rationale":"The candidate is an in-pro...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.design-an-interface","kind":"skill","title":"design-an-interface","domain":"specialized","sourcePath":"skills/deprecated/design-an-interface/SKIL...
+library
+3d ago
+{"proposedEdges":[{"fromObjectKey":"skill.brainstorming","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.97,"rationale":"The imported SKILL.md gove...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.brainstorming","kind":"skill","title":"Brainstorming","domain":"engineering","sourcePath":"skills/brainstorming/SKILL.md","selectedByDefault":tru...
+library
+3d ago
+Generate ontology edges for the selected Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"proposedEdges...
+library
+4d ago
+(no messages)
+library
+4d ago
+{"candidates":[{"objectKey":"skill.brainstorming","kind":"skill","title":"Brainstorming Ideas Into Designs","domain":"engineering","sourcePath":"skills/brainstorming/SKILL.md","sel...
+library
+4d ago
+{"proposedEdges":[{"fromObjectKey":"skill.superpowers.brainstorming","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.97,"rationale":"Selected as an...
+library
+4d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+4d ago
+(no messages)
+library
+4d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+4d ago
+{"proposedEdges":[{"fromObjectKey":"skill.SKILL","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.95,"rationale":"The source file skills/brainstormi...
+library
+4d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+4d ago
+[obra/superpowers](https://github.com/obra/superpowers) import superpowers skill,我選擇安裝
+library
+4d ago
+{"proposedEdges":[{"fromObjectKey":"skill.superpowers.brainstorming","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.96,"rationale":"The imported s...
+library
+5d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+5d ago
+(no messages)
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.superpowers.using-git-worktrees","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.98,"rationale":"The skil...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.gpt-image-2","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.96,"rationale":"The skill is explicitly for image...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.94,"rationale":"The skill is explicitly abo...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.95,"rationale":"The skill is explicitly abo...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.96,"rationale":"The skill designs source ma...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.96,"rationale":"The skill is explicitly abo...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.94,"rationale":"The skill designs source ma...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+LIBRARY DOMAIN TREE
+engineering
+2
+mcp
+2
+Browser Playwright MCP
+mcp.browser-playwright
+approved
+Filesystem Workspace MCP
+mcp.filesystem-workspace
+approved
+global
+2
+skills
+2
+Southstar Goal Design
+skill.southstar-goal-design
+approved
+Southstar Slice to DAG Composer
+skill.southstar-slice-to-dag-composer
+approved
+software
+5
+agents
+1
+Software Delivery Engineer
+agent.software-delivery-engineer
+approved
+skills
+1
+Software Delivery
+skill.software-delivery
+approved
+tools
+3
+Test Runner
+tool.test-runner
+approved
+Workspace Read
+tool.workspace-read
+approved
+Workspace Write
+tool.workspace-write
+approved
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+
+Import library vocabulary candidates for this vocabulary-learning goal. Produce only the domain, capabilities, artifact contracts, and evaluator profiles needed to implement and verify the local flashcard vocabulary system. Do not invent external integrations.
+
+Copy
+21:54
+library-chat
+
+[library.intent.started] Reading library command. [intent] import_library_candidates [done] ready_for_review
+
+›
+Import candidates
+library-import-<draft>
+6/6 selected
+Vocabulary Learning
+DOMAIN
+0.93
+domain.vocabulary-learning
+Library-chat-prompt.md
+Flashcard Deck Management
+CAPABILITY
+0.90
+capability.flashcard-deck-management
+Library-chat-prompt.md
+Review Session Execution
+CAPABILITY
+0.88
+capability.review-session-execution
+Library-chat-prompt.md
+Flashcard Deck Specification
+ARTIFACT
+0.86
+artifact.flashcard-deck-spec
+Library-chat-prompt.md
+Review Session Results
+ARTIFACT
+0.85
+artifact.review-session-results
+Library-chat-prompt.md
+Local Flashcard System Verifier
+EVALUATOR
+0.84
+evaluator.local-flashcard-system-verifier
+Library-chat-prompt.md
+Copy
+21:54
+Send
+GPT-5.3 Codex
+auto
+default
+Compact

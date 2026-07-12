@@ -1,0 +1,14 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.flashcard-set-authoring
+title: "Flashcard Set Authoring"
+scope: "general"
+status: approved
+description: "Create, update, and organize local vocabulary flashcards with prompt/answer and optional metadata fields."
+requiredOperations:
+  - "create-flashcard"
+  - "update-flashcard"
+  - "delete-flashcard"
+  - "group-into-deck"
+importDraftId: "library-import-draft-141e557c-275a-4782-a796-d05e4402b474"
+importCandidateKey: "capability.flashcard-set-authoring"
+importSourcePath: "Library-chat-prompt.md"

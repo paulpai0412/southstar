@@ -11,6 +11,8 @@ import { getPostgresTaskEnvelope } from "../../src/v2/ui-api/postgres-task-envel
 import { createSouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
+import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
+import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
 import {
   contextPolicy,
   implementationReportContract,
@@ -133,6 +135,7 @@ test("Postgres server task envelope route uses new TaskEnvelope API", async () =
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -183,6 +186,24 @@ test("Postgres task envelope fallback preserves canonical graph library refs", a
       sortOrder: 0,
       dependsOn: [],
       rootSessionId: "session-envelope-canonical-refs",
+    });
+    const selectedRefs = [
+      "instruction.software-maker",
+      "skill.software-implementation",
+      "tool.workspace-read",
+      "tool.workspace-write",
+      "tool.shell-command",
+      "mcp.filesystem-workspace",
+      "vault.github-write-token",
+    ];
+    const versions = await db.query<{ object_key: string; head_version_id: string }>(
+      "select object_key, head_version_id from southstar.library_objects where object_key = any($1::text[])",
+      [selectedRefs],
+    );
+    await captureRunLibrarySnapshotPg(db, {
+      runId: "run-envelope-canonical-refs",
+      manifestHash: "1".repeat(64),
+      libraryObjectVersionRefs: versions.rows.map((row) => ({ objectKey: row.object_key, versionRef: row.head_version_id })),
     });
     await upsertRuntimeResourcePg(db, {
       resourceType: "context_packet",
@@ -291,6 +312,7 @@ async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string, op
     goalPrompt,
     orchestrationMode: "llm-constrained",
     composerMode: "llm",
+    goalInterpreter: fixedGoalInterpreter(softwareGoalContract(goalPrompt)),
     composer: new DeterministicFixtureComposer(),
     ...(options.cwd ? { cwd: options.cwd } : {}),
   });

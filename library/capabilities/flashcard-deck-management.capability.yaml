@@ -1,0 +1,16 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.flashcard-deck-management
+title: "Flashcard Deck Management"
+scope: "general"
+status: approved
+description: "Create, update, organize, and persist local vocabulary flashcards and deck structures."
+requiredOperations:
+  - "create-deck"
+  - "add-card"
+  - "update-card"
+  - "delete-card"
+  - "list-deck-cards"
+  - "persist-deck-locally"
+importDraftId: "library-import-draft-a50847a7-93f1-4a88-bb23-25a5b5947e52"
+importCandidateKey: "capability.flashcard-deck-management"
+importSourcePath: "Library-chat-prompt.md"

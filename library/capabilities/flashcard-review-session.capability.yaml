@@ -1,0 +1,14 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.flashcard-review-session
+title: "Flashcard Review Session"
+scope: "general"
+status: approved
+description: "Run local review sessions that present cards and capture learner responses."
+requiredOperations:
+  - "start-session"
+  - "present-card"
+  - "record-response"
+  - "complete-session"
+importDraftId: "library-import-draft-e5e81e71-8ca6-4bc4-a23f-51a5f5648b27"
+importCandidateKey: "capability.flashcard-review-session"
+importSourcePath: "Library-chat-prompt.md"

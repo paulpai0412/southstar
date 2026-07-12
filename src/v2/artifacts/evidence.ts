@@ -11,18 +11,23 @@ export type BuildEvidencePacketInput = {
   artifactRef: string;
   requiredEvidenceKinds: EvidenceKind[];
   artifact: Record<string, unknown>;
+  identityScope?: string;
   now?: string;
 };
 
 export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePacket {
   const now = input.now ?? new Date().toISOString();
   const requiredKinds = [...new Set(input.requiredEvidenceKinds)];
-  const available = evidenceByKind(input.artifact, now);
+  const available = evidenceByKind(input.artifact, now, input.runId);
   const evidenceItems = requiredKinds.map((kind) => available.get(kind) ?? missingEvidence(kind, now));
   const presentCount = evidenceItems.filter((item) => item.status === "present").length;
   return {
     schemaVersion: EVIDENCE_PACKET_SCHEMA_VERSION,
-    id: `evidence-${input.runId}-${input.taskId}-${shortHash(`${input.artifactRef}:${requiredKinds.join(",")}`)}`,
+    id: `evidence-${input.runId}-${input.taskId}-${shortHash([
+      input.artifactRef,
+      ...(input.identityScope ? [input.identityScope] : []),
+      requiredKinds.join(","),
+    ].join(":"))}`,
     runId: input.runId,
     taskId: input.taskId,
     artifactRef: input.artifactRef,
@@ -37,59 +42,52 @@ export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePa
   };
 }
 
-function evidenceByKind(artifact: Record<string, unknown>, now: string): Map<EvidenceKind, EvidencePacket["evidenceItems"][number]> {
+export function screenshotEvidenceRef(artifact: Record<string, unknown>, runId: string): string | undefined {
+  const browserEvidence = isRecord(artifact.browserEvidence) ? artifact.browserEvidence : {};
+  return safeScreenshotRef(firstDefined(
+    firstArrayItem(browserEvidence.screenshots),
+    browserEvidence.screenshot,
+    firstArrayItem(artifact.screenshots),
+    artifact.screenshot,
+  ), runId);
+}
+
+function evidenceByKind(
+  artifact: Record<string, unknown>,
+  now: string,
+  runId: string,
+): Map<EvidenceKind, EvidencePacket["evidenceItems"][number]> {
   const byKind = new Map<EvidenceKind, EvidencePacket["evidenceItems"][number]>();
 
-  const commandResults = firstCommandResult(artifact.testResults)
-    ?? firstCommandResult((artifact.artifactEvidence as { testResults?: unknown } | undefined)?.testResults)
-    ?? firstCommandResult(artifact.tests);
-  const commandStrings = [
-    ...extractCommandStrings(artifact.commandsRun),
-    ...extractCommandStrings(artifact.commandsToRun),
-  ];
+  const testCommandResults = commandResults(artifact.testResults);
+  const executedCommandResults = executedCommands(artifact.commandsRun);
+  const executedCommandEvidenceStatus = executedCommandResults.length > 0
+    ? aggregateCommandStatus(executedCommandResults)
+    : undefined;
+  const commandEvidenceSource = executedCommandEvidenceStatus === "present" || testCommandResults.length === 0
+    ? "artifact.commandsRun"
+    : "artifact.testResults";
+  const commandEvidenceResults = commandEvidenceSource === "artifact.commandsRun"
+    ? executedCommandResults
+    : testCommandResults;
+  const commandStrings = extractCommandStrings(artifact.commandsRun);
 
-  if (commandResults) {
-    const status = commandStatus(commandResults);
-    const summary = summarizeCommand(commandResults);
-    const reproducibleCommand = splitCommand(commandResults.command) ?? splitCommand(findTestCommand(commandStrings));
-    byKind.set("test-result", {
-      kind: "test-result",
-      status,
-      summary,
-      sourceRef: "artifact.testResults",
-      sha256: shortHash(JSON.stringify(commandResults)),
-      capturedAt: now,
-      reproducibleCommand,
-      redactionApplied: true,
-    });
+  const testEvidence = objectTestEvidence(artifact, commandStrings, now);
+  if (testEvidence) {
+    byKind.set("test-result", testEvidence);
+  }
+
+  if (commandEvidenceResults.length > 0) {
     byKind.set("command-output", {
       kind: "command-output",
-      status,
-      summary,
-      sourceRef: "artifact.testResults",
-      sha256: shortHash(JSON.stringify(commandResults)),
+      status: aggregateCommandStatus(commandEvidenceResults),
+      summary: commandEvidenceResults.map(summarizeCommand).join("; ").slice(0, 500),
+      sourceRef: commandEvidenceSource,
+      sha256: shortHash(safeJson(commandEvidenceResults)),
       capturedAt: now,
-      reproducibleCommand,
+      reproducibleCommand: splitCommand(commandEvidenceResults[0]!.command),
       redactionApplied: true,
     });
-  } else {
-    const testEvidence = objectTestEvidence(artifact, commandStrings, now);
-    if (testEvidence) {
-      byKind.set("test-result", testEvidence);
-    }
-    const firstCommand = commandStrings[0];
-    if (firstCommand) {
-      byKind.set("command-output", {
-        kind: "command-output",
-        status: "present",
-        summary: firstCommand,
-        sourceRef: Array.isArray(artifact.commandsRun) ? "artifact.commandsRun" : "artifact.commandsToRun",
-        sha256: shortHash(firstCommand),
-        capturedAt: now,
-        reproducibleCommand: splitCommand(firstCommand),
-        redactionApplied: true,
-      });
-    }
   }
 
   const filesChanged = extractPathLikeValues(artifact.filesChanged);
@@ -131,30 +129,163 @@ function evidenceByKind(artifact: Record<string, unknown>, now: string): Map<Evi
     });
   }
 
+  const browserEvidence = isRecord(artifact.browserEvidence) ? artifact.browserEvidence : {};
+  const browserUrl = firstDefined(
+    browserEvidence.url,
+    firstArrayItem(browserEvidence.urls),
+    artifact.url,
+    firstArrayItem(artifact.urls),
+  );
+  if (browserUrl !== undefined) {
+    const safeUrl = safeHttpUrl(browserUrl);
+    byKind.set("url", safeUrl
+      ? {
+        kind: "url",
+        status: "present",
+        summary: `Visited ${safeUrl}`,
+        sourceRef: isRecord(artifact.browserEvidence) ? "artifact.browserEvidence.url" : "artifact.url",
+        sha256: shortHash(safeUrl),
+        capturedAt: now,
+        redactionApplied: true,
+      }
+      : invalidBrowserEvidence("url", "browser URL must be a credential-free HTTP(S) URL", now));
+  }
+
+  const screenshot = firstDefined(
+    firstArrayItem(browserEvidence.screenshots),
+    browserEvidence.screenshot,
+    firstArrayItem(artifact.screenshots),
+    artifact.screenshot,
+  );
+  if (screenshot !== undefined) {
+    const safeScreenshot = safeScreenshotRef(screenshot, runId);
+    byKind.set("screenshot", safeScreenshot
+      ? {
+        kind: "screenshot",
+        status: "present",
+        summary: `Captured screenshot ${safeScreenshot}`,
+        sourceRef: isRecord(artifact.browserEvidence)
+          ? "artifact.browserEvidence.screenshots"
+          : "artifact.screenshots",
+        sha256: shortHash(safeScreenshot),
+        capturedAt: now,
+        redactionApplied: true,
+      }
+      : invalidBrowserEvidence("screenshot", "screenshot must use an artifact ref, safe relative path, or HTTP(S) URL", now));
+  }
+
   return byKind;
 }
 
-function firstCommandResult(value: unknown): Record<string, unknown> | undefined {
-  if (!Array.isArray(value)) return undefined;
-  return value.find((item): item is Record<string, unknown> =>
-    isRecord(item) && typeof item.command === "string" && item.command.trim().length > 0
+function firstDefined(...values: unknown[]): unknown {
+  return values.find((value) => value !== undefined);
+}
+
+function firstArrayItem(value: unknown): unknown {
+  return Array.isArray(value) ? value[0] : undefined;
+}
+
+function safeHttpUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2_048) return undefined;
+  try {
+    const parsed = new URL(value);
+    if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || parsed.username || parsed.password) return undefined;
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function safeScreenshotRef(value: unknown, runId: string): string | undefined {
+  const candidate = isRecord(value)
+    ? firstDefined(value.artifactRef, value.ref, value.path, value.url)
+    : value;
+  if (typeof candidate !== "string" || candidate.length === 0 || candidate.length > 1_024) return undefined;
+  if (candidate.startsWith("artifact_ref:")) {
+    const parts = candidate.slice(`artifact_ref:${runId}:`.length).split(":");
+    return candidate.startsWith(`artifact_ref:${runId}:`)
+      && parts.length === 3
+      && parts[0]!.length > 0
+      && parts[1]!.length > 0
+      && /^[a-f0-9]{64}$/.test(parts[2]!)
+      ? candidate
+      : undefined;
+  }
+  const url = safeHttpUrl(candidate);
+  if (url) return url;
+  if (
+    candidate.startsWith("/")
+    || candidate.includes(":")
+    || candidate.includes("\\")
+    || candidate.split("/").some((segment) => segment === ".." || segment === ".")
+    || !/\.(png|jpe?g|webp)$/i.test(candidate)
+  ) return undefined;
+  return candidate;
+}
+
+function invalidBrowserEvidence(
+  kind: "url" | "screenshot",
+  summary: string,
+  now: string,
+): EvidencePacket["evidenceItems"][number] {
+  return {
+    kind,
+    status: "invalid",
+    summary,
+    capturedAt: now,
+    redactionApplied: true,
+  };
+}
+
+function commandResults(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> =>
+    isRecord(item) && Boolean(splitCommand(item.command))
   );
 }
 
+function executedCommands(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) return [];
+  const hasStructuredCommand = value.some((item) => isRecord(item) && "command" in item);
+  if (!hasStructuredCommand) return [];
+  return value.map((item) => typeof item === "string"
+    ? { command: item }
+    : isRecord(item)
+      ? item
+      : {});
+}
+
+function aggregateCommandStatus(commands: Record<string, unknown>[]): "present" | "invalid" {
+  return commands.length > 0 && commands.every((command) => commandStatus(command) === "present")
+    ? "present"
+    : "invalid";
+}
+
 function commandStatus(command: Record<string, unknown>): "present" | "invalid" {
-  if (typeof command.command !== "string" || command.command.trim().length === 0) return "invalid";
-  return "present";
+  if (!splitCommand(command.command)) return "invalid";
+  const outcome = command.status ?? command.result ?? command.outcome;
+  if (
+    (outcome !== undefined && valueStatus(outcome) !== "present")
+    || command.ok === false
+    || command.passed === false
+    || (typeof command.exitCode === "number" && Number.isInteger(command.exitCode) && command.exitCode !== 0)
+  ) return "invalid";
+  if (valueStatus(outcome) === "present" || command.ok === true || command.passed === true || command.exitCode === 0) return "present";
+  return "invalid";
 }
 
 function summarizeCommand(command: Record<string, unknown>): string {
-  const rendered = typeof command.command === "string" ? command.command : "command";
+  const rendered = splitCommand(command.command)?.join(" ") ?? "command";
   const output = typeof command.output === "string" ? command.output.trim() : "";
   return output ? `${rendered}: ${output.slice(0, 200)}` : rendered;
 }
 
 function splitCommand(value: unknown): string[] | undefined {
-  if (typeof value !== "string") return undefined;
-  const parts = value.split(/\s+/).filter(Boolean);
+  const parts = typeof value === "string"
+    ? value.split(/\s+/).filter(Boolean)
+    : Array.isArray(value)
+      ? value.filter((part): part is string => typeof part === "string" && part.length > 0)
+      : [];
   return parts.length > 0 ? parts : undefined;
 }
 
@@ -179,55 +310,29 @@ function objectTestEvidence(
   now: string,
 ): EvidencePacket["evidenceItems"][number] | undefined {
   const testResults = artifact.testResults;
-  if (Array.isArray(testResults)) {
-    const objectEntry = testResults.find((item) => isRecord(item));
-    if (isRecord(objectEntry)) {
-      const status = valueStatus(objectEntry.status ?? objectEntry.result ?? objectEntry.outcome)
-        ?? (objectEntry.passed === true || objectEntry.ok === true ? "present" : undefined)
-        ?? statusFromCounts(objectEntry)
-        ?? nestedStatusFromResultTree(objectEntry)
-        ?? statusFromTextValues(objectEntry)
-        ?? "invalid";
-      const summary = typeof objectEntry.summary === "string"
-        ? objectEntry.summary
-        : typeof objectEntry.output === "string"
-          ? objectEntry.output
-          : "test results present";
-      return {
-        kind: "test-result",
-        status,
-        summary,
-        sourceRef: "artifact.testResults",
-        sha256: shortHash(JSON.stringify(objectEntry)),
-        capturedAt: now,
-        reproducibleCommand: splitCommand(findTestCommand(commands)),
-        redactionApplied: true,
-      };
-    }
-
-    const stringEntry = testResults.find((item): item is string => typeof item === "string" && item.length > 0);
-    if (stringEntry) {
-      const status = valueStatus(stringEntry) ?? (/(pass|success|ok)/i.test(stringEntry) ? "present" : "invalid");
-      return {
-        kind: "test-result",
-        status,
-        summary: stringEntry,
-        sourceRef: "artifact.testResults",
-        sha256: shortHash(stringEntry),
-        capturedAt: now,
-        reproducibleCommand: splitCommand(findTestCommand(commands)),
-        redactionApplied: true,
-      };
-    }
+  if (Array.isArray(testResults) && testResults.length > 0) {
+    const first = testResults[0];
+    const firstRecord = asEvidenceRecord(first);
+    return {
+      kind: "test-result",
+      status: testResults.every((item) => testResultItemStatus(item) === "present") ? "present" : "invalid",
+      summary: typeof first === "string"
+        ? first
+        : typeof firstRecord.summary === "string"
+          ? firstRecord.summary
+          : typeof firstRecord.output === "string"
+            ? firstRecord.output
+            : "test results present",
+      sourceRef: "artifact.testResults",
+      sha256: shortHash(safeJson(testResults)),
+      capturedAt: now,
+      reproducibleCommand: splitCommand(firstRecord.command) ?? splitCommand(findTestCommand(commands)),
+      redactionApplied: true,
+    };
   }
 
   if (isRecord(testResults)) {
-    const status = valueStatus(testResults.status ?? testResults.result ?? testResults.outcome ?? testResults.overall)
-      ?? (testResults.passed === true || testResults.ok === true ? "present" : undefined)
-      ?? statusFromCounts(testResults)
-      ?? nestedStatusFromResultTree(testResults)
-      ?? statusFromTextValues(testResults)
-      ?? "invalid";
+    const status = testRecordStatus(testResults);
     const summary = [
       typeof testResults.status === "string" ? `status=${testResults.status}` : undefined,
       typeof testResults.details === "string" ? testResults.details : undefined,
@@ -238,7 +343,7 @@ function objectTestEvidence(
       status,
       summary: summary || "test results present",
       sourceRef: "artifact.testResults",
-      sha256: shortHash(JSON.stringify(testResults)),
+      sha256: shortHash(safeJson(testResults)),
       capturedAt: now,
       reproducibleCommand: splitCommand(findTestCommand(commands)),
       redactionApplied: true,
@@ -246,10 +351,9 @@ function objectTestEvidence(
   }
 
   if (typeof testResults === "string") {
-    const status = valueStatus(testResults) ?? "invalid";
     return {
       kind: "test-result",
-      status,
+      status: "invalid",
       summary: `test result: ${testResults}`,
       sourceRef: "artifact.testResults",
       sha256: shortHash(testResults),
@@ -260,46 +364,25 @@ function objectTestEvidence(
   }
 
   const tests = artifact.tests;
-  if (Array.isArray(tests)) {
-    const objectEntry = tests.find((item) => isRecord(item));
-    if (isRecord(objectEntry)) {
-      const status = valueStatus(objectEntry.status ?? objectEntry.result ?? objectEntry.outcome)
-        ?? (objectEntry.passed === true || objectEntry.ok === true ? "present" : undefined)
-        ?? statusFromCounts(objectEntry)
-        ?? nestedStatusFromResultTree(objectEntry)
-        ?? statusFromTextValues(objectEntry)
-        ?? "invalid";
-      const summary = typeof objectEntry.summary === "string"
-        ? objectEntry.summary
-        : typeof objectEntry.output === "string"
-          ? objectEntry.output
-          : "tests evidence present";
-      return {
-        kind: "test-result",
-        status,
-        summary,
-        sourceRef: "artifact.tests",
-        sha256: shortHash(JSON.stringify(objectEntry)),
-        capturedAt: now,
-        reproducibleCommand: splitCommand(findTestCommand(commands)),
-        redactionApplied: true,
-      };
-    }
-
-    const stringEntry = tests.find((item): item is string => typeof item === "string" && item.length > 0);
-    if (stringEntry) {
-      const status = valueStatus(stringEntry) ?? (/(pass|success|ok)/i.test(stringEntry) ? "present" : "invalid");
-      return {
-        kind: "test-result",
-        status,
-        summary: stringEntry,
-        sourceRef: "artifact.tests",
-        sha256: shortHash(stringEntry),
-        capturedAt: now,
-        reproducibleCommand: splitCommand(findTestCommand(commands)),
-        redactionApplied: true,
-      };
-    }
+  if (Array.isArray(tests) && tests.length > 0) {
+    const first = tests[0];
+    const firstRecord = asEvidenceRecord(first);
+    return {
+      kind: "test-result",
+      status: tests.every((item) => testResultItemStatus(item) === "present") ? "present" : "invalid",
+      summary: typeof first === "string"
+        ? first
+        : typeof firstRecord.summary === "string"
+          ? firstRecord.summary
+          : typeof firstRecord.output === "string"
+            ? firstRecord.output
+            : "tests evidence present",
+      sourceRef: "artifact.tests",
+      sha256: shortHash(safeJson(tests)),
+      capturedAt: now,
+      reproducibleCommand: splitCommand(firstRecord.command) ?? splitCommand(findTestCommand(commands)),
+      redactionApplied: true,
+    };
   }
 
   const artifactEvidence = artifact.artifactEvidence;
@@ -317,10 +400,10 @@ function objectTestEvidence(
           : "artifact evidence present";
       return {
         kind: "test-result",
-        status: "present",
+        status: testRecordStatus(evidence),
         summary,
         sourceRef: "artifact.artifactEvidence",
-        sha256: shortHash(JSON.stringify(evidence)),
+        sha256: shortHash(safeJson(evidence)),
         capturedAt: now,
         reproducibleCommand: splitCommand(findTestCommand(commands)),
         redactionApplied: true,
@@ -331,19 +414,85 @@ function objectTestEvidence(
   return undefined;
 }
 
+function testRecordStatus(value: Record<string, unknown>): "present" | "invalid" {
+  return resultTreeStatus(value, 0, new WeakSet()) ?? "invalid";
+}
+
+function resultTreeStatus(
+  value: unknown,
+  depth: number,
+  ancestors: WeakSet<object>,
+): "present" | "invalid" | undefined {
+  if (depth > 8) return "invalid";
+  if (Array.isArray(value)) {
+    if (ancestors.has(value)) return "invalid";
+    ancestors.add(value);
+    let sawPresent = false;
+    for (const item of value) {
+      const status = resultTreeStatus(item, depth + 1, ancestors);
+      if (status === "invalid") {
+        ancestors.delete(value);
+        return "invalid";
+      }
+      if (status === "present") sawPresent = true;
+    }
+    ancestors.delete(value);
+    return sawPresent ? "present" : undefined;
+  }
+  if (!isRecord(value)) return undefined;
+  if (ancestors.has(value)) return "invalid";
+  ancestors.add(value);
+
+  const outcome = value.status ?? value.result ?? value.outcome ?? value.overall;
+  const countStatus = statusFromCounts(value);
+  if (
+    (outcome !== undefined && valueStatus(outcome) !== "present")
+    || value.passed === false
+    || value.ok === false
+    || (typeof value.exitCode === "number" && Number.isInteger(value.exitCode) && value.exitCode !== 0)
+    || countStatus === "invalid"
+  ) {
+    ancestors.delete(value);
+    return "invalid";
+  }
+
+  let sawPresent = valueStatus(outcome) === "present"
+    || value.passed === true
+    || value.ok === true
+    || value.exitCode === 0
+    || countStatus === "present";
+  for (const child of Object.values(value)) {
+    if (!child || typeof child !== "object") continue;
+    const status = resultTreeStatus(child, depth + 1, ancestors);
+    if (status === "invalid") {
+      ancestors.delete(value);
+      return "invalid";
+    }
+    if (status === "present") sawPresent = true;
+  }
+  ancestors.delete(value);
+  return sawPresent ? "present" : undefined;
+}
+
+function testResultItemStatus(value: unknown): "present" | "invalid" {
+  return isRecord(value) ? testRecordStatus(value) : "invalid";
+}
+
+function asEvidenceRecord(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}
+
 function valueStatus(value: unknown): "present" | "invalid" | undefined {
+  if (value === true) return "present";
+  if (value === false) return "invalid";
   if (typeof value !== "string") return undefined;
-  const normalized = value.toLowerCase();
+  const normalized = value.trim().toLowerCase();
 
   if (/\b0\s+failed\b/.test(normalized) && /(pass|passed|success|succeeded|ok)/.test(normalized)) {
     return "present";
   }
+  if (["passed", "pass", "success", "succeeded", "ok", "true"].includes(normalized)) return "present";
   if ([
-    "passed",
-    "pass",
-    "success",
-    "succeeded",
-    "ok",
     "failed",
     "fail",
     "error",
@@ -357,29 +506,16 @@ function valueStatus(value: unknown): "present" | "invalid" | undefined {
     "failed_non_gating",
     "non-gating",
     "non_gating",
-    "pass_with_environment_gap",
-  ].some((token) => normalized.includes(token))) {
-    return "present";
-  }
+    "false",
+  ].includes(normalized)) return "invalid";
   return undefined;
 }
 
 function statusFromCounts(testResults: Record<string, unknown>): "present" | "invalid" | undefined {
   const failed = numberFromObject(testResults, ["failed", "failCount"]);
   const passed = numberFromObject(testResults, ["passed", "passCount"]);
-  if (typeof failed === "number") {
-    if (failed > 0) return "present";
-    if ((passed ?? 0) > 0) return "present";
-  }
-  const automated = testResults.automated;
-  if (isRecord(automated)) {
-    const automatedFailed = numberFromObject(automated, ["failed", "failCount"]);
-    const automatedPassed = numberFromObject(automated, ["passed", "passCount"]);
-    if (typeof automatedFailed === "number") {
-      if (automatedFailed > 0) return "present";
-      if ((automatedPassed ?? 0) > 0) return "present";
-    }
-  }
+  if ((failed ?? 0) > 0) return "invalid";
+  if ((passed ?? 0) > 0) return "present";
   return undefined;
 }
 
@@ -389,61 +525,6 @@ function numberFromObject(value: Record<string, unknown>, keys: string[]): numbe
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
   }
   return undefined;
-}
-
-function statusFromTextValues(value: unknown): "present" | "invalid" | undefined {
-  const samples = collectTextSamples(value, 0, []);
-  if (samples.length === 0) return undefined;
-
-  const hasPositive = samples.some((sample) => /(pass|passed|success|succeeded|ok)/i.test(sample));
-  const hasOutcome = samples.some((sample) => /(\bfail(ed)?\b|\berror\b|\bassertion\b|\bblocked\b|\bnot[-_ ]?verified\b|\bskipped\b)/i.test(sample));
-
-  if (hasPositive || hasOutcome) return "present";
-  return undefined;
-}
-
-function collectTextSamples(value: unknown, depth: number, output: string[]): string[] {
-  if (depth > 4) return output;
-  if (typeof value === "string") {
-    output.push(value);
-    return output;
-  }
-  if (Array.isArray(value)) {
-    for (const item of value) collectTextSamples(item, depth + 1, output);
-    return output;
-  }
-  if (isRecord(value)) {
-    for (const nested of Object.values(value)) collectTextSamples(nested, depth + 1, output);
-  }
-  return output;
-}
-
-function nestedStatusFromResultTree(value: unknown, depth = 0): "present" | "invalid" | undefined {
-  if (depth > 5) return undefined;
-  if (Array.isArray(value)) {
-    let sawPresent = false;
-    for (const item of value) {
-      const nested = nestedStatusFromResultTree(item, depth + 1);
-      if (nested === "invalid") return "invalid";
-      if (nested === "present") sawPresent = true;
-    }
-    return sawPresent ? "present" : undefined;
-  }
-  if (!isRecord(value)) return undefined;
-
-  let sawPresent = false;
-  for (const key of ["status", "result", "overall", "outcome"]) {
-    const direct = valueStatus(value[key]);
-    if (direct === "invalid") return "invalid";
-    if (direct === "present") sawPresent = true;
-  }
-
-  for (const nested of Object.values(value)) {
-    const status = nestedStatusFromResultTree(nested, depth + 1);
-    if (status === "invalid") return "invalid";
-    if (status === "present") sawPresent = true;
-  }
-  return sawPresent ? "present" : undefined;
 }
 
 function extractPathLikeValues(value: unknown): string[] {
@@ -482,7 +563,7 @@ function extractArtifactRefs(value: unknown): string[] {
     }
 
     if (!captured) {
-      refs.push(`artifact-object-${shortHash(JSON.stringify(item))}`);
+      refs.push(`artifact-object-${shortHash(safeJson(item))}`);
     }
   }
   return refs;
@@ -500,6 +581,17 @@ function missingEvidence(kind: EvidenceKind, now: string): EvidencePacket["evide
 
 function shortHash(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+function safeJson(value: unknown): string {
+  const seen = new WeakSet<object>();
+  return JSON.stringify(value, (_key, child: unknown) => {
+    if (typeof child === "bigint") return child.toString();
+    if (!child || typeof child !== "object") return child;
+    if (seen.has(child)) return "[Circular]";
+    seen.add(child);
+    return child;
+  }) ?? "null";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
