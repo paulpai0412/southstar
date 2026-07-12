@@ -84,8 +84,10 @@ export async function compileWorkflowComposition(
   db: SouthstarDb,
   input: CompileWorkflowCompositionInput,
 ): Promise<CompiledWorkflowComposition> {
-  const libraryScope = input.scope ?? "software";
-  const manifestDomain = input.manifestDomain ?? (libraryScope === "all" ? "software" : libraryScope);
+  const goalDomain = nonEmptyString(input.goalContract.domain)
+    ?? nonEmptyString(input.goalDesignPackage?.goalContract.domain);
+  const libraryScope = nonEmptyString(input.scope) ?? goalDomain ?? "all";
+  const manifestDomain = nonEmptyString(input.manifestDomain) ?? goalDomain ?? domainForManifestFallback(libraryScope);
   const taskDomain = workflowTaskDomain(manifestDomain);
   const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, {
     scope: libraryScope,
@@ -717,6 +719,10 @@ function workflowTaskDomain(value: string): WorkflowTaskDefinition["domain"] {
     : "general";
 }
 
+function domainForManifestFallback(scope: string): string {
+  return scope === "all" ? "general" : scope;
+}
+
 function synthesizeRuntimeRoleFromTask(task: WorkflowCompositionTask): RoleDefinition {
   return {
     id: roleIdFromAgentRef(task.agentDefinitionRef),
@@ -895,6 +901,10 @@ function required<T>(value: T | null | undefined, message: string): T {
     throw new Error(message);
   }
   return value;
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

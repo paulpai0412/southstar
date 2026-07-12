@@ -278,6 +278,47 @@ test("buildEvidencePacket supports structured test results with command strings 
   }
 });
 
+test("buildEvidencePacket does not let unstructured commands shadow executed test command evidence", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-test-command-shadowing",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result", "command-output"],
+    artifact: {
+      commandsRun: ["cd /workspace/repo && npm test"],
+      testResults: [{ name: "local tests", command: "npm test", status: "passed", gating: "blocking" }],
+    },
+  });
+
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status, item.sourceRef]), [
+    ["test-result", "present", "artifact.testResults"],
+    ["command-output", "present", "artifact.testResults"],
+  ]);
+});
+
+test("buildEvidencePacket does not let command records without outcomes shadow executed test command evidence", () => {
+  const packet = buildEvidencePacket({
+    runId: "run-test-command-record-shadowing",
+    taskId: "task-verify",
+    artifactRef: "artifact-ref-command",
+    requiredEvidenceKinds: ["test-result", "command-output"],
+    artifact: {
+      commandsRun: [{ command: "cd /workspace/repo && node --test tests/membership-subscription.test.mjs" }],
+      testResults: [{
+        name: "membership acceptance",
+        command: "node --test tests/membership-subscription.test.mjs",
+        status: "passed",
+        gating: "blocking",
+      }],
+    },
+  });
+
+  assert.deepEqual(packet.evidenceItems.map((item) => [item.kind, item.status, item.sourceRef]), [
+    ["test-result", "present", "artifact.testResults"],
+    ["command-output", "present", "artifact.testResults"],
+  ]);
+});
+
 test("acceptOrRejectArtifactRefPg writes deterministic accepted artifact_ref runtime resources", async () => {
   const db = await createTestPostgresDb();
   try {

@@ -1,0 +1,689 @@
+Southstar
+New
+.../apps/southstar-vocab
+LIBRARY LLM SESSIONS
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+23m ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+23m ago
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+1h ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+1h ago
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+2h ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+2h ago
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+2h ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+2h ago
+Generate ontology edges for the selected Southstar library candidates and the existing approved Southstar library graph. Return exactly one JSON object. No markdown, comments, or p...
+library
+2h ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+2h ago
+{"proposedEdges":[{"fromObjectKey":"skill.karpathy-guidelines","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.97,"rationale":"The skill is explici...
+library
+2d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+2d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.97,"rationale":"The skill is explicitly for...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.beautiful-article","kind":"skill","title":"Beautiful Article","domain":"design","sourcePath":"skills/beautiful-article/SKILL.md","selectedByDefau...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.beautiful-article","kind":"skill","title":"Beautiful Article","domain":"design","sourcePath":"skills/beautiful-article/SKILL.md","selectedByDefau...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.beautiful-article","kind":"skill","title":"Beautiful Article","domain":"design","sourcePath":"skills/beautiful-article/SKILL.md","selectedByDefau...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.beautiful-article","kind":"skill","title":"Beautiful Article","domain":"design","sourcePath":"skills/beautiful-article/SKILL.md","selectedByDefau...
+library
+3d ago
+{"proposedEdges":[{"fromObjectKey":"skill.writing-beats","edgeType":"belongs_to_domain","toObjectKey":"domain.specialized","confidence":0.72,"rationale":"The candidate is an in-pro...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.design-an-interface","kind":"skill","title":"design-an-interface","domain":"specialized","sourcePath":"skills/deprecated/design-an-interface/SKIL...
+library
+3d ago
+{"proposedEdges":[{"fromObjectKey":"skill.brainstorming","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.97,"rationale":"The imported SKILL.md gove...
+library
+3d ago
+{"candidates":[{"objectKey":"skill.brainstorming","kind":"skill","title":"Brainstorming","domain":"engineering","sourcePath":"skills/brainstorming/SKILL.md","selectedByDefault":tru...
+library
+3d ago
+Generate ontology edges for the selected Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"proposedEdges...
+library
+4d ago
+(no messages)
+library
+4d ago
+{"candidates":[{"objectKey":"skill.brainstorming","kind":"skill","title":"Brainstorming Ideas Into Designs","domain":"engineering","sourcePath":"skills/brainstorming/SKILL.md","sel...
+library
+4d ago
+{"proposedEdges":[{"fromObjectKey":"skill.superpowers.brainstorming","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.97,"rationale":"Selected as an...
+library
+4d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+4d ago
+(no messages)
+library
+4d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+4d ago
+{"proposedEdges":[{"fromObjectKey":"skill.SKILL","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.95,"rationale":"The source file skills/brainstormi...
+library
+4d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+4d ago
+[obra/superpowers](https://github.com/obra/superpowers) import superpowers skill,我選擇安裝
+library
+4d ago
+{"proposedEdges":[{"fromObjectKey":"skill.superpowers.brainstorming","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.96,"rationale":"The imported s...
+library
+5d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+5d ago
+(no messages)
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.superpowers.using-git-worktrees","edgeType":"belongs_to_domain","toObjectKey":"domain.engineering","confidence":0.98,"rationale":"The skil...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.gpt-image-2","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.96,"rationale":"The skill is explicitly for image...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.94,"rationale":"The skill is explicitly abo...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.95,"rationale":"The skill is explicitly abo...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.96,"rationale":"The skill designs source ma...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.96,"rationale":"The skill is explicitly abo...
+library
+6d ago
+{"proposedEdges":[{"fromObjectKey":"skill.beautiful-article","edgeType":"belongs_to_domain","toObjectKey":"domain.design","confidence":0.94,"rationale":"The skill designs source ma...
+library
+6d ago
+Classify the requested repository/library source into Southstar library candidates. Return exactly one JSON object. No markdown, comments, or prose outside JSON. Use this shape: {"...
+library
+6d ago
+LIBRARY DOMAIN TREE
+engineering
+2
+mcp
+2
+Browser Playwright MCP
+mcp.browser-playwright
+approved
+Filesystem Workspace MCP
+mcp.filesystem-workspace
+approved
+global
+2
+skills
+2
+Southstar Goal Design
+skill.southstar-goal-design
+approved
+Southstar Slice to DAG Composer
+skill.southstar-slice-to-dag-composer
+approved
+software
+5
+agents
+1
+Software Delivery Engineer
+agent.software-delivery-engineer
+approved
+skills
+1
+Software Delivery
+skill.software-delivery
+approved
+tools
+3
+Test Runner
+tool.test-runner
+approved
+Workspace Read
+tool.workspace-read
+approved
+Workspace Write
+tool.workspace-write
+approved
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+
+Import library vocabulary candidates for this vocabulary-learning goal. Produce only the domain, capabilities, artifact contracts, and evaluator profiles needed to implement and verify the local flashcard vocabulary system. Do not invent external integrations.
+
+Copy
+21:54
+library-chat
+
+[library.intent.started] Reading library command. [intent] import_library_candidates [done] ready_for_review
+
+›
+Import candidates
+library-import-<draft>
+0/0 selected
+Vocabulary Learning
+DOMAIN
+0.93
+Already installed
+domain.vocabulary-learning
+Library-chat-prompt.md
+Flashcard Deck Management
+CAPABILITY
+0.90
+Already installed
+capability.flashcard-deck-management
+Library-chat-prompt.md
+Review Session Execution
+CAPABILITY
+0.88
+Already installed
+capability.review-session-execution
+Library-chat-prompt.md
+Flashcard Deck Specification
+ARTIFACT
+0.86
+Already installed
+artifact.flashcard-deck-spec
+Library-chat-prompt.md
+Review Session Results
+ARTIFACT
+0.85
+Already installed
+artifact.review-session-results
+Library-chat-prompt.md
+Local Flashcard System Verifier
+EVALUATOR
+0.84
+Already installed
+evaluator.local-flashcard-system-verifier
+Library-chat-prompt.md
+library.import.install.requested
+{
+  "draftId": "library-import-<draft>",
+  "selectedCandidateCount": 6
+}
+library.import.existing_graph.loaded
+{
+  "draftId": "library-import-<draft>",
+  "nodeCount": 11,
+  "edgeCount": 11
+}
+library.import.ontology.started
+{
+  "draftId": "library-import-<draft>",
+  "selectedCandidateCount": 6
+}
+library.progress.keepalive
+{
+  "phase": "library_import_install",
+  "draftId": "library-import-<draft>",
+  "at": "2026-07-12T13:54:55.537Z"
+}
+library.import.ontology.completed
+{
+  "draftId": "library-import-<draft>",
+  "proposedEdgeCount": 11
+}
+library.import.install.started
+{
+  "draftId": "library-import-<draft>",
+  "selectedCandidateCount": 6
+}
+library.import.install.completed
+{
+  "draftId": "library-import-<draft>",
+  "installedObjectCount": 6,
+  "installedEdgeCount": 11
+}
+library.db.synced
+{
+  "draftId": "library-import-<draft>",
+  "objectKeys": [
+    "domain.vocabulary-learning",
+    "capability.flashcard-deck-management",
+    "capability.review-session-execution",
+    "artifact.flashcard-deck-spec",
+    "artifact.review-session-results",
+    "evaluator.local-flashcard-system-verifier"
+  ],
+  "edgeIds": [
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>"
+  ]
+}
+library.graph.snapshot
+{
+  "activeScope": "general",
+  "availableScopes": [
+    "all",
+    "engineering",
+    "general",
+    "global",
+    "software"
+  ],
+  "query": {
+    "scope": "general",
+    "installedObjectKeys": [
+      "domain.vocabulary-learning",
+      "capability.flashcard-deck-management",
+      "capability.review-session-execution",
+      "artifact.flashcard-deck-spec",
+      "artifact.review-session-results",
+      "evaluator.local-flashcard-system-verifier"
+    ],
+    "installedEdgeIds": [
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "lib-<hash>",
+      "objectKey": "artifact.flashcard-deck-spec",
+      "objectKind": "artifact_contract",
+      "status": "approved",
+      "title": "Flashcard Deck Specification",
+      "scope": "general"
+    },
+    {
+      "id": "lib-<hash>",
+      "objectKey": "artifact.review-session-results",
+      "objectKind": "artifact_contract",
+      "status": "approved",
+      "title": "Review Session Results",
+      "scope": "general"
+    },
+    {
+      "id": "lib-<hash>",
+      "objectKey": "capability.flashcard-deck-management",
+      "objectKind": "capability_spec",
+      "status": "approved",
+      "title": "Flashcard Deck Management",
+      "scope": "general"
+    },
+    {
+      "id": "lib-<hash>",
+      "objectKey": "capability.review-session-execution",
+      "objectKind": "capability_spec",
+      "status": "approved",
+      "title": "Review Session Execution",
+      "scope": "general"
+    },
+    {
+      "id": "lib-<hash>",
+      "objectKey": "domain.vocabulary-learning",
+      "objectKind": "domain_taxonomy",
+      "status": "approved",
+      "title": "Vocabulary Learning",
+      "scope": "general"
+    },
+    {
+      "id": "lib-<hash>",
+      "objectKey": "evaluator.local-flashcard-system-verifier",
+      "objectKind": "evaluator_profile",
+      "status": "approved",
+      "title": "Local Flashcard System Verifier",
+      "scope": "general"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "artifact.flashcard-deck-spec",
+      "edgeType": "belongs_to_domain",
+      "toObjectKey": "domain.vocabulary-learning",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.95,
+      "ontology": {
+        "category": "classification",
+        "confidence": 0.95,
+        "rationale": "The flashcard deck specification is a domain artifact defining vocabulary-learning content structure.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "artifact.review-session-results",
+      "edgeType": "belongs_to_domain",
+      "toObjectKey": "domain.vocabulary-learning",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.95,
+      "ontology": {
+        "category": "classification",
+        "confidence": 0.95,
+        "rationale": "Review-session results are domain artifacts capturing learner performance outcomes.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "capability.flashcard-deck-management",
+      "edgeType": "belongs_to_domain",
+      "toObjectKey": "domain.vocabulary-learning",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.98,
+      "ontology": {
+        "category": "classification",
+        "confidence": 0.98,
+        "rationale": "Deck management is a core capability within the vocabulary-learning domain.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "capability.review-session-execution",
+      "edgeType": "belongs_to_domain",
+      "toObjectKey": "domain.vocabulary-learning",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.98,
+      "ontology": {
+        "category": "classification",
+        "confidence": 0.98,
+        "rationale": "Review-session execution is a core capability within the vocabulary-learning domain.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "evaluator.local-flashcard-system-verifier",
+      "edgeType": "belongs_to_domain",
+      "toObjectKey": "domain.vocabulary-learning",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.94,
+      "ontology": {
+        "category": "classification",
+        "confidence": 0.94,
+        "rationale": "The verifier profile evaluates system behavior specific to vocabulary-learning workflows.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "capability.review-session-execution",
+      "edgeType": "consumes",
+      "toObjectKey": "artifact.flashcard-deck-spec",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.94,
+      "ontology": {
+        "category": "artifact_flow",
+        "confidence": 0.94,
+        "rationale": "Review sessions require the deck specification as input to select prompts and expected answers.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "capability.flashcard-deck-management",
+      "edgeType": "produces",
+      "toObjectKey": "artifact.flashcard-deck-spec",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.96,
+      "ontology": {
+        "category": "artifact_flow",
+        "confidence": 0.96,
+        "rationale": "Deck management creates and maintains the deck specification consumed by downstream review logic.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "capability.review-session-execution",
+      "edgeType": "produces",
+      "toObjectKey": "artifact.review-session-results",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.97,
+      "ontology": {
+        "category": "artifact_flow",
+        "confidence": 0.97,
+        "rationale": "Executing a review session yields outcome data such as correctness and progress metrics.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "capability.flashcard-deck-management",
+      "edgeType": "unblocks",
+      "toObjectKey": "capability.review-session-execution",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.89,
+      "ontology": {
+        "category": "workflow_order",
+        "confidence": 0.89,
+        "rationale": "Providing a valid deck removes a prerequisite blocker for review-session execution.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "evaluator.local-flashcard-system-verifier",
+      "edgeType": "validates",
+      "toObjectKey": "artifact.review-session-results",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.95,
+      "ontology": {
+        "category": "quality_gate",
+        "confidence": 0.95,
+        "rationale": "The verifier should validate that session-result artifacts are complete, consistent, and correct for local system behavior.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "capability.flashcard-deck-management",
+      "edgeType": "workflow_precedes",
+      "toObjectKey": "capability.review-session-execution",
+      "scope": "general",
+      "status": "active",
+      "weight": 0.91,
+      "ontology": {
+        "category": "workflow_order",
+        "confidence": 0.91,
+        "rationale": "Deck definitions must exist before meaningful review sessions can run.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-<draft>"
+      }
+    }
+  ]
+}
+library.command.completed
+{
+  "draftId": "library-import-<draft>",
+  "status": "installed"
+}
+›
+Graph snapshot
+Domain
+all
+global
+engineering
+general
+software
+Kind
+all
+agent_definition
+agent_profile
+domain_taxonomy
+skill_spec
+tool_definition
+mcp_tool_grant
+capability_spec
+workflow_template
+Status
+all
+draft
+approved
+deprecated
+blocked
+Edge
+all
+implements
+provides_capability
+requires_capability
+uses
+requires_skill
+allows_tool
+requires_tool
+uses_instruction
+requires_secret_group
+allows_mcp_grant
+produces_artifact
+consumes_artifact
+validates_artifact
+uses_policy
+part_of_template
+supersedes
+blocked_by
+belongs_to_domain
+has_capability
+provides
+requires
+conflicts_with
+precedes
+workflow_precedes
+unblocks
+validates
+reviews
+produces
+consumes
+similar_to
+substitutes
+complements
+incompatible_with
+requires_approval
+requires_secret
+Search
+general / all / all / all / 6 matched / 6 nodes / 11 edges
+Drag on
+Reset
+−
+100%
++
+belongs_to_domain 0.95
+belongs_to_domain 0.95
+belongs_to_domain 0.98
+belongs_to_domain 0.98
+belongs_to_domain 0.94
+consumes 0.94
+produces 0.96
+produces 0.97
+unblocks 0.89
+validates 0.95
+workflow_precedes 0.91
+Flashcard Deck Specification
+artifact_contract
+Review Session Results
+artifact_contract
+Flashcard Deck Management
+capability_spec
+Review Session Execution
+capability_spec
+Vocabulary Learning
+domain_taxonomy
+Local Flashcard System Verifier
+evaluator_profile
+Flashcard Deck Specification
+Review Session Results
+Flashcard Deck Management
+Review Session Execution
+Vocabulary Learning
+Local Flashcard System Verifier
+Copy
+21:54
+Send
+GPT-5.3 Codex
+auto
+default
+Compact

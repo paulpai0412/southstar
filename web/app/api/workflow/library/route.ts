@@ -33,9 +33,12 @@ type LibraryObjectDetail = {
 
 export async function GET(request: NextRequest) {
   try {
-    const domain = request.nextUrl.searchParams.get("domain") ?? "software";
+    const domain = request.nextUrl.searchParams.get("domain") ?? undefined;
+    const graphPath = domain
+      ? `/api/v2/library/graph?scope=${encodeURIComponent(domain)}&status=approved`
+      : "/api/v2/library/graph?status=approved";
     const graph = await fetchRuntimeJson<LibraryGraphReadModel>(
-      `/api/v2/library/graph?scope=${encodeURIComponent(domain)}&status=approved`,
+      graphPath,
     );
     const templateNodes = (graph.nodes ?? [])
       .filter((node) => node.objectKind === "workflow_template" && node.status === "approved" && node.objectKey);
@@ -62,7 +65,7 @@ export async function GET(request: NextRequest) {
       supportDetailsByRef.set(detail.object.objectKey, detail);
     }
 
-    return NextResponse.json({ library: await workflowLibraryFromGraph(domain, details, profileDetailsByRef, supportDetailsByRef) });
+    return NextResponse.json({ library: await workflowLibraryFromGraph(domain ?? "all", details, profileDetailsByRef, supportDetailsByRef) });
   } catch (error) {
     if (error instanceof Error && error.message === "Southstar v2 workflow API is not configured") {
       return workflowV2BlockedResponse();

@@ -1,0 +1,12 @@
+schemaVersion: southstar.library.domain_taxonomy_file.v1
+id: domain.academic
+title: "Academic Vocabulary Learning"
+scope: "general"
+status: approved
+aliases:
+  - "vocabulary-learning"
+  - "flashcards"
+  - "language-study"
+importDraftId: "library-import-draft-5b27e3ac-0add-43e4-af93-312d4f120c0f"
+importCandidateKey: "domain.academic"
+importSourcePath: "Library-chat-prompt.md"

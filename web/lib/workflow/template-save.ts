@@ -6,7 +6,7 @@ export type WorkflowTemplateSaveRequest = {
     scope: string;
     templateId: string;
     title: string;
-    status: "approved";
+    status: "draft";
   };
 };
 
@@ -17,13 +17,15 @@ export function buildWorkflowTemplateSaveRequest(input: {
   title?: string;
 }): WorkflowTemplateSaveRequest {
   const title = input.title?.trim() || input.dag.templateTitle || "Saved Workflow Template";
+  const scope = input.scope ?? input.dag.mission?.goalContract.domain;
+  if (!scope) throw new Error("Workflow template save requires an explicit scope or Goal Contract domain");
   return {
     url: `/api/workflow/planner-drafts/${encodeURIComponent(input.draftId)}/save-template`,
     body: {
-      scope: input.scope ?? "software",
+      scope,
       templateId: `template.${toTemplateSlug(input.dag.id ?? input.draftId)}`,
       title,
-      status: "approved",
+      status: "draft",
     },
   };
 }

@@ -1,0 +1,14 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.learning-progress-assessment
+title: "Learning Progress Assessment"
+scope: "general"
+status: approved
+description: "Evaluate learning outcomes from session data to determine recall quality and progression readiness."
+requiredOperations:
+  - "compute-recall-metrics"
+  - "summarize-session-performance"
+  - "flag-weak-terms"
+  - "generate-verification-summary"
+importDraftId: "library-import-draft-141e557c-275a-4782-a796-d05e4402b474"
+importCandidateKey: "capability.learning-progress-assessment"
+importSourcePath: "Library-chat-prompt.md"

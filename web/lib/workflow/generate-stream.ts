@@ -20,6 +20,8 @@ export type WorkflowGenerateDraftEvent = {
   draftId?: string;
   status?: string;
   goalDesignPackageHash?: string;
+  vocabularyGaps?: Array<{ kind: string; requestedRef: string; allowedRefs: string[] }>;
+  libraryImportDraftId?: string;
   validationIssues?: unknown[];
 };
 
@@ -50,6 +52,7 @@ export type WorkflowGenerateStreamHandlers = {
   onGoalContract?: (mission: GoalMissionReadModel) => void;
   onCoverage?: (mission: GoalMissionReadModel) => void;
   onRun?: (run: { runId?: string; runStatus?: string }) => void;
+  onExecutionSet?: (executionSet: { executionSetId?: string; sliceRuns?: Array<{ sliceId?: string; runId?: string; runStatus?: string; approvalId?: string }> }) => void;
   onApproval?: (approval: { mission?: GoalMissionReadModel; command?: WorkflowCommandDescriptor }) => void;
   onRecoverable?: (recoverable: WorkflowGenerateRecoverableEvent) => void;
   onError?: (message: string) => void;
@@ -81,6 +84,8 @@ export async function createPlannerDraftStream(input: {
 export async function generateWorkflowDagStream(input: {
   prompt: string;
   draftId?: string | null;
+  expectedPackageHash?: string | null;
+  selectedSliceId?: string | null;
   cwd?: string | null;
   goalDesignMode?: GoalDesignMode;
   templatePolicy?: WorkflowTemplatePolicyV1;
@@ -100,6 +105,8 @@ export async function generateWorkflowDagStream(input: {
       ...(!input.draftId ? { idempotencyKey: input.idempotencyKey ?? crypto.randomUUID() } : {}),
       ...(!input.draftId && input.goalDesignMode ? { goalDesignMode: input.goalDesignMode } : {}),
       ...(!input.draftId && input.templatePolicy ? { templatePolicy: input.templatePolicy } : {}),
+      ...(input.draftId && input.expectedPackageHash ? { expectedPackageHash: input.expectedPackageHash } : {}),
+      ...(input.draftId && input.selectedSliceId ? { selectedSliceId: input.selectedSliceId } : {}),
     }),
   });
 
@@ -118,6 +125,25 @@ export async function generateWorkflowDagStream(input: {
     throw new Error("workflow generate response is missing a stream body");
   }
 
+  await readWorkflowEventStream(response.body, input);
+}
+
+export async function confirmGoalDesignStream(input: {
+  draftId: string;
+  expectedPackageHash: string;
+  signal?: AbortSignal;
+} & WorkflowGenerateStreamHandlers): Promise<void> {
+  const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(input.draftId)}/confirm-goal-design/stream`, {
+    method: "POST",
+    signal: input.signal,
+    headers: { "content-type": "application/json", accept: "text/event-stream" },
+    body: JSON.stringify({ expectedPackageHash: input.expectedPackageHash }),
+  });
+  if (!response.ok) {
+    const text = await response.text().catch(() => "");
+    throw new Error(text || `goal design confirmation failed with HTTP ${response.status}`);
+  }
+  if (!response.body) throw new Error("goal design confirmation response is missing a stream body");
   await readWorkflowEventStream(response.body, input);
 }
 
@@ -209,6 +235,10 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
   }
   if (event === "run") {
     handlers.onRun?.(data as { runId?: string; runStatus?: string });
+    return;
+  }
+  if (event === "execution_set") {
+    handlers.onExecutionSet?.(data as { executionSetId?: string; sliceRuns?: Array<{ sliceId?: string; runId?: string; runStatus?: string; approvalId?: string }> });
     return;
   }
   if (event === "approval") {

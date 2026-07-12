@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { AgentMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
+import type { AgentMessage, ExtensionUiRequest, GoalSliceSelection, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
 import { MessageView } from "./MessageView";
 import { ChatInput, type ChatInputHandle } from "./ChatInput";
 import { ChatMinimap, useMessageRefs } from "./ChatMinimap";
@@ -32,6 +32,9 @@ interface Props {
   workflowTemplate?: WorkflowTemplateSummary | null;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
+  onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
+  goalDesignRevisionAnchor?: GoalSliceSelection | null;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
   onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
@@ -110,7 +113,7 @@ function Typewriter({ phrases }: { phrases: string[] }) {
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalSliceSelect, onConfirmGoalDesign, goalDesignRevisionAnchor, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
@@ -123,14 +126,14 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
     isNew,
     messagesEndRef, scrollContainerRef,
     lastUserMsgRef,
-    handleSend, handleAbort, handleFork, handleNavigate, handleModelChange,
+    handleSend, handleConfirmGoalDesign, handleAbort, handleFork, handleNavigate, handleModelChange,
     handleCompact, handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction,
     handleBuiltinSlashCommand,
     handleToolPresetChange, handleThinkingLevelChange, loadSlashCommands, handleAgentEventRef,
   } = useAgentSession({
     session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked,
     modelsRefreshKey, onBranchDataChange, onSystemPromptChange, onSessionStatsPanelOpen,
-    sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect,
+    sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, goalDesignRevisionAnchor,
   });
 
   const { soundEnabled, onSoundToggle, playDoneSound } = useAudio();
@@ -431,6 +434,8 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     prevTimestamp={idx > 0 ? (messages[idx - 1] as import("@/lib/types").AgentMessage & { timestamp?: number }).timestamp : undefined}
                     workflowCwd={workflowCwd}
                     onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
+                    onGoalSliceSelect={onGoalSliceSelect}
+                    onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign}
                     onGoalContractSelect={onGoalContractSelect}
                     onWorkflowGoalRevise={onWorkflowGoalRevise}
                     onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
@@ -450,7 +455,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             })()}
 
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
             )}
 
             {agentRunning && !streamState.streamingMessage && (

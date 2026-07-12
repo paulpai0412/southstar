@@ -1,0 +1,14 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.local-learning-verification
+title: "Local Learning Verification"
+scope: "general"
+status: approved
+description: "Run local checks to verify artifact contracts and functional correctness of flashcard vocabulary outputs."
+requiredOperations:
+  - "run-local-verification"
+  - "validate-artifact-contracts"
+  - "produce-verification-report"
+  - "summarize-verification-results"
+importDraftId: "library-import-draft-3a8cdbc9-9097-4d06-9bb3-09577a8c436d"
+importCandidateKey: "capability.local-learning-verification"
+importSourcePath: "Library-chat-prompt.md"

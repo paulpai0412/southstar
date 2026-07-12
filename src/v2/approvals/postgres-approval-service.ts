@@ -4,6 +4,7 @@ import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { recordRuntimeExceptionPg } from "../exceptions/postgres-runtime-exceptions.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { goalContractHash, storedGoalContract, type GoalContractV1 } from "../orchestration/goal-contract.ts";
+import { advanceGoalExecutionSetPg } from "../orchestration/goal-execution-set.ts";
 import { loadRunLibrarySnapshotPg, type RunLibrarySnapshotV1 } from "../orchestration/run-library-snapshot.ts";
 import {
   continueDynamicRepairApprovalPg,
@@ -80,8 +81,8 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
   startScheduling?: (db: SouthstarDb, input: { runId: string }) => Promise<StartRunSchedulingResult>;
 }) {
   const decision = await db.tx(async (tx) => {
-    const run = await tx.maybeOne<{ status: string }>(
-      "select status from southstar.workflow_runs where id = $1 for update",
+    const run = await tx.maybeOne<{ status: string; runtime_context_json: Record<string, unknown> }>(
+      "select status, runtime_context_json from southstar.workflow_runs where id = $1 for update",
       [input.runId],
     );
     if (!run) throw new Error(`run not found: ${input.runId}`);
@@ -107,6 +108,7 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
         shouldSchedule: goalExecutionApproval
           && input.decision === "approved"
           && row.payload_json.schedulingState === "requested",
+        executionSetId: optionalString(run.runtime_context_json.goalExecutionSetId),
         goalExecutionApproval,
         dynamicRepairApproval,
         schedulingResult,
@@ -146,12 +148,17 @@ export async function decideApprovalPg(db: SouthstarDb, input: {
     });
     return {
       shouldSchedule: goalExecutionApproval && input.decision === "approved",
+      executionSetId: optionalString(run.runtime_context_json.goalExecutionSetId),
       goalExecutionApproval,
       dynamicRepairApproval,
       schedulingResult: {},
     };
   });
 
+  if (decision.shouldSchedule && decision.executionSetId) {
+    await advanceGoalExecutionSetPg(db, { executionSetId: decision.executionSetId });
+    return { id: input.approvalId, status: input.decision, runStatus: "created" as const };
+  }
   if (decision.shouldSchedule) {
     const scheduling = await completeApprovalSchedulingHandoffPg(db, input, input.startScheduling ?? startRunSchedulingPg);
     return { id: input.approvalId, status: input.decision, ...scheduling };

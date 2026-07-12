@@ -1,0 +1,12 @@
+schemaVersion: southstar.library.tool_definition_file.v1
+id: tool.workspace-write
+title: Workspace Write
+scope: software
+status: approved
+toolName: workspace-write
+proxyToolName: workspace-write
+operations:
+  - edit_file
+  - apply_patch
+providesCapabilityRefs:
+  - capability.repo-write

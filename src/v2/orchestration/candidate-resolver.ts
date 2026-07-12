@@ -8,17 +8,22 @@ import {
 import { isRuntimeProfilePrimitiveCandidate, resolveGraphProfileCandidates } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
 import type { CandidatePacket, CandidateSummary, RequirementSpecV2 } from "../design-library/types.ts";
 import { buildGraphMetadataCandidatePacket } from "./graph-metadata-packet.ts";
+import type { WorkflowTemplatePolicyV1 } from "./goal-design.ts";
 
 export type ResolveWorkflowCandidatesInput = {
   requirementSpec: RequirementSpecV2;
   scope: string;
+  templatePolicy?: WorkflowTemplatePolicyV1;
 };
 
 export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveWorkflowCandidatesInput): Promise<CandidatePacket> {
   const approvedWorkflowTemplateCandidates = (
     await findApprovedLibraryObjectsByKind(db, "workflow_template", input.scope)
   ).map((object) => summary(object.objectKey, object.headVersionId, object.objectKind, object.state, "approved workflow template"));
-  const workflowTemplateCandidates = approvedWorkflowTemplateCandidates;
+  const workflowTemplateCandidates = await applyTemplatePolicy(db, {
+    candidates: approvedWorkflowTemplateCandidates,
+    policy: input.templatePolicy,
+  });
 
   const unavailableRequirements: CandidatePacket["unavailableRequirements"] = [];
   const agentCandidatesByCapability: Record<string, CandidateSummary[]> = {};
@@ -93,6 +98,32 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
     graphMetadataCandidates,
     unavailableRequirements,
   };
+}
+
+async function applyTemplatePolicy(
+  db: SouthstarDb,
+  input: { candidates: CandidateSummary[]; policy?: WorkflowTemplatePolicyV1 },
+): Promise<CandidateSummary[]> {
+  const policy = input.policy;
+  if (!policy || policy.mode === "auto") {
+    return [...input.candidates].sort(candidateOrder);
+  }
+  const template = await findLibraryObjectByKey(db, policy.templateRef);
+  if (!template || template.objectKind !== "workflow_template" || template.status !== "approved") {
+    throw new Error(`workflow_template_policy_unresolved: ${policy.templateRef}`);
+  }
+  if (template.headVersionId !== policy.versionRef) {
+    throw new Error(`workflow_template_version_mismatch: ${policy.templateRef}`);
+  }
+  const pinned = summary(template.objectKey, template.headVersionId, template.objectKind, template.state, `${policy.mode} workflow template policy`);
+  const rest = input.candidates
+    .filter((candidate) => candidate.ref !== pinned.ref)
+    .sort(candidateOrder);
+  return [pinned, ...rest];
+}
+
+function candidateOrder(left: CandidateSummary, right: CandidateSummary): number {
+  return left.ref.localeCompare(right.ref);
 }
 
 async function summariesForRefs(db: SouthstarDb, refs: string[], reason: string): Promise<CandidateSummary[]> {

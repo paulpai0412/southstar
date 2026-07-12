@@ -1,0 +1,15 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.flashcard-contract-evaluator
+title: "Flashcard Contract Evaluator"
+scope: "general"
+status: approved
+validatesArtifactRefs:
+  - "artifact.flashcard-deck-contract"
+  - "artifact.flashcard-session-record"
+evidenceKinds:
+  - "workspace-snapshot"
+  - "file-diff"
+  - "artifact-ref"
+importDraftId: "library-import-draft-e5e81e71-8ca6-4bc4-a23f-51a5f5648b27"
+importCandidateKey: "evaluator.flashcard-contract-evaluator"
+importSourcePath: "Library-chat-prompt.md"

@@ -1,0 +1,13 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.vocabulary-corpus-contract
+title: "Vocabulary Corpus Contract"
+scope: "general"
+status: approved
+artifactType: "vocabulary-corpus"
+evidenceKinds:
+  - "artifact-ref"
+  - "workspace-snapshot"
+  - "file-diff"
+importDraftId: "library-import-draft-3a8cdbc9-9097-4d06-9bb3-09577a8c436d"
+importCandidateKey: "artifact.vocabulary-corpus-contract"
+importSourcePath: "Library-chat-prompt.md"

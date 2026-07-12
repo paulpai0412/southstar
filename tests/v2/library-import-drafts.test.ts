@@ -9,13 +9,14 @@ import {
   createLibraryImportDraft,
   installLibraryImportCandidates,
 } from "../../src/v2/design-library/importers/library-import-draft-store.ts";
-import { asImportSource, extractLibraryImportProposal } from "../../src/v2/design-library/importers/library-import-extractor.ts";
+import { asImportSource } from "../../src/v2/design-library/importers/library-import-extractor.ts";
 import { extractLibraryCandidatesFromDocuments } from "../../src/v2/design-library/importers/library-candidate-extractor.ts";
 import {
   analyzeLibraryImportWithLlm,
   analyzeLibraryImportOntologyWithLlm,
   buildLibraryImportAnalysisPrompt,
   buildLibraryImportCandidatePrompt,
+  normalizeLibraryImportCandidates,
   type LibraryImportOntologyExistingGraphNode,
   type LibraryImportLlmProvider,
 } from "../../src/v2/design-library/importers/library-llm-import-analyzer.ts";
@@ -31,19 +32,36 @@ import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
+const browserSkillImportProvider: LibraryImportLlmProvider = async () => ({
+  candidates: [{
+    objectKey: "skill.browser-verification",
+    kind: "skill",
+    title: "Browser Verification",
+    sourcePath: "browser-skill-prompt.md",
+    selectedByDefault: true,
+    confidence: 1,
+    classificationReason: "The source explicitly requests a browser verification skill.",
+  }],
+});
+
+async function createBrowserSkillImportDraft(db: Parameters<typeof createLibraryImportDraft>[0]) {
+  return await createLibraryImportDraft(db, {
+    source: {
+      kind: "paste",
+      label: "browser skill prompt",
+      content: "create a browser verification skill that uses tool.browser",
+    },
+    scope: "software",
+    llmProvider: browserSkillImportProvider,
+  });
+}
+
 test("createLibraryImportDraft creates a runtime draft without writing library files", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-draft-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
 
     assert.match(draft.draftId, /^library-import-draft-/);
     assert.equal(draft.status, "draft");
@@ -57,20 +75,7 @@ test("createLibraryImportDraft creates a runtime draft without writing library f
       status: "draft",
       relativePath: "skills/browser-verification.skill.md",
     }]);
-    assert.deepEqual(draft.proposal.dependencies, [
-      {
-        fromObjectKey: "skill.browser-verification",
-        edgeType: "requires_capability",
-        toObjectKey: "capability.browser-verification",
-        scope: "software",
-      },
-      {
-        fromObjectKey: "skill.browser-verification",
-        edgeType: "requires_tool",
-        toObjectKey: "tool.browser",
-        scope: "software",
-      },
-    ]);
+    assert.deepEqual(draft.proposal.dependencies, []);
     assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
 
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
@@ -79,7 +84,7 @@ test("createLibraryImportDraft creates a runtime draft without writing library f
     assert.equal((resource?.payload as any).schemaVersion, "southstar.library.import_draft.v1");
     assert.deepEqual((resource?.payload as any).proposal.objectKeys, ["skill.browser-verification"]);
     assert.equal((resource?.payload as any).proposal.objectSummaries[0].title, "Browser Verification");
-    assert.equal((resource?.payload as any).proposal.dependencies[0].toObjectKey, "capability.browser-verification");
+    assert.deepEqual((resource?.payload as any).proposal.dependencies, []);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -91,14 +96,7 @@ test("createLibraryImportDraft accepts canonical paste source and persists kind-
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-canonical-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
 
     assert.equal(draft.status, "draft");
     assert.equal(draft.proposal.files[0]?.relativePath, "skills/browser-verification.skill.md");
@@ -116,27 +114,20 @@ test("createLibraryImportDraft accepts canonical paste source and persists kind-
   }
 });
 
-test("extractor accepts canonical github and local sources with inline content for deterministic import", () => {
-  const githubProposal = extractLibraryImportProposal({
-    source: {
-      kind: "github",
-      repoUrl: "https://github.com/acme/library",
-      path: "skills/browser.md",
-      content: "create a browser verification skill that uses tool.browser",
-    },
-    scope: "software",
+test("extractor accepts canonical github and local import sources", () => {
+  assert.deepEqual(asImportSource({
+    kind: "github",
+    repoUrl: "https://github.com/acme/library",
+    path: "skills/browser.md",
+  }), {
+    kind: "github",
+    repoUrl: "https://github.com/acme/library",
+    path: "skills/browser.md",
   });
-  assert.deepEqual(githubProposal.objectKeys, ["skill.browser-verification"]);
-
-  const localProposal = extractLibraryImportProposal({
-    source: {
-      kind: "local",
-      absolutePath: "/tmp/browser.md",
-      content: "create a browser verification skill that uses tool.browser",
-    },
-    scope: "software",
+  assert.deepEqual(asImportSource({ kind: "local", absolutePath: "/tmp/browser.md" }), {
+    kind: "local",
+    absolutePath: "/tmp/browser.md",
   });
-  assert.equal(localProposal.files[0]?.relativePath, "skills/browser-verification.skill.md");
 });
 
 test("buildLibraryImportAnalysisPrompt includes bounded document content excerpts for LLM classification", () => {
@@ -175,6 +166,77 @@ test("library import candidate prompt constrains LLM domain classification to ca
   assert.match(prompt, /skills\/<slug>\/SKILL\.md/);
   assert.match(prompt, /skill\.<slug>/);
   assert.equal(CATALOG_CANONICAL_DOMAINS.length, 19);
+});
+
+test("library import candidate prompt and host parser support governed vocabulary kinds", () => {
+  const prompt = buildLibraryImportCandidatePrompt([], "membership", {
+    requestPrompt: "Create the missing membership vocabulary",
+  });
+
+  assert.match(prompt, /domain, capability, artifact, evaluator/);
+  assert.match(prompt, /file-diff, test-result, command-output, url, screenshot, human-approval, artifact-ref, workspace-snapshot, policy-decision/);
+  assert.match(prompt, /domain\.<slug>/);
+  assert.match(prompt, /capability\.<slug>/);
+  assert.match(prompt, /artifact\.<slug>/);
+  assert.match(prompt, /evaluator\.<slug>/);
+
+  const candidates = normalizeLibraryImportCandidates([
+    {
+      objectKey: "domain.membership",
+      kind: "domain",
+      title: "Membership",
+      scope: "membership",
+      aliases: ["subscription"],
+      selectedByDefault: true,
+    },
+    {
+      objectKey: "capability.subscription-billing",
+      kind: "capability",
+      title: "Subscription Billing",
+      scope: "membership",
+      description: "Manage subscription billing state.",
+      requiredOperations: ["workspace-read", "workspace-write"],
+      selectedByDefault: true,
+    },
+    {
+      objectKey: "artifact.subscription-verification",
+      kind: "artifact",
+      title: "Subscription Verification",
+      scope: "membership",
+      artifactType: "verification_report",
+      evidenceKinds: ["test-result", "command-output"],
+      selectedByDefault: true,
+    },
+    {
+      objectKey: "evaluator.subscription-quality",
+      kind: "evaluator",
+      title: "Subscription Quality",
+      scope: "membership",
+      validatesArtifactRefs: ["artifact.subscription-verification"],
+      evidenceKinds: ["test-result"],
+      selectedByDefault: true,
+    },
+    {
+      objectKey: "artifact.invalid-evidence",
+      kind: "artifact",
+      title: "Invalid Evidence",
+      scope: "membership",
+      artifactType: "invalid",
+      evidenceKinds: ["invented-evidence"],
+      selectedByDefault: true,
+    },
+  ], { scope: "membership", sourcePaths: new Set() });
+
+  assert.deepEqual(candidates.map((candidate) => candidate.objectKey), [
+    "domain.membership",
+    "capability.subscription-billing",
+    "artifact.subscription-verification",
+    "evaluator.subscription-quality",
+  ]);
+  assert.deepEqual(candidates[0]?.aliases, ["subscription"]);
+  assert.deepEqual(candidates[1]?.requiredOperations, ["workspace-read", "workspace-write"]);
+  assert.deepEqual(candidates[2]?.evidenceKinds, ["test-result", "command-output"]);
+  assert.deepEqual(candidates[3]?.validatesArtifactRefs, ["artifact.subscription-verification"]);
 });
 
 test("extractLibraryCandidatesFromDocuments deterministically classifies obvious library docs and proposes simple edges", () => {
@@ -662,7 +724,7 @@ test("createLibraryImportDraft requires LLM analysis for github repository impor
   }
 });
 
-test("createLibraryImportDraft preserves the legacy proposal and persists analyzed documents and candidates without ontology edges", async () => {
+test("createLibraryImportDraft derives its proposal from analyzed candidates without ontology edges", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-analysis-"));
   const provider: LibraryImportLlmProvider = async () => ({
@@ -683,7 +745,7 @@ test("createLibraryImportDraft preserves the legacy proposal and persists analyz
       llmProvider: provider,
     });
 
-    assert.deepEqual(draft.proposal.objectKeys, ["skill.browser-verification"]);
+    assert.deepEqual(draft.proposal.objectKeys, ["agent.browser-reviewer", "skill.browser-verification"]);
     assert.deepEqual(draft.documents?.map((doc) => doc.path), ["browser-skill-prompt.md"]);
     assert.deepEqual(draft.candidates?.map((candidate) => candidate.objectKey), [
       "agent.browser-reviewer",
@@ -693,7 +755,7 @@ test("createLibraryImportDraft preserves the legacy proposal and persists analyz
     assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
 
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
-    assert.deepEqual((resource?.payload as any).proposal.objectKeys, ["skill.browser-verification"]);
+    assert.deepEqual((resource?.payload as any).proposal.objectKeys, ["agent.browser-reviewer", "skill.browser-verification"]);
     assert.deepEqual((resource?.payload as any).documents.map((doc: any) => doc.path), ["browser-skill-prompt.md"]);
     assert.deepEqual((resource?.payload as any).candidates.map((candidate: any) => candidate.objectKey), [
       "agent.browser-reviewer",
@@ -857,6 +919,87 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
       "uses",
       "requires",
     ]);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("installLibraryImportCandidates writes and syncs governed vocabulary files", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-vocabulary-import-"));
+  const candidates = [
+    {
+      objectKey: "domain.membership",
+      kind: "domain" as const,
+      title: "Membership",
+      scope: "membership",
+      aliases: ["subscription"],
+      selectedByDefault: true,
+    },
+    {
+      objectKey: "capability.subscription-billing",
+      kind: "capability" as const,
+      title: "Subscription Billing",
+      scope: "membership",
+      description: "Manage subscription billing state.",
+      requiredOperations: ["workspace-read", "workspace-write"],
+      selectedByDefault: true,
+    },
+    {
+      objectKey: "artifact.subscription-verification",
+      kind: "artifact" as const,
+      title: "Subscription Verification",
+      scope: "membership",
+      artifactType: "verification_report",
+      evidenceKinds: ["test-result", "command-output"],
+      selectedByDefault: true,
+    },
+    {
+      objectKey: "evaluator.subscription-quality",
+      kind: "evaluator" as const,
+      title: "Subscription Quality",
+      scope: "membership",
+      validatesArtifactRefs: ["artifact.subscription-verification"],
+      evidenceKinds: ["test-result"],
+      selectedByDefault: true,
+    },
+  ];
+  const provider: LibraryImportLlmProvider = async ({ prompt }) => prompt.includes("Generate ontology edges")
+    ? { proposedEdges: [] }
+    : { candidates };
+
+  try {
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "membership vocabulary", content: "Create governed membership vocabulary." },
+      scope: "membership",
+      requestPrompt: "Create the missing membership vocabulary",
+      llmProvider: provider,
+    });
+    const installed = await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: candidates.map((candidate) => candidate.objectKey),
+      actor: "operator",
+      reason: "approved membership vocabulary",
+      llmProvider: provider,
+    });
+
+    assert.deepEqual(installed.installedObjects.map((object) => object.relativePath), [
+      "domains/membership.domain.yaml",
+      "capabilities/subscription-billing.capability.yaml",
+      "artifacts/subscription-verification.artifact.yaml",
+      "evaluators/subscription-quality.evaluator.yaml",
+    ]);
+    assert.deepEqual(await Promise.all(candidates.map(async (candidate) =>
+      (await findLibraryObjectByKey(db, candidate.objectKey))?.objectKind
+    )), ["domain_taxonomy", "capability_spec", "artifact_contract", "evaluator_profile"]);
+
+    for (const object of installed.installedObjects) {
+      const content = await readFile(join(libraryRoot, object.relativePath), "utf8");
+      const parsed = parseLibraryFileContent({ path: `library/${object.relativePath}`, content });
+      assert.equal(parsed.ok, true, `${object.relativePath} should parse`);
+    }
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -1298,14 +1441,7 @@ test("approveLibraryImportDraft writes proposed files and syncs them to the grap
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-approve-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
 
     const approved = await approveLibraryImportDraft(db, {
       root: libraryRoot,
@@ -1327,11 +1463,11 @@ test("approveLibraryImportDraft writes proposed files and syncs them to the grap
     assert.equal(parsed.ok, true);
     if (!parsed.ok) throw new Error("expected approved import file to parse");
     assert.equal(parsed.file.id, "skill.browser-verification");
-    assert.equal(parsed.file.status, "draft");
+    assert.equal(parsed.file.status, "approved");
 
     const object = await findLibraryObjectByKey(db, "skill.browser-verification");
     assert.equal(object?.objectKind, "skill_spec");
-    assert.equal(object?.status, "draft");
+    assert.equal(object?.status, "approved");
 
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     assert.equal(resource?.status, "approved");
@@ -1348,14 +1484,7 @@ test("approveLibraryImportDraft no-ops approved drafts without rewriting files o
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-idempotent-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
 
     const first = await approveLibraryImportDraft(db, {
       root: libraryRoot,
@@ -1395,14 +1524,7 @@ test("approveLibraryImportDraft prevents double approval from overwriting the fi
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-double-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
 
     await approveLibraryImportDraft(db, {
       root: libraryRoot,
@@ -1432,14 +1554,7 @@ test("approveLibraryImportDraft marks failed application retryable and later app
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-retry-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     const payload = resource?.payload as any;
     const validContent = payload.proposal.files[0].content;
@@ -1494,14 +1609,7 @@ test("approveLibraryImportDraft preflights multi-file proposals before writing o
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-preflight-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     const payload = resource?.payload as any;
     const validFile = payload.proposal.files[0];
@@ -1547,14 +1655,7 @@ test("approveLibraryImportDraft preflights unsupported reference prefixes before
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-ref-preflight-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     const payload = resource?.payload as any;
     const validFile = payload.proposal.files[0];
@@ -1615,14 +1716,7 @@ test("approveLibraryImportDraft rejects existing files before overwriting librar
   try {
     await mkdir(join(libraryRoot, "skills"), { recursive: true });
     await writeFile(join(libraryRoot, "skills/browser-verification.skill.md"), "existing library truth", { encoding: "utf8", flag: "wx" });
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
 
     await assert.rejects(
       () => approveLibraryImportDraft(db, {
@@ -1654,14 +1748,7 @@ test("approveLibraryImportDraft rejects existing graph objects before downgradin
       headVersionId: "skill.browser-verification@approved",
       state: { title: "Approved Browser Verification", scope: "software" },
     });
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
 
     await assert.rejects(
       () => approveLibraryImportDraft(db, {
@@ -1686,14 +1773,7 @@ test("approveLibraryImportDraft cleans written files when graph transaction sees
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-late-conflict-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
     let txCount = 0;
     const racingDb = {
       ...db,
@@ -1739,14 +1819,7 @@ test("approveLibraryImportDraft rejects active applying approvals without side e
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-active-lease-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     const payload = resource?.payload as any;
     await db.query(
@@ -1793,14 +1866,7 @@ test("approveLibraryImportDraft resumes applying drafts and preserves in-flight 
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-applying-"));
 
   try {
-    const draft = await createLibraryImportDraft(db, {
-      source: {
-        kind: "paste",
-        label: "browser skill prompt",
-        content: "create a browser verification skill that uses tool.browser",
-      },
-      scope: "software",
-    });
+    const draft = await createBrowserSkillImportDraft(db);
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     const payload = resource?.payload as any;
     const firstApproval = {
@@ -1852,7 +1918,7 @@ test("POST /api/v2/library/import-drafts creates a draft from a canonical paste 
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-"));
 
   try {
-    const response = await handleRuntimeRoute({ db, libraryRoot } as any, new Request("http://local/api/v2/library/import-drafts", {
+    const response = await handleRuntimeRoute({ db, libraryRoot, libraryImportLlmProvider: browserSkillImportProvider } as any, new Request("http://local/api/v2/library/import-drafts", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -2047,7 +2113,7 @@ test("POST /api/v2/library/import-drafts/:draftId/approve approves and writes sy
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-approve-"));
 
   try {
-    const context = { db, libraryRoot } as any;
+    const context = { db, libraryRoot, libraryImportLlmProvider: browserSkillImportProvider } as any;
     const draftResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/import-drafts", {
       method: "POST",
       headers: { "content-type": "application/json" },

@@ -63,6 +63,78 @@ providesCapabilityRefs:
   assert.deepEqual(parsed.file.frontmatter.operations, ["edit_file", "apply_patch"]);
 });
 
+test("parses vocabulary yaml files", () => {
+  const capability = parseLibraryFileContent({
+    path: "library/capabilities/repo-write.capability.yaml",
+    content: `schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.repo-write
+title: Repository Write
+scope: software
+status: approved
+description: Modify files in a workspace repository.
+requiredOperations:
+  - workspace-write
+risk:
+  level: medium
+  dataSensitivity: workspace
+  approvalRequired: false
+`,
+  });
+  assert.equal(capability.ok, true);
+  if (!capability.ok) throw new Error("expected capability parse success");
+  assert.equal(capability.file.kind, "capability");
+  assert.equal(capability.file.objectKind, "capability_spec");
+
+  const artifact = parseLibraryFileContent({
+    path: "library/artifacts/implementation-report.artifact.yaml",
+    content: `schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.implementation_report
+title: Implementation Report
+scope: software
+status: approved
+artifactType: implementation_report
+evidenceKinds:
+  - artifact-ref
+`,
+  });
+  assert.equal(artifact.ok, true);
+  if (!artifact.ok) throw new Error("expected artifact parse success");
+  assert.equal(artifact.file.kind, "artifact");
+  assert.equal(artifact.file.objectKind, "artifact_contract");
+
+  const domain = parseLibraryFileContent({
+    path: "library/domains/software.domain.yaml",
+    content: `schemaVersion: southstar.library.domain_taxonomy_file.v1
+id: domain.software
+title: Software
+scope: software
+status: approved
+aliases:
+  - software
+`,
+  });
+  assert.equal(domain.ok, true);
+  if (!domain.ok) throw new Error("expected domain parse success");
+  assert.equal(domain.file.kind, "domain");
+  assert.equal(domain.file.objectKind, "domain_taxonomy");
+
+  const evaluator = parseLibraryFileContent({
+    path: "library/evaluators/software-quality.evaluator.yaml",
+    content: `schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.software-quality
+title: Software Quality
+scope: software
+status: approved
+validatesArtifactRefs:
+  - artifact.verification_report
+`,
+  });
+  assert.equal(evaluator.ok, true);
+  if (!evaluator.ok) throw new Error("expected evaluator parse success");
+  assert.equal(evaluator.file.kind, "evaluator");
+  assert.equal(evaluator.file.objectKind, "evaluator_profile");
+});
+
 test("parses mcp yaml file", () => {
   const parsed = parseLibraryFileContent({
     path: "library/mcp/github.mcp.yaml",

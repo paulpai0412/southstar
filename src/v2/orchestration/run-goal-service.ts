@@ -9,6 +9,7 @@ import type { SouthstarDb } from "../db/postgres.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { recordRuntimeExceptionPg } from "../exceptions/postgres-runtime-exceptions.ts";
 import type { WorkflowComposer } from "./composer.ts";
+import { materializeGoalExecutionSetPg } from "./goal-execution-set.ts";
 import {
   loadCurrentGoalDesignPackagePg,
   preparePostgresGoalDesignDraft,
@@ -20,13 +21,20 @@ import {
   type GoalDesignPackageV1,
   type WorkflowTemplatePolicyV1,
 } from "./goal-design.ts";
-import { storedGoalContract, type GoalContractInterpreter, type GoalContractV1 } from "./goal-contract.ts";
+import {
+  storedGoalContract,
+  type GoalContractInterpreter,
+  type GoalContractV1,
+  type GoalContractVocabularyGapV1,
+} from "./goal-contract.ts";
 import { loadRunLibrarySnapshotPg } from "./run-library-snapshot.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import type { StartRunSchedulingResult } from "../server/run-execution-controller.ts";
 import { startRunSchedulingPg } from "../server/run-execution-controller.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
+import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
 
 export type RunGoalRequest = {
   goalPrompt: string;
@@ -40,12 +48,23 @@ export type RunGoalResult = {
   goalDesignPackageHash?: string;
   goalContractHash: string;
   draftId: string;
-  draftStatus: "needs_input" | "invalid" | "template_incompatible" | "ready_for_review" | "validated";
+  draftStatus: "needs_input" | "needs_library_input" | "invalid" | "template_incompatible" | "ready_for_review" | "validated";
   runId?: string;
   runStatus?: "created" | "awaiting_approval" | "scheduling";
   approvalId?: string;
+  executionSetId?: string;
+  sliceRuns?: SliceRunResult[];
   blockers: string[];
+  vocabularyGaps?: GoalContractVocabularyGapV1[];
+  libraryImportDraftId?: string;
   schedulerExceptionId?: string;
+};
+
+export type SliceRunResult = {
+  sliceId: string;
+  runId: string;
+  runStatus: "created" | "awaiting_approval" | "scheduling";
+  approvalId: string;
 };
 
 export type SubmitGoalContext = {
@@ -53,6 +72,8 @@ export type SubmitGoalContext = {
   goalInterpreter: GoalContractInterpreter;
   goalDesigner?: GoalDesigner;
   composer?: WorkflowComposer;
+  libraryImportLlmProvider?: LibraryImportLlmProvider;
+  libraryImportSourceFetcher?: LibraryImportSourceFetcher;
   startScheduling?: (db: SouthstarDb, input: { runId: string }) => Promise<StartRunSchedulingResult>;
   onStage?: (stage: string, data?: Record<string, unknown>) => void;
 };
@@ -127,10 +148,20 @@ export async function submitClaimedGoalPg(
     const result: RunGoalResult = {
       goalContractHash: draft.goalContractHash,
       draftId: draft.draftId,
-      draftStatus: draft.status === "needs_input" ? "needs_input" : "invalid",
+      draftStatus: draft.status === "needs_library_input"
+        ? "needs_library_input"
+        : draft.status === "needs_input"
+          ? "needs_input"
+          : "invalid",
       blockers: draft.blockers,
+      ...(draft.vocabularyGaps ? { vocabularyGaps: draft.vocabularyGaps } : {}),
+      ...(draft.libraryImportDraftId ? { libraryImportDraftId: draft.libraryImportDraftId } : {}),
     };
-    const finalStages = draft.status === "needs_input" ? ["draft.needs_input", "done"] : ["done"];
+    const finalStages = draft.status === "needs_library_input"
+      ? ["draft.needs_library_input", "done"]
+      : draft.status === "needs_input"
+        ? ["draft.needs_input", "done"]
+        : ["done"];
     try {
       await context.db.tx(async (tx) => {
         await upsertRuntimeResourcePg(tx, draftResource!);
@@ -185,6 +216,8 @@ async function submitGoalDesignDraftPg(
       templatePolicy,
       goalInterpreter: context.goalInterpreter,
       goalDesigner: context.goalDesigner!,
+      libraryImportLlmProvider: context.libraryImportLlmProvider,
+      libraryImportSourceFetcher: context.libraryImportSourceFetcher,
       onProgress(event) {
         if (event.stage === "goal_contract.interpreted" || event.stage === "goal_design.persisted" || event.stage === "draft.persisted") {
           observedStages.push(event.stage);
@@ -197,6 +230,8 @@ async function submitGoalDesignDraftPg(
   }
   const draftStatus = draft.status === "ready_for_review"
     ? "ready_for_review"
+    : draft.status === "needs_library_input"
+      ? "needs_library_input"
     : draft.status === "needs_input"
       ? "needs_input"
       : draft.status === "template_incompatible"
@@ -210,9 +245,13 @@ async function submitGoalDesignDraftPg(
     draftId: draft.draftId,
     draftStatus,
     blockers: draft.blockers,
+    ...(draft.vocabularyGaps ? { vocabularyGaps: draft.vocabularyGaps } : {}),
+    ...(draft.libraryImportDraftId ? { libraryImportDraftId: draft.libraryImportDraftId } : {}),
   };
   const finalStages = draftStatus === "ready_for_review"
     ? ["draft.ready_for_review", "done"]
+    : draftStatus === "needs_library_input"
+      ? ["draft.needs_library_input", "done"]
     : draftStatus === "needs_input"
       ? ["draft.needs_input", "done"]
       : ["done"];
@@ -226,7 +265,7 @@ async function submitGoalDesignDraftPg(
       await completeSubmissionPg(context.db, claim.submissionId, autoResult, [...observedStages, "done"]);
       for (const stage of observedStages) {
         context.onStage?.(stage, stage === "goal_design.persisted"
-          ? { draftId: draft.draftId, goalDesignPackageHash: draft.goalDesignPackageHash, draftStatus: result.draftStatus }
+          ? { draftId: draft.draftId, goalDesignPackageHash: draft.goalDesignPackageHash, draftStatus: result.draftStatus, package: draft.goalDesignPackage }
           : undefined);
       }
       return autoResult;
@@ -238,7 +277,7 @@ async function submitGoalDesignDraftPg(
   }
   for (const stage of observedStages) {
     context.onStage?.(stage, stage === "goal_design.persisted"
-      ? { draftId: draft.draftId, goalDesignPackageHash: draft.goalDesignPackageHash, draftStatus: result.draftStatus }
+      ? { draftId: draft.draftId, goalDesignPackageHash: draft.goalDesignPackageHash, draftStatus: result.draftStatus, package: draft.goalDesignPackage }
       : undefined);
   }
   finalStages.forEach((stage) => context.onStage?.(stage));
@@ -274,6 +313,28 @@ export async function continueGoalDesignToRunPg(
   const observedStages: string[] = [];
   let composedDraft: Awaited<ReturnType<typeof createPostgresPlannerDraft>>;
   try {
+    if (prepared.package.compositionStrategy.mode === "per-slice-runs") {
+      const executionSet = await materializeGoalExecutionSetPg(context, {
+        draftId: input.draftId,
+        expectedPackageHash: input.expectedPackageHash,
+      });
+      const result: RunGoalResult = {
+        goalContractHash: prepared.package.goalContractHash,
+        goalDesignPackageHash: prepared.package.packageHash,
+        draftId: input.draftId,
+        draftStatus: "validated",
+        executionSetId: executionSet.id,
+        sliceRuns: executionSet.entries.map((entry) => ({
+          sliceId: entry.sliceId,
+          runId: entry.runId,
+          runStatus: sliceRunStatus(entry.status),
+          approvalId: entry.approvalId,
+        })),
+        blockers: [],
+      };
+      await completeConfirmationPg(context.db, prepared.confirmationId, result, ["goal_execution_set.materialized", "done"]);
+      return result;
+    }
     composedDraft = await createPostgresPlannerDraft(context.db, {
       goalPrompt: prepared.goalPrompt,
       cwd: prepared.cwd,
@@ -291,13 +352,19 @@ export async function continueGoalDesignToRunPg(
   }
 
   if (composedDraft.status !== "validated") {
-    const draftStatus = composedDraft.status === "needs_input" ? "needs_input" : "invalid";
+    const draftStatus = composedDraft.status === "needs_library_input"
+      ? "needs_library_input"
+      : composedDraft.status === "needs_input"
+        ? "needs_input"
+        : "invalid";
     const result: RunGoalResult = {
       goalContractHash: composedDraft.goalContractHash,
       goalDesignPackageHash: prepared.package.packageHash,
       draftId: composedDraft.draftId,
       draftStatus,
       blockers: composedDraft.blockers,
+      ...(composedDraft.vocabularyGaps ? { vocabularyGaps: composedDraft.vocabularyGaps } : {}),
+      ...(composedDraft.libraryImportDraftId ? { libraryImportDraftId: composedDraft.libraryImportDraftId } : {}),
     };
     await completeConfirmationPg(context.db, prepared.confirmationId, result, [...observedStages, "done"]);
     return result;
@@ -331,6 +398,12 @@ export async function continueGoalDesignToRunPg(
   transaction.stages.forEach((stage) => context.onStage?.(stage));
   if (!transaction.autoSchedule || !transaction.result.runId) return transaction.result;
   return await completeGoalSchedulingHandoffPg(context, prepared.confirmationId);
+}
+
+function sliceRunStatus(status: string): SliceRunResult["runStatus"] {
+  if (status === "awaiting_approval") return "awaiting_approval";
+  if (status === "scheduling" || status === "running") return "scheduling";
+  return "created";
 }
 
 type GoalDesignConfirmationPreparation = {
@@ -403,6 +476,33 @@ async function prepareGoalDesignConfirmationPg(
       "select id, status, payload_json from southstar.runtime_resources where resource_type = 'goal_design_confirmation' and resource_key = $1 for update",
       [input.draftId],
     );
+    if (existing.status === "stale") {
+      await tx.query(
+        "update southstar.runtime_resources set status = 'composing', payload_json = $2::jsonb, summary_json = $3::jsonb, updated_at = now() where id = $1",
+        [
+          existing.id,
+          JSON.stringify({
+            draftId: input.draftId,
+            packageHash: input.expectedPackageHash,
+            confirmationMode: input.confirmationMode,
+            stages: [],
+            attempt: Number(existing.payload_json.attempt ?? 0) + 1,
+          }),
+          JSON.stringify({
+            draftId: input.draftId,
+            packageHash: input.expectedPackageHash,
+            confirmationMode: input.confirmationMode,
+          }),
+        ],
+      );
+      return {
+        confirmationId: existing.id,
+        package: pkg,
+        goalPrompt,
+        cwd,
+        stages: [],
+      };
+    }
     if (existing.payload_json.packageHash !== input.expectedPackageHash) {
       throw new Error(`goal_design_confirmation_conflict: ${input.draftId}`);
     }

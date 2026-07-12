@@ -15,6 +15,7 @@ export function WorkflowTaskNode(props: NodeProps<WorkflowTaskFlowNode>) {
 
   return (
     <article
+      data-testid={`workflow-dag-node-${props.data.id}`}
       className={`ss-flow-node ss-flow-node-${status} ${props.data.selected ? "ss-flow-node-selected" : ""}`}
       style={{ borderColor: colors.border, background: colors.fill }}
     >

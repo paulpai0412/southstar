@@ -3,11 +3,64 @@ import test from "node:test";
 import type { GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
   finalizeGoalContract,
+  GoalContractVocabularyGapError,
   goalContractHash,
   interpretGoalContractWithLlm,
   requirementSpecFromGoalContract,
   reviseGoalContract,
 } from "../../src/v2/orchestration/goal-contract.ts";
+
+test("Goal interpreter returns structured vocabulary gaps without repairing into unrelated refs", async () => {
+  let attempts = 0;
+  await assert.rejects(
+    () => interpretGoalContractWithLlm({
+      goalPrompt: "Build membership subscriptions",
+      cwd: "/workspace/membership",
+      libraryVocabulary: {
+        scopes: ["software"],
+        capabilityRefs: ["capability.repo-read"],
+        artifactRefs: ["artifact.implementation_report"],
+      },
+      client: {
+        async generateText() {
+          attempts += 1;
+          return JSON.stringify({
+            domain: "membership",
+            intent: "deliver_membership_subscriptions",
+            workType: "software_feature",
+            summary: "Deliver membership subscriptions",
+            requirements: [{
+              statement: "Members can subscribe",
+              acceptanceCriteria: ["A successful purchase activates a subscription"],
+              blocking: true,
+              source: "explicit",
+              expectedArtifacts: [{ description: "Subscription verification report" }],
+            }],
+            expectedArtifactRefs: ["artifact.subscription-verification"],
+            requiredCapabilities: ["capability.subscription-billing"],
+            nonGoals: [],
+            assumptions: [],
+            blockingInputs: [],
+            riskTags: [],
+            requestedSideEffects: ["workspace-write"],
+          });
+        },
+      },
+      model: "test-goal-interpreter",
+    }),
+    (error: unknown) => {
+      assert.ok(error instanceof GoalContractVocabularyGapError);
+      assert.equal(error.goalContract.domain, "membership");
+      assert.deepEqual(error.gaps.map((gap) => ({ kind: gap.kind, requestedRef: gap.requestedRef })), [
+        { kind: "domain", requestedRef: "membership" },
+        { kind: "capability", requestedRef: "capability.subscription-billing" },
+        { kind: "artifact", requestedRef: "artifact.subscription-verification" },
+      ]);
+      return true;
+    },
+  );
+  assert.equal(attempts, 1);
+});
 
 test("LLM interpretation produces a host-owned GoalContractV1", async () => {
   const contract = await interpretGoalContractWithLlm({
@@ -98,6 +151,50 @@ test("Goal interpreter rejects LLM-owned identity fields", async () => {
   );
 });
 
+test("Goal Contract drops unsafe optional expected artifact paths", () => {
+  const contract = finalizeGoalContract({
+    goalPrompt: "Build it",
+    cwd: "/workspace/project",
+    interpretation: {
+      ...interpretation("Build it"),
+      requirements: [{
+        statement: "Build it",
+        acceptanceCriteria: ["Build it"],
+        blocking: true,
+        source: "explicit",
+        expectedArtifacts: [{
+          description: "Implementation report",
+          path: "/tmp/outside.md",
+          mediaType: "text/markdown",
+        }],
+      }],
+    },
+  });
+
+  assert.deepEqual(contract.requirements[0]?.expectedArtifacts, [{
+    description: "Implementation report",
+    mediaType: "text/markdown",
+  }]);
+});
+
+test("Goal interpreter drops invalid descriptive string list entries", async () => {
+  const contract = await interpretGoalContractWithLlm({
+    goalPrompt: "Build it",
+    cwd: "/workspace/project",
+    client: {
+      generateText: async () => JSON.stringify({
+        ...interpretation("Build it"),
+        blockingInputs: ["Need product tier decision", "", null, { question: "bad shape" }],
+        riskTags: ["billing", "", false],
+      }),
+    },
+    model: "test-goal-interpreter",
+  });
+
+  assert.deepEqual(contract.blockingInputs, ["Need product tier decision"]);
+  assert.deepEqual(contract.riskTags, ["billing"]);
+});
+
 test("Goal interpreter decomposes a compound outcome into observable requirements", async () => {
   const prompts: string[] = [];
   const contract = await interpretGoalContractWithLlm({
@@ -153,9 +250,16 @@ test("Goal interpreter decomposes a compound outcome into observable requirement
   assert.match(prompts[0] ?? "", /decompose compound outcomes into independently verifiable requirements/i);
   assert.match(prompts[0] ?? "", /do not put details discoverable from the local workspace or library in blockingInputs/i);
   assert.match(prompts[0] ?? "", /blockingInputs are only for information unavailable from the prompt, workspace, and library/i);
+  assert.match(prompts[0] ?? "", /safe, reversible local\/test implementation choices/i);
   assert.match(prompts[0] ?? "", /blocking=true for every requirement needed to satisfy the requested outcome/i);
+  assert.match(prompts[0] ?? "", /GoalContractInterpretationSchema:/);
+  assert.match(prompts[0] ?? "", /Every array item must be a non-empty string/i);
+  assert.match(prompts[0] ?? "", /blockingInputs: string\[\]/);
+  assert.match(prompts[0] ?? "", /expectedArtifacts\[\]\.path/i);
   assert.match(prompts[0] ?? "", /AvailableLibraryVocabulary:/);
-  assert.match(prompts[0] ?? "", /Choose domain exactly from scopes/i);
+  assert.match(prompts[0] ?? "", /AllowedCapabilities: \["capability.repo-read","capability.repo-write","capability.test-execution"\]/);
+  assert.match(prompts[0] ?? "", /AllowedArtifactRefs: \["artifact.implementation_report","artifact.verification_report"\]/);
+  assert.match(prompts[0] ?? "", /host will stop composition and create a reviewable vocabulary gap/i);
   assert.match(prompts[0] ?? "", /design\/article/);
   assert.match(prompts[0] ?? "", /GoalDesignSkillVersionRef: skill\.southstar-goal-design@v1/);
   assert.match(prompts[0] ?? "", /WorkspaceDiscovery:/);
@@ -232,6 +336,44 @@ test("Goal interpreter repairs one schema-invalid LLM response", async () => {
   assert.match(prompts[1] ?? "", /previous response was invalid/i);
   assert.match(prompts[1] ?? "", /source must be explicit or inferred/i);
   assert.match(prompts[1] ?? "", /\"source\":\"user\"/);
+});
+
+test("Goal interpreter repairs malformed Library vocabulary refs", async () => {
+  const prompts: string[] = [];
+  let callCount = 0;
+
+  const contract = await interpretGoalContractWithLlm({
+    goalPrompt: "Build a membership flow",
+    cwd: "/workspace/project",
+    libraryVocabulary: {
+      scopes: ["software"],
+      capabilityRefs: ["capability.repo-write", "capability.test-execution"],
+      artifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
+    },
+    client: {
+      async generateText(input) {
+        prompts.push(input.prompt);
+        callCount += 1;
+        return JSON.stringify({
+          ...interpretation("Build a membership flow"),
+          domain: callCount === 1 ? "membership_subscriptions" : "software",
+          expectedArtifactRefs: callCount === 1
+            ? ["membership-code"]
+            : ["artifact.implementation_report", "artifact.verification_report"],
+          requiredCapabilities: callCount === 1
+            ? ["javascript-esm-implementation", "fake-payment-adapter-integration"]
+            : ["capability.repo-write", "capability.test-execution"],
+        });
+      },
+    },
+    model: "test-goal-interpreter",
+  });
+
+  assert.equal(callCount, 2);
+  assert.equal(contract.domain, "software");
+  assert.deepEqual(contract.requiredCapabilities, ["capability.repo-write", "capability.test-execution"]);
+  assert.deepEqual(contract.expectedArtifactRefs, ["artifact.implementation_report", "artifact.verification_report"]);
+  assert.match(prompts[1] ?? "", /expectedArtifactRefs refs must start with artifact\./i);
 });
 
 test("Goal interpreter fails closed after one bounded repair", async () => {

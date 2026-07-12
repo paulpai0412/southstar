@@ -1,0 +1,14 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.review-scheduling
+title: "Review Queue and Scheduling"
+scope: "general"
+status: approved
+description: "Determine which flashcards are due, build review queues, and update next review timing after outcomes."
+requiredOperations:
+  - "compute-due-cards"
+  - "queue-review-session"
+  - "record-card-outcome"
+  - "update-next-review-at"
+importDraftId: "library-import-draft-5b27e3ac-0add-43e4-af93-312d4f120c0f"
+importCandidateKey: "capability.review-scheduling"
+importSourcePath: "Library-chat-prompt.md"

@@ -47,6 +47,13 @@ function modelFromProvider(provider: "pi" | "codex"): string {
   return provider === "pi" ? "pi-agent-default" : "gpt-5-codex";
 }
 
+function profileResourcePathFromProfileRef(profileRef: string): string {
+  const segment = profileRef
+    .replace(/^profile\./, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-") || "agent";
+  return `profiles/${segment}.yaml`;
+}
+
 function readinessFromDraftStatus(
   status: string,
   validationIssueCount: number,
@@ -114,7 +121,7 @@ export function buildWorkflowDagFromPlannerDraft(input: V2PlannerDraftOrchestrat
       role: task.roleRef ?? "maker",
       agentRef: `agent.${agentSegmentFromProfile(profileRef)}`,
       profileRef,
-      profileResourcePath: `software/agents/${agentSegmentFromProfile(profileRef)}/profile.json`,
+      profileResourcePath: profileResourcePathFromProfileRef(profileRef),
       provider,
       model: modelFromProvider(provider),
       level: levels.get(task.taskId) ?? index,

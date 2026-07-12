@@ -1,0 +1,15 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.vocabulary-corpus-management
+title: "Vocabulary Corpus Management"
+scope: "general"
+status: approved
+description: "Create and maintain the local vocabulary corpus used by flashcards, including term, meaning, and usage metadata."
+requiredOperations:
+  - "create-vocabulary-entry"
+  - "update-vocabulary-entry"
+  - "list-vocabulary-entries"
+  - "delete-vocabulary-entry"
+  - "import-vocabulary-list"
+importDraftId: "library-import-draft-3a8cdbc9-9097-4d06-9bb3-09577a8c436d"
+importCandidateKey: "capability.vocabulary-corpus-management"
+importSourcePath: "Library-chat-prompt.md"

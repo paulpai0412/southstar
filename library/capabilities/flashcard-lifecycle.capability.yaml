@@ -1,0 +1,15 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.flashcard-lifecycle
+title: "Flashcard Lifecycle Management"
+scope: "general"
+status: approved
+description: "Manage local flashcard records including term content, metadata, and updates over time."
+requiredOperations:
+  - "create-card"
+  - "update-card"
+  - "delete-card"
+  - "list-cards"
+  - "tag-card"
+importDraftId: "library-import-draft-5b27e3ac-0add-43e4-af93-312d4f120c0f"
+importCandidateKey: "capability.flashcard-lifecycle"
+importSourcePath: "Library-chat-prompt.md"

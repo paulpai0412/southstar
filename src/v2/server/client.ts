@@ -102,13 +102,15 @@ type RevisePlannerDraftRequest = {
   prompt: string;
   orchestrationMode?: "llm-constrained";
   composerMode?: "llm";
+  expectedPackageHash?: string;
+  selectedSliceId?: string;
 };
 type SaveWorkflowTemplateRequest = {
   draftId: string;
   templateId: string;
   title: string;
   scope?: string;
-  status?: "draft" | "approved";
+  status?: "draft";
 };
 type RuntimeSseEvent = {
   event: string;
@@ -283,6 +285,8 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
         prompt: body.prompt,
         ...(body.orchestrationMode !== undefined ? { orchestrationMode: body.orchestrationMode } : {}),
         ...(body.composerMode !== undefined ? { composerMode: body.composerMode } : {}),
+        ...(body.expectedPackageHash !== undefined ? { expectedPackageHash: body.expectedPackageHash } : {}),
+        ...(body.selectedSliceId !== undefined ? { selectedSliceId: body.selectedSliceId } : {}),
       }, onEvent, signal);
     },
     saveWorkflowTemplate(body: SaveWorkflowTemplateRequest) {

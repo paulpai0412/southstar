@@ -1,0 +1,15 @@
+schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.local-system-verification-evaluator
+title: "Local System Verification Evaluator"
+scope: "general"
+status: approved
+validatesArtifactRefs:
+  - "artifact.flashcard-deck-contract"
+  - "artifact.local-verification-report"
+evidenceKinds:
+  - "test-result"
+  - "command-output"
+  - "workspace-snapshot"
+importDraftId: "library-import-draft-3a8cdbc9-9097-4d06-9bb3-09577a8c436d"
+importCandidateKey: "evaluator.local-system-verification-evaluator"
+importSourcePath: "Library-chat-prompt.md"

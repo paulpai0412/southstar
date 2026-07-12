@@ -14,8 +14,12 @@ type RunGoalResult = {
   draftId: string;
   draftStatus: string;
   goalDesignPackageHash?: string;
+  vocabularyGaps?: Array<{ kind: string; requestedRef: string; allowedRefs: string[] }>;
+  libraryImportDraftId?: string;
   runId?: string;
   runStatus?: string;
+  executionSetId?: string;
+  sliceRuns?: Array<{ sliceId: string; runId: string; runStatus: string; approvalId: string }>;
 };
 
 type WorkflowUiReadModel = {
@@ -114,7 +118,7 @@ async function proxyRunGoalStream(
       await sendGoalReceipt(data as RunGoalResult, send);
       return;
     }
-    if (["message", "message.delta", "planner.stage", "heartbeat", "goal_design", "draft", "dag", "error"].includes(event)) {
+    if (["message", "message.delta", "planner.stage", "heartbeat", "goal_design", "draft", "dag", "execution_set", "error"].includes(event)) {
       send(event, data);
     }
   };
@@ -136,9 +140,24 @@ async function proxyRunGoalStream(
 }
 
 async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerateEvent): Promise<void> {
-  send("draft", { draft: { draftId: result.draftId, status: result.draftStatus, goalDesignPackageHash: result.goalDesignPackageHash } });
+  send("draft", { draft: {
+    draftId: result.draftId,
+    status: result.draftStatus,
+    goalDesignPackageHash: result.goalDesignPackageHash,
+    vocabularyGaps: result.vocabularyGaps,
+    libraryImportDraftId: result.libraryImportDraftId,
+  } });
+  if (result.executionSetId) {
+    send("execution_set", { executionSetId: result.executionSetId, sliceRuns: result.sliceRuns ?? [] });
+    send("done", result);
+    return;
+  }
   if (result.runId) send("run", { runId: result.runId, runStatus: result.runStatus });
-  if (!result.runId && (result.draftStatus === "ready_for_review" || result.draftStatus === "needs_input")) {
+  if (!result.runId && (
+    result.draftStatus === "ready_for_review"
+    || result.draftStatus === "needs_input"
+    || result.draftStatus === "needs_library_input"
+  )) {
     send("done", result);
     return;
   }

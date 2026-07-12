@@ -1,0 +1,13 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.review-session-log
+title: "Review Session Log Contract"
+scope: "general"
+status: approved
+artifactType: "review-session-log"
+evidenceKinds:
+  - "artifact-ref"
+  - "command-output"
+  - "test-result"
+importDraftId: "library-import-draft-5b27e3ac-0add-43e4-af93-312d4f120c0f"
+importCandidateKey: "artifact.review-session-log"
+importSourcePath: "Library-chat-prompt.md"

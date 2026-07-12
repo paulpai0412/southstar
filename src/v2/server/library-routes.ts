@@ -35,6 +35,9 @@ import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
+const DEFAULT_LIBRARY_READ_SCOPE = "all";
+const DEFAULT_LIBRARY_AUTHORING_SCOPE = "general";
+
 export async function handleLibraryRoute(
   context: RuntimeServerContext,
   request: Request,
@@ -93,7 +96,7 @@ export async function handleLibraryRoute(
     const body = await readJsonBody<{ source?: unknown; scope?: unknown; requestPrompt?: unknown }>(request);
     return json("library-import-draft", await createLibraryImportDraft(context.db, {
       source: asImportSource(body.source),
-      scope: optionalString(body.scope) ?? "software",
+      scope: libraryAuthoringScope(body.scope),
       requestPrompt: optionalString(body.requestPrompt),
       sourceFetcher: context.libraryImportSourceFetcher,
       llmProvider: context.libraryImportLlmProvider,
@@ -159,7 +162,7 @@ export async function handleLibraryRoute(
     if (!draft) return errorJson(`planner draft not found: ${draftId}`, 404);
     const draftPayload = asRecord(draft.payload);
     const workflow = asRecord(draftPayload.workflow);
-    const scope = optionalString(body.scope) ?? "software";
+    const scope = requiredNonBlankString(body.scope, "scope");
     const status = workflowTemplateSaveStatus(body.status);
     const compositionPlan = workflowCompositionPlanFromDraftPayload(draftPayload);
     const result = await saveWorkflowTemplateDraft(context.db, {
@@ -177,7 +180,7 @@ export async function handleLibraryRoute(
   if (request.method === "POST" && url.pathname === "/api/v2/library/import-prompts") {
     const body = await readJsonBody<{ prompt?: unknown; scope?: unknown }>(request);
     const prompt = requiredString(body.prompt, "prompt");
-    const scope = optionalString(body.scope) ?? "software";
+    const scope = libraryAuthoringScope(body.scope);
     const draft = await createLibraryImportDraft(context.db, {
       source: { kind: "paste", label: "Prompt import", content: prompt },
       scope,
@@ -210,7 +213,7 @@ export async function handleLibraryRoute(
       templateId?: unknown;
     }>(request);
     return json("library-profile-draft", await composeNodeProfileDraft(context.db, {
-      scope: optionalString(body.scope) ?? "software",
+      scope: libraryAuthoringScope(body.scope),
       nodeId: requiredNonBlankString(body.nodeId, "nodeId"),
       requirement: requiredNonBlankString(body.requirement, "requirement"),
       preferredAgentRef: requiredNonBlankString(body.preferredAgentRef, "preferredAgentRef"),
@@ -241,7 +244,7 @@ export async function handleLibraryRoute(
       actionId: `library-action-${randomUUID()}`,
       sessionId: optionalString(body.sessionId) ?? `library-chat-${randomUUID()}`,
       prompt,
-      scope: optionalString(body.scope) ?? "software",
+      scope: libraryReadScope(body.scope),
     };
 
     await upsertRuntimeResourcePg(context.db, {
@@ -376,13 +379,20 @@ function requiredNonBlankString(value: unknown, field: string): string {
 }
 
 function optionalString(value: unknown): string | undefined {
-  return typeof value === "string" && value.length > 0 ? value : undefined;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-function workflowTemplateSaveStatus(value: unknown): "draft" | "approved" {
-  if (value === undefined || value === null || value === "") return "approved";
-  if (value === "draft" || value === "approved") return value;
-  throw new Error("status must be draft or approved");
+function libraryReadScope(value: unknown): string {
+  return optionalString(value) ?? DEFAULT_LIBRARY_READ_SCOPE;
+}
+
+function libraryAuthoringScope(value: unknown): string {
+  const scope = optionalString(value);
+  return !scope || scope === DEFAULT_LIBRARY_READ_SCOPE ? DEFAULT_LIBRARY_AUTHORING_SCOPE : scope;
+}
+
+function workflowTemplateSaveStatus(_value: unknown): "draft" {
+  return "draft";
 }
 
 function requiredQueryParam(url: URL, name: string): string {
@@ -816,7 +826,7 @@ async function requireLibraryChatAction(
     actionId: input.actionId,
     sessionId: actionSessionId ?? input.sessionId,
     prompt: requiredNonBlankString(payload.prompt, "library_chat_action.prompt"),
-    scope: optionalString(payload.selectedScope) ?? "software",
+    scope: libraryReadScope(payload.selectedScope),
   };
 }
 
@@ -849,7 +859,7 @@ function libraryChatEventStream(
           emit("library.intent.completed", { intent: "import_library_candidates", confidence: 0.95 });
           const draft = await createLibraryImportDraft(context.db, {
             source: importSourceFromPrompt(input.prompt) ?? { kind: "paste", label: "Library chat prompt", content: input.prompt },
-            scope: input.scope,
+            scope: libraryAuthoringScope(input.scope),
             requestPrompt: input.prompt,
             sourceFetcher: context.libraryImportSourceFetcher,
             llmProvider: context.libraryImportLlmProvider,

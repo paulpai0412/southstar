@@ -8,7 +8,7 @@ export type SaveWorkflowTemplateDraftInput = {
   scope: string;
   templateId: string;
   title: string;
-  status?: "draft" | "approved";
+  status?: "draft";
   nodes: Array<{
     id: string;
     title: string;
@@ -69,7 +69,7 @@ export async function saveWorkflowTemplateDraft(db: SouthstarDb, input: SaveWork
 }
 
 function profileYaml(
-  input: SaveWorkflowTemplateDraftInput["nodes"][number] & { profileId: string; scope: string; status: "draft" | "approved"; templateId: string },
+  input: SaveWorkflowTemplateDraftInput["nodes"][number] & { profileId: string; scope: string; status: "draft"; templateId: string },
 ): string {
   return `schemaVersion: southstar.library.generated_agent_profile_file.v1
 id: ${yamlScalar(input.profileId)}

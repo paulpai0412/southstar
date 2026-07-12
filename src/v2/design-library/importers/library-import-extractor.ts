@@ -1,6 +1,3 @@
-import { normalizeImportProposal } from "./import-proposal-normalizer.ts";
-import { createPromptLibraryImportProposal, type LibraryPromptImportProposal } from "./prompt-library-importer.ts";
-
 export type LibraryImportSource =
   | { kind: "paste"; label: string; content: string }
   | { kind: "github"; repoUrl: string; path?: string; content?: string }
@@ -39,20 +36,6 @@ export function asImportSource(value: unknown): LibraryImportSource {
     };
   }
   throw new Error(`unsupported import source kind: ${kind}`);
-}
-
-export function extractLibraryImportProposal(input: {
-  source: LibraryImportSource;
-  scope: string;
-}): LibraryPromptImportProposal {
-  const prompt = promptFromSource(input.source);
-  return normalizeImportProposal(createPromptLibraryImportProposal({ prompt, scope: input.scope }));
-}
-
-function promptFromSource(source: LibraryImportSource): string {
-  if (source.kind === "paste") return source.content;
-  if (source.content) return source.content;
-  throw new Error(`source.${source.kind} requires inline content in this implementation slice`);
 }
 
 function requiredString(value: unknown, field: string): string {

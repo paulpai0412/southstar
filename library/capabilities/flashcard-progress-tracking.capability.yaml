@@ -1,0 +1,13 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.flashcard-progress-tracking
+title: "Flashcard Progress Tracking"
+scope: "general"
+status: approved
+description: "Track per-card learning progress and expose summary status for the local system."
+requiredOperations:
+  - "update-progress"
+  - "read-progress"
+  - "summarize-progress"
+importDraftId: "library-import-draft-e5e81e71-8ca6-4bc4-a23f-51a5f5648b27"
+importCandidateKey: "capability.flashcard-progress-tracking"
+importSourcePath: "Library-chat-prompt.md"

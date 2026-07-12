@@ -7,22 +7,14 @@ import {
   type LibraryObjectSummary,
 } from "../design-library/library-graph-store.ts";
 import type { WorkflowTaskDefinition } from "../manifests/types.ts";
-import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
 import { parseWorkflowCompositionPlanFromText } from "../orchestration/llm-composer.ts";
-import { isCoverageExceptionTask } from "../orchestration/goal-requirement-coverage.ts";
 import { getResourceByKeyPg } from "../stores/postgres-runtime-store.ts";
 import {
-  createPostgresPlannerDraft,
-  type PlannerDraftProgressListener,
   type PlannerDraftValidationIssue,
 } from "../ui-api/postgres-run-api.ts";
-import type { WorkflowComposer } from "../orchestration/composer.ts";
-import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
-import {
-  requirementSpecFromGoalContract,
-  type GoalContractInterpreter,
-  type GoalContractV1,
-} from "../orchestration/goal-contract.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
+import type { WorkflowTemplatePolicyV1 } from "../orchestration/goal-design.ts";
+import type { RunGoalRequest, RunGoalResult } from "../orchestration/run-goal-service.ts";
 
 export type WorkflowTemplateSearchInput = {
   prompt: string;
@@ -81,11 +73,8 @@ export type InstantiateWorkflowTemplateInput = {
     maxNodes?: number;
     requireApproval?: boolean;
   };
-  goalInterpreter: GoalContractInterpreter;
-  composer?: WorkflowComposer;
-  onProgress?: PlannerDraftProgressListener;
-  onGoalContractDelta?: (text: string) => void;
-  onLlmDelta?: (text: string) => void;
+  idempotencyKey?: string;
+  submitGoal: (request: RunGoalRequest) => Promise<RunGoalResult>;
 };
 
 export type InstantiateWorkflowTemplateResult = {
@@ -133,219 +122,29 @@ export async function instantiateWorkflowTemplatePg(
   input: InstantiateWorkflowTemplateInput,
 ): Promise<InstantiateWorkflowTemplateResult> {
   const template = await requireApprovedWorkflowTemplate(db, input.templateRef);
-  const state = template.state;
-  const goalInterpreter = memoizeGoalInterpreter(input.goalInterpreter);
-  const goalContract = await goalInterpreter.interpret({
+  if (!template.headVersionId) throw new Error(`workflow template is missing head version: ${input.templateRef}`);
+  const templatePolicy: WorkflowTemplatePolicyV1 = input.constraints?.mode === "strict"
+    ? { mode: "require", templateRef: template.objectKey, versionRef: template.headVersionId }
+    : { mode: "prefer", templateRef: template.objectKey, versionRef: template.headVersionId };
+  const submitted = await input.submitGoal({
     goalPrompt: input.goalPrompt,
     cwd: input.cwd ?? process.cwd(),
-    onDelta: input.onGoalContractDelta,
+    idempotencyKey: input.idempotencyKey ?? workflowTemplateInstantiationKey(input, template.headVersionId),
+    templatePolicy,
   });
-  let compositionPlan: WorkflowCompositionPlan | undefined;
-  if (goalContract.blockingInputs.length === 0) {
-    await assertTemplateScopeCompatible(db, input.templateRef, goalContract.domain);
-    const hasSavedCompositionPlan = state.compositionPlan !== undefined
-      || (typeof state.compositionPlanJsonBase64 === "string" && state.compositionPlanJsonBase64.length > 0);
-    const savedCompositionPlan = workflowCompositionPlanValue(state.compositionPlan)
-      ?? workflowCompositionPlanBase64Value(state.compositionPlanJsonBase64);
-    if (savedCompositionPlan) {
-      try {
-        compositionPlan = instantiateSavedCompositionPlan(savedCompositionPlan, input, goalContract);
-      } catch (error) {
-        if (!input.composer) {
-          throw new Error(`saved workflow composition needs regeneration: ${errorMessage(error)}`);
-        }
-        compositionPlan = await composeSkeletonTemplate(db, input, template, goalContract);
-      }
-    } else if (hasSavedCompositionPlan && !input.composer) {
-      throw new Error("saved workflow composition needs regeneration: stored composition does not match the current strict schema");
-    } else {
-      compositionPlan = await composeSkeletonTemplate(db, input, template, goalContract);
-    }
-  }
-
-  input.onProgress?.(compositionPlan
-    ? { stage: "template.loaded", message: "Workflow template composition loaded." }
-    : { stage: "template.blocked", message: "Workflow template is waiting for required Goal Contract input." });
-  const draft = await createPostgresPlannerDraft(db, {
-    goalPrompt: input.goalPrompt,
-    orchestrationMode: "llm-constrained",
-    ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-    ...(compositionPlan ? { compositionPlan } : {}),
-    goalInterpreter,
-    composer: input.composer,
-    onProgress: input.onProgress,
-    onGoalContractDelta: input.onGoalContractDelta,
-    onLlmDelta: input.onLlmDelta,
-  });
-  const persistedDraft = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+  const persistedDraft = await getResourceByKeyPg(db, "planner_draft", submitted.draftId);
   const payload = asRecord(persistedDraft?.payload);
   const workflow = asRecord(payload.workflow);
   const tasks = Array.isArray(workflow.tasks) ? workflow.tasks : [];
 
   return {
     templateRef: input.templateRef,
-    draftId: draft.draftId,
-    workflowId: draft.workflowId,
-    status: draft.status,
-    validationIssues: draft.validationIssues,
+    draftId: submitted.draftId,
+    workflowId: stringValue(workflow.workflowId) ?? "",
+    status: submitted.draftStatus,
+    validationIssues: plannerDraftValidationIssues(payload.validationIssues),
     nodes: tasks.map((task) => instanceNodeFromTask(asWorkflowTask(task))),
   };
-}
-
-async function assertTemplateScopeCompatible(
-  db: SouthstarDb,
-  templateRef: string,
-  domain: string,
-): Promise<void> {
-  const visibleTemplates = await findApprovedLibraryObjectsByKind(db, "workflow_template", domain);
-  if (visibleTemplates.some((template) => template.objectKey === templateRef)) return;
-  throw new Error(`workflow template ${templateRef} is not compatible with Goal Contract domain ${domain}`);
-}
-
-async function composeSkeletonTemplate(
-  db: SouthstarDb,
-  input: InstantiateWorkflowTemplateInput,
-  template: LibraryObjectSummary,
-  goalContract: GoalContractV1,
-): Promise<WorkflowCompositionPlan> {
-  if (!input.composer) {
-    throw new Error(`workflow template requires a composer when compositionPlan is missing: ${input.templateRef}`);
-  }
-  const detail = detailFromLibraryObject(template);
-  if (!detail.canInstantiate) {
-    throw new Error(`workflow template is not instantiable: ${input.templateRef}`);
-  }
-  const scope = goalContract.domain;
-  const requirementSpec = requirementSpecFromGoalContract(goalContract);
-  input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
-  const candidatePacket = await resolveWorkflowCandidates(db, { requirementSpec, scope });
-  input.onProgress?.({ stage: "candidate.resolved", message: "Workflow library candidates resolved." });
-  const repair = await runCompositionRepairLoop({
-    db,
-    goalPrompt: renderTemplateInstantiationGoal(input, detail),
-    goalContract,
-    candidatePacket,
-    composer: input.composer,
-    ...(input.cwd ? { cwd: input.cwd } : {}),
-    scope,
-    maxRepairAttempts: 2,
-    onProgress: input.onProgress,
-    onLlmDelta: input.onLlmDelta,
-  });
-  if (!repair.validation.ok || !repair.composition) {
-    throw new Error(`workflow template composition failed validation: ${JSON.stringify(repair.validation.issues)}`);
-  }
-  return repair.composition;
-}
-
-function memoizeGoalInterpreter(interpreter: GoalContractInterpreter): GoalContractInterpreter {
-  let contract: Promise<GoalContractV1> | undefined;
-  return {
-    interpret(input) {
-      contract ??= interpreter.interpret(input);
-      return contract;
-    },
-  };
-}
-
-function renderTemplateInstantiationGoal(
-  input: InstantiateWorkflowTemplateInput,
-  detail: WorkflowTemplateDetail,
-): string {
-  return [
-    input.goalPrompt,
-    "",
-    "Template instantiation mode:",
-    input.constraints?.mode === "adaptive" ? "adaptive" : "strict",
-    "",
-    "Template skeleton:",
-    JSON.stringify({
-      templateRef: input.templateRef,
-      title: detail.title,
-      nodes: detail.nodes,
-      edges: detail.edges,
-    }),
-    "",
-    "Preserve template node ids and dependencies when mode is strict.",
-    "For each template node, generate the nodePromptSpec and generated agent profile for this specific goal.",
-    "Select agent, skill, tool, MCP, instruction, artifact, evaluator, and policy refs only from the provided graph metadata candidates.",
-  ].join("\n");
-}
-
-function instantiateSavedCompositionPlan(
-  plan: WorkflowCompositionPlan,
-  input: InstantiateWorkflowTemplateInput,
-  goalContract: GoalContractV1,
-): WorkflowCompositionPlan {
-  const goalRequirement = `Instantiation goal: ${input.goalPrompt}`;
-  return {
-    ...plan,
-    title: `${plan.title} - instantiated`,
-    rationale: `${plan.rationale}\n\nInstantiated for: ${input.goalPrompt}`,
-    tasks: plan.tasks.map((task) => {
-      const requirementIds = mapSavedTaskRequirementIds(task, goalContract);
-      return {
-        ...task,
-        requirementIds,
-        nodePromptSpec: {
-          ...task.nodePromptSpec,
-          goal: `${task.nodePromptSpec!.goal}\n\nInstantiation goal: ${input.goalPrompt}`,
-          requirements: uniqueStrings([goalRequirement, ...task.nodePromptSpec!.requirements]),
-          acceptanceCriteria: uniqueStrings([
-            `Satisfy the instantiation goal: ${input.goalPrompt}`,
-            ...task.nodePromptSpec!.acceptanceCriteria,
-          ]),
-        },
-      };
-    }),
-    generatedComponentProposals: plan.generatedComponentProposals.map((proposal) => proposal.agentProfile
-      ? {
-        ...proposal,
-        agentProfile: {
-          ...proposal.agentProfile,
-          instruction: `${proposal.agentProfile.instruction}\n\nInstantiation goal: ${input.goalPrompt}`,
-        },
-      }
-      : proposal),
-  };
-}
-
-function mapSavedTaskRequirementIds(
-  task: WorkflowCompositionPlan["tasks"][number],
-  goalContract: GoalContractV1,
-): string[] {
-  if (!task.nodePromptSpec) {
-    throw new Error(`task ${task.id} has no nodePromptSpec`);
-  }
-  const requirementIdsByText = new Map<string, Set<string>>();
-  for (const requirement of goalContract.requirements) {
-    for (const text of [requirement.statement, ...requirement.acceptanceCriteria]) {
-      const normalized = normalizeRequirementText(text);
-      const requirementIds = requirementIdsByText.get(normalized) ?? new Set<string>();
-      requirementIds.add(requirement.id);
-      requirementIdsByText.set(normalized, requirementIds);
-    }
-  }
-
-  const mappedRequirementIds = new Set<string>();
-  for (const text of [
-    ...task.nodePromptSpec.requirements,
-    ...task.nodePromptSpec.acceptanceCriteria,
-  ]) {
-    const matches = [...(requirementIdsByText.get(normalizeRequirementText(text)) ?? [])];
-    if (matches.length > 1) {
-      throw new Error(`task ${task.id} has ambiguous Goal Contract requirement text: ${text}`);
-    }
-    if (matches[0]) mappedRequirementIds.add(matches[0]);
-  }
-  if (mappedRequirementIds.size === 0 && !isCoverageExceptionTask(task)) {
-    throw new Error(`task ${task.id} cannot be mapped to a Goal Contract requirement by exact node prompt text`);
-  }
-  return [...mappedRequirementIds];
-}
-
-function normalizeRequirementText(value: string): string {
-  return value.trim().replace(/\s+/g, " ");
 }
 
 function requireApprovedWorkflowTemplate(db: SouthstarDb, templateRef: string): Promise<LibraryObjectSummary> {
@@ -440,6 +239,31 @@ function instanceNodeFromTask(task: WorkflowTaskDefinition): WorkflowTemplateIns
   };
 }
 
+function workflowTemplateInstantiationKey(
+  input: InstantiateWorkflowTemplateInput,
+  versionRef: string,
+): string {
+  return `workflow-template:${contentHashForPayload({
+    templateRef: input.templateRef,
+    versionRef,
+    goalPrompt: input.goalPrompt,
+    cwd: input.cwd ?? process.cwd(),
+    mode: input.constraints?.mode ?? "adaptive",
+  }).slice(0, 24)}`;
+}
+
+function plannerDraftValidationIssues(value: unknown): PlannerDraftValidationIssue[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((issue) => {
+    const record = asRecord(issue);
+    return {
+      path: stringValue(record.path) ?? "",
+      message: stringValue(record.message) ?? "",
+      ...(stringValue(record.code) ? { code: stringValue(record.code) } : {}),
+    };
+  });
+}
+
 function scoreTemplate(template: LibraryObjectSummary, queryTokens: Set<string>): number {
   if (queryTokens.size === 0) return 0;
   const detail = templateShape(template.state);
@@ -497,12 +321,4 @@ function tokenize(value: string): Set<string> {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)];
-}
-
-function uniqueStrings(values: string[]): string[] {
-  return [...new Set(values.filter((value) => value.length > 0))];
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

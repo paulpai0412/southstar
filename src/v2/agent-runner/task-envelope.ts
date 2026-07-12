@@ -380,9 +380,19 @@ function formatArtifactContracts(contracts: ArtifactContract[]): string {
 function contractSpecificOutputRules(contractId: string): string[] {
   if (contractId === "implementation_report" || contractId === "verification_report") {
     return [
-      "commandsRun must be an array of executed commands (string or object with command).",
-      "testResults entries should use status enum: passed, failed, failed_non_gating, blocked, not-verified, not-run.",
+      "pass and safeToSave, when present, must be booleans: true or false.",
+      "commandsRun must be an array of executed command result objects, not bare strings.",
+      "commandsRun.status allowed values: passed, failed, blocked.",
+      `commandsRun item schema: {"command": "npm test" or ["npm","test"], "status": "passed", "exitCode": 0, "output": "bounded relevant output"}.`,
+      "Each commandsRun item must include status or exitCode; command records without an outcome do not satisfy command-output evidence.",
+      "exitCode must be an integer; use 0 for success and non-zero for failed command execution.",
+      "testResults.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap.",
+      "gating allowed values: blocking, non-gating.",
       "when status is failed/blocked/not-verified/not-run, include gating: blocking or non-gating.",
+      ...(contractId === "verification_report"
+        ? ["verifiedArtifactRefs must be an array of exact upstream ArtifactRef values evaluated by this verifier."]
+        : []),
+      "remainingFailures, when present, must be an array; use [] only when every blocking check passed.",
     ];
   }
   if (contractId === "completion_report") {

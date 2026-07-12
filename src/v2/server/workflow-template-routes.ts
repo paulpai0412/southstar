@@ -3,10 +3,11 @@ import {
   instantiateWorkflowTemplatePg,
   searchWorkflowTemplatesPg,
 } from "../workflow-templates/template-api-service.ts";
-import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
+import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
-import { resolveGoalInterpreter } from "./planner-routes.ts";
+import { resolveGoalDesigner, resolveGoalInterpreter } from "./planner-routes.ts";
+import { submitGoalPg } from "../orchestration/run-goal-service.ts";
 import type { ApiEnvelope } from "./types.ts";
 
 export async function handleWorkflowTemplateRoute(
@@ -27,6 +28,7 @@ export async function handleWorkflowTemplateRoute(
       templateRef?: unknown;
       goalPrompt?: unknown;
       cwd?: unknown;
+      idempotencyKey?: unknown;
       repo?: unknown;
       constraints?: unknown;
     }>(request);
@@ -34,10 +36,15 @@ export async function handleWorkflowTemplateRoute(
       templateRef: requiredString(body.templateRef, "templateRef"),
       goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
       ...(optionalString(body.cwd) ? { cwd: optionalString(body.cwd) } : {}),
+      ...(optionalString(body.idempotencyKey) ? { idempotencyKey: optionalString(body.idempotencyKey) } : {}),
       ...(isRecord(body.repo) ? { repo: parseRepo(body.repo) } : {}),
       ...(isRecord(body.constraints) ? { constraints: parseConstraints(body.constraints) } : {}),
-      goalInterpreter: resolveGoalInterpreter(context),
-      composer: resolveWorkflowTemplateComposer(context),
+      submitGoal: (goalRequest) => submitGoalPg({
+        db: context.db,
+        goalInterpreter: resolveGoalInterpreter(context),
+        goalDesigner: resolveGoalDesigner(context),
+        composer: resolveWorkflowTemplateComposer(context),
+      }, goalRequest),
     }));
   }
 
@@ -55,6 +62,7 @@ function resolveWorkflowTemplateComposer(context: RuntimeServerContext): Workflo
   if (context.workflowComposer) return context.workflowComposer;
   return new LlmWorkflowComposer({
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
+    composerSop: () => loadWorkflowComposerSopPg(context.db),
     client: {
       async generateText(input) {
         return await context.plannerClient.generate(input.prompt);

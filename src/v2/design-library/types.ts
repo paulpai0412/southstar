@@ -455,6 +455,7 @@ export type WorkflowCompositionValidationIssueCode =
   | "composer_output_schema_violation"
   | "invalid_schema_version"
   | "unknown_template"
+  | "required_template_mismatch"
   | "duplicate_task_id"
   | "unknown_dependency"
   | "dependency_cycle"

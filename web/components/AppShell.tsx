@@ -10,6 +10,7 @@ import { FileViewer } from "./FileViewer";
 import { WorkflowResourceViewer } from "./WorkflowResourceViewer";
 import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
 import { GoalContractInspector } from "./GoalContractInspector";
+import { GoalSliceEditor } from "./GoalSliceEditor";
 import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
@@ -25,7 +26,7 @@ import { BranchNavigator } from "./BranchNavigator";
 import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
 import { buildOperatorIncidents } from "@/lib/operator/incidents";
-import type { SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
+import type { GoalSliceSelection, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
 import type { WorkflowDag, WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -201,6 +202,11 @@ export function AppShell() {
   const [activeSidecarTabId, setActiveSidecarTabId] = useState<string | null>(null);
   const [sidecarMode, setSidecarMode] = useState<SidecarMode>("hidden");
   const [sidecarWidth, setSidecarWidth] = useState(DEFAULT_SIDECAR_WIDTH);
+  const [goalDesignRevisionAnchor, setGoalDesignRevisionAnchor] = useState<GoalSliceSelection | null>(null);
+
+  useEffect(() => {
+    setGoalDesignRevisionAnchor(null);
+  }, [selectedSession?.id, workflowSelectedSession?.id, newSessionCwd, workflowNewSessionCwd]);
 
   const handleAtMention = useCallback((relativePath: string) => {
     chatInputRef.current?.insertText("`" + relativePath + "`");
@@ -650,6 +656,37 @@ export function AppShell() {
     });
   }, [openSidecarTab]);
 
+  const handleGoalSliceSelect = useCallback((selection: GoalSliceSelection) => {
+    const currentPackage = goalDesignRevisionAnchor?.draftId === selection.draftId
+      ? goalDesignRevisionAnchor
+      : null;
+    const effectiveSelection: GoalSliceSelection = {
+      ...selection,
+      package: currentPackage?.package ?? selection.package,
+      goalDesignPackageHash: currentPackage?.goalDesignPackageHash ?? selection.goalDesignPackageHash,
+      selectedSliceId: selection.selectedSliceId,
+    };
+    setChatWorkspaceSurface("workflow");
+    setGoalDesignRevisionAnchor(effectiveSelection);
+    openSidecarTab({
+      id: `goal-slice:${effectiveSelection.draftId}:${effectiveSelection.selectedSliceId}`,
+      label: `Slice ${effectiveSelection.selectedSliceId}`,
+      filePath: `${effectiveSelection.draftId}/${effectiveSelection.selectedSliceId}`,
+      kind: "goalSlice",
+      draftId: effectiveSelection.draftId,
+      goalSliceSelection: effectiveSelection,
+    });
+  }, [goalDesignRevisionAnchor, openSidecarTab]);
+
+  const handleGoalSlicePackageChange = useCallback((selection: GoalSliceSelection) => {
+    setGoalDesignRevisionAnchor(selection);
+    setSidecarTabs((current) => current.map((tab) => (
+      tab.kind === "goalSlice" && tab.draftId === selection.draftId && tab.goalSliceSelection?.selectedSliceId === selection.selectedSliceId
+        ? { ...tab, goalSliceSelection: selection, refreshKey: (tab.refreshKey ?? 0) + 1 }
+        : tab
+    )));
+  }, []);
+
   const handleGoalContractSelect = useCallback((dag: WorkflowDag) => {
     const scopeId = dag.runId ?? dag.draftId;
     if (!scopeId) return;
@@ -735,6 +772,9 @@ export function AppShell() {
     if (activeSidecarTab.kind === "workflowGoalContract") {
       return <GoalContractInspector draftId={activeSidecarTab.draftId} runId={activeSidecarTab.runId} refreshKey={activeSidecarTab.refreshKey} />;
     }
+    if (activeSidecarTab.kind === "goalSlice" && activeSidecarTab.goalSliceSelection) {
+      return <GoalSliceEditor selection={activeSidecarTab.goalSliceSelection} onPackageChange={handleGoalSlicePackageChange} />;
+    }
     if (activeSidecarTab.kind === "workflowStaticNodeProfile" && activeSidecarTab.workflowNode) {
       return <WorkflowStaticNodeProfile node={activeSidecarTab.workflowNode} />;
     }
@@ -770,7 +810,7 @@ export function AppShell() {
       );
     }
     return <FileViewer filePath={activeSidecarTab.filePath} cwd={currentCwd ?? undefined} />;
-  }, [activeSidecarTab, currentCwd, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
+  }, [activeSidecarTab, currentCwd, handleGoalSlicePackageChange, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!workflowCurrentCwd) return;
@@ -1548,6 +1588,8 @@ export function AppShell() {
                 workflowMode={false}
                 workflowCwd={chatCurrentCwd}
                 onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
+                onGoalSliceSelect={handleGoalSliceSelect}
+                goalDesignRevisionAnchor={goalDesignRevisionAnchor}
                 onGoalContractSelect={handleGoalContractSelect}
                 onWorkflowGoalRevise={handleWorkflowGoalRevise}
                 onLibraryGraphNodeSelect={handleLibraryGraphNodeSelect}
@@ -1575,6 +1617,8 @@ export function AppShell() {
               workflowTemplate={selectedWorkflowTemplate}
               workflowCwd={workflowCurrentCwd}
               onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
+              onGoalSliceSelect={handleGoalSliceSelect}
+              goalDesignRevisionAnchor={goalDesignRevisionAnchor}
               onGoalContractSelect={handleGoalContractSelect}
               onWorkflowGoalRevise={handleWorkflowGoalRevise}
             />

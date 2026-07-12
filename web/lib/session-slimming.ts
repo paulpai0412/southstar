@@ -41,6 +41,7 @@ function slimContentBlockForUi<T>(block: T, maxChars: number): T {
   if (!block || typeof block !== "object") return block;
   const record = block as Record<string, unknown>;
   if (record.type === "workflowDag") return block;
+  if (record.type === "goalDesign") return block;
 
   const next = { ...record };
   for (const key of Object.keys(next)) {

@@ -1,7 +1,7 @@
-import type { WorkflowCompositionPlan } from "../design-library/types.ts";
+import { createHash } from "node:crypto";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts";
-import { LlmWorkflowComposer } from "../orchestration/llm-composer.ts";
+import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
 import {
   createLlmGoalDesigner,
   type GoalDesignMode,
@@ -16,19 +16,27 @@ import {
   claimGoalSubmissionPg,
   confirmGoalDesignPg,
   submitClaimedGoalPg,
+  submitGoalPg,
   type GoalSubmissionClaim,
   type RunGoalResult,
   type RunGoalRequest,
 } from "../orchestration/run-goal-service.ts";
-import { loadCurrentGoalDesignPackagePg } from "../orchestration/goal-design-draft-service.ts";
 import {
-  createPostgresPlannerDraft,
+  isReviewableGoalDesignDraftPg,
+  isGoalDesignVocabularyGapDraftPg,
+  retryPostgresGoalDesignAfterVocabularyApprovalPg,
+  loadCurrentGoalDesignPackagePg,
+  reviseGoalDesignFromChatPg,
+  reviseGoalSlicePg,
+  reviseGoalTemplatePolicyPg,
+  type GoalSlicePatchV1,
+} from "../orchestration/goal-design-draft-service.ts";
+import {
   createPostgresRunFromDraft,
   getPostgresPlannerDraftOrchestration,
   patchPostgresPlannerDraftTaskProfileOverride,
   revisePostgresPlannerDraft,
   validatePostgresPlannerDraft,
-  type PlannerDraftLibraryHints,
 } from "../ui-api/postgres-run-api.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
@@ -64,6 +72,8 @@ export async function handlePlannerRoute(
       goalInterpreter: resolveGoalInterpreter(context),
       goalDesigner: resolveGoalDesigner(context),
       composer: resolvePlannerWorkflowComposer(context),
+      libraryImportLlmProvider: context.libraryImportLlmProvider,
+      libraryImportSourceFetcher: context.libraryImportSourceFetcher,
     }, runGoalRequest, claim));
   }
 
@@ -95,6 +105,8 @@ export async function handlePlannerRoute(
         goalInterpreter: resolveGoalInterpreter(context),
         goalDesigner: resolveGoalDesigner(context),
         composer: resolvePlannerWorkflowComposer(context),
+        libraryImportLlmProvider: context.libraryImportLlmProvider,
+        libraryImportSourceFetcher: context.libraryImportSourceFetcher,
       }, { draftId, expectedPackageHash }));
     } catch (error) {
       return goalDesignConfirmationErrorResponse(error);
@@ -103,8 +115,45 @@ export async function handlePlannerRoute(
 
   const draftReviseStreamMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/revise\/stream$/);
   if (request.method === "POST" && draftReviseStreamMatch) {
-    const body = await readJsonBody<{ prompt?: unknown; orchestrationMode?: unknown; composerMode?: unknown }>(request);
+    const body = await readJsonBody<{
+      prompt?: unknown;
+      orchestrationMode?: unknown;
+      composerMode?: unknown;
+      expectedPackageHash?: unknown;
+      selectedSliceId?: unknown;
+    }>(request);
     return createPlannerDraftRevisionStreamResponse(context, decodeURIComponent(draftReviseStreamMatch[1]!), body);
+  }
+
+  const goalDesignSlicePatchMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/goal-design\/slices\/([^/]+)$/);
+  if (request.method === "PATCH" && goalDesignSlicePatchMatch) {
+    const body = await readJsonBody<{ expectedPackageHash?: unknown; patch?: unknown }>(request);
+    try {
+      return json("goal-design-package", await reviseGoalSlicePg(context.db, {
+        draftId: decodeURIComponent(goalDesignSlicePatchMatch[1]!),
+        sliceId: decodeURIComponent(goalDesignSlicePatchMatch[2]!),
+        expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+        patch: parseGoalSlicePatch(body.patch),
+      }));
+    } catch (error) {
+      return goalDesignRevisionErrorResponse(error);
+    }
+  }
+
+  const goalDesignTemplatePolicyPatchMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/goal-design\/template-policy$/);
+  if (request.method === "PATCH" && goalDesignTemplatePolicyPatchMatch) {
+    const body = await readJsonBody<{ expectedPackageHash?: unknown; templatePolicy?: unknown }>(request);
+    const templatePolicy = optionalWorkflowTemplatePolicy(body.templatePolicy);
+    if (!templatePolicy) return errorJson("templatePolicy is required", 422);
+    try {
+      return json("goal-design-package", await reviseGoalTemplatePolicyPg(context.db, {
+        draftId: decodeURIComponent(goalDesignTemplatePolicyPatchMatch[1]!),
+        expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+        templatePolicy,
+      }));
+    } catch (error) {
+      return goalDesignRevisionErrorResponse(error);
+    }
   }
 
   if (request.method === "POST" && url.pathname === "/api/v2/planner/drafts") {
@@ -115,25 +164,62 @@ export async function handlePlannerRoute(
       cwd?: unknown;
       compositionPlan?: unknown;
       libraryHints?: unknown;
+      idempotencyKey?: unknown;
+      goalDesignMode?: unknown;
+      templatePolicy?: unknown;
     }>(request);
-    const plannerRequest = parsePlannerDraftRequest(body);
     return json(
       "planner-draft",
-      await createPostgresPlannerDraft(context.db, {
-        ...plannerRequest,
+      plannerDraftReceiptFromGoalResult(await submitGoalPg({
+        db: context.db,
         goalInterpreter: resolveGoalInterpreter(context),
+        goalDesigner: resolveGoalDesigner(context),
         composer: resolvePlannerWorkflowComposer(context),
-      }),
+        libraryImportLlmProvider: context.libraryImportLlmProvider,
+        libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+      }, runGoalRequestFromPlannerDraftBody(body)), requiredString(body.goalPrompt, "goalPrompt")),
     );
   }
 
   const draftReviseMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/revise$/);
   if (request.method === "POST" && draftReviseMatch) {
-    const body = await readJsonBody<{ prompt?: unknown; orchestrationMode?: unknown; composerMode?: unknown }>(request);
+    const draftId = decodeURIComponent(draftReviseMatch[1]!);
+    const body = await readJsonBody<{
+      prompt?: unknown;
+      orchestrationMode?: unknown;
+      composerMode?: unknown;
+      expectedPackageHash?: unknown;
+      selectedSliceId?: unknown;
+    }>(request);
+    if (await isGoalDesignVocabularyGapDraftPg(context.db, draftId)) {
+      return json("planner-draft", await retryPostgresGoalDesignAfterVocabularyApprovalPg(context.db, {
+        draftId,
+        goalInterpreter: resolveGoalInterpreter(context),
+        goalDesigner: resolveGoalDesigner(context),
+        libraryImportLlmProvider: context.libraryImportLlmProvider,
+        libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+      }));
+    }
+    if (await isReviewableGoalDesignDraftPg(context.db, draftId)) {
+      try {
+        return json("goal-design-revision", await reviseGoalDesignFromChatPg({
+          db: context.db,
+          goalInterpreter: resolveGoalInterpreter(context),
+          goalDesigner: resolveGoalDesigner(context),
+        }, {
+          draftId,
+          expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+          message: requiredString(body.prompt, "prompt"),
+          selectedSliceId: optionalString(body.selectedSliceId),
+        }));
+      } catch (error) {
+        return goalDesignRevisionErrorResponse(error);
+      }
+    }
     return json(
       "planner-draft",
       await revisePostgresPlannerDraft(context.db, {
-        draftId: decodeURIComponent(draftReviseMatch[1]!),
+        draftId,
         prompt: requiredString(body.prompt, "prompt"),
         orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
         composerMode: optionalComposerMode(body.composerMode),
@@ -205,6 +291,8 @@ function createRunGoalStreamResponse(
           goalInterpreter: resolveGoalInterpreter(context),
           goalDesigner: resolveGoalDesigner(context),
           composer: resolvePlannerWorkflowComposer(context),
+          libraryImportLlmProvider: context.libraryImportLlmProvider,
+          libraryImportSourceFetcher: context.libraryImportSourceFetcher,
           onStage(stage, data) {
             if (stage === "goal_design.persisted") send("goal_design", data ?? {});
             if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
@@ -277,6 +365,8 @@ function createGoalDesignConfirmationStreamResponse(
               send("planner.stage", { stage: "planner.stream.degraded", message });
             },
           }),
+          libraryImportLlmProvider: context.libraryImportLlmProvider,
+          libraryImportSourceFetcher: context.libraryImportSourceFetcher,
           onStage(stage, data) {
             if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
           },
@@ -330,6 +420,7 @@ async function preflightGoalDesignConfirmation(
       [input.draftId],
     );
     if (!existing || existing.status === "completed" || existing.status === "failed") return undefined;
+    if (existing.status === "stale") return undefined;
     if (existing.payload_json.packageHash !== input.expectedPackageHash) {
       return errorJson("goal_design_confirmation_conflict", 409);
     }
@@ -365,6 +456,12 @@ function sendGoalDesignConfirmationResultFrames(
     send("run", { runId: result.runId, runStatus: result.runStatus });
     send("dag", { runId: result.runId, draftId: result.draftId, status: result.runStatus });
   }
+  if (result.executionSetId) {
+    send("execution_set", {
+      executionSetId: result.executionSetId,
+      sliceRuns: result.sliceRuns ?? [],
+    });
+  }
   if (result.approvalId) {
     send("approval", { approvalId: result.approvalId, runId: result.runId });
   }
@@ -379,9 +476,12 @@ function createPlannerDraftStreamResponse(
     cwd?: unknown;
     compositionPlan?: unknown;
     libraryHints?: unknown;
+    idempotencyKey?: unknown;
+    goalDesignMode?: unknown;
+    templatePolicy?: unknown;
   },
 ): Response {
-  const plannerRequest = parsePlannerDraftRequest(body);
+  const request = runGoalRequestFromPlannerDraftBody(body);
   const encoder = new TextEncoder();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let closed = false;
@@ -398,33 +498,34 @@ function createPlannerDraftStreamResponse(
       };
       heartbeat = startPlannerSseHeartbeat(context, send, {
         phase: "planner_draft_create",
+        idempotencyKey: request.idempotencyKey,
       });
       try {
         send("planner.stage", { stage: "request.accepted", message: "Accepted workflow generation request." });
-        const composer = resolvePlannerWorkflowComposer(context, {
-          onStreamDegraded(message) {
-            send("planner.stage", { stage: "planner.stream.degraded", message });
-          },
-        });
-        const draft = await createPostgresPlannerDraft(context.db, {
-          ...plannerRequest,
+        const result = await submitGoalPg({
+          db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
-          composer,
-          onProgress(event) {
-            send("planner.stage", event);
+          goalDesigner: resolveGoalDesigner(context),
+          composer: resolvePlannerWorkflowComposer(context, {
+            onStreamDegraded(message) {
+              send("planner.stage", { stage: "planner.stream.degraded", message });
+            },
+          }),
+          libraryImportLlmProvider: context.libraryImportLlmProvider,
+          libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+          onStage(stage, data) {
+            if (stage === "goal_design.persisted") send("goal_design", data ?? {});
+            if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
           },
-          onGoalContractDelta(text) {
-            send("goal_contract.delta", { text });
-          },
-          onLlmDelta(text) {
-            send("message.delta", { text });
-          },
-        });
+        }, request);
+        const draft = plannerDraftReceiptFromGoalResult(result, request.goalPrompt);
         send("draft", { draft });
-        send("planner.stage", { stage: "orchestration.loading", message: "Loading planner draft orchestration." });
-        const orchestration = await getPostgresPlannerDraftOrchestration(context.db, { draftId: draft.draftId });
-        send("orchestration", { orchestration });
-        send("done", {});
+        if (result.draftStatus === "validated") {
+          send("planner.stage", { stage: "orchestration.loading", message: "Loading planner draft orchestration." });
+          const orchestration = await getPostgresPlannerDraftOrchestration(context.db, { draftId: result.draftId });
+          send("orchestration", { orchestration });
+        }
+        send("done", result);
       } catch (error) {
         send("error", { error: error instanceof Error ? error.message : String(error) });
       } finally {
@@ -461,6 +562,8 @@ function createPlannerDraftRevisionStreamResponse(
     prompt?: unknown;
     orchestrationMode?: unknown;
     composerMode?: unknown;
+    expectedPackageHash?: unknown;
+    selectedSliceId?: unknown;
   },
 ): Response {
   const encoder = new TextEncoder();
@@ -482,6 +585,67 @@ function createPlannerDraftRevisionStreamResponse(
         draftId,
       });
       try {
+        if (await isGoalDesignVocabularyGapDraftPg(context.db, draftId)) {
+          send("planner.stage", { stage: "goal_design.vocabulary.retry", message: "Retrying Goal Design with approved Library vocabulary." });
+          const draft = await retryPostgresGoalDesignAfterVocabularyApprovalPg(context.db, {
+            draftId,
+            goalInterpreter: resolveGoalInterpreter(context),
+            goalDesigner: resolveGoalDesigner(context),
+            libraryImportLlmProvider: context.libraryImportLlmProvider,
+            libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+            onProgress(event) {
+              send("planner.stage", event);
+            },
+          });
+          if (draft.goalDesignPackage) {
+            send("goal_design", {
+              draftId: draft.draftId,
+              status: draft.status,
+              goalDesignPackageHash: draft.goalDesignPackageHash,
+              package: draft.goalDesignPackage,
+            });
+          }
+          send("draft", { draft });
+          send("done", { draftId: draft.draftId, draftStatus: draft.status, goalDesignPackageHash: draft.goalDesignPackageHash });
+          return;
+        }
+        if (await isReviewableGoalDesignDraftPg(context.db, draftId)) {
+          send("planner.stage", { stage: "goal_design.revision.requested", message: "Accepted Goal Design revision request." });
+          const result = await reviseGoalDesignFromChatPg({
+            db: context.db,
+            goalInterpreter: resolveGoalInterpreter(context),
+            goalDesigner: resolveGoalDesigner(context),
+          }, {
+            draftId,
+            expectedPackageHash: requiredString(body.expectedPackageHash, "expectedPackageHash"),
+            message: requiredString(body.prompt, "prompt"),
+            selectedSliceId: optionalString(body.selectedSliceId),
+          });
+          if (result.kind === "needs_input") {
+            send("message.delta", { text: result.question });
+            send("done", result);
+            return;
+          }
+          send("message.delta", { text: result.summary });
+          send("goal_design", {
+            draftId,
+            status: result.draftStatus,
+            goalDesignPackageHash: result.package.packageHash,
+            package: result.package,
+            changedSliceIds: result.changedSliceIds,
+          });
+          send("draft", {
+            draftId,
+            status: result.draftStatus,
+            goalDesignPackageHash: result.package.packageHash,
+          });
+          send("done", {
+            draftId,
+            draftStatus: result.draftStatus,
+            goalDesignPackageHash: result.package.packageHash,
+          });
+          return;
+        }
         send("planner.stage", { stage: "revision.requested", message: "Accepted workflow revision request." });
         const composer = resolvePlannerWorkflowComposer(context, {
           onStreamDegraded(message) {
@@ -557,83 +721,42 @@ async function readJsonBody<T>(request: Request): Promise<T> {
   return await request.json() as T;
 }
 
-function parsePlannerDraftRequest(body: {
+function runGoalRequestFromPlannerDraftBody(body: {
   goalPrompt?: unknown;
-  orchestrationMode?: unknown;
-  composerMode?: unknown;
   cwd?: unknown;
-  compositionPlan?: unknown;
-  libraryHints?: unknown;
-}): {
-  goalPrompt: string;
-  orchestrationMode?: "llm-constrained";
-  composerMode?: WorkflowComposerMode;
-  cwd?: string;
-  compositionPlan?: WorkflowCompositionPlan;
-  libraryHints?: PlannerDraftLibraryHints;
-} {
+  idempotencyKey?: unknown;
+  goalDesignMode?: unknown;
+  templatePolicy?: unknown;
+}): RunGoalRequest {
+  const goalPrompt = requiredString(body.goalPrompt, "goalPrompt");
+  const cwd = optionalString(body.cwd) ?? process.cwd();
   return {
-    goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
-    orchestrationMode: optionalOrchestrationMode(body.orchestrationMode),
-    composerMode: optionalComposerMode(body.composerMode),
-    cwd: optionalString(body.cwd),
-    compositionPlan: optionalWorkflowCompositionPlan(body.compositionPlan),
-    libraryHints: optionalPlannerDraftLibraryHints(body.libraryHints),
+    goalPrompt,
+    cwd,
+    idempotencyKey: optionalString(body.idempotencyKey) ?? legacyPlannerDraftIdempotencyKey(goalPrompt, cwd),
+    goalDesignMode: optionalGoalDesignMode(body.goalDesignMode),
+    templatePolicy: optionalWorkflowTemplatePolicy(body.templatePolicy),
   };
 }
 
-function optionalWorkflowCompositionPlan(value: unknown): WorkflowCompositionPlan | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("compositionPlan must be an object");
-  if (value.schemaVersion !== "southstar.workflow_composition_plan.v1") {
-    throw new Error("compositionPlan.schemaVersion must be southstar.workflow_composition_plan.v1");
-  }
-  if (typeof value.title !== "string" || value.title.length === 0) {
-    throw new Error("compositionPlan.title is required");
-  }
-  if (
-    value.selectedWorkflowTemplateRef !== undefined
-    && (typeof value.selectedWorkflowTemplateRef !== "string" || value.selectedWorkflowTemplateRef.length === 0)
-  ) {
-    throw new Error("compositionPlan.selectedWorkflowTemplateRef must be a non-empty string when provided");
-  }
-  if (!Array.isArray(value.tasks) || value.tasks.length === 0) {
-    throw new Error("compositionPlan.tasks is required");
-  }
-  return value as WorkflowCompositionPlan;
-}
-
-function optionalPlannerDraftLibraryHints(value: unknown): PlannerDraftLibraryHints | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("libraryHints must be an object");
+function plannerDraftReceiptFromGoalResult(result: RunGoalResult, goalPrompt = "") {
   return {
-    roleRefs: parseOptionalStringArray(value.roleRefs, "libraryHints.roleRefs"),
-    agentProfileRefs: parseOptionalStringArray(value.agentProfileRefs, "libraryHints.agentProfileRefs"),
-    skillRefs: parseOptionalStringArray(value.skillRefs, "libraryHints.skillRefs"),
-    mcpGrantRefs: parseOptionalStringArray(value.mcpGrantRefs, "libraryHints.mcpGrantRefs"),
-    toolRefs: parseOptionalStringArray(value.toolRefs, "libraryHints.toolRefs"),
-    modelHints: parseOptionalStringRecord(value.modelHints, "libraryHints.modelHints"),
-    vaultLeasePolicyRefs: parseOptionalStringArray(value.vaultLeasePolicyRefs, "libraryHints.vaultLeasePolicyRefs"),
-    toolPolicyHints: optionalPlannerDraftToolPolicyHints(value.toolPolicyHints),
+    draftId: result.draftId,
+    goalPrompt,
+    workflowId: "",
+    status: result.draftStatus,
+    goalContractHash: result.goalContractHash,
+    ...(result.goalDesignPackageHash ? { goalDesignPackageHash: result.goalDesignPackageHash } : {}),
+    ...(result.vocabularyGaps ? { vocabularyGaps: result.vocabularyGaps } : {}),
+    ...(result.libraryImportDraftId ? { libraryImportDraftId: result.libraryImportDraftId } : {}),
+    blockers: result.blockers,
+    validationIssues: [],
+    taskSummaries: [],
   };
 }
 
-function optionalPlannerDraftToolPolicyHints(value: unknown): PlannerDraftLibraryHints["toolPolicyHints"] | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("libraryHints.toolPolicyHints must be an object");
-  return {
-    allowedTools: parseOptionalStringArray(value.allowedTools, "libraryHints.toolPolicyHints.allowedTools"),
-    deniedTools: parseOptionalStringArray(value.deniedTools, "libraryHints.toolPolicyHints.deniedTools"),
-    requiresApprovalFor: parseOptionalStringArray(value.requiresApprovalFor, "libraryHints.toolPolicyHints.requiresApprovalFor"),
-  };
-}
-
-function parseOptionalStringRecord(value: unknown, field: string): Record<string, string> | undefined {
-  if (value === undefined) return undefined;
-  if (!isRecord(value) || Object.values(value).some((item) => typeof item !== "string")) {
-    throw new Error(`${field} must be an object with string values`);
-  }
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item as string]));
+function legacyPlannerDraftIdempotencyKey(goalPrompt: string, cwd: string): string {
+  return `planner-draft-${createHash("sha256").update(`${cwd}\n${goalPrompt}`).digest("hex").slice(0, 24)}`;
 }
 
 function optionalOrchestrationMode(value: unknown): "llm-constrained" | undefined {
@@ -668,6 +791,48 @@ function optionalWorkflowTemplatePolicy(value: unknown): WorkflowTemplatePolicyV
   throw new Error("templatePolicy.mode must be auto, prefer, or require");
 }
 
+function parseGoalSlicePatch(value: unknown): GoalSlicePatchV1 {
+  if (!isRecord(value)) throw new Error("patch must be an object");
+  const patch: GoalSlicePatchV1 = {};
+  if (value.outcome !== undefined) patch.outcome = requiredString(value.outcome, "patch.outcome");
+  if (value.requirementIds !== undefined) patch.requirementIds = parseRequiredStringArray(value.requirementIds, "patch.requirementIds");
+  if (value.stateOrArtifactOwner !== undefined) patch.stateOrArtifactOwner = requiredString(value.stateOrArtifactOwner, "patch.stateOrArtifactOwner");
+  if (value.mutationBoundary !== undefined) patch.mutationBoundary = requiredString(value.mutationBoundary, "patch.mutationBoundary");
+  if (value.expectedArtifactRefs !== undefined) patch.expectedArtifactRefs = parseRequiredStringArray(value.expectedArtifactRefs, "patch.expectedArtifactRefs");
+  if (value.evaluatorContractRefs !== undefined) patch.evaluatorContractRefs = parseRequiredStringArray(value.evaluatorContractRefs, "patch.evaluatorContractRefs");
+  if (value.dependsOnSliceIds !== undefined) patch.dependsOnSliceIds = parseRequiredStringArray(value.dependsOnSliceIds, "patch.dependsOnSliceIds");
+  if (value.dependencyArtifactRefs !== undefined) patch.dependencyArtifactRefs = parseRequiredStringArray(value.dependencyArtifactRefs, "patch.dependencyArtifactRefs");
+  if (value.mergeReason !== undefined) patch.mergeReason = requiredString(value.mergeReason, "patch.mergeReason");
+  return patch;
+}
+
+function parseRequiredStringArray(value: unknown, field: string): string[] {
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${field} must be an array of strings`);
+  }
+  return value;
+}
+
+function goalDesignRevisionErrorResponse(error: unknown): Response {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.includes("goal_design_package_stale")
+    || message.includes("goal_design_already_materialized")
+    || message.includes("not ready for review")
+  ) {
+    return errorJson(message, 409);
+  }
+  if (
+    message.includes("invalid Goal Design package")
+    || message.includes("goal_design_slice_not_found")
+    || message.includes("patch must")
+    || message.includes("patch.")
+  ) {
+    return errorJson(message, 422);
+  }
+  throw error;
+}
+
 function resolvePlannerWorkflowComposer(
   context: RuntimeServerContext,
   options: { onStreamDegraded?: (message: string) => void } = {},
@@ -675,6 +840,7 @@ function resolvePlannerWorkflowComposer(
   if (context.workflowComposer) return context.workflowComposer;
   return new LlmWorkflowComposer({
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
+    composerSop: () => loadWorkflowComposerSopPg(context.db),
     client: {
       async generateText(input) {
         return await context.plannerClient.generate(input.prompt);
@@ -726,14 +892,6 @@ function requiredString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
-}
-
-function parseOptionalStringArray(value: unknown, field: string): string[] | undefined {
-  if (value === undefined) return undefined;
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error(`${field} must be an array of strings`);
-  }
-  return value;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

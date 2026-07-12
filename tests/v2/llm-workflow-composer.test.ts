@@ -7,6 +7,7 @@ import {
   parseWorkflowCompositionPlanFromText,
   WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA,
 } from "../../src/v2/orchestration/llm-composer.ts";
+import { finalizeGoalDesignPackage } from "../../src/v2/orchestration/goal-design.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 const GOAL_CONTRACT = softwareGoalContract();
@@ -16,6 +17,12 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   const composer = new LlmWorkflowComposer({
     model: "test-model",
     maxOutputChars: 20_000,
+    composerSop: {
+      objectKey: "skill.southstar-slice-to-dag-composer",
+      versionRef: "skill.southstar-slice-to-dag-composer@test",
+      stateHash: "composer-sop-state",
+      body: "# Slice to DAG Composer\n\nSLICE_TO_DAG_SOP_MARKER",
+    },
     client: {
       async generateText(input) {
         prompts.push(input.prompt);
@@ -34,6 +41,8 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /OutputJsonSchema:/);
   assert.match(prompts[0] ?? "", /Do not use alias fields/i);
   assert.doesNotMatch(prompts[0] ?? "", /SkillGuidance:/);
+  assert.match(prompts[0] ?? "", /WorkflowComposerSopSkill:/);
+  assert.match(prompts[0] ?? "", /SLICE_TO_DAG_SOP_MARKER/);
   assert.match(prompts[0] ?? "", /DagAndAgentProfileSop:/);
   assert.match(prompts[0] ?? "", /Choose task count and workerKind dynamically/i);
   assert.match(prompts[0] ?? "", /do not pre-add repair\/reverify nodes/i);
@@ -65,15 +74,6 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /acceptanceCriteria/);
   assert.match(prompts[0] ?? "", /GoalContractRequirements:/);
   assert.match(prompts[0] ?? "", new RegExp(GOAL_CONTRACT.requirements[0]!.id));
-  assert.match(prompts[0] ?? "", /turn each observable requirement into one or more executable producer work packages/i);
-  assert.match(prompts[0] ?? "", /preserve independent branches as tasks without artificial dependencies/i);
-  assert.match(prompts[0] ?? "", /producer tasks are dependency-independent unless a declared input artifact requires ordering/i);
-  assert.match(prompts[0] ?? "", /shared integration or evaluator task depends on every producer branch it evaluates/i);
-  assert.match(prompts[0] ?? "", /state or artifact owner/i);
-  assert.match(prompts[0] ?? "", /same atomic consistency boundary/i);
-  assert.match(prompts[0] ?? "", /do not create a catch-all producer/i);
-  assert.match(prompts[0] ?? "", /dependency is valid only when the consumer names an upstream outputArtifactRef in inputArtifactRefs/i);
-  assert.match(prompts[0] ?? "", /never force one task per requirement/i);
   assert.match(prompts[0] ?? "", /independent evaluator/i);
   assert.equal(typeof WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.id.type, "string");
   assert.equal(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.requirementIds.type, "array");
@@ -92,6 +92,34 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   );
 });
 
+
+test("LLM composer prompt forbids using Goal Design skill refs as DAG primitives", async () => {
+  const prompts: string[] = [];
+  const composer = new LlmWorkflowComposer({
+    model: "test-model",
+    maxOutputChars: 20_000,
+    client: {
+      async generateText(input) {
+        prompts.push(input.prompt);
+        return JSON.stringify(validPlan());
+      },
+    },
+  });
+
+  await composer.compose({
+    goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
+    candidatePacket: candidatePacket(),
+    goalDesignPackage: goalDesignPackage(),
+  });
+
+  assert.match(prompts[0] ?? "", /ForbiddenGoalDesignRefs:/);
+  assert.match(prompts[0] ?? "", /skill\.southstar-goal-design/);
+  assert.match(prompts[0] ?? "", /skills\/southstar-goal-design\.skill\.md/);
+  assert.match(prompts[0] ?? "", /library\/skills\/southstar-goal-design\.skill\.md/);
+  assert.match(prompts[0] ?? "", /must never be used as agentDefinitionRef, skillRefs, instructionRefs, agentProfileRef, evaluatorProfileRef, toolGrantRefs, or mcpGrantRefs/i);
+  assert.match(prompts[0] ?? "", /GoalDesignPackage is a planning constraint, not a selectable Library primitive/i);
+});
 
 test("LLM composer uses streaming text client and relays true deltas", async () => {
   const deltas: string[] = [];
@@ -534,6 +562,51 @@ function candidatePacket(): CandidatePacket {
     },
     unavailableRequirements: [],
   };
+}
+
+function goalDesignPackage() {
+  const requirement = GOAL_CONTRACT.requirements[0]!;
+  const artifactRef = GOAL_CONTRACT.expectedArtifactRefs[0]!;
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision: 1,
+    goalContract: GOAL_CONTRACT,
+    evaluatorContracts: [{
+      schemaVersion: "southstar.requirement_evaluator_contract.v1",
+      id: "eval-main",
+      requirementId: requirement.id,
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      requiredEvidenceKinds: ["test_result"],
+      independence: "independent",
+      failureClassifications: ["implementation_gap"],
+    }],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [{
+        id: "slice-main",
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: artifactRef,
+        mutationBoundary: "one cohesive implementation boundary",
+        expectedArtifactRefs: [artifactRef],
+        evaluatorContractRefs: ["eval-main"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-main"],
+      rationale: "one atomic requirement boundary",
+    },
+    templatePolicy: { mode: "auto" },
+    goalDesignSkillRef: "skill.southstar-goal-design",
+    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
+    workspaceDiscoveryHash: "workspace-test",
+    mode: "auto_until_blocked",
+  });
 }
 
 function candidateMap(

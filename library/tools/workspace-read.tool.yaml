@@ -1,0 +1,13 @@
+schemaVersion: southstar.library.tool_definition_file.v1
+id: tool.workspace-read
+title: Workspace Read
+scope: software
+status: approved
+toolName: workspace-read
+proxyToolName: workspace-read
+operations:
+  - read_file
+  - list_files
+  - search_files
+providesCapabilityRefs:
+  - capability.repo-read

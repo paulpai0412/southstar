@@ -1,33 +1,31 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
+import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import { finalizeGoalContract, type GoalContractInterpreter, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
-  DeterministicFixtureComposer,
-  deterministicFixtureComposition,
-} from "./fixtures/deterministic-workflow-composer.ts";
-import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
+  finalizeGoalDesignPackage,
+  type GoalDesignMode,
+  type GoalDesigner,
+  type GoalDesignPackageV1,
+  type ResolvedGoalDesignSkillV1,
+  type WorkflowTemplatePolicyV1,
+} from "../../src/v2/orchestration/goal-design.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
 type SseFrame = { event: string; data: Record<string, unknown> };
 
-test("planner draft stream route emits true LLM deltas, backend stages, draft, orchestration, and done", async () => {
+test("legacy planner draft stream route creates a reviewable Goal Design draft", async () => {
   const db = await createTestPostgresDb();
   try {
-    const interpretationText = goalInterpretation("Generate a todo webapp");
-    const compositionText = JSON.stringify(deterministicFixtureComposition());
+    await seedGoalDesignSkill(db);
     const context = {
       db,
-      workflowComposer: new DeltaComposer(compositionText),
-      plannerClient: {
-        async generate() {
-          throw new Error("generate should not be used by streaming route");
-        },
-        async generateStream(_prompt: string, handlers?: { onDelta?: (text: string) => void }) {
-          handlers?.onDelta?.(interpretationText.slice(0, 32));
-          handlers?.onDelta?.(interpretationText.slice(32));
-          return interpretationText;
-        },
-      },
+      goalInterpreter: fixedGoalInterpreter(goalContract("Generate a todo webapp")),
+      goalDesigner: inlineGoalDesigner(),
+      workflowComposer: new DeterministicFixtureComposer(),
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
       executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
     };
 
@@ -38,47 +36,37 @@ test("planner draft stream route emits true LLM deltas, backend stages, draft, o
         goalPrompt: "generate todo webapp",
         orchestrationMode: "llm-constrained",
         composerMode: "llm",
+        cwd: process.cwd(),
       }),
     }));
 
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "text/event-stream");
     const frames = parseSse(await response.text());
-    assert.equal(joinDeltaFrames(frames, "goal_contract.delta"), interpretationText);
-    const messageText = joinDeltaFrames(frames, "message.delta");
-    assert.ok(messageText.length > 0);
-    assert.equal(messageText.includes(interpretationText), false);
-    assert.equal(messageText.split(compositionText).join(""), "");
-    assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "composer.started"));
     assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "goal_contract.interpreted"));
-    assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "draft.persisted"));
-    assert.ok(frames.some((frame) => frame.event === "draft" && typeof (frame.data.draft as { draftId?: unknown }).draftId === "string"));
-    assert.ok(frames.some((frame) => frame.event === "orchestration" && Array.isArray((frame.data.orchestration as { taskSummaries?: unknown }).taskSummaries)));
+    assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "goal_design.persisted"));
+    const draft = frames.find((frame) => frame.event === "draft")?.data.draft as { draftId?: unknown; status?: unknown; goalDesignPackageHash?: unknown } | undefined;
+    assert.match(String(draft?.draftId), /^draft-goal-design-/);
+    assert.equal(draft?.status, "ready_for_review");
+    assert.match(String(draft?.goalDesignPackageHash), /^[a-f0-9]{64}$/);
+    assert.equal(frames.some((frame) => frame.event === "orchestration"), false);
     assert.equal(frames.at(-1)?.event, "done");
+    assert.equal((frames.at(-1)?.data as { draftStatus?: string }).draftStatus, "ready_for_review");
   } finally {
     await db.close();
   }
 });
 
-test("planner draft revise stream route includes the previous Goal Contract and streams the revised DAG", async () => {
+test("legacy planner draft revise stream route edits the reviewed Goal Design package", async () => {
   const db = await createTestPostgresDb();
   try {
-    const goalPrompts: string[] = [];
+    await seedGoalDesignSkill(db);
     const context = {
       db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Generate a todo webapp")),
+      goalDesigner: inlineGoalDesigner(),
       workflowComposer: new DeterministicFixtureComposer(),
-      plannerClient: {
-        async generate() {
-          throw new Error("generate should not be used by streaming route");
-        },
-        async generateStream(prompt: string, handlers?: { onDelta?: (text: string) => void }) {
-          const text = goalInterpretation(prompt.includes("RevisionPrompt:") ? "Generate a todo webapp with parallel frontend and backend tasks" : "Generate a todo webapp");
-          goalPrompts.push(prompt);
-          handlers?.onDelta?.(text.slice(0, 24));
-          handlers?.onDelta?.(text.slice(24));
-          return text;
-        },
-      },
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
       executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
     };
 
@@ -89,11 +77,15 @@ test("planner draft revise stream route includes the previous Goal Contract and 
         goalPrompt: "generate todo webapp",
         orchestrationMode: "llm-constrained",
         composerMode: "llm",
+        cwd: process.cwd(),
       }),
     }));
     const initialFrames = parseSse(await initialResponse.text());
-    const initialDraftId = (initialFrames.find((frame) => frame.event === "draft")?.data.draft as { draftId?: string } | undefined)?.draftId;
+    const initialDraft = initialFrames.find((frame) => frame.event === "draft")?.data.draft as { draftId?: string; goalDesignPackageHash?: string } | undefined;
+    const initialDraftId = initialDraft?.draftId;
+    const packageHash = initialDraft?.goalDesignPackageHash;
     assert.ok(initialDraftId);
+    assert.ok(packageHash);
 
     const reviseResponse = await handleRuntimeRoute(context, new Request(`http://127.0.0.1/api/v2/planner/drafts/${initialDraftId}/revise/stream`, {
       method: "POST",
@@ -102,22 +94,19 @@ test("planner draft revise stream route includes the previous Goal Contract and 
         prompt: "split frontend and backend into parallel tasks",
         orchestrationMode: "llm-constrained",
         composerMode: "llm",
+        expectedPackageHash: packageHash,
       }),
     }));
 
     assert.equal(reviseResponse.status, 200);
     assert.equal(reviseResponse.headers.get("content-type"), "text/event-stream");
     const reviseFrames = parseSse(await reviseResponse.text());
-    assert.ok(reviseFrames.some((frame) => frame.event === "goal_contract.delta" && typeof frame.data.text === "string"));
-    assert.equal(reviseFrames.some((frame) => frame.event === "message.delta"), false);
-    assert.ok(reviseFrames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "revision.requested"));
-    assert.ok(reviseFrames.some((frame) => frame.event === "draft" && typeof (frame.data.draft as { draftId?: unknown }).draftId === "string"));
-    assert.ok(reviseFrames.some((frame) => frame.event === "orchestration" && Array.isArray((frame.data.orchestration as { taskSummaries?: unknown }).taskSummaries)));
+    assert.ok(reviseFrames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "goal_design.revision.requested"));
+    assert.ok(reviseFrames.some((frame) => frame.event === "message.delta" && /Updated slice plan/.test(String(frame.data.text))));
+    const revised = reviseFrames.find((frame) => frame.event === "goal_design")?.data as { changedSliceIds?: string[]; goalDesignPackageHash?: string } | undefined;
+    assert.deepEqual(revised?.changedSliceIds, ["slice-implementation"]);
+    assert.match(String(revised?.goalDesignPackageHash), /^[a-f0-9]{64}$/);
     assert.equal(reviseFrames.at(-1)?.event, "done");
-
-    assert.equal(goalPrompts.length, 2);
-    assert.match(goalPrompts[1] ?? "", /PreviousGoalContract:/);
-    assert.match(goalPrompts[1] ?? "", /RevisionPrompt: split frontend and backend into parallel tasks/);
   } finally {
     await db.close();
   }
@@ -135,41 +124,125 @@ function parseSse(text: string): SseFrame[] {
   });
 }
 
-function joinDeltaFrames(frames: SseFrame[], event: string): string {
-  return frames
-    .filter((frame) => frame.event === event)
-    .map((frame) => typeof frame.data.text === "string" ? frame.data.text : "")
-    .join("");
+async function seedGoalDesignSkill(db: Awaited<ReturnType<typeof createTestPostgresDb>>): Promise<void> {
+  await upsertLibraryObject(db, {
+    objectKey: "skill.southstar-goal-design",
+    objectKind: "skill_spec",
+    status: "approved",
+    headVersionId: "skill.southstar-goal-design@test",
+    state: {
+      purpose: "goal_design",
+      body: "Design the smallest cohesive outcome slices and return the host schema.",
+    },
+  });
 }
 
-class DeltaComposer implements WorkflowComposer {
-  constructor(private readonly text: string) {}
-
-  async compose(input: ComposeWorkflowInput) {
-    input.onLlmDelta?.(this.text.slice(0, 48));
-    input.onLlmDelta?.(this.text.slice(48));
-    return deterministicFixtureComposition();
-  }
+function fixedGoalInterpreter(contract: GoalContractV1): GoalContractInterpreter {
+  return { interpret: async () => contract };
 }
 
-function goalInterpretation(summary: string): string {
-  return JSON.stringify({
-    domain: "software",
-    intent: "implement_feature",
-    workType: "software_feature",
-    summary,
-    requirements: [{
-      statement: summary,
-      acceptanceCriteria: [summary],
-      blocking: true,
-      source: "explicit",
+function goalContract(goalPrompt: string): GoalContractV1 {
+  return finalizeGoalContract({
+    goalPrompt,
+    cwd: process.cwd(),
+    interpretation: {
+      domain: "software",
+      intent: "implement_feature",
+      workType: "software_feature",
+      summary: goalPrompt,
+      requirements: [{ statement: goalPrompt, acceptanceCriteria: [goalPrompt], blocking: true, source: "explicit" }],
+      expectedArtifactRefs: ["artifact.implementation_report"],
+      requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
+      nonGoals: [],
+      assumptions: [],
+      blockingInputs: [],
+      riskTags: [],
+      requestedSideEffects: ["workspace-write"],
+    },
+  });
+}
+
+function inlineGoalDesigner(): GoalDesigner {
+  return {
+    async design(input) {
+      return goalDesignPackage({
+        goalContract: input.goalContract,
+        mode: input.mode,
+        templatePolicy: input.templatePolicy,
+        skill: input.skill,
+        workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
+      });
+    },
+    async revise(input) {
+      const next = goalDesignPackage({
+        goalContract: input.currentPackage.goalContract,
+        mode: input.currentPackage.mode,
+        templatePolicy: input.currentPackage.templatePolicy,
+        skill: {
+          objectKey: input.currentPackage.goalDesignSkillRef,
+          versionRef: input.currentPackage.goalDesignSkillVersionRef,
+          stateHash: "",
+          body: "",
+        },
+        workspaceDiscoveryHash: input.currentPackage.workspaceDiscoveryHash,
+        revision: input.currentPackage.revision + 1,
+        parentRevision: input.currentPackage.revision,
+      });
+      return { kind: "revision", package: next, summary: "Updated slice plan.", changedSliceIds: ["slice-implementation"] };
+    },
+  };
+}
+
+function goalDesignPackage(input: {
+  goalContract: GoalContractV1;
+  mode: GoalDesignMode;
+  templatePolicy: WorkflowTemplatePolicyV1;
+  skill: ResolvedGoalDesignSkillV1;
+  workspaceDiscoveryHash: string;
+  revision?: number;
+  parentRevision?: number;
+}): GoalDesignPackageV1 {
+  const requirement = input.goalContract.requirements[0]!;
+  const artifactRef = input.goalContract.expectedArtifactRefs[0]!;
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision: input.revision ?? 1,
+    ...(input.parentRevision ? { parentRevision: input.parentRevision } : {}),
+    goalContract: input.goalContract,
+    evaluatorContracts: [{
+      schemaVersion: "southstar.requirement_evaluator_contract.v1",
+      id: "eval-implementation",
+      requirementId: requirement.id,
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      requiredEvidenceKinds: ["test_result"],
+      independence: "independent",
+      failureClassifications: ["implementation_gap"],
     }],
-    expectedArtifactRefs: ["artifact.implementation_report", "artifact.verification_report"],
-    requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
-    nonGoals: [],
-    assumptions: [],
-    blockingInputs: [],
-    riskTags: [],
-    requestedSideEffects: ["workspace-write"],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: input.revision ?? 1,
+      slices: [{
+        id: "slice-implementation",
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: artifactRef,
+        mutationBoundary: "one cohesive implementation boundary",
+        expectedArtifactRefs: [artifactRef],
+        evaluatorContractRefs: ["eval-implementation"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-implementation"],
+      rationale: "one atomic requirement boundary",
+    },
+    templatePolicy: input.templatePolicy,
+    goalDesignSkillRef: input.skill.objectKey,
+    goalDesignSkillVersionRef: input.skill.versionRef,
+    workspaceDiscoveryHash: input.workspaceDiscoveryHash,
+    mode: input.mode,
   });
 }

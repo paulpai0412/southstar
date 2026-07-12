@@ -288,7 +288,7 @@ function selectTaskId(taskIds: string[], preferredTaskId?: string): string | und
 }
 
 function normalizeDomain(value: string | undefined): string {
-  return value && value.length > 0 ? value : "software";
+  return value && value.length > 0 ? value : "general";
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

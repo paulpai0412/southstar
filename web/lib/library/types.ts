@@ -103,7 +103,15 @@ export type LibraryImportSourceDocument = {
   content: string;
 };
 
-export type LibraryImportCandidateKind = "agent" | "skill" | "mcp" | "tool";
+export type LibraryImportCandidateKind =
+  | "agent"
+  | "skill"
+  | "mcp"
+  | "tool"
+  | "domain"
+  | "capability"
+  | "artifact"
+  | "evaluator";
 
 export type LibraryImportEdgeType =
   | "belongs_to_domain"
@@ -137,6 +145,12 @@ export type LibraryImportCandidate = {
   sourcePath?: string;
   selectedByDefault: boolean;
   confidence?: number;
+  description?: string;
+  aliases?: string[];
+  requiredOperations?: string[];
+  artifactType?: string;
+  evidenceKinds?: string[];
+  validatesArtifactRefs?: string[];
 };
 
 export type LibraryImportProposedEdge = {

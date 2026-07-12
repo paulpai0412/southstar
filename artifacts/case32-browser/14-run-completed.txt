@@ -1,0 +1,85 @@
+Southstar
+New
+.../apps/southstar-vocab
+RUNNING WORKFLOW RUNS
+
+No running workflows for this project.
+
+COMPLETED WORKFLOW RUNS
+Continue the existing goal now that the approved Library vocabulary is available.
+<age>
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+State Dashboard
+
+Workflow lifecycle by project, newest first.
+
+active 0
+attention 0
+exception 0
+runs 1
+HEALTHY
+CREATED
+0
+
+No workflow runs
+
+SCHEDULING
+0
+
+No workflow runs
+
+RUNNING
+0
+
+No workflow runs
+
+VERIFYING
+0
+
+No workflow runs
+
+EXCEPTION
+0
+
+No workflow runs
+
+PAUSED
+0
+
+No workflow runs
+
+COMPLETED
+1
+execution completed
+outcome satisfied
+health healthy
+Continue the existing goal now that the approved Library vocabulary is available.
+southstar-vocab · software
+<run>...717c6 · <age>
+Pause
+Cancel
+CANCELLED
+0
+
+No workflow runs
+
+Slice slice-scope-vocabulary-alignment
+slice-scope-vocabulary-alignment
+Resume the existing goal in this repository by aligning it to approved vocabulary, delivering any remaining flashcard/review behavior in code, and producing implementation, verification, review-session, and completion evidence artifacts. · strategy single-run · <hash>
+Outcome
+State / artifact owner
+Mutation boundary
+Requirement IDs
+Expected artifact refs
+Evaluator contract refs
+Depends on slice IDs
+Dependency artifact refs
+Merge reason
+expected package <hash>
+Save slice

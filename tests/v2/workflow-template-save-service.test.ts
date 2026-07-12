@@ -133,14 +133,13 @@ test("quotes YAML scalar-like titles before syncing", async () => {
   }
 });
 
-test("approved saved workflow templates become workflow generation candidates", async () => {
+test("saved workflow templates remain draft proposals until separately approved", async () => {
   const db = await createTestPostgresDb();
-  const root = await mkdtemp(join(tmpdir(), "southstar-template-save-approved-"));
+  const root = await mkdtemp(join(tmpdir(), "southstar-template-save-draft-"));
   try {
     await saveWorkflowTemplateDraft(db, {
       root,
       scope: "software",
-      status: "approved",
       templateId: "template.reusable-webapp",
       title: "Reusable Webapp",
       nodes: [{
@@ -155,10 +154,10 @@ test("approved saved workflow templates become workflow generation candidates", 
       libraryVersionRefs: ["agent.frontend-developer@test", "skill.react-ui@test"],
     });
 
-    assert.match(await readFile(join(root, "templates/saved/reusable-webapp.workflow.yaml"), "utf8"), /status: approved/);
-    assert.match(await readFile(join(root, "profiles/generated/reusable-webapp/implement-ui.profile.yaml"), "utf8"), /status: approved/);
-    assert.equal((await findLibraryObjectByKey(db, "template.reusable-webapp"))?.status, "approved");
-    assert.equal((await findLibraryObjectByKey(db, "profile.generated.reusable-webapp.implement-ui"))?.status, "approved");
+    assert.match(await readFile(join(root, "templates/saved/reusable-webapp.workflow.yaml"), "utf8"), /status: draft/);
+    assert.match(await readFile(join(root, "profiles/generated/reusable-webapp/implement-ui.profile.yaml"), "utf8"), /status: draft/);
+    assert.equal((await findLibraryObjectByKey(db, "template.reusable-webapp"))?.status, "draft");
+    assert.equal((await findLibraryObjectByKey(db, "profile.generated.reusable-webapp.implement-ui"))?.status, "draft");
 
     const candidates = await resolveWorkflowCandidates(db, {
       scope: "software",
@@ -174,7 +173,7 @@ test("approved saved workflow templates become workflow generation candidates", 
         missingInputs: [],
       },
     });
-    assert.equal(candidates.workflowTemplateCandidates.some((candidate) => candidate.ref === "template.reusable-webapp"), true);
+    assert.equal(candidates.workflowTemplateCandidates.some((candidate) => candidate.ref === "template.reusable-webapp"), false);
   } finally {
     await db.close();
     await rm(root, { recursive: true, force: true });
@@ -211,7 +210,7 @@ test("rejects unsafe template and node identifiers before writing files", async 
   }
 });
 
-test("runtime save-template route writes approved workflow templates by default", async () => {
+test("runtime save-template route writes draft workflow template proposals by default", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-template-route-"));
   try {
@@ -279,9 +278,9 @@ test("runtime save-template route writes approved workflow templates by default"
     assert.match(templateYaml, /skill\.software-implementation@/);
     assert.match(templateYaml, /tool\.workspace-write@/);
     assert.match(templateYaml, /mcp\.filesystem-workspace@/);
-    assert.match(templateYaml, /status: approved/);
-    assert.equal((await findLibraryObjectByKey(db, "template.route-save"))?.status, "approved");
-    assert.equal((await findLibraryObjectByKey(db, "profile.generated.route-save.implement-ui"))?.status, "approved");
+    assert.match(templateYaml, /status: draft/);
+    assert.equal((await findLibraryObjectByKey(db, "template.route-save"))?.status, "draft");
+    assert.equal((await findLibraryObjectByKey(db, "profile.generated.route-save.implement-ui"))?.status, "draft");
     assert.doesNotMatch(profile, /agent\.browser-body/);
     assert.equal(await findLibraryObjectByKey(db, "agent.maker"), null);
   } finally {
@@ -337,8 +336,8 @@ test("runtime save-template route derives generated profile agent refs from role
     assert.equal(response.status, 200);
     const profile = await readFile(join(libraryRoot, "profiles/generated/generated-route-save/implement-ui.profile.yaml"), "utf8");
     assert.match(profile, /agent\.software-maker/);
-    assert.match(profile, /status: approved/);
-    assert.equal((await findLibraryObjectByKey(db, "template.generated-route-save"))?.status, "approved");
+    assert.match(profile, /status: draft/);
+    assert.equal((await findLibraryObjectByKey(db, "template.generated-route-save"))?.status, "draft");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

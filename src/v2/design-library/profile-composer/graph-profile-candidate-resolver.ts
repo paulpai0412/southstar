@@ -27,6 +27,8 @@ export function isRuntimeProfilePrimitiveCandidate(object: LibraryObjectSummary)
   switch (object.objectKind) {
     case "skill_spec":
     case "skill_definition":
+      if (stringValue(state.purpose) === "goal_design") return false;
+      if (stringValue(state.purpose) === "composer_guidance") return false;
       return stringValue(state.body) !== undefined || stringValue(state.instructions) !== undefined;
     case "tool_definition":
       return stringValue(state.toolName) !== undefined && stringValue(state.proxyToolName) !== undefined;

@@ -44,7 +44,7 @@ export async function captureRunLibrarySnapshotPg(
   return await db.tx((tx) => captureRunLibrarySnapshotInTransaction(tx, input));
 }
 
-async function captureRunLibrarySnapshotInTransaction(
+export async function captureRunLibrarySnapshotInTransaction(
   db: SouthstarDb,
   input: CaptureRunLibrarySnapshotInput,
 ): Promise<RunLibrarySnapshotV1> {

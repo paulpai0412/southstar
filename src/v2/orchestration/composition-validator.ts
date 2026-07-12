@@ -47,11 +47,14 @@ export async function validateWorkflowCompositionPlan(
   }
   const candidateRefSet = candidateRefs(packet);
   const selectedTemplateRef = plan.selectedWorkflowTemplateRef;
+  const templatePolicy = options.goalDesignPackage?.templatePolicy;
   if (selectedTemplateRef) {
     if (!candidateRefSet.has(selectedTemplateRef)) {
       issues.push(issue("unknown_template", "selectedWorkflowTemplateRef", `template is not an approved candidate: ${selectedTemplateRef}`));
+    } else if (templatePolicy?.mode === "require" && selectedTemplateRef !== templatePolicy.templateRef) {
+      issues.push(issue("required_template_mismatch", "selectedWorkflowTemplateRef", `required template policy must select ${templatePolicy.templateRef}`));
     }
-  } else if (options.goalDesignPackage?.templatePolicy.mode === "require") {
+  } else if (templatePolicy?.mode === "require") {
     issues.push(issue("unknown_template", "selectedWorkflowTemplateRef", "required template policy must select an approved workflow template"));
   }
   const constraints = selectedTemplateRef ? compositionConstraintsForTemplate(packet, selectedTemplateRef) : null;
@@ -73,9 +76,17 @@ export async function validateWorkflowCompositionPlan(
   if (selectedTemplateRef) validateTemplateSlotConstraints(selectedTemplateRef, constraints, plan, issues);
   const hostRefs = options.goalDesignPackage ? goalDesignHostRefs(options.goalDesignPackage) : new Set<string>();
   validateCandidateMembership(plan, packet, candidateRefSet, hostRefs, issues);
-  await validateGeneratedProfileClosure(db, plan, issues, options.scope ?? "software");
-  await validateEdgeConstraints(db, plan, issues, options.scope ?? "software", options.goalDesignPackage);
+  const validationScope = workflowValidationScope(options);
+  await validateGeneratedProfileClosure(db, plan, issues, validationScope);
+  await validateEdgeConstraints(db, plan, issues, validationScope, options.goalDesignPackage);
   return { ok: issues.length === 0, issues };
+}
+
+function workflowValidationScope(options: ValidateWorkflowCompositionOptions): string {
+  return nonEmptyString(options.scope)
+    ?? nonEmptyString(options.goalContract?.domain)
+    ?? nonEmptyString(options.goalDesignPackage?.goalContract.domain)
+    ?? "all";
 }
 
 function validateGoalDesignSlicePlan(
@@ -88,6 +99,7 @@ function validateGoalDesignSlicePlan(
   for (const [taskIndex, task] of plan.tasks.entries()) {
     const sliceId = task.sliceId;
     const slice = typeof sliceId === "string" && sliceId.length > 0 ? slicesById.get(sliceId) : undefined;
+    const nodeType = classifyWorkflowCompositionTask(task);
     if (!slice || !sliceId) {
       issues.push(issue(
         "unknown_slice_id",
@@ -100,6 +112,7 @@ function validateGoalDesignSlicePlan(
     tasks.push(task);
     taskIdsBySlice.set(sliceId, tasks);
     const ownedRequirementIds = new Set(slice.requirementIds);
+    if (nodeType === "verify" || nodeType === "review") continue;
     for (const requirementId of task.requirementIds) {
       if (ownedRequirementIds.has(requirementId)) continue;
       issues.push(issue(
@@ -118,9 +131,10 @@ function validateGoalDesignSlicePlan(
         `slice has no producer task: ${slice.id}`,
       ));
     }
-    if (!tasks.some((task) => {
+    if (!plan.tasks.some((task) => {
       const nodeType = classifyWorkflowCompositionTask(task);
-      return nodeType === "verify" || nodeType === "review";
+      return (nodeType === "verify" || nodeType === "review")
+        && task.requirementIds.some((requirementId) => slice.requirementIds.includes(requirementId));
     })) {
       issues.push(issue(
         "slice_without_evaluator",
@@ -1124,6 +1138,10 @@ function issue(
   message: string,
 ): WorkflowCompositionValidationIssue {
   return { code, path, message };
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

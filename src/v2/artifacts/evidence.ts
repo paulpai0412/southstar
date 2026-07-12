@@ -61,7 +61,15 @@ function evidenceByKind(
 
   const testCommandResults = commandResults(artifact.testResults);
   const executedCommandResults = executedCommands(artifact.commandsRun);
-  const commandEvidenceResults = executedCommandResults.length > 0 ? executedCommandResults : testCommandResults;
+  const executedCommandEvidenceStatus = executedCommandResults.length > 0
+    ? aggregateCommandStatus(executedCommandResults)
+    : undefined;
+  const commandEvidenceSource = executedCommandEvidenceStatus === "present" || testCommandResults.length === 0
+    ? "artifact.commandsRun"
+    : "artifact.testResults";
+  const commandEvidenceResults = commandEvidenceSource === "artifact.commandsRun"
+    ? executedCommandResults
+    : testCommandResults;
   const commandStrings = extractCommandStrings(artifact.commandsRun);
 
   const testEvidence = objectTestEvidence(artifact, commandStrings, now);
@@ -74,7 +82,7 @@ function evidenceByKind(
       kind: "command-output",
       status: aggregateCommandStatus(commandEvidenceResults),
       summary: commandEvidenceResults.map(summarizeCommand).join("; ").slice(0, 500),
-      sourceRef: executedCommandResults.length > 0 ? "artifact.commandsRun" : "artifact.testResults",
+      sourceRef: commandEvidenceSource,
       sha256: shortHash(safeJson(commandEvidenceResults)),
       capturedAt: now,
       reproducibleCommand: splitCommand(commandEvidenceResults[0]!.command),
@@ -238,6 +246,8 @@ function commandResults(value: unknown): Record<string, unknown>[] {
 
 function executedCommands(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value)) return [];
+  const hasStructuredCommand = value.some((item) => isRecord(item) && "command" in item);
+  if (!hasStructuredCommand) return [];
   return value.map((item) => typeof item === "string"
     ? { command: item }
     : isRecord(item)

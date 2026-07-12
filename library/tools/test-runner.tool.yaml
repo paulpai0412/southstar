@@ -1,0 +1,11 @@
+schemaVersion: southstar.library.tool_definition_file.v1
+id: tool.test-runner
+title: Test Runner
+scope: software
+status: approved
+toolName: test-runner
+proxyToolName: test-runner
+operations:
+  - run_tests
+providesCapabilityRefs:
+  - capability.test-execution

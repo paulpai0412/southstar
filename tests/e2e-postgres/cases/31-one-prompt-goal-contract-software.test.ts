@@ -1,15 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { contentHashForPayload } from "../../../src/v2/design-library/canonical-json.ts";
+import { syncLibraryFileToGraph } from "../../../src/v2/design-library/files/library-file-store.ts";
 import type { SouthstarWorkflowManifest } from "../../../src/v2/manifests/types.ts";
 import { goalContractHash, storedGoalContract } from "../../../src/v2/orchestration/goal-contract.ts";
 import { storedGoalRequirementCoverage } from "../../../src/v2/orchestration/goal-requirement-coverage.ts";
 import { loadRunLibrarySnapshotPg } from "../../../src/v2/orchestration/run-library-snapshot.ts";
 import { getResourceByKeyPg, listHistoryForRunPg } from "../../../src/v2/stores/postgres-runtime-store.ts";
-import { seedSoftwareLibraryGraph } from "../../v2/fixtures/software-library-graph.ts";
 import {
   createInitializedRealPostgresE2E,
   createRealRuntimeServer,
@@ -25,7 +26,10 @@ import {
   waitForHandExecutionStatus,
 } from "../recovery-scheduler-helpers.ts";
 
-const GOAL = "Deliver a production-ready membership subscription flow in the local test workspace using the provided fake payment adapter, with access control, billing state, cancellation/refund behavior, and audit reporting; do not deploy or charge real accounts";
+const GOAL = "Deliver a production-ready local membership subscription module in the workspace, with access control, billing state, immediate cancellation, idempotent full-refund records, and audit reporting; use only the local payment ledger in the repository and do not deploy or charge external accounts";
+const TARGET_PROJECT_CWD = process.env.SOUTHSTAR_CASE31_PROJECT_CWD ?? join(homedir(), "apps", "southstar-vocab");
+const MEMBERSHIP_MODULE_PATH = "src/membership.mjs";
+const MEMBERSHIP_TEST_PATH = "tests/membership-subscription.test.mjs";
 const FORBIDDEN_INGRESS = new Set([
   "/api/v2/planner/drafts",
   "/api/v2/planner/drafts/validate",
@@ -47,13 +51,13 @@ test("31 one prompt goal contract: membership software goal completes with froze
   const checkpoint = (message: string) => console.info(`[case31] ${message}`);
   const env = await createInitializedRealPostgresE2E();
   const materializationRoot = await mkdtemp("/tmp/case31-materialization-");
-  const workspace = await mkdtemp("/tmp/case31-workspace-");
+  const workspace = TARGET_PROJECT_CWD;
   let isolatedTork: Awaited<ReturnType<typeof startIsolatedRealTork>> | undefined;
   let server: Awaited<ReturnType<typeof createRealRuntimeServer>> | undefined;
   const requests: Array<{ method: string; path: string }> = [];
 
   try {
-    await createLocalMembershipWorkspace(workspace);
+    await prepareMembershipAcceptanceWorkspace(workspace);
     isolatedTork = await startIsolatedRealTork({
       postgresAdminUrl: env.adminUrl,
       materializationRoot,
@@ -64,19 +68,30 @@ test("31 one prompt goal contract: membership software goal completes with froze
     });
     const infra = isolatedTork.infra;
     await probeRealPostgresTorkPi(infra);
-    await seedSoftwareLibraryGraph(env.db);
+    await syncCase31LibraryGraph(env.db);
     server = await createRealRuntimeServer({ db: env.db, infra });
 
     const result = await api<RunGoalResult>(server.port, "/api/v2/run-goal", {
       method: "POST",
       headers: { accept: "text/event-stream" },
-      body: JSON.stringify({ goalPrompt: GOAL, cwd: workspace, idempotencyKey: `case31-${Date.now()}` }),
+      body: JSON.stringify({
+        goalPrompt: GOAL,
+        cwd: workspace,
+        idempotencyKey: `case31-${Date.now()}`,
+        goalDesignMode: "auto_until_blocked",
+      }),
     }, requests);
     if (result.draftStatus !== "validated") {
       const invalidDraft = await getResourceByKeyPg(env.db, "planner_draft", result.draftId);
       const payload = invalidDraft?.payload as Record<string, unknown> | undefined;
+      const summary = invalidDraft?.summary as Record<string, unknown> | undefined;
       throw new Error(`Case31 planner draft ${result.draftStatus}: ${JSON.stringify({
+        draftId: result.draftId,
+        persistedDraftFound: Boolean(invalidDraft),
         blockers: result.blockers,
+        summaryStatus: summary?.status,
+        summaryValidationIssues: summary?.validationIssues,
+        payloadKeys: payload ? Object.keys(payload).sort() : [],
         repairAttempts: payload?.repairAttempts,
         validation: (payload?.orchestrationSnapshot as Record<string, unknown> | undefined)?.validation,
       })}`);
@@ -122,7 +137,7 @@ test("31 one prompt goal contract: membership software goal completes with froze
     assert.equal(run.status, "scheduling");
     assert.equal(run.runtime_context_json.goalContractHash, result.goalContractHash);
     assert.equal(run.runtime_context_json.manifestHash, contentHashForPayload(run.workflow_manifest_json));
-    assertCompoundTopology(run.workflow_manifest_json, coverage);
+    assertCoverageBackedDag(run.workflow_manifest_json, coverage);
 
     const frozenSnapshot = await loadRunLibrarySnapshotPg(env.db, runId);
     assert.equal(frozenSnapshot.goalContractHash, result.goalContractHash);
@@ -151,7 +166,7 @@ test("31 one prompt goal contract: membership software goal completes with froze
         const hand = await latestHandExecutionForTask(env.db, { runId, taskId });
         torkJobIds.push(hand.externalJobId);
         await waitForTorkJob(infra.torkBaseUrl, hand.externalJobId);
-        assert.equal(await waitForHandExecutionStatus(env.db, hand.resourceKey, ["completed", "failed"]), "completed");
+        await assertHandCompleted(env.db, hand.resourceKey, { runId, taskId, workspace });
       }));
     }
 
@@ -200,85 +215,170 @@ test("31 one prompt goal contract: membership software goal completes with froze
     checkpoint(`workspace=${workspace} files=${workspaceFiles.join(",")}`);
     assert.equal(torkJobIds.length, run.workflow_manifest_json.tasks.length);
     assert.equal(evidenceIds.length >= contract.requirements.filter((requirement) => requirement.blocking).length, true);
-    assert.equal(workspaceFiles.includes("fake-payment-adapter.mjs"), true);
-    assert.match(await readFile(join(workspace, "fake-payment-adapter.mjs"), "utf8"), /fake-payment-adapter\.local-test\.v1/);
+    assert.equal(workspaceFiles.includes(MEMBERSHIP_MODULE_PATH), true);
+    execFileSync("node", ["--test", MEMBERSHIP_TEST_PATH], { cwd: workspace, stdio: "pipe" });
   } finally {
     await server?.close();
     await isolatedTork?.close();
     await env.close();
     await rm(materializationRoot, { recursive: true, force: true });
-    await rm(workspace, { recursive: true, force: true });
   }
 });
 
-async function createLocalMembershipWorkspace(cwd: string): Promise<void> {
-  await writeFile(join(cwd, "package.json"), JSON.stringify({
-    name: "case31-local-membership",
-    private: true,
-    type: "module",
-    scripts: { test: "node --test" },
-  }, null, 2));
-  await writeFile(join(cwd, "fake-payment-adapter.mjs"), `
-export const adapterId = "fake-payment-adapter.local-test.v1";
-
-export class FakePaymentAdapter {
-  #events = [];
-  charge({ accountId, amountCents }) {
-    if (!accountId.startsWith("test_")) throw new Error("fake adapter refuses non-test accounts");
-    const event = { id: \`fake_charge_\${this.#events.length + 1}\`, type: "charge", accountId, amountCents };
-    this.#events.push(event);
-    return structuredClone(event);
-  }
-  refund(chargeId) {
-    if (!chargeId.startsWith("fake_charge_")) throw new Error("fake adapter only refunds fake charges");
-    const event = { id: \`fake_refund_\${this.#events.length + 1}\`, type: "refund", chargeId };
-    this.#events.push(event);
-    return structuredClone(event);
-  }
-  auditEvents() { return structuredClone(this.#events); }
-}
-`);
-  await writeFile(join(cwd, "fake-payment-adapter.test.mjs"), `
+async function prepareMembershipAcceptanceWorkspace(cwd: string): Promise<void> {
+  await mkdir(join(cwd, "tests"), { recursive: true });
+  await writeFile(join(cwd, MEMBERSHIP_TEST_PATH), `
 import assert from "node:assert/strict";
 import test from "node:test";
-import { FakePaymentAdapter, adapterId } from "./fake-payment-adapter.mjs";
+import { LocalPaymentLedger, MembershipService } from "../src/membership.mjs";
 
-test("adapter is local, fake, and auditable", () => {
-  assert.equal(adapterId, "fake-payment-adapter.local-test.v1");
-  const adapter = new FakePaymentAdapter();
-  const charge = adapter.charge({ accountId: "test_member_1", amountCents: 1200 });
-  assert.match(charge.id, /^fake_charge_/);
-  assert.match(adapter.refund(charge.id).id, /^fake_refund_/);
-  assert.equal(adapter.auditEvents().length, 2);
-  assert.throws(() => adapter.charge({ accountId: "acct_real", amountCents: 1200 }), /non-test/);
+test("membership subscription lifecycle is persisted, access-controlled, refundable, and auditable", () => {
+  const ledger = new LocalPaymentLedger();
+  const service = new MembershipService({ ledger });
+
+  assert.equal(service.canAccess("account-a", "premium-course"), false);
+  const subscription = service.subscribe({ accountId: "account-a", planId: "pro", amountCents: 1200 });
+  assert.equal(subscription.status, "active");
+  assert.equal(service.canAccess("account-a", "premium-course"), true);
+
+  const cancellation = service.cancel({ accountId: "account-a", reason: "user-request" });
+  assert.equal(cancellation.status, "cancelled");
+  assert.equal(cancellation.refund.amountCents, 1200);
+  assert.equal(service.canAccess("account-a", "premium-course"), false);
+
+  const secondCancellation = service.cancel({ accountId: "account-a", reason: "user-request" });
+  assert.equal(secondCancellation.refund.id, cancellation.refund.id);
+  assert.equal(ledger.refunds().length, 1);
+  assert.deepEqual(service.auditReport().map((event) => event.type), ["charge", "subscription_activated", "refund", "subscription_cancelled"]);
 });
 `);
-  execFileSync("git", ["init", "-q"], { cwd });
-  execFileSync("git", ["config", "user.email", "case31@southstar.test"], { cwd });
-  execFileSync("git", ["config", "user.name", "Southstar Case31"], { cwd });
-  execFileSync("git", ["add", "."], { cwd });
-  execFileSync("git", ["commit", "-qm", "test: seed local fake payment workspace"], { cwd });
 }
 
-function assertCompoundTopology(
+async function syncCase31LibraryGraph(db: Parameters<typeof syncLibraryFileToGraph>[0]): Promise<void> {
+  const root = join(import.meta.dirname, "../../../library");
+  for (const relativePath of [
+    "domains/software.domain.yaml",
+    "capabilities/repo-read.capability.yaml",
+    "capabilities/repo-write.capability.yaml",
+    "capabilities/test-execution.capability.yaml",
+    "artifacts/implementation-report.artifact.yaml",
+    "artifacts/verification-report.artifact.yaml",
+    "artifacts/completion-report.artifact.yaml",
+    "tools/workspace-read.tool.yaml",
+    "tools/workspace-write.tool.yaml",
+    "tools/test-runner.tool.yaml",
+    "mcp/filesystem-workspace.mcp.yaml",
+    "skills/software-delivery.skill.md",
+    "skills/southstar-goal-design.skill.md",
+    "skills/southstar-slice-to-dag-composer.skill.md",
+    "agents/software-delivery-engineer.agent.md",
+    "evaluators/software-quality.evaluator.yaml",
+  ]) {
+    await syncLibraryFileToGraph(db, { root, relativePath });
+  }
+}
+
+async function assertHandCompleted(
+  db: Parameters<typeof getResourceByKeyPg>[0],
+  resourceKey: string,
+  input: { runId: string; taskId: string; workspace: string },
+): Promise<void> {
+  const status = await waitForHandExecutionStatus(db, resourceKey, ["completed", "failed"]);
+  if (status === "completed") return;
+  const hand = await getResourceByKeyPg(db, "hand_execution", resourceKey);
+  const task = await db.maybeOne<{ status: string; snapshot_json: Record<string, unknown> }>(
+    "select status, snapshot_json from southstar.workflow_tasks where run_id = $1 and id = $2",
+    [input.runId, input.taskId],
+  );
+  const resources = await db.query<{ resource_type: string; resource_key: string; status: string; summary_json: Record<string, unknown>; payload_json: Record<string, unknown> }>(
+    `select resource_type, resource_key, status, summary_json, payload_json
+       from southstar.runtime_resources
+      where run_id = $1
+        and task_id = $2
+      order by created_at, resource_type, resource_key`,
+    [input.runId, input.taskId],
+  );
+  throw new Error(`case31 hand failed: ${JSON.stringify({
+    resourceKey,
+    runId: input.runId,
+    taskId: input.taskId,
+    handStatus: hand?.status,
+    handPayload: hand?.payload,
+    task,
+    workspaceFiles: await listWorkspaceFiles(input.workspace),
+    npmTest: runNpmTestDiagnostic(input.workspace),
+    resources: resources.rows.map(compactRuntimeResourceForDiagnostic),
+  }, null, 2)}`);
+}
+
+function compactRuntimeResourceForDiagnostic(row: {
+  resource_type: string;
+  resource_key: string;
+  status: string;
+  summary_json: Record<string, unknown>;
+  payload_json: Record<string, unknown>;
+}): Record<string, unknown> {
+  const payload = row.payload_json ?? {};
+  return {
+    type: row.resource_type,
+    key: row.resource_key,
+    status: row.status,
+    summary: row.summary_json,
+    payloadKeys: Object.keys(payload).sort(),
+    verdict: payload.verdict,
+    messages: Array.isArray(payload.messages) ? payload.messages.slice(0, 5) : undefined,
+    completeness: payload.completeness,
+    evidenceItems: Array.isArray(payload.evidenceItems)
+      ? payload.evidenceItems.map((item) => isRecord(item)
+        ? {
+          kind: item.kind,
+          status: item.status,
+          sourceRef: item.sourceRef,
+          summary: typeof item.summary === "string" ? item.summary.slice(0, 500) : item.summary,
+        }
+        : item).slice(0, 8)
+      : undefined,
+    findings: Array.isArray(payload.findings) ? payload.findings.slice(0, 8) : undefined,
+    lastError: typeof payload.lastError === "string" ? payload.lastError.slice(-2_000) : undefined,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function runNpmTestDiagnostic(cwd: string): { ok: boolean; output: string } {
+  try {
+    return {
+      ok: true,
+      output: execFileSync("node", ["--test", MEMBERSHIP_TEST_PATH], { cwd, encoding: "utf8", stdio: "pipe" }).slice(-8_000),
+    };
+  } catch (error) {
+    const execError = error as { stdout?: Buffer | string; stderr?: Buffer | string; message?: string };
+    return {
+      ok: false,
+      output: `${String(execError.stdout ?? "")}\n${String(execError.stderr ?? "")}\n${execError.message ?? String(error)}`.slice(-8_000),
+    };
+  }
+}
+
+function assertCoverageBackedDag(
   manifest: SouthstarWorkflowManifest,
   coverage: NonNullable<ReturnType<typeof storedGoalRequirementCoverage>>,
 ): void {
   const tasks = new Map(manifest.tasks.map((task) => [task.id, task]));
-  const producers = [...new Set(coverage.entries.flatMap((entry) => entry.producerTaskIds))];
-  const evaluators = new Set(coverage.entries.flatMap((entry) => entry.evaluatorTaskIds));
-  const independentPair = producers.flatMap((left, index) => producers.slice(index + 1).map((right) => [left, right] as const))
-    .find(([left, right]) => !ancestors(tasks, left).has(right) && !ancestors(tasks, right).has(left));
-  assert.ok(independentPair, "expected at least two dependency-independent producer branches");
-  const [left, right] = independentPair;
-  const downstream = manifest.tasks.filter((task) => {
-    const taskAncestors = ancestors(tasks, task.id);
-    return taskAncestors.has(left) && taskAncestors.has(right);
-  });
-  assert.equal(downstream.length > 0, true, "expected a downstream integration wave");
-  assert.equal(downstream.some((task) => evaluators.has(task.id) || manifest.tasks.some((candidate) =>
-    evaluators.has(candidate.id) && ancestors(tasks, candidate.id).has(task.id)
-  )), true, "expected a downstream evaluator wave");
+  for (const entry of coverage.entries) {
+    assert.equal(entry.producerTaskIds.length > 0, true, `coverage entry ${entry.requirementId} missing producer tasks`);
+    assert.equal(entry.evaluatorTaskIds.length > 0, true, `coverage entry ${entry.requirementId} missing evaluator tasks`);
+    for (const taskId of [...entry.producerTaskIds, ...entry.evaluatorTaskIds]) {
+      assert.ok(tasks.has(taskId), `coverage entry ${entry.requirementId} references missing task ${taskId}`);
+    }
+    for (const producerTaskId of entry.producerTaskIds) {
+      assert.equal(entry.evaluatorTaskIds.some((evaluatorTaskId) =>
+        evaluatorTaskId === producerTaskId || ancestors(tasks, evaluatorTaskId).has(producerTaskId)
+      ), true, `coverage evaluator for ${entry.requirementId} cannot see producer ${producerTaskId}`);
+    }
+  }
 }
 
 function ancestors(tasks: Map<string, SouthstarWorkflowManifest["tasks"][number]>, taskId: string): Set<string> {

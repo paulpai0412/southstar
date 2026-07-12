@@ -58,7 +58,26 @@ export type GoalContractLibraryVocabulary = {
   scopes: string[];
   capabilityRefs: string[];
   artifactRefs: string[];
+  evaluatorRefs?: string[];
 };
+
+export type GoalContractVocabularyGapV1 = {
+  kind: "domain" | "capability" | "artifact";
+  requestedRef: string;
+  allowedRefs: string[];
+};
+
+export class GoalContractVocabularyGapError extends Error {
+  readonly code = "goal_contract_vocabulary_gap";
+
+  constructor(
+    readonly goalContract: GoalContractV1,
+    readonly gaps: GoalContractVocabularyGapV1[],
+  ) {
+    super(`Goal Contract requires unapproved Library vocabulary: ${gaps.map((gap) => gap.requestedRef).join(", ")}`);
+    this.name = "GoalContractVocabularyGapError";
+  }
+}
 
 type GoalRequirementInterpretation = Omit<GoalRequirementV1, "id" | "expectedArtifacts"> & {
   expectedArtifacts?: GoalExpectedArtifactV1[];
@@ -161,17 +180,21 @@ export async function interpretGoalContractWithLlm(
       : await input.client.generateText(textInput);
     try {
       const interpretation = parseInterpretation(text);
-      for (const delta of deltas) input.onDelta?.(delta);
       const finalizationInput = {
         goalPrompt: input.goalPrompt,
         cwd: input.cwd,
         ...(input.projectRef ? { projectRef: input.projectRef } : {}),
         interpretation,
       };
-      return input.previousContract
+      const contract = input.previousContract
         ? reviseGoalContract({ ...finalizationInput, previousContract: input.previousContract })
         : finalizeGoalContract(finalizationInput);
+      const gaps = goalContractVocabularyGaps(interpretation, input.libraryVocabulary);
+      if (gaps.length > 0) throw new GoalContractVocabularyGapError(contract, gaps);
+      for (const delta of deltas) input.onDelta?.(delta);
+      return contract;
     } catch (error) {
+      if (error instanceof GoalContractVocabularyGapError) throw error;
       if (attempt === MAX_INTERPRETER_ATTEMPTS) throw error;
       prompt = renderInterpreterRepairPrompt(originalPrompt, text, error);
     }
@@ -329,10 +352,40 @@ function expectedArtifactRefsForRequirements(requirements: GoalRequirementV1[], 
   return derived.length > 0 ? derived : [...fallbackRefs];
 }
 
+function goalContractInterpretationSchemaPrompt(): string {
+  return [
+    "GoalContractInterpretationSchema:",
+    "{",
+    "  domain: string,",
+    "  intent: string,",
+    "  workType: \"software_feature\" | \"bugfix\" | \"research\" | \"data_analysis\" | \"migration\" | \"ops_recovery\" | \"general\",",
+    "  summary: string,",
+    "  requirements: [{",
+    "    statement: string,",
+    "    acceptanceCriteria: string[],",
+    "    blocking: boolean,",
+    "    source: \"explicit\" | \"inferred\",",
+    "    expectedArtifacts: [{ description: string, path?: string, mediaType?: string }]",
+    "  }],",
+    "  expectedArtifactRefs: string[],",
+    "  requiredCapabilities: string[],",
+    "  nonGoals: string[],",
+    "  assumptions: string[],",
+    "  blockingInputs: string[],",
+    "  riskTags: string[],",
+    "  requestedSideEffects: string[]",
+    "}",
+    "Every array item must be a non-empty string unless the schema says it is an object.",
+    "Use [] for empty arrays; do not use null, false, objects, or empty strings as array entries.",
+    "requirements[].expectedArtifacts[].path must be omitted unless it is a safe relative path; never use absolute paths, URLs, artifact refs, or ../ segments.",
+  ].join("\n");
+}
+
 function renderInterpreterPrompt(input: InterpretGoalContractWithLlmInput): string {
   return [
     "Interpret the user's goal as a strict Southstar Goal Contract JSON object.",
     INTERPRETER_INSTRUCTION,
+    goalContractInterpretationSchemaPrompt(),
     "Return JSON only. Include exactly these fields: domain, intent, workType, summary, requirements, expectedArtifactRefs, requiredCapabilities, nonGoals, assumptions, blockingInputs, riskTags, requestedSideEffects.",
     "Each requirement must contain statement, acceptanceCriteria, blocking, source, and expectedArtifacts. Every requirement needs at least one observable acceptance criterion. source must be explicit or inferred.",
     "workType must be one of software_feature, bugfix, research, data_analysis, migration, ops_recovery, or general.",
@@ -340,6 +393,8 @@ function renderInterpreterPrompt(input: InterpretGoalContractWithLlmInput): stri
     "Set blocking=true for every requirement needed to satisfy the requested outcome; use blocking=false only when the user explicitly marks that requirement optional.",
     "Do not put details discoverable from the local workspace or Library in blockingInputs; workflow discovery tasks can inspect those sources.",
     "blockingInputs are only for information unavailable from the prompt, workspace, and Library that cannot be safely inferred without a user decision.",
+    "For safe, reversible local/test implementation choices that the user did not specify, record explicit assumptions and acceptance criteria instead of blockingInputs.",
+    "Reserve blockingInputs for decisions that would create irreversible external effects, legal/financial commitments, or unsafe ambiguity.",
     "Do not return host-owned fields such as schemaVersion, originalPrompt, promptHash, revision, workspace, or requirement ids.",
     `GoalPrompt: ${input.goalPrompt}`,
     `WorkspaceCwd: ${input.cwd}`,
@@ -358,7 +413,11 @@ function renderInterpreterPrompt(input: InterpretGoalContractWithLlmInput): stri
     ...(input.libraryVocabulary ? [
       "AvailableLibraryVocabulary:",
       stableStringify(input.libraryVocabulary),
-      "Choose domain exactly from scopes. Choose requiredCapabilities and expectedArtifactRefs only from the listed refs. Do not invent Library refs.",
+      `AllowedScopes: ${JSON.stringify(input.libraryVocabulary.scopes)}`,
+      `AllowedCapabilities: ${JSON.stringify(input.libraryVocabulary.capabilityRefs)}`,
+      `AllowedArtifactRefs: ${JSON.stringify(input.libraryVocabulary.artifactRefs)}`,
+      `AllowedEvaluatorRefs: ${JSON.stringify(input.libraryVocabulary.evaluatorRefs ?? [])}`,
+      "Reuse listed refs when they match the requested outcome. When no listed ref truthfully represents a required concept, return one canonical proposed domain/capability/artifact ref for that concept; the host will stop composition and create a reviewable vocabulary gap. Never substitute an unrelated listed ref.",
     ] : []),
   ].join("\n");
 }
@@ -398,14 +457,40 @@ function validateInterpretation(value: unknown, options: { requireWorkType?: boo
     workType: optionalWorkType(object.workType),
     summary: requiredString(object.summary, "summary"),
     requirements: requirements.map((requirement, index) => validateRequirement(requirement, index)),
-    expectedArtifactRefs: stringArray(object.expectedArtifactRefs, "expectedArtifactRefs"),
-    requiredCapabilities: stringArray(object.requiredCapabilities, "requiredCapabilities"),
-    nonGoals: stringArray(object.nonGoals, "nonGoals"),
-    assumptions: stringArray(object.assumptions, "assumptions"),
-    blockingInputs: stringArray(object.blockingInputs, "blockingInputs"),
-    riskTags: stringArray(object.riskTags, "riskTags"),
-    requestedSideEffects: stringArray(object.requestedSideEffects, "requestedSideEffects"),
+    expectedArtifactRefs: libraryRefArray(object.expectedArtifactRefs, "expectedArtifactRefs", "artifact."),
+    requiredCapabilities: libraryRefArray(object.requiredCapabilities, "requiredCapabilities", "capability."),
+    nonGoals: descriptiveStringArray(object.nonGoals, "nonGoals"),
+    assumptions: descriptiveStringArray(object.assumptions, "assumptions"),
+    blockingInputs: descriptiveStringArray(object.blockingInputs, "blockingInputs"),
+    riskTags: descriptiveStringArray(object.riskTags, "riskTags"),
+    requestedSideEffects: descriptiveStringArray(object.requestedSideEffects, "requestedSideEffects"),
   };
+}
+
+function goalContractVocabularyGaps(
+  interpretation: GoalContractInterpretation,
+  vocabulary: GoalContractLibraryVocabulary | undefined,
+): GoalContractVocabularyGapV1[] {
+  if (!vocabulary) return [];
+  const gaps: GoalContractVocabularyGapV1[] = [];
+  if (vocabulary.scopes.length > 0 && !vocabulary.scopes.includes(interpretation.domain)) {
+    gaps.push({ kind: "domain", requestedRef: interpretation.domain, allowedRefs: [...vocabulary.scopes] });
+  }
+  const allowedCapabilities = new Set(vocabulary.capabilityRefs);
+  const unknownCapabilities = interpretation.requiredCapabilities.filter((ref) => !allowedCapabilities.has(ref));
+  gaps.push(...unknownCapabilities.map((requestedRef) => ({
+    kind: "capability" as const,
+    requestedRef,
+    allowedRefs: [...vocabulary.capabilityRefs],
+  })));
+  const allowedArtifacts = new Set(vocabulary.artifactRefs);
+  const unknownArtifactRefs = interpretation.expectedArtifactRefs.filter((ref) => !allowedArtifacts.has(ref));
+  gaps.push(...unknownArtifactRefs.map((requestedRef) => ({
+    kind: "artifact" as const,
+    requestedRef,
+    allowedRefs: [...vocabulary.artifactRefs],
+  })));
+  return gaps;
 }
 
 function validateRequirement(value: unknown, index: number): GoalRequirementInterpretation {
@@ -455,6 +540,17 @@ function stringArray(value: unknown, path: string): string[] {
   return requiredArray(value, path).map((entry, index) => requiredString(entry, `${path}.${index}`));
 }
 
+function libraryRefArray(value: unknown, path: string, prefix: string): string[] {
+  const refs = stringArray(value, path);
+  const invalid = refs.find((ref) => !ref.startsWith(prefix) || ref.length === prefix.length);
+  if (invalid) throw new Error(`${path} refs must start with ${prefix}; got ${invalid}`);
+  return refs;
+}
+
+function descriptiveStringArray(value: unknown, path: string): string[] {
+  return requiredArray(value, path).filter(nonEmptyString) as string[];
+}
+
 function optionalWorkType(value: unknown): RequirementSpecV2["workType"] | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || !WORK_TYPES.has(value as RequirementSpecV2["workType"])) {
@@ -470,20 +566,23 @@ function expectedArtifactsArray(value: unknown, path: string): GoalExpectedArtif
     const artifact: GoalExpectedArtifactV1 = {
       description: requiredString(object.description, `${path}.${index}.description`),
     };
-    if (object.path !== undefined) artifact.path = safeRelativePath(object.path, `${path}.${index}.path`);
+    const artifactPath = optionalSafeRelativePath(object.path);
+    if (artifactPath !== undefined) artifact.path = artifactPath;
     if (object.mediaType !== undefined) artifact.mediaType = requiredString(object.mediaType, `${path}.${index}.mediaType`);
     return artifact;
   });
 }
 
-function safeRelativePath(value: unknown, path: string): string {
-  const text = requiredString(value, path);
+function optionalSafeRelativePath(value: unknown): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  const text = value;
   if (
     text.startsWith("/")
     || text.includes("\0")
     || text.split(/[\\/]+/).some((part) => part === ".." || part.length === 0)
   ) {
-    throw new Error(`${path} must be a safe relative path`);
+    return undefined;
   }
   return text;
 }

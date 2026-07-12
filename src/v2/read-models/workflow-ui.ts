@@ -205,7 +205,7 @@ async function buildRuntimeWorkflowUiReadModel(db: SouthstarDb, runId: string, p
   const overlayRows = await runtimeOverlayRows(db, runId);
   const workflowTasks = workflowTasksFromWorkflowManifest(run.workflow_manifest_json);
   const selectedTaskId = selectTaskId(tasks.map((task) => task.id), preferredTaskId);
-  const domain = run.domain ?? "software";
+  const domain = run.domain ?? "general";
   const { nodes, edges } = buildRuntimeWorkflowCanvasProjection({
     tasks,
     workflowTasks,
@@ -283,7 +283,7 @@ async function buildDraftWorkflowUiReadModel(db: SouthstarDb, draftId: string, p
   const workflowTasks = workflowTasksFromUnknown(workflow.tasks);
   const selectedTaskId = selectTaskId(workflowTasks.map((task) => task.id), preferredTaskId);
   const selectedTask = selectedTaskId ? workflowTasks.find((task) => task.id === selectedTaskId) ?? null : null;
-  const domain = stringValue(workflow.domain) ?? "software";
+  const domain = stringValue(workflow.domain) ?? "general";
   const issues = validationIssues(summary.validationIssues ?? payload.validationIssues);
   const repairDetails = repairAttemptDetails(payload.repairAttempts ?? summary.repairAttempts);
   const mission = await buildGoalMissionReadModelPg(db, { draftId });

@@ -1,0 +1,12 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.repo-read
+title: Repository Read
+scope: software
+status: approved
+description: Inspect source files, package metadata, and tests in a workspace repository.
+requiredOperations:
+  - workspace-read
+risk:
+  level: low
+  dataSensitivity: workspace
+  approvalRequired: false

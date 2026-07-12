@@ -8,6 +8,7 @@ import {
   type GoalContractV1,
 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
+  createLlmGoalDesigner,
   designGoalWithLlm,
   finalizeGoalDesignPackage,
   goalDesignPackageHash,
@@ -40,7 +41,7 @@ test("Goal Design uses the approved Library SOP and derives variable outcome sli
             evaluatorContracts: [{
               id: "eval-offline",
               requirementId,
-              acceptanceCriteria: ["article opens offline"],
+              acceptanceCriteria: [...contract.requirements[0]!.acceptanceCriteria],
               requiredEvidenceKinds: ["screenshot"],
               independence: "independent",
               failureClassifications: ["network_dependency"],
@@ -72,9 +73,66 @@ test("Goal Design uses the approved Library SOP and derives variable outcome sli
 
     assert.match(prompts[0] ?? "", /smallest cohesive outcome slices/i);
     assert.match(prompts[0] ?? "", /Southstar Goal Design/);
+    assert.match(prompts[0] ?? "", /GoalDesignOutputSchema:/);
+    assert.match(prompts[0] ?? "", /AllowedRequirementIds:/);
+    assert.match(prompts[0] ?? "", new RegExp(requirementId));
+    assert.match(prompts[0] ?? "", new RegExp(`AllowedGoalArtifactRefs: ${escapeRegExp(JSON.stringify(contract.expectedArtifactRefs))}`));
+    assert.match(prompts[0] ?? "", /compositionStrategy\.mode: "single-run" \| "per-slice-runs"/);
+    assert.match(prompts[0] ?? "", /evaluatorContracts\[\]\.independence must be "independent"/);
     assert.equal(designed.package.slicePlan.slices.length, 1);
     assert.equal(designed.package.goalDesignSkillVersionRef, designed.skill.versionRef);
     assert.equal(validateGoalDesignPackage(designed.package).length, 0);
+  } finally {
+    await db.close();
+  }
+});
+
+test("Goal Design revision prompt returns a host-finalized package or clarification", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await syncGoalDesignSkill(db);
+    const prompts: string[] = [];
+    const skill = await loadGoalDesignSkillPg(db);
+    const base = packageValue(articleGoalContract());
+    const current = packageWithSkill(base, skill);
+    const designer = createLlmGoalDesigner(db, {
+      model: "inline-goal-revision-test",
+      client: {
+        async generateText({ prompt }) {
+          prompts.push(prompt);
+          return JSON.stringify({
+            kind: "revision",
+            summary: "Updated the outcome boundary.",
+            changedSliceIds: ["slice-article"],
+            package: {
+              evaluatorContracts: current.evaluatorContracts,
+              slicePlan: {
+                slices: [{
+                  ...current.slicePlan.slices[0]!,
+                  outcome: "deliver revised offline article",
+                }],
+              },
+              compositionStrategy: current.compositionStrategy,
+            },
+          });
+        },
+      },
+    });
+
+    const result = await designer.revise({
+      currentPackage: current,
+      message: "make the article outcome more explicit",
+      selectedSliceId: "slice-article",
+    });
+
+    assert.equal(result.kind, "revision");
+    if (result.kind !== "revision") assert.fail("expected revision");
+    assert.match(prompts[0] ?? "", /CurrentGoalDesignPackage/);
+    assert.match(prompts[0] ?? "", /Do not change templatePolicy/);
+    assert.equal(result.package.revision, current.revision + 1);
+    assert.equal(result.package.parentRevision, current.revision);
+    assert.equal(result.package.templatePolicy.mode, current.templatePolicy.mode);
+    assert.equal(result.package.slicePlan.slices[0]!.outcome, "deliver revised offline article");
   } finally {
     await db.close();
   }
@@ -128,6 +186,23 @@ test("Goal Design rejects duplicate requirement ownership and artifact-free depe
   };
   assert.equal(
     validateGoalDesignPackage(falseDependency).some((issue) => issue.code === "dependency_without_artifact_flow"),
+    true,
+  );
+});
+
+test("Goal Design requires evaluator criteria to cover requirement criteria", () => {
+  const contract = articleGoalContract();
+  const pkg = packageValue(contract);
+  const drifted: GoalDesignPackageV1 = {
+    ...pkg,
+    evaluatorContracts: [{
+      ...pkg.evaluatorContracts[0]!,
+      acceptanceCriteria: ["A different criterion invented by the evaluator"],
+    }],
+  };
+
+  assert.equal(
+    validateGoalDesignPackage(drifted).some((issue) => issue.code === "evaluator_criteria_mismatch"),
     true,
   );
 });
@@ -194,7 +269,7 @@ function packageValue(
       schemaVersion: "southstar.requirement_evaluator_contract.v1",
       id: evaluatorId,
       requirementId,
-      acceptanceCriteria: ["article opens offline"],
+      acceptanceCriteria: [...goalContract.requirements[0]!.acceptanceCriteria],
       requiredEvidenceKinds: ["screenshot"],
       independence: "independent",
       failureClassifications: ["network_dependency"],
@@ -218,6 +293,26 @@ function packageValue(
   });
 }
 
+function packageWithSkill(
+  current: GoalDesignPackageV1,
+  skill: { objectKey: string; versionRef: string },
+): GoalDesignPackageV1 {
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision: current.revision,
+    ...(current.parentRevision !== undefined ? { parentRevision: current.parentRevision } : {}),
+    goalContract: current.goalContract,
+    evaluatorContracts: current.evaluatorContracts,
+    slicePlan: current.slicePlan,
+    compositionStrategy: current.compositionStrategy,
+    templatePolicy: current.templatePolicy,
+    goalDesignSkillRef: skill.objectKey,
+    goalDesignSkillVersionRef: skill.versionRef,
+    workspaceDiscoveryHash: current.workspaceDiscoveryHash,
+    mode: current.mode,
+  });
+}
+
 function slice(
   id: string,
   requirementIds: string[],
@@ -236,6 +331,10 @@ function slice(
     dependencyArtifactRefs: [],
     ...overrides,
   };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function syncGoalDesignSkill(db: Awaited<ReturnType<typeof createTestPostgresDb>>): Promise<void> {

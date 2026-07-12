@@ -1,0 +1,12 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.repo-write
+title: Repository Write
+scope: software
+status: approved
+description: Modify source files and tests in a workspace repository.
+requiredOperations:
+  - workspace-write
+risk:
+  level: medium
+  dataSensitivity: workspace
+  approvalRequired: false

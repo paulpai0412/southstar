@@ -9,7 +9,7 @@ import { seedDeterministicWorkflowGraph } from "./fixtures/deterministic-workflo
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 
-test("runtime routes expose workflow template search, detail, and instantiation", async () => {
+test("runtime routes expose workflow template search and detail", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDeterministicWorkflowGraph(db);
@@ -31,59 +31,6 @@ test("runtime routes expose workflow template search, detail, and instantiation"
     assert.equal(detail.result.templateRef, "template.software-dev-standard");
     assert.equal(detail.result.nodes[0]?.id, "plan");
     assert.equal(detail.result.canInstantiate, true);
-
-    const goalContract = softwareGoalContract("build vocabulary app");
-    await seedWorkflowTemplate(db, compositionPlan(goalContract));
-    const instantiated = await call<{ templateRef: string; draftId: string; status: string; nodes: Array<{ taskId: string; nodePromptSpec?: unknown }> }>(
-      db,
-      "/api/v2/workflow/templates/instantiate",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          templateRef: "template.software-dev-standard",
-          goalPrompt: "build vocabulary app",
-          constraints: { mode: "strict" },
-        }),
-      },
-      { goalInterpreter: fixedGoalInterpreter(goalContract) },
-    );
-    assert.equal(instantiated.kind, "workflow-template-instantiate");
-    assert.equal(instantiated.result.templateRef, "template.software-dev-standard");
-    assert.match(instantiated.result.draftId, /^draft-wf-composed-/);
-    assert.equal(instantiated.result.status, "validated");
-    assert.equal(instantiated.result.nodes.every((node) => node.nodePromptSpec), true);
-  } finally {
-    await db.close();
-  }
-});
-
-test("runtime route can instantiate a skeleton template through workflowComposer", async () => {
-  const db = await createTestPostgresDb();
-  try {
-    await seedDeterministicWorkflowGraph(db);
-    await seedWorkflowTemplate(db);
-    const workflowComposer = new CapturingComposer(compositionPlan());
-
-    const instantiated = await call<{ status: string; nodes: Array<{ nodePromptSpec?: unknown }> }>(
-      db,
-      "/api/v2/workflow/templates/instantiate",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          templateRef: "template.software-dev-standard",
-          goalPrompt: "build vocabulary app",
-          constraints: { mode: "strict" },
-        }),
-      },
-      {
-        workflowComposer,
-        goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app")),
-      },
-    );
-
-    assert.equal(instantiated.result.status, "validated");
-    assert.equal(instantiated.result.nodes.every((node) => node.nodePromptSpec), true);
-    assert.match(workflowComposer.lastGoalPrompt ?? "", /Template skeleton/);
   } finally {
     await db.close();
   }

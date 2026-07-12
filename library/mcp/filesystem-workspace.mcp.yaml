@@ -3,6 +3,8 @@ id: mcp.filesystem-workspace
 title: Filesystem Workspace MCP
 scope: engineering
 status: approved
+domainRefs:
+  - software
 serverId: filesystem-workspace
 transport: stdio
 command: node
@@ -14,4 +16,3 @@ allowedTools:
   - write_file
   - list_files
   - search_files
-

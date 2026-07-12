@@ -7,13 +7,19 @@ import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_pr
 import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
+import { createPiBrainProvider } from "../../src/v2/brain/pi-brain-provider.ts";
 import { createHttpPiPlannerClient, createPiSdkPlannerClient } from "../../src/v2/planner/pi-planner.ts";
 import { TorkClient } from "../../src/v2/executor/tork-client.ts";
 import { TorkExecutorProvider } from "../../src/v2/executor/tork-provider.ts";
+import { createTorkHandProvider } from "../../src/v2/hands/tork-hand-provider.ts";
+import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
+import { createRuntimeLoopRegistry } from "../../src/v2/server/runtime-loop-registry.ts";
 import { createSouthstarRuntimeServer, type SouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { recordSandboxEvaluatorOutputPg } from "../../src/v2/evolution/sandbox.ts";
+import { createGithubLibraryImportSourceFetcher } from "../../src/v2/design-library/importers/library-source-fetcher.ts";
 import type { WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
-import { LlmWorkflowComposer } from "../../src/v2/orchestration/llm-composer.ts";
+import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../../src/v2/orchestration/llm-composer.ts";
+import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
 
 export type RealPostgresInfra = {
   postgresAdminUrl: string;
@@ -436,26 +442,70 @@ export async function createRealRuntimeServer(input: {
   db: SouthstarDb;
   infra: RealPostgresInfra;
   workflowComposer?: WorkflowComposer;
+  runRoot?: string;
 }): Promise<SouthstarRuntimeServer> {
   const torkClient = new TorkClient({ baseUrl: input.infra.torkBaseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
+  const port = await freeTcpPort();
+  const callbackBaseUrl = `http://${input.infra.callbackHost}:${port}`;
+  const plannerTimeoutMs = realE2EPlannerTimeoutMs();
   const plannerClient = input.infra.piPlannerEndpoint
     ? createHttpPiPlannerClient({ endpoint: input.infra.piPlannerEndpoint })
-    : createPiSdkPlannerClient();
+    : createPiSdkPlannerClient({ timeoutMs: plannerTimeoutMs });
+  const libraryPlannerClient = input.infra.piPlannerEndpoint
+    ? createHttpPiPlannerClient({ endpoint: input.infra.piPlannerEndpoint, sessionKind: "library" })
+    : createPiSdkPlannerClient({ timeoutMs: plannerTimeoutMs, sessionKind: "library" });
+  const workflowPlannerClientForInput = (cwd?: string) => {
+    if (input.infra.piPlannerEndpoint || !cwd) return plannerClient;
+    return createPiSdkPlannerClient({ cwd, timeoutMs: plannerTimeoutMs });
+  };
   const workflowComposer = input.workflowComposer ?? new LlmWorkflowComposer({
     model: process.env.SOUTHSTAR_WORKFLOW_COMPOSER_MODEL ?? "southstar-runtime-workflow-composer",
+    composerSop: () => loadWorkflowComposerSopPg(input.db),
     client: {
-      generateText: (request) => plannerClient.generate(request.prompt),
+      generateText: (request) => workflowPlannerClientForInput(request.cwd).generate(request.prompt),
       generateTextStream: plannerClient.generateStream
-        ? (request, handlers) => plannerClient.generateStream!(request.prompt, { onDelta: handlers.onDelta })
+        ? (request, handlers) => workflowPlannerClientForInput(request.cwd).generateStream!(request.prompt, { onDelta: handlers.onDelta })
         : undefined,
     },
   });
+  const executorProvider = new TorkExecutorProvider({
+    torkClient,
+    callbackUrl: `${callbackBaseUrl}/api/v2/tork/callback`,
+    heartbeatUrl: `${callbackBaseUrl}/api/v2/executor/heartbeat`,
+    liveEventUrl: `${callbackBaseUrl}/api/v2/executor/live-event`,
+  });
   return await createSouthstarRuntimeServer({
     host: "0.0.0.0",
+    port,
     db: input.db as never,
     plannerClient,
     workflowComposer,
-    executorProvider: new TorkExecutorProvider({ torkClient }),
+    libraryImportSourceFetcher: createGithubLibraryImportSourceFetcher(),
+    libraryImportLlmProvider: async ({ prompt, sourceRepoPath }) => {
+      if (!input.infra.piPlannerEndpoint && sourceRepoPath) {
+        return createPiSdkPlannerClient({
+          cwd: sourceRepoPath,
+          noTools: null,
+          sessionKind: "library",
+          timeoutMs: plannerTimeoutMs,
+        }).generate(prompt);
+      }
+      return libraryPlannerClient.generate(prompt);
+    },
+    executorProvider,
+    callbackUrl: `${callbackBaseUrl}/api/v2/tork/callback`,
+    runtimeLoopRegistry: createRuntimeLoopRegistry(),
+    managedRuntime: {
+      sessionStore: createPostgresSessionStore(input.db),
+      brainProvider: createPiBrainProvider(),
+      handProvider: createTorkHandProvider({
+        executorProvider,
+        callbackUrl: `${callbackBaseUrl}/api/v2/tork/callback`,
+        heartbeatUrl: `${callbackBaseUrl}/api/v2/executor/heartbeat`,
+        liveEventUrl: `${callbackBaseUrl}/api/v2/executor/live-event`,
+        ...(input.runRoot ? { runRoot: input.runRoot } : {}),
+      }),
+    },
     torkObservationClient: {
       capabilities: () => torkClient.capabilities(),
       getJob: (jobId) => torkClient.getJobObservation(jobId),
@@ -465,6 +515,10 @@ export async function createRealRuntimeServer(input: {
     callbackUrl: "http://127.0.0.1/placeholder-until-server-starts",
     createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
   });
+}
+
+export function realE2EPlannerTimeoutMs(input: Record<string, string | undefined> = process.env): number {
+  return loadSouthstarEnv(input).piPlannerTimeoutMs;
 }
 
 export function dockerReachableUrl(server: SouthstarRuntimeServer, infra: RealPostgresInfra): string {
@@ -520,10 +574,23 @@ export async function waitForTorkJob(
     const observed = await client.getJobObservation(jobId);
     const status = observed.status.toLowerCase();
     if (acceptedStatuses.has(status)) return status;
-    if (["failed", "errored", "error", "cancelled", "canceled"].includes(status)) throw new Error(`Tork job ${jobId} ended with ${status}`);
+    if (["failed", "errored", "error", "cancelled", "canceled"].includes(status)) {
+      throw new Error(`Tork job ${jobId} ended with ${status}${await torkJobDiagnosticsForError(client, jobId, observed.raw)}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 2_000));
   }
-  throw new Error(`Tork job ${jobId} did not complete within ${timeoutMs}ms`);
+  throw new Error(`Tork job ${jobId} did not complete within ${timeoutMs}ms${await torkJobDiagnosticsForError(client, jobId)}`);
+}
+
+async function torkJobDiagnosticsForError(client: TorkClient, jobId: string, raw?: unknown): Promise<string> {
+  const parts = [`\nTork job observation:\n${JSON.stringify(raw ?? await client.getJobObservation(jobId), null, 2).slice(-12_000)}`];
+  try {
+    const logs = (await client.getJobLogs(jobId)).trim();
+    parts.push(`\nTork job logs:\n${logs ? logs.slice(-12_000) : "<empty>"}`);
+  } catch (error) {
+    parts.push(`\nTork job logs unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return parts.join("");
 }
 
 export async function startSandboxEvaluatorCallbackServer(db: SouthstarDb): Promise<{ url: string; close(): Promise<void> }> {

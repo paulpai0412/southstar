@@ -1,10 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
 import { openSouthstarDb, type SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import { installLibraryImportCandidates } from "../../src/v2/design-library/importers/library-import-draft-store.ts";
 import type { WorkflowCompositionPlan } from "../../src/v2/design-library/types.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
@@ -16,16 +20,27 @@ import {
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import {
   finalizeGoalContract,
+  GoalContractVocabularyGapError,
   goalContractHash,
   requirementSpecFromGoalContract,
   reviseGoalContract,
   type GoalContractInterpreter,
   type GoalContractV1,
 } from "../../src/v2/orchestration/goal-contract.ts";
-import { finalizeGoalDesignPackage } from "../../src/v2/orchestration/goal-design.ts";
+import {
+  finalizeGoalDesignPackage,
+  type GoalDesigner,
+  type GoalDesignMode,
+  type GoalDesignPackageV1,
+  type WorkflowTemplatePolicyV1,
+} from "../../src/v2/orchestration/goal-design.ts";
 import {
   loadCurrentGoalDesignPackagePg,
   persistGoalDesignPackageRevisionPg,
+  preparePostgresGoalDesignDraft,
+  retryPostgresGoalDesignAfterVocabularyApprovalPg,
+  reviseGoalDesignFromChatPg,
+  reviseGoalSlicePg,
 } from "../../src/v2/orchestration/goal-design-draft-service.ts";
 import {
   createPostgresPlannerDraft,
@@ -66,6 +81,13 @@ test("planner draft persists a design/article Goal Contract and uses its domain"
     const goalPrompt = "Turn notes.md into an offline HTML article";
     const goalContract = articleGoalContract(goalPrompt);
     await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    await upsertLibraryObject(db, {
+      objectKey: "domain.design-article",
+      objectKind: "domain_taxonomy",
+      status: "approved",
+      headVersionId: "domain.design-article@v1",
+      state: { scope: "design/article" },
+    });
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt,
       cwd: "/workspace/article",
@@ -88,6 +110,13 @@ test("planner draft gives the Goal interpreter approved Library vocabulary", asy
     const goalPrompt = "Turn notes.md into an offline HTML article";
     const goalContract = articleGoalContract(goalPrompt);
     await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    await upsertLibraryObject(db, {
+      objectKey: "domain.design-article",
+      objectKind: "domain_taxonomy",
+      status: "approved",
+      headVersionId: "domain.design-article@v1",
+      state: { scope: "design/article" },
+    });
     await upsertLibraryObject(db, {
       objectKey: "capability.article-workspace-read",
       objectKind: "capability_spec",
@@ -119,6 +148,74 @@ test("planner draft gives the Goal interpreter approved Library vocabulary", asy
     assert.ok(vocabulary?.scopes.includes("design/article"));
     assert.ok(vocabulary?.capabilityRefs.some((ref) => ref.startsWith("capability.")));
     assert.ok(vocabulary?.artifactRefs.some((ref) => ref.startsWith("artifact.")));
+  });
+});
+
+test("Goal Design draft gives the Goal interpreter approved Library vocabulary", async () => {
+  await withDb(async (db) => {
+    const cwd = await mkdtemp(join(tmpdir(), "southstar-goal-design-vocab-"));
+    const goalPrompt = "Turn notes.md into an offline HTML article";
+    const goalContract = articleGoalContract(goalPrompt);
+    try {
+      await seedDeterministicWorkflowGraph(db, goalContract.domain);
+      await upsertLibraryObject(db, {
+        objectKey: "domain.design-article",
+        objectKind: "domain_taxonomy",
+        status: "approved",
+        headVersionId: "domain.design-article@v1",
+        state: { scope: "design/article" },
+      });
+      await upsertLibraryObject(db, {
+        objectKey: "capability.article-workspace-read",
+        objectKind: "capability_spec",
+        status: "approved",
+        headVersionId: "capability.article-workspace-read@v1",
+        state: { scope: "design/article" },
+      });
+      await upsertLibraryObject(db, {
+        objectKey: "artifact.article_html",
+        objectKind: "artifact_contract",
+        status: "approved",
+        headVersionId: "artifact.article_html@v1",
+        state: { scope: "design/article" },
+      });
+      await seedGoalDesignSkill(db);
+      let vocabulary: Parameters<GoalContractInterpreter["interpret"]>[0]["libraryVocabulary"];
+
+      await preparePostgresGoalDesignDraft(db, {
+        goalPrompt,
+        cwd,
+        mode: "review_before_compose",
+        templatePolicy: { mode: "auto" },
+        goalInterpreter: {
+          async interpret(input) {
+            vocabulary = input.libraryVocabulary;
+            return structuredClone(goalContract);
+          },
+        },
+        goalDesigner: {
+          async design(input) {
+            return goalDesignPackageForContract({
+              goalContract: input.goalContract,
+              skillRef: input.skill.objectKey,
+              skillVersionRef: input.skill.versionRef,
+              workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
+              mode: input.mode,
+              templatePolicy: input.templatePolicy,
+            });
+          },
+          async revise() {
+            throw new Error("revise should not be called");
+          },
+        },
+      });
+
+      assert.ok(vocabulary?.scopes.includes("design/article"));
+      assert.ok(vocabulary?.capabilityRefs.includes("capability.article-workspace-read"));
+      assert.ok(vocabulary?.artifactRefs.includes("artifact.article_html"));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 
@@ -156,6 +253,120 @@ test("Goal Design package revisions are immutable resources", async () => {
       }),
       /goal_design_revision_conflict/,
     );
+  });
+});
+
+test("valid Slice edit creates one immutable package revision", async () => {
+  await withDb(async (db) => {
+    const { draftId, package: before } = await createReadyReviewGoalDesignDraft(db);
+    const after = await reviseGoalSlicePg(db, {
+      draftId,
+      sliceId: before.slicePlan.slices[0]!.id,
+      expectedPackageHash: before.packageHash,
+      patch: { outcome: "deliver the accepted artifact" },
+    });
+
+    assert.equal(after.revision, before.revision + 1);
+    assert.equal(after.parentRevision, before.revision);
+    assert.notEqual(after.packageHash, before.packageHash);
+    assert.equal(after.slicePlan.slices[0]!.outcome, "deliver the accepted artifact");
+    assert.equal(await countGoalDesignRevisions(db, draftId), 2);
+  });
+});
+
+test("invalid and stale Slice edits create no revision", async () => {
+  await withDb(async (db) => {
+    const { draftId, package: before } = await createReadyReviewGoalDesignDraft(db);
+    const sliceId = before.slicePlan.slices[0]!.id;
+    const artifactRef = before.slicePlan.slices[0]!.expectedArtifactRefs[0]!;
+
+    await assert.rejects(
+      () => reviseGoalSlicePg(db, {
+        draftId,
+        sliceId,
+        expectedPackageHash: before.packageHash,
+        patch: { dependsOnSliceIds: [sliceId], dependencyArtifactRefs: [artifactRef] },
+      }),
+      /dependency_cycle/,
+    );
+    await assert.rejects(
+      () => reviseGoalSlicePg(db, {
+        draftId,
+        sliceId,
+        expectedPackageHash: "stale",
+        patch: { outcome: "x" },
+      }),
+      /goal_design_package_stale/,
+    );
+    assert.equal(await countGoalDesignRevisions(db, draftId), 1);
+  });
+});
+
+test("review chat revises the complete package without composing", async () => {
+  await withDb(async (db) => {
+    const { draftId, package: before } = await createReadyReviewGoalDesignDraft(db);
+    let reviseCalls = 0;
+    const result = await reviseGoalDesignFromChatPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(before.goalContract),
+      goalDesigner: {
+        async design() {
+          throw new Error("design should not be called for review chat");
+        },
+        async revise({ currentPackage }) {
+          reviseCalls += 1;
+          const nextSlice = {
+            ...currentPackage.slicePlan.slices[0]!,
+            outcome: "deliver the split audit artifact",
+          };
+          return {
+            kind: "revision",
+            summary: "Separated audit artifact outcome.",
+            changedSliceIds: [nextSlice.id],
+            package: goalDesignPackageFromCurrent(currentPackage, [nextSlice]),
+          };
+        },
+      },
+    }, {
+      draftId,
+      expectedPackageHash: before.packageHash,
+      message: "separate the audit artifact into its own outcome boundary",
+      selectedSliceId: before.slicePlan.slices[0]!.id,
+    });
+
+    assert.equal(result.kind, "revision");
+    if (result.kind !== "revision") assert.fail("expected a revision");
+    assert.equal(result.package.revision, before.revision + 1);
+    assert.equal(result.draftStatus, "ready_for_review");
+    assert.equal(result.changedSliceIds[0], before.slicePlan.slices[0]!.id);
+    assert.equal(reviseCalls, 1);
+    assert.equal((await db.one<{ count: string }>("select count(*) from southstar.workflow_runs")).count, "0");
+  });
+});
+
+test("review chat clarification leaves the package unchanged", async () => {
+  await withDb(async (db) => {
+    const { draftId, package: before } = await createReadyReviewGoalDesignDraft(db);
+    const result = await reviseGoalDesignFromChatPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(before.goalContract),
+      goalDesigner: {
+        async design() {
+          throw new Error("design should not be called for review chat");
+        },
+        async revise() {
+          return { kind: "needs_input", question: "Which outcome boundary should change?" };
+        },
+      },
+    }, {
+      draftId,
+      expectedPackageHash: before.packageHash,
+      message: "change it",
+    });
+
+    assert.deepEqual(result, { kind: "needs_input", question: "Which outcome boundary should change?" });
+    assert.equal((await loadCurrentGoalDesignPackagePg(db, draftId)).packageHash, before.packageHash);
+    assert.equal(await countGoalDesignRevisions(db, draftId), 1);
   });
 });
 
@@ -213,6 +424,136 @@ test("blocking Goal Contract persists needs_input without compiling", async () =
     assert.equal((stored!.payload as any).workflow, undefined);
     assert.equal((stored!.payload as any).composition, undefined);
     await assert.rejects(() => createPostgresRunFromDraft(db, { draftId: draft.draftId }), /not validated/);
+  });
+});
+
+test("unapproved Goal vocabulary persists needs_library_input without compiling", async () => {
+  await withDb(async (db) => {
+    let composerCalled = false;
+    const goalContract = softwareGoalContract("Build membership subscriptions");
+    const gapError = new GoalContractVocabularyGapError(
+      { ...goalContract, domain: "membership", requiredCapabilities: ["capability.subscription-billing"] },
+      [
+        { kind: "domain", requestedRef: "membership", allowedRefs: ["software"] },
+        { kind: "capability", requestedRef: "capability.subscription-billing", allowedRefs: ["capability.repo-read"] },
+      ],
+    );
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: goalContract.originalPrompt,
+      cwd: "/workspace/membership",
+      goalInterpreter: { async interpret() { throw gapError; } },
+      composer: {
+        async compose() {
+          composerCalled = true;
+          return deterministicFixtureComposition();
+        },
+      },
+    });
+
+    assert.equal(draft.status, "needs_library_input");
+    assert.equal(composerCalled, false);
+    assert.deepEqual(draft.vocabularyGaps, gapError.gaps);
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal(stored?.status, "needs_library_input");
+    assert.deepEqual((stored?.payload as any).vocabularyGaps, gapError.gaps);
+    assert.equal((stored?.payload as any).workflow, undefined);
+  });
+});
+
+test("auto Goal Design creates a reviewable Library import draft for vocabulary gaps", async () => {
+  await withDb(async (db) => {
+    const cwd = await mkdtemp(join(tmpdir(), "southstar-goal-vocabulary-gap-"));
+    const goalContract = softwareGoalContract("Build membership subscriptions");
+    const error = new GoalContractVocabularyGapError(
+      { ...goalContract, domain: "membership", requiredCapabilities: ["capability.subscription-billing"] },
+      [
+        { kind: "domain", requestedRef: "membership", allowedRefs: ["software"] },
+        { kind: "capability", requestedRef: "capability.subscription-billing", allowedRefs: ["capability.repo-read"] },
+      ],
+    );
+    await upsertLibraryObject(db, {
+      objectKey: "skill.southstar-goal-design",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "skill.southstar-goal-design@test",
+      state: { purpose: "goal_design", body: "Design governed outcome slices." },
+    });
+
+    try {
+      const draft = await preparePostgresGoalDesignDraft(db, {
+        goalPrompt: goalContract.originalPrompt,
+        cwd,
+        mode: "auto_until_blocked",
+        templatePolicy: { mode: "auto" },
+        goalInterpreter: { async interpret() { throw error; } },
+        goalDesigner: { async design() { throw new Error("goal designer must not run before vocabulary approval"); } },
+        libraryImportLlmProvider: async () => ({ candidates: [
+          {
+            objectKey: "domain.membership",
+            kind: "domain",
+            title: "Membership",
+            scope: "membership",
+            aliases: ["subscription"],
+            selectedByDefault: true,
+          },
+          {
+            objectKey: "capability.subscription-billing",
+            kind: "capability",
+            title: "Subscription Billing",
+            scope: "membership",
+            description: "Manage subscription billing state.",
+            requiredOperations: ["workspace-read", "workspace-write"],
+            selectedByDefault: true,
+          },
+        ] }),
+      });
+
+      assert.equal(draft.status, "needs_library_input");
+      assert.match(draft.libraryImportDraftId ?? "", /^library-import-draft-/);
+      const importDraft = await getResourceByKeyPg(db, "library_import_draft", draft.libraryImportDraftId!);
+      assert.deepEqual((importDraft?.payload as any).candidates.map((candidate: any) => candidate.objectKey), [
+        "domain.membership",
+        "capability.subscription-billing",
+      ]);
+      const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+      assert.equal((stored?.payload as any).libraryImportDraftId, draft.libraryImportDraftId);
+
+      await installLibraryImportCandidates(db, {
+        root: join(cwd, "library"),
+        draftId: draft.libraryImportDraftId!,
+        selectedCandidateIds: ["domain.membership", "capability.subscription-billing"],
+        actor: "operator",
+        reason: "approved Goal vocabulary gaps",
+        llmProvider: async () => ({ proposedEdges: [] }),
+      });
+      const retried = await retryPostgresGoalDesignAfterVocabularyApprovalPg(db, {
+        draftId: draft.draftId,
+        goalInterpreter: {
+          async interpret(input) {
+            assert.ok(input.libraryVocabulary?.scopes.includes("membership"));
+            assert.ok(input.libraryVocabulary?.capabilityRefs.includes("capability.subscription-billing"));
+            return error.goalContract;
+          },
+        },
+        goalDesigner: {
+          async design(input) {
+            return goalDesignPackageForContract({
+              goalContract: input.goalContract,
+              skillRef: input.skill.objectKey,
+              skillVersionRef: input.skill.versionRef,
+              workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
+              mode: input.mode,
+              templatePolicy: input.templatePolicy,
+            });
+          },
+          async revise() { throw new Error("revise should not be called"); },
+        },
+      });
+      assert.equal(retried.status, "ready_for_review");
+      assert.equal(retried.goalContractHash, goalContractHash(error.goalContract));
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1206,13 +1547,15 @@ test("Postgres run creation rejects invalid planner drafts", async () => {
   });
 });
 
-test("Postgres server routes create planner drafts and runs through new API", async () => {
+test("Postgres server routes create planner drafts through the Goal API", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by Postgres constrained planner"); } },
       goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
+      goalDesigner: routeGoalDesigner(),
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by created-state route"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -1222,70 +1565,40 @@ test("Postgres server routes create planner drafts and runs through new API", as
         draftId: string;
         workflowId: string;
         status: string;
+        goalDesignPackageHash?: string;
         validationIssues: Array<{ path: string; message: string }>;
         taskSummaries: Array<{ taskId: string }>;
       }>(server.url, "/api/v2/planner/drafts", {
         method: "POST",
-        body: JSON.stringify({ goalPrompt: "implement calc sum" }),
+        body: JSON.stringify({ goalPrompt: "implement calc sum", cwd: process.cwd(), idempotencyKey: "legacy-route-create-1" }),
       });
-      assert.match(draft.draftId, /^draft-wf-composed-/);
-      assert.equal(draft.status, "validated");
+      assert.match(draft.draftId, /^draft-goal-design-/);
+      assert.equal(draft.status, "ready_for_review");
+      assert.match(draft.goalDesignPackageHash ?? "", /^[a-f0-9]{64}$/);
       assert.deepEqual(draft.validationIssues, []);
-      assert.deepEqual(draft.taskSummaries.map((task) => task.taskId), FIXTURE_TASK_IDS);
-
-      const run = await api<{ runId: string; taskIds: string[] }>(server.url, "/api/v2/runs", {
-        method: "POST",
-        body: JSON.stringify({ draftId: draft.draftId }),
-      });
-      assert.match(run.runId, /^run-wf-composed-/);
-      assert.deepEqual(run.taskIds, FIXTURE_TASK_IDS);
+      assert.deepEqual(draft.taskSummaries, []);
 
       const llmDraft = await api<{
         draftId: string;
         workflowId: string;
         status: string;
+        goalDesignPackageHash?: string;
         validationIssues: Array<{ path: string; message: string }>;
         taskSummaries: Array<{ taskId: string }>;
       }>(server.url, "/api/v2/planner/drafts", {
         method: "POST",
-        body: JSON.stringify({ goalPrompt: "implement calc sum", orchestrationMode: "llm-constrained" }),
+        body: JSON.stringify({
+          goalPrompt: "implement calc sum",
+          orchestrationMode: "llm-constrained",
+          cwd: process.cwd(),
+          idempotencyKey: "legacy-route-create-2",
+        }),
       });
-      assert.match(llmDraft.draftId, /^draft-wf-composed-/);
-      assert.equal(llmDraft.status, "validated");
+      assert.match(llmDraft.draftId, /^draft-goal-design-/);
+      assert.equal(llmDraft.status, "ready_for_review");
+      assert.match(llmDraft.goalDesignPackageHash ?? "", /^[a-f0-9]{64}$/);
       assert.deepEqual(llmDraft.validationIssues, []);
-      assert.equal(llmDraft.taskSummaries.length, 6);
-
-      const orchestration = await api<{
-        draftId: string;
-        status: string;
-        taskSummaries: Array<{ taskId: string }>;
-        orchestrationSnapshot?: { validation: { ok: boolean } };
-      }>(server.url, `/api/v2/planner/drafts/${encodeURIComponent(llmDraft.draftId)}/orchestration`, {
-        method: "GET",
-      });
-      assert.equal(orchestration.draftId, llmDraft.draftId);
-      assert.equal(orchestration.status, "validated");
-      assert.equal(orchestration.orchestrationSnapshot?.validation.ok, true);
-      assert.deepEqual(orchestration.taskSummaries.map((task) => task.taskId), llmDraft.taskSummaries.map((task) => task.taskId));
-
-      const llmRun = await api<{ runId: string; taskIds: string[] }>(server.url, `/api/v2/planner/drafts/${encodeURIComponent(llmDraft.draftId)}/runs`, {
-        method: "POST",
-        body: JSON.stringify({}),
-      });
-      assert.deepEqual(llmRun.taskIds, [
-        "understand-repo",
-        "review-spec",
-        "implement-feature",
-        "verify-feature",
-        "review-code-quality",
-        "summarize-completion",
-      ]);
-
-      const llmRunViaLegacyRoute = await api<{ runId: string; taskIds: string[] }>(server.url, "/api/v2/runs", {
-        method: "POST",
-        body: JSON.stringify({ draftId: llmDraft.draftId }),
-      });
-      assert.deepEqual(llmRunViaLegacyRoute.taskIds, llmRun.taskIds);
+      assert.deepEqual(llmDraft.taskSummaries, []);
     } finally {
       await server.close();
     }
@@ -1341,10 +1654,12 @@ test("run-goal returns a needs_input draft without materializing a run", async (
 test("Postgres server planner draft route accepts and persists structured request hints", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by structured request contract test"); } },
       goalInterpreter: fixedGoalInterpreter(softwareGoalContract("implement calc sum")),
+      goalDesigner: routeGoalDesigner(),
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by planner route"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -1354,7 +1669,8 @@ test("Postgres server planner draft route accepts and persists structured reques
         goalPrompt: "implement calc sum",
         orchestrationMode: "llm-constrained",
         composerMode: "llm",
-        cwd: "/workspace/southstar",
+        cwd: process.cwd(),
+        idempotencyKey: "legacy-structured-request-1",
         libraryHints: {
           roleRefs: ["agent.software-maker"],
           agentProfileRefs: ["profile.software-maker-pi"],
@@ -1370,7 +1686,12 @@ test("Postgres server planner draft route accepts and persists structured reques
           },
         },
       };
-      const expectedPlannerRequest = request;
+      const expectedPlannerRequest = {
+        goalPrompt: request.goalPrompt,
+        cwd: request.cwd,
+        goalDesignMode: "review_before_compose",
+        templatePolicy: { mode: "auto" },
+      };
       const draft = await api<{
         draftId: string;
         goalPrompt: string;
@@ -1380,7 +1701,7 @@ test("Postgres server planner draft route accepts and persists structured reques
         method: "POST",
         body: JSON.stringify(request),
       });
-      assert.equal(draft.status, "validated");
+      assert.equal(draft.status, "ready_for_review");
       assert.equal(draft.goalPrompt, request.goalPrompt);
 
       const row = await db.one<{
@@ -1502,10 +1823,12 @@ test("Postgres planner draft revision preserves structured request hints with ex
 test("Postgres server routes revise planner drafts via planner pipeline", async () => {
   await withDb(async (db) => {
     await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner client not used by planner route test"); } },
       goalInterpreter: softwareRevisionInterpreter("implement calc sum"),
+      goalDesigner: routeGoalDesigner(),
       workflowComposer: new DeterministicFixtureComposer(),
       executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used by planner routes"); } },
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
@@ -1516,35 +1839,37 @@ test("Postgres server routes revise planner drafts via planner pipeline", async 
         goalPrompt: string;
         workflowId: string;
         status: string;
+        goalDesignPackageHash?: string;
         taskSummaries: Array<{ taskId: string }>;
       }>(server.url, "/api/v2/planner/drafts", {
         method: "POST",
-        body: JSON.stringify({ goalPrompt: "implement calc sum" }),
+        body: JSON.stringify({ goalPrompt: "implement calc sum", cwd: process.cwd(), idempotencyKey: "legacy-revise-route-1" }),
       });
       const revised = await api<{
-        draftId: string;
-        goalPrompt: string;
-        workflowId: string;
-        status: string;
-        taskSummaries: Array<{ taskId: string }>;
+        kind: string;
+        draftStatus: string;
+        changedSliceIds: string[];
+        package: { packageHash: string };
       }>(server.url, `/api/v2/planner/drafts/${encodeURIComponent(draft.draftId)}/revise`, {
         method: "POST",
-        body: JSON.stringify({ prompt: "add explicit edge-case validation for empty inputs", orchestrationMode: "llm-constrained" }),
+        body: JSON.stringify({
+          prompt: "add explicit edge-case validation for empty inputs",
+          orchestrationMode: "llm-constrained",
+          expectedPackageHash: draft.goalDesignPackageHash,
+        }),
       });
 
-      assert.notEqual(revised.draftId, draft.draftId);
-      assert.equal(revised.status, "validated");
-      assert.equal(revised.goalPrompt, "implement calc sum");
-      assert.notEqual(revised.goalContractHash, draft.goalContractHash);
-      assert.equal(revised.taskSummaries[0]?.taskId, "understand-repo");
-      assert.equal(revised.taskSummaries.at(-1)?.taskId, "summarize-completion");
-      assert.equal(revised.taskSummaries.length > 0, true);
+      assert.equal(revised.kind, "revision");
+      assert.equal(revised.draftStatus, "ready_for_review");
+      assert.deepEqual(revised.changedSliceIds, ["slice-1"]);
+      assert.notEqual(revised.package.packageHash, draft.goalDesignPackageHash);
 
-      const revisedDraftRow = await db.one<{ summary_json: { goalPrompt?: string } }>(
+      const revisedDraftRow = await db.one<{ summary_json: { goalPrompt?: string; goalDesignPackageHash?: string } }>(
         "select summary_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
-        [revised.draftId],
+        [draft.draftId],
       );
-      assert.equal(revisedDraftRow.summary_json.goalPrompt, revised.goalPrompt);
+      assert.equal(revisedDraftRow.summary_json.goalPrompt, "implement calc sum");
+      assert.equal(revisedDraftRow.summary_json.goalDesignPackageHash, revised.package.packageHash);
     } finally {
       await server.close();
     }
@@ -1584,6 +1909,53 @@ async function createFixturePlannerDraft(db: SouthstarDb, goalPrompt: string) {
     goalInterpreter: fixedGoalInterpreter(softwareGoalContract(goalPrompt)),
     composer: new DeterministicFixtureComposer(),
   });
+}
+
+async function createReadyReviewGoalDesignDraft(
+  db: SouthstarDb,
+): Promise<{ draftId: string; package: GoalDesignPackageV1 }> {
+  const pkg = packageRevision(1);
+  const draftId = `draft-goal-design-${pkg.packageHash.slice(0, 12)}`;
+  await persistGoalDesignPackageRevisionPg(db, { draftId, package: pkg });
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: "planner",
+    status: "ready_for_review",
+    title: "Goal Design Ready For Review",
+    payload: {
+      goalContract: pkg.goalContract,
+      goalContractHash: pkg.goalContractHash,
+      goalDesignPackage: pkg,
+      goalDesignPackageHash: pkg.packageHash,
+      plannerRequest: {
+        goalPrompt: pkg.goalContract.originalPrompt,
+        cwd: pkg.goalContract.workspace.cwd,
+        goalDesignMode: pkg.mode,
+        templatePolicy: pkg.templatePolicy,
+      },
+    },
+    summary: {
+      goalPrompt: pkg.goalContract.originalPrompt,
+      workflowId: "",
+      planner: "goal-design",
+      status: "ready_for_review",
+      validationIssues: [],
+      taskSummaries: [],
+      goalContractHash: pkg.goalContractHash,
+      goalDesignPackageHash: pkg.packageHash,
+      sliceCount: pkg.slicePlan.slices.length,
+    },
+  });
+  return { draftId, package: pkg };
+}
+
+async function countGoalDesignRevisions(db: SouthstarDb, draftId: string): Promise<number> {
+  const row = await db.one<{ count: string }>(
+    "select count(*) from southstar.runtime_resources where resource_type = 'goal_design_package_revision' and resource_key like $1",
+    [`${draftId}:revision:%`],
+  );
+  return Number(row.count);
 }
 
 async function stripGoalContractFromDraft(
@@ -1681,6 +2053,99 @@ function articleGoalContract(goalPrompt: string): GoalContractV1 {
   });
 }
 
+async function seedGoalDesignSkill(db: SouthstarDb): Promise<void> {
+  await upsertLibraryObject(db, {
+    objectKey: "skill.southstar-goal-design",
+    objectKind: "skill_spec",
+    status: "approved",
+    headVersionId: "skill.southstar-goal-design@test",
+    state: {
+      purpose: "goal_design",
+      body: "Design the smallest cohesive outcome slices and return the host schema.",
+    },
+  });
+}
+
+function routeGoalDesigner(): GoalDesigner {
+  return {
+    async design(input) {
+      return goalDesignPackageForContract({
+        goalContract: input.goalContract,
+        skillRef: input.skill.objectKey,
+        skillVersionRef: input.skill.versionRef,
+        workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
+        mode: input.mode,
+        templatePolicy: input.templatePolicy,
+      });
+    },
+    async revise({ currentPackage }) {
+      const firstSlice = currentPackage.slicePlan.slices[0]!;
+      const nextSlice = {
+        ...firstSlice,
+        outcome: `${firstSlice.outcome} with revised route coverage`,
+      };
+      return {
+        kind: "revision",
+        summary: "Updated the first slice outcome.",
+        changedSliceIds: [firstSlice.id],
+        package: goalDesignPackageFromCurrent(currentPackage, [nextSlice]),
+      };
+    },
+  };
+}
+
+function goalDesignPackageForContract(input: {
+  goalContract: GoalContractV1;
+  skillRef: string;
+  skillVersionRef: string;
+  workspaceDiscoveryHash: string;
+  mode: GoalDesignMode;
+  templatePolicy: WorkflowTemplatePolicyV1;
+}): GoalDesignPackageV1 {
+  const requirement = input.goalContract.requirements[0]!;
+  const artifactRef = input.goalContract.expectedArtifactRefs[0] ?? "artifact.completion_report";
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision: 1,
+    goalContract: input.goalContract,
+    evaluatorContracts: [{
+      schemaVersion: "southstar.requirement_evaluator_contract.v1",
+      id: "eval-1",
+      requirementId: requirement.id,
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      requiredEvidenceKinds: ["test_result"],
+      independence: "independent",
+      failureClassifications: ["implementation_gap"],
+    }],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [{
+        id: "slice-1",
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: artifactRef,
+        mutationBoundary: "one cohesive implementation boundary",
+        expectedArtifactRefs: [artifactRef],
+        evaluatorContractRefs: ["eval-1"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-1"],
+      rationale: "one atomic requirement boundary",
+    },
+    templatePolicy: input.templatePolicy,
+    goalDesignSkillRef: input.skillRef,
+    goalDesignSkillVersionRef: input.skillVersionRef,
+    workspaceDiscoveryHash: input.workspaceDiscoveryHash,
+    mode: input.mode,
+  });
+}
+
 function packageRevision(revision: number, parentRevision?: number) {
   const contract = softwareGoalContract(`goal design revision ${revision}`);
   const requirement = contract.requirements[0]!;
@@ -1725,6 +2190,35 @@ function packageRevision(revision: number, parentRevision?: number) {
     goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
     workspaceDiscoveryHash: `workspace-${revision}`,
     mode: "review_before_compose",
+  });
+}
+
+function goalDesignPackageFromCurrent(
+  current: GoalDesignPackageV1,
+  slices: GoalDesignPackageV1["slicePlan"]["slices"],
+): GoalDesignPackageV1 {
+  const nextRevision = current.revision + 1;
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision: nextRevision,
+    parentRevision: current.revision,
+    goalContract: current.goalContract,
+    evaluatorContracts: current.evaluatorContracts,
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: nextRevision,
+      slices,
+    },
+    compositionStrategy: {
+      ...current.compositionStrategy,
+      sliceIds: slices.map((slice) => slice.id),
+    },
+    templatePolicy: current.templatePolicy,
+    goalDesignSkillRef: current.goalDesignSkillRef,
+    goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
+    workspaceDiscoveryHash: current.workspaceDiscoveryHash,
+    mode: current.mode,
   });
 }
 

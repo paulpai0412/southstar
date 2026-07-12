@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { finalizeGoalContract, type GoalContractInterpreter, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
@@ -299,6 +300,72 @@ test("confirmation composes the exact package hash and schedules once", async ()
     assert.equal(schedulingCalls, 1);
     assert.equal(await runCount(db), 1);
   } finally {
+    await db.close();
+  }
+});
+
+test("confirmation can materialize per-slice runs under one execution set", async () => {
+  const db = await createTestPostgresDb();
+  const workspace = await mkdtemp("/tmp/southstar-per-slice-runs-");
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const contract = perSliceGoalContract("Deliver account and billing slices", workspace);
+    const composedSliceIds: string[] = [];
+    const context = {
+      db,
+      goalInterpreter: fixedGoalInterpreter(contract),
+      goalDesigner: perSliceGoalDesigner(),
+      composer: {
+        async compose(input) {
+          const sliceId = input.goalDesignPackage?.slicePlan.slices[0]?.id ?? "missing";
+          composedSliceIds.push(sliceId);
+          return goalDesignAwareComposition(input.goalContract, sliceId);
+        },
+      } satisfies WorkflowComposer,
+      startScheduling: startRunSchedulingPg,
+    };
+    const prepared = await submitGoalPg(context, {
+      ...request("Deliver account and billing slices", "goal-per-slice-runs-1"),
+      cwd: contract.workspace.cwd,
+    });
+
+    const result = await confirmGoalDesignPg(context, {
+      draftId: prepared.draftId,
+      expectedPackageHash: prepared.goalDesignPackageHash!,
+    });
+
+    assert.equal(result.draftStatus, "validated");
+    assert.equal(result.runId, undefined);
+    assert.ok(result.executionSetId);
+    assert.equal(result.sliceRuns?.length, 2);
+    assert.deepEqual([...composedSliceIds].sort(), ["slice-account", "slice-billing"]);
+    assert.equal(await runCount(db), 2);
+
+    const rows = await db.query<{ status: string; runtime_context_json: Record<string, unknown> }>(
+      "select status, runtime_context_json from southstar.workflow_runs order by goal_prompt",
+    );
+    assert.deepEqual(
+      rows.rows.map((row) => row.runtime_context_json.sliceId).sort(),
+      ["slice-account", "slice-billing"],
+    );
+    assert.equal(rows.rows.every((row) => row.runtime_context_json.goalExecutionSetId === result.executionSetId), true);
+    assert.equal(rows.rows.every((row) => row.runtime_context_json.cwd === contract.workspace.cwd), true);
+    assert.equal(rows.rows.every((row) => row.runtime_context_json.parentGoalContractHash === prepared.goalContractHash), true);
+    assert.equal(rows.rows.filter((row) => row.status === "scheduling").length, 1);
+    assert.equal(rows.rows.filter((row) => row.status === "created").length, 1);
+
+    const billingRun = rows.rows.find((row) => row.runtime_context_json.sliceId === "slice-billing");
+    assert.deepEqual(billingRun?.runtime_context_json.dependsOnSliceIds, ["slice-account"]);
+    assert.deepEqual(billingRun?.runtime_context_json.dependencyArtifactRefs, [contract.expectedArtifactRefs[0]]);
+
+    const executionSet = await db.one<{ payload_json: { entries: Array<{ sliceId: string; runId: string }> } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'goal_execution_set' and resource_key = $1",
+      [result.executionSetId],
+    );
+    assert.deepEqual(executionSet.payload_json.entries.map((entry) => entry.sliceId).sort(), ["slice-account", "slice-billing"]);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
     await db.close();
   }
 });
@@ -845,6 +912,74 @@ test("POST /api/v2/run-goal streams persisted stages and the JSON-equivalent don
   }
 });
 
+test("POST /api/v2/planner/drafts enters through Goal Design and returns a legacy draft receipt", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const response = await handleRuntimeRoute(runtimeContext(db, "Add parser tests"), new Request("http://127.0.0.1/api/v2/planner/drafts", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        goalPrompt: "Add parser tests",
+        cwd: process.cwd(),
+        idempotencyKey: "legacy-planner-draft-route-1",
+      }),
+    }));
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json() as { ok: true; kind: string; result: { status: string; draftId: string; goalDesignPackageHash?: string } };
+    assert.equal(envelope.kind, "planner-draft");
+    assert.equal(envelope.result.status, "ready_for_review");
+    assert.match(envelope.result.draftId, /^draft-goal-design-/);
+    assert.match(envelope.result.goalDesignPackageHash ?? "", /^[a-f0-9]{64}$/);
+  } finally {
+    await db.close();
+  }
+});
+
+test("POST /api/v2/planner/drafts/:draftId/revise edits a reviewable Goal Design draft", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const prepared = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Add parser tests")),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    }, {
+      ...request("Add parser tests", "legacy-planner-revise-prepare-1"),
+      cwd: process.cwd(),
+    });
+    assert.ok(prepared.goalDesignPackageHash);
+
+    const response = await handleRuntimeRoute({
+      ...runtimeContext(db, "Add parser tests"),
+      goalDesigner: revisingGoalDesigner(),
+    }, new Request(
+      `http://127.0.0.1/api/v2/planner/drafts/${prepared.draftId}/revise`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          prompt: "tighten the slice plan",
+          expectedPackageHash: prepared.goalDesignPackageHash,
+        }),
+      },
+    ));
+
+    assert.equal(response.status, 200);
+    const envelope = await response.json() as { ok: true; kind: string; result: { kind: string; draftStatus: string; changedSliceIds: string[] } };
+    assert.equal(envelope.kind, "goal-design-revision");
+    assert.equal(envelope.result.kind, "revision");
+    assert.equal(envelope.result.draftStatus, "ready_for_review");
+    assert.deepEqual(envelope.result.changedSliceIds, ["slice-implementation"]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("POST /api/v2/planner/drafts/:draftId/confirm-goal-design returns the confirmed run result", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -1072,6 +1207,42 @@ function goalContract(goalPrompt: string, riskTags: string[] = []): GoalContract
   });
 }
 
+function perSliceGoalContract(goalPrompt: string, cwd: string): GoalContractV1 {
+  return finalizeGoalContract({
+    goalPrompt,
+    cwd,
+    interpretation: {
+      domain: "software",
+      intent: "implement_feature",
+      workType: "software_feature",
+      summary: goalPrompt,
+      requirements: [
+        {
+          statement: "Implement account access control",
+          acceptanceCriteria: ["account access control passes verification"],
+          blocking: true,
+          source: "explicit",
+          expectedArtifacts: [{ description: "Account implementation report", path: "account.md", mediaType: "text/markdown" }],
+        },
+        {
+          statement: "Implement billing state transitions",
+          acceptanceCriteria: ["billing state transitions pass verification"],
+          blocking: true,
+          source: "explicit",
+          expectedArtifacts: [{ description: "Billing implementation report", path: "billing.md", mediaType: "text/markdown" }],
+        },
+      ],
+      expectedArtifactRefs: ["artifact.account_report", "artifact.billing_report"],
+      requiredCapabilities: ["capability.repo-read", "capability.repo-write", "capability.test-execution"],
+      nonGoals: [],
+      assumptions: [],
+      blockingInputs: [],
+      riskTags: [],
+      requestedSideEffects: ["workspace-write"],
+    },
+  });
+}
+
 async function seedGoalDesignSkill(db: Awaited<ReturnType<typeof createTestPostgresDb>>): Promise<void> {
   await upsertLibraryObject(db, {
     objectKey: "skill.southstar-goal-design",
@@ -1089,6 +1260,54 @@ function inlineGoalDesigner(): GoalDesigner {
   return {
     async design(input) {
       return goalDesignPackage({
+        goalContract: input.goalContract,
+        mode: input.mode,
+        templatePolicy: input.templatePolicy,
+        skill: input.skill,
+        workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
+      });
+    },
+    async revise() {
+      throw new Error("revise not used");
+    },
+  };
+}
+
+function revisingGoalDesigner(): GoalDesigner {
+  const base = inlineGoalDesigner();
+  return {
+    ...base,
+    async revise(input) {
+      const slice = input.currentPackage.slicePlan.slices[0]!;
+      const nextRevision = input.currentPackage.revision + 1;
+      const next = finalizeGoalDesignPackage({
+        schemaVersion: "southstar.goal_design_package.v1",
+        revision: nextRevision,
+        parentRevision: input.currentPackage.revision,
+        goalContract: input.currentPackage.goalContract,
+        evaluatorContracts: input.currentPackage.evaluatorContracts,
+        slicePlan: {
+          schemaVersion: "southstar.goal_slice_plan.v1",
+          goalContractHash: "host-filled",
+          revision: nextRevision,
+          slices: [{ ...slice, outcome: `${slice.outcome} (revised)` }],
+        },
+        compositionStrategy: input.currentPackage.compositionStrategy,
+        templatePolicy: input.currentPackage.templatePolicy,
+        goalDesignSkillRef: input.currentPackage.goalDesignSkillRef,
+        goalDesignSkillVersionRef: input.currentPackage.goalDesignSkillVersionRef,
+        workspaceDiscoveryHash: input.currentPackage.workspaceDiscoveryHash,
+        mode: input.currentPackage.mode,
+      });
+      return { kind: "revision", package: next, summary: "Revised slice plan.", changedSliceIds: [slice.id] };
+    },
+  };
+}
+
+function perSliceGoalDesigner(): GoalDesigner {
+  return {
+    async design(input) {
+      return perSliceGoalDesignPackage({
         goalContract: input.goalContract,
         mode: input.mode,
         templatePolicy: input.templatePolicy,
@@ -1153,6 +1372,85 @@ function goalDesignPackage(input: {
   });
 }
 
+function perSliceGoalDesignPackage(input: {
+  goalContract: GoalContractV1;
+  mode: GoalDesignMode;
+  templatePolicy: WorkflowTemplatePolicyV1;
+  skill: ResolvedGoalDesignSkillV1;
+  workspaceDiscoveryHash: string;
+}) {
+  const [accountRequirement, billingRequirement] = input.goalContract.requirements;
+  const [accountArtifactRef, billingArtifactRef] = input.goalContract.expectedArtifactRefs;
+  assert.ok(accountRequirement);
+  assert.ok(billingRequirement);
+  assert.ok(accountArtifactRef);
+  assert.ok(billingArtifactRef);
+  return finalizeGoalDesignPackage({
+    schemaVersion: "southstar.goal_design_package.v1",
+    revision: 1,
+    goalContract: input.goalContract,
+    evaluatorContracts: [
+      {
+        schemaVersion: "southstar.requirement_evaluator_contract.v1",
+        id: "eval-account",
+        requirementId: accountRequirement.id,
+        acceptanceCriteria: [...accountRequirement.acceptanceCriteria],
+        requiredEvidenceKinds: ["test_result"],
+        independence: "independent",
+        failureClassifications: ["implementation_gap"],
+      },
+      {
+        schemaVersion: "southstar.requirement_evaluator_contract.v1",
+        id: "eval-billing",
+        requirementId: billingRequirement.id,
+        acceptanceCriteria: [...billingRequirement.acceptanceCriteria],
+        requiredEvidenceKinds: ["test_result"],
+        independence: "independent",
+        failureClassifications: ["implementation_gap"],
+      },
+    ],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [
+        {
+          id: "slice-account",
+          requirementIds: [accountRequirement.id],
+          outcome: accountRequirement.statement,
+          stateOrArtifactOwner: "account",
+          mutationBoundary: "account access control files",
+          expectedArtifactRefs: [accountArtifactRef],
+          evaluatorContractRefs: ["eval-account"],
+          dependsOnSliceIds: [],
+          dependencyArtifactRefs: [],
+        },
+        {
+          id: "slice-billing",
+          requirementIds: [billingRequirement.id],
+          outcome: billingRequirement.statement,
+          stateOrArtifactOwner: "billing",
+          mutationBoundary: "billing state transition files",
+          expectedArtifactRefs: [billingArtifactRef],
+          evaluatorContractRefs: ["eval-billing"],
+          dependsOnSliceIds: ["slice-account"],
+          dependencyArtifactRefs: [accountArtifactRef],
+        },
+      ],
+    },
+    compositionStrategy: {
+      mode: "per-slice-runs",
+      sliceIds: ["slice-account", "slice-billing"],
+      rationale: "Persist each independently owned slice as its own run while sharing cwd.",
+    },
+    templatePolicy: input.templatePolicy,
+    goalDesignSkillRef: input.skill.objectKey,
+    goalDesignSkillVersionRef: input.skill.versionRef,
+    workspaceDiscoveryHash: input.workspaceDiscoveryHash,
+    mode: input.mode,
+  });
+}
+
 function deploymentComposer(): WorkflowComposer {
   return {
     async compose(input) {
@@ -1166,10 +1464,10 @@ function deploymentComposer(): WorkflowComposer {
   };
 }
 
-function goalDesignAwareComposition(goalContract: GoalContractV1) {
+function goalDesignAwareComposition(goalContract: GoalContractV1, sliceId = "slice-implementation") {
   const composition = deterministicFixtureComposition(goalContract);
   for (const task of composition.tasks) {
-    (task as typeof task & { sliceId: string }).sliceId = "slice-implementation";
+    (task as typeof task & { sliceId: string }).sliceId = sliceId;
   }
   return composition;
 }

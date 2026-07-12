@@ -1,0 +1,13 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.progress-summary
+title: "Progress Summary"
+scope: "general"
+status: approved
+artifactType: "progress-summary"
+evidenceKinds:
+  - "artifact-ref"
+  - "test-result"
+  - "workspace-snapshot"
+importDraftId: "library-import-draft-251a9454-7eb0-40e8-96da-6fb0e39c5bc3"
+importCandidateKey: "artifact.progress-summary"
+importSourcePath: "Library-chat-prompt.md"

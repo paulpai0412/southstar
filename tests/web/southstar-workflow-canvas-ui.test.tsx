@@ -23,9 +23,11 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
     'event: planner.stage\ndata: {"stage":"composer.started","message":"Streaming LLM workflow composition."}\n\n',
     'event: heartbeat\ndata: {"phase":"composing","elapsedMs":1200}\n\n',
     'event: draft\ndata: {"draft":{"draftId":"draft-1","status":"validated"}}\n\n',
+    'event: goal_design\ndata: {"draftId":"draft-1","goalDesignPackageHash":"hash-1","package":{"slicePlan":{"slices":[{"id":"slice-a","outcome":"A"}]}}}\n\n',
     'event: goal_contract\ndata: {"mission":{"goalContract":{"summary":"Todo app"}}}\n\n',
     'event: coverage\ndata: {"mission":{"coverage":{"covered":2,"total":2}}}\n\n',
     'event: run\ndata: {"runId":"run-1","runStatus":"scheduling"}\n\n',
+    'event: execution_set\ndata: {"executionSetId":"set-1","sliceRuns":[{"sliceId":"slice-a","runId":"run-a","runStatus":"scheduling","approvalId":"approval-a"}]}\n\n',
     'event: approval\ndata: {"command":null}\n\n',
     'event: recoverable\ndata: {"result":{"draftId":"draft-1","runId":"run-1"},"error":"read model unavailable"}\n\n',
     'event: dag\ndata: {"dag":{"id":"draft-1","templateId":"template.software-feature","templateTitle":"Todo app","prompt":"todo","expandedByDefault":true,"readiness":"ready","nodes":[],"edges":[],"createdAt":"2026-06-29T00:00:00.000Z"}}\n\n',
@@ -67,6 +69,9 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
       onDraft(draft: { draftId?: string }) {
         events.push(`draft:${draft.draftId}`);
       },
+      onGoalDesign(goalDesign: { draftId?: string; package?: { slicePlan?: { slices?: Array<{ id?: string }> } } }) {
+        receipts.push(`goal_design:${goalDesign.draftId}:${goalDesign.package?.slicePlan?.slices?.[0]?.id}`);
+      },
       onGoalContract() {
         receipts.push("goal_contract");
       },
@@ -75,6 +80,9 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
       },
       onRun(run: { runId?: string }) {
         receipts.push(`run:${run.runId}`);
+      },
+      onExecutionSet(executionSet: { executionSetId?: string; sliceRuns?: Array<{ sliceId?: string }> }) {
+        receipts.push(`execution_set:${executionSet.executionSetId}:${executionSet.sliceRuns?.[0]?.sliceId}`);
       },
       onApproval() {
         receipts.push("approval");
@@ -110,7 +118,7 @@ test("generateWorkflowDagStream parses POST SSE message deltas and DAG payloads"
       "done",
     ]);
     assert.equal(dagId, "draft-1");
-    assert.deepEqual(receipts, ["goal_contract", "coverage", "run:run-1", "approval", "recoverable:draft-1:run-1"]);
+    assert.deepEqual(receipts, ["goal_design:draft-1:slice-a", "goal_contract", "coverage", "run:run-1", "execution_set:set-1:slice-a", "approval", "recoverable:draft-1:run-1"]);
   } finally {
     global.fetch = originalFetch;
   }
@@ -734,6 +742,7 @@ test("workflow template save request uses encoded draft route and server-derived
       templateId: "template.software",
       templateTitle: "Fancy Todo",
       prompt: "todo",
+      mission: { goalContract: { domain: "software" } },
       expandedByDefault: true,
       readiness: "ready",
       nodes: [{
@@ -758,7 +767,7 @@ test("workflow template save request uses encoded draft route and server-derived
     scope: "software",
     templateId: "template.fancy-todo",
     title: "Fancy Todo",
-    status: "approved",
+    status: "draft",
   });
 });
 
@@ -773,6 +782,7 @@ test("workflow template save request accepts user-entered template titles", asyn
       templateId: "template.software",
       templateTitle: "Original Title",
       prompt: "build game",
+      mission: { goalContract: { domain: "software" } },
       expandedByDefault: true,
       readiness: "ready",
       nodes: [],

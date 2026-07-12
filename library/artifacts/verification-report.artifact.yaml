@@ -1,0 +1,9 @@
+schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.verification_report
+title: Verification Report
+scope: software
+status: approved
+artifactType: verification_report
+evidenceKinds:
+  - test-result
+  - command-output

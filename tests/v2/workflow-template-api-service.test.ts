@@ -47,224 +47,76 @@ test("getWorkflowTemplateDetailPg returns template skeleton details", async () =
   }
 });
 
-test("instantiateWorkflowTemplatePg creates planner draft from strict template composition", async () => {
-  const db = await createTestPostgresDb();
-  const goalContract = softwareGoalContract("build vocabulary app");
-  try {
-    await seedDeterministicWorkflowGraph(db);
-    await seedWorkflowTemplate(db, compositionPlan(goalContract));
-
-    const result = await instantiateWorkflowTemplatePg(db, {
-      templateRef: "template.software-dev-standard",
-      goalPrompt: "build vocabulary app",
-      goalInterpreter: fixedGoalInterpreter(goalContract),
-      constraints: { mode: "strict" },
-    });
-
-    assert.equal(result.templateRef, "template.software-dev-standard");
-    assert.match(result.draftId, /^draft-wf-composed-/);
-    assert.equal(result.status, "validated");
-    assert.equal(result.nodes.every((node) => node.nodePromptSpec), true);
-    assert.match(JSON.stringify(result.nodes[0]?.nodePromptSpec), /build vocabulary app/);
-  } finally {
-    await db.close();
-  }
-});
-
-test("instantiateWorkflowTemplatePg reuses saved base64 template composition without composer", async () => {
-  const db = await createTestPostgresDb();
-  const goalContract = softwareGoalContract("build vocabulary app from saved template");
-  try {
-    await seedDeterministicWorkflowGraph(db);
-    await seedWorkflowTemplate(db, undefined, {
-      compositionPlanJsonBase64: Buffer.from(JSON.stringify(compositionPlan(goalContract)), "utf8").toString("base64"),
-    });
-
-    const result = await instantiateWorkflowTemplatePg(db, {
-      templateRef: "template.software-dev-standard",
-      goalPrompt: "build vocabulary app from saved template",
-      goalInterpreter: fixedGoalInterpreter(goalContract),
-      constraints: { mode: "strict" },
-    });
-
-    assert.equal(result.status, "validated");
-    assert.equal(result.nodes.every((node) => node.nodePromptSpec), true);
-    assert.match(JSON.stringify(result.nodes[0]?.nodePromptSpec), /build vocabulary app from saved template/);
-  } finally {
-    await db.close();
-  }
-});
-
-test("instantiateWorkflowTemplatePg binds saved compound branches only to their exact Goal Contract requirements", async () => {
-  const db = await createTestPostgresDb();
-  const goalContract = subscriptionGoalContract();
-  try {
-    await seedDeterministicWorkflowGraph(db);
-    await seedWorkflowTemplate(db, compoundCompositionPlan(goalContract));
-
-    const result = await instantiateWorkflowTemplatePg(db, {
-      templateRef: "template.software-dev-standard",
-      goalPrompt: goalContract.summary,
-      goalInterpreter: fixedGoalInterpreter(goalContract),
-      constraints: { mode: "strict" },
-    });
-
-    assert.equal(result.status, "validated");
-    const draft = await getResourceByKeyPg(db, "planner_draft", result.draftId);
-    const selectedPlan = (draft?.payload as {
-      orchestrationSnapshot?: { selectedCompositionPlan?: WorkflowCompositionPlan };
-    }).orchestrationSnapshot?.selectedCompositionPlan;
-    assert.ok(selectedPlan);
-    const producerTasks = selectedPlan.tasks.filter((task) => task.id.startsWith("produce-requirement-"));
-    assert.deepEqual(
-      producerTasks.map((task) => task.requirementIds),
-      goalContract.requirements.map((requirement) => [requirement.id]),
-    );
-    assert.deepEqual(
-      selectedPlan.tasks.find((task) => task.id === "verify-compound-goal")?.requirementIds,
-      goalContract.requirements.map((requirement) => requirement.id),
-    );
-  } finally {
-    await db.close();
-  }
-});
-
-test("instantiateWorkflowTemplatePg rejects a legacy saved plan missing requirementIds as needing regeneration", async () => {
-  const db = await createTestPostgresDb();
-  const goalContract = softwareGoalContract("build a legacy migration fixture");
-  try {
-    await seedDeterministicWorkflowGraph(db);
-    const legacyPlan = structuredClone(compositionPlan()) as unknown as {
-      tasks: Array<Record<string, unknown>>;
-    };
-    delete legacyPlan.tasks[0]!.requirementIds;
-    await seedWorkflowTemplate(db, legacyPlan as unknown as WorkflowCompositionPlan);
-
-    await assert.rejects(
-      () => instantiateWorkflowTemplatePg(db, {
-        templateRef: "template.software-dev-standard",
-        goalPrompt: goalContract.summary,
-        goalInterpreter: fixedGoalInterpreter(goalContract),
-        constraints: { mode: "strict" },
-      }),
-      /saved workflow composition needs regeneration/,
-    );
-  } finally {
-    await db.close();
-  }
-});
-
-test("instantiateWorkflowTemplatePg asks composer to bind a skeleton-only template", async () => {
+test("instantiateWorkflowTemplatePg delegates to Goal Design with a preferred template policy", async () => {
   const db = await createTestPostgresDb();
   try {
-    await seedDeterministicWorkflowGraph(db);
     await seedWorkflowTemplate(db);
-    const composer = new CapturingComposer(compositionPlan());
+    let submitted: unknown;
 
     const result = await instantiateWorkflowTemplatePg(db, {
       templateRef: "template.software-dev-standard",
-      goalPrompt: "build vocabulary app",
-      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("build vocabulary app")),
-      constraints: { mode: "strict" },
-      composer,
-    });
-
-    assert.equal(result.status, "validated");
-    assert.equal(result.nodes.every((node) => node.nodePromptSpec), true);
-    assert.match(composer.lastGoalPrompt ?? "", /Template skeleton/);
-    assert.match(composer.lastGoalPrompt ?? "", /"id":"plan"/);
-    assert.match(composer.lastGoalPrompt ?? "", /Preserve template node ids and dependencies/);
-  } finally {
-    await db.close();
-  }
-});
-
-test("instantiateWorkflowTemplatePg rejects a template outside the interpreted Goal Contract domain", async () => {
-  const db = await createTestPostgresDb();
-  try {
-    await seedWorkflowTemplate(db, compositionPlan());
-    const goalPrompt = "Turn notes.md into an offline HTML article";
-    const goalContract = {
-      ...softwareGoalContract(goalPrompt),
-      domain: "design/article",
-      workspace: { cwd: "/workspace/article" },
-    };
-
-    await assert.rejects(
-      () => instantiateWorkflowTemplatePg(db, {
-        templateRef: "template.software-dev-standard",
-        goalPrompt,
-        cwd: "/workspace/article",
-        goalInterpreter: fixedGoalInterpreter(goalContract),
-        constraints: { mode: "strict" },
-      }),
-      /workflow template template\.software-dev-standard is not compatible with Goal Contract domain design\/article/,
-    );
-  } finally {
-    await db.close();
-  }
-});
-
-test("instantiateWorkflowTemplatePg accepts a template whose domainRefs include the interpreted domain", async () => {
-  const db = await createTestPostgresDb();
-  try {
-    const domain = "design/article";
-    await seedDeterministicWorkflowGraph(db, domain);
-    const goalPrompt = "Turn notes.md into an offline HTML article";
-    const goalContract = {
-      ...softwareGoalContract(goalPrompt),
-      domain,
-      workspace: { cwd: "/workspace/article" },
-    };
-    await seedWorkflowTemplate(db, compositionPlan(goalContract), { domainRefs: [domain] });
-
-    const result = await instantiateWorkflowTemplatePg(db, {
-      templateRef: "template.software-dev-standard",
-      goalPrompt,
-      cwd: "/workspace/article",
-      goalInterpreter: fixedGoalInterpreter(goalContract),
-      constraints: { mode: "strict" },
-    });
-    assert.equal(result.status, "validated");
-  } finally {
-    await db.close();
-  }
-});
-
-test("blocking template instantiation persists needs_input before incompatible or missing template scope checks", async () => {
-  const db = await createTestPostgresDb();
-  try {
-    await seedWorkflowTemplate(db, compositionPlan());
-    const goalPrompt = "Publish my article";
-    const goalContract = {
-      ...softwareGoalContract(goalPrompt),
-      domain: "design/article",
-      workspace: { cwd: "/workspace/article" },
-      blockingInputs: ["Which source file should be used?"],
-    };
-    const stages: string[] = [];
-
-    const result = await instantiateWorkflowTemplatePg(db, {
-      templateRef: "template.software-dev-standard",
-      goalPrompt,
-      goalInterpreter: fixedGoalInterpreter(goalContract),
-      constraints: { mode: "strict" },
-      onProgress(event) {
-        stages.push(event.stage);
+      goalPrompt: "Deliver the outcome",
+      cwd: "/workspace/software",
+      constraints: { mode: "adaptive" },
+      async submitGoal(request) {
+        submitted = request;
+        return {
+          goalContractHash: "goal-hash",
+          goalDesignPackageHash: "package-hash",
+          draftId: "draft-goal-design-abc",
+          draftStatus: "ready_for_review",
+          blockers: [],
+        };
       },
     });
 
-    assert.equal(result.status, "needs_input");
-    assert.equal(stages.includes("template.loaded"), false);
-
-    await seedWorkflowTemplate(db, compositionPlan(), { scope: undefined });
-    const missingScopeResult = await instantiateWorkflowTemplatePg(db, {
-      templateRef: "template.software-dev-standard",
-      goalPrompt,
-      goalInterpreter: fixedGoalInterpreter(goalContract),
-      constraints: { mode: "strict" },
+    assert.ok(submitted && typeof submitted === "object");
+    const request = submitted as Record<string, unknown>;
+    assert.match(String(request.idempotencyKey), /^workflow-template:/);
+    delete request.idempotencyKey;
+    assert.deepEqual(request, {
+      goalPrompt: "Deliver the outcome",
+      cwd: "/workspace/software",
+      templatePolicy: {
+        mode: "prefer",
+        templateRef: "template.software-dev-standard",
+        versionRef: "template.software-dev-standard@1",
+      },
     });
-    assert.equal(missingScopeResult.status, "needs_input");
+    assert.equal(result.draftId, "draft-goal-design-abc");
+    assert.equal(result.status, "ready_for_review");
+    assert.deepEqual(result.nodes, []);
+  } finally {
+    await db.close();
+  }
+});
+
+test("instantiateWorkflowTemplatePg maps strict templates to require policy", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedWorkflowTemplate(db);
+    let templatePolicy: unknown;
+
+    await instantiateWorkflowTemplatePg(db, {
+      templateRef: "template.software-dev-standard",
+      goalPrompt: "Deliver the outcome",
+      constraints: { mode: "strict" },
+      async submitGoal(request) {
+        templatePolicy = request.templatePolicy;
+        return {
+          goalContractHash: "goal-hash",
+          draftId: "draft-goal-design-strict",
+          draftStatus: "ready_for_review",
+          blockers: [],
+        };
+      },
+    });
+
+    assert.deepEqual(templatePolicy, {
+      mode: "require",
+      templateRef: "template.software-dev-standard",
+      versionRef: "template.software-dev-standard@1",
+    });
   } finally {
     await db.close();
   }

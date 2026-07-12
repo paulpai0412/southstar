@@ -85,7 +85,7 @@ async function proxyPlannerDraftStream(
       send("done", data);
       return;
     }
-    if (["message", "message.delta", "planner.stage", "draft", "error"].includes(event)) {
+    if (["message", "message.delta", "planner.stage", "draft", "goal_design", "error"].includes(event)) {
       send(event, data);
     }
   };

@@ -61,7 +61,7 @@ export function buildWorkflowCompositionPlanDisplay(text: string): WorkflowCompo
         role,
         agentRef: task.agentDefinitionRef || `agent.${role}`,
         profileRef,
-        profileResourcePath: `software/agents/${role}/profile.json`,
+        profileResourcePath: profileResourcePathFromRef(profileRef, role),
         provider,
         model: provider === "pi" ? "pi-agent-default" : "gpt-5-codex",
         level: levels.get(task.id) ?? index,
@@ -169,6 +169,13 @@ function providerFromProfileRef(profileRef: string): "pi" | "codex" {
 
 function profileRefFromAgentDefinition(agentDefinitionRef: string): string {
   return `${agentDefinitionRef.replace(/^agent\./, "profile.")}-codex`;
+}
+
+function profileResourcePathFromRef(profileRef: string, fallback: string): string {
+  const segment = profileRef
+    .replace(/^profile\./, "")
+    .replace(/[^a-zA-Z0-9._-]+/g, "-") || fallback;
+  return `profiles/${segment}.yaml`;
 }
 
 function stableSlug(value: string): string {

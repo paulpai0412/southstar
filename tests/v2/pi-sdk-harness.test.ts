@@ -256,6 +256,7 @@ test("Pi SDK agent harness promotes nested verification_report artifacts to the 
                   summary: "All blocking checks passed.",
                   pass: true,
                   safeToSave: true,
+                  verifiedArtifactRefs: ["artifact://run-1/task-1/implementation_report"],
                   commandsRun: ["npm test"],
                   testResults: [{ command: "npm test", status: "passed", gating: "blocking" }],
                   remainingFailures: [],
@@ -298,6 +299,7 @@ test("Pi SDK agent harness prompts verification tasks for top-level artifact fie
                 summary: "All blocking checks passed.",
                 pass: true,
                 safeToSave: true,
+                verifiedArtifactRefs: ["artifact://run-1/task-1/implementation_report"],
                 commandsRun: ["npm test"],
                 testResults: [{ command: "npm test", status: "passed", gating: "blocking" }],
                 remainingFailures: [],
@@ -313,7 +315,13 @@ test("Pi SDK agent harness prompts verification tasks for top-level artifact fie
   await harness.run({ envelope: envelopeV2WithVerificationReport(), attempt: 1 });
 
   assert.match(prompts[0], /Runner output contract:/);
-  assert.match(prompts[0], /artifact must contain these fields at top level: summary, pass, safeToSave, commandsRun, testResults, remainingFailures/);
+  assert.match(prompts[0], /artifact must contain these fields at top level: summary, pass, safeToSave, verifiedArtifactRefs, commandsRun, testResults, remainingFailures/);
+  assert.match(prompts[0], /verifiedArtifactRefs must be an array of exact upstream ArtifactRef values/);
+  assert.match(prompts[0], /commandsRun entries must be executed command result objects/);
+  assert.match(prompts[0], /include status or exitCode/);
+  assert.match(prompts[0], /commandsRun\.status allowed values: passed, failed, blocked/);
+  assert.match(prompts[0], /testResults\.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap/);
+  assert.match(prompts[0], /gating allowed values: blocking, non-gating/);
   assert.match(prompts[0], /Do not put the report under artifact\.verification_report/);
   assert.match(prompts[0], /Do not return \{"verification_report": \.\.\.\}/);
 });

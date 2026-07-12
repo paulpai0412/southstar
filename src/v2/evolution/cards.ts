@@ -254,7 +254,7 @@ function clusterSignals(signals: SignalRow[]): Map<string, SignalRow[]> {
 
 function clusterKey(payload: Record<string, unknown>): string {
   const required = [
-    stringValue(payload.scope, "software"),
+    stringValue(payload.scope, "general"),
     stringValue(payload.intent, "unknown_intent"),
     stringValue(payload.roleRef, "unknown_role"),
     stringValue(payload.artifactType, "unknown_artifact"),
@@ -273,7 +273,7 @@ function clusterKey(payload: Record<string, unknown>): string {
 function buildCard(cluster: SignalRow[]): KnowledgeCard {
   const first = cluster[0]!.payload_jsonb;
   const evidenceNodeRefs = cluster.map((signal) => signal.id);
-  const scope = stringValue(first.scope, "software");
+  const scope = stringValue(first.scope, "general");
   const artifactType = stringValue(first.artifactType, "artifact");
   const failureKind = stringValue(first.failureKind, "failure");
   const missingFields = stringArray(first.missingFields).sort();

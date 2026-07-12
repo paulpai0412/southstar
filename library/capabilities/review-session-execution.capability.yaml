@@ -1,0 +1,16 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.review-session-execution
+title: "Review Session Execution"
+scope: "general"
+status: approved
+description: "Run local study sessions that present cards, capture answers, and update per-card review state."
+requiredOperations:
+  - "start-review-session"
+  - "present-card"
+  - "capture-response"
+  - "grade-response"
+  - "update-review-state"
+  - "complete-review-session"
+importDraftId: "library-import-draft-a50847a7-93f1-4a88-bb23-25a5b5947e52"
+importCandidateKey: "capability.review-session-execution"
+importSourcePath: "Library-chat-prompt.md"

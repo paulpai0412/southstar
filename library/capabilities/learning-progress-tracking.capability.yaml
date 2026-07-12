@@ -1,0 +1,14 @@
+schemaVersion: southstar.library.capability_spec_file.v1
+id: capability.learning-progress-tracking
+title: "Learning Progress Tracking"
+scope: "general"
+status: approved
+description: "Track per-session and per-card learning results to summarize retention and weak vocabulary areas."
+requiredOperations:
+  - "start-session"
+  - "record-session-result"
+  - "summarize-progress"
+  - "list-weak-terms"
+importDraftId: "library-import-draft-5b27e3ac-0add-43e4-af93-312d4f120c0f"
+importCandidateKey: "capability.learning-progress-tracking"
+importSourcePath: "Library-chat-prompt.md"

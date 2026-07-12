@@ -113,6 +113,7 @@ export type GoalDesignValidationIssue = {
     | "package_hash_mismatch"
     | "duplicate_evaluator_id"
     | "unknown_evaluator_requirement"
+    | "evaluator_criteria_mismatch"
     | "duplicate_slice_id"
     | "unknown_slice_requirement"
     | "requirement_owner_count"
@@ -143,6 +144,22 @@ type LlmGoalDesignPayload = {
   slicePlan: { revision: number; slices: GoalSliceV1[] };
   compositionStrategy: CompositionStrategyV1;
 };
+
+type LlmGoalDesignRevisionPayload =
+  | {
+      kind: "revision";
+      package: {
+        evaluatorContracts: Array<Omit<RequirementEvaluatorContractV1, "schemaVersion"> & { schemaVersion?: string }>;
+        slicePlan: { slices: GoalSliceV1[] };
+        compositionStrategy: CompositionStrategyV1;
+      };
+      summary: string;
+      changedSliceIds: string[];
+    }
+  | {
+      kind: "needs_input";
+      question: string;
+    };
 
 const MAX_DESIGN_RESPONSE_CHARS = 60_000;
 const MAX_DESIGN_ATTEMPTS = 2;
@@ -237,8 +254,57 @@ export function createLlmGoalDesigner(
         model: input.model,
       })).package;
     },
-    async revise() {
-      throw new Error("Goal Design revision LLM flow is not implemented yet");
+    async revise(revisionInput) {
+      const skill = await loadGoalDesignSkillPg(db);
+      if (
+        skill.objectKey !== revisionInput.currentPackage.goalDesignSkillRef
+        || skill.versionRef !== revisionInput.currentPackage.goalDesignSkillVersionRef
+      ) {
+        throw new Error("Goal Design skill version no longer matches the reviewed package");
+      }
+      const prompt = renderRevisionPrompt({
+        skill,
+        currentPackage: revisionInput.currentPackage,
+        message: revisionInput.message,
+        selectedSliceId: revisionInput.selectedSliceId,
+      });
+      const response = await input.client.generateText({
+        model: input.model,
+        prompt,
+        temperature: 0,
+        cwd: revisionInput.currentPackage.goalContract.workspace.cwd,
+      });
+      const payload = parseGoalDesignRevisionPayload(response);
+      if (payload.kind === "needs_input") return payload;
+      const current = revisionInput.currentPackage;
+      const nextRevision = current.revision + 1;
+      return {
+        kind: "revision",
+        summary: payload.summary,
+        changedSliceIds: payload.changedSliceIds,
+        package: finalizeGoalDesignPackage({
+          schemaVersion: "southstar.goal_design_package.v1",
+          revision: nextRevision,
+          parentRevision: current.revision,
+          goalContract: current.goalContract,
+          evaluatorContracts: payload.package.evaluatorContracts.map((contract) => ({
+            ...contract,
+            schemaVersion: "southstar.requirement_evaluator_contract.v1",
+          })),
+          slicePlan: {
+            schemaVersion: "southstar.goal_slice_plan.v1",
+            goalContractHash: "host-filled",
+            revision: nextRevision,
+            slices: payload.package.slicePlan.slices,
+          },
+          compositionStrategy: payload.package.compositionStrategy,
+          templatePolicy: current.templatePolicy,
+          goalDesignSkillRef: current.goalDesignSkillRef,
+          goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
+          workspaceDiscoveryHash: current.workspaceDiscoveryHash,
+          mode: current.mode,
+        }),
+      };
     },
   };
 }
@@ -310,6 +376,64 @@ export function validateGoalDesignPackage(pkg: GoalDesignPackageV1): GoalDesignV
   return issues;
 }
 
+function goalDesignOutputSchemaPrompt(goalContract: GoalContractV1): string {
+  return [
+    "GoalDesignOutputSchema:",
+    "{",
+    "  evaluatorContracts: [{",
+    "    id: string,",
+    "    requirementId: string,",
+    "    acceptanceCriteria: string[],",
+    "    requiredEvidenceKinds: string[],",
+    "    independence: \"independent\",",
+    "    failureClassifications: string[]",
+    "  }],",
+    "  slicePlan: {",
+    "    revision: integer,",
+    "    slices: [{",
+    "      id: string,",
+    "      requirementIds: string[],",
+    "      outcome: string,",
+    "      stateOrArtifactOwner: string,",
+    "      mutationBoundary: string,",
+    "      expectedArtifactRefs: string[],",
+    "      evaluatorContractRefs: string[],",
+    "      dependsOnSliceIds: string[],",
+    "      dependencyArtifactRefs: string[],",
+    "      mergeReason?: string",
+    "    }]",
+    "  },",
+    "  compositionStrategy: {",
+    "    mode: \"single-run\" | \"per-slice-runs\",",
+    "    sliceIds: string[],",
+    "    rationale: string",
+    "  }",
+    "}",
+    `AllowedRequirementIds: ${JSON.stringify(goalContract.requirements.map((requirement) => requirement.id))}`,
+    `AllowedGoalArtifactRefs: ${JSON.stringify(goalContract.expectedArtifactRefs)}`,
+    "compositionStrategy.mode: \"single-run\" | \"per-slice-runs\"",
+    "evaluatorContracts[].requirementId must use AllowedRequirementIds.",
+    "evaluatorContracts[].acceptanceCriteria must include every acceptance criterion from its referenced GoalContract requirement; do not invent unrelated criteria.",
+    "evaluatorContracts[].independence must be \"independent\".",
+    "slicePlan.slices[].requirementIds must use AllowedRequirementIds.",
+    "slicePlan.slices[].expectedArtifactRefs and dependencyArtifactRefs must use AllowedGoalArtifactRefs.",
+    "slicePlan.slices[].evaluatorContractRefs may reference only evaluatorContracts[].id declared in this response.",
+    "Every blocking requirement in GoalContract must be owned by exactly one slice.",
+    "Only add dependsOnSliceIds when dependencyArtifactRefs consumes an upstream slice artifact.",
+  ].join("\n");
+}
+
+function goalDesignRevisionOutputSchemaPrompt(goalContract: GoalContractV1): string {
+  return [
+    goalDesignOutputSchemaPrompt(goalContract),
+    "RevisionResponseSchema:",
+    "{\"kind\":\"revision\",\"package\":{\"evaluatorContracts\":[],\"slicePlan\":{\"slices\":[]},\"compositionStrategy\":{}},\"summary\":\"string\",\"changedSliceIds\":[\"slice-id\"]}",
+    "NeedsInputResponseSchema:",
+    "{\"kind\":\"needs_input\",\"question\":\"string\"}",
+    "For revision responses, omit slicePlan.revision; the host owns package revision and hashes.",
+  ].join("\n");
+}
+
 function renderDesignPrompt(input: DesignGoalWithLlmInput & { skill: ResolvedGoalDesignSkillV1 }): string {
   return [
     "Use the approved Library Goal Design SOP to design this Goal Contract.",
@@ -318,11 +442,36 @@ function renderDesignPrompt(input: DesignGoalWithLlmInput & { skill: ResolvedGoa
     input.skill.body,
     "",
     "Decompose the Goal Contract into the smallest cohesive outcome slices.",
+    goalDesignOutputSchemaPrompt(input.goalContract),
     "Return JSON only with exactly evaluatorContracts, slicePlan, and compositionStrategy.",
     `Mode: ${input.mode}`,
     `TemplatePolicy: ${JSON.stringify(input.templatePolicy)}`,
     `WorkspaceDiscovery: ${JSON.stringify(input.workspaceDiscovery)}`,
     `GoalContract: ${JSON.stringify(input.goalContract)}`,
+  ].join("\n");
+}
+
+function renderRevisionPrompt(input: {
+  skill: ResolvedGoalDesignSkillV1;
+  currentPackage: GoalDesignPackageV1;
+  message: string;
+  selectedSliceId?: string;
+}): string {
+  return [
+    "Use the approved Library Goal Design SOP to revise this reviewed Goal Design package.",
+    `GoalDesignSkillRef: ${input.skill.objectKey}`,
+    `GoalDesignSkillVersionRef: ${input.skill.versionRef}`,
+    input.skill.body,
+    "",
+    "Return JSON only.",
+    goalDesignRevisionOutputSchemaPrompt(input.currentPackage.goalContract),
+    "If the request is ambiguous, return {\"kind\":\"needs_input\",\"question\":\"...\"}.",
+    "If the request is actionable, return {\"kind\":\"revision\",\"package\":{\"evaluatorContracts\":[],\"slicePlan\":{\"slices\":[]},\"compositionStrategy\":{}},\"summary\":\"...\",\"changedSliceIds\":[]}.",
+    "The package must contain complete evaluatorContracts, complete slicePlan.slices, and complete compositionStrategy.",
+    "Do not change templatePolicy, goalContract, workspace cwd, mode, skill refs, hashes, package revision, or parent revision; the host owns those fields.",
+    `SelectedSliceId: ${input.selectedSliceId ?? ""}`,
+    `UserMessage: ${input.message}`,
+    `CurrentGoalDesignPackage: ${JSON.stringify(input.currentPackage)}`,
   ].join("\n");
 }
 
@@ -345,6 +494,40 @@ function parseGoalDesignPayload(text: string): LlmGoalDesignPayload {
       slices: array(slicePlan.slices, "slicePlan.slices").map(parseSlice),
     },
     compositionStrategy: parseCompositionStrategy(compositionStrategy),
+  };
+}
+
+function parseGoalDesignRevisionPayload(text: string): LlmGoalDesignRevisionPayload {
+  if (text.length > MAX_DESIGN_RESPONSE_CHARS) throw new Error("Goal Design revision response is too large");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text.trim());
+  } catch {
+    throw new Error("Goal Design revision returned invalid JSON");
+  }
+  const object = record(parsed, "$");
+  const kind = string(object.kind, "kind");
+  if (kind === "needs_input") {
+    exactKeys(object, ["kind", "question"], "$");
+    return { kind, question: string(object.question, "question") };
+  }
+  if (kind !== "revision") throw new Error("Goal Design revision kind must be revision or needs_input");
+  exactKeys(object, ["kind", "package", "summary", "changedSliceIds"], "$");
+  const pkg = record(object.package, "package");
+  exactKeys(pkg, ["evaluatorContracts", "slicePlan", "compositionStrategy"], "package");
+  const slicePlan = record(pkg.slicePlan, "package.slicePlan");
+  exactKeys(slicePlan, ["slices"], "package.slicePlan");
+  return {
+    kind,
+    summary: string(object.summary, "summary"),
+    changedSliceIds: stringArray(object.changedSliceIds, "changedSliceIds"),
+    package: {
+      evaluatorContracts: array(pkg.evaluatorContracts, "package.evaluatorContracts").map(parseEvaluatorContract),
+      slicePlan: {
+        slices: array(slicePlan.slices, "package.slicePlan.slices").map(parseSlice),
+      },
+      compositionStrategy: parseCompositionStrategy(record(pkg.compositionStrategy, "package.compositionStrategy")),
+    },
   };
 }
 
@@ -401,15 +584,30 @@ function validateTemplatePolicy(policy: WorkflowTemplatePolicyV1, issues: GoalDe
 }
 
 function validateEvaluatorContracts(pkg: GoalDesignPackageV1, issues: GoalDesignValidationIssue[]): void {
-  const requirementIds = new Set(pkg.goalContract.requirements.map((requirement) => requirement.id));
+  const requirementsById = new Map(pkg.goalContract.requirements.map((requirement) => [requirement.id, requirement]));
   const evaluatorIds = new Set<string>();
   for (const [index, evaluator] of pkg.evaluatorContracts.entries()) {
     if (evaluatorIds.has(evaluator.id)) issues.push(issue("duplicate_evaluator_id", `evaluatorContracts.${index}.id`, `duplicate evaluator id: ${evaluator.id}`));
     evaluatorIds.add(evaluator.id);
-    if (!requirementIds.has(evaluator.requirementId)) {
+    const requirement = requirementsById.get(evaluator.requirementId);
+    if (!requirement) {
       issues.push(issue("unknown_evaluator_requirement", `evaluatorContracts.${index}.requirementId`, `unknown requirement id: ${evaluator.requirementId}`));
+      continue;
+    }
+    const evaluatorCriteria = new Set(evaluator.acceptanceCriteria.map(normalizedCriteria));
+    const missingCriteria = requirement.acceptanceCriteria.filter((criterion) => !evaluatorCriteria.has(normalizedCriteria(criterion)));
+    if (missingCriteria.length > 0) {
+      issues.push(issue(
+        "evaluator_criteria_mismatch",
+        `evaluatorContracts.${index}.acceptanceCriteria`,
+        `evaluator criteria must cover requirement criteria for ${evaluator.requirementId}`,
+      ));
     }
   }
+}
+
+function normalizedCriteria(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
 }
 
 function validateSlices(pkg: GoalDesignPackageV1, issues: GoalDesignValidationIssue[]): void {
@@ -521,7 +719,7 @@ function stringArray(value: unknown, path: string): string[] {
 
 function integer(value: unknown, path: string): number {
   if (!Number.isInteger(value)) throw new Error(`${path} must be an integer`);
-  return value;
+  return value as number;
 }
 
 function string(value: unknown, path: string): string {

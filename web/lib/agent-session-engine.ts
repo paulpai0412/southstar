@@ -92,6 +92,8 @@ export function workflowTemplatePolicyFrom(template: unknown): WorkflowTemplateP
 }
 
 export function latestWorkflowDraftId(messages: AgentMessage[]): string | null {
+  const goalDesignIdentity = latestGoalDesignDraftIdentity(messages);
+  if (goalDesignIdentity) return goalDesignIdentity.draftId;
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const message = messages[i];
     if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
@@ -104,6 +106,30 @@ export function latestWorkflowDraftId(messages: AgentMessage[]): string | null {
           ? block.dag.id
           : null;
       if (draftId) return draftId;
+    }
+  }
+  return null;
+}
+
+export function latestGoalDesignDraftIdentity(messages: AgentMessage[]): {
+  draftId: string;
+  status?: string;
+  goalDesignPackageHash?: string;
+  selectedSliceId?: string;
+} | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (let j = message.content.length - 1; j >= 0; j -= 1) {
+      const block = message.content[j];
+      if (block.type !== "goalDesign") continue;
+      if (!isPlannerDraftId(block.draftId)) continue;
+      return {
+        draftId: block.draftId,
+        ...(typeof block.status === "string" ? { status: block.status } : {}),
+        ...(typeof block.goalDesignPackageHash === "string" ? { goalDesignPackageHash: block.goalDesignPackageHash } : {}),
+        ...(typeof block.selectedSliceId === "string" ? { selectedSliceId: block.selectedSliceId } : {}),
+      };
     }
   }
   return null;

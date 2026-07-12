@@ -14,6 +14,7 @@ import { writeCallbackMemoryPg } from "../memory/writeback-policy.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { triggerRunCompletedKnowledgeCardSynthesis } from "../evolution/cards.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
+import { advanceGoalExecutionSetPg } from "../orchestration/goal-execution-set.ts";
 import { maybeApplyDynamicRepairRevisionPg, type DynamicRepairRevisionResult } from "../runtime-revision/dynamic-repair-revision.ts";
 import { assertNoRawCredentialPayloadPg } from "../tool-proxy/policy-enforcer.ts";
 import { runtimeAttemptNumber } from "./attempt-identity.ts";
@@ -103,7 +104,7 @@ export async function ingestTaskRunResultPg(
     artifact: result.artifact,
   });
 
-  return await db.tx(async (tx) => {
+  const ingested = await db.tx(async (tx) => {
     const run = await tx.maybeOne<{ status: string }>(
       "select status from southstar.workflow_runs where id = $1 for update",
       [result.runId],
@@ -400,6 +401,19 @@ export async function ingestTaskRunResultPg(
       ...(dynamicRepairRevision ? { dynamicRepairRevision } : {}),
     };
   });
+  await advanceExecutionSetForRunIfNeededPg(db, result.runId);
+  return ingested;
+}
+
+async function advanceExecutionSetForRunIfNeededPg(db: SouthstarDb, runId: string): Promise<void> {
+  const row = await db.maybeOne<{ runtime_context_json: Record<string, unknown> }>(
+    "select runtime_context_json from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  const executionSetId = typeof row?.runtime_context_json.goalExecutionSetId === "string"
+    ? row.runtime_context_json.goalExecutionSetId
+    : undefined;
+  if (executionSetId) await advanceGoalExecutionSetPg(db, { executionSetId });
 }
 
 async function findCallbackReceiptPg(

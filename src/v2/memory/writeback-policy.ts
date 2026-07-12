@@ -97,7 +97,7 @@ function normalizedMemoryCandidates(value: unknown, requiredSourceRefs: string[]
     const text = nonEmptyString(record.text);
     if (!text) return [];
     return [{
-      scope: nonEmptyString(record.scope) ?? "software",
+      scope: nonEmptyString(record.scope) ?? "general",
       kind: nonEmptyString(record.kind) ?? "workflow_learning",
       text,
       tags: stringArray(record.tags),
