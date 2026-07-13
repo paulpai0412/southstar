@@ -74,11 +74,11 @@ export function resolveClosedApprovedLibraryFileSet(records: LibraryFileRecord[]
       });
     }
   }
+  diagnostics.sort((a, b) => (a.objectKey ?? "").localeCompare(b.objectKey ?? ""));
   if (diagnostics.length > 0) return { included: [], excluded: [], diagnostics };
 
   const approved = records.filter((record) => record.status === "approved");
   const candidates = new Map(approved.map((record) => [record.objectKey, record]));
-  const missingByKey = new Map<string, string[]>();
   let changed = true;
   while (changed) {
     changed = false;
@@ -86,7 +86,6 @@ export function resolveClosedApprovedLibraryFileSet(records: LibraryFileRecord[]
       const missing = libraryFileReferences(record).filter((ref) => !candidates.has(ref));
       if (missing.length === 0) continue;
       candidates.delete(objectKey);
-      missingByKey.set(objectKey, missing);
       changed = true;
     }
   }
@@ -99,8 +98,7 @@ export function resolveClosedApprovedLibraryFileSet(records: LibraryFileRecord[]
       fatal: false,
       paths: [record.path],
       objectKey: record.objectKey,
-      missingRefs: missingByKey.get(record.objectKey)
-        ?? libraryFileReferences(record).filter((ref) => !candidates.has(ref)),
+      missingRefs: libraryFileReferences(record).filter((ref) => !candidates.has(ref)),
     }))
     .sort((a, b) => a.objectKey.localeCompare(b.objectKey));
 
@@ -122,7 +120,7 @@ export function validateRequiredLibraryPurposes(records: LibraryFileRecord[]): L
         code: "required_purpose_cardinality",
         message: `expected exactly one approved ${purpose} skill, found ${matches.length}`,
         fatal: true,
-        paths: matches.map((item) => item.path),
+        paths: matches.map((item) => item.path).sort(),
         missingRefs: [],
       });
       continue;

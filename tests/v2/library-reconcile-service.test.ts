@@ -66,6 +66,21 @@ test("closed approved set recursively excludes files with missing references", (
   );
 });
 
+test("closed approved diagnostics recompute transitive missing references independent of input order", () => {
+  const root = record({ objectKey: "skill.root", refs: ["skill.branch-a", "skill.branch-b"] });
+  const branchA = record({ objectKey: "skill.branch-a", refs: ["tool.missing-a"] });
+  const branchB = record({ objectKey: "skill.branch-b", refs: ["tool.missing-b"] });
+
+  const first = resolveClosedApprovedLibraryFileSet([root, branchA, branchB]);
+  const second = resolveClosedApprovedLibraryFileSet([branchA, root, branchB]);
+
+  assert.deepEqual(second, first);
+  assert.deepEqual(first.excluded.find((item) => item.objectKey === "skill.root")?.missingRefs, [
+    "skill.branch-a",
+    "skill.branch-b",
+  ]);
+});
+
 test("catalog discovers every supported Library file kind", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-library-kinds-"));
   const cases = [
