@@ -228,7 +228,7 @@ async function evaluateEntry(
     ...(!input.callbackOk ? [`evaluator callback failed requirement ${entry.requirementId}`] : []),
     ...(invalidEvidence ? validator.messages.map((message) => message.text) : []),
   ];
-  const legacyVerdict = !input.callbackOk
+  const legacyVerdict: RequirementEvaluatorResultV1["verdict"] = !input.callbackOk
     ? "failed"
     : blockedFindings.length > 0
       ? "blocked"
@@ -1026,8 +1026,9 @@ function parseCoverage(
   };
   const rawCoverage = asRecord(value);
   if (rawCoverage.schemaVersion !== "southstar.goal_requirement_coverage.v1") fail("schemaVersion");
-  if (!Array.isArray(rawCoverage.entries)) fail("entries");
-  for (const [index, rawEntry] of rawCoverage.entries.entries()) {
+  const rawEntries = rawCoverage.entries;
+  const entries = Array.isArray(rawEntries) ? rawEntries : fail("entries");
+  for (const [index, rawEntry] of entries.entries()) {
     const entry = asRecord(rawEntry);
     for (const key of [
       "producerTaskIds",
@@ -1063,7 +1064,7 @@ function parseCoverage(
         || new Set(entry.criterionIds).size !== entry.criterionIds.length
         || JSON.stringify(entry.acceptanceCriteria) !== JSON.stringify(requirement.acceptanceCriteria)
       ) fail(`${path}.criterionIds`);
-      if (!entry.validationBindingId) fail(`${path}.validationBindingId`);
+      const validationBindingId = entry.validationBindingId ?? fail(`${path}.validationBindingId`);
       if (entry.evaluatorProfileRefs.length !== 1) fail(`${path}.evaluatorProfileRefs`);
       if (entry.evaluatorProfileVersionRefs.length !== 1) fail(`${path}.evaluatorProfileVersionRefs`);
       const profileRef = entry.evaluatorProfileRefs[0]!;
@@ -1072,10 +1073,9 @@ function parseCoverage(
         normalizeRequirementEvidenceRef(candidate.libraryObjectRef ?? candidate.id, "evaluator")
           === normalizeRequirementEvidenceRef(profileRef, "evaluator")
           && candidate.libraryVersionRef === profileVersionRef
-      );
-      if (!pipeline) fail(`manifest is missing frozen evaluator pipeline ${profileRef}@${profileVersionRef}`);
-      if (!pipeline.validationBindingIds?.includes(entry.validationBindingId)) {
-        fail(`manifest evaluator pipeline is missing validation binding ${entry.validationBindingId}`);
+      ) ?? fail(`manifest is missing frozen evaluator pipeline ${profileRef}@${profileVersionRef}`);
+      if (!pipeline.validationBindingIds?.includes(validationBindingId)) {
+        fail(`manifest evaluator pipeline is missing validation binding ${validationBindingId}`);
       }
       const pipelineCriterionIds = pipeline.evaluators
         .map((step) => nonEmptyString(asRecord(step.config).criterionId))

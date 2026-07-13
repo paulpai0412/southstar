@@ -231,7 +231,7 @@ export async function resolveGoalValidationPg(
 }
 
 export function goalValidationResolutionReady(resolution: GoalValidationResolutionV1): boolean {
-  return resolution.ready && !resolution.gaps.some((gap) => gap.blocking);
+  return resolution.ready === true && !resolution.gaps.some((gap) => gap.blocking);
 }
 
 export function assertGoalValidationResolutionReady(resolution: GoalValidationResolutionV1): void {
@@ -435,8 +435,8 @@ function buildBinding(input: {
   );
   const rankerEvidenceKinds = uniqueStrings(input.recommendation.expectedEvidenceKinds ?? []);
   const inventedEvidenceKinds = rankerEvidenceKinds.filter((kind) => !expectedEvidenceKinds.includes(kind));
-  const procedureEvidenceKinds = uniqueStrings(procedure.allowedEvidenceKinds);
-  const evaluatorEvidenceKinds = uniqueStrings(state.evidenceKinds);
+  const procedureEvidenceKinds = uniqueStrings(stringArray(procedure.allowedEvidenceKinds));
+  const evaluatorEvidenceKinds = uniqueStrings(stringArray(state.evidenceKinds));
   const artifactEvidenceKinds = uniqueStrings(stringArray(input.artifact.state.evidenceKinds));
   const resultSchemaRef = typeof state.resultSchemaRef === "string" ? state.resultSchemaRef.trim() : "";
   const procedureInstruction = typeof procedure.instruction === "string" ? procedure.instruction.trim() : "";
@@ -562,11 +562,13 @@ function validateExecutableContractState(
   object: LibraryObjectSummary,
 ): string | undefined {
   try {
+    const scope = typeof object.state.scope === "string" ? object.state.scope.trim() : "";
+    if (!scope) throw new Error("state.scope must be a non-empty string");
     const record: Record<string, unknown> = {
       objectKey: object.objectKey,
       kind,
       title: typeof object.state.title === "string" ? object.state.title : object.objectKey,
-      scope: typeof object.state.scope === "string" ? object.state.scope : object.scope,
+      scope,
       selectedByDefault: true,
     };
     const hostOwnedFields = new Set([

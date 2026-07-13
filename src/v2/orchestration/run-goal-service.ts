@@ -14,6 +14,7 @@ import {
   loadCurrentGoalDesignPackagePg,
   preparePostgresGoalRequirementDraft,
   preparePostgresGoalDesignDraft,
+  type GoalRequirementReviewIssue,
   type GoalRequirementReviewResult,
 } from "./goal-design-draft-service.ts";
 import {
@@ -38,7 +39,7 @@ import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-ap
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
-import type { GoalRequirementDraftInterpreter, GoalRequirementDraftIssue, GoalRequirementDraftV1 } from "./goal-requirement-draft.ts";
+import type { GoalRequirementDraftInterpreter, GoalRequirementDraftV1 } from "./goal-requirement-draft.ts";
 
 export type RunGoalRequest = {
   goalPrompt: string;
@@ -69,7 +70,7 @@ export type RunGoalResult = {
   schedulerExceptionId?: string;
   /** Host-owned requirement review projection (present for requirement-review results). */
   confirmable?: boolean;
-  validationIssues?: GoalRequirementDraftIssue[];
+  validationIssues?: GoalRequirementReviewIssue[];
 };
 
 export type SliceRunResult = {

@@ -540,8 +540,12 @@ export async function syncLibraryFileRecordToGraph(
     keepEdges: activeEdges,
   });
   const edges = [];
+  const objectVersionRef = object.headVersionId;
+  if (!objectVersionRef) {
+    throw new Error(`library object is missing headVersionId after file sync: ${object.objectKey}`);
+  }
   for (const edge of activeEdges) {
-    edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, object.headVersionId)));
+    edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, objectVersionRef)));
   }
   return { object, edges };
 }
@@ -662,10 +666,12 @@ export async function syncLibraryFileRecordsToGraphPg(
       sourcePath: file.path,
       keepEdges: activeEdges,
     });
+    const source = objects.find((object) => object.objectKey === projection.object.objectKey);
+    if (!source) throw new Error(`library object sync result missing: ${projection.object.objectKey}`);
+    const sourceVersionRef = source.headVersionId;
+    if (!sourceVersionRef) throw new Error(`library object sync result is missing headVersionId: ${source.objectKey}`);
     for (const edge of activeEdges) {
-      const source = objects.find((object) => object.objectKey === projection.object.objectKey);
-      if (!source) throw new Error(`library object sync result missing: ${projection.object.objectKey}`);
-      edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, source.headVersionId)));
+      edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, sourceVersionRef)));
     }
   }
 

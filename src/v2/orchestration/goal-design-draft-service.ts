@@ -185,7 +185,7 @@ export type GoalDesignChatRevisionResult =
   | {
       kind: "revision";
       draftStatus: "ready_for_review";
-      package: GoalDesignPackageV1;
+      package: GoalDesignPackage;
       summary: string;
       changedSliceIds: string[];
     }
@@ -1295,8 +1295,8 @@ async function markPriorGoalDesignResourcesStaleTx(
 }
 
 function changedSliceIds(
-  before: GoalDesignPackageV1,
-  after: GoalDesignPackageV1,
+  before: GoalDesignPackage,
+  after: GoalDesignPackage,
   proposed: string[],
 ): string[] {
   const beforeById = new Map(before.slicePlan.slices.map((slice) => [slice.id, JSON.stringify(slice)]));
