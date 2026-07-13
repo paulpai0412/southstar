@@ -36,7 +36,11 @@ import { listLibraryChatSessionSummariesPg, type LibraryChatAction } from "../re
 import { buildLibraryGraphReadModel } from "../read-models/library-graph.ts";
 import { buildLibraryWorkspaceReadModel } from "../read-models/library-workspace.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-import { resumeGoalValidationAfterLibraryImportPg } from "../orchestration/goal-design-draft-service.ts";
+import {
+  assertGoalValidationImportCurrentPg,
+  GoalValidationProviderNotConfiguredError,
+  resumeGoalValidationAfterLibraryImportPg,
+} from "../orchestration/goal-validation-lifecycle.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -148,9 +152,11 @@ export async function handleLibraryRoute(
       actor?: unknown;
       reason?: unknown;
     }>(request);
+    const draftId = decodeURIComponent(importDraftInstallMatch[1]!);
+    await assertGoalValidationImportCurrentPg(context.db, draftId);
     const installed = await installLibraryImportCandidates(context.db, {
       root: libraryRoot(context),
-      draftId: decodeURIComponent(importDraftInstallMatch[1]!),
+      draftId,
       selectedCandidateIds: stringArray(body.selectedCandidateIds, "selectedCandidateIds"),
       ...(Array.isArray(body.selectedEdgeIds)
         ? { selectedEdgeIds: stringArray(body.selectedEdgeIds, "selectedEdgeIds") }
@@ -158,6 +164,7 @@ export async function handleLibraryRoute(
       actor: optionalString(body.actor) ?? "operator",
       reason: requiredNonBlankString(body.reason, "reason"),
       llmProvider: context.libraryImportLlmProvider,
+      transactionGuard: async (tx) => await assertGoalValidationImportCurrentPg(tx, draftId, { lockForInstall: true }),
     });
     return json("library-import-candidate-install", await resumeLinkedGoalValidation(context, installed));
   }
@@ -1020,6 +1027,7 @@ function libraryImportInstallEventStream(
           draftId: input.draftId,
           selectedCandidateCount: input.selectedCandidateIds.length,
         });
+        await assertGoalValidationImportCurrentPg(context.db, input.draftId);
         const installed = await installLibraryImportCandidates(context.db, {
           root: libraryRoot(context),
           draftId: input.draftId,
@@ -1028,6 +1036,7 @@ function libraryImportInstallEventStream(
           actor: input.actor,
           reason: input.reason,
           llmProvider: context.libraryImportLlmProvider,
+          transactionGuard: async (tx) => await assertGoalValidationImportCurrentPg(tx, input.draftId, { lockForInstall: true }),
           progress: ({ event, data }) => emit(event, data),
         });
         emit("library.db.synced", {
@@ -1111,6 +1120,11 @@ async function resumeLinkedGoalValidation(
         draftId: optionalString(payload.originGoalDraftId),
         status: "library_review",
         error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof GoalValidationProviderNotConfiguredError ? {
+          code: error.code,
+          httpStatus: error.status,
+          readiness: error.readiness,
+        } : {}),
       },
     };
   }

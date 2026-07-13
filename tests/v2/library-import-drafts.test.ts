@@ -128,6 +128,9 @@ test("createLibraryImportDraft reuses one host-linked draft for the same Goal va
         scope: "design/article",
         artifactType: "offline_html",
         evidenceKinds: ["test-result"],
+        validationRules: ["rule.offline-html"],
+        schemaRef: "schema.offline-html.v1",
+        requiredFields: ["content"],
         selectedByDefault: true,
       }],
     };
@@ -228,6 +231,14 @@ test("library import candidate prompt and host parser support governed vocabular
   assert.match(prompt, /capability\.<slug>/);
   assert.match(prompt, /artifact\.<slug>/);
   assert.match(prompt, /evaluator\.<slug>/);
+  assert.match(prompt, /validationRules/);
+  assert.match(prompt, /schemaRef/);
+  assert.match(prompt, /requiredFields/);
+  assert.match(prompt, /verificationModes/);
+  assert.match(prompt, /verificationProcedures/);
+  assert.match(prompt, /independencePolicy/);
+  assert.match(prompt, /resultSchemaRef/);
+  assert.match(prompt, /failureClassifications/);
 
   const candidates = normalizeLibraryImportCandidates([
     {
@@ -254,6 +265,9 @@ test("library import candidate prompt and host parser support governed vocabular
       scope: "membership",
       artifactType: "verification_report",
       evidenceKinds: ["test-result", "command-output"],
+      validationRules: ["rule.subscription-verification"],
+      schemaRef: "schema.subscription-verification.v1",
+      requiredFields: ["summary", "commandsRun"],
       selectedByDefault: true,
     },
     {
@@ -263,15 +277,15 @@ test("library import candidate prompt and host parser support governed vocabular
       scope: "membership",
       validatesArtifactRefs: ["artifact.subscription-verification"],
       evidenceKinds: ["test-result"],
-      selectedByDefault: true,
-    },
-    {
-      objectKey: "artifact.invalid-evidence",
-      kind: "artifact",
-      title: "Invalid Evidence",
-      scope: "membership",
-      artifactType: "invalid",
-      evidenceKinds: ["invented-evidence"],
+      verificationModes: ["deterministic"],
+      verificationProcedures: [{
+        id: "procedure.subscription-tests",
+        checkKind: "deterministic",
+        allowedEvidenceKinds: ["test-result"],
+      }],
+      independencePolicy: "independent",
+      resultSchemaRef: "schema.evaluator-result.v1",
+      failureClassifications: ["test_failure"],
       selectedByDefault: true,
     },
   ], { scope: "membership", sourcePaths: new Set() });
@@ -285,7 +299,112 @@ test("library import candidate prompt and host parser support governed vocabular
   assert.deepEqual(candidates[0]?.aliases, ["subscription"]);
   assert.deepEqual(candidates[1]?.requiredOperations, ["workspace-read", "workspace-write"]);
   assert.deepEqual(candidates[2]?.evidenceKinds, ["test-result", "command-output"]);
+  assert.deepEqual(candidates[2]?.validationRules, ["rule.subscription-verification"]);
+  assert.equal(candidates[2]?.schemaRef, "schema.subscription-verification.v1");
+  assert.deepEqual(candidates[2]?.requiredFields, ["summary", "commandsRun"]);
   assert.deepEqual(candidates[3]?.validatesArtifactRefs, ["artifact.subscription-verification"]);
+  assert.deepEqual(candidates[3]?.verificationModes, ["deterministic"]);
+  assert.deepEqual(candidates[3]?.verificationProcedures, [{
+    id: "procedure.subscription-tests",
+    checkKind: "deterministic",
+    allowedEvidenceKinds: ["test-result"],
+  }]);
+  assert.equal(candidates[3]?.independencePolicy, "independent");
+  assert.equal(candidates[3]?.resultSchemaRef, "schema.evaluator-result.v1");
+  assert.deepEqual(candidates[3]?.failureClassifications, ["test_failure"]);
+  assert.throws(() => normalizeLibraryImportCandidates([{
+    objectKey: "artifact.invalid-evidence",
+    kind: "artifact",
+    title: "Invalid Evidence",
+    scope: "membership",
+    artifactType: "invalid",
+    evidenceKinds: ["invented-evidence"],
+    validationRules: ["rule.invalid"],
+    schemaRef: "schema.invalid.v1",
+    requiredFields: ["content"],
+    selectedByDefault: true,
+  }], { scope: "membership", sourcePaths: new Set() }), /unsupported evidenceKinds/);
+  assert.throws(() => normalizeLibraryImportCandidates([{
+    objectKey: "artifact.mixed-validation-rules",
+    kind: "artifact",
+    title: "Mixed Validation Rules",
+    scope: "membership",
+    artifactType: "verification_report",
+    evidenceKinds: ["test-result"],
+    validationRules: ["rule.valid", 42],
+    schemaRef: "schema.mixed.v1",
+    requiredFields: ["summary"],
+    selectedByDefault: true,
+  }], { scope: "membership", sourcePaths: new Set() }), /validationRules must be an array of non-empty strings/);
+});
+
+test("candidate install rejects tampered persisted validation contracts instead of normalizing them", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-strict-persisted-"));
+  const baseCandidate = {
+    objectKey: "artifact.strict-report",
+    kind: "artifact" as const,
+    title: "Strict Report",
+    scope: "general",
+    artifactType: "verification_report",
+    evidenceKinds: ["test-result"],
+    validationRules: ["rule.strict-report"],
+    schemaRef: "schema.strict-report.v1",
+    requiredFields: ["summary"],
+    selectedByDefault: true,
+  };
+  const provider: LibraryImportLlmProvider = async () => ({ candidates: [baseCandidate], proposedEdges: [] });
+
+  try {
+    for (const mutation of [
+      { ...baseCandidate, evidenceKinds: ["test-result", 42] },
+      { ...baseCandidate, verificationModes: ["deterministic"] },
+      {
+        objectKey: "evaluator.duplicate-procedure",
+        kind: "evaluator",
+        title: "Duplicate Procedure",
+        scope: "general",
+        validatesArtifactRefs: [baseCandidate.objectKey],
+        evidenceKinds: ["test-result"],
+        verificationModes: ["deterministic"],
+        verificationProcedures: [
+          { id: "procedure.same", checkKind: "deterministic", allowedEvidenceKinds: ["test-result"] },
+          { id: "procedure.same", checkKind: "deterministic", allowedEvidenceKinds: ["test-result"] },
+        ],
+        independencePolicy: "independent",
+        resultSchemaRef: "schema.evaluator-result.v1",
+        failureClassifications: ["test_failure"],
+        selectedByDefault: true,
+      },
+    ]) {
+      const draft = await createLibraryImportDraft(db, {
+        source: { kind: "paste", label: "strict report", content: "Create a strict verification report contract." },
+        scope: "general",
+        llmProvider: provider,
+      });
+      await db.query(
+        `update southstar.runtime_resources
+            set payload_json = jsonb_set(payload_json, '{candidates}', $2::jsonb), updated_at = now()
+          where resource_type = 'library_import_draft' and resource_key = $1`,
+        [draft.draftId, JSON.stringify([mutation])],
+      );
+      await assert.rejects(
+        () => installLibraryImportCandidates(db, {
+          root: libraryRoot,
+          draftId: draft.draftId,
+          selectedCandidateIds: [mutation.objectKey],
+          actor: "operator",
+          reason: "tampered contracts must fail closed",
+          llmProvider: provider,
+        }),
+        /must be a non-empty array of non-empty strings|contains unsupported fields|duplicate verification procedure id/,
+      );
+      assert.equal(await findLibraryObjectByKey(db, mutation.objectKey), null);
+    }
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
 });
 
 test("extractLibraryCandidatesFromDocuments deterministically classifies obvious library docs and proposes simple edges", () => {
@@ -853,6 +972,9 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
   });
 
   try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
     const draft = await createLibraryImportDraft(db, {
       source: {
         kind: "paste",
@@ -917,6 +1039,10 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
         },
       ],
     );
+    for (const edge of installed.installedEdges) {
+      assert.equal(edge.fromVersionRef, (await findLibraryObjectByKey(db, edge.fromObjectKey))?.headVersionId);
+      assert.equal(edge.toVersionRef, (await findLibraryObjectByKey(db, edge.toObjectKey))?.headVersionId);
+    }
 
     for (const relativePath of ["agents/reviewer.agent.md", "skills/review.skill.md", "tools/github.tool.yaml"]) {
       const content = await readFile(join(libraryRoot, relativePath), "utf8");
@@ -1172,6 +1298,9 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
       scope: "membership",
       artifactType: "verification_report",
       evidenceKinds: ["test-result", "command-output"],
+      validationRules: ["rule.subscription-verification"],
+      schemaRef: "schema.subscription-verification.v1",
+      requiredFields: ["summary", "commandsRun"],
       selectedByDefault: true,
     },
     {
@@ -1181,6 +1310,15 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
       scope: "membership",
       validatesArtifactRefs: ["artifact.subscription-verification"],
       evidenceKinds: ["test-result"],
+      verificationModes: ["deterministic"],
+      verificationProcedures: [{
+        id: "procedure.subscription-tests",
+        checkKind: "deterministic",
+        allowedEvidenceKinds: ["test-result"],
+      }],
+      independencePolicy: "independent" as const,
+      resultSchemaRef: "schema.evaluator-result.v1",
+      failureClassifications: ["test_failure"],
       selectedByDefault: true,
     },
   ];
@@ -1189,6 +1327,9 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
     : { candidates };
 
   try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
     const draft = await createLibraryImportDraft(db, {
       source: { kind: "paste", label: "membership vocabulary", content: "Create governed membership vocabulary." },
       scope: "membership",
@@ -1219,6 +1360,23 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
       const parsed = parseLibraryFileContent({ path: `library/${object.relativePath}`, content });
       assert.equal(parsed.ok, true, `${object.relativePath} should parse`);
     }
+    const artifact = await findLibraryObjectByKey(db, "artifact.subscription-verification");
+    const evaluator = await findLibraryObjectByKey(db, "evaluator.subscription-quality");
+    assert.deepEqual(artifact?.state.validationRules, ["rule.subscription-verification"]);
+    assert.equal(artifact?.state.schemaRef, "schema.subscription-verification.v1");
+    assert.deepEqual(artifact?.state.requiredFields, ["summary", "commandsRun"]);
+    assert.deepEqual(evaluator?.state.verificationModes, ["deterministic"]);
+    assert.deepEqual(evaluator?.state.verificationProcedures, [{
+      id: "procedure.subscription-tests",
+      checkKind: "deterministic",
+      allowedEvidenceKinds: ["test-result"],
+    }]);
+    const validationEdge = (await findLibraryEdgesFrom(db, "evaluator.subscription-quality", "validates_artifact")).find((edge) =>
+      edge.fromObjectKey === "evaluator.subscription-quality"
+        && edge.edgeType === "validates_artifact"
+        && edge.toObjectKey === "artifact.subscription-verification");
+    assert.equal(validationEdge?.fromVersionRef, evaluator?.headVersionId);
+    assert.equal(validationEdge?.toVersionRef, artifact?.headVersionId);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -2377,7 +2535,7 @@ test("POST /api/v2/library/import-drafts/:draftId/install installs selected cand
   }
 });
 
-test("linked candidate install stays committed and returns a recoverable Goal resume error", async () => {
+test("linked candidate install rejects stale Goal origin before changing Library state", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-goal-resume-error-"));
   try {
@@ -2408,21 +2566,17 @@ test("linked candidate install stays committed and returns a recoverable Goal re
     }));
 
     const envelope = await response.json() as any;
-    assert.equal(response.status, 200, JSON.stringify(envelope));
-    assert.equal(envelope.result.status, "installed");
-    assert.equal(envelope.result.installed, true);
-    assert.equal(envelope.result.goalValidationResume.ok, false);
-    assert.equal(envelope.result.goalValidationResume.recoverable, true);
-    assert.equal(envelope.result.goalValidationResume.status, "library_review");
-    assert.match(envelope.result.goalValidationResume.error, /goal_validation_import_stale/);
-    assert.equal((await getResourceByKeyPg(db, "library_import_draft", draft.draftId))?.status, "installed");
+    assert.equal(response.status, 409, JSON.stringify(envelope));
+    assert.equal(envelope.ok, false);
+    assert.match(envelope.error, /goal_validation_import_stale/);
+    assert.equal((await getResourceByKeyPg(db, "library_import_draft", draft.draftId))?.status, "stale");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
   }
 });
 
-test("linked candidate install stream emits goal_validation_resumed after committed reconcile", async () => {
+test("linked candidate install stream emits a stale error before reconcile", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-goal-resume-stream-"));
   try {
@@ -2454,10 +2608,10 @@ test("linked candidate install stream emits goal_validation_resumed after commit
 
     assert.equal(response.status, 200);
     const events = await response.text();
-    assert.match(events, /event: goal_validation_resumed/);
-    assert.match(events, /"recoverable":true/);
-    assert.match(events, /event: library\.command\.completed/);
-    assert.equal((await getResourceByKeyPg(db, "library_import_draft", draft.draftId))?.status, "installed");
+    assert.match(events, /event: library\.error/);
+    assert.match(events, /goal_validation_import_stale/);
+    assert.doesNotMatch(events, /event: library\.command\.completed/);
+    assert.equal((await getResourceByKeyPg(db, "library_import_draft", draft.draftId))?.status, "stale");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

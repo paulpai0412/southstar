@@ -47,7 +47,19 @@ export type LibraryImportCandidate = {
   requiredOperations?: string[];
   artifactType?: string;
   evidenceKinds?: string[];
+  validationRules?: string[];
+  schemaRef?: string;
+  requiredFields?: string[];
   validatesArtifactRefs?: string[];
+  verificationModes?: Array<"deterministic" | "browser_interaction" | "semantic_review" | "human_approval">;
+  verificationProcedures?: Array<{
+    id: string;
+    checkKind: "deterministic" | "browser_interaction" | "semantic_review" | "human_approval";
+    allowedEvidenceKinds: string[];
+  }>;
+  independencePolicy?: "independent";
+  resultSchemaRef?: string;
+  failureClassifications?: string[];
 };
 
 export type LibraryImportProposedEdge = {

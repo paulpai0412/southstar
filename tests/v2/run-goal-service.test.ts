@@ -117,8 +117,8 @@ test("staged run-goal route persists requirement review and confirms with a hash
     ));
     assert.equal(confirmed.status, 200);
     const confirmedEnvelope = await confirmed.json() as { ok: true; result: { status: string; phase: string; goalContractHash: string } };
-    assert.equal(confirmedEnvelope.result.status, "validation_resolving");
-    assert.equal(confirmedEnvelope.result.phase, "validation_resolving");
+    assert.equal(confirmedEnvelope.result.status, "library_review");
+    assert.equal(confirmedEnvelope.result.phase, "library_review");
     assert.match(confirmedEnvelope.result.goalContractHash, /^[a-f0-9]{64}$/);
 
     const missing = await handleRuntimeRoute(context, new Request(
@@ -1989,6 +1989,9 @@ function runtimeContextWithInterpreter(
     goalInterpreter,
     goalDesigner: inlineGoalDesigner(),
     workflowComposer,
+    libraryImportLlmProvider: async ({ prompt }: { prompt: string }) => prompt.startsWith("Rank only the supplied approved artifact contracts")
+      ? { recommendations: [] }
+      : { candidates: [] },
     plannerClient: { generate: async () => { throw new Error("planner not used"); } },
     executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
   };

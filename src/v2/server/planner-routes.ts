@@ -40,11 +40,11 @@ import {
   reviseGoalSlicePg,
   reviseGoalTemplatePolicyPg,
   confirmGoalRequirementsPg,
-  resolveAndPersistGoalValidationPg,
   reviseGoalRequirementPg,
   reviseGoalRequirementFromChatPg,
   type GoalSlicePatchV1,
 } from "../orchestration/goal-design-draft-service.ts";
+import { resolveAndPersistGoalValidationPg } from "../orchestration/goal-validation-lifecycle.ts";
 import {
   createPostgresRunFromDraft,
   getPostgresPlannerDraftOrchestration,
@@ -166,6 +166,7 @@ export async function handlePlannerRoute(
 
   const goalRequirementConfirmMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/confirm-requirements$/);
   if (request.method === "POST" && goalRequirementConfirmMatch) {
+    if (!context.libraryImportLlmProvider) return goalValidationProviderConfigurationResponse();
     const body = await readJsonBody<{ expectedDraftHash?: unknown; actor?: unknown }>(request);
     try {
       const confirmed = await confirmGoalRequirementsPg(context.db, {
@@ -174,7 +175,7 @@ export async function handlePlannerRoute(
         actor: optionalString(body.actor),
         goalInterpreter: resolveGoalInterpreter(context),
       });
-      if (!context.libraryImportLlmProvider || !confirmed.goalContractHash) {
+      if (!confirmed.goalContractHash) {
         return json("goal-requirement-confirmation", confirmed);
       }
       return json("goal-requirement-confirmation", await resolveAndPersistGoalValidationPg(context.db, {
@@ -1176,6 +1177,23 @@ function json<T>(kind: string, result: T, status = 200): Response {
 function errorJson(error: string, status: number): Response {
   return new Response(JSON.stringify({ ok: false, error }), {
     status,
+    headers: { "content-type": "application/json", ...corsHeaders() },
+  });
+}
+
+function goalValidationProviderConfigurationResponse(): Response {
+  return new Response(JSON.stringify({
+    ok: false,
+    code: "goal_validation_provider_not_configured",
+    status: "configuration_required",
+    error: "Goal validation requires a configured Library LLM provider before Requirements can be confirmed.",
+    readiness: {
+      ready: false,
+      missing: ["libraryImportLlmProvider"],
+      action: "Configure the runtime Library LLM provider, then confirm the Requirement draft again.",
+    },
+  }), {
+    status: 503,
     headers: { "content-type": "application/json", ...corsHeaders() },
   });
 }

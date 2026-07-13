@@ -37,6 +37,8 @@ import {
 import {
   analyzeLibraryImportWithLlm,
   analyzeLibraryImportOntologyResultWithLlm,
+  LIBRARY_VALIDATION_EVIDENCE_KINDS,
+  LIBRARY_VERIFICATION_MODES,
   type LibraryImportOntologyExistingGraph,
   type LibraryImportLlmProvider,
 } from "./library-llm-import-analyzer.ts";
@@ -141,9 +143,11 @@ export async function createLibraryImportDraft(
     originGoalContractHash?: string;
     originGoalRequirementDraftHash?: string;
     originGoalValidationResolutionHash?: string;
+    originGoalValidationGapHash?: string;
+    originGoalValidationAttempt?: number;
   },
 ): Promise<LibraryImportDraftResult> {
-  const origin = goalValidationImportOrigin(input);
+  const origin = await goalValidationImportOrigin(db, input);
   const draftId = origin
     ? `library-import-goal-${contentHashForPayload(origin).slice(0, 32)}`
     : `library-import-draft-${randomUUID()}`;
@@ -232,14 +236,18 @@ type GoalValidationImportOrigin = {
   originGoalContractHash: string;
   originGoalRequirementDraftHash: string;
   originGoalValidationResolutionHash: string;
+  originGoalValidationGapHash: string;
+  originGoalValidationAttempt: number;
 };
 
-function goalValidationImportOrigin(input: {
+async function goalValidationImportOrigin(db: SouthstarDb, input: {
   originGoalDraftId?: string;
   originGoalContractHash?: string;
   originGoalRequirementDraftHash?: string;
   originGoalValidationResolutionHash?: string;
-}): GoalValidationImportOrigin | undefined {
+  originGoalValidationGapHash?: string;
+  originGoalValidationAttempt?: number;
+}): Promise<GoalValidationImportOrigin | undefined> {
   const values = [
     input.originGoalDraftId,
     input.originGoalContractHash,
@@ -250,11 +258,40 @@ function goalValidationImportOrigin(input: {
   if (values.some((value) => typeof value !== "string" || value.trim().length === 0)) {
     throw new Error("Goal-linked Library import drafts require complete origin metadata");
   }
-  return {
+  const originWithoutAttempt = {
     originGoalDraftId: input.originGoalDraftId!,
     originGoalContractHash: input.originGoalContractHash!,
     originGoalRequirementDraftHash: input.originGoalRequirementDraftHash!,
     originGoalValidationResolutionHash: input.originGoalValidationResolutionHash!,
+    originGoalValidationGapHash: input.originGoalValidationGapHash ?? input.originGoalValidationResolutionHash!,
+  };
+  const prior = await db.query<{ status: string; payload_json: Record<string, unknown> }>(
+    `select status, payload_json
+       from southstar.runtime_resources
+      where resource_type = $1
+        and payload_json->>'originGoalDraftId' = $2
+        and payload_json->>'originGoalContractHash' = $3
+        and payload_json->>'originGoalRequirementDraftHash' = $4`,
+    [
+      LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE,
+      originWithoutAttempt.originGoalDraftId,
+      originWithoutAttempt.originGoalContractHash,
+      originWithoutAttempt.originGoalRequirementDraftHash,
+    ],
+  );
+  const active = prior.rows.find((row) => {
+    const payload = asRecord(row.payload_json);
+    return row.status === "draft"
+      && payload.originGoalValidationResolutionHash === originWithoutAttempt.originGoalValidationResolutionHash
+      && (payload.originGoalValidationGapHash ?? payload.originGoalValidationResolutionHash) === originWithoutAttempt.originGoalValidationGapHash;
+  });
+  const activeAttempt = active ? positiveInteger(asRecord(active.payload_json).originGoalValidationAttempt) ?? 1 : undefined;
+  const maxAttempt = prior.rows.reduce((maximum, row) =>
+    Math.max(maximum, positiveInteger(asRecord(row.payload_json).originGoalValidationAttempt) ?? 1), 0);
+  const requestedAttempt = positiveInteger(input.originGoalValidationAttempt);
+  return {
+    ...originWithoutAttempt,
+    originGoalValidationAttempt: requestedAttempt ?? activeAttempt ?? maxAttempt + 1,
   };
 }
 
@@ -423,6 +460,7 @@ export async function installLibraryImportCandidates(
     reason: string;
     llmProvider?: LibraryImportLlmProvider;
     progress?: LibraryImportProgressListener;
+    transactionGuard?: (tx: SouthstarDb) => Promise<void>;
   },
 ): Promise<LibraryImportCandidateInstallResult> {
   const createdFiles: Array<{ relativePath: string; content: string | Buffer }> = [];
@@ -530,6 +568,14 @@ export async function installLibraryImportCandidates(
 
     const catalog = await loadLibraryFileCatalog({ root: input.root });
     const result = await db.tx(async (tx) => {
+      try {
+        await input.transactionGuard?.(tx);
+      } catch (error) {
+        // The guard may persist a stale marker while holding the Goal and import
+        // rows. Return it as data so that marker commits before we rethrow and
+        // clean up preflighted filesystem writes outside the transaction.
+        return { transactionGuardRejected: true as const, error };
+      }
       const { graphSync } = await reconcileLibraryCatalogPg(tx, {
         catalog,
         root: input.root,
@@ -549,10 +595,17 @@ export async function installLibraryImportCandidates(
       const installGeneratedAt = new Date().toISOString();
       const installedEdges = [];
       for (const edge of proposedEdges) {
+        const sourceObject = await findLibraryObjectByKey(tx, edge.fromObjectKey);
+        const targetObject = await findLibraryObjectByKey(tx, edge.toObjectKey);
+        if (!sourceObject?.headVersionId || !targetObject?.headVersionId) {
+          throw new Error(`library import ontology edge is missing version pins: ${edge.fromObjectKey} -> ${edge.toObjectKey}`);
+        }
         installedEdges.push(await upsertLibraryEdge(tx, {
           fromObjectKey: edge.fromObjectKey,
+          fromVersionRef: sourceObject.headVersionId,
           edgeType: edge.edgeType,
           toObjectKey: edge.toObjectKey,
+          toVersionRef: targetObject.headVersionId,
           scope: scopeForImportedEdge(edge, selectedCandidates),
           status: "active",
           weight: edge.confidence,
@@ -636,6 +689,8 @@ export async function installLibraryImportCandidates(
         ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
       };
     });
+
+    if ("transactionGuardRejected" in result) throw result.error;
 
     try {
       input.progress?.({
@@ -952,11 +1007,19 @@ function renderLibraryImportCandidate(
           ? [
             `artifactType: ${yamlScalar(candidate.artifactType ?? "")}`,
             ...yamlArray("evidenceKinds", candidate.evidenceKinds),
+            ...yamlArray("validationRules", candidate.validationRules),
+            `schemaRef: ${yamlScalar(candidate.schemaRef ?? "")}`,
+            ...yamlArray("requiredFields", candidate.requiredFields),
           ]
           : candidate.kind === "evaluator"
             ? [
               ...yamlArray("validatesArtifactRefs", candidate.validatesArtifactRefs),
               ...yamlArray("evidenceKinds", candidate.evidenceKinds),
+              ...yamlArray("verificationModes", candidate.verificationModes),
+              ...yamlVerificationProcedures(candidate.verificationProcedures),
+              `independencePolicy: ${yamlScalar(candidate.independencePolicy ?? "")}`,
+              `resultSchemaRef: ${yamlScalar(candidate.resultSchemaRef ?? "")}`,
+              ...yamlArray("failureClassifications", candidate.failureClassifications),
             ]
             : [`description: ${yamlScalar(`Imported ${candidate.kind} candidate from library import draft.`)}`];
     return {
@@ -1125,28 +1188,51 @@ function asImportCandidates(value: unknown): LibraryImportCandidate[] {
   if (!Array.isArray(value)) return [];
   return value.map((item) => {
     const record = asRecord(item);
-    return {
-      objectKey: requiredString(record.objectKey, "candidates.objectKey"),
-      kind: requiredImportCandidateKind(record.kind),
+    const objectKey = requiredString(record.objectKey, "candidates.objectKey");
+    const kind = requiredImportCandidateKind(record.kind);
+    assertImportCandidateRecordKeys(record, kind, objectKey);
+    const selectedByDefault = requiredBoolean(record.selectedByDefault, `candidates.${objectKey}.selectedByDefault`);
+    const confidence = optionalConfidence(record.confidence, `candidates.${objectKey}.confidence`);
+    const domain = optionalStrictString(record.domain, `candidates.${objectKey}.domain`);
+    const displayDomain = optionalStrictString(record.displayDomain, `candidates.${objectKey}.displayDomain`);
+    const classificationReason = optionalStrictString(record.classificationReason, `candidates.${objectKey}.classificationReason`);
+    const sourcePath = optionalStrictString(record.sourcePath, `candidates.${objectKey}.sourcePath`);
+    const candidate: LibraryImportCandidate = {
+      objectKey,
+      kind,
       title: requiredString(record.title, "candidates.title"),
       scope: requiredString(record.scope, "candidates.scope"),
-      ...(typeof record.domain === "string" && record.domain.length > 0 ? { domain: record.domain } : {}),
-      ...(typeof record.displayDomain === "string" && record.displayDomain.length > 0 ? { displayDomain: record.displayDomain } : {}),
-      ...(typeof record.classificationReason === "string" && record.classificationReason.length > 0
-        ? { classificationReason: record.classificationReason }
+      ...(domain ? { domain } : {}),
+      ...(displayDomain ? { displayDomain } : {}),
+      ...(classificationReason ? { classificationReason } : {}),
+      ...(sourcePath ? { sourcePath } : {}),
+      selectedByDefault,
+      ...(confidence !== undefined ? { confidence } : {}),
+      ...(optionalStrictString(record.description, `candidates.${objectKey}.description`) ? { description: requiredString(record.description, `candidates.${objectKey}.description`) } : {}),
+      ...(optionalStrictStringArray(record.aliases, `candidates.${objectKey}.aliases`) ? { aliases: requiredStrictStringArray(record.aliases, `candidates.${objectKey}.aliases`) } : {}),
+      ...(optionalStrictStringArray(record.requiredOperations, `candidates.${objectKey}.requiredOperations`) ? { requiredOperations: requiredStrictStringArray(record.requiredOperations, `candidates.${objectKey}.requiredOperations`) } : {}),
+      ...(optionalStrictString(record.artifactType, `candidates.${objectKey}.artifactType`) ? { artifactType: requiredString(record.artifactType, `candidates.${objectKey}.artifactType`) } : {}),
+      ...(optionalStrictStringArray(record.evidenceKinds, `candidates.${objectKey}.evidenceKinds`) ? { evidenceKinds: requiredStrictStringArray(record.evidenceKinds, `candidates.${objectKey}.evidenceKinds`) } : {}),
+      ...(optionalStrictStringArray(record.validationRules, `candidates.${objectKey}.validationRules`) ? { validationRules: requiredStrictStringArray(record.validationRules, `candidates.${objectKey}.validationRules`) } : {}),
+      ...(optionalStrictString(record.schemaRef, `candidates.${objectKey}.schemaRef`) ? { schemaRef: requiredString(record.schemaRef, `candidates.${objectKey}.schemaRef`) } : {}),
+      ...(optionalStrictStringArray(record.requiredFields, `candidates.${objectKey}.requiredFields`) ? { requiredFields: requiredStrictStringArray(record.requiredFields, `candidates.${objectKey}.requiredFields`) } : {}),
+      ...(optionalStrictStringArray(record.validatesArtifactRefs, `candidates.${objectKey}.validatesArtifactRefs`)
+        ? { validatesArtifactRefs: requiredStrictStringArray(record.validatesArtifactRefs, `candidates.${objectKey}.validatesArtifactRefs`) }
         : {}),
-      ...(typeof record.sourcePath === "string" && record.sourcePath.length > 0 ? { sourcePath: record.sourcePath } : {}),
-      selectedByDefault: typeof record.selectedByDefault === "boolean" ? record.selectedByDefault : true,
-      ...(typeof record.confidence === "number" ? { confidence: record.confidence } : {}),
-      ...(typeof record.description === "string" && record.description.length > 0 ? { description: record.description } : {}),
-      ...(stringArray(record.aliases).length > 0 ? { aliases: stringArray(record.aliases) } : {}),
-      ...(stringArray(record.requiredOperations).length > 0 ? { requiredOperations: stringArray(record.requiredOperations) } : {}),
-      ...(typeof record.artifactType === "string" && record.artifactType.length > 0 ? { artifactType: record.artifactType } : {}),
-      ...(stringArray(record.evidenceKinds).length > 0 ? { evidenceKinds: stringArray(record.evidenceKinds) } : {}),
-      ...(stringArray(record.validatesArtifactRefs).length > 0
-        ? { validatesArtifactRefs: stringArray(record.validatesArtifactRefs) }
+      ...(record.verificationModes !== undefined
+        ? { verificationModes: requiredVerificationModes(record.verificationModes, objectKey) }
+        : {}),
+      ...(Array.isArray(record.verificationProcedures)
+        ? { verificationProcedures: requiredVerificationProcedures(record.verificationProcedures, objectKey) }
+        : {}),
+      ...(record.independencePolicy === "independent" ? { independencePolicy: "independent" as const } : {}),
+      ...(optionalStrictString(record.resultSchemaRef, `candidates.${objectKey}.resultSchemaRef`) ? { resultSchemaRef: requiredString(record.resultSchemaRef, `candidates.${objectKey}.resultSchemaRef`) } : {}),
+      ...(optionalStrictStringArray(record.failureClassifications, `candidates.${objectKey}.failureClassifications`)
+        ? { failureClassifications: requiredStrictStringArray(record.failureClassifications, `candidates.${objectKey}.failureClassifications`) }
         : {}),
     };
+    assertCompleteValidationCandidate(candidate);
+    return candidate;
   });
 }
 
@@ -1218,9 +1304,165 @@ function yamlArray(key: string, values: string[] | undefined): string[] {
   return [`${key}:`, ...values.map((value) => `  - ${yamlScalar(value)}`)];
 }
 
+function yamlVerificationProcedures(
+  procedures: LibraryImportCandidate["verificationProcedures"],
+): string[] {
+  if (!procedures || procedures.length === 0) return ["verificationProcedures: []"];
+  const lines = ["verificationProcedures:"];
+  for (const procedure of procedures) {
+    lines.push(`  - id: ${yamlScalar(procedure.id)}`);
+    lines.push(`    checkKind: ${yamlScalar(procedure.checkKind)}`);
+    lines.push("    allowedEvidenceKinds:");
+    for (const evidenceKind of procedure.allowedEvidenceKinds) {
+      lines.push(`      - ${yamlScalar(evidenceKind)}`);
+    }
+  }
+  return lines;
+}
+
+const IMPORT_VERIFICATION_MODES = new Set<string>(LIBRARY_VERIFICATION_MODES);
+const IMPORT_EVIDENCE_KINDS = new Set<string>(LIBRARY_VALIDATION_EVIDENCE_KINDS);
+
+function requiredVerificationModes(
+  value: unknown,
+  objectKey: string,
+): NonNullable<LibraryImportCandidate["verificationModes"]> {
+  const modes = requiredStrictStringArray(value, `candidates.${objectKey}.verificationModes`);
+  if (modes.some((mode) => !IMPORT_VERIFICATION_MODES.has(mode))) {
+    throw new Error(`library import evaluator ${objectKey} has invalid verificationModes`);
+  }
+  return modes as NonNullable<LibraryImportCandidate["verificationModes"]>;
+}
+
+function requiredVerificationProcedures(
+  value: unknown[],
+  objectKey: string,
+): NonNullable<LibraryImportCandidate["verificationProcedures"]> {
+  if (value.length === 0) throw new Error(`library import evaluator ${objectKey} has no verificationProcedures`);
+  const seen = new Set<string>();
+  return value.map((item, index) => {
+    const procedure = asRecord(item);
+    const unsupported = Object.keys(procedure).filter((key) => !["id", "checkKind", "allowedEvidenceKinds"].includes(key));
+    if (unsupported.length > 0) {
+      throw new Error(`library import evaluator ${objectKey} procedure ${index} contains unsupported fields: ${unsupported.join(", ")}`);
+    }
+    const id = requiredString(procedure.id, `candidates.${objectKey}.verificationProcedures.${index}.id`);
+    if (seen.has(id)) throw new Error(`library import evaluator ${objectKey} has duplicate verification procedure id: ${id}`);
+    seen.add(id);
+    const checkKind = requiredString(procedure.checkKind, `candidates.${objectKey}.verificationProcedures.${index}.checkKind`);
+    if (!IMPORT_VERIFICATION_MODES.has(checkKind)) {
+      throw new Error(`library import evaluator ${objectKey} procedure ${id} has invalid checkKind`);
+    }
+    const allowedEvidenceKinds = requiredStrictStringArray(
+      procedure.allowedEvidenceKinds,
+      `candidates.${objectKey}.verificationProcedures.${index}.allowedEvidenceKinds`,
+    );
+    return {
+      id,
+      checkKind: checkKind as NonNullable<LibraryImportCandidate["verificationProcedures"]>[number]["checkKind"],
+      allowedEvidenceKinds,
+    };
+  });
+}
+
+function assertCompleteValidationCandidate(candidate: LibraryImportCandidate): void {
+  if (candidate.kind === "artifact" && (
+    !candidate.artifactType || !candidate.schemaRef || !candidate.evidenceKinds?.length
+    || !candidate.validationRules?.length || !candidate.requiredFields?.length
+  )) {
+    throw new Error(`library import artifact ${candidate.objectKey} is missing its complete validation contract`);
+  }
+  if (candidate.kind === "evaluator" && (
+    !candidate.validatesArtifactRefs?.length || !candidate.evidenceKinds?.length || !candidate.verificationModes?.length
+    || !candidate.verificationProcedures?.length || candidate.independencePolicy !== "independent"
+    || !candidate.resultSchemaRef || !candidate.failureClassifications?.length
+  )) {
+    throw new Error(`library import evaluator ${candidate.objectKey} is missing its complete evaluator contract`);
+  }
+  if (candidate.evidenceKinds?.some((kind) => !IMPORT_EVIDENCE_KINDS.has(kind))) {
+    throw new Error(`library import candidate ${candidate.objectKey} has unsupported evidenceKinds`);
+  }
+  if (candidate.kind === "evaluator") {
+    if (candidate.validatesArtifactRefs?.some((ref) => !ref.startsWith("artifact."))) {
+      throw new Error(`library import evaluator ${candidate.objectKey} has invalid validatesArtifactRefs`);
+    }
+    for (const procedure of candidate.verificationProcedures ?? []) {
+      if (!candidate.verificationModes?.includes(procedure.checkKind)
+        || procedure.allowedEvidenceKinds.some((kind) => !IMPORT_EVIDENCE_KINDS.has(kind) || !candidate.evidenceKinds?.includes(kind))) {
+        throw new Error(`library import evaluator ${candidate.objectKey} procedure ${procedure.id} is incompatible with its declared modes or evidence`);
+      }
+    }
+  }
+}
+
+const IMPORT_CANDIDATE_COMMON_FIELDS = [
+  "objectKey", "kind", "title", "scope", "domain", "displayDomain", "classificationReason", "sourcePath",
+  "selectedByDefault", "confidence",
+];
+const IMPORT_CANDIDATE_KIND_FIELDS: Record<LibraryImportCandidateKind, string[]> = {
+  agent: [],
+  skill: [],
+  mcp: [],
+  tool: [],
+  domain: ["aliases"],
+  capability: ["description", "requiredOperations"],
+  artifact: ["artifactType", "evidenceKinds", "validationRules", "schemaRef", "requiredFields"],
+  evaluator: [
+    "validatesArtifactRefs", "evidenceKinds", "verificationModes", "verificationProcedures",
+    "independencePolicy", "resultSchemaRef", "failureClassifications",
+  ],
+};
+
+function assertImportCandidateRecordKeys(
+  record: Record<string, unknown>,
+  kind: LibraryImportCandidateKind,
+  objectKey: string,
+): void {
+  const allowed = new Set([...IMPORT_CANDIDATE_COMMON_FIELDS, ...IMPORT_CANDIDATE_KIND_FIELDS[kind]]);
+  const unsupported = Object.keys(record).filter((key) => !allowed.has(key));
+  if (unsupported.length > 0) {
+    throw new Error(`library import ${kind} candidate ${objectKey} contains unsupported fields: ${unsupported.join(", ")}`);
+  }
+}
+
+function requiredBoolean(value: unknown, label: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`${label} must be a boolean`);
+  return value;
+}
+
+function optionalConfidence(value: unknown, label: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value > 1) {
+    throw new Error(`${label} must be a number between 0 and 1`);
+  }
+  return value;
+}
+
+function optionalStrictString(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${label} must be a non-empty string`);
+  return value;
+}
+
+function optionalStrictStringArray(value: unknown, label: string): string[] | undefined {
+  return value === undefined ? undefined : requiredStrictStringArray(value, label);
+}
+
+function requiredStrictStringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.length === 0
+    || value.some((item) => typeof item !== "string" || item.trim().length === 0)) {
+    throw new Error(`${label} must be a non-empty array of non-empty strings`);
+  }
+  return [...new Set(value as string[])];
+}
+
 function stringArray(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((item) => typeof item === "string" && item.length > 0 ? [item] : []);
+}
+
+function positiveInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
 async function libraryFileExists(root: string, relativePath: string): Promise<boolean> {
