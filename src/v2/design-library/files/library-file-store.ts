@@ -1,12 +1,7 @@
 import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
-import {
-  catalogDomainTitle,
-  isCatalogCanonicalDomain,
-  type CatalogCanonicalDomain,
-  CATALOG_CANONICAL_DOMAINS,
-} from "../canonical-domains.ts";
+import { isCatalogCanonicalDomain } from "../canonical-domains.ts";
 import {
   createLibraryObject,
   deactivateLibraryEdgesForSourceExcept,
@@ -163,6 +158,7 @@ export async function syncLibraryFileRecordToGraph(
         state: { ...projection.object.state, status: existing.status },
       }
     : projection.object;
+  await assertReferencedLibraryObjectsExist(db, projection);
   const object = await upsertLibraryObject(db, objectInput);
   await deactivateLibraryEdgesForSourceExcept(db, {
     fromObjectKey: projection.object.objectKey,
@@ -171,7 +167,6 @@ export async function syncLibraryFileRecordToGraph(
   });
   const edges = [];
   for (const edge of projection.edges) {
-    await ensureReferencedObject(db, edge.toObjectKey, edge.scope);
     edges.push(await upsertLibraryEdge(db, { ...edge, status: "active", weight: 1 }));
   }
   return { object, edges };
@@ -183,6 +178,9 @@ export async function syncNewLibraryFileRecordsToGraph(db: SouthstarDb, files: L
     return { file, projection: projectLibraryFileToGraph(file) };
   });
   const importedKeys = new Set(projections.map(({ projection }) => projection.object.objectKey));
+  for (const { projection } of projections) {
+    await assertReferencedLibraryObjectsExist(db, projection, importedKeys);
+  }
   const objects = [];
   for (const { projection } of projections) {
     objects.push(await createLibraryObject(db, projection.object));
@@ -197,9 +195,6 @@ export async function syncNewLibraryFileRecordsToGraph(db: SouthstarDb, files: L
     });
     const edges = [];
     for (const edge of projection.edges) {
-      if (!importedKeys.has(edge.toObjectKey)) {
-        await ensureReferencedObject(db, edge.toObjectKey, edge.scope);
-      }
       edges.push(await upsertLibraryEdge(db, { ...edge, status: "active", weight: 1 }));
     }
     const object = objects.find((candidate) => candidate.objectKey === projection.object.objectKey);
@@ -231,11 +226,11 @@ export async function syncLibraryFileRecordsToGraphPg(
   input: LibraryGraphSyncInput,
 ): Promise<LibraryGraphSyncResult> {
   const all = [
-    ...input.executable.map((file) => ({ file, forcedStatus: "approved" as const })),
-    ...input.nonExecutable.map(({ file, status }) => ({ file, forcedStatus: status })),
+    ...input.executable.map((file) => ({ file, forcedStatus: "approved" as const, reason: undefined })),
+    ...input.nonExecutable.map(({ file, status, reason }) => ({ file, forcedStatus: status, reason })),
   ];
-  const projections = all.map(({ file, forcedStatus }) => {
-    validateLibraryFileGraphReferences(file);
+  const projections = all.map(({ file, forcedStatus, reason }) => {
+    if (forcedStatus === "approved") validateLibraryFileGraphReferences(file);
     const projection = projectLibraryFileToGraph(file);
     return {
       file,
@@ -244,7 +239,12 @@ export async function syncLibraryFileRecordsToGraphPg(
         object: {
           ...projection.object,
           status: forcedStatus,
-          state: { ...projection.object.state, status: forcedStatus, declaredStatus: file.status },
+          state: {
+            ...projection.object.state,
+            status: forcedStatus,
+            declaredStatus: file.status,
+            ...(reason ? { reconcileReason: reason } : {}),
+          },
         },
       },
     };
@@ -374,77 +374,33 @@ function edge(
   };
 }
 
-async function ensureReferencedObject(db: SouthstarDb, objectKey: string, scope: string): Promise<void> {
-  const existing = await findLibraryObjectByKey(db, objectKey);
-  if (existing) return;
-
-  try {
-    const domain = catalogDomainFromObjectKey(objectKey);
-    if (domain) {
-      await createLibraryObject(db, {
-        objectKey,
-        objectKind: "domain_taxonomy",
-        status: "approved",
-        headVersionId: `${objectKey}@catalog-v1`,
-        state: {
-          title: domain.title,
-          scope: domain.key,
-          domainKey: domain.key,
-          source: "catalog-canonical-domain",
-          sourcePathPrefixes: domain.sourcePathPrefixes,
-        },
-      });
-      return;
-    }
-
-    await createLibraryObject(db, {
-      objectKey,
-      objectKind: inferObjectKind(objectKey),
-      status: "draft",
-      headVersionId: `${objectKey}@placeholder`,
-      state: {
-        title: objectKey,
-        scope,
-        source: "library-file-sync-placeholder",
-      },
-    });
-  } catch (error: unknown) {
-    if ((error as Error).message === `library object already exists: ${objectKey}`) return;
-    throw error;
-  }
-}
-
-function inferObjectKind(objectKey: string): LibraryDefinitionKind {
-  if (objectKey.startsWith("agent.")) return "agent_definition";
-  if (objectKey.startsWith("artifact.")) return "artifact_contract";
-  if (objectKey.startsWith("capability.")) return "capability_spec";
-  if (objectKey.startsWith("domain.")) return "domain_taxonomy";
-  if (objectKey.startsWith("evaluator.")) return "evaluator_profile";
-  if (objectKey.startsWith("instruction.")) return "instruction_template";
-  if (objectKey.startsWith("mcp.")) return "mcp_tool_grant";
-  if (objectKey.startsWith("profile.")) return "agent_profile";
-  if (objectKey.startsWith("skill.")) return "skill_spec";
-  if (objectKey.startsWith("template.")) return "workflow_template";
-  if (objectKey.startsWith("tool.")) return "tool_definition";
-  if (objectKey.startsWith("vault.")) return "vault_lease_policy";
-  throw new Error(`unsupported referenced object key prefix: ${objectKey}`);
-}
-
 function domainObjectKey(scope: string): string {
   return `domain.${scope}`;
 }
 
-function catalogDomainFromObjectKey(objectKey: string): CatalogCanonicalDomain | undefined {
-  const key = objectKey.startsWith("domain.") ? objectKey.slice("domain.".length) : undefined;
-  if (!isCatalogCanonicalDomain(key)) return undefined;
-  return CATALOG_CANONICAL_DOMAINS.find((domain) => domain.key === key)
-    ?? { key, title: catalogDomainTitle(key) ?? key, sourcePathPrefixes: [] };
-}
-
 function validateReferencedObjects(projection: LibraryFileGraphProjection): void {
   for (const edge of projection.edges) {
-    inferObjectKind(edge.toObjectKey);
+    if (!isKnownLibraryObjectKey(edge.toObjectKey)) {
+      throw new Error(`unsupported referenced object key prefix: ${edge.toObjectKey}`);
+    }
   }
+}
+
+async function assertReferencedLibraryObjectsExist(
+  db: SouthstarDb,
+  projection: LibraryFileGraphProjection,
+  availableKeys: ReadonlySet<string> = new Set(),
+): Promise<void> {
+  for (const edge of projection.edges) {
+    if (edge.toObjectKey === projection.object.objectKey) continue;
+    if (availableKeys.has(edge.toObjectKey)) continue;
+    if (await findLibraryObjectByKey(db, edge.toObjectKey)) continue;
+    throw new Error(`unresolved Library reference ${edge.toObjectKey} from ${projection.object.objectKey}`);
+  }
+}
+
+function isKnownLibraryObjectKey(objectKey: string): boolean {
+  return /^(agent|artifact|capability|domain|evaluator|instruction|mcp|profile|skill|template|tool|vault)\.[^\s.]+(?:[^\s]*)$/.test(objectKey);
 }
 
 async function resolveLibraryPath(input: {

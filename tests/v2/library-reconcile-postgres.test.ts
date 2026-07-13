@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import type { WorkflowRunInput } from "../../src/v2/stores/postgres-runtime-store.ts";
-import { createWorkflowRunPg, getWorkflowRunPg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createWorkflowRunPg, getResourceByKeyPg, getWorkflowRunPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import type { UpsertLibraryObjectInput } from "../../src/v2/design-library/library-graph-store.ts";
 import {
   createLibraryObject,
@@ -94,6 +94,37 @@ test("concurrent reconciles serialize on the advisory transaction lock", async (
     assert.equal(left.snapshotHash, right.snapshotHash);
     const active = await listLibraryEdges(db, { status: "active" });
     assert.equal(new Set(active.map((edge) => edge.id)).size, active.length);
+  });
+});
+
+test("snapshot resources are immutable while current readiness follows the latest reconcile", async () => {
+  await withPostgresTestDb(async (db) => {
+    const firstRoot = await createMinimalReadyLibraryRoot();
+    const secondRoot = await createMinimalReadyLibraryRoot();
+    await reconcileLibraryFilesPg(db, { root: firstRoot, trigger: "startup" });
+    const second = await reconcileLibraryFilesPg(db, { root: secondRoot, trigger: "library_save" });
+
+    const snapshot = await getResourceByKeyPg(db, "library_sync_snapshot", `library-sync:${second.snapshotHash}`);
+    assert.equal((snapshot?.payload as { sourceRoot?: string }).sourceRoot, firstRoot);
+    assert.equal((snapshot?.payload as { trigger?: string }).trigger, "startup");
+    const readiness = await loadLibraryReadinessPg(db);
+    assert.equal(readiness?.sourceRoot, secondRoot);
+    assert.equal(readiness?.trigger, "library_save");
+  });
+});
+
+test("non-executable files with unknown references persist without graph placeholders", async () => {
+  await withPostgresTestDb(async (db) => {
+    const root = await createLibraryRoot({
+      "skills/goal.skill.md": approvedSkill("skill.goal-any", "goal_design"),
+      "skills/composer.skill.md": approvedSkill("skill.composer-any", "composer_guidance"),
+      "skills/draft.skill.md": approvedSkill("skill.draft", "worker", ["mystery.missing"]).replace("status: approved", "status: draft"),
+    });
+    const result = await reconcileLibraryFilesPg(db, { root, trigger: "startup" });
+    assert.equal(result.status, "ready");
+    assert.equal((await findLibraryObjectByKey(db, "skill.draft"))?.status, "draft");
+    assert.equal(await findLibraryObjectByKey(db, "mystery.missing"), null);
+    assert.equal((await listLibraryEdges(db)).filter((edge) => edge.fromObjectKey === "skill.draft").length, 0);
   });
 });
 

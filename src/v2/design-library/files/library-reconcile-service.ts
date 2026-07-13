@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { SouthstarDb } from "../../db/postgres.ts";
-import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../stores/postgres-runtime-store.ts";
+import {
+  getResourceByKeyPg,
+  insertRuntimeResourceIfAbsentPg,
+  upsertRuntimeResourcePg,
+} from "../../stores/postgres-runtime-store.ts";
 import {
   appendLibraryHistoryEvent,
   deactivateOutgoingLibraryEdges,
@@ -341,7 +345,7 @@ export async function reconcileLibraryFilesPg(
       excludedCount: result.excluded.length,
       diagnostics,
     };
-    await upsertRuntimeResourcePg(tx, {
+    await insertRuntimeResourceIfAbsentPg(tx, {
       resourceType: "library_sync_snapshot",
       resourceKey: `library-sync:${hash}`,
       scope: "runtime",

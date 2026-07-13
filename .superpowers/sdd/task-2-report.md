@@ -94,3 +94,67 @@ error: expected HTTP 200, received 400
 ```
 
 These failures are outside the Task 2 files and were present in the shared dirty worktree/runtime environment.
+
+## Follow-up review fixes (after `a48bad9`)
+
+- Added `insertRuntimeResourceIfAbsentPg`, which uses `on conflict do nothing` and then reads the durable row. Reconcile now uses it for immutable `library_sync_snapshot` resources while retaining the upsert path for mutable current readiness.
+- Removed all placeholder and canonical-domain synthesis from `syncLibraryFileRecordToGraph` and `syncNewLibraryFileRecordsToGraph`. Legacy sync now fails with an unresolved-reference diagnostic before writing graph rows; canonical-domain edges require a parsed domain object to have been synced first.
+- Batch sync validates reference prefixes/existence only for executable approved records. Non-executable records can carry missing or unknown refs, are persisted with their requested non-executable status/reason, and receive no active edges.
+- Updated legacy file-store tests to provide real referenced graph objects, require missing-reference failure/no object, and exercise parsed domain-file provenance. Added Postgres regressions for immutable snapshots/current readiness and non-executable unknown refs.
+
+### Follow-up red
+
+Before the fixes, the new regressions failed as expected:
+
+```text
+not ok 6 - snapshot resources are immutable while current readiness follows the latest reconcile
+Expected first sourceRoot, received second sourceRoot (snapshot payload was overwritten)
+
+not ok 7 - non-executable files with unknown references persist without graph placeholders
+error: unsupported referenced object key prefix: mystery.missing
+1..7
+# tests 7
+# pass 5
+# fail 2
+```
+
+### Follow-up green gate
+
+Commands:
+
+```text
+npx tsx --test tests/v2/library-reconcile-service.test.ts tests/v2/library-reconcile-postgres.test.ts tests/v2/library-file-store.test.ts tests/v2/library-graph-store.test.ts
+npx tsc --noEmit --pretty false
+git diff --check
+```
+
+Observed output:
+
+```text
+1..30
+# tests 30
+# pass 30
+# fail 0
+# cancelled 0
+# duration_ms 7163.208451
+
+tsc exit=0
+diff check exit=0
+
+The requested focused reconcile/file-store command was also run after the final edits:
+
+```text
+npx tsx --test tests/v2/library-reconcile-service.test.ts tests/v2/library-reconcile-postgres.test.ts tests/v2/library-file-store.test.ts
+```
+
+```text
+1..27
+# tests 27
+# pass 27
+# fail 0
+# cancelled 0
+# duration_ms 7019.821413
+focused_exit=0
+tsc_exit=0
+diffcheck_exit=0
+```

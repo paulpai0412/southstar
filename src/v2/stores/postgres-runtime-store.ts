@@ -278,6 +278,42 @@ export async function upsertRuntimeResourcePg(db: SouthstarDb, input: RuntimeRes
   return { id };
 }
 
+/**
+ * Insert a resource exactly once and return the durable row that won the
+ * resource key. Unlike upsertRuntimeResourcePg, this helper never updates an
+ * existing payload, making it suitable for immutable snapshot resources.
+ */
+export async function insertRuntimeResourceIfAbsentPg(
+  db: SouthstarDb,
+  input: RuntimeResourceInput,
+): Promise<RuntimeResourceRecord> {
+  await db.query(
+    `insert into southstar.runtime_resources (
+      id, resource_type, resource_key, run_id, task_id, session_id, scope, status,
+      title, payload_json, summary_json, metrics_json, created_at, updated_at, expires_at
+    ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, now(), now(), $13)
+    on conflict(resource_type, resource_key) do nothing`,
+    [
+      input.id ?? randomUUID(),
+      input.resourceType,
+      input.resourceKey,
+      input.runId ?? null,
+      input.taskId ?? null,
+      input.sessionId ?? null,
+      input.scope,
+      input.status,
+      input.title ?? null,
+      JSON.stringify(input.payload),
+      JSON.stringify(input.summary ?? {}),
+      JSON.stringify(input.metrics ?? {}),
+      input.expiresAt ?? null,
+    ],
+  );
+  const resource = await getResourceByKeyPg(db, input.resourceType, input.resourceKey);
+  if (!resource) throw new Error(`runtime resource insert did not produce a row: ${input.resourceType}/${input.resourceKey}`);
+  return resource;
+}
+
 export async function listResourcesPg(db: SouthstarDb, input: { resourceType: string; scope?: string; status?: string }): Promise<RuntimeResourceRecord[]> {
   const rows = await db.query<RuntimeResourceRow>(
     `select * from southstar.runtime_resources

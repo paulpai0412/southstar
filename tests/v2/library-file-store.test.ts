@@ -52,6 +52,21 @@ Builds React interfaces.
     assert.equal(read.parsed.file.path, "library/agents/frontend-developer.agent.md");
     assert.equal(read.parsed.file.objectKind, "agent_definition");
 
+    await upsertLibraryObject(db, {
+      objectKey: "capability.react-ui",
+      objectKind: "capability_spec",
+      status: "approved",
+      headVersionId: "capability.react-ui@test",
+      state: { scope: "software" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "tool.workspace-read",
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: "tool.workspace-read@test",
+      state: { scope: "software" },
+    });
+
     const synced = await syncLibraryFileToGraph(db, { root, relativePath: "agents/frontend-developer.agent.md" });
     assert.equal(synced.object.objectKey, "agent.frontend-developer");
 
@@ -158,6 +173,13 @@ status: draft
 # Identity
 `;
 
+    await upsertLibraryObject(db, {
+      objectKey: "capability.old",
+      objectKind: "capability_spec",
+      status: "approved",
+      headVersionId: "capability.old@test",
+      state: { scope: "software" },
+    });
     await writeLibraryFile({ root, relativePath, content: withRef });
     await syncLibraryFileToGraph(db, { root, relativePath });
 
@@ -316,6 +338,27 @@ test("syncs generated profile tool and mcp grant refs but does not infer vault o
   const db = await createTestPostgresDb();
 
   try {
+    await upsertLibraryObject(db, {
+      objectKey: "agent.frontend-developer",
+      objectKind: "agent_definition",
+      status: "approved",
+      headVersionId: "agent.frontend-developer@test",
+      state: { scope: "software" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "tool.workspace-write",
+      objectKind: "tool_definition",
+      status: "approved",
+      headVersionId: "tool.workspace-write@test",
+      state: { scope: "software" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "mcp.filesystem-workspace",
+      objectKind: "mcp_tool_grant",
+      status: "approved",
+      headVersionId: "mcp.filesystem-workspace@test",
+      state: { scope: "software" },
+    });
     await writeLibraryFile({
       root,
       relativePath: "profiles/todo-implement-ui.profile.yaml",
@@ -372,6 +415,17 @@ test("sync projects catalog domain membership edges for agent files", async () =
   try {
     await writeLibraryFile({
       root,
+      relativePath: "domains/marketing.domain.yaml",
+      content: `schemaVersion: southstar.library.domain_taxonomy_file.v1
+id: domain.marketing
+title: Marketing
+scope: marketing
+status: approved
+`,
+    });
+    await syncLibraryFileToGraph(db, { root, relativePath: "domains/marketing.domain.yaml" });
+    await writeLibraryFile({
+      root,
       relativePath: "agents/marketing-seo-specialist.agent.md",
       content: `---
 schemaVersion: southstar.library.agent_definition_file.v1
@@ -407,7 +461,7 @@ Plans organic search programs.
   }
 });
 
-test("creates identifiable placeholders for missing refs and lets real upserts replace them", async () => {
+test("rejects missing refs without writing source or placeholder graph rows", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
   const db = await createTestPostgresDb();
 
@@ -429,30 +483,19 @@ allowedToolRefs:
 `,
     });
 
-    await syncLibraryFileToGraph(db, { root, relativePath: "agents/frontend-developer.agent.md" });
-
-    const placeholder = await findLibraryObjectByKey(db, "tool.workspace-read");
-    assert.equal(placeholder?.objectKind, "tool_definition");
-    assert.equal(placeholder?.status, "draft");
-    assert.equal(placeholder?.state.source, "library-file-sync-placeholder");
-
-    await upsertLibraryObject(db, {
-      objectKey: "tool.workspace-read",
-      objectKind: "tool_definition",
-      status: "approved",
-      state: { title: "Workspace Read", scope: "software", source: "seed" },
-    });
-
-    const replaced = await findLibraryObjectByKey(db, "tool.workspace-read");
-    assert.equal(replaced?.status, "approved");
-    assert.equal(replaced?.state.source, "seed");
+    await assert.rejects(
+      syncLibraryFileToGraph(db, { root, relativePath: "agents/frontend-developer.agent.md" }),
+      /unresolved Library reference tool\.workspace-read from agent\.frontend-developer/,
+    );
+    assert.equal(await findLibraryObjectByKey(db, "agent.frontend-developer"), null);
+    assert.equal(await findLibraryObjectByKey(db, "tool.workspace-read"), null);
   } finally {
     await db.close();
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("placeholder creation does not downgrade existing referenced objects", async () => {
+test("existing referenced objects are not mutated by file sync", async () => {
   const root = await mkdtemp(join(tmpdir(), "southstar-library-"));
   const db = await createTestPostgresDb();
 
