@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
@@ -273,6 +273,55 @@ test("replace publication rollback preserves an in-place operator edit and immut
     );
     await publication.rollbackPublished();
     assert.equal(await readFile(join(root, relativePath), "utf8"), operatorContent);
+  } finally {
+    await publication.discard();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("create publication rollback preserves an identical atomic operator replacement", async () => {
+  const root = await createMinimalReadyLibraryRoot();
+  const relativePath = "skills/operator-create-atomic.skill.md";
+  const targetPath = join(root, relativePath);
+  const replacementPath = join(root, "skills/.operator-create-atomic.tmp");
+  const publishedContent = approvedSkill("skill.operator-create-atomic", "general", [], "Published content");
+  const publication = await prepareLibraryFilePublication({
+    root,
+    identity: { kind: "library_file_patch", relativePath },
+    files: [{ relativePath, content: publishedContent, mode: "create" }],
+  });
+  try {
+    await publication.publish();
+    await writeFile(replacementPath, publishedContent);
+    await rename(replacementPath, targetPath);
+
+    await publication.rollbackPublished();
+    assert.equal(await readFile(targetPath, "utf8"), publishedContent);
+  } finally {
+    await publication.discard();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("replace publication rollback preserves an identical atomic operator replacement", async () => {
+  const root = await createMinimalReadyLibraryRoot();
+  const relativePath = "skills/goal.skill.md";
+  const targetPath = join(root, relativePath);
+  const replacementPath = join(root, "skills/.goal-atomic.tmp");
+  const originalContent = await readFile(targetPath, "utf8");
+  const publishedContent = approvedSkill("skill.goal-any", "goal_design", [], "Published replacement");
+  const publication = await prepareLibraryFilePublication({
+    root,
+    identity: { kind: "library_file_patch", relativePath },
+    files: [{ relativePath, content: publishedContent, mode: "replace", expectedContent: originalContent }],
+  });
+  try {
+    await publication.publish();
+    await writeFile(replacementPath, publishedContent);
+    await rename(replacementPath, targetPath);
+
+    await publication.rollbackPublished();
+    assert.equal(await readFile(targetPath, "utf8"), publishedContent);
   } finally {
     await publication.discard();
     await rm(root, { recursive: true, force: true });

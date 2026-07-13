@@ -150,6 +150,7 @@ export type LibraryFilePublicationManifest = {
     backupRef: string;
     newHash: string;
     newContentRef: string;
+    ownershipRef: string;
   }>;
 };
 
@@ -194,6 +195,7 @@ export async function prepareLibraryFilePublication(input: {
       const newContentRef = `new/${index}-${basename(file.relativePath)}`;
       const originalContentRef = expectedContent ? `original/${index}-${basename(file.relativePath)}` : undefined;
       const backupRef = `backups/${index}-${basename(file.relativePath)}`;
+      const ownershipRef = `ownership/${index}-${basename(file.relativePath)}`;
       await writeDurableFile(join(preparingRoot, newContentRef), content);
       if (expectedContent && originalContentRef) {
         await writeDurableFile(join(preparingRoot, originalContentRef), expectedContent);
@@ -205,6 +207,7 @@ export async function prepareLibraryFilePublication(input: {
         backupRef,
         newHash: sha256(content),
         newContentRef,
+        ownershipRef,
       });
     }
     await persistLibraryPublicationManifest(preparingRoot, manifest);
@@ -247,14 +250,17 @@ function publicationFromManifest(
     for (const entry of [...entries].reverse()) {
       const targetPath = await livePath(entry.relativePath);
       const live = await optionalFile(targetPath);
+      const stillOwned = live
+        && sha256(live) === entry.newHash
+        && await sameFile(targetPath, join(stagingRoot, entry.ownershipRef));
       if (entry.mode === "create") {
-        if (live && sha256(live) === entry.newHash) {
+        if (stillOwned) {
           await rm(targetPath, { force: true });
           await syncDirectory(dirname(targetPath));
         }
         continue;
       }
-      if (live && sha256(live) !== entry.newHash) continue;
+      if (live && !stillOwned) continue;
       if (!entry.originalContentRef) throw new Error(`publication original content is missing: ${entry.relativePath}`);
       await replaceTargetFromRef(join(stagingRoot, entry.originalContentRef), targetPath, manifest.publicationId);
     }
@@ -284,10 +290,20 @@ function publicationFromManifest(
             await syncDirectory(dirname(backupPath));
           }
           if (entry.mode === "replace") {
-            await replaceTargetFromRef(newContentPath, targetPath, manifest.publicationId);
+            await replaceTargetFromRef(
+              newContentPath,
+              targetPath,
+              manifest.publicationId,
+              join(stagingRoot, entry.ownershipRef),
+            );
           } else {
-            await createTargetFromRef(newContentPath, targetPath, manifest.publicationId);
             touchedEntries.push(entry);
+            await createTargetFromRef(
+              newContentPath,
+              targetPath,
+              manifest.publicationId,
+              join(stagingRoot, entry.ownershipRef),
+            );
           }
         }
         manifest.phase = "published";
@@ -305,7 +321,12 @@ function publicationFromManifest(
         const liveHash = live ? sha256(live) : undefined;
         if (liveHash === entry.newHash) continue;
         if (liveHash !== undefined && liveHash !== entry.expectedOriginalHash) continue;
-        await replaceTargetFromRef(join(stagingRoot, entry.newContentRef), targetPath, manifest.publicationId);
+        await replaceTargetFromRef(
+          join(stagingRoot, entry.newContentRef),
+          targetPath,
+          manifest.publicationId,
+          join(stagingRoot, entry.ownershipRef),
+        );
       }
     },
     async markCommittedOrRecoverable() {
@@ -362,26 +383,55 @@ async function optionalFile(path: string): Promise<Buffer | undefined> {
   });
 }
 
-async function replaceTargetFromRef(ref: string, targetPath: string, publicationId: string): Promise<void> {
+async function sameFile(leftPath: string, rightPath: string): Promise<boolean> {
+  try {
+    const [left, right] = await Promise.all([lstat(leftPath), lstat(rightPath)]);
+    return left.dev === right.dev && left.ino === right.ino;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+async function replaceTargetFromRef(
+  ref: string,
+  targetPath: string,
+  publicationId: string,
+  ownershipPath?: string,
+): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
   const temporary = join(dirname(targetPath), `.${basename(targetPath)}.${publicationId}.tmp`);
   await rm(temporary, { force: true });
   await writeDurableFile(temporary, await readFile(ref));
+  if (ownershipPath) await replaceOwnershipLink(temporary, ownershipPath);
   await rename(temporary, targetPath);
   await syncDirectory(dirname(targetPath));
 }
 
-async function createTargetFromRef(ref: string, targetPath: string, publicationId: string): Promise<void> {
+async function createTargetFromRef(
+  ref: string,
+  targetPath: string,
+  publicationId: string,
+  ownershipPath: string,
+): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
   const temporary = join(dirname(targetPath), `.${basename(targetPath)}.${publicationId}.tmp`);
   await rm(temporary, { force: true });
   await writeDurableFile(temporary, await readFile(ref));
+  await replaceOwnershipLink(temporary, ownershipPath);
   try {
     await link(temporary, targetPath);
     await syncDirectory(dirname(targetPath));
   } finally {
     await rm(temporary, { force: true });
   }
+}
+
+async function replaceOwnershipLink(sourcePath: string, ownershipPath: string): Promise<void> {
+  await mkdir(dirname(ownershipPath), { recursive: true });
+  await rm(ownershipPath, { force: true });
+  await link(sourcePath, ownershipPath);
+  await syncDirectory(dirname(ownershipPath));
 }
 
 function assertLibraryPublicationManifest(
@@ -396,6 +446,7 @@ function assertLibraryPublicationManifest(
     && ["create", "replace"].includes(entry.mode)
     && /^[a-f0-9]{64}$/.test(entry.newHash)
     && isSafeRelativeReference(entry.newContentRef)
+    && isSafeRelativeReference(entry.ownershipRef)
     && isSafeRelativeReference(entry.backupRef)
     && (entry.originalContentRef === undefined || isSafeRelativeReference(entry.originalContentRef))
     && (entry.expectedOriginalHash === undefined || /^[a-f0-9]{64}$/.test(entry.expectedOriginalHash))

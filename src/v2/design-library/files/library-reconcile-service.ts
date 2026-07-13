@@ -289,6 +289,7 @@ export async function commitLibraryFilePublicationPg(
         mode: entry.mode,
         expectedOriginalHash: entry.expectedOriginalHash,
         newHash: entry.newHash,
+        ownershipRef: entry.ownershipRef,
       })),
       committedAt: new Date().toISOString(),
     },
@@ -349,6 +350,7 @@ async function libraryPublicationCommittedPg(
       mode: entry.mode,
       expectedOriginalHash: entry.expectedOriginalHash,
       newHash: entry.newHash,
+      ownershipRef: entry.ownershipRef,
     })),
   };
   if (canonicalJson(committedPublication) !== canonicalJson(expectedPublication)) return false;
