@@ -40,6 +40,7 @@ import {
   reviseGoalSlicePg,
   reviseGoalTemplatePolicyPg,
   confirmGoalRequirementsPg,
+  resolveAndPersistGoalValidationPg,
   reviseGoalRequirementPg,
   reviseGoalRequirementFromChatPg,
   type GoalSlicePatchV1,
@@ -167,11 +168,21 @@ export async function handlePlannerRoute(
   if (request.method === "POST" && goalRequirementConfirmMatch) {
     const body = await readJsonBody<{ expectedDraftHash?: unknown; actor?: unknown }>(request);
     try {
-      return json("goal-requirement-confirmation", await confirmGoalRequirementsPg(context.db, {
+      const confirmed = await confirmGoalRequirementsPg(context.db, {
         draftId: decodeURIComponent(goalRequirementConfirmMatch[1]!),
         expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
         actor: optionalString(body.actor),
         goalInterpreter: resolveGoalInterpreter(context),
+      });
+      if (!context.libraryImportLlmProvider || !confirmed.goalContractHash) {
+        return json("goal-requirement-confirmation", confirmed);
+      }
+      return json("goal-requirement-confirmation", await resolveAndPersistGoalValidationPg(context.db, {
+        draftId: confirmed.draftId,
+        expectedGoalContractHash: confirmed.goalContractHash,
+        libraryImportLlmProvider: context.libraryImportLlmProvider,
+        libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+        actor: optionalString(body.actor),
       }));
     } catch (error) {
       return goalRequirementRevisionErrorResponse(error);

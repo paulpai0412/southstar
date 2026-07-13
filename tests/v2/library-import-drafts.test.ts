@@ -115,6 +115,54 @@ test("createLibraryImportDraft accepts canonical paste source and persists kind-
   }
 });
 
+test("createLibraryImportDraft reuses one host-linked draft for the same Goal validation resolution", async () => {
+  const db = await createTestPostgresDb();
+  let providerCalls = 0;
+  const provider: LibraryImportLlmProvider = async () => {
+    providerCalls += 1;
+    return {
+      candidates: [{
+        objectKey: "artifact.offline-html",
+        kind: "artifact",
+        title: "Offline HTML",
+        scope: "design/article",
+        artifactType: "offline_html",
+        evidenceKinds: ["test-result"],
+        selectedByDefault: true,
+      }],
+    };
+  };
+  const input = {
+    source: { kind: "paste" as const, label: "confirmed validation gaps", content: "gap payload" },
+    scope: "design/article",
+    requestPrompt: "Create only the artifact candidate needed by the confirmed validation gap.",
+    llmProvider: provider,
+    originGoalDraftId: "draft-goal-linked",
+    originGoalContractHash: "a".repeat(64),
+    originGoalRequirementDraftHash: "b".repeat(64),
+    originGoalValidationResolutionHash: "c".repeat(64),
+  };
+
+  try {
+    const first = await createLibraryImportDraft(db, input);
+    const replay = await createLibraryImportDraft(db, input);
+
+    assert.equal(replay.draftId, first.draftId);
+    assert.equal(providerCalls, 1);
+    const resource = await getResourceByKeyPg(db, "library_import_draft", first.draftId);
+    assert.equal((resource?.payload as any).originGoalDraftId, input.originGoalDraftId);
+    assert.equal((resource?.payload as any).originGoalContractHash, input.originGoalContractHash);
+    assert.equal((resource?.payload as any).originGoalRequirementDraftHash, input.originGoalRequirementDraftHash);
+    assert.equal((resource?.payload as any).originGoalValidationResolutionHash, input.originGoalValidationResolutionHash);
+    const count = await db.one<{ count: string }>(
+      "select count(*) from southstar.runtime_resources where resource_type = 'library_import_draft'",
+    );
+    assert.equal(Number(count.count), 1);
+  } finally {
+    await db.close();
+  }
+});
+
 test("extractor accepts canonical github and local import sources", () => {
   assert.deepEqual(asImportSource({
     kind: "github",
@@ -2323,6 +2371,93 @@ test("POST /api/v2/library/import-drafts/:draftId/install installs selected cand
       sessionsEnvelope.result.sessions.map((session: any) => session.id),
       ["pi-agent-ontology-session-1", "pi-agent-candidate-session-1"],
     );
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("linked candidate install stays committed and returns a recoverable Goal resume error", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-goal-resume-error-"));
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "browser skill prompt", content: "create a browser verification skill" },
+      scope: "software",
+      llmProvider: browserSkillImportProvider,
+      originGoalDraftId: "missing-goal-draft",
+      originGoalContractHash: "a".repeat(64),
+      originGoalRequirementDraftHash: "b".repeat(64),
+      originGoalValidationResolutionHash: "c".repeat(64),
+    });
+    const response = await handleRuntimeRoute({
+      db,
+      libraryRoot,
+      libraryImportLlmProvider: browserSkillImportProvider,
+    } as any, new Request(`http://local/api/v2/library/import-drafts/${draft.draftId}/install`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        selectedCandidateIds: ["skill.browser-verification"],
+        actor: "operator",
+        reason: "install before resuming linked Goal",
+      }),
+    }));
+
+    const envelope = await response.json() as any;
+    assert.equal(response.status, 200, JSON.stringify(envelope));
+    assert.equal(envelope.result.status, "installed");
+    assert.equal(envelope.result.installed, true);
+    assert.equal(envelope.result.goalValidationResume.ok, false);
+    assert.equal(envelope.result.goalValidationResume.recoverable, true);
+    assert.equal(envelope.result.goalValidationResume.status, "library_review");
+    assert.match(envelope.result.goalValidationResume.error, /goal_validation_import_stale/);
+    assert.equal((await getResourceByKeyPg(db, "library_import_draft", draft.draftId))?.status, "installed");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("linked candidate install stream emits goal_validation_resumed after committed reconcile", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-goal-resume-stream-"));
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "browser skill prompt", content: "create a browser verification skill" },
+      scope: "software",
+      llmProvider: browserSkillImportProvider,
+      originGoalDraftId: "missing-goal-stream-draft",
+      originGoalContractHash: "d".repeat(64),
+      originGoalRequirementDraftHash: "e".repeat(64),
+      originGoalValidationResolutionHash: "f".repeat(64),
+    });
+    const response = await handleRuntimeRoute({
+      db,
+      libraryRoot,
+      libraryImportLlmProvider: browserSkillImportProvider,
+    } as any, new Request(`http://local/api/v2/library/import-drafts/${draft.draftId}/install/stream`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        selectedCandidateIds: ["skill.browser-verification"],
+        actor: "operator",
+        reason: "install and stream linked Goal resume",
+      }),
+    }));
+
+    assert.equal(response.status, 200);
+    const events = await response.text();
+    assert.match(events, /event: goal_validation_resumed/);
+    assert.match(events, /"recoverable":true/);
+    assert.match(events, /event: library\.command\.completed/);
+    assert.equal((await getResourceByKeyPg(db, "library_import_draft", draft.draftId))?.status, "installed");
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

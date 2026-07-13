@@ -17,7 +17,13 @@ import {
   type LibraryReconcileResult,
 } from "../files/library-reconcile-service.ts";
 import type { LibraryGraphSyncResult } from "../files/library-file-store.ts";
-import { upsertRuntimeResourcePg } from "../../stores/postgres-runtime-store.ts";
+import {
+  getResourceByKeyPg,
+  insertRuntimeResourceIfAbsentPg,
+  upsertRuntimeResourcePg,
+  type RuntimeResourceRecord,
+} from "../../stores/postgres-runtime-store.ts";
+import { contentHashForPayload } from "../canonical-json.ts";
 import type { LibraryImportProposal } from "./library-import-proposal.ts";
 import {
   asImportSource,
@@ -131,8 +137,20 @@ export async function createLibraryImportDraft(
     maxBytes?: number;
     requestPrompt?: string;
     progress?: LibraryImportProgressListener;
+    originGoalDraftId?: string;
+    originGoalContractHash?: string;
+    originGoalRequirementDraftHash?: string;
+    originGoalValidationResolutionHash?: string;
   },
 ): Promise<LibraryImportDraftResult> {
+  const origin = goalValidationImportOrigin(input);
+  const draftId = origin
+    ? `library-import-goal-${contentHashForPayload(origin).slice(0, 32)}`
+    : `library-import-draft-${randomUUID()}`;
+  if (origin) {
+    const existing = await getResourceByKeyPg(db, LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE, draftId);
+    if (existing) return linkedLibraryImportDraftResult(existing, origin);
+  }
   const source = asImportSource(input.source);
   input.progress?.({ event: "library.import.source.started", data: { sourceKind: source.kind } });
   const sourceSnapshot = await fetchLibraryImportSourceSnapshot({
@@ -163,9 +181,8 @@ export async function createLibraryImportDraft(
     event: "library.import.candidates.completed",
     data: { candidateCount: analysis.candidates.length },
   });
-  const draftId = `library-import-draft-${randomUUID()}`;
   const proposal = proposalFromCandidates(draftId, analysis.candidates);
-  await upsertRuntimeResourcePg(db, {
+  const resource = await insertRuntimeResourceIfAbsentPg(db, {
     resourceType: LIBRARY_IMPORT_DRAFT_RESOURCE_TYPE,
     resourceKey: draftId,
     scope: "library",
@@ -183,6 +200,7 @@ export async function createLibraryImportDraft(
       documents,
       candidates: analysis.candidates,
       proposedEdges: analysis.proposedEdges,
+      ...(origin ?? {}),
       ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
     },
     summary: {
@@ -191,18 +209,78 @@ export async function createLibraryImportDraft(
       filePaths: proposal.files.map((file) => file.relativePath),
       candidateKeys: analysis.candidates.map((candidate) => candidate.objectKey),
       proposedEdgeCount: analysis.proposedEdges.length,
+      ...(origin ?? {}),
       ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
       ...(sourceSnapshot.repoPath ? { sourceRepoPath: sourceSnapshot.repoPath } : {}),
     },
   });
+  return origin
+    ? linkedLibraryImportDraftResult(resource, origin)
+    : {
+      draftId,
+      status: "draft",
+      proposal,
+      documents,
+      candidates: analysis.candidates,
+      proposedEdges: analysis.proposedEdges,
+      ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
+    };
+}
+
+type GoalValidationImportOrigin = {
+  originGoalDraftId: string;
+  originGoalContractHash: string;
+  originGoalRequirementDraftHash: string;
+  originGoalValidationResolutionHash: string;
+};
+
+function goalValidationImportOrigin(input: {
+  originGoalDraftId?: string;
+  originGoalContractHash?: string;
+  originGoalRequirementDraftHash?: string;
+  originGoalValidationResolutionHash?: string;
+}): GoalValidationImportOrigin | undefined {
+  const values = [
+    input.originGoalDraftId,
+    input.originGoalContractHash,
+    input.originGoalRequirementDraftHash,
+    input.originGoalValidationResolutionHash,
+  ];
+  if (values.every((value) => value === undefined)) return undefined;
+  if (values.some((value) => typeof value !== "string" || value.trim().length === 0)) {
+    throw new Error("Goal-linked Library import drafts require complete origin metadata");
+  }
   return {
-    draftId,
+    originGoalDraftId: input.originGoalDraftId!,
+    originGoalContractHash: input.originGoalContractHash!,
+    originGoalRequirementDraftHash: input.originGoalRequirementDraftHash!,
+    originGoalValidationResolutionHash: input.originGoalValidationResolutionHash!,
+  };
+}
+
+function linkedLibraryImportDraftResult(
+  resource: RuntimeResourceRecord,
+  origin: GoalValidationImportOrigin,
+): LibraryImportDraftResult {
+  const payload = asRecord(resource.payload);
+  for (const [key, expected] of Object.entries(origin)) {
+    if (payload[key] !== expected) throw new Error(`linked Library import draft origin conflict: ${resource.resourceKey}`);
+  }
+  if (resource.status !== "draft") {
+    throw new Error(`linked Library import draft is ${resource.status}: ${resource.resourceKey}`);
+  }
+  const proposal = payload.proposal;
+  if (!proposal || typeof proposal !== "object" || Array.isArray(proposal)) {
+    throw new Error(`linked Library import draft proposal is missing: ${resource.resourceKey}`);
+  }
+  return {
+    draftId: resource.resourceKey,
     status: "draft",
-    proposal,
-    documents,
-    candidates: analysis.candidates,
-    proposedEdges: analysis.proposedEdges,
-    ...(analysis.piSessionId ? { piSessionId: analysis.piSessionId } : {}),
+    proposal: proposal as LibraryImportProposal,
+    documents: asImportSourceDocuments(payload.documents),
+    candidates: asImportCandidates(payload.candidates),
+    proposedEdges: asImportProposedEdges(payload.proposedEdges),
+    ...(typeof payload.piSessionId === "string" ? { piSessionId: payload.piSessionId } : {}),
   };
 }
 

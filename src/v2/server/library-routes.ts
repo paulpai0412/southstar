@@ -36,6 +36,7 @@ import { listLibraryChatSessionSummariesPg, type LibraryChatAction } from "../re
 import { buildLibraryGraphReadModel } from "../read-models/library-graph.ts";
 import { buildLibraryWorkspaceReadModel } from "../read-models/library-workspace.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
+import { resumeGoalValidationAfterLibraryImportPg } from "../orchestration/goal-design-draft-service.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -147,7 +148,7 @@ export async function handleLibraryRoute(
       actor?: unknown;
       reason?: unknown;
     }>(request);
-    return json("library-import-candidate-install", await installLibraryImportCandidates(context.db, {
+    const installed = await installLibraryImportCandidates(context.db, {
       root: libraryRoot(context),
       draftId: decodeURIComponent(importDraftInstallMatch[1]!),
       selectedCandidateIds: stringArray(body.selectedCandidateIds, "selectedCandidateIds"),
@@ -157,7 +158,8 @@ export async function handleLibraryRoute(
       actor: optionalString(body.actor) ?? "operator",
       reason: requiredNonBlankString(body.reason, "reason"),
       llmProvider: context.libraryImportLlmProvider,
-    }));
+    });
+    return json("library-import-candidate-install", await resumeLinkedGoalValidation(context, installed));
   }
 
   const importDraftInstallStreamMatch = url.pathname.match(/^\/api\/v2\/library\/import-drafts\/([^/]+)\/install\/stream$/);
@@ -1034,7 +1036,9 @@ function libraryImportInstallEventStream(
           edgeIds: installed.graph.edgeIds,
         });
         emit("library.graph.snapshot", await installedImportGraphSnapshot(context, installed));
-        emit("library.command.completed", { draftId: input.draftId, status: "installed" });
+        const result = await resumeLinkedGoalValidation(context, installed);
+        if (result.goalValidationResume) emit("goal_validation_resumed", result.goalValidationResume);
+        emit("library.command.completed", result as unknown as Record<string, unknown>);
       } catch (error) {
         emit("library.error", {
           draftId: input.draftId,
@@ -1065,6 +1069,51 @@ function libraryImportInstallEventStream(
       "access-control-allow-origin": "*",
     },
   });
+}
+
+async function resumeLinkedGoalValidation(
+  context: RuntimeServerContext,
+  installed: Awaited<ReturnType<typeof installLibraryImportCandidates>>,
+): Promise<Awaited<ReturnType<typeof installLibraryImportCandidates>> & {
+  installed: true;
+  goalValidationResume?: Record<string, unknown>;
+}> {
+  const resource = await getResourceByKeyPg(context.db, "library_import_draft", installed.draftId);
+  const payload = asRecord(resource?.payload);
+  if (!optionalString(payload.originGoalDraftId)) return { ...installed, installed: true };
+  try {
+    const resumed = await resumeGoalValidationAfterLibraryImportPg(context.db, {
+      libraryImportDraftId: installed.draftId,
+      libraryImportLlmProvider: context.libraryImportLlmProvider,
+      libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+      actor: optionalString(asRecord(payload.install).actor) ?? "operator",
+    });
+    return {
+      ...installed,
+      installed: true,
+      goalValidationResume: {
+        ok: true,
+        recoverable: false,
+        draftId: resumed.draftId,
+        status: resumed.status,
+        goalDesignPhase: resumed.phase,
+        resolutionHash: resumed.goalValidationResolution.resolutionHash,
+        ...(resumed.libraryImportDraftId ? { libraryImportDraftId: resumed.libraryImportDraftId } : {}),
+      },
+    };
+  } catch (error) {
+    return {
+      ...installed,
+      installed: true,
+      goalValidationResume: {
+        ok: false,
+        recoverable: true,
+        draftId: optionalString(payload.originGoalDraftId),
+        status: "library_review",
+        error: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
 }
 
 async function installedImportGraphSnapshot(
