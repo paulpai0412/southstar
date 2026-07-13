@@ -226,6 +226,10 @@ export function projectLibraryFileToGraph(file: LibraryFileRecord): LibraryFileG
   };
 }
 
+export function libraryFileReferences(file: LibraryFileRecord): string[] {
+  return [...new Set(projectLibraryFileToGraph(file).edges.map((edge) => edge.toObjectKey))].sort();
+}
+
 export function validateLibraryFileGraphReferences(file: LibraryFileRecord): void {
   validateReferencedObjects(projectLibraryFileToGraph(file));
 }

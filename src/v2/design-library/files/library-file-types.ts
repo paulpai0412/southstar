@@ -38,9 +38,14 @@ export type LibraryFileValidationIssue = {
   code: string;
 };
 
+export type LibraryFileParseMetadata = {
+  status?: LibraryFileStatus;
+  objectKey?: string;
+};
+
 export type LibraryFileParseResult =
-  | { ok: true; file: LibraryFileRecord; issues: LibraryFileValidationIssue[] }
-  | { ok: false; issues: LibraryFileValidationIssue[] };
+  | { ok: true; file: LibraryFileRecord; issues: LibraryFileValidationIssue[]; metadata: LibraryFileParseMetadata }
+  | { ok: false; issues: LibraryFileValidationIssue[]; metadata?: LibraryFileParseMetadata };
 
 export type LibraryFileGraphProjection = {
   object: {

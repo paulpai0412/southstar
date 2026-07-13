@@ -122,7 +122,14 @@ export function parseLibraryFileContent(input: { path: string; content: string }
     issues.push(error("status", `status is not supported: ${status}`, "status_unsupported"));
   }
 
-  if (issues.some((issue) => issue.severity === "error")) return { ok: false, issues };
+  const metadata = {
+    status: VALID_STATUSES.has(status as LibraryFileRecord["status"])
+      ? status as LibraryFileRecord["status"]
+      : undefined,
+    objectKey: id || undefined,
+  };
+
+  if (issues.some((issue) => issue.severity === "error")) return { ok: false, issues, metadata };
 
   const definition = { ...parsed.data };
   const file: LibraryFileRecord = {
@@ -141,7 +148,7 @@ export function parseLibraryFileContent(input: { path: string; content: string }
     sourceHash: hash(input.content),
   };
 
-  return { ok: true, file, issues };
+  return { ok: true, file, issues, metadata };
 }
 
 function parseMarkdownWithFrontmatter(content: string): ParsedContent {
