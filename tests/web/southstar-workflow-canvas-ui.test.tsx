@@ -1153,6 +1153,25 @@ test("chat Goal Requirements events replace the AppShell anchor, not only editor
   assert.match(hook, /opts\.onGoalRequirements\?\.\(block\)/);
   assert.match(shell, /onGoalRequirements=\{handleGoalRequirementsContent\}/);
   assert.match(shell, /expectedDraftHash: content\.goalRequirementDraftHash/);
+  assert.match(shell, /currentOverride\.draft\.revision > content\.draft\.revision/);
+  assert.match(shell, /goalRequirementRevisionAnchorRef\.current = next/);
+});
+
+test("AppShell confirmation projection rejects a requirements_review response before mutation", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { goalRequirementsConfirmationFromUnknown } from "./web/components/GoalRequirementListBlock";
+    const draft = ${JSON.stringify(requirementDraftView())};
+    const result = goalRequirementsConfirmationFromUnknown({ result: { draftId: "draft-goal-1", status: "requirements_review", phase: "requirements_review", goalRequirementDraftHash: "hash-1", goalRequirementDraft: draft, confirmable: true, validationIssues: [] } }, { draftId: "draft-goal-1", expectedDraftHash: "hash-1" });
+    createRoot(document.getElementById("root")).render(<div data-testid="guard-result">{result ? "accepted" : "rejected"}</div>);
+  `, async (page) => {
+    assert.equal(await page.locator('[data-testid="guard-result"]').textContent(), "rejected");
+  });
+  const shell = source("web/components/AppShell.tsx");
+  const guard = shell.indexOf("goalRequirementsConfirmationFromUnknown");
+  const mutation = shell.indexOf("setGoalRequirementContentOverride(result)");
+  assert.ok(guard >= 0 && guard < mutation);
 });
 
 test("Requirement editor fails closed on a malformed 2xx PATCH and invalidates the previous hash", async () => {

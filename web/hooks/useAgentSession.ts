@@ -979,6 +979,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           },
           onDraft(draft) {
             if (draft.draftId) appendWorkflowText(`[draft] ${draft.draftId}${draft.status ? ` ${draft.status}` : ""}`);
+            if (draft.status === "requirements_review" && draft.draftId && draft.goalRequirementDraft) {
+              const block = goalRequirementsContentFromUnknown({
+                ...draft,
+                phase: draft.goalDesignPhase ?? draft.status,
+                goalRequirementDraftHash: draft.goalRequirementDraftHash,
+              });
+              if (block) {
+                goalRequirementsBlock = block;
+                opts.onGoalRequirements?.(block);
+                reviewDraftIdentity = {
+                  draftId: block.draftId,
+                  status: block.status,
+                  goalRequirementDraftHash: block.goalRequirementDraftHash,
+                };
+              }
+            }
             if (draft.status === "needs_library_input") {
               for (const gap of draft.vocabularyGaps ?? []) {
                 appendWorkflowText(`[library gap] ${gap.kind}: ${gap.requestedRef}`);

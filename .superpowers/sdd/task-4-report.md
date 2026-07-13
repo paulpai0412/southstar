@@ -62,6 +62,12 @@ Follow-up tests:
 - `npm exec tsc -- --noEmit -p web/tsconfig.json --pretty false`
 - `git diff --check`
 
+## Replay and confirmation guard follow-up
+
+- Replayed requirement submissions now reconstruct and emit the persisted `goal_requirements` block (draft, hash, phase, confirmable, and validation issues) from the durable result. The web receipt has the same fallback, and the workflow session handles a requirements-review draft event without trying to build an empty DAG.
+- AppShell validates the confirmation result's draft identity/hash and post-confirmation phase before mutating the shared content override. A structurally valid `requirements_review` response is rejected before parent state changes.
+- Goal Requirement content updates are monotonic by draft revision, preventing a late lower-revision event from replacing a newer authoritative projection.
+
 ## Reviewer follow-up: rollback race and post-commit progress
 
 Follow-up implementation commit: `6d450fc` (`fix: preserve concurrent library edits on rollback`)

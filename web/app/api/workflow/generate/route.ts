@@ -13,6 +13,10 @@ import type {
 type RunGoalResult = {
   draftId: string;
   draftStatus: string;
+  goalRequirementDraftId?: string;
+  goalRequirementDraftHash?: string;
+  goalDesignPhase?: string;
+  goalRequirementDraft?: Record<string, unknown>;
   goalDesignPackageHash?: string;
   vocabularyGaps?: Array<{ kind: string; requestedRef: string; allowedRefs: string[] }>;
   libraryImportDraftId?: string;
@@ -111,6 +115,7 @@ async function proxyRunGoalStream(
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let sawGoalRequirements = false;
   const dispatch = async (frame: string) => {
     const event = frame.split("\n").find((line) => line.startsWith("event:"))?.slice("event:".length).trim() || "message";
     const rawData = frame
@@ -120,10 +125,11 @@ async function proxyRunGoalStream(
       .join("\n");
     const data = rawData ? JSON.parse(rawData) as Record<string, unknown> : {};
     if (event === "done") {
-      await sendGoalReceipt(data as RunGoalResult, send);
+      await sendGoalReceipt(data as RunGoalResult, send, { includeGoalRequirements: !sawGoalRequirements });
       return;
     }
     if (["message", "message.delta", "planner.stage", "heartbeat", "goal_design", "goal_requirements", "draft", "dag", "execution_set", "error"].includes(event)) {
+      if (event === "goal_requirements") sawGoalRequirements = true;
       send(event, data);
     }
   };
@@ -144,7 +150,11 @@ async function proxyRunGoalStream(
   }
 }
 
-async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerateEvent): Promise<void> {
+async function sendGoalReceipt(
+  result: RunGoalResult,
+  send: SendWorkflowGenerateEvent,
+  options: { includeGoalRequirements?: boolean } = {},
+): Promise<void> {
   send("draft", { draft: {
     draftId: result.draftId,
     status: result.draftStatus,
@@ -154,6 +164,22 @@ async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerate
     confirmable: result.confirmable,
     validationIssues: result.validationIssues,
   } });
+  if (options.includeGoalRequirements && result.draftStatus === "requirements_review" && result.goalRequirementDraft && result.goalRequirementDraftHash) {
+    const requirementReceipt = {
+      draftId: result.goalRequirementDraftId ?? result.draftId,
+      status: result.draftStatus,
+      phase: result.goalDesignPhase ?? result.draftStatus,
+      goalRequirementDraftId: result.goalRequirementDraftId ?? result.draftId,
+      goalRequirementDraftHash: result.goalRequirementDraftHash,
+      goalRequirementDraft: result.goalRequirementDraft,
+      confirmable: result.confirmable === true,
+      validationIssues: result.validationIssues ?? [],
+      blockers: [],
+    };
+    send("goal_requirements", { ...requirementReceipt, package: requirementReceipt });
+    send("done", result);
+    return;
+  }
   if (result.executionSetId) {
     send("execution_set", { executionSetId: result.executionSetId, sliceRuns: result.sliceRuns ?? [] });
     send("done", result);

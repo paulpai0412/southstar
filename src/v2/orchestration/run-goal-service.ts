@@ -37,7 +37,7 @@ import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-ap
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
-import type { GoalRequirementDraftInterpreter, GoalRequirementDraftIssue } from "./goal-requirement-draft.ts";
+import type { GoalRequirementDraftInterpreter, GoalRequirementDraftIssue, GoalRequirementDraftV1 } from "./goal-requirement-draft.ts";
 
 export type RunGoalRequest = {
   goalPrompt: string;
@@ -52,6 +52,7 @@ export type RunGoalResult = {
   goalDesignPackageHash?: string;
   goalRequirementDraftId?: string;
   goalRequirementDraftHash?: string;
+  goalRequirementDraft?: GoalRequirementDraftV1;
   goalDesignPhase?: string;
   goalContractHash: string;
   draftId: string;
@@ -120,7 +121,9 @@ export async function submitClaimedGoalPg(
   claim: GoalSubmissionClaim,
 ): Promise<RunGoalResult> {
   if (claim.result) {
-    for (const stage of claim.stages) context.onStage?.(stage);
+    for (const stage of claim.stages) {
+      context.onStage?.(stage, stage === "requirements.persisted" ? goalRequirementProgressData(claim.result) : undefined);
+    }
     return claim.result;
   }
   if (claim.schedulingRequest) {
@@ -245,6 +248,7 @@ async function submitGoalRequirementDraftPg(
     goalContractHash: "",
     goalRequirementDraftId: draft.draftId,
     goalRequirementDraftHash: draft.goalRequirementDraftHash,
+    goalRequirementDraft: draft.goalRequirementDraft,
     goalDesignPhase: draft.phase,
     draftId: draft.draftId,
     draftStatus: draft.status,
@@ -758,6 +762,27 @@ function fixedGoalInterpreter(goalContract: GoalContractV1): GoalContractInterpr
     async interpret() {
       return goalContract;
     },
+  };
+}
+
+function goalRequirementProgressData(result: RunGoalResult): Record<string, unknown> | undefined {
+  if (!result.goalRequirementDraft || !result.goalRequirementDraftHash || result.draftStatus !== "requirements_review") return undefined;
+  const draftId = result.goalRequirementDraftId ?? result.draftId;
+  const phase = result.goalDesignPhase ?? result.draftStatus;
+  const packageResult = {
+    draftId,
+    status: result.draftStatus,
+    phase,
+    goalRequirementDraftId: draftId,
+    goalRequirementDraft: result.goalRequirementDraft,
+    goalRequirementDraftHash: result.goalRequirementDraftHash,
+    confirmable: result.confirmable === true,
+    validationIssues: result.validationIssues ?? [],
+    blockers: result.blockers,
+  };
+  return {
+    ...packageResult,
+    package: packageResult,
   };
 }
 

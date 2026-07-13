@@ -158,6 +158,77 @@ test("staged run-goal route persists requirement review and confirms with a hash
   }
 });
 
+test("SSE replay re-emits the persisted Goal Requirements block", async () => {
+  const db = await createTestPostgresDb();
+  const cwd = process.cwd();
+  const idempotencyKey = "requirements-sse-replay-1";
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const context = {
+      ...runtimeContext(db, "Create a vocabulary app"),
+      goalRequirementInterpreter: {
+        async interpret() {
+          return finalizeGoalRequirementDraft({
+            goalPrompt: "Create a vocabulary app",
+            cwd,
+            summary: "Create a vocabulary app with a reviewable flow.",
+            requirements: [{
+              title: "Vocabulary review",
+              statement: "A learner can review a vocabulary item.",
+              source: "explicit" as const,
+              blocking: true,
+              userVisibleBehaviors: ["The item and answer are shown."],
+              businessRules: [],
+              acceptanceCriteria: [{ statement: "A vocabulary item can be reviewed.", evidenceIntent: ["browser evidence"] }],
+              expectedOutcomeArtifacts: [{ description: "Vocabulary review UI", mediaType: "text/html" }],
+              verificationIntent: ["Open the app and complete one review."],
+              assumptions: [],
+              openQuestions: [],
+              riskTags: [],
+              interactionContractRefs: [],
+            }],
+            nonGoals: [],
+            blockingInputs: [],
+          });
+        },
+        async revise() {
+          throw new Error("revision not used in replay test");
+        },
+      },
+    };
+    const requestBody = { goalPrompt: "Create a vocabulary app", cwd, idempotencyKey };
+    const first = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/run-goal", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify(requestBody),
+    }));
+    const firstFrames = parseFrames(await first.text());
+    const firstRequirements = firstFrames.find((frame) => frame.event === "goal_requirements")?.data as Record<string, unknown> | undefined;
+    assert.equal(firstRequirements?.status, "requirements_review");
+    assert.equal(firstRequirements?.confirmable, true);
+    assert.deepEqual(firstRequirements?.validationIssues, []);
+    assert.ok(firstRequirements?.goalRequirementDraft);
+    assert.equal(firstFrames.at(-1)?.event, "done");
+
+    const replay = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/run-goal", {
+      method: "POST",
+      headers: { "content-type": "application/json", accept: "text/event-stream" },
+      body: JSON.stringify(requestBody),
+    }));
+    const replayFrames = parseFrames(await replay.text());
+    const replayRequirements = replayFrames.find((frame) => frame.event === "goal_requirements")?.data as Record<string, unknown> | undefined;
+    assert.equal(replayRequirements?.status, "requirements_review");
+    assert.equal(replayRequirements?.goalRequirementDraftHash, firstRequirements?.goalRequirementDraftHash);
+    assert.equal(replayRequirements?.confirmable, true);
+    assert.deepEqual(replayRequirements?.validationIssues, []);
+    assert.deepEqual(replayRequirements?.goalRequirementDraft, firstRequirements?.goalRequirementDraft);
+    assert.equal(replayFrames.at(-1)?.event, "done");
+  } finally {
+    await db.close();
+  }
+});
+
 test("materialization failure rolls back the prepared draft and leaves a retryable submission", async () => {
   const db = await createTestPostgresDb();
   const input = request("Add parser tests", "goal-materialization-retry-1");

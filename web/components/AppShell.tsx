@@ -12,7 +12,7 @@ import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
 import { GoalContractInspector } from "./GoalContractInspector";
 import { GoalSliceEditor } from "./GoalSliceEditor";
 import { GoalRequirementEditor } from "./GoalRequirementEditor";
-import { goalRequirementsContentFromUnknown, type GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
+import { goalRequirementsConfirmationFromUnknown, goalRequirementsContentFromUnknown, type GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
 import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
@@ -220,11 +220,15 @@ export function AppShell() {
   const [goalDesignRevisionAnchor, setGoalDesignRevisionAnchor] = useState<GoalSliceSelection | null>(null);
   const [goalRequirementRevisionAnchor, setGoalRequirementRevisionAnchor] = useState<GoalRequirementSelection | null>(null);
   const [goalRequirementContentOverride, setGoalRequirementContentOverride] = useState<GoalRequirementsContent | null>(null);
+  const goalRequirementRevisionAnchorRef = useRef<GoalRequirementSelection | null>(null);
+  const goalRequirementContentOverrideRef = useRef<GoalRequirementsContent | null>(null);
 
   useEffect(() => {
     setGoalDesignRevisionAnchor(null);
     setGoalRequirementRevisionAnchor(null);
     setGoalRequirementContentOverride(null);
+    goalRequirementRevisionAnchorRef.current = null;
+    goalRequirementContentOverrideRef.current = null;
   }, [selectedSession?.id, workflowSelectedSession?.id, newSessionCwd, workflowNewSessionCwd]);
 
   const handleAtMention = useCallback((relativePath: string) => {
@@ -708,6 +712,8 @@ export function AppShell() {
 
   const handleGoalRequirementSelect = useCallback((selection: GoalRequirementSelection) => {
     setChatWorkspaceSurface("workflow");
+    goalRequirementRevisionAnchorRef.current = selection;
+    goalRequirementContentOverrideRef.current = goalRequirementContentFromSelection(selection);
     setGoalRequirementRevisionAnchor(selection);
     setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
     openSidecarTab({
@@ -721,6 +727,8 @@ export function AppShell() {
   }, [openSidecarTab]);
 
   const handleGoalRequirementChange = useCallback((selection: GoalRequirementSelection) => {
+    goalRequirementRevisionAnchorRef.current = selection;
+    goalRequirementContentOverrideRef.current = goalRequirementContentFromSelection(selection);
     setGoalRequirementRevisionAnchor(selection);
     setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
     setSidecarTabs((current) => current.map((tab) => (
@@ -733,6 +741,8 @@ export function AppShell() {
   }, []);
 
   const handleGoalRequirementInvalidated = useCallback((selection: GoalRequirementSelection) => {
+    goalRequirementRevisionAnchorRef.current = selection;
+    goalRequirementContentOverrideRef.current = goalRequirementContentFromSelection(selection);
     setGoalRequirementRevisionAnchor(selection);
     setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
     setSidecarTabs((current) => current.map((tab) => (
@@ -749,14 +759,23 @@ export function AppShell() {
     // draft id is stable and only the revision hash changes. Clear an older
     // editor projection before applying the new content so the next prompt and
     // confirmation cannot reuse H1.
+    const currentOverride = goalRequirementContentOverrideRef.current;
+    if (
+      currentOverride
+      && currentOverride.draftId === content.draftId
+      && currentOverride.draft.revision > content.draft.revision
+    ) return;
+    goalRequirementContentOverrideRef.current = content;
     setGoalRequirementContentOverride(content);
-    const current = goalRequirementRevisionAnchor;
+    const current = goalRequirementRevisionAnchorRef.current;
     if (!current || current.draftId !== content.draftId) {
+      goalRequirementRevisionAnchorRef.current = null;
       setGoalRequirementRevisionAnchor(null);
       return;
     }
     const requirement = content.draft.requirements.find((item) => item.id === current.requirementId);
     if (!requirement) {
+      goalRequirementRevisionAnchorRef.current = null;
       setGoalRequirementRevisionAnchor(null);
       return;
     }
@@ -769,6 +788,7 @@ export function AppShell() {
       validationIssues: content.validationIssues,
       ...(content.coveragePreview ? { coveragePreview: content.coveragePreview } : {}),
     };
+    goalRequirementRevisionAnchorRef.current = next;
     setGoalRequirementRevisionAnchor(next);
     setSidecarTabs((tabs) => tabs.map((tab) => (
       tab.kind === "goalRequirement"
@@ -777,7 +797,7 @@ export function AppShell() {
         ? { ...tab, goalRequirementSelection: next, refreshKey: (tab.refreshKey ?? 0) + 1 }
         : tab
     )));
-  }, [goalRequirementRevisionAnchor]);
+  }, []);
 
   const handleConfirmRequirements = useCallback(async (confirmation: GoalRequirementsConfirmation): Promise<GoalRequirementsContent | void> => {
     const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(confirmation.draftId)}/confirm-requirements`, {
@@ -787,8 +807,12 @@ export function AppShell() {
     });
     const payload = await response.json().catch(() => undefined) as { result?: unknown; error?: string; message?: string } | undefined;
     if (!response.ok) throw new Error(payload?.error ?? payload?.message ?? `HTTP ${response.status}`);
-    const result = goalRequirementsContentFromUnknown(payload?.result);
+    const result = goalRequirementsConfirmationFromUnknown(payload?.result, {
+      draftId: confirmation.draftId,
+      expectedDraftHash: confirmation.expectedDraftHash,
+    });
     if (!result) throw new Error("Requirement confirmation response did not include a valid goal requirement result.");
+    goalRequirementContentOverrideRef.current = result;
     setGoalRequirementContentOverride(result);
     return result;
   }, []);

@@ -212,6 +212,17 @@ export function goalRequirementsContentFromUnknown(value: unknown): GoalRequirem
   });
 }
 
+export function goalRequirementsConfirmationFromUnknown(
+  value: unknown,
+  expected: { draftId: string; expectedDraftHash: string },
+): GoalRequirementsContent | null {
+  const content = goalRequirementsContentFromUnknown(value);
+  if (!content) return null;
+  if (content.draftId !== expected.draftId || content.goalRequirementDraftHash !== expected.expectedDraftHash) return null;
+  if (content.status !== "validation_resolving" && content.status !== "validation_ready") return null;
+  return content;
+}
+
 function parseDraft(value: Record<string, unknown>): GoalRequirementDraftView | null {
   if (value.schemaVersion !== "southstar.goal_requirement_draft.v1" || typeof value.draftHash !== "string" || !Array.isArray(value.requirements)) return null;
   if (typeof value.revision !== "number" || typeof value.originalPrompt !== "string" || typeof value.summary !== "string") return null;
