@@ -152,6 +152,13 @@ async function evaluateCoveragePg(
       order by created_at, resource_key`,
     [runId],
   )).rows;
+  const completeEvidenceRefs = new Set((await db.query<{ resource_key: string }>(
+    `select resource_key
+       from southstar.runtime_resources
+      where run_id = $1 and resource_type = 'evidence_packet' and status = 'complete'
+      order by resource_key`,
+    [runId],
+  )).rows.map((row) => row.resource_key));
   const coveredRequirementIds: string[] = [];
   const failedRequirementIds: string[] = [];
   const findings: string[] = [];
@@ -174,20 +181,42 @@ async function evaluateCoveragePg(
       && acceptedRefs.length > 0
       && results.some((row) => {
         const payload = asRecord(row.payload_json);
-        return row.status === "passed"
+        const identityMatches = row.status === "passed"
           && row.task_id !== null
           && evaluatorTaskIds.has(row.task_id)
-          && payload.schemaVersion === "southstar.requirement_evaluator_result.v1"
           && payload.verdict === "passed"
           && payload.evaluatorTaskId === row.task_id
-          && stringArray(payload.requirementIds).includes(requirement.id)
           && evaluatorProfiles.has(normalizeRequirementEvidenceRef(stringValue(payload.evaluatorProfileRef) ?? "", "evaluator"))
           && stringArray(payload.artifactRefs).some((ref) => acceptedRefSet.has(ref));
+        if (!identityMatches) return false;
+        if (entry.criterionIds.length === 0) {
+          return payload.schemaVersion === "southstar.requirement_evaluator_result.v1"
+            && stringArray(payload.requirementIds).includes(requirement.id);
+        }
+        if (
+          payload.schemaVersion !== "southstar.requirement_evaluator_result.v2"
+          || payload.requirementId !== requirement.id
+          || payload.validationBindingId !== entry.validationBindingId
+          || payload.evaluatorProfileVersionRef !== entry.evaluatorProfileVersionRefs[0]
+          || !stringArray(payload.evidenceRefs).every((ref) => completeEvidenceRefs.has(ref))
+          || stringArray(payload.evidenceRefs).length === 0
+        ) return false;
+        const criteriaResults = Array.isArray(payload.criteriaResults)
+          ? payload.criteriaResults.map(asRecord)
+          : [];
+        const criterionIds = criteriaResults.map((result) => stringValue(result.criterionId));
+        return criteriaResults.length === entry.criterionIds.length
+          && criterionIds.every((criterionId): criterionId is string => Boolean(criterionId))
+          && new Set(criterionIds).size === criterionIds.length
+          && [...criterionIds].sort().join("\u0000") === [...entry.criterionIds].sort().join("\u0000")
+          && criteriaResults.every((result) => result.verdict === "passed" && stringArray(result.evidenceRefs).length > 0);
       });
     if (passed) coveredRequirementIds.push(requirement.id);
     else {
       failedRequirementIds.push(requirement.id);
-      findings.push(`blocking requirement ${requirement.id} lacks accepted producer artifact and independent passed evaluator evidence`);
+      findings.push(entry.criterionIds.length > 0
+        ? `blocking requirement ${requirement.id} lacks complete passed criterion evidence from the frozen evaluator version`
+        : `blocking requirement ${requirement.id} lacks accepted producer artifact and independent passed evaluator evidence`);
     }
   }
   return {

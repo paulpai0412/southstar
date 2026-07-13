@@ -239,7 +239,7 @@ function renderContextPacketPrompt(
     formatRuntimeGrantContract(input),
     formatArtifactContracts(input.artifactContracts),
     "",
-    `Evaluator pipeline: ${input.evaluatorPipeline.id}`,
+    formatEvaluatorPipelineContract(input.evaluatorPipeline),
     `Forbidden actions: ${packet.forbiddenActions.length > 0 ? packet.forbiddenActions.join(", ") : "none"}`,
     "Return exactly one JSON object with keys: artifact, progress, metrics.",
   ].filter((line) => line !== "").join("\n");
@@ -368,38 +368,79 @@ function formatArtifactContracts(contracts: ArtifactContract[]): string {
     "",
     "Artifact contracts:",
     ...contracts.flatMap((contract) => {
-      const rules = contractSpecificOutputRules(contract.id);
+      const rules = contractSpecificOutputRules(contract);
       return [
         `- ${contract.id}: ${contract.artifactType}; required fields: ${contract.requiredFields.join(", ")}`,
+        ...(contract.evidenceKinds?.length ? [`  - evidenceKinds allowed values: ${contract.evidenceKinds.join(", ")}.`] : []),
+        ...(contract.validationRules?.map((rule) => `  - validation rule: ${rule}`) ?? []),
         ...rules.map((rule) => `  - ${rule}`),
       ];
     }),
   ].join("\n");
 }
 
-function contractSpecificOutputRules(contractId: string): string[] {
-  if (contractId === "implementation_report" || contractId === "verification_report") {
-    return [
-      "pass and safeToSave, when present, must be booleans: true or false.",
+function contractSpecificOutputRules(contract: ArtifactContract): string[] {
+  const fields = new Set([...contract.requiredFields, ...contract.evidenceFields]);
+  const evidenceKinds = new Set(contract.evidenceKinds ?? []);
+  const rules: string[] = [];
+  if (fields.has("pass") || fields.has("safeToSave")) {
+    rules.push("pass and safeToSave, when present, must be booleans: true or false.");
+  }
+  if (fields.has("commandsRun") || evidenceKinds.has("command-output")) {
+    rules.push(
       "commandsRun must be an array of executed command result objects, not bare strings.",
       "commandsRun.status allowed values: passed, failed, blocked.",
       `commandsRun item schema: {"command": "npm test" or ["npm","test"], "status": "passed", "exitCode": 0, "output": "bounded relevant output"}.`,
       "Each commandsRun item must include status or exitCode; command records without an outcome do not satisfy command-output evidence.",
       "exitCode must be an integer; use 0 for success and non-zero for failed command execution.",
+    );
+  }
+  if (fields.has("testResults") || evidenceKinds.has("test-result")) {
+    rules.push(
       "testResults.status allowed values: passed, failed, failed_non_gating, blocked, not-verified, not-run, skipped, pass_with_environment_gap.",
       "gating allowed values: blocking, non-gating.",
       "when status is failed/blocked/not-verified/not-run, include gating: blocking or non-gating.",
-      ...(contractId === "verification_report"
-        ? ["verifiedArtifactRefs must be an array of exact upstream ArtifactRef values evaluated by this verifier."]
-        : []),
+    );
+  }
+  if (fields.has("verifiedArtifactRefs") || evidenceKinds.has("artifact-ref")) {
+    rules.push("verifiedArtifactRefs must be an array of exact upstream ArtifactRef values evaluated by this verifier.");
+  }
+  if (fields.has("remainingFailures")) {
+    rules.push(
       "remainingFailures, when present, must be an array; use [] only when every blocking check passed.",
-    ];
+    );
   }
-  if (contractId === "completion_report") {
-    return [
-      "tests must summarize executed test evidence (array of strings or structured entries).",
+  if (fields.has("tests")) {
+    rules.push("tests must summarize executed test evidence (array of strings or structured entries).");
+  }
+  if (fields.has("acceptedArtifacts")) {
+    rules.push(
       "acceptedArtifacts must reference upstream artifact IDs or requirements.",
-    ];
+    );
   }
-  return [];
+  return [...new Set(rules)];
+}
+
+function formatEvaluatorPipelineContract(pipeline: EvaluatorPipelineDefinition): string {
+  const criterionSteps = pipeline.evaluators
+    .map((step) => ({ step, config: step.config as Record<string, unknown> }))
+    .filter(({ config }) => typeof config.criterionId === "string" && config.criterionId.length > 0);
+  if (criterionSteps.length === 0) return `Evaluator pipeline: ${pipeline.id}`;
+  return [
+    `Evaluator pipeline: ${pipeline.id}`,
+    `Evaluator profile ref: ${pipeline.libraryObjectRef ?? pipeline.id}`,
+    `Evaluator profile version: ${pipeline.libraryVersionRef ?? "missing"}`,
+    "Criterion result contract:",
+    "- artifact.criteriaResults is required and must contain exactly one item for every criterion listed below.",
+    "- item schema: {\"criterionId\":\"...\",\"verdict\":\"passed|failed|blocked\",\"evidenceRefs\":[\"explicit-ref\"],\"findings\":[\"...\"]}.",
+    "- verdict allowed values are passed, failed, blocked. Do not emit any other value.",
+    "- evidenceRefs must point to explicit ref/evidenceRef/artifactRef/id/resourceKey/path/url values in the returned artifact evidence fields.",
+    "- an overall artifact verdict/pass flag is advisory only; Southstar computes the final verdict from every criterion and validated evidence.",
+    ...criterionSteps.map(({ config }) => {
+      const kinds = Array.isArray(config.expectedEvidenceKinds)
+        ? config.expectedEvidenceKinds.filter((value): value is string => typeof value === "string")
+        : [];
+      return `- ${String(config.criterionId)}: ${String(config.acceptanceCriterion ?? "")}; required evidence kinds: ${kinds.join(", ")}.`;
+    }),
+  ].join("\n");
 }

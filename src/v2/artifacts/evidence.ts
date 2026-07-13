@@ -15,6 +15,11 @@ export type BuildEvidencePacketInput = {
   now?: string;
 };
 
+export type ArtifactEvidenceClaim = {
+  ref: string;
+  kind: EvidenceKind;
+};
+
 export function buildEvidencePacket(input: BuildEvidencePacketInput): EvidencePacket {
   const now = input.now ?? new Date().toISOString();
   const requiredKinds = [...new Set(input.requiredEvidenceKinds)];
@@ -50,6 +55,54 @@ export function screenshotEvidenceRef(artifact: Record<string, unknown>, runId: 
     firstArrayItem(artifact.screenshots),
     artifact.screenshot,
   ), runId);
+}
+
+/**
+ * Extracts explicit, worker-authored evidence references without treating prose as evidence.
+ * Criterion results may only cite one of these references, and the matching EvidencePacket
+ * item must still pass host validation.
+ */
+export function artifactEvidenceClaims(
+  artifact: Record<string, unknown>,
+  runId: string,
+): ArtifactEvidenceClaim[] {
+  const claims: ArtifactEvidenceClaim[] = [];
+  const push = (kind: EvidenceKind, ref: unknown) => {
+    const value = explicitEvidenceRef(ref);
+    if (value) claims.push({ kind, ref: value });
+  };
+  for (const ref of extractArtifactRefs(artifact.acceptedArtifacts)) push("artifact-ref", ref);
+  for (const ref of extractArtifactRefs(artifact.verifiedArtifactRefs)) push("artifact-ref", ref);
+  for (const ref of extractArtifactRefs(artifact.artifactRefs)) push("artifact-ref", ref);
+  for (const item of arrayOrSingle(artifact.testResults)) push("test-result", item);
+  for (const item of arrayOrSingle(artifact.tests)) push("test-result", item);
+  for (const item of arrayOrSingle(artifact.commandsRun)) push("command-output", item);
+  for (const item of arrayOrSingle(artifact.filesChanged)) push("file-diff", item);
+  for (const item of arrayOrSingle(artifact.filesToInspect)) push("workspace-snapshot", item);
+  for (const item of arrayOrSingle(artifact.approvals)) push("human-approval", item);
+  for (const item of arrayOrSingle(artifact.policyDecisions)) push("policy-decision", item);
+
+  const browserEvidence = isRecord(artifact.browserEvidence) ? artifact.browserEvidence : {};
+  for (const item of [
+    ...arrayOrSingle(browserEvidence.urls),
+    ...arrayOrSingle(browserEvidence.url),
+    ...arrayOrSingle(artifact.urls),
+    ...arrayOrSingle(artifact.url),
+  ]) {
+    const url = safeHttpUrl(isRecord(item) ? firstDefined(item.ref, item.url) : item);
+    if (url) claims.push({ kind: "url", ref: url });
+  }
+  for (const item of [
+    ...arrayOrSingle(browserEvidence.screenshots),
+    ...arrayOrSingle(browserEvidence.screenshot),
+    ...arrayOrSingle(artifact.screenshots),
+    ...arrayOrSingle(artifact.screenshot),
+  ]) {
+    const screenshot = safeScreenshotRef(item, runId);
+    if (screenshot) claims.push({ kind: "screenshot", ref: screenshot });
+  }
+  return [...new Map(claims.map((claim) => [`${claim.kind}\u0000${claim.ref}`, claim])).values()]
+    .sort((left, right) => left.kind.localeCompare(right.kind) || left.ref.localeCompare(right.ref));
 }
 
 function evidenceByKind(
@@ -183,6 +236,19 @@ function firstDefined(...values: unknown[]): unknown {
 
 function firstArrayItem(value: unknown): unknown {
   return Array.isArray(value) ? value[0] : undefined;
+}
+
+function arrayOrSingle(value: unknown): unknown[] {
+  if (value === undefined || value === null) return [];
+  return Array.isArray(value) ? value : [value];
+}
+
+function explicitEvidenceRef(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (!isRecord(value)) return undefined;
+  return ["evidenceRef", "artifactRef", "ref", "id", "resourceKey", "path", "url"]
+    .map((key) => value[key])
+    .find((candidate): candidate is string => typeof candidate === "string" && candidate.length > 0);
 }
 
 function safeHttpUrl(value: unknown): string | undefined {

@@ -57,6 +57,54 @@ test("completion cannot satisfy an uncovered blocking requirement", async () => 
   }
 });
 
+test("completion requires every frozen V2 criterion and evaluator profile version to pass", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRunV2(db, "run-criterion-covered");
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "satisfied");
+    assert.deepEqual((await goalOutcome(db, runId)).payload_json.coveredRequirementIds, ["req-blocking"]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion rejects a V2 overall passed result with a missing frozen criterion", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRunV2(db, "run-criterion-missing", { omitCriterion: true });
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "unsatisfied");
+    assert.match(result.findings.join("\n"), /complete passed criterion evidence/);
+  } finally {
+    await db.close();
+  }
+});
+
+test("completion rejects a passed V2 result from a different evaluator profile version", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    const { runId } = await seedCoveredGoalRunV2(db, "run-criterion-stale-evaluator");
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(payload_json, '{evaluatorProfileVersionRef}', to_jsonb('evaluator.independent@stale'::text))
+        where run_id = $1 and resource_type = 'requirement_evaluator_result'`,
+      [runId],
+    );
+
+    const result = await evaluateRunCompletionGatePg(db, { runId });
+
+    assert.equal(result.outcomeStatus, "unsatisfied");
+    assert.match(result.findings.join("\n"), /frozen evaluator version/);
+  } finally {
+    await db.close();
+  }
+});
+
 test("optional requirements do not block a satisfied goal outcome", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -493,6 +541,7 @@ async function seedCoveredGoalRun(
     acceptanceCriteria: ["The produced artifact is independently verified"],
     blocking: true,
     source: "explicit",
+    expectedArtifacts: [],
   }];
   if (options.includeOptionalRequirement) {
     requirements.push({
@@ -501,6 +550,7 @@ async function seedCoveredGoalRun(
       acceptanceCriteria: ["Optional polish may be deferred"],
       blocking: false,
       source: "inferred",
+      expectedArtifacts: [],
     });
   }
   const goalContract: GoalContractV1 = {
@@ -511,6 +561,7 @@ async function seedCoveredGoalRun(
     workspace: { cwd: "/tmp/southstar" },
     domain: "software",
     intent: "ship",
+    workType: "general",
     summary: "Ship a covered outcome",
     requirements,
     expectedArtifactRefs: ["artifact.output"],
@@ -618,6 +669,113 @@ async function seedCoveredGoalRun(
       verdict,
       evidenceRefs: [`evidence-${runId}`],
       findings: verdict === "passed" ? [] : ["verification failed"],
+    },
+  });
+  return { runId };
+}
+
+async function seedCoveredGoalRunV2(
+  db: SouthstarDb,
+  runId: string,
+  options: { omitCriterion?: boolean } = {},
+): Promise<{ runId: string }> {
+  await seedCoveredGoalRun(db, runId);
+  const artifact = await db.one<{ resource_key: string }>(
+    `select resource_key
+       from southstar.runtime_resources
+      where run_id = $1 and resource_type = 'artifact_ref' and status = 'accepted'
+      order by resource_key
+      limit 1`,
+    [runId],
+  );
+  await upsertRuntimeResourcePg(db, {
+    id: `coverage-${runId}`,
+    resourceType: "goal_requirement_coverage",
+    resourceKey: runId,
+    runId,
+    scope: "run",
+    status: "frozen",
+    title: "Frozen criterion coverage",
+    payload: {
+      schemaVersion: "southstar.goal_requirement_coverage.v1",
+      goalContractHash: (await db.one<{ runtime_context_json: { goalContractHash: string } }>(
+        "select runtime_context_json from southstar.workflow_runs where id = $1",
+        [runId],
+      )).runtime_context_json.goalContractHash,
+      entries: [{
+        requirementId: "req-blocking",
+        producerTaskIds: ["task-producer"],
+        artifactRefs: ["artifact.output"],
+        evaluatorTaskIds: ["task-evaluator"],
+        evaluatorProfileRefs: ["evaluator.independent"],
+        evaluatorProfileVersionRefs: ["evaluator.independent@2"],
+        validationBindingId: "binding-req-blocking",
+        criterionIds: ["criterion-blocking"],
+        acceptanceCriteria: ["The produced artifact is independently verified"],
+        requiredEvidenceKinds: ["artifact-ref"],
+      }],
+    },
+  });
+  await db.query(
+    `update southstar.workflow_runs
+        set workflow_manifest_json = workflow_manifest_json || $2::jsonb
+      where id = $1`,
+    [runId, JSON.stringify({
+      evaluatorPipelines: [{
+        id: "independent",
+        libraryObjectRef: "evaluator.independent",
+        libraryVersionRef: "evaluator.independent@2",
+        validationBindingIds: ["binding-req-blocking"],
+        evaluators: [{
+          id: "check-criterion-blocking",
+          kind: "checker-agent",
+          required: true,
+          config: {
+            criterionId: "criterion-blocking",
+            acceptanceCriterion: "The produced artifact is independently verified",
+            expectedEvidenceKinds: ["artifact-ref"],
+          },
+        }],
+        onFailure: { defaultStrategy: "request-workflow-revision" },
+      }],
+    })],
+  );
+  await upsertRuntimeResourcePg(db, {
+    id: `evidence-${runId}`,
+    resourceType: "evidence_packet",
+    resourceKey: `evidence-${runId}`,
+    runId,
+    taskId: "task-evaluator",
+    scope: "evaluator",
+    status: "complete",
+    payload: { schemaVersion: "southstar.evidence_packet.v1" },
+  });
+  await upsertRuntimeResourcePg(db, {
+    id: `requirement-result-${runId}`,
+    resourceType: "requirement_evaluator_result",
+    resourceKey: `requirement:${runId}:req-blocking:task-evaluator:${artifact.resource_key}`,
+    runId,
+    taskId: "task-evaluator",
+    scope: "evaluator",
+    status: "passed",
+    payload: {
+      schemaVersion: "southstar.requirement_evaluator_result.v2",
+      requirementId: "req-blocking",
+      validationBindingId: "binding-req-blocking",
+      artifactRefs: [artifact.resource_key],
+      evaluatorId: `evaluator-${runId}`,
+      evaluatorTaskId: "task-evaluator",
+      evaluatorProfileRef: "evaluator.independent",
+      evaluatorProfileVersionRef: "evaluator.independent@2",
+      verdict: "passed",
+      criteriaResults: options.omitCriterion ? [] : [{
+        criterionId: "criterion-blocking",
+        verdict: "passed",
+        evidenceRefs: [artifact.resource_key],
+        findings: [],
+      }],
+      evidenceRefs: [`evidence-${runId}`],
+      findings: [],
     },
   });
   return { runId };

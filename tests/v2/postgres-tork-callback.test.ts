@@ -655,6 +655,65 @@ test("requirement evaluation returns only failed blocking requirement ids for ta
   });
 });
 
+test("RequirementEvaluatorResultV2 passes only when every frozen criterion has valid evidence", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-criterion-pass");
+    await upgradeRequirementCoverageToV2(db, fixture.runId, fixture.goalContractHash, "req-offline");
+
+    const result = await recordRequirementEvaluatorResultsPg(db, {
+      runId: fixture.runId,
+      taskId: "task-verify",
+      artifactRefId: "artifact-ref:criterion-verification",
+      artifact: {
+        verdict: "passed",
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+        criteriaResults: [{
+          criterionId: "criterion-req-offline",
+          verdict: "passed",
+          evidenceRefs: [fixture.producerArtifactRefId],
+          findings: [],
+        }],
+      },
+      callbackOk: true,
+      rootSessionId: "session-1",
+      attemptId: "attempt-1",
+      handExecutionId: `hand-execution:${fixture.runId}:task-verify:attempt-1`,
+    });
+
+    assert.equal(result.ok, true);
+    const stored = await latestRequirementResultPg(db, fixture.runId, "req-offline");
+    assert.equal((stored?.payload as any).schemaVersion, "southstar.requirement_evaluator_result.v2");
+    assert.equal((stored?.payload as any).criteriaResults[0].verdict, "passed");
+    assert.equal((stored?.payload as any).evaluatorProfileVersionRef, "evaluator.software-verification-quality@2");
+  });
+});
+
+test("an LLM overall passed verdict cannot hide a missing frozen criterion", async () => {
+  await withDb(async (db) => {
+    const fixture = await seedRequirementEvidenceRun(db, "run-requirement-criterion-missing");
+    await upgradeRequirementCoverageToV2(db, fixture.runId, fixture.goalContractHash, "req-offline");
+
+    const result = await recordRequirementEvaluatorResultsPg(db, {
+      runId: fixture.runId,
+      taskId: "task-verify",
+      artifactRefId: "artifact-ref:criterion-verification-missing",
+      artifact: {
+        verdict: "passed",
+        verifiedArtifactRefs: [fixture.producerArtifactRefId],
+        criteriaResults: [],
+      },
+      callbackOk: true,
+      rootSessionId: "session-1",
+      attemptId: "attempt-1",
+      handExecutionId: `hand-execution:${fixture.runId}:task-verify:attempt-1`,
+    });
+
+    assert.equal(result.ok, false);
+    assert.match(result.findings.join("\n"), /missing criterion result criterion-req-offline/);
+    assert.equal((await latestRequirementResultPg(db, fixture.runId, "req-offline"))?.status, "blocked");
+  });
+});
+
 test("malformed frozen requirement coverage fails closed with a descriptive error", async () => {
   await withDb(async (db) => {
     const fixture = await seedRequirementEvidenceRun(db, "run-requirement-malformed-coverage");
@@ -1695,6 +1754,47 @@ function requirementCoverage(requirementIds: string[], contractHash: string, art
   };
 }
 
+async function upgradeRequirementCoverageToV2(
+  db: SouthstarDb,
+  runId: string,
+  contractHash: string,
+  requirementId: string,
+): Promise<void> {
+  const coverage = requirementCoverage([requirementId], contractHash);
+  Object.assign(coverage.entries[0]!, {
+    evaluatorProfileVersionRefs: ["evaluator.software-verification-quality@2"],
+    validationBindingId: `binding-${requirementId}`,
+    criterionIds: [`criterion-${requirementId}`],
+    acceptanceCriteria: [`${requirementId} is independently verified`],
+    requiredEvidenceKinds: ["artifact-ref"],
+  });
+  await replaceRequirementCoverage(db, runId, coverage);
+  await db.query(
+    `update southstar.workflow_runs
+        set workflow_manifest_json = workflow_manifest_json || $2::jsonb
+      where id = $1`,
+    [runId, JSON.stringify({
+      evaluatorPipelines: [{
+        id: "software-verification-quality",
+        libraryObjectRef: "evaluator.software-verification-quality",
+        libraryVersionRef: "evaluator.software-verification-quality@2",
+        validationBindingIds: [`binding-${requirementId}`],
+        evaluators: [{
+          id: `check-${requirementId}`,
+          kind: "checker-agent",
+          required: true,
+          config: {
+            criterionId: `criterion-${requirementId}`,
+            acceptanceCriterion: `${requirementId} is independently verified`,
+            expectedEvidenceKinds: ["artifact-ref"],
+          },
+        }],
+        onFailure: { defaultStrategy: "request-workflow-revision" },
+      }],
+    })],
+  );
+}
+
 function requirementGoalContract(
   requirementIds: string[],
   nonBlockingIds: string[] = [],
@@ -1708,6 +1808,7 @@ function requirementGoalContract(
     workspace: { cwd: "/workspace" },
     domain: "software",
     intent: "implement_feature",
+    workType: "general",
     summary: "Build and verify the requested feature",
     requirements: requirementIds.map((id) => ({
       id,
@@ -1715,6 +1816,7 @@ function requirementGoalContract(
       acceptanceCriteria: [`${id} is independently verified`],
       blocking: !nonBlockingIds.includes(id),
       source: "explicit",
+      expectedArtifacts: [],
     })),
     expectedArtifactRefs: ["artifact.implementation_report"],
     requiredCapabilities: ["software"],
@@ -1872,10 +1974,13 @@ async function latestRequirementResultPg(db: SouthstarDb, runId: string, require
        from southstar.runtime_resources
       where run_id = $1
         and resource_type = 'requirement_evaluator_result'
-        and payload_json -> 'requirementIds' @> $2::jsonb
+        and (
+          payload_json -> 'requirementIds' @> $2::jsonb
+          or payload_json ->> 'requirementId' = $3
+        )
       order by created_at desc, resource_key desc
       limit 1`,
-    [runId, JSON.stringify([requirementId])],
+    [runId, JSON.stringify([requirementId]), requirementId],
   );
   return row ? await getResourceByKeyPg(db, "requirement_evaluator_result", row.resource_key) : null;
 }

@@ -4,7 +4,11 @@ import { open, realpath, type FileHandle } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import sharp from "sharp";
 import type { SouthstarDb } from "../db/postgres.ts";
-import { buildEvidencePacket, screenshotEvidenceRef } from "../artifacts/evidence.ts";
+import {
+  artifactEvidenceClaims,
+  buildEvidencePacket,
+  screenshotEvidenceRef,
+} from "../artifacts/evidence.ts";
 import type { EvidenceKind, EvidencePacket, ValidatorResult } from "../artifacts/types.ts";
 import { evidenceValidatorResult } from "../artifacts/validator-results.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
@@ -31,6 +35,30 @@ export type RequirementEvaluatorResultV1 = {
   evidenceRefs: string[];
   findings: string[];
 };
+
+export type RequirementCriterionEvaluatorResultV2 = {
+  criterionId: string;
+  verdict: "passed" | "failed" | "blocked";
+  evidenceRefs: string[];
+  findings: string[];
+};
+
+export type RequirementEvaluatorResultV2 = {
+  schemaVersion: "southstar.requirement_evaluator_result.v2";
+  requirementId: string;
+  validationBindingId: string;
+  artifactRefs: string[];
+  evaluatorId: string;
+  evaluatorTaskId: string;
+  evaluatorProfileRef: string;
+  evaluatorProfileVersionRef: string;
+  verdict: "passed" | "failed" | "blocked";
+  criteriaResults: RequirementCriterionEvaluatorResultV2[];
+  evidenceRefs: string[];
+  findings: string[];
+};
+
+export type RequirementEvaluatorResult = RequirementEvaluatorResultV1 | RequirementEvaluatorResultV2;
 
 export type RequirementEvaluationWriteResult = {
   ok: boolean;
@@ -157,7 +185,7 @@ async function evaluateEntry(
 ): Promise<{
   evidence: EvidencePacket;
   validator: ValidatorResult;
-  result: RequirementEvaluatorResultV1;
+  result: RequirementEvaluatorResult;
   resourceKey: string;
 }> {
   const evaluatorProfileRef = resolveEvaluatorProfileRef(manifest, entry, input.taskId);
@@ -200,7 +228,7 @@ async function evaluateEntry(
     ...(!input.callbackOk ? [`evaluator callback failed requirement ${entry.requirementId}`] : []),
     ...(invalidEvidence ? validator.messages.map((message) => message.text) : []),
   ];
-  const verdict = !input.callbackOk
+  const legacyVerdict = !input.callbackOk
     ? "failed"
     : blockedFindings.length > 0
       ? "blocked"
@@ -208,22 +236,190 @@ async function evaluateEntry(
       ? "failed"
       : "passed";
   const resourceKey = `${contractRef}:${input.taskId}:${input.artifactRefId}`;
+  const result = entry.criterionIds.length > 0
+    ? evaluateCriterionResult({
+        entry,
+        manifest,
+        taskId: input.taskId,
+        artifact,
+        artifactRefs,
+        callbackOk: input.callbackOk,
+        evaluatorProfileRef,
+        evaluatorId: resourceKey,
+        evidence,
+        hostFindings: blockedFindings,
+      })
+    : {
+        schemaVersion: "southstar.requirement_evaluator_result.v1" as const,
+        requirementIds: [entry.requirementId],
+        artifactRefs,
+        evaluatorId: resourceKey,
+        evaluatorTaskId: input.taskId,
+        evaluatorProfileRef,
+        verdict: legacyVerdict,
+        evidenceRefs: [evidence.id],
+        findings: uniqueSorted([...blockedFindings, ...failedFindings]),
+      };
   return {
     evidence,
     validator,
     resourceKey,
-    result: {
-      schemaVersion: "southstar.requirement_evaluator_result.v1",
-      requirementIds: [entry.requirementId],
-      artifactRefs,
-      evaluatorId: resourceKey,
-      evaluatorTaskId: input.taskId,
-      evaluatorProfileRef,
-      verdict,
-      evidenceRefs: [evidence.id],
-      findings: uniqueSorted([...blockedFindings, ...failedFindings]),
-    },
+    result,
   };
+}
+
+function evaluateCriterionResult(input: {
+  entry: CoverageEntry;
+  manifest: SouthstarWorkflowManifest;
+  taskId: string;
+  artifact: Record<string, unknown>;
+  artifactRefs: string[];
+  callbackOk: boolean;
+  evaluatorProfileRef: string;
+  evaluatorId: string;
+  evidence: EvidencePacket;
+  hostFindings: string[];
+}): RequirementEvaluatorResultV2 {
+  const rawResults = Array.isArray(input.artifact.criteriaResults)
+    ? input.artifact.criteriaResults.map(asRecord)
+    : [];
+  const rawByCriterion = new Map<string, Record<string, unknown>[]>();
+  const unknownCriterionIds: string[] = [];
+  const expectedCriterionIds = new Set(input.entry.criterionIds);
+  for (const raw of rawResults) {
+    const criterionId = nonEmptyString(raw.criterionId);
+    if (!criterionId || !expectedCriterionIds.has(criterionId)) {
+      unknownCriterionIds.push(criterionId ?? "<missing>");
+      continue;
+    }
+    const values = rawByCriterion.get(criterionId) ?? [];
+    values.push(raw);
+    rawByCriterion.set(criterionId, values);
+  }
+  const claims = artifactEvidenceClaims(input.artifact, input.evidence.runId);
+  const claimKindsByRef = new Map<string, Set<EvidenceKind>>();
+  for (const claim of claims) {
+    const kinds = claimKindsByRef.get(claim.ref) ?? new Set<EvidenceKind>();
+    kinds.add(claim.kind);
+    claimKindsByRef.set(claim.ref, kinds);
+  }
+  const evidenceStatusByKind = new Map(input.evidence.evidenceItems.map((item) => [item.kind, item.status]));
+  const globalFindings = [
+    ...input.hostFindings,
+    ...(!input.callbackOk ? [`evaluator callback failed requirement ${input.entry.requirementId}`] : []),
+    ...unknownCriterionIds.map((criterionId) => `unknown criterion result ${criterionId}`),
+  ];
+  const criteriaResults = input.entry.criterionIds.map((criterionId): RequirementCriterionEvaluatorResultV2 => {
+    const candidates = rawByCriterion.get(criterionId) ?? [];
+    const raw = candidates[0];
+    const findings = [
+      ...(candidates.length === 0 ? [`missing criterion result ${criterionId}`] : []),
+      ...(candidates.length > 1 ? [`duplicate criterion result ${criterionId}`] : []),
+    ];
+    const claimedVerdict = raw ? criterionVerdict(raw.verdict) : undefined;
+    if (raw && !claimedVerdict) findings.push(`invalid criterion verdict ${criterionId}`);
+    const evidenceRefs = raw ? uniqueSorted(stringArray(raw.evidenceRefs)) : [];
+    const workerFindings = raw && Array.isArray(raw.findings) && raw.findings.every((item) => typeof item === "string")
+      ? raw.findings as string[]
+      : [];
+    if (raw && (!Array.isArray(raw.evidenceRefs) || evidenceRefs.length === 0)) {
+      findings.push(`missing criterion evidence refs ${criterionId}`);
+    }
+    const expectedKinds = expectedEvidenceKindsForCriterion(input.manifest, input.entry, criterionId);
+    const referencedKinds = new Set<EvidenceKind>();
+    for (const evidenceRef of evidenceRefs) {
+      const kinds = claimKindsByRef.get(evidenceRef);
+      if (!kinds || kinds.size === 0) {
+        findings.push(`unknown evidence ref ${evidenceRef} for criterion ${criterionId}`);
+        continue;
+      }
+      for (const kind of kinds) referencedKinds.add(kind);
+    }
+    let invalidEvidence = false;
+    for (const kind of expectedKinds) {
+      if (!referencedKinds.has(kind)) {
+        findings.push(`missing ${kind} evidence for criterion ${criterionId}`);
+        continue;
+      }
+      const status = evidenceStatusByKind.get(kind);
+      if (status !== "present") {
+        findings.push(`${kind} evidence is ${status ?? "missing"} for criterion ${criterionId}`);
+        if (status === "invalid" || status === "stale") invalidEvidence = true;
+      }
+    }
+    const verdict = !input.callbackOk
+      ? "failed"
+      : claimedVerdict === "failed" || invalidEvidence
+        ? "failed"
+        : claimedVerdict !== "passed" || findings.length > 0 || globalFindings.length > 0
+          ? "blocked"
+          : "passed";
+    return {
+      criterionId,
+      verdict,
+      evidenceRefs,
+      findings: uniqueSorted([...workerFindings, ...findings]),
+    };
+  });
+  const verdict = !input.callbackOk || criteriaResults.some((result) => result.verdict === "failed")
+    ? "failed"
+    : criteriaResults.some((result) => result.verdict === "blocked") || globalFindings.length > 0
+      ? "blocked"
+      : "passed";
+  const evaluatorProfileVersionRef = requiredSingle(
+    input.entry.evaluatorProfileVersionRefs,
+    `requirement ${input.entry.requirementId} evaluator profile version`,
+  );
+  const validationBindingId = nonEmptyString(input.entry.validationBindingId);
+  if (!validationBindingId) throw new Error(`requirement ${input.entry.requirementId} validation binding is missing`);
+  return {
+    schemaVersion: "southstar.requirement_evaluator_result.v2",
+    requirementId: input.entry.requirementId,
+    validationBindingId,
+    artifactRefs: input.artifactRefs,
+    evaluatorId: input.evaluatorId,
+    evaluatorTaskId: input.taskId,
+    evaluatorProfileRef: input.evaluatorProfileRef,
+    evaluatorProfileVersionRef,
+    verdict,
+    criteriaResults,
+    evidenceRefs: [input.evidence.id],
+    findings: uniqueSorted([
+      ...globalFindings,
+      ...criteriaResults.flatMap((result) => result.findings),
+    ]),
+  };
+}
+
+function expectedEvidenceKindsForCriterion(
+  manifest: SouthstarWorkflowManifest,
+  entry: CoverageEntry,
+  criterionId: string,
+): EvidenceKind[] {
+  const profileRef = requiredSingle(entry.evaluatorProfileRefs, `requirement ${entry.requirementId} evaluator profile`);
+  const versionRef = requiredSingle(entry.evaluatorProfileVersionRefs, `requirement ${entry.requirementId} evaluator profile version`);
+  const pipeline = (manifest.evaluatorPipelines ?? []).find((candidate) =>
+    normalizeRequirementEvidenceRef(candidate.libraryObjectRef ?? candidate.id, "evaluator")
+      === normalizeRequirementEvidenceRef(profileRef, "evaluator")
+      && candidate.libraryVersionRef === versionRef
+  );
+  if (!pipeline) throw new Error(`manifest is missing frozen evaluator pipeline ${profileRef}@${versionRef}`);
+  const step = pipeline.evaluators.find((candidate) => asRecord(candidate.config).criterionId === criterionId);
+  if (!step) throw new Error(`manifest evaluator pipeline is missing criterion ${criterionId}`);
+  const kinds = stringArray(asRecord(step.config).expectedEvidenceKinds);
+  if (kinds.length === 0 || kinds.some((kind) => !isEvidenceKind(kind))) {
+    throw new Error(`manifest evaluator criterion ${criterionId} has invalid expected evidence kinds`);
+  }
+  return kinds as EvidenceKind[];
+}
+
+function criterionVerdict(value: unknown): RequirementCriterionEvaluatorResultV2["verdict"] | undefined {
+  return value === "passed" || value === "failed" || value === "blocked" ? value : undefined;
+}
+
+function requiredSingle(values: string[], label: string): string {
+  if (values.length !== 1 || !nonEmptyString(values[0])) throw new Error(`${label} must contain exactly one value`);
+  return values[0]!;
 }
 
 export async function acceptedProducerArtifactRefsPg(
@@ -639,9 +835,12 @@ async function persistValidatorResult(db: SouthstarDb, validator: ValidatorResul
 async function persistRequirementResult(
   db: SouthstarDb,
   input: { runId: string; taskId: string },
-  result: RequirementEvaluatorResultV1,
+  result: RequirementEvaluatorResult,
   resourceKey: string,
 ): Promise<void> {
+  const requirementIds = result.schemaVersion === "southstar.requirement_evaluator_result.v2"
+    ? [result.requirementId]
+    : result.requirementIds;
   await upsertRuntimeResourcePg(db, {
     id: resourceKey,
     resourceType: "requirement_evaluator_result",
@@ -650,9 +849,9 @@ async function persistRequirementResult(
     taskId: input.taskId,
     scope: "evaluator",
     status: result.verdict,
-    title: `Requirement evaluator ${result.requirementIds.join(", ")}`,
+    title: `Requirement evaluator ${requirementIds.join(", ")}`,
     payload: result,
-    summary: { requirementIds: result.requirementIds, findingCount: result.findings.length },
+    summary: { requirementIds, findingCount: result.findings.length },
   });
 }
 
@@ -825,6 +1024,21 @@ function parseCoverage(
   const fail = (path: string): never => {
     throw new Error(`invalid Goal Requirement Coverage for run ${runId}: ${path}`);
   };
+  const rawCoverage = asRecord(value);
+  if (rawCoverage.schemaVersion !== "southstar.goal_requirement_coverage.v1") fail("schemaVersion");
+  if (!Array.isArray(rawCoverage.entries)) fail("entries");
+  for (const [index, rawEntry] of rawCoverage.entries.entries()) {
+    const entry = asRecord(rawEntry);
+    for (const key of [
+      "producerTaskIds",
+      "artifactRefs",
+      "evaluatorTaskIds",
+      "evaluatorProfileRefs",
+      "requiredEvidenceKinds",
+    ]) {
+      if (!Array.isArray(entry[key])) fail(`entries[${index}].${key}`);
+    }
+  }
   const coverage = storedGoalRequirementCoverage(value);
   if (!coverage) throw new Error(`invalid Goal Requirement Coverage for run ${runId}: stored projection`);
   const requirements = new Map(goalContract.requirements.map((requirement) => [requirement.id, requirement]));
@@ -842,6 +1056,42 @@ function parseCoverage(
       if (requirement.blocking && values.length === 0) fail(`${path}.${key}`);
     }
     if (requirement.blocking && entry.requiredEvidenceKinds.length === 0) fail(`${path}.requiredEvidenceKinds`);
+    const hasCriterionCoverage = entry.criterionIds.length > 0;
+    if (hasCriterionCoverage) {
+      if (
+        entry.criterionIds.length !== entry.acceptanceCriteria.length
+        || new Set(entry.criterionIds).size !== entry.criterionIds.length
+        || JSON.stringify(entry.acceptanceCriteria) !== JSON.stringify(requirement.acceptanceCriteria)
+      ) fail(`${path}.criterionIds`);
+      if (!entry.validationBindingId) fail(`${path}.validationBindingId`);
+      if (entry.evaluatorProfileRefs.length !== 1) fail(`${path}.evaluatorProfileRefs`);
+      if (entry.evaluatorProfileVersionRefs.length !== 1) fail(`${path}.evaluatorProfileVersionRefs`);
+      const profileRef = entry.evaluatorProfileRefs[0]!;
+      const profileVersionRef = entry.evaluatorProfileVersionRefs[0]!;
+      const pipeline = (manifest.evaluatorPipelines ?? []).find((candidate) =>
+        normalizeRequirementEvidenceRef(candidate.libraryObjectRef ?? candidate.id, "evaluator")
+          === normalizeRequirementEvidenceRef(profileRef, "evaluator")
+          && candidate.libraryVersionRef === profileVersionRef
+      );
+      if (!pipeline) fail(`manifest is missing frozen evaluator pipeline ${profileRef}@${profileVersionRef}`);
+      if (!pipeline.validationBindingIds?.includes(entry.validationBindingId)) {
+        fail(`manifest evaluator pipeline is missing validation binding ${entry.validationBindingId}`);
+      }
+      const pipelineCriterionIds = pipeline.evaluators
+        .map((step) => nonEmptyString(asRecord(step.config).criterionId))
+        .filter((value): value is string => Boolean(value));
+      if (
+        pipelineCriterionIds.length !== entry.criterionIds.length
+        || new Set(pipelineCriterionIds).size !== pipelineCriterionIds.length
+        || [...pipelineCriterionIds].sort().join("\u0000") !== [...entry.criterionIds].sort().join("\u0000")
+      ) fail(`${path}.criterionIds do not match manifest evaluator pipeline`);
+    } else if (
+      entry.acceptanceCriteria.length > 0
+      || entry.evaluatorProfileVersionRefs.length > 0
+      || entry.validationBindingId !== undefined
+    ) {
+      fail(`${path} has partial criterion coverage`);
+    }
     for (const producerTaskId of entry.producerTaskIds) {
       if (!manifestTaskIds.has(producerTaskId)) fail(`manifest is missing producer task ${producerTaskId}`);
     }
@@ -1037,6 +1287,22 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value)
     ? value.filter((item): item is string => typeof item === "string" && item.length > 0)
     : [];
+}
+
+const EVIDENCE_KINDS = new Set<EvidenceKind>([
+  "file-diff",
+  "test-result",
+  "command-output",
+  "url",
+  "screenshot",
+  "human-approval",
+  "artifact-ref",
+  "workspace-snapshot",
+  "policy-decision",
+]);
+
+function isEvidenceKind(value: string): value is EvidenceKind {
+  return EVIDENCE_KINDS.has(value as EvidenceKind);
 }
 
 function uniqueSorted(values: string[]): string[] {
