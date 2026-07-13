@@ -32,6 +32,7 @@ type SendWorkflowGenerateEvent = (event: string, data: unknown) => void;
 export async function POST(request: NextRequest) {
   const body = await request.json() as {
     cwd?: string | null;
+    projectRef?: string | null;
     prompt?: string;
     idempotencyKey?: string;
     goalDesignMode?: unknown;
@@ -39,6 +40,7 @@ export async function POST(request: NextRequest) {
   };
   const prompt = body.prompt?.trim();
   const cwd = body.cwd?.trim();
+  const projectRef = body.projectRef?.trim();
   const idempotencyKey = body.idempotencyKey?.trim();
   if (!prompt) return new Response("prompt is required", { status: 400 });
   if (!cwd) return new Response("cwd is required", { status: 400 });
@@ -56,6 +58,7 @@ export async function POST(request: NextRequest) {
     body: JSON.stringify({
       goalPrompt: prompt,
       cwd,
+      ...(projectRef ? { projectRef } : {}),
       idempotencyKey,
       ...(isGoalDesignMode(body.goalDesignMode) ? { goalDesignMode: body.goalDesignMode } : {}),
       ...(isTemplatePolicy(body.templatePolicy) ? { templatePolicy: body.templatePolicy } : {}),

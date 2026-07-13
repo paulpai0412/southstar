@@ -238,3 +238,31 @@ $ npx tsx --test --test-name-pattern='staged run-goal route persists requirement
 $ npx tsc --noEmit --pretty false && git diff --check
 PASS
 ```
+
+## Follow-up reviewer fixes: immutable request snapshot and project lineage
+
+- `createPostgresPlannerDraft` now snapshots the complete planner request before the asynchronous source-lineage gate. Workspace, project reference, source requirement id/hash, library hints, and a deep-cloned composition plan are therefore immutable for the whole orchestration/persistence operation.
+- Source requirement validation now parses the persisted draft, validates its schema, recomputes the canonical draft hash, and fails closed on tampered payloads before accepting lineage.
+- Optional `projectRef` is carried from browser/API request bodies through `RunGoalRequest`, staged Goal Requirement/Goal Design persistence, confirmation preparation, single-DAG composition, and run results/runtime context. Generated legacy planner request idempotency keys include it as well.
+- The non-per-slice confirmed run result now returns `goalRequirementDraftId` and `goalRequirementDraftHash`, with a focused Postgres regression covering confirmation and runtime context.
+
+Verification:
+
+```text
+$ npx tsc --noEmit --pretty false && git diff --check
+PASS
+
+$ npx tsx --test --test-name-pattern='generated planner DAG keeps source requirement lineage|planner draft snapshots source lineage|staged run-goal route persists requirement review' tests/v2/postgres-run-api.test.ts tests/v2/run-goal-service.test.ts
+1..3
+# pass 3
+
+$ npx tsx --test --test-name-pattern='confirmed single-DAG run result preserves source requirement lineage' tests/v2/run-goal-service.test.ts
+1..1
+# pass 1
+
+$ npx tsx --test tests/v2/postgres-run-api.test.ts
+1..53
+# pass 51, fail 2
+```
+
+The two full-suite failures are unrelated existing environment/fixture failures: the auto Library import fixture lacks approved `goal_design`/`composer_guidance` skills, and the isolated `needs_input` route test has no ready Library snapshot. Existing Goal Design tests also retain the known `/tmp/snap-private-tmp` permission failure when run in their broader suite.

@@ -355,6 +355,56 @@ test("generated planner DAG keeps source requirement lineage through materializa
         where resource_type = 'planner_draft' and resource_key = $1`,
       [sourceRequirement.draftId],
     );
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json || jsonb_build_object('goalRequirementDraftHash', $2::text),
+              updated_at = now()
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [sourceRequirement.draftId, "0".repeat(64)],
+    );
+    await assert.rejects(
+      () => createPostgresPlannerDraft(db, {
+        goalPrompt,
+        cwd,
+        goalInterpreter: fixedGoalInterpreter(goalContract),
+        composer: new DeterministicFixtureComposer(),
+        goalRequirementDraftId: sourceRequirement.draftId,
+        goalRequirementDraftHash: sourceRequirement.goalRequirementDraftHash,
+      }),
+      /goal_requirement_draft_stale/,
+    );
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json || jsonb_build_object('goalRequirementDraftHash', $2::text),
+              updated_at = now()
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [sourceRequirement.draftId, sourceRequirement.goalRequirementDraftHash],
+    );
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(payload_json, '{goalRequirementDraft,draftHash}', to_jsonb($2::text), false),
+              updated_at = now()
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [sourceRequirement.draftId, "0".repeat(64)],
+    );
+    await assert.rejects(
+      () => createPostgresPlannerDraft(db, {
+        goalPrompt,
+        cwd,
+        goalInterpreter: fixedGoalInterpreter(goalContract),
+        composer: new DeterministicFixtureComposer(),
+        goalRequirementDraftId: sourceRequirement.draftId,
+        goalRequirementDraftHash: sourceRequirement.goalRequirementDraftHash,
+      }),
+      /goal_requirement_draft_stale/,
+    );
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = jsonb_set(payload_json, '{goalRequirementDraft,draftHash}', to_jsonb($2::text), false),
+              updated_at = now()
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [sourceRequirement.draftId, sourceRequirement.goalRequirementDraftHash],
+    );
     await assert.rejects(
       () => createPostgresPlannerDraft(db, {
         goalPrompt,
@@ -407,6 +457,79 @@ test("generated planner DAG keeps source requirement lineage through materializa
       }),
       /goal_requirements_already_materialized/,
     );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  });
+});
+
+test("planner draft snapshots source lineage before asynchronous validation", async () => {
+  await withDb(async (db) => {
+    const cwd = await mkdtemp(join(tmpdir(), "southstar-goal-lineage-snapshot-"));
+    try {
+      const goalPrompt = "Turn notes.md into an offline HTML article";
+      const goalContract = articleGoalContract(goalPrompt);
+      await seedDeterministicWorkflowGraph(db, goalContract.domain);
+      await upsertLibraryObject(db, {
+        objectKey: "domain.design-article",
+        objectKind: "domain_taxonomy",
+        status: "approved",
+        headVersionId: "domain.design-article@snapshot-test",
+        state: { scope: "design/article" },
+      });
+      await seedGoalDesignSkill(db);
+      const sourceRequirement = await preparePostgresGoalRequirementDraft(db, {
+        goalPrompt,
+        cwd,
+        projectRef: "snapshot-project",
+        requirementInterpreter: requirementDraftInterpreter(goalPrompt, cwd, "snapshot-project"),
+      });
+      await confirmGoalRequirementsPg(db, {
+        draftId: sourceRequirement.draftId,
+        expectedDraftHash: sourceRequirement.goalRequirementDraftHash,
+        goalContractMetadata: {
+          domain: "design/article",
+          intent: "publish_article",
+          workType: "general",
+          expectedArtifactRefs: [],
+          requiredCapabilities: [],
+          assumptions: [],
+          requestedSideEffects: [],
+        },
+      });
+      await db.query(
+        `update southstar.runtime_resources
+            set status = 'validation_ready',
+                payload_json = payload_json || '{"goalDesignPhase":"validation_ready"}'::jsonb,
+                updated_at = now()
+          where resource_type = 'planner_draft' and resource_key = $1`,
+        [sourceRequirement.draftId],
+      );
+      const mutableInput = {
+        goalPrompt,
+        cwd,
+        projectRef: "snapshot-project",
+        compositionPlan: deterministicFixtureComposition(goalContract),
+        goalInterpreter: fixedGoalInterpreter(goalContract),
+        composer: new DeterministicFixtureComposer(),
+        goalRequirementDraftId: sourceRequirement.draftId,
+        goalRequirementDraftHash: sourceRequirement.goalRequirementDraftHash,
+      };
+      const expectedCompositionPlan = structuredClone(mutableInput.compositionPlan);
+      const draftPromise = createPostgresPlannerDraft(db, mutableInput);
+      mutableInput.cwd = "/workspace/mutated";
+      mutableInput.projectRef = "mutated-project";
+      mutableInput.goalRequirementDraftId = "mutated-source";
+      mutableInput.goalRequirementDraftHash = "f".repeat(64);
+      mutableInput.compositionPlan.tasks[0]!.name = "Mutated after request";
+      const draft = await draftPromise;
+      assert.equal(draft.status, "validated");
+      const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+      assert.equal((stored!.payload as any).plannerRequest.cwd, cwd);
+      assert.equal((stored!.payload as any).plannerRequest.projectRef, "snapshot-project");
+      assert.equal((stored!.payload as any).plannerRequest.goalRequirementDraftId, sourceRequirement.draftId);
+      assert.equal((stored!.payload as any).plannerRequest.goalRequirementDraftHash, sourceRequirement.goalRequirementDraftHash);
+      assert.deepEqual((stored!.payload as any).plannerRequest.compositionPlan, expectedCompositionPlan);
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -2384,10 +2507,10 @@ async function seedGoalRequirementVocabulary(db: SouthstarDb): Promise<void> {
   });
 }
 
-function requirementDraftInterpreter(goalPrompt: string, cwd: string) {
+function requirementDraftInterpreter(goalPrompt: string, cwd: string, projectRef?: string) {
   return {
     async interpret() {
-      return finalizeGoalRequirementDraft(validGoalRequirementDraftInput(goalPrompt, cwd));
+      return finalizeGoalRequirementDraft(validGoalRequirementDraftInput(goalPrompt, cwd, projectRef));
     },
     async revise() {
       throw new Error("revision not used in creation test");
@@ -2395,10 +2518,11 @@ function requirementDraftInterpreter(goalPrompt: string, cwd: string) {
   };
 }
 
-function validGoalRequirementDraftInput(goalPrompt: string, cwd: string): GoalRequirementDraftInputV1 {
+function validGoalRequirementDraftInput(goalPrompt: string, cwd: string, projectRef?: string): GoalRequirementDraftInputV1 {
   return {
     goalPrompt,
     cwd,
+    ...(projectRef !== undefined ? { projectRef } : {}),
     summary: "Create and verify the requested offline article.",
     requirements: [{
       title: "Offline article",

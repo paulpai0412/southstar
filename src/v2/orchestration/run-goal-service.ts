@@ -42,6 +42,7 @@ import type { GoalRequirementDraftInterpreter } from "./goal-requirement-draft.t
 export type RunGoalRequest = {
   goalPrompt: string;
   cwd: string;
+  projectRef?: string;
   idempotencyKey: string;
   goalDesignMode?: GoalDesignMode;
   templatePolicy?: WorkflowTemplatePolicyV1;
@@ -220,6 +221,7 @@ async function submitGoalRequirementDraftPg(
     draft = await preparePostgresGoalRequirementDraft(context.db, {
       goalPrompt: request.goalPrompt,
       cwd: request.cwd,
+      ...(request.projectRef !== undefined ? { projectRef: request.projectRef } : {}),
       mode: request.goalDesignMode ?? "review_before_compose",
       templatePolicy: request.templatePolicy ?? { mode: "auto" },
       requirementInterpreter: context.goalRequirementInterpreter!,
@@ -273,6 +275,7 @@ async function submitGoalDesignDraftPg(
     draft = await preparePostgresGoalDesignDraft(context.db, {
       goalPrompt: request.goalPrompt,
       cwd: request.cwd,
+      ...(request.projectRef !== undefined ? { projectRef: request.projectRef } : {}),
       mode: goalDesignMode,
       templatePolicy,
       goalInterpreter: context.goalInterpreter,
@@ -403,6 +406,7 @@ export async function continueGoalDesignToRunPg(
     composedDraft = await createPostgresPlannerDraft(context.db, {
       goalPrompt: prepared.goalPrompt,
       cwd: prepared.cwd,
+      ...(prepared.projectRef !== undefined ? { projectRef: prepared.projectRef } : {}),
       goalInterpreter: fixedGoalInterpreter(prepared.package.goalContract),
       goalDesignPackage: prepared.package,
       composer: context.composer,
@@ -430,6 +434,8 @@ export async function continueGoalDesignToRunPg(
       draftId: composedDraft.draftId,
       draftStatus,
       blockers: composedDraft.blockers,
+      ...(prepared.goalRequirementDraftId ? { goalRequirementDraftId: prepared.goalRequirementDraftId } : {}),
+      ...(prepared.goalRequirementDraftHash ? { goalRequirementDraftHash: prepared.goalRequirementDraftHash } : {}),
       ...(composedDraft.vocabularyGaps ? { vocabularyGaps: composedDraft.vocabularyGaps } : {}),
       ...(composedDraft.libraryImportDraftId ? { libraryImportDraftId: composedDraft.libraryImportDraftId } : {}),
     };
@@ -478,6 +484,7 @@ type GoalDesignConfirmationPreparation = {
   package: GoalDesignPackageV1;
   goalPrompt: string;
   cwd: string;
+  projectRef?: string;
   goalRequirementDraftId?: string;
   goalRequirementDraftHash?: string;
   stages: string[];
@@ -512,6 +519,8 @@ async function prepareGoalDesignConfirmationPg(
     const cwd = optionalString(plannerRequest.cwd)
       ?? optionalString(asRecord(pkg.goalContract.workspace).cwd)
       ?? process.cwd();
+    const projectRef = optionalString(plannerRequest.projectRef)
+      ?? optionalString(asRecord(pkg.goalContract.workspace).projectRef);
     const confirmationId = `goal-design-confirmation-${randomUUID()}`;
     const inserted = await tx.maybeOne<{ id: string }>(
       `insert into southstar.runtime_resources (
@@ -544,6 +553,7 @@ async function prepareGoalDesignConfirmationPg(
         package: pkg,
         goalPrompt,
         cwd,
+        ...(projectRef ? { projectRef } : {}),
         ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
         ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages: [],
@@ -579,6 +589,7 @@ async function prepareGoalDesignConfirmationPg(
         package: pkg,
         goalPrompt,
         cwd,
+        ...(projectRef ? { projectRef } : {}),
         ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
         ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages: [],
@@ -594,6 +605,7 @@ async function prepareGoalDesignConfirmationPg(
         package: pkg,
         goalPrompt,
         cwd,
+        ...(projectRef ? { projectRef } : {}),
         ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
         ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages,
@@ -622,6 +634,7 @@ async function prepareGoalDesignConfirmationPg(
         package: pkg,
         goalPrompt,
         cwd,
+        ...(projectRef ? { projectRef } : {}),
         ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
         ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages: [],
@@ -693,6 +706,8 @@ async function createRunRequestFromValidatedDraftTx(
   }
   const result: RunGoalResult = {
     goalContractHash: input.draft.goalContractHash,
+    ...(input.draft.goalRequirementDraftId ? { goalRequirementDraftId: input.draft.goalRequirementDraftId } : {}),
+    ...(input.draft.goalRequirementDraftHash ? { goalRequirementDraftHash: input.draft.goalRequirementDraftHash } : {}),
     ...(input.draft.goalDesignPackageHash ? { goalDesignPackageHash: input.draft.goalDesignPackageHash } : {}),
     draftId: input.draft.draftId,
     draftStatus: "validated",
@@ -936,6 +951,7 @@ async function failSubmissionPg(
 function validateRequest(request: RunGoalRequest): void {
   requiredString(request.goalPrompt, "goalPrompt");
   requiredString(request.cwd, "cwd");
+  if (request.projectRef !== undefined) requiredString(request.projectRef, "projectRef");
   requiredString(request.idempotencyKey, "idempotencyKey");
 }
 

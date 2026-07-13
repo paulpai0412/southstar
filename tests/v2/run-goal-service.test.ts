@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import type { WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
-import { finalizeGoalContract, type GoalContractInterpreter, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
+import { finalizeGoalContract, goalContractHash, type GoalContractInterpreter, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
   finalizeGoalDesignPackage,
   type GoalDesigner,
@@ -11,7 +11,7 @@ import {
   type ResolvedGoalDesignSkillV1,
   type WorkflowTemplatePolicyV1,
 } from "../../src/v2/orchestration/goal-design.ts";
-import { finalizeGoalRequirementDraft } from "../../src/v2/orchestration/goal-requirement-draft.ts";
+import { finalizeGoalRequirementDraft, type GoalRequirementDraftInputV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import {
   GoalSubmissionConflictError,
   GoalSubmissionPendingError,
@@ -33,6 +33,7 @@ import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-st
 test("staged run-goal route persists requirement review and confirms with a hash", async () => {
   const db = await createTestPostgresDb();
   const cwd = process.cwd();
+  const projectRef = "vocab-route";
   try {
     await seedDeterministicWorkflowGraph(db);
     await seedGoalDesignSkill(db);
@@ -43,6 +44,7 @@ test("staged run-goal route persists requirement review and confirms with a hash
           return finalizeGoalRequirementDraft({
             goalPrompt: "Create a vocabulary app",
             cwd,
+            projectRef,
             summary: "Create a vocabulary app with a reviewable offline flow.",
             requirements: [{
               title: "Vocabulary review",
@@ -71,22 +73,23 @@ test("staged run-goal route persists requirement review and confirms with a hash
     const response = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/run-goal", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, idempotencyKey: "requirements-route-1", goalDesignMode: "auto_until_blocked", templatePolicy: { mode: "auto" } }),
+      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, projectRef, idempotencyKey: "requirements-route-1", goalDesignMode: "auto_until_blocked", templatePolicy: { mode: "auto" } }),
     }));
     assert.equal(response.status, 200);
     const envelope = await response.json() as { ok: true; result: { draftId: string; draftStatus: string; goalRequirementDraftHash: string } };
     assert.equal(envelope.result.draftStatus, "requirements_review");
     assert.match(envelope.result.goalRequirementDraftHash, /^[a-f0-9]{64}$/);
-    const stagedResource = await db.one<{ payload_json: { plannerRequest?: { goalDesignMode?: string; templatePolicy?: { mode?: string } } } }>(
+    const stagedResource = await db.one<{ payload_json: { plannerRequest?: { projectRef?: string; goalDesignMode?: string; templatePolicy?: { mode?: string } } } }>(
       "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
       [envelope.result.draftId],
     );
     assert.equal(stagedResource.payload_json.plannerRequest?.goalDesignMode, "auto_until_blocked");
     assert.equal(stagedResource.payload_json.plannerRequest?.templatePolicy?.mode, "auto");
+    assert.equal(stagedResource.payload_json.plannerRequest?.projectRef, projectRef);
     const replay = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/run-goal", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, idempotencyKey: "requirements-route-1", goalDesignMode: "auto_until_blocked", templatePolicy: { mode: "auto" } }),
+      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, projectRef, idempotencyKey: "requirements-route-1", goalDesignMode: "auto_until_blocked", templatePolicy: { mode: "auto" } }),
     }));
     assert.equal(replay.status, 200);
     const replayEnvelope = await replay.json() as { ok: true; result: { draftStatus: string; goalRequirementDraftHash: string } };
@@ -1153,6 +1156,101 @@ test("POST /api/v2/planner/drafts/:draftId/confirm-goal-design returns the confi
     assert.equal(envelope.result.runStatus, "scheduling");
     assert.equal(envelope.result.goalDesignPackageHash, prepared.goalDesignPackageHash);
   } finally {
+    await db.close();
+  }
+});
+
+test("confirmed single-DAG run result preserves source requirement lineage", async () => {
+  const db = await createTestPostgresDb();
+  const cwd = await mkdtemp("/tmp/southstar-single-dag-");
+  const projectRef = "source-project";
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const sourceContract = goalContract("Add parser tests");
+    const sourceDraft = finalizeGoalRequirementDraft({
+      goalPrompt: sourceContract.originalPrompt,
+      cwd,
+      projectRef,
+      summary: "A source requirement draft for the composed DAG.",
+      requirements: [{
+        title: "Parser tests",
+        statement: "Parser tests cover the requested behavior.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["Parser behavior is verified."],
+        businessRules: [],
+        acceptanceCriteria: [{ statement: "Parser tests pass.", evidenceIntent: ["test output"] }],
+        expectedOutcomeArtifacts: [{ description: "Verification report", mediaType: "text/markdown" }],
+        verificationIntent: ["Run the parser test suite."],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: [],
+      }],
+      nonGoals: [],
+      blockingInputs: [],
+    } satisfies GoalRequirementDraftInputV1);
+    const sourceDraftId = "draft-goal-requirements-source-run";
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: sourceDraftId,
+      scope: "planner",
+      status: "validation_ready",
+      payload: {
+        goalRequirementDraftId: sourceDraftId,
+        goalRequirementDraft: sourceDraft,
+        goalRequirementDraftHash: sourceDraft.draftHash,
+        goalDesignPhase: "validation_ready",
+        goalContract: sourceContract,
+        goalContractHash: goalContractHash(sourceContract),
+      },
+      summary: { goalRequirementDraftId: sourceDraftId, goalRequirementDraftHash: sourceDraft.draftHash },
+    });
+
+    const prepared = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(sourceContract),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    }, {
+      ...request("Add parser tests", "single-dag-source-lineage-1"),
+      cwd,
+      projectRef,
+    });
+    assert.equal(prepared.draftStatus, "ready_for_review");
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json || jsonb_build_object(
+            'goalRequirementDraftId', $2::text,
+            'goalRequirementDraftHash', $3::text,
+            'plannerRequest', payload_json->'plannerRequest' || jsonb_build_object(
+              'goalRequirementDraftId', $2::text,
+              'goalRequirementDraftHash', $3::text
+            )
+          ),
+          updated_at = now()
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [prepared.draftId, sourceDraftId, sourceDraft.draftHash],
+    );
+
+    const result = await confirmGoalDesignPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(sourceContract),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    }, { draftId: prepared.draftId, expectedPackageHash: prepared.goalDesignPackageHash! });
+    assert.equal(result.goalRequirementDraftId, sourceDraftId);
+    assert.equal(result.goalRequirementDraftHash, sourceDraft.draftHash);
+    assert.ok(result.runId);
+    const run = await db.one<{ runtime_context_json: Record<string, unknown> }>(
+      "select runtime_context_json from southstar.workflow_runs where id = $1",
+      [result.runId],
+    );
+    assert.equal(run.runtime_context_json.goalRequirementDraftId, sourceDraftId);
+    assert.equal(run.runtime_context_json.goalRequirementDraftHash, sourceDraft.draftHash);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
     await db.close();
   }
 });

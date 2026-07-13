@@ -7,6 +7,8 @@ export type RuntimeServerClient = ReturnType<typeof createRuntimeServerClient>;
 
 type PlannerRequestBody = {
   goalPrompt: string;
+  cwd?: string;
+  projectRef?: string;
   orchestrationMode?: "llm-constrained";
   composerMode?: "llm";
   scope?: string;

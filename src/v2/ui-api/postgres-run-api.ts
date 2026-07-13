@@ -26,7 +26,11 @@ import {
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
 import { validateGoalDesignPackage, type GoalDesignPackageV1 } from "../orchestration/goal-design.ts";
-import type { GoalRequirementDraftV1 } from "../orchestration/goal-requirement-draft.ts";
+import {
+  goalRequirementDraftHash,
+  validateGoalRequirementDraft,
+  type GoalRequirementDraftV1,
+} from "../orchestration/goal-requirement-draft.ts";
 import { captureRunLibrarySnapshotPg } from "../orchestration/run-library-snapshot.ts";
 import {
   appendHistoryEventPg,
@@ -189,8 +193,8 @@ type InterpretedPlannerDraftInput = CreatePostgresPlannerDraftInput & {
 };
 
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
-  await assertGoalRequirementSourceLineage(db, input);
   const plannerRequest = plannerRequestSnapshot(input);
+  await assertGoalRequirementSourceLineage(db, plannerRequest);
   input.onProgress?.({ stage: "request.normalized", message: "Planner draft request normalized." });
   const libraryVocabulary = await loadGoalContractLibraryVocabularyPg(db);
   let goalContract: GoalContractV1;
@@ -237,7 +241,7 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
 
 async function assertGoalRequirementSourceLineage(
   db: SouthstarDb,
-  input: CreatePostgresPlannerDraftInput,
+  input: PlannerDraftRequestContract,
 ): Promise<void> {
   const hasId = input.goalRequirementDraftId !== undefined;
   const hasHash = input.goalRequirementDraftHash !== undefined;
@@ -246,9 +250,18 @@ async function assertGoalRequirementSourceLineage(
   const source = await getResourceByKeyPg(db, "planner_draft", input.goalRequirementDraftId!);
   if (!source) throw new Error(`goal requirement source draft not found: ${input.goalRequirementDraftId}`);
   const sourcePayload = asRecord(source.payload);
-  const sourceDraft = sourcePayload.goalRequirementDraft && typeof sourcePayload.goalRequirementDraft === "object"
+  const sourceDraft = sourcePayload.goalRequirementDraft && typeof sourcePayload.goalRequirementDraft === "object" && !Array.isArray(sourcePayload.goalRequirementDraft)
     ? sourcePayload.goalRequirementDraft as Record<string, unknown>
     : undefined;
+  const sourceDraftValue = sourceDraft as GoalRequirementDraftV1 | undefined;
+  const sourceDraftIssues = sourceDraftValue ? validateGoalRequirementDraft(sourceDraftValue) : [];
+  const sourceDraftHash = sourceDraftValue
+    ? (() => {
+        const { draftHash: _draftHash, ...withoutHash } = sourceDraftValue;
+        return goalRequirementDraftHash(withoutHash);
+      })()
+    : undefined;
+  const sourcePersistedDraftHash = stringValue(sourcePayload.goalRequirementDraftHash);
   const sourceContract = goalContractFromStored(sourcePayload.goalContract);
   const sourcePhase = stringValue(sourcePayload.goalDesignPhase);
   const sourceContractHash = stringValue(sourcePayload.goalContractHash);
@@ -260,6 +273,10 @@ async function assertGoalRequirementSourceLineage(
   if (
     source.status === "stale"
     || !["validation_ready", "slice_review", "ready_to_compose", "composing", "dag_validated"].includes(sourcePhase ?? "")
+    || sourceDraftIssues.length > 0
+    || !sourceDraftHash
+    || sourceDraftHash !== sourceDraft?.draftHash
+    || sourcePersistedDraftHash !== sourceDraftHash
     || !sourceContract
     || sourceContractHash !== goalContractHash(sourceContract)
     || sourceDraft?.draftHash !== input.goalRequirementDraftHash
@@ -606,7 +623,7 @@ function plannerRequestSnapshot(input: PlannerDraftRequestContract): PlannerDraf
     ...(input.orchestrationMode !== undefined ? { orchestrationMode: input.orchestrationMode } : {}),
     ...(input.composerMode !== undefined ? { composerMode: input.composerMode } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
-    ...(input.compositionPlan !== undefined ? { compositionPlan: input.compositionPlan } : {}),
+    ...(input.compositionPlan !== undefined ? { compositionPlan: structuredClone(input.compositionPlan) } : {}),
   };
   if (input.libraryHints) {
     snapshot.libraryHints = plannerLibraryHintsSnapshot(input.libraryHints);

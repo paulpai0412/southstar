@@ -618,12 +618,14 @@ export async function retryPostgresGoalDesignAfterVocabularyApprovalPg(
   const request = plannerRequest as Record<string, unknown>;
   const goalPrompt = typeof request.goalPrompt === "string" ? request.goalPrompt : undefined;
   const cwd = typeof request.cwd === "string" ? request.cwd : undefined;
+  const projectRef = typeof request.projectRef === "string" ? request.projectRef : undefined;
   const mode = request.goalDesignMode === "auto_until_blocked" ? "auto_until_blocked" : "review_before_compose";
   const templatePolicy = request.templatePolicy as WorkflowTemplatePolicyV1 | undefined;
   if (!goalPrompt || !cwd || !templatePolicy) throw new Error(`planner draft request is incomplete: ${input.draftId}`);
   return await preparePostgresGoalDesignDraft(db, {
     goalPrompt,
     cwd,
+    ...(projectRef !== undefined ? { projectRef } : {}),
     mode,
     templatePolicy,
     goalInterpreter: input.goalInterpreter,
@@ -911,6 +913,7 @@ export async function preparePostgresGoalDesignDraft(
   input: {
     goalPrompt: string;
     cwd: string;
+    projectRef?: string;
     mode: GoalDesignMode;
     templatePolicy: WorkflowTemplatePolicyV1;
     goalInterpreter: GoalContractInterpreter;
@@ -930,6 +933,7 @@ export async function preparePostgresGoalDesignDraft(
     goalContract = await input.goalInterpreter.interpret({
       goalPrompt: input.goalPrompt,
       cwd: input.cwd,
+      ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
       libraryVocabulary,
       goalDesignSkill: skill,
       workspaceDiscovery,
@@ -939,6 +943,7 @@ export async function preparePostgresGoalDesignDraft(
     const plannerRequest = {
       goalPrompt: input.goalPrompt,
       cwd: input.cwd,
+      ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
       goalDesignMode: input.mode,
       templatePolicy: input.templatePolicy,
     };
@@ -975,6 +980,7 @@ export async function preparePostgresGoalDesignDraft(
     return await persistGoalContractOnlyDraft(db, {
       goalPrompt: input.goalPrompt,
       cwd: input.cwd,
+      ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
       goalContract,
       goalContractHash: contractHash,
       skill,
@@ -1011,6 +1017,7 @@ export async function preparePostgresGoalDesignDraft(
       plannerRequest: {
         goalPrompt: input.goalPrompt,
         cwd: input.cwd,
+        ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
         goalDesignMode: input.mode,
         templatePolicy: input.templatePolicy,
       },
@@ -1035,6 +1042,7 @@ export async function preparePostgresGoalDesignDraft(
       plannerRequest: {
         goalPrompt: input.goalPrompt,
         cwd: input.cwd,
+        ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
         goalDesignMode: input.mode,
         templatePolicy: input.templatePolicy,
       },
@@ -1069,6 +1077,7 @@ async function persistGoalContractOnlyDraft(
   input: {
     goalPrompt: string;
     cwd: string;
+    projectRef?: string;
     goalContract: GoalContractV1;
     goalContractHash: string;
     skill: { objectKey: string; versionRef: string };
@@ -1088,7 +1097,11 @@ async function persistGoalContractOnlyDraft(
     payload: {
       goalContract: input.goalContract,
       goalContractHash: input.goalContractHash,
-      plannerRequest: { goalPrompt: input.goalPrompt, cwd: input.cwd },
+      plannerRequest: {
+        goalPrompt: input.goalPrompt,
+        cwd: input.cwd,
+        ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
+      },
       goalDesignSkillRef: input.skill.objectKey,
       goalDesignSkillVersionRef: input.skill.versionRef,
       workspaceDiscoveryHash: input.workspaceDiscoveryHash,

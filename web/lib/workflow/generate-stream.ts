@@ -119,6 +119,7 @@ export async function generateWorkflowDagStream(input: {
   expectedPackageHash?: string | null;
   selectedSliceId?: string | null;
   cwd?: string | null;
+  projectRef?: string | null;
   goalDesignMode?: GoalDesignMode;
   templatePolicy?: WorkflowTemplatePolicyV1;
   idempotencyKey?: string;
@@ -134,6 +135,7 @@ export async function generateWorkflowDagStream(input: {
     body: JSON.stringify({
       prompt: input.prompt,
       ...(input.cwd ? { cwd: input.cwd } : {}),
+      ...(input.projectRef ? { projectRef: input.projectRef } : {}),
       ...(!input.draftId ? { idempotencyKey: input.idempotencyKey ?? crypto.randomUUID() } : {}),
       ...(!input.draftId && input.goalDesignMode ? { goalDesignMode: input.goalDesignMode } : {}),
       ...(!input.draftId && input.templatePolicy ? { templatePolicy: input.templatePolicy } : {}),

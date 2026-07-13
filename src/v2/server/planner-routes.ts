@@ -77,6 +77,7 @@ export async function handlePlannerRoute(
     const runGoalRequest: RunGoalRequest = {
       goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
       cwd: requiredString(body.cwd, "cwd"),
+      ...(optionalString(body.projectRef) !== undefined ? { projectRef: optionalString(body.projectRef) } : {}),
       idempotencyKey: requiredString(body.idempotencyKey, "idempotencyKey"),
       goalDesignMode: optionalGoalDesignMode(body.goalDesignMode),
       templatePolicy: optionalWorkflowTemplatePolicy(body.templatePolicy),
@@ -110,6 +111,7 @@ export async function handlePlannerRoute(
       orchestrationMode?: unknown;
       composerMode?: unknown;
       cwd?: unknown;
+      projectRef?: unknown;
       compositionPlan?: unknown;
       libraryHints?: unknown;
     }>(request);
@@ -224,6 +226,7 @@ export async function handlePlannerRoute(
       orchestrationMode?: unknown;
       composerMode?: unknown;
       cwd?: unknown;
+      projectRef?: unknown;
       compositionPlan?: unknown;
       libraryHints?: unknown;
       idempotencyKey?: unknown;
@@ -539,6 +542,7 @@ function createPlannerDraftStreamResponse(
     orchestrationMode?: unknown;
     composerMode?: unknown;
     cwd?: unknown;
+    projectRef?: unknown;
     compositionPlan?: unknown;
     libraryHints?: unknown;
     idempotencyKey?: unknown;
@@ -791,16 +795,19 @@ async function readJsonBody<T>(request: Request): Promise<T> {
 function runGoalRequestFromPlannerDraftBody(body: {
   goalPrompt?: unknown;
   cwd?: unknown;
+  projectRef?: unknown;
   idempotencyKey?: unknown;
   goalDesignMode?: unknown;
   templatePolicy?: unknown;
 }): RunGoalRequest {
   const goalPrompt = requiredString(body.goalPrompt, "goalPrompt");
   const cwd = optionalString(body.cwd) ?? process.cwd();
+  const projectRef = optionalString(body.projectRef);
   return {
     goalPrompt,
     cwd,
-    idempotencyKey: optionalString(body.idempotencyKey) ?? legacyPlannerDraftIdempotencyKey(goalPrompt, cwd),
+    ...(projectRef !== undefined ? { projectRef } : {}),
+    idempotencyKey: optionalString(body.idempotencyKey) ?? legacyPlannerDraftIdempotencyKey(goalPrompt, cwd, projectRef),
     goalDesignMode: optionalGoalDesignMode(body.goalDesignMode),
     templatePolicy: optionalWorkflowTemplatePolicy(body.templatePolicy),
   };
@@ -825,8 +832,8 @@ function plannerDraftReceiptFromGoalResult(result: RunGoalResult, goalPrompt = "
   };
 }
 
-function legacyPlannerDraftIdempotencyKey(goalPrompt: string, cwd: string): string {
-  return `planner-draft-${createHash("sha256").update(`${cwd}\n${goalPrompt}`).digest("hex").slice(0, 24)}`;
+function legacyPlannerDraftIdempotencyKey(goalPrompt: string, cwd: string, projectRef?: string): string {
+  return `planner-draft-${createHash("sha256").update(`${cwd}\n${projectRef ?? ""}\n${goalPrompt}`).digest("hex").slice(0, 24)}`;
 }
 
 function optionalOrchestrationMode(value: unknown): "llm-constrained" | undefined {
