@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 import test from "node:test";
 import { openSouthstarDb } from "../../src/v2/db/postgres.ts";
 import type { WorkflowRunInput } from "../../src/v2/stores/postgres-runtime-store.ts";
-import { createWorkflowRunPg, getResourceByKeyPg, getWorkflowRunPg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createWorkflowRunPg, getResourceByKeyPg, getWorkflowRunPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import type { UpsertLibraryObjectInput } from "../../src/v2/design-library/library-graph-store.ts";
 import {
   createLibraryObject,
@@ -17,11 +17,12 @@ import {
 import {
   LibraryReconcileError,
   acquireLibraryReconcileLockPg,
+  commitLibraryFilePublicationPg,
   loadLibraryReadinessPg,
   reconcileLibraryFilesPg,
 } from "../../src/v2/design-library/files/library-reconcile-service.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
-import { prepareLibraryFilePublication } from "../../src/v2/design-library/files/library-file-store.ts";
+import { listLibraryFilePublications, prepareLibraryFilePublication } from "../../src/v2/design-library/files/library-file-store.ts";
 
 test("reconcile publishes a closed approved snapshot and is idempotent", async () => {
   await withPostgresTestDb(async (db) => {
@@ -138,6 +139,7 @@ test("abandoned pre-publish staging is invisible to startup reconcile", async ()
     const root = await createMinimalReadyLibraryRoot();
     const publication = await prepareLibraryFilePublication({
       root,
+      identity: { kind: "library_file_patch", relativePath: "agents/staged.agent.md" },
       files: [{
         relativePath: "agents/staged.agent.md",
         mode: "create",
@@ -165,6 +167,160 @@ This file must remain invisible until publish.
       await publication.discard();
     }
   });
+});
+
+test("startup recovery restores files published before an uncommitted crash", async () => {
+  await withPostgresTestDb(async (db) => {
+    const root = await createMinimalReadyLibraryRoot();
+    const relativePath = "skills/goal.skill.md";
+    const original = await readFile(join(root, relativePath), "utf8");
+    const changed = approvedSkill("skill.goal-any", "goal_design", [], "Published before commit crash");
+    const publication = await prepareLibraryFilePublication({
+      root,
+      identity: { kind: "library_file_patch", relativePath },
+      files: [{ relativePath, content: changed, mode: "replace", expectedContent: original }],
+    });
+    await assert.rejects(
+      () => db.tx(async (tx) => {
+        await acquireLibraryReconcileLockPg(tx);
+        await publication.publish();
+        throw new Error("simulated process crash before commit");
+      }),
+      /simulated process crash before commit/,
+    );
+    const [journal] = await listLibraryFilePublications({ root });
+    assert.equal(journal.manifest.phase, "published");
+    assert.deepEqual(journal.manifest.identity, { kind: "library_file_patch", relativePath });
+    assert.equal(journal.manifest.entries[0]?.expectedOriginalHash, createHash("sha256").update(original).digest("hex"));
+    assert.equal(journal.manifest.entries[0]?.newHash, createHash("sha256").update(changed).digest("hex"));
+    await access(join(journal.stagingRoot, journal.manifest.entries[0]!.originalContentRef!));
+    await access(join(journal.stagingRoot, journal.manifest.entries[0]!.newContentRef));
+    assert.equal(await readFile(join(root, relativePath), "utf8"), changed);
+
+    const recovered = await reconcileLibraryFilesPg(db, { root, trigger: "startup" });
+    assert.equal(await readFile(join(root, relativePath), "utf8"), original);
+    assert.equal((await listLibraryFilePublications({ root })).length, 0);
+    assert.equal(
+      recovered.included.find((item) => item.objectKey === "skill.goal-any")?.sourceHash,
+      createHash("sha256").update(original).digest("hex"),
+    );
+  });
+});
+
+test("failed create publication preserves an operator file with identical content", async () => {
+  const root = await createMinimalReadyLibraryRoot();
+  const relativePath = "skills/operator-created.skill.md";
+  const content = approvedSkill("skill.operator-created", "general", [], "Operator-created content");
+  const publication = await prepareLibraryFilePublication({
+    root,
+    identity: { kind: "library_file_patch", relativePath },
+    files: [{ relativePath, content, mode: "create" }],
+  });
+  try {
+    await writeFile(join(root, relativePath), content);
+    await assert.rejects(() => publication.publish(), /EEXIST/);
+    assert.equal(await readFile(join(root, relativePath), "utf8"), content);
+  } finally {
+    await publication.discard();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("startup recovery rolls forward a committed publication left before cleanup", async () => {
+  await withPostgresTestDb(async (db) => {
+    const root = await createMinimalReadyLibraryRoot();
+    const relativePath = "skills/goal.skill.md";
+    const original = await readFile(join(root, relativePath), "utf8");
+    const changed = approvedSkill("skill.goal-any", "goal_design", [], "Committed before cleanup crash");
+    const importDraftId = `library-import-${randomUUID()}`;
+    const publication = await prepareLibraryFilePublication({
+      root,
+      identity: {
+        kind: "candidate_install",
+        importDraftId,
+        plannerDraftId: "planner-crash-recovery",
+        originGoalContractHash: "contract-hash",
+        originGoalRequirementDraftHash: "requirement-hash",
+        originGoalValidationResolutionHash: "resolution-hash",
+        originGoalValidationGapHash: "gap-hash",
+      },
+      files: [{ relativePath, content: changed, mode: "replace", expectedContent: original }],
+    });
+    await db.tx(async (tx) => {
+      await acquireLibraryReconcileLockPg(tx);
+      await publication.publish();
+      await upsertRuntimeResourcePg(tx, {
+        resourceType: "library_import_draft",
+        resourceKey: importDraftId,
+        scope: "library",
+        status: "installed",
+        payload: {
+          install: { publicationId: publication.publicationId },
+          originGoalDraftId: "planner-crash-recovery",
+          originGoalContractHash: "contract-hash",
+          originGoalRequirementDraftHash: "requirement-hash",
+          originGoalValidationResolutionHash: "resolution-hash",
+          originGoalValidationGapHash: "gap-hash",
+        },
+        summary: {},
+      });
+      await commitLibraryFilePublicationPg(tx, publication);
+    });
+    assert.equal((await listLibraryFilePublications({ root })).length, 1);
+
+    const recovered = await reconcileLibraryFilesPg(db, { root, trigger: "startup" });
+    assert.equal(await readFile(join(root, relativePath), "utf8"), changed);
+    assert.equal((await listLibraryFilePublications({ root })).length, 0);
+    assert.equal(
+      recovered.included.find((item) => item.objectKey === "skill.goal-any")?.sourceHash,
+      createHash("sha256").update(changed).digest("hex"),
+    );
+  });
+});
+
+test("waiting reconcile restores an uncommitted publication after transaction failure", async () => {
+  const writerDb = await createTestPostgresDb();
+  const reconcileDb = await openSouthstarDb(writerDb.databaseUrl);
+  const root = await createMinimalReadyLibraryRoot();
+  const relativePath = "skills/goal.skill.md";
+  const original = await readFile(join(root, relativePath), "utf8");
+  const changed = approvedSkill("skill.goal-any", "goal_design", [], "Failed commit while reconcile waits");
+  const publication = await prepareLibraryFilePublication({
+    root,
+    identity: { kind: "library_file_patch", relativePath },
+    files: [{ relativePath, content: changed, mode: "replace", expectedContent: original }],
+  });
+  let published!: () => void;
+  let release!: () => void;
+  const publishedSignal = new Promise<void>((resolve) => { published = resolve; });
+  const releaseSignal = new Promise<void>((resolve) => { release = resolve; });
+  try {
+    const failedWriter = writerDb.tx(async (tx) => {
+      await acquireLibraryReconcileLockPg(tx);
+      await publication.publish();
+      await commitLibraryFilePublicationPg(tx, publication);
+      published();
+      await releaseSignal;
+      throw new Error("forced commit failure");
+    });
+    await publishedSignal;
+    const waitingReconcile = reconcileLibraryFilesPg(reconcileDb, { root, trigger: "startup" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    release();
+    await assert.rejects(() => failedWriter, /forced commit failure/);
+    const recovered = await waitingReconcile;
+    assert.equal(await readFile(join(root, relativePath), "utf8"), original);
+    assert.equal((await listLibraryFilePublications({ root })).length, 0);
+    assert.equal(
+      recovered.included.find((item) => item.objectKey === "skill.goal-any")?.sourceHash,
+      createHash("sha256").update(original).digest("hex"),
+    );
+  } finally {
+    release();
+    await reconcileDb.close();
+    await writerDb.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("snapshot resources are immutable while current readiness follows the latest reconcile", async () => {

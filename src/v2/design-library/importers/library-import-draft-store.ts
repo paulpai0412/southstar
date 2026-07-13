@@ -7,11 +7,14 @@ import {
   readLibraryFile,
   prepareLibraryFilePublication,
   validateLibraryFileGraphReferences,
+  type LibraryFilePublicationIdentity,
 } from "../files/library-file-store.ts";
 import type { LibraryFileRecord } from "../files/library-file-types.ts";
 import {
   loadLibraryFileCatalog,
   acquireLibraryReconcileLockPg,
+  commitLibraryFilePublicationPg,
+  finalizeCommittedLibraryPublication,
   reconcileLibraryCatalogLockedPg,
   type LibraryReconcileResult,
 } from "../files/library-reconcile-service.ts";
@@ -345,6 +348,24 @@ function candidateObjectKind(kind: LibraryImportCandidateKind): string {
   return "evaluator_profile";
 }
 
+function libraryPublicationIdentity(
+  kind: "candidate_install" | "legacy_approval",
+  importDraftId: string,
+  payload: Record<string, unknown>,
+): LibraryFilePublicationIdentity {
+  const stringField = (key: string): string | undefined =>
+    typeof payload[key] === "string" && payload[key].trim().length > 0 ? payload[key] as string : undefined;
+  return {
+    kind,
+    importDraftId,
+    ...(stringField("originGoalDraftId") ? { plannerDraftId: stringField("originGoalDraftId") } : {}),
+    ...(stringField("originGoalContractHash") ? { originGoalContractHash: stringField("originGoalContractHash") } : {}),
+    ...(stringField("originGoalRequirementDraftHash") ? { originGoalRequirementDraftHash: stringField("originGoalRequirementDraftHash") } : {}),
+    ...(stringField("originGoalValidationResolutionHash") ? { originGoalValidationResolutionHash: stringField("originGoalValidationResolutionHash") } : {}),
+    ...(stringField("originGoalValidationGapHash") ? { originGoalValidationGapHash: stringField("originGoalValidationGapHash") } : {}),
+  };
+}
+
 export async function approveLibraryImportDraft(
   db: SouthstarDb,
   input: { root: string; draftId: string; actor: string; reason: string },
@@ -358,6 +379,7 @@ export async function approveLibraryImportDraft(
     const files = preflighted.map((file) => ({ relativePath: file.relativePath }));
     publication = await prepareLibraryFilePublication({
       root: input.root,
+      identity: libraryPublicationIdentity("legacy_approval", input.draftId, reserved.payload),
       files: preflighted.map((file) => ({ relativePath: file.relativePath, content: file.content, mode: "create" })),
     });
 
@@ -397,6 +419,7 @@ export async function approveLibraryImportDraft(
               approval: reserved.approval,
               applied: {
                 ...applied,
+                publicationId: publication!.publicationId,
                 reconcile,
                 librarySnapshotHash: reconcile.snapshotHash,
                 synced,
@@ -415,13 +438,15 @@ export async function approveLibraryImportDraft(
         if ((updated.rowCount ?? 0) === 0) {
           throw new Error(`library import draft approval lease was lost: ${input.draftId}`);
         }
+        await commitLibraryFilePublicationPg(tx, publication!);
         return { reconcile, synced };
       } catch (error) {
         await publication!.rollbackPublished();
+        await publication!.discard();
         throw error;
       }
     });
-    await publication.discard().catch(() => {});
+    await finalizeCommittedLibraryPublication(publication);
 
     return {
       draftId: input.draftId,
@@ -433,8 +458,6 @@ export async function approveLibraryImportDraft(
       librarySnapshotHash: reconcile.snapshotHash,
     };
   } catch (error) {
-    await publication?.rollbackPublished();
-    await publication?.discard();
     await markLibraryImportDraftApplyFailed(db, reserved, error);
     throw error;
   }
@@ -512,6 +535,7 @@ export async function installLibraryImportCandidates(
 
     publication = await prepareLibraryFilePublication({
       root: input.root,
+      identity: libraryPublicationIdentity("candidate_install", input.draftId, draft.payload),
       files: preflighted.flatMap((file) => [
         {
           relativePath: file.relativePath,
@@ -599,6 +623,7 @@ export async function installLibraryImportCandidates(
           selectedCandidateIds: input.selectedCandidateIds,
           ...(input.selectedEdgeIds ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
           generatedOntologyAt: installGeneratedAt,
+          publicationId: publication!.publicationId,
           ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
           installedObjectKeys: installedObjects.map((object) => object.objectKey),
           installedObjects: installedObjects.map((object) => ({
@@ -648,6 +673,7 @@ export async function installLibraryImportCandidates(
         if ((updated.rowCount ?? 0) === 0) {
           throw new Error(`library import draft install state changed: ${input.draftId}`);
         }
+        await commitLibraryFilePublicationPg(tx, publication!);
 
         return {
           draftId: input.draftId,
@@ -662,12 +688,16 @@ export async function installLibraryImportCandidates(
         };
       } catch (error) {
         await publication!.rollbackPublished();
+        await publication!.discard();
         throw error;
       }
     });
 
-    if ("transactionGuardRejected" in result) throw result.error;
-    await publication.discard().catch(() => {});
+    if ("transactionGuardRejected" in result) {
+      await publication.discard();
+      throw result.error;
+    }
+    await finalizeCommittedLibraryPublication(publication);
 
     try {
       input.progress?.({
@@ -684,8 +714,6 @@ export async function installLibraryImportCandidates(
     }
     return result;
   } catch (error) {
-    await publication?.rollbackPublished();
-    await publication?.discard();
     await markLibraryImportCandidateInstallFailed(db, input.draftId, error);
     throw error;
   }

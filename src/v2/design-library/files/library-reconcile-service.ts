@@ -12,13 +12,16 @@ import {
   listFileBackedLibraryObjectsForUpdate,
   updateLibraryObjectStatus,
 } from "../library-graph-store.ts";
+import { canonicalJson } from "../canonical-json.ts";
 import type { LibraryDefinitionKind } from "../types.ts";
 import {
   libraryFileReferences,
+  listLibraryFilePublications,
   listLibraryFiles,
   prepareLibraryFilePublication,
   readLibraryFile,
   syncLibraryFileRecordsToGraphPg,
+  type LibraryFilePublication,
 } from "./library-file-store.ts";
 import type { LibraryFileRecord } from "./library-file-types.ts";
 
@@ -239,14 +242,19 @@ export async function reconcileLibraryFilesPg(
   db: SouthstarDb,
   input: { root: string; trigger: LibraryReconcileTrigger },
 ): Promise<LibraryReconcileResult> {
-  return await withLibraryReconcileLockPg(db, async (tx) => {
+  const recovered: LibraryFilePublication[] = [];
+  const result = await withLibraryReconcileLockPg(db, async (tx) => {
+    recovered.push(...await recoverLibraryFilePublicationsLockedPg(tx, input.root));
     const catalog = await loadLibraryFileCatalog({ root: input.root });
     const { result } = await reconcileLibraryCatalogLockedPg(tx, { ...input, catalog });
     return result;
   });
+  for (const publication of recovered) await publication.discard().catch(() => {});
+  return result;
 }
 
 export const LIBRARY_RECONCILE_LOCK_KEY = "southstar.library.reconcile.v1";
+export const LIBRARY_PUBLICATION_COMMIT_RESOURCE_TYPE = "library_file_publication_commit";
 
 export async function acquireLibraryReconcileLockPg(tx: SouthstarDb): Promise<void> {
   await tx.query("select pg_advisory_xact_lock(hashtext($1))", [LIBRARY_RECONCILE_LOCK_KEY]);
@@ -262,6 +270,106 @@ export async function withLibraryReconcileLockPg<T>(
   });
 }
 
+export async function commitLibraryFilePublicationPg(
+  tx: SouthstarDb,
+  publication: LibraryFilePublication,
+): Promise<void> {
+  await insertRuntimeResourceIfAbsentPg(tx, {
+    resourceType: LIBRARY_PUBLICATION_COMMIT_RESOURCE_TYPE,
+    resourceKey: publication.publicationId,
+    scope: "library",
+    status: "committed",
+    title: `Committed Library publication ${publication.publicationId}`,
+    payload: {
+      schemaVersion: "southstar.library_file_publication_commit.v1",
+      publicationId: publication.publicationId,
+      identity: publication.manifest.identity,
+      entries: publication.manifest.entries.map((entry) => ({
+        relativePath: entry.relativePath,
+        mode: entry.mode,
+        expectedOriginalHash: entry.expectedOriginalHash,
+        newHash: entry.newHash,
+      })),
+      committedAt: new Date().toISOString(),
+    },
+    summary: {
+      publicationId: publication.publicationId,
+      kind: publication.manifest.identity.kind,
+      entryCount: publication.manifest.entries.length,
+    },
+  });
+}
+
+export async function finalizeCommittedLibraryPublication(
+  publication: LibraryFilePublication,
+): Promise<void> {
+  try {
+    await publication.markCommittedOrRecoverable();
+    await publication.discard();
+  } catch {
+    // The committed database marker is the recovery authority. Leaving the
+    // durable journal intact lets startup converge the filesystem and graph.
+  }
+}
+
+export async function recoverLibraryFilePublicationsLockedPg(
+  tx: SouthstarDb,
+  root: string,
+): Promise<LibraryFilePublication[]> {
+  const publications = await listLibraryFilePublications({ root });
+  for (const publication of publications) {
+    if (await libraryPublicationCommittedPg(tx, publication)) {
+      await publication.rollForwardCommitted();
+    } else {
+      await publication.rollbackPublished();
+    }
+  }
+  return publications;
+}
+
+async function libraryPublicationCommittedPg(
+  tx: SouthstarDb,
+  publication: LibraryFilePublication,
+): Promise<boolean> {
+  const marker = await getResourceByKeyPg(tx, LIBRARY_PUBLICATION_COMMIT_RESOURCE_TYPE, publication.publicationId);
+  if (marker?.status !== "committed") return false;
+  const markerPayload = marker.payload as Record<string, unknown>;
+  const committedPublication = {
+    schemaVersion: markerPayload.schemaVersion,
+    publicationId: markerPayload.publicationId,
+    identity: markerPayload.identity,
+    entries: markerPayload.entries,
+  };
+  const expectedPublication = {
+    schemaVersion: "southstar.library_file_publication_commit.v1",
+    publicationId: publication.publicationId,
+    identity: publication.manifest.identity,
+    entries: publication.manifest.entries.map((entry) => ({
+      relativePath: entry.relativePath,
+      mode: entry.mode,
+      expectedOriginalHash: entry.expectedOriginalHash,
+      newHash: entry.newHash,
+    })),
+  };
+  if (canonicalJson(committedPublication) !== canonicalJson(expectedPublication)) return false;
+  const identity = publication.manifest.identity;
+  if (identity.kind === "library_file_patch") return true;
+  if (!identity.importDraftId) return false;
+  const importDraft = await getResourceByKeyPg(tx, "library_import_draft", identity.importDraftId);
+  const expectedStatus = identity.kind === "candidate_install" ? "installed" : "approved";
+  if (importDraft?.status !== expectedStatus) return false;
+  const payload = importDraft.payload as Record<string, unknown>;
+  const ownerState = identity.kind === "candidate_install"
+    ? payload.install as Record<string, unknown> | undefined
+    : payload.applied as Record<string, unknown> | undefined;
+  if (ownerState?.publicationId !== publication.publicationId) return false;
+  return (!identity.plannerDraftId || payload.originGoalDraftId === identity.plannerDraftId)
+    && (!identity.originGoalContractHash || payload.originGoalContractHash === identity.originGoalContractHash)
+    && (!identity.originGoalRequirementDraftHash || payload.originGoalRequirementDraftHash === identity.originGoalRequirementDraftHash)
+    && (!identity.originGoalValidationResolutionHash || payload.originGoalValidationResolutionHash === identity.originGoalValidationResolutionHash)
+    && (!identity.originGoalValidationGapHash || (payload.originGoalValidationGapHash ?? payload.originGoalValidationResolutionHash) === identity.originGoalValidationGapHash);
+}
+
 export async function writeLibraryFileWithLockPg(
   db: SouthstarDb,
   input: { root: string; relativePath: string; content: string },
@@ -274,6 +382,7 @@ export async function writeLibraryFileWithLockPg(
   );
   const publication = await prepareLibraryFilePublication({
     root: input.root,
+    identity: { kind: "library_file_patch", relativePath: input.relativePath },
     files: [{
       relativePath: input.relativePath,
       content: input.content,
@@ -281,23 +390,19 @@ export async function writeLibraryFileWithLockPg(
       ...(current ? { expectedContent: current.content } : {}),
     }],
   });
-  try {
-    const result = await withLibraryReconcileLockPg(db, async () => {
+  const result = await withLibraryReconcileLockPg(db, async (tx) => {
+    try {
       await publication.publish();
-      try {
-        return await readLibraryFile({ root: input.root, relativePath: input.relativePath });
-      } catch (error) {
-        await publication.rollbackPublished();
-        throw error;
-      }
-    });
-    await publication.discard().catch(() => {});
-    return result;
-  } catch (error) {
-    await publication.rollbackPublished();
-    await publication.discard();
-    throw error;
-  }
+      await commitLibraryFilePublicationPg(tx, publication);
+      return await readLibraryFile({ root: input.root, relativePath: input.relativePath });
+    } catch (error) {
+      await publication.rollbackPublished();
+      await publication.discard();
+      throw error;
+    }
+  });
+  await finalizeCommittedLibraryPublication(publication);
+  return result;
 }
 
 export async function reconcileLibraryCatalogLockedPg(
