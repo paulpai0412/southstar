@@ -607,6 +607,7 @@ test("LibrarySidebarPanel renders current Library readiness diagnostics", async 
     await page.getByText("Library ready").waitFor();
     await page.getByText("1 included · 1 excluded").waitFor();
     await page.getByText("missing tool.absent").waitFor();
+    await page.getByText(/skills\/imported\.skill\.md/).waitFor();
   }, async (page) => {
     await page.route("**/api/sessions**", async (route) => {
       await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions: [] }) });

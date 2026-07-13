@@ -51,6 +51,8 @@ export type LibraryImportDraftApprovalResult = {
   proposal: LibraryImportProposal;
   files: Array<{ relativePath: string }>;
   synced: Array<{ object?: unknown; edges?: unknown[] }>;
+  reconcile: LibraryReconcileResult;
+  librarySnapshotHash: string;
 };
 
 export function unwrapEnvelope<T>(payload: unknown): T {

@@ -28,6 +28,7 @@ import {
   findLibraryObjectByKey,
   upsertLibraryObject,
 } from "../../src/v2/design-library/library-graph-store.ts";
+import { loadLibraryReadinessPg } from "../../src/v2/design-library/files/library-reconcile-service.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -919,6 +920,84 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
       "uses",
       "requires",
     ]);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("candidate install reconciles the complete Library root", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-reconcile-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [{ objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true }],
+    proposedEdges: [],
+  });
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "review skill", content: "Create a review skill." },
+      scope: "software",
+      llmProvider: provider,
+    });
+
+    const installed = await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: ["skill.review"],
+      actor: "operator",
+      reason: "reconcile review skill",
+      llmProvider: provider,
+    });
+
+    assert.equal(installed.installedObjects[0]?.objectKey, "skill.review");
+    assert.equal(installed.installedObjects[0]?.object.status, "approved");
+    const readiness = await loadLibraryReadinessPg(db);
+    assert.equal(readiness?.ready, true);
+    assert.deepEqual(
+      [readiness?.includedCount, readiness?.excludedCount],
+      [3, 0],
+    );
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("candidate install restores overwritten files when reconcile fails", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-rollback-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [{ objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true }],
+    proposedEdges: [],
+  });
+  const originalContent = approvedWorkerSkill({ id: "skill.review", requiresToolRefs: [] });
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/review.skill.md"), originalContent);
+    await writeFile(join(libraryRoot, "skills/broken.skill.md"), "---\nstatus: approved\n---\n");
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "review skill", content: "Create a review skill." },
+      scope: "software",
+      llmProvider: provider,
+    });
+
+    await assert.rejects(
+      () => installLibraryImportCandidates(db, {
+        root: libraryRoot,
+        draftId: draft.draftId,
+        selectedCandidateIds: ["skill.review"],
+        actor: "operator",
+        reason: "broken root should rollback overwrite",
+        llmProvider: provider,
+      }),
+      /library_reconcile_failed|id: id is required/,
+    );
+    assert.equal(await readFile(join(libraryRoot, "skills/review.skill.md"), "utf8"), originalContent);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });

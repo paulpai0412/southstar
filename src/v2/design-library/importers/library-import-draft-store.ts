@@ -6,7 +6,6 @@ import { parseLibraryFileContent } from "../files/library-file-parser.ts";
 import {
   readLibraryFile,
   removeLibraryFileIfContentMatches,
-  syncLibraryFileRecordToGraph,
   validateLibraryFileGraphReferences,
   writeLibraryFile,
   writeNewLibraryFile,
@@ -107,6 +106,11 @@ type SupportingLibraryImportFile = {
   relativePath: string;
   content: Buffer;
   existingFile?: boolean;
+};
+
+type LibraryImportFileSnapshot = {
+  relativePath: string;
+  content: string | Buffer;
 };
 
 export type LibraryImportProgressListener = (event: {
@@ -343,6 +347,7 @@ export async function installLibraryImportCandidates(
   },
 ): Promise<LibraryImportCandidateInstallResult> {
   const createdFiles: Array<{ relativePath: string; content: string | Buffer }> = [];
+  const overwrittenFiles: LibraryImportFileSnapshot[] = [];
 
   try {
     const draft = await loadLibraryImportCandidateDraft(db, input.draftId);
@@ -400,6 +405,10 @@ export async function installLibraryImportCandidates(
 
     for (const file of preflighted) {
       try {
+        if (file.existingFile) {
+          const existing = await readLibraryFile({ root: input.root, relativePath: file.relativePath });
+          overwrittenFiles.push({ relativePath: file.relativePath, content: existing.content });
+        }
         const write = file.existingFile ? writeLibraryFile : writeNewLibraryFile;
         await write({
           root: input.root,
@@ -408,6 +417,12 @@ export async function installLibraryImportCandidates(
         });
         if (!file.existingFile) createdFiles.push({ relativePath: file.relativePath, content: file.content });
         for (const supportingFile of file.supportingFiles) {
+          if (supportingFile.existingFile) {
+            overwrittenFiles.push({
+              relativePath: supportingFile.relativePath,
+              content: await readFile(resolveLibraryImportPath(input.root, supportingFile.relativePath)),
+            });
+          }
           await writeSupportingImportFile({
             root: input.root,
             relativePath: supportingFile.relativePath,
@@ -429,13 +444,15 @@ export async function installLibraryImportCandidates(
       }
     }
 
+    const catalog = await loadLibraryFileCatalog({ root: input.root });
     const result = await db.tx(async (tx) => {
-      const syncedFiles: Array<Awaited<ReturnType<typeof syncLibraryFileRecordToGraph>>> = [];
-      for (const file of preflighted) {
-        syncedFiles.push(await syncLibraryFileRecordToGraph(tx, file.file));
-      }
+      const { graphSync } = await reconcileLibraryCatalogPg(tx, {
+        catalog,
+        root: input.root,
+        trigger: "import_approval",
+      });
       const installedObjects = preflighted.map((file) => {
-        const object = syncedFiles.find((synced) => synced.object.objectKey === file.file.objectKey)?.object;
+        const object = graphSync.results.find((synced) => synced.object.objectKey === file.file.objectKey)?.object;
         if (!object) throw new Error(`library object sync result missing: ${file.file.objectKey}`);
         return {
           objectKey: file.file.objectKey,
@@ -547,6 +564,7 @@ export async function installLibraryImportCandidates(
     return result;
   } catch (error) {
     await cleanupCreatedImportFiles(input.root, createdFiles);
+    await restoreOverwrittenImportFiles(input.root, overwrittenFiles);
     await markLibraryImportCandidateInstallFailed(db, input.draftId, error);
     throw error;
   }
@@ -1173,6 +1191,21 @@ async function cleanupCreatedImportFiles(
     } else {
       await removeSupportingImportFileIfContentMatches({ root, relativePath: file.relativePath, content: file.content });
     }
+  }
+}
+
+async function restoreOverwrittenImportFiles(
+  root: string,
+  files: LibraryImportFileSnapshot[],
+): Promise<void> {
+  for (const file of [...files].reverse()) {
+    if (typeof file.content === "string") {
+      await writeLibraryFile({ root, relativePath: file.relativePath, content: file.content });
+      continue;
+    }
+    const absolutePath = resolveLibraryImportPath(root, file.relativePath);
+    await mkdir(path.dirname(absolutePath), { recursive: true });
+    await writeFile(absolutePath, file.content);
   }
 }
 

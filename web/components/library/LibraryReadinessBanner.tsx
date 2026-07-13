@@ -7,7 +7,10 @@ export function LibraryReadinessBanner({ readiness }: { readiness: LibraryReadin
       <span>{readiness.snapshotHash ? readiness.snapshotHash.slice(0, 12) : "No successful snapshot"}</span>
       <span>{readiness.includedCount} included · {readiness.excludedCount} excluded</span>
       {readiness.diagnostics.map((diagnostic) => (
-        <p key={`${diagnostic.code}:${diagnostic.paths.join("|")}`}>{diagnostic.message}</p>
+        <p key={`${diagnostic.code}:${diagnostic.paths.join("|")}`}>
+          {diagnostic.message}
+          {diagnostic.paths.length > 0 ? ` (${diagnostic.paths.join(", ")})` : ""}
+        </p>
       ))}
     </section>
   );
