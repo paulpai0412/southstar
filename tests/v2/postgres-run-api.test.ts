@@ -301,7 +301,14 @@ test("candidate install resumes the same Goal draft and reaches validation_ready
       const envelope = await response.json() as any;
       assert.equal(response.status, 200, JSON.stringify(envelope));
       assert.equal(envelope.result.goalValidationResume.ok, true);
-      assert.equal(envelope.result.goalValidationResume.status, "validation_ready");
+      const unexpectedFollowUp = envelope.result.goalValidationResume.libraryImportDraftId
+        ? await getResourceByKeyPg(db, "library_import_draft", envelope.result.goalValidationResume.libraryImportDraftId)
+        : undefined;
+      assert.equal(
+        envelope.result.goalValidationResume.status,
+        "validation_ready",
+        JSON.stringify({ resume: envelope.result.goalValidationResume, followUp: unexpectedFollowUp?.payload }),
+      );
 
       const stored = await getResourceByKeyPg(db, "planner_draft", goal.draftId);
       assert.equal((stored!.payload as any).goalDesignPhase, "validation_ready");
@@ -3213,10 +3220,12 @@ function validationImportCandidates() {
       title: "Offline HTML",
       scope: "design/article",
       artifactType: "offline_html",
+      mediaTypes: ["text/html"],
       evidenceKinds: ["screenshot"],
       validationRules: ["rule.offline-html"],
       schemaRef: "schema.offline-html.v1",
       requiredFields: ["content"],
+      provenanceRequirements: ["workspace-artifact"],
       selectedByDefault: true,
     }, {
       objectKey: "evaluator.offline-html",
@@ -3224,15 +3233,17 @@ function validationImportCandidates() {
       title: "Offline HTML Evaluator",
       scope: "design/article",
       validatesArtifactRefs: ["artifact.offline-html"],
+      requiredInputs: ["accepted-artifact"],
       evidenceKinds: ["screenshot"],
       verificationModes: ["browser_interaction"],
       verificationProcedures: [{
         id: "procedure.offline-open",
         checkKind: "browser_interaction",
+        instruction: "Open the HTML artifact offline and capture the rendered result.",
         allowedEvidenceKinds: ["screenshot"],
       }],
       independencePolicy: "independent",
-      resultSchemaRef: "schema.evaluator-result.v1",
+      resultSchemaRef: "southstar.requirement_evaluator_result.v2",
       failureClassifications: ["offline_open_failed"],
       selectedByDefault: true,
     }],

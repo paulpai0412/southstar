@@ -16,6 +16,7 @@ import type { LibraryDefinitionKind } from "../types.ts";
 import {
   libraryFileReferences,
   listLibraryFiles,
+  prepareLibraryFilePublication,
   readLibraryFile,
   syncLibraryFileRecordsToGraphPg,
 } from "./library-file-store.ts";
@@ -238,13 +239,69 @@ export async function reconcileLibraryFilesPg(
   db: SouthstarDb,
   input: { root: string; trigger: LibraryReconcileTrigger },
 ): Promise<LibraryReconcileResult> {
-  const catalog = await loadLibraryFileCatalog({ root: input.root });
-  const { result } = await reconcileLibraryCatalogPg(db, { ...input, catalog });
-  return result;
+  return await withLibraryReconcileLockPg(db, async (tx) => {
+    const catalog = await loadLibraryFileCatalog({ root: input.root });
+    const { result } = await reconcileLibraryCatalogLockedPg(tx, { ...input, catalog });
+    return result;
+  });
 }
 
-export async function reconcileLibraryCatalogPg(
+export const LIBRARY_RECONCILE_LOCK_KEY = "southstar.library.reconcile.v1";
+
+export async function acquireLibraryReconcileLockPg(tx: SouthstarDb): Promise<void> {
+  await tx.query("select pg_advisory_xact_lock(hashtext($1))", [LIBRARY_RECONCILE_LOCK_KEY]);
+}
+
+export async function withLibraryReconcileLockPg<T>(
   db: SouthstarDb,
+  run: (tx: SouthstarDb) => Promise<T>,
+): Promise<T> {
+  return await db.tx(async (tx) => {
+    await acquireLibraryReconcileLockPg(tx);
+    return await run(tx);
+  });
+}
+
+export async function writeLibraryFileWithLockPg(
+  db: SouthstarDb,
+  input: { root: string; relativePath: string; content: string },
+): Promise<Awaited<ReturnType<typeof readLibraryFile>>> {
+  const current = await readLibraryFile({ root: input.root, relativePath: input.relativePath }).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    },
+  );
+  const publication = await prepareLibraryFilePublication({
+    root: input.root,
+    files: [{
+      relativePath: input.relativePath,
+      content: input.content,
+      mode: current ? "replace" : "create",
+      ...(current ? { expectedContent: current.content } : {}),
+    }],
+  });
+  try {
+    const result = await withLibraryReconcileLockPg(db, async () => {
+      await publication.publish();
+      try {
+        return await readLibraryFile({ root: input.root, relativePath: input.relativePath });
+      } catch (error) {
+        await publication.rollbackPublished();
+        throw error;
+      }
+    });
+    await publication.discard().catch(() => {});
+    return result;
+  } catch (error) {
+    await publication.rollbackPublished();
+    await publication.discard();
+    throw error;
+  }
+}
+
+export async function reconcileLibraryCatalogLockedPg(
+  tx: SouthstarDb,
   input: {
     catalog: LibraryFileCatalog;
     root: string;
@@ -259,8 +316,6 @@ export async function reconcileLibraryCatalogPg(
   if (fatal.length > 0) throw new LibraryReconcileError(fatal);
   const hash = snapshotHash(catalog.records);
 
-  return db.tx(async (tx) => {
-    await tx.query("select pg_advisory_xact_lock(hashtext($1))", ["southstar.library.reconcile.v1"]);
     const existing = await listFileBackedLibraryObjectsForUpdate(tx);
     for (const objectKey of [...(input.rejectExistingObjectKeys ?? [])].sort()) {
       if (await findLibraryObjectByKeyForUpdate(tx, objectKey)) {
@@ -386,5 +441,4 @@ export async function reconcileLibraryCatalogPg(
       metrics: { included: result.included.length, excluded: result.excluded.length },
     });
     return { result, graphSync };
-  });
 }

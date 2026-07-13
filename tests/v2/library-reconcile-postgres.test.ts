@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { access, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
+import { openSouthstarDb } from "../../src/v2/db/postgres.ts";
 import type { WorkflowRunInput } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createWorkflowRunPg, getResourceByKeyPg, getWorkflowRunPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import type { UpsertLibraryObjectInput } from "../../src/v2/design-library/library-graph-store.ts";
@@ -15,10 +16,12 @@ import {
 } from "../../src/v2/design-library/library-graph-store.ts";
 import {
   LibraryReconcileError,
+  acquireLibraryReconcileLockPg,
   loadLibraryReadinessPg,
   reconcileLibraryFilesPg,
 } from "../../src/v2/design-library/files/library-reconcile-service.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { prepareLibraryFilePublication } from "../../src/v2/design-library/files/library-file-store.ts";
 
 test("reconcile publishes a closed approved snapshot and is idempotent", async () => {
   await withPostgresTestDb(async (db) => {
@@ -94,6 +97,73 @@ test("concurrent reconciles serialize on the advisory transaction lock", async (
     assert.equal(left.snapshotHash, right.snapshotHash);
     const active = await listLibraryEdges(db, { status: "active" });
     assert.equal(new Set(active.map((edge) => edge.id)).size, active.length);
+  });
+});
+
+test("startup reconcile reads the catalog after waiting for the advisory lock", async () => {
+  const lockDb = await createTestPostgresDb();
+  const reconcileDb = await openSouthstarDb(lockDb.databaseUrl);
+  const root = await createMinimalReadyLibraryRoot();
+  let releaseLock!: () => void;
+  let announceLock!: () => void;
+  const locked = new Promise<void>((resolve) => { announceLock = resolve; });
+  const release = new Promise<void>((resolve) => { releaseLock = resolve; });
+  const holder = lockDb.tx(async (tx) => {
+    await acquireLibraryReconcileLockPg(tx);
+    announceLock();
+    await release;
+  });
+  try {
+    await locked;
+    const reconcile = reconcileLibraryFilesPg(reconcileDb, { root, trigger: "startup" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const updatedContent = approvedSkill("skill.goal-any", "goal_design", [], "Updated after reconcile started waiting");
+    await writeFile(join(root, "skills/goal.skill.md"), updatedContent);
+    releaseLock();
+    await holder;
+    const result = await reconcile;
+    const expectedVersion = `skill.goal-any@${createHash("sha256").update(updatedContent).digest("hex").slice(0, 12)}`;
+    assert.equal(result.included.find((item) => item.objectKey === "skill.goal-any")?.versionRef, expectedVersion);
+  } finally {
+    releaseLock();
+    await holder.catch(() => {});
+    await reconcileDb.close();
+    await lockDb.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("abandoned pre-publish staging is invisible to startup reconcile", async () => {
+  await withPostgresTestDb(async (db) => {
+    const root = await createMinimalReadyLibraryRoot();
+    const publication = await prepareLibraryFilePublication({
+      root,
+      files: [{
+        relativePath: "agents/staged.agent.md",
+        mode: "create",
+        content: `---
+schemaVersion: southstar.library.agent_definition_file.v1
+id: agent.staged
+title: Staged
+scope: engineering
+status: approved
+---
+
+# Identity
+
+This file must remain invisible until publish.
+`,
+      }],
+    });
+    try {
+      assert.equal(relative(root, publication.stagingRoot).startsWith(".."), true);
+      const result = await reconcileLibraryFilesPg(db, { root, trigger: "startup" });
+      assert.equal(result.included.some((item) => item.objectKey === "agent.staged"), false);
+      assert.equal(await findLibraryObjectByKey(db, "agent.staged"), null);
+      await assert.rejects(() => access(join(root, "agents/staged.agent.md")));
+    } finally {
+      await publication.discard();
+    }
   });
 });
 

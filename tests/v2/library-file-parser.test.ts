@@ -93,8 +93,17 @@ title: Implementation Report
 scope: software
 status: approved
 artifactType: implementation_report
+mediaTypes:
+  - application/json
 evidenceKinds:
   - artifact-ref
+validationRules:
+  - rule.implementation-report
+schemaRef: schema.implementation-report.v1
+requiredFields:
+  - summary
+provenanceRequirements:
+  - workspace-artifact
 `,
   });
   assert.equal(artifact.ok, true);
@@ -127,12 +136,99 @@ scope: software
 status: approved
 validatesArtifactRefs:
   - artifact.verification_report
+requiredInputs:
+  - accepted-artifact
+evidenceKinds:
+  - test-result
+verificationModes:
+  - deterministic
+verificationProcedures:
+  - id: procedure.software-tests
+    checkKind: deterministic
+    instruction: Run the declared test suite and record the exit status.
+    allowedEvidenceKinds:
+      - test-result
+independencePolicy: independent
+resultSchemaRef: southstar.requirement_evaluator_result.v2
+failureClassifications:
+  - test-failure
 `,
   });
   assert.equal(evaluator.ok, true);
   if (!evaluator.ok) throw new Error("expected evaluator parse success");
   assert.equal(evaluator.file.kind, "evaluator");
   assert.equal(evaluator.file.objectKind, "evaluator_profile");
+});
+
+test("rejects incomplete executable artifact and evaluator contracts", () => {
+  const artifact = parseLibraryFileContent({
+    path: "library/artifacts/incomplete.artifact.yaml",
+    content: `schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.incomplete
+title: Incomplete
+scope: general
+status: approved
+artifactType: report
+evidenceKinds:
+  - test-result
+`,
+  });
+  assert.equal(artifact.ok, false);
+  if (artifact.ok) throw new Error("expected incomplete artifact rejection");
+  assert.match(artifact.issues.map((issue) => issue.message).join("; "), /mediaTypes/);
+
+  const evaluator = parseLibraryFileContent({
+    path: "library/evaluators/incomplete.evaluator.yaml",
+    content: `schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.incomplete
+title: Incomplete
+scope: general
+status: approved
+validatesArtifactRefs:
+  - artifact.incomplete
+requiredInputs:
+  - accepted-artifact
+evidenceKinds:
+  - test-result
+verificationModes:
+  - deterministic
+verificationProcedures:
+  - id: procedure.incomplete
+    checkKind: deterministic
+    allowedEvidenceKinds:
+      - test-result
+independencePolicy: independent
+resultSchemaRef: schema.evaluator-result.v1
+failureClassifications:
+  - failed
+`,
+  });
+  assert.equal(evaluator.ok, false);
+  if (evaluator.ok) throw new Error("expected incomplete evaluator rejection");
+  assert.match(evaluator.issues.map((issue) => issue.message).join("; "), /instruction|southstar\.requirement_evaluator_result\.v2/);
+});
+
+test("rejects unknown executable contract fields instead of dropping them before validation", () => {
+  const artifact = parseLibraryFileContent({
+    path: "library/artifacts/unknown-field.artifact.yaml",
+    content: `schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.unknown-field
+title: Unknown Field
+scope: general
+status: approved
+artifactType: report
+mediaTypes: [application/json]
+evidenceKinds: [artifact-ref]
+validationRules: [rule.report]
+schemaRef: schema.report.v1
+requiredFields: [summary]
+provenanceRequirements: [workspace-artifact]
+legacyBypass: true
+`,
+  });
+  assert.equal(artifact.ok, false);
+  if (artifact.ok) throw new Error("expected artifact parse failure");
+  assert.match(artifact.issues.map((issue) => issue.message).join("\n"), /unsupported fields: legacyBypass/);
 });
 
 test("parses mcp yaml file", () => {

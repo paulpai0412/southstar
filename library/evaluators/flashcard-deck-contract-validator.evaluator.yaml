@@ -5,14 +5,15 @@ scope: "general"
 status: approved
 validatesArtifactRefs:
   - "artifact.flashcard-deck-contract"
-resultSchemaRef: "schema.flashcard-deck-contract-validation.v1"
+requiredInputs:
+  - "accepted-artifact"
+resultSchemaRef: "southstar.requirement_evaluator_result.v2"
 verificationModes:
   - "deterministic"
 independencePolicy: "independent"
 verificationProcedures:
   - id: "procedure.flashcard-deck-contract"
     checkKind: "deterministic"
-    verificationMode: "deterministic"
     instruction: "Validate the flashcard deck contract fields and card identity rules from the produced artifact."
     allowedEvidenceKinds:
       - "artifact-ref"

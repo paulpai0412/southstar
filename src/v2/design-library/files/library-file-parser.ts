@@ -6,6 +6,9 @@ import type {
   LibraryFileRecord,
   LibraryFileValidationIssue,
 } from "./library-file-types.ts";
+import {
+  normalizeLibraryImportCandidateKindFields,
+} from "../importers/library-import-candidate-schema.ts";
 
 type ParsedContent =
   | { ok: true; data: Record<string, unknown>; body: string }
@@ -120,6 +123,32 @@ export function parseLibraryFileContent(input: { path: string; content: string }
     issues.push(error("status", "status is required", "status_required"));
   } else if (!VALID_STATUSES.has(status as LibraryFileRecord["status"])) {
     issues.push(error("status", `status is not supported: ${status}`, "status_unsupported"));
+  }
+
+  if (id && (format.kind === "artifact" || format.kind === "evaluator")) {
+    try {
+      const candidateDefinition: Record<string, unknown> = {
+        objectKey: id,
+        kind: format.kind,
+        title: title ?? id,
+        scope: scope ?? "invalid",
+        selectedByDefault: true,
+      };
+      const hostOwnedFields = new Set([
+        "schemaVersion", "id", "title", "scope", "status",
+        "importDraftId", "importCandidateKey", "importSourcePath",
+      ]);
+      for (const [key, value] of Object.entries(parsed.data)) {
+        if (!hostOwnedFields.has(key)) candidateDefinition[key] = value;
+      }
+      normalizeLibraryImportCandidateKindFields(candidateDefinition, format.kind, id);
+    } catch (cause) {
+      issues.push(error(
+        format.kind,
+        cause instanceof Error ? cause.message : String(cause),
+        `${format.kind}_contract_invalid`,
+      ));
+    }
   }
 
   const metadata = {

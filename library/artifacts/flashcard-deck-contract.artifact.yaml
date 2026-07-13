@@ -4,6 +4,8 @@ title: "Flashcard Deck Contract"
 scope: "general"
 status: approved
 artifactType: "flashcard-deck"
+mediaTypes:
+  - "application/json"
 schemaRef: "schema.flashcard-deck-contract.v1"
 requiredFields:
   - "deckId"
@@ -18,6 +20,8 @@ evidenceKinds:
   - "workspace-snapshot"
   - "file-diff"
   - "artifact-ref"
+provenanceRequirements:
+  - "workspace-artifact"
 importDraftId: "library-import-draft-5b27e3ac-0add-43e4-af93-312d4f120c0f"
 importCandidateKey: "artifact.flashcard-deck-contract"
 importSourcePath: "Library-chat-prompt.md"

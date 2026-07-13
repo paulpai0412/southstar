@@ -1,19 +1,18 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
 import { parseLibraryFileContent } from "../files/library-file-parser.ts";
 import {
   readLibraryFile,
-  removeLibraryFileIfContentMatches,
+  prepareLibraryFilePublication,
   validateLibraryFileGraphReferences,
-  writeLibraryFile,
-  writeNewLibraryFile,
 } from "../files/library-file-store.ts";
 import type { LibraryFileRecord } from "../files/library-file-types.ts";
 import {
   loadLibraryFileCatalog,
-  reconcileLibraryCatalogPg,
+  acquireLibraryReconcileLockPg,
+  reconcileLibraryCatalogLockedPg,
   type LibraryReconcileResult,
 } from "../files/library-reconcile-service.ts";
 import type { LibraryGraphSyncResult } from "../files/library-file-store.ts";
@@ -37,11 +36,12 @@ import {
 import {
   analyzeLibraryImportWithLlm,
   analyzeLibraryImportOntologyResultWithLlm,
-  LIBRARY_VALIDATION_EVIDENCE_KINDS,
-  LIBRARY_VERIFICATION_MODES,
   type LibraryImportOntologyExistingGraph,
   type LibraryImportLlmProvider,
 } from "./library-llm-import-analyzer.ts";
+import {
+  normalizeLibraryImportCandidateKindFields,
+} from "./library-import-candidate-schema.ts";
 import type {
   LibraryImportCandidate,
   LibraryImportCandidateKind,
@@ -108,18 +108,14 @@ type PreflightedLibraryImportFile = {
   content: string;
   file: LibraryFileRecord;
   existingFile?: boolean;
+  originalContent?: string;
 };
 
 type SupportingLibraryImportFile = {
   relativePath: string;
   content: Buffer;
   existingFile?: boolean;
-};
-
-type LibraryImportFileSnapshot = {
-  relativePath: string;
-  original: string | Buffer;
-  installed: string | Buffer;
+  originalContent?: Buffer;
 };
 
 export type LibraryImportProgressListener = (event: {
@@ -355,43 +351,35 @@ export async function approveLibraryImportDraft(
 ): Promise<LibraryImportDraftApprovalResult> {
   const reserved = await reserveLibraryImportDraftApproval(db, input);
   if (reserved.kind === "already-approved") return reserved.result;
-  const createdFiles: Array<{ relativePath: string; content: string }> = [];
+  let publication: Awaited<ReturnType<typeof prepareLibraryFilePublication>> | undefined;
 
   try {
     const preflighted = await preflightLibraryImportProposal(db, { root: input.root, proposal: reserved.proposal });
-    const files: Array<{ relativePath: string }> = [];
-    for (const file of preflighted) {
-      try {
-        files.push(await writeNewLibraryFile({
-          root: input.root,
-          relativePath: file.relativePath,
-          content: file.content,
-        }));
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-          throw new Error(`library import file already exists: ${file.relativePath}`);
-        }
-        throw error;
-      }
-      createdFiles.push({ relativePath: file.relativePath, content: file.content });
-    }
+    const files = preflighted.map((file) => ({ relativePath: file.relativePath }));
+    publication = await prepareLibraryFilePublication({
+      root: input.root,
+      files: preflighted.map((file) => ({ relativePath: file.relativePath, content: file.content, mode: "create" })),
+    });
 
     const applied = {
       files,
       objectKeys: reserved.proposal.objectKeys,
     };
-    const catalog = await loadLibraryFileCatalog({ root: input.root });
     const importedKeys = new Set(preflighted.map((file) => file.file.objectKey));
     const { reconcile, synced } = await db.tx(async (tx) => {
-      const { result: reconcile, graphSync } = await reconcileLibraryCatalogPg(tx, {
-        catalog,
-        root: input.root,
-        trigger: "import_approval",
-        rejectExistingObjectKeys: importedKeys,
-      });
-      const synced = graphSync.results.filter((item) => importedKeys.has(item.object.objectKey));
-      const updated = await tx.query(
-        `update southstar.runtime_resources
+      await acquireLibraryReconcileLockPg(tx);
+      await publication!.publish();
+      try {
+        const catalog = await loadLibraryFileCatalog({ root: input.root });
+        const { result: reconcile, graphSync } = await reconcileLibraryCatalogLockedPg(tx, {
+          catalog,
+          root: input.root,
+          trigger: "import_approval",
+          rejectExistingObjectKeys: importedKeys,
+        });
+        const synced = graphSync.results.filter((item) => importedKeys.has(item.object.objectKey));
+        const updated = await tx.query(
+          `update southstar.runtime_resources
             set status = 'approved',
                 title = $2,
                 payload_json = $3::jsonb,
@@ -400,38 +388,40 @@ export async function approveLibraryImportDraft(
           where id = $1
             and status = 'applying'
             and payload_json->'approvalLease'->>'attemptId' = $5`,
-        [
-          reserved.resourceId,
-          reserved.title,
-          JSON.stringify({
-            ...withoutTransientApplyState(reserved.payload),
-            status: "approved",
-            approval: reserved.approval,
-            applied: {
-              ...applied,
-              reconcile,
-              librarySnapshotHash: reconcile.snapshotHash,
-              synced,
-            },
-          }),
-          JSON.stringify({
-            ...reserved.summary,
-            status: "approved",
-            approvedBy: reserved.approval.actor,
-            objectKeys: reserved.proposal.objectKeys,
-            filePaths: files.map((file) => file.relativePath),
-          }),
-          reserved.approvalLease.attemptId,
-        ],
-      );
-      if ((updated.rowCount ?? 0) === 0) {
-        throw new Error(`library import draft approval lease was lost: ${input.draftId}`);
+          [
+            reserved.resourceId,
+            reserved.title,
+            JSON.stringify({
+              ...withoutTransientApplyState(reserved.payload),
+              status: "approved",
+              approval: reserved.approval,
+              applied: {
+                ...applied,
+                reconcile,
+                librarySnapshotHash: reconcile.snapshotHash,
+                synced,
+              },
+            }),
+            JSON.stringify({
+              ...reserved.summary,
+              status: "approved",
+              approvedBy: reserved.approval.actor,
+              objectKeys: reserved.proposal.objectKeys,
+              filePaths: files.map((file) => file.relativePath),
+            }),
+            reserved.approvalLease.attemptId,
+          ],
+        );
+        if ((updated.rowCount ?? 0) === 0) {
+          throw new Error(`library import draft approval lease was lost: ${input.draftId}`);
+        }
+        return { reconcile, synced };
+      } catch (error) {
+        await publication!.rollbackPublished();
+        throw error;
       }
-      return {
-        reconcile,
-        synced,
-      };
     });
+    await publication.discard().catch(() => {});
 
     return {
       draftId: input.draftId,
@@ -443,7 +433,8 @@ export async function approveLibraryImportDraft(
       librarySnapshotHash: reconcile.snapshotHash,
     };
   } catch (error) {
-    await cleanupCreatedImportFiles(input.root, createdFiles);
+    await publication?.rollbackPublished();
+    await publication?.discard();
     await markLibraryImportDraftApplyFailed(db, reserved, error);
     throw error;
   }
@@ -463,8 +454,7 @@ export async function installLibraryImportCandidates(
     transactionGuard?: (tx: SouthstarDb) => Promise<void>;
   },
 ): Promise<LibraryImportCandidateInstallResult> {
-  const createdFiles: Array<{ relativePath: string; content: string | Buffer }> = [];
-  const overwrittenFiles: LibraryImportFileSnapshot[] = [];
+  let publication: Awaited<ReturnType<typeof prepareLibraryFilePublication>> | undefined;
 
   try {
     const draft = await loadLibraryImportCandidateDraft(db, input.draftId);
@@ -520,53 +510,24 @@ export async function installLibraryImportCandidates(
       selectedEdgeIds: input.selectedEdgeIds,
     });
 
-    for (const file of preflighted) {
-      try {
-        if (file.existingFile) {
-          const existing = await readLibraryFile({ root: input.root, relativePath: file.relativePath });
-          overwrittenFiles.push({
-            relativePath: file.relativePath,
-            original: existing.content,
-            installed: file.content,
-          });
-        }
-        const write = file.existingFile ? writeLibraryFile : writeNewLibraryFile;
-        await write({
-          root: input.root,
+    publication = await prepareLibraryFilePublication({
+      root: input.root,
+      files: preflighted.flatMap((file) => [
+        {
           relativePath: file.relativePath,
           content: file.content,
-        });
-        if (!file.existingFile) createdFiles.push({ relativePath: file.relativePath, content: file.content });
-        for (const supportingFile of file.supportingFiles) {
-          if (supportingFile.existingFile) {
-            overwrittenFiles.push({
-              relativePath: supportingFile.relativePath,
-              original: await readFile(resolveLibraryImportPath(input.root, supportingFile.relativePath)),
-              installed: supportingFile.content,
-            });
-          }
-          await writeSupportingImportFile({
-            root: input.root,
-            relativePath: supportingFile.relativePath,
-            content: supportingFile.content,
-            overwrite: supportingFile.existingFile === true,
-          });
-          if (!supportingFile.existingFile) {
-            createdFiles.push({
-              relativePath: supportingFile.relativePath,
-              content: supportingFile.content,
-            });
-          }
-        }
-      } catch (error: unknown) {
-        if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-          throw new Error(`library import file already exists: ${file.relativePath}`);
-        }
-        throw error;
-      }
-    }
+          mode: file.existingFile ? "replace" as const : "create" as const,
+          ...(file.originalContent === undefined ? {} : { expectedContent: file.originalContent }),
+        },
+        ...file.supportingFiles.map((supportingFile) => ({
+          relativePath: supportingFile.relativePath,
+          content: supportingFile.content,
+          mode: supportingFile.existingFile ? "replace" as const : "create" as const,
+          ...(supportingFile.originalContent === undefined ? {} : { expectedContent: supportingFile.originalContent }),
+        })),
+      ]),
+    });
 
-    const catalog = await loadLibraryFileCatalog({ root: input.root });
     const result = await db.tx(async (tx) => {
       try {
         await input.transactionGuard?.(tx);
@@ -576,121 +537,137 @@ export async function installLibraryImportCandidates(
         // clean up preflighted filesystem writes outside the transaction.
         return { transactionGuardRejected: true as const, error };
       }
-      const { graphSync } = await reconcileLibraryCatalogPg(tx, {
-        catalog,
-        root: input.root,
-        trigger: "import_approval",
-      });
-      const installedObjects = preflighted.map((file) => {
-        const object = graphSync.results.find((synced) => synced.object.objectKey === file.file.objectKey)?.object;
-        if (!object) throw new Error(`library object sync result missing: ${file.file.objectKey}`);
-        return {
-          objectKey: file.file.objectKey,
-          kind: file.candidate.kind,
-          relativePath: file.relativePath,
-          object,
-        };
-      });
+      const lockedDraft = await tx.maybeOne<{ status: string }>(
+        `select status from southstar.runtime_resources
+          where resource_type = 'library_import_draft' and resource_key = $1
+          for update`,
+        [input.draftId],
+      );
+      if (lockedDraft?.status !== "draft") throw new Error(`library import draft install state changed: ${input.draftId}`);
+      await acquireLibraryReconcileLockPg(tx);
+      await publication!.publish();
+      try {
+        const catalog = await loadLibraryFileCatalog({ root: input.root });
+        const { graphSync } = await reconcileLibraryCatalogLockedPg(tx, {
+          catalog,
+          root: input.root,
+          trigger: "import_approval",
+        });
+        const installedObjects = preflighted.map((file) => {
+          const object = graphSync.results.find((synced) => synced.object.objectKey === file.file.objectKey)?.object;
+          if (!object) throw new Error(`library object sync result missing: ${file.file.objectKey}`);
+          return {
+            objectKey: file.file.objectKey,
+            kind: file.candidate.kind,
+            relativePath: file.relativePath,
+            object,
+          };
+        });
 
-      const installGeneratedAt = new Date().toISOString();
-      const installedEdges = [];
-      for (const edge of proposedEdges) {
-        const sourceObject = await findLibraryObjectByKey(tx, edge.fromObjectKey);
-        const targetObject = await findLibraryObjectByKey(tx, edge.toObjectKey);
-        if (!sourceObject?.headVersionId || !targetObject?.headVersionId) {
-          throw new Error(`library import ontology edge is missing version pins: ${edge.fromObjectKey} -> ${edge.toObjectKey}`);
+        const installGeneratedAt = new Date().toISOString();
+        const installedEdges = [];
+        for (const edge of proposedEdges) {
+          const sourceObject = await findLibraryObjectByKey(tx, edge.fromObjectKey);
+          const targetObject = await findLibraryObjectByKey(tx, edge.toObjectKey);
+          if (!sourceObject?.headVersionId || !targetObject?.headVersionId) {
+            throw new Error(`library import ontology edge is missing version pins: ${edge.fromObjectKey} -> ${edge.toObjectKey}`);
+          }
+          installedEdges.push(await upsertLibraryEdge(tx, {
+            fromObjectKey: edge.fromObjectKey,
+            fromVersionRef: sourceObject.headVersionId,
+            edgeType: edge.edgeType,
+            toObjectKey: edge.toObjectKey,
+            toVersionRef: targetObject.headVersionId,
+            scope: scopeForImportedEdge(edge, selectedCandidates),
+            status: "active",
+            weight: edge.confidence,
+            metadata: {
+              source: input.llmProvider ? "library-import-ontology" : "library-import-candidate",
+              draftId: input.draftId,
+              newObjectKeys: installedObjects.map((object) => object.objectKey),
+              confidence: edge.confidence,
+              generatedAt: installGeneratedAt,
+              ...(edge.rationale ? { rationale: edge.rationale } : {}),
+            },
+          }));
         }
-        installedEdges.push(await upsertLibraryEdge(tx, {
-          fromObjectKey: edge.fromObjectKey,
-          fromVersionRef: sourceObject.headVersionId,
-          edgeType: edge.edgeType,
-          toObjectKey: edge.toObjectKey,
-          toVersionRef: targetObject.headVersionId,
-          scope: scopeForImportedEdge(edge, selectedCandidates),
-          status: "active",
-          weight: edge.confidence,
-          metadata: {
-            source: input.llmProvider ? "library-import-ontology" : "library-import-candidate",
-            draftId: input.draftId,
-            newObjectKeys: installedObjects.map((object) => object.objectKey),
-            confidence: edge.confidence,
-            generatedAt: installGeneratedAt,
-            ...(edge.rationale ? { rationale: edge.rationale } : {}),
-          },
-        }));
-      }
 
-      const install = {
-        actor: input.actor ?? "operator",
-        reason: input.reason,
-        installedAt: installGeneratedAt,
-        selectedCandidateIds: input.selectedCandidateIds,
-        ...(input.selectedEdgeIds ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
-        generatedOntologyAt: installGeneratedAt,
-        ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
-        installedObjectKeys: installedObjects.map((object) => object.objectKey),
-        installedObjects: installedObjects.map((object) => ({
-          objectKey: object.objectKey,
-          kind: object.kind,
-          relativePath: object.relativePath,
-          headVersionId: object.object.headVersionId,
-        })),
-        installedEdges: installedEdges.map((edge) => ({
-          id: edge.id,
-          fromObjectKey: edge.fromObjectKey,
-          edgeType: edge.edgeType,
-          toObjectKey: edge.toObjectKey,
-          scope: edge.scope,
-          metadata: edge.metadata,
-        })),
-      };
+        const install = {
+          actor: input.actor ?? "operator",
+          reason: input.reason,
+          installedAt: installGeneratedAt,
+          selectedCandidateIds: input.selectedCandidateIds,
+          ...(input.selectedEdgeIds ? { selectedEdgeIds: input.selectedEdgeIds } : {}),
+          generatedOntologyAt: installGeneratedAt,
+          ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
+          installedObjectKeys: installedObjects.map((object) => object.objectKey),
+          installedObjects: installedObjects.map((object) => ({
+            objectKey: object.objectKey,
+            kind: object.kind,
+            relativePath: object.relativePath,
+            headVersionId: object.object.headVersionId,
+          })),
+          installedEdges: installedEdges.map((edge) => ({
+            id: edge.id,
+            fromObjectKey: edge.fromObjectKey,
+            edgeType: edge.edgeType,
+            toObjectKey: edge.toObjectKey,
+            scope: edge.scope,
+            metadata: edge.metadata,
+          })),
+        };
 
-      const updated = await tx.query(
-        `update southstar.runtime_resources
+        const updated = await tx.query(
+          `update southstar.runtime_resources
             set status = 'installed',
                 payload_json = $3::jsonb,
                 summary_json = $4::jsonb,
                 updated_at = now()
           where id = $1
             and status = $2`,
-        [
-          draft.resourceId,
-          draft.status,
-          JSON.stringify({
-            ...withoutTransientApplyState(draft.payload),
-            status: "installed",
-            proposedEdges,
-            install,
-            ...(ontologyAnalysis.piSessionId ? { ontologyPiSessionId: ontologyAnalysis.piSessionId } : {}),
-          }),
-          JSON.stringify({
-            ...draft.summary,
-            status: "installed",
-            installedBy: install.actor,
-            installedObjectKeys: install.installedObjectKeys,
-            installedEdgeCount: installedEdges.length,
-            ...(ontologyAnalysis.piSessionId ? { ontologyPiSessionId: ontologyAnalysis.piSessionId } : {}),
-          }),
-        ],
-      );
-      if ((updated.rowCount ?? 0) === 0) {
-        throw new Error(`library import draft install state changed: ${input.draftId}`);
-      }
+          [
+            draft.resourceId,
+            draft.status,
+            JSON.stringify({
+              ...withoutTransientApplyState(draft.payload),
+              status: "installed",
+              proposedEdges,
+              install,
+              ...(ontologyAnalysis.piSessionId ? { ontologyPiSessionId: ontologyAnalysis.piSessionId } : {}),
+            }),
+            JSON.stringify({
+              ...draft.summary,
+              status: "installed",
+              installedBy: install.actor,
+              installedObjectKeys: install.installedObjectKeys,
+              installedEdgeCount: installedEdges.length,
+              ...(ontologyAnalysis.piSessionId ? { ontologyPiSessionId: ontologyAnalysis.piSessionId } : {}),
+            }),
+          ],
+        );
+        if ((updated.rowCount ?? 0) === 0) {
+          throw new Error(`library import draft install state changed: ${input.draftId}`);
+        }
 
-      return {
-        draftId: input.draftId,
-        status: "installed" as const,
-        installedObjects,
-        installedEdges,
-        graph: {
-          objectKeys: installedObjects.map((object) => object.objectKey),
-          edgeIds: installedEdges.map((edge) => edge.id),
-        },
-        ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
-      };
+        return {
+          draftId: input.draftId,
+          status: "installed" as const,
+          installedObjects,
+          installedEdges,
+          graph: {
+            objectKeys: installedObjects.map((object) => object.objectKey),
+            edgeIds: installedEdges.map((edge) => edge.id),
+          },
+          ...(ontologyAnalysis.piSessionId ? { piSessionId: ontologyAnalysis.piSessionId } : {}),
+        };
+      } catch (error) {
+        await publication!.rollbackPublished();
+        throw error;
+      }
     });
 
     if ("transactionGuardRejected" in result) throw result.error;
+    await publication.discard().catch(() => {});
 
     try {
       input.progress?.({
@@ -707,8 +684,8 @@ export async function installLibraryImportCandidates(
     }
     return result;
   } catch (error) {
-    await cleanupCreatedImportFiles(input.root, createdFiles);
-    await restoreOverwrittenImportFiles(input.root, overwrittenFiles);
+    await publication?.rollbackPublished();
+    await publication?.discard();
     await markLibraryImportCandidateInstallFailed(db, input.draftId, error);
     throw error;
   }
@@ -842,6 +819,9 @@ async function preflightLibraryImportCandidates(
     if (existingFile && !input.allowExistingCandidateFiles) {
       throw new Error(`library import file already exists: ${rendered.relativePath}`);
     }
+    const originalContent = existingFile
+      ? (await readLibraryFile({ root: input.root, relativePath: rendered.relativePath })).content
+      : undefined;
     const existingObject = await findLibraryObjectByKey(db, parsed.file.objectKey);
     if (existingObject && !input.allowExistingCandidateFiles) {
       throw new Error(`library import object already exists: ${parsed.file.objectKey}`);
@@ -860,12 +840,16 @@ async function preflightLibraryImportCandidates(
         throw new Error(`library import file already exists: ${supportingFile.relativePath}`);
       }
       supportingFile.existingFile = existingSupportingFile;
+      supportingFile.originalContent = existingSupportingFile
+        ? await readFile(resolveLibraryImportPath(input.root, supportingFile.relativePath))
+        : undefined;
     }
     preflighted.push({
       relativePath: rendered.relativePath,
       content: rendered.content,
       file: parsed.file,
       existingFile: existingFile === true,
+      ...(originalContent === undefined ? {} : { originalContent }),
       candidate,
       supportingFiles,
     });
@@ -997,7 +981,10 @@ function renderLibraryImportCandidate(
 
   if (candidate.kind !== "agent" && candidate.kind !== "skill") {
     const definitionLines = candidate.kind === "domain"
-      ? yamlArray("aliases", candidate.aliases)
+      ? [
+        ...(candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : []),
+        ...yamlArray("aliases", candidate.aliases),
+      ]
       : candidate.kind === "capability"
         ? [
           `description: ${yamlScalar(candidate.description ?? "")}`,
@@ -1005,15 +992,20 @@ function renderLibraryImportCandidate(
         ]
         : candidate.kind === "artifact"
           ? [
+            ...(candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : []),
             `artifactType: ${yamlScalar(candidate.artifactType ?? "")}`,
+            ...yamlArray("mediaTypes", candidate.mediaTypes),
             ...yamlArray("evidenceKinds", candidate.evidenceKinds),
             ...yamlArray("validationRules", candidate.validationRules),
             `schemaRef: ${yamlScalar(candidate.schemaRef ?? "")}`,
             ...yamlArray("requiredFields", candidate.requiredFields),
+            ...yamlArray("provenanceRequirements", candidate.provenanceRequirements),
           ]
           : candidate.kind === "evaluator"
             ? [
+              ...(candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : []),
               ...yamlArray("validatesArtifactRefs", candidate.validatesArtifactRefs),
+              ...yamlArray("requiredInputs", candidate.requiredInputs),
               ...yamlArray("evidenceKinds", candidate.evidenceKinds),
               ...yamlArray("verificationModes", candidate.verificationModes),
               ...yamlVerificationProcedures(candidate.verificationProcedures),
@@ -1021,7 +1013,7 @@ function renderLibraryImportCandidate(
               `resultSchemaRef: ${yamlScalar(candidate.resultSchemaRef ?? "")}`,
               ...yamlArray("failureClassifications", candidate.failureClassifications),
             ]
-            : [`description: ${yamlScalar(`Imported ${candidate.kind} candidate from library import draft.`)}`];
+            : candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : [];
     return {
       relativePath,
       content: [
@@ -1064,6 +1056,7 @@ function renderLibraryImportCandidate(
       `title: ${title}`,
       `scope: ${scope}`,
       "status: approved",
+      ...(candidate.description ? [`description: ${yamlScalar(candidate.description)}`] : []),
       provenance,
       "---",
       "",
@@ -1190,7 +1183,7 @@ function asImportCandidates(value: unknown): LibraryImportCandidate[] {
     const record = asRecord(item);
     const objectKey = requiredString(record.objectKey, "candidates.objectKey");
     const kind = requiredImportCandidateKind(record.kind);
-    assertImportCandidateRecordKeys(record, kind, objectKey);
+    const kindFields = normalizeLibraryImportCandidateKindFields(record, kind, objectKey);
     const selectedByDefault = requiredBoolean(record.selectedByDefault, `candidates.${objectKey}.selectedByDefault`);
     const confidence = optionalConfidence(record.confidence, `candidates.${objectKey}.confidence`);
     const domain = optionalStrictString(record.domain, `candidates.${objectKey}.domain`);
@@ -1208,30 +1201,8 @@ function asImportCandidates(value: unknown): LibraryImportCandidate[] {
       ...(sourcePath ? { sourcePath } : {}),
       selectedByDefault,
       ...(confidence !== undefined ? { confidence } : {}),
-      ...(optionalStrictString(record.description, `candidates.${objectKey}.description`) ? { description: requiredString(record.description, `candidates.${objectKey}.description`) } : {}),
-      ...(optionalStrictStringArray(record.aliases, `candidates.${objectKey}.aliases`) ? { aliases: requiredStrictStringArray(record.aliases, `candidates.${objectKey}.aliases`) } : {}),
-      ...(optionalStrictStringArray(record.requiredOperations, `candidates.${objectKey}.requiredOperations`) ? { requiredOperations: requiredStrictStringArray(record.requiredOperations, `candidates.${objectKey}.requiredOperations`) } : {}),
-      ...(optionalStrictString(record.artifactType, `candidates.${objectKey}.artifactType`) ? { artifactType: requiredString(record.artifactType, `candidates.${objectKey}.artifactType`) } : {}),
-      ...(optionalStrictStringArray(record.evidenceKinds, `candidates.${objectKey}.evidenceKinds`) ? { evidenceKinds: requiredStrictStringArray(record.evidenceKinds, `candidates.${objectKey}.evidenceKinds`) } : {}),
-      ...(optionalStrictStringArray(record.validationRules, `candidates.${objectKey}.validationRules`) ? { validationRules: requiredStrictStringArray(record.validationRules, `candidates.${objectKey}.validationRules`) } : {}),
-      ...(optionalStrictString(record.schemaRef, `candidates.${objectKey}.schemaRef`) ? { schemaRef: requiredString(record.schemaRef, `candidates.${objectKey}.schemaRef`) } : {}),
-      ...(optionalStrictStringArray(record.requiredFields, `candidates.${objectKey}.requiredFields`) ? { requiredFields: requiredStrictStringArray(record.requiredFields, `candidates.${objectKey}.requiredFields`) } : {}),
-      ...(optionalStrictStringArray(record.validatesArtifactRefs, `candidates.${objectKey}.validatesArtifactRefs`)
-        ? { validatesArtifactRefs: requiredStrictStringArray(record.validatesArtifactRefs, `candidates.${objectKey}.validatesArtifactRefs`) }
-        : {}),
-      ...(record.verificationModes !== undefined
-        ? { verificationModes: requiredVerificationModes(record.verificationModes, objectKey) }
-        : {}),
-      ...(Array.isArray(record.verificationProcedures)
-        ? { verificationProcedures: requiredVerificationProcedures(record.verificationProcedures, objectKey) }
-        : {}),
-      ...(record.independencePolicy === "independent" ? { independencePolicy: "independent" as const } : {}),
-      ...(optionalStrictString(record.resultSchemaRef, `candidates.${objectKey}.resultSchemaRef`) ? { resultSchemaRef: requiredString(record.resultSchemaRef, `candidates.${objectKey}.resultSchemaRef`) } : {}),
-      ...(optionalStrictStringArray(record.failureClassifications, `candidates.${objectKey}.failureClassifications`)
-        ? { failureClassifications: requiredStrictStringArray(record.failureClassifications, `candidates.${objectKey}.failureClassifications`) }
-        : {}),
+      ...kindFields,
     };
-    assertCompleteValidationCandidate(candidate);
     return candidate;
   });
 }
@@ -1312,117 +1283,13 @@ function yamlVerificationProcedures(
   for (const procedure of procedures) {
     lines.push(`  - id: ${yamlScalar(procedure.id)}`);
     lines.push(`    checkKind: ${yamlScalar(procedure.checkKind)}`);
+    lines.push(`    instruction: ${yamlScalar(procedure.instruction)}`);
     lines.push("    allowedEvidenceKinds:");
     for (const evidenceKind of procedure.allowedEvidenceKinds) {
       lines.push(`      - ${yamlScalar(evidenceKind)}`);
     }
   }
   return lines;
-}
-
-const IMPORT_VERIFICATION_MODES = new Set<string>(LIBRARY_VERIFICATION_MODES);
-const IMPORT_EVIDENCE_KINDS = new Set<string>(LIBRARY_VALIDATION_EVIDENCE_KINDS);
-
-function requiredVerificationModes(
-  value: unknown,
-  objectKey: string,
-): NonNullable<LibraryImportCandidate["verificationModes"]> {
-  const modes = requiredStrictStringArray(value, `candidates.${objectKey}.verificationModes`);
-  if (modes.some((mode) => !IMPORT_VERIFICATION_MODES.has(mode))) {
-    throw new Error(`library import evaluator ${objectKey} has invalid verificationModes`);
-  }
-  return modes as NonNullable<LibraryImportCandidate["verificationModes"]>;
-}
-
-function requiredVerificationProcedures(
-  value: unknown[],
-  objectKey: string,
-): NonNullable<LibraryImportCandidate["verificationProcedures"]> {
-  if (value.length === 0) throw new Error(`library import evaluator ${objectKey} has no verificationProcedures`);
-  const seen = new Set<string>();
-  return value.map((item, index) => {
-    const procedure = asRecord(item);
-    const unsupported = Object.keys(procedure).filter((key) => !["id", "checkKind", "allowedEvidenceKinds"].includes(key));
-    if (unsupported.length > 0) {
-      throw new Error(`library import evaluator ${objectKey} procedure ${index} contains unsupported fields: ${unsupported.join(", ")}`);
-    }
-    const id = requiredString(procedure.id, `candidates.${objectKey}.verificationProcedures.${index}.id`);
-    if (seen.has(id)) throw new Error(`library import evaluator ${objectKey} has duplicate verification procedure id: ${id}`);
-    seen.add(id);
-    const checkKind = requiredString(procedure.checkKind, `candidates.${objectKey}.verificationProcedures.${index}.checkKind`);
-    if (!IMPORT_VERIFICATION_MODES.has(checkKind)) {
-      throw new Error(`library import evaluator ${objectKey} procedure ${id} has invalid checkKind`);
-    }
-    const allowedEvidenceKinds = requiredStrictStringArray(
-      procedure.allowedEvidenceKinds,
-      `candidates.${objectKey}.verificationProcedures.${index}.allowedEvidenceKinds`,
-    );
-    return {
-      id,
-      checkKind: checkKind as NonNullable<LibraryImportCandidate["verificationProcedures"]>[number]["checkKind"],
-      allowedEvidenceKinds,
-    };
-  });
-}
-
-function assertCompleteValidationCandidate(candidate: LibraryImportCandidate): void {
-  if (candidate.kind === "artifact" && (
-    !candidate.artifactType || !candidate.schemaRef || !candidate.evidenceKinds?.length
-    || !candidate.validationRules?.length || !candidate.requiredFields?.length
-  )) {
-    throw new Error(`library import artifact ${candidate.objectKey} is missing its complete validation contract`);
-  }
-  if (candidate.kind === "evaluator" && (
-    !candidate.validatesArtifactRefs?.length || !candidate.evidenceKinds?.length || !candidate.verificationModes?.length
-    || !candidate.verificationProcedures?.length || candidate.independencePolicy !== "independent"
-    || !candidate.resultSchemaRef || !candidate.failureClassifications?.length
-  )) {
-    throw new Error(`library import evaluator ${candidate.objectKey} is missing its complete evaluator contract`);
-  }
-  if (candidate.evidenceKinds?.some((kind) => !IMPORT_EVIDENCE_KINDS.has(kind))) {
-    throw new Error(`library import candidate ${candidate.objectKey} has unsupported evidenceKinds`);
-  }
-  if (candidate.kind === "evaluator") {
-    if (candidate.validatesArtifactRefs?.some((ref) => !ref.startsWith("artifact."))) {
-      throw new Error(`library import evaluator ${candidate.objectKey} has invalid validatesArtifactRefs`);
-    }
-    for (const procedure of candidate.verificationProcedures ?? []) {
-      if (!candidate.verificationModes?.includes(procedure.checkKind)
-        || procedure.allowedEvidenceKinds.some((kind) => !IMPORT_EVIDENCE_KINDS.has(kind) || !candidate.evidenceKinds?.includes(kind))) {
-        throw new Error(`library import evaluator ${candidate.objectKey} procedure ${procedure.id} is incompatible with its declared modes or evidence`);
-      }
-    }
-  }
-}
-
-const IMPORT_CANDIDATE_COMMON_FIELDS = [
-  "objectKey", "kind", "title", "scope", "domain", "displayDomain", "classificationReason", "sourcePath",
-  "selectedByDefault", "confidence",
-];
-const IMPORT_CANDIDATE_KIND_FIELDS: Record<LibraryImportCandidateKind, string[]> = {
-  agent: [],
-  skill: [],
-  mcp: [],
-  tool: [],
-  domain: ["aliases"],
-  capability: ["description", "requiredOperations"],
-  artifact: ["artifactType", "evidenceKinds", "validationRules", "schemaRef", "requiredFields"],
-  evaluator: [
-    "validatesArtifactRefs", "evidenceKinds", "verificationModes", "verificationProcedures",
-    "independencePolicy", "resultSchemaRef", "failureClassifications",
-  ],
-};
-
-function assertImportCandidateRecordKeys(
-  record: Record<string, unknown>,
-  kind: LibraryImportCandidateKind,
-  objectKey: string,
-): void {
-  const allowed = new Set([...IMPORT_CANDIDATE_COMMON_FIELDS, ...IMPORT_CANDIDATE_KIND_FIELDS[kind]]);
-  const unsupported = Object.keys(record).filter((key) => !allowed.has(key));
-  if (unsupported.length > 0) {
-    throw new Error(`library import ${kind} candidate ${objectKey} contains unsupported fields: ${unsupported.join(", ")}`);
-  }
 }
 
 function requiredBoolean(value: unknown, label: string): boolean {
@@ -1442,18 +1309,6 @@ function optionalStrictString(value: unknown, label: string): string | undefined
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${label} must be a non-empty string`);
   return value;
-}
-
-function optionalStrictStringArray(value: unknown, label: string): string[] | undefined {
-  return value === undefined ? undefined : requiredStrictStringArray(value, label);
-}
-
-function requiredStrictStringArray(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.length === 0
-    || value.some((item) => typeof item !== "string" || item.trim().length === 0)) {
-    throw new Error(`${label} must be a non-empty array of non-empty strings`);
-  }
-  return [...new Set(value as string[])];
 }
 
 function stringArray(value: unknown): string[] {
@@ -1510,76 +1365,6 @@ async function supportingFileExists(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
     throw error;
   }
-}
-
-async function cleanupCreatedImportFiles(
-  root: string,
-  files: Array<{ relativePath: string; content: string | Buffer }>,
-): Promise<void> {
-  for (const file of [...files].reverse()) {
-    if (typeof file.content === "string") {
-      await removeLibraryFileIfContentMatches({ root, relativePath: file.relativePath, content: file.content });
-    } else {
-      await removeSupportingImportFileIfContentMatches({ root, relativePath: file.relativePath, content: file.content });
-    }
-  }
-}
-
-async function restoreOverwrittenImportFiles(
-  root: string,
-  files: LibraryImportFileSnapshot[],
-): Promise<void> {
-  for (const file of [...files].reverse()) {
-    const absolutePath = resolveLibraryImportPath(root, file.relativePath);
-    let current: string | Buffer;
-    try {
-      current = typeof file.original === "string"
-        ? await readFile(absolutePath, "utf8")
-        : await readFile(absolutePath);
-    } catch (error: unknown) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
-      throw error;
-    }
-    const matchesInstalled = typeof file.installed === "string"
-      ? typeof current === "string" && current === file.installed
-      : Buffer.isBuffer(current) && current.equals(file.installed);
-    if (!matchesInstalled) continue;
-    if (typeof file.original === "string") {
-      await writeLibraryFile({ root, relativePath: file.relativePath, content: file.original });
-      continue;
-    }
-    await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, file.original);
-  }
-}
-
-async function writeSupportingImportFile(input: {
-  root: string;
-  relativePath: string;
-  content: Buffer;
-  overwrite?: boolean;
-}): Promise<void> {
-  const absolutePath = resolveLibraryImportPath(input.root, input.relativePath);
-  await mkdir(path.dirname(absolutePath), { recursive: true });
-  await writeFile(absolutePath, input.content, input.overwrite ? undefined : { flag: "wx" });
-}
-
-async function removeSupportingImportFileIfContentMatches(input: {
-  root: string;
-  relativePath: string;
-  content: Buffer;
-}): Promise<boolean> {
-  const absolutePath = resolveLibraryImportPath(input.root, input.relativePath);
-  let existing;
-  try {
-    existing = await readFile(absolutePath);
-  } catch (error: unknown) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
-    throw error;
-  }
-  if (!existing.equals(input.content)) return false;
-  await rm(absolutePath, { force: true });
-  return true;
 }
 
 function resolveLibraryImportPath(root: string, relativePath: string): string {

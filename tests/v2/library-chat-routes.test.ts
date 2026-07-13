@@ -9,6 +9,16 @@ import { loadLibraryReadinessPg } from "../../src/v2/design-library/files/librar
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
+const browserVerificationImportProvider = async () => ({
+  candidates: [{
+    objectKey: "skill.browser-verification",
+    kind: "skill",
+    title: "Browser Verification",
+    selectedByDefault: true,
+    confidence: 1,
+  }],
+});
+
 test("serves library workspace and scoped graph route envelopes", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-route-"));
@@ -179,7 +189,7 @@ test("accepts library chat messages and streams deterministic SSE events", async
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-route-"));
 
   try {
-    const context = { db, libraryRoot } as any;
+    const context = { db, libraryRoot, libraryImportLlmProvider: browserVerificationImportProvider } as any;
     const messageResponse = await handleRuntimeRoute(
       context,
       new Request("http://local/api/v2/library/chat/messages", {
@@ -235,14 +245,13 @@ test("accepts library chat messages and streams deterministic SSE events", async
     assert.match(streamResponse.headers.get("content-type") ?? "", /^text\/event-stream/);
     const stream = await streamResponse.text();
     assert.match(stream, /event: library\.intent\.started/);
-    assert.match(stream, /event: library\.proposal\.created/);
+    assert.match(stream, /event: library\.import\.candidates/);
     assert.match(stream, /event: library\.command\.completed/);
 
     const frames = parseSseFrames(stream);
-    const proposal = frames.find((frame) => frame.event === "library.proposal.created");
-    assert.equal(proposal?.data.title, "Draft library proposal");
-    assert.deepEqual(proposal?.data.objectKeys, ["skill.browser-verification"]);
-    assert.deepEqual(proposal?.data.filePaths, ["skills/browser-verification.skill.md"]);
+    const candidates = frames.find((frame) => frame.event === "library.import.candidates");
+    assert.equal(candidates?.data.title, "Import candidates");
+    assert.deepEqual(candidates?.data.candidates.map((candidate: { objectKey: string }) => candidate.objectKey), ["skill.browser-verification"]);
     const completed = frames.find((frame) => frame.event === "library.command.completed");
     assert.equal(completed?.data.status, "ready_for_review");
 
@@ -563,7 +572,7 @@ test("library prompt import creates an import draft without writing files", asyn
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-prompt-"));
   try {
-    const context = { db, libraryRoot } as any;
+    const context = { db, libraryRoot, libraryImportLlmProvider: browserVerificationImportProvider } as any;
     const response = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/import-prompts", {
       method: "POST",
       headers: { "content-type": "application/json" },

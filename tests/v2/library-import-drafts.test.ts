@@ -28,7 +28,7 @@ import {
   findLibraryObjectByKey,
   upsertLibraryObject,
 } from "../../src/v2/design-library/library-graph-store.ts";
-import { loadLibraryReadinessPg } from "../../src/v2/design-library/files/library-reconcile-service.ts";
+import { loadLibraryReadinessPg, reconcileLibraryFilesPg } from "../../src/v2/design-library/files/library-reconcile-service.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -77,7 +77,10 @@ test("createLibraryImportDraft creates a runtime draft without writing library f
       relativePath: "skills/browser-verification.skill.md",
     }]);
     assert.deepEqual(draft.proposal.dependencies, []);
-    assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
+    assert.equal(
+      (await listLibraryFiles({ root: libraryRoot })).some((file) => file.relativePath === "skills/browser-verification.skill.md"),
+      false,
+    );
 
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     assert.equal(resource?.status, "draft");
@@ -127,10 +130,12 @@ test("createLibraryImportDraft reuses one host-linked draft for the same Goal va
         title: "Offline HTML",
         scope: "design/article",
         artifactType: "offline_html",
+        mediaTypes: ["text/html"],
         evidenceKinds: ["test-result"],
         validationRules: ["rule.offline-html"],
         schemaRef: "schema.offline-html.v1",
         requiredFields: ["content"],
+        provenanceRequirements: ["workspace-artifact"],
         selectedByDefault: true,
       }],
     };
@@ -232,13 +237,18 @@ test("library import candidate prompt and host parser support governed vocabular
   assert.match(prompt, /artifact\.<slug>/);
   assert.match(prompt, /evaluator\.<slug>/);
   assert.match(prompt, /validationRules/);
+  assert.match(prompt, /mediaTypes/);
+  assert.match(prompt, /provenanceRequirements/);
   assert.match(prompt, /schemaRef/);
   assert.match(prompt, /requiredFields/);
   assert.match(prompt, /verificationModes/);
   assert.match(prompt, /verificationProcedures/);
+  assert.match(prompt, /requiredInputs/);
+  assert.match(prompt, /instruction/);
   assert.match(prompt, /independencePolicy/);
   assert.match(prompt, /resultSchemaRef/);
   assert.match(prompt, /failureClassifications/);
+  assert.match(prompt, /southstar\.requirement_evaluator_result\.v2/);
 
   const candidates = normalizeLibraryImportCandidates([
     {
@@ -264,10 +274,12 @@ test("library import candidate prompt and host parser support governed vocabular
       title: "Subscription Verification",
       scope: "membership",
       artifactType: "verification_report",
+      mediaTypes: ["application/json"],
       evidenceKinds: ["test-result", "command-output"],
       validationRules: ["rule.subscription-verification"],
       schemaRef: "schema.subscription-verification.v1",
       requiredFields: ["summary", "commandsRun"],
+      provenanceRequirements: ["workspace-artifact"],
       selectedByDefault: true,
     },
     {
@@ -276,15 +288,17 @@ test("library import candidate prompt and host parser support governed vocabular
       title: "Subscription Quality",
       scope: "membership",
       validatesArtifactRefs: ["artifact.subscription-verification"],
+      requiredInputs: ["accepted-artifact"],
       evidenceKinds: ["test-result"],
       verificationModes: ["deterministic"],
       verificationProcedures: [{
         id: "procedure.subscription-tests",
         checkKind: "deterministic",
+        instruction: "Run the subscription verification rules and record the result.",
         allowedEvidenceKinds: ["test-result"],
       }],
       independencePolicy: "independent",
-      resultSchemaRef: "schema.evaluator-result.v1",
+      resultSchemaRef: "southstar.requirement_evaluator_result.v2",
       failureClassifications: ["test_failure"],
       selectedByDefault: true,
     },
@@ -300,6 +314,7 @@ test("library import candidate prompt and host parser support governed vocabular
   assert.deepEqual(candidates[1]?.requiredOperations, ["workspace-read", "workspace-write"]);
   assert.deepEqual(candidates[2]?.evidenceKinds, ["test-result", "command-output"]);
   assert.deepEqual(candidates[2]?.validationRules, ["rule.subscription-verification"]);
+  assert.deepEqual(candidates[2]?.mediaTypes, ["application/json"]);
   assert.equal(candidates[2]?.schemaRef, "schema.subscription-verification.v1");
   assert.deepEqual(candidates[2]?.requiredFields, ["summary", "commandsRun"]);
   assert.deepEqual(candidates[3]?.validatesArtifactRefs, ["artifact.subscription-verification"]);
@@ -307,10 +322,11 @@ test("library import candidate prompt and host parser support governed vocabular
   assert.deepEqual(candidates[3]?.verificationProcedures, [{
     id: "procedure.subscription-tests",
     checkKind: "deterministic",
+    instruction: "Run the subscription verification rules and record the result.",
     allowedEvidenceKinds: ["test-result"],
   }]);
   assert.equal(candidates[3]?.independencePolicy, "independent");
-  assert.equal(candidates[3]?.resultSchemaRef, "schema.evaluator-result.v1");
+  assert.equal(candidates[3]?.resultSchemaRef, "southstar.requirement_evaluator_result.v2");
   assert.deepEqual(candidates[3]?.failureClassifications, ["test_failure"]);
   assert.throws(() => normalizeLibraryImportCandidates([{
     objectKey: "artifact.invalid-evidence",
@@ -318,10 +334,12 @@ test("library import candidate prompt and host parser support governed vocabular
     title: "Invalid Evidence",
     scope: "membership",
     artifactType: "invalid",
+    mediaTypes: ["application/json"],
     evidenceKinds: ["invented-evidence"],
     validationRules: ["rule.invalid"],
     schemaRef: "schema.invalid.v1",
     requiredFields: ["content"],
+    provenanceRequirements: ["workspace-artifact"],
     selectedByDefault: true,
   }], { scope: "membership", sourcePaths: new Set() }), /unsupported evidenceKinds/);
   assert.throws(() => normalizeLibraryImportCandidates([{
@@ -330,12 +348,14 @@ test("library import candidate prompt and host parser support governed vocabular
     title: "Mixed Validation Rules",
     scope: "membership",
     artifactType: "verification_report",
+    mediaTypes: ["application/json"],
     evidenceKinds: ["test-result"],
     validationRules: ["rule.valid", 42],
     schemaRef: "schema.mixed.v1",
     requiredFields: ["summary"],
+    provenanceRequirements: ["workspace-artifact"],
     selectedByDefault: true,
-  }], { scope: "membership", sourcePaths: new Set() }), /validationRules must be an array of non-empty strings/);
+  }], { scope: "membership", sourcePaths: new Set() }), /validationRules must be a non-empty array of non-empty strings/);
 });
 
 test("candidate install rejects tampered persisted validation contracts instead of normalizing them", async () => {
@@ -347,10 +367,12 @@ test("candidate install rejects tampered persisted validation contracts instead 
     title: "Strict Report",
     scope: "general",
     artifactType: "verification_report",
+    mediaTypes: ["application/json"],
     evidenceKinds: ["test-result"],
     validationRules: ["rule.strict-report"],
     schemaRef: "schema.strict-report.v1",
     requiredFields: ["summary"],
+    provenanceRequirements: ["workspace-artifact"],
     selectedByDefault: true,
   };
   const provider: LibraryImportLlmProvider = async () => ({ candidates: [baseCandidate], proposedEdges: [] });
@@ -365,14 +387,15 @@ test("candidate install rejects tampered persisted validation contracts instead 
         title: "Duplicate Procedure",
         scope: "general",
         validatesArtifactRefs: [baseCandidate.objectKey],
+        requiredInputs: ["accepted-artifact"],
         evidenceKinds: ["test-result"],
         verificationModes: ["deterministic"],
         verificationProcedures: [
-          { id: "procedure.same", checkKind: "deterministic", allowedEvidenceKinds: ["test-result"] },
-          { id: "procedure.same", checkKind: "deterministic", allowedEvidenceKinds: ["test-result"] },
+          { id: "procedure.same", checkKind: "deterministic", instruction: "Run the check.", allowedEvidenceKinds: ["test-result"] },
+          { id: "procedure.same", checkKind: "deterministic", instruction: "Run the check again.", allowedEvidenceKinds: ["test-result"] },
         ],
         independencePolicy: "independent",
-        resultSchemaRef: "schema.evaluator-result.v1",
+        resultSchemaRef: "southstar.requirement_evaluator_result.v2",
         failureClassifications: ["test_failure"],
         selectedByDefault: true,
       },
@@ -400,6 +423,50 @@ test("candidate install rejects tampered persisted validation contracts instead 
         /must be a non-empty array of non-empty strings|contains unsupported fields|duplicate verification procedure id/,
       );
       assert.equal(await findLibraryObjectByKey(db, mutation.objectKey), null);
+    }
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("agent skill tool and MCP descriptions round-trip through one shared candidate schema", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-description-roundtrip-"));
+  const candidates = (["agent", "skill", "tool", "mcp"] as const).map((kind) => ({
+    objectKey: `${kind}.described`,
+    kind,
+    title: `Described ${kind}`,
+    scope: "engineering",
+    domain: "engineering",
+    displayDomain: "Engineering",
+    description: `Reusable ${kind} description`,
+    selectedByDefault: true,
+    confidence: 0.9,
+  }));
+  const provider: LibraryImportLlmProvider = async ({ prompt }) => prompt.includes("Generate ontology edges")
+    ? { proposedEdges: [] }
+    : { candidates };
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "described primitives", content: "Import four reusable described primitives." },
+      scope: "engineering",
+      llmProvider: provider,
+    });
+    assert.deepEqual(draft.candidates?.map((candidate) => candidate.description), candidates.map((candidate) => candidate.description));
+    await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: candidates.map((candidate) => candidate.objectKey),
+      actor: "operator",
+      reason: "verify shared schema round trip",
+      llmProvider: provider,
+    });
+    for (const candidate of candidates) {
+      assert.equal((await findLibraryObjectByKey(db, candidate.objectKey))?.state.description, candidate.description);
     }
   } finally {
     await db.close();
@@ -1070,6 +1137,7 @@ test("installLibraryImportCandidates writes selected candidates, syncs graph obj
       },
     );
     assert.equal(await findLibraryObjectByKey(db, "mcp.filesystem"), null);
+    assert.equal((await findLibraryObjectByKey(db, "tool.github"))?.state.description, undefined);
 
     const agentEdges = await findLibraryEdgesFrom(db, "agent.reviewer", "uses", { scope: "software" });
     assert.equal(agentEdges.length, 1);
@@ -1234,6 +1302,47 @@ test("candidate install preserves a concurrent edit during rollback", async () =
   }
 });
 
+test("candidate install rejects a replacement changed after preflight", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-cas-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [{ objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true }],
+    proposedEdges: [],
+  });
+  const reviewPath = join(libraryRoot, "skills/review.skill.md");
+  const originalContent = approvedWorkerSkill({ id: "skill.review", requiresToolRefs: [] });
+  const concurrentContent = "concurrent operator edit before publish";
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(reviewPath, originalContent);
+    await writeRequiredPurposeSkills(libraryRoot);
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "review skill", content: "Create a review skill." },
+      scope: "software",
+      llmProvider: provider,
+    });
+    await assert.rejects(
+      () => installLibraryImportCandidates(db, {
+        root: libraryRoot,
+        draftId: draft.draftId,
+        selectedCandidateIds: ["skill.review"],
+        actor: "operator",
+        reason: "reject stale replace",
+        llmProvider: provider,
+        transactionGuard: async () => {
+          await writeFile(reviewPath, concurrentContent);
+        },
+      }),
+      /library file changed since publication was prepared/,
+    );
+    assert.equal(await readFile(reviewPath, "utf8"), concurrentContent);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("candidate install ignores post-commit progress callback failures", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-progress-"));
@@ -1270,6 +1379,51 @@ test("candidate install ignores post-commit progress callback failures", async (
   }
 });
 
+test("concurrent reconcile cannot observe a candidate while install is blocked before publish", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-install-stage-race-"));
+  let enterGuard!: () => void;
+  let rejectGuard!: (error: Error) => void;
+  const guardEntered = new Promise<void>((resolve) => { enterGuard = resolve; });
+  const guardRelease = new Promise<void>((_resolve, reject) => { rejectGuard = reject; });
+  const provider: LibraryImportLlmProvider = async ({ prompt }) => prompt.includes("Generate ontology edges")
+    ? { proposedEdges: [] }
+    : { candidates: [{ objectKey: "skill.staged-race", kind: "skill", title: "Staged Race", scope: "engineering", selectedByDefault: true }] };
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "staged race", content: "Import one reusable staged skill." },
+      scope: "engineering",
+      llmProvider: provider,
+    });
+    const install = installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: ["skill.staged-race"],
+      actor: "operator",
+      reason: "prove staging isolation",
+      llmProvider: provider,
+      transactionGuard: async () => {
+        enterGuard();
+        await guardRelease;
+      },
+    });
+    await guardEntered;
+    const reconcile = await reconcileLibraryFilesPg(db, { root: libraryRoot, trigger: "startup" });
+    assert.equal(reconcile.included.some((item) => item.objectKey === "skill.staged-race"), false);
+    assert.equal((await listLibraryFiles({ root: libraryRoot })).some((item) => item.relativePath === "skills/staged-race.skill.md"), false);
+    assert.equal(await findLibraryObjectByKey(db, "skill.staged-race"), null);
+    rejectGuard(new Error("reject before atomic publish"));
+    await assert.rejects(() => install, /reject before atomic publish/);
+    assert.equal((await listLibraryFiles({ root: libraryRoot })).some((item) => item.relativePath === "skills/staged-race.skill.md"), false);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("installLibraryImportCandidates writes and syncs governed vocabulary files", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-vocabulary-import-"));
@@ -1279,6 +1433,7 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
       kind: "domain" as const,
       title: "Membership",
       scope: "membership",
+      description: "Membership domain vocabulary.",
       aliases: ["subscription"],
       selectedByDefault: true,
     },
@@ -1296,11 +1451,14 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
       kind: "artifact" as const,
       title: "Subscription Verification",
       scope: "membership",
+      description: "Contract for subscription verification evidence.",
       artifactType: "verification_report",
+      mediaTypes: ["application/json"],
       evidenceKinds: ["test-result", "command-output"],
       validationRules: ["rule.subscription-verification"],
       schemaRef: "schema.subscription-verification.v1",
       requiredFields: ["summary", "commandsRun"],
+      provenanceRequirements: ["workspace-artifact"],
       selectedByDefault: true,
     },
     {
@@ -1308,16 +1466,19 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
       kind: "evaluator" as const,
       title: "Subscription Quality",
       scope: "membership",
+      description: "Evaluator for subscription quality evidence.",
       validatesArtifactRefs: ["artifact.subscription-verification"],
+      requiredInputs: ["accepted-artifact"],
       evidenceKinds: ["test-result"],
       verificationModes: ["deterministic"],
       verificationProcedures: [{
         id: "procedure.subscription-tests",
         checkKind: "deterministic",
+        instruction: "Run the subscription verification rules and record the result.",
         allowedEvidenceKinds: ["test-result"],
       }],
       independencePolicy: "independent" as const,
-      resultSchemaRef: "schema.evaluator-result.v1",
+      resultSchemaRef: "southstar.requirement_evaluator_result.v2",
       failureClassifications: ["test_failure"],
       selectedByDefault: true,
     },
@@ -1363,12 +1524,18 @@ test("installLibraryImportCandidates writes and syncs governed vocabulary files"
     const artifact = await findLibraryObjectByKey(db, "artifact.subscription-verification");
     const evaluator = await findLibraryObjectByKey(db, "evaluator.subscription-quality");
     assert.deepEqual(artifact?.state.validationRules, ["rule.subscription-verification"]);
+    assert.equal((await findLibraryObjectByKey(db, "domain.membership"))?.state.description, "Membership domain vocabulary.");
+    assert.equal(artifact?.state.description, "Contract for subscription verification evidence.");
+    assert.deepEqual(artifact?.state.mediaTypes, ["application/json"]);
+    assert.deepEqual(artifact?.state.provenanceRequirements, ["workspace-artifact"]);
     assert.equal(artifact?.state.schemaRef, "schema.subscription-verification.v1");
     assert.deepEqual(artifact?.state.requiredFields, ["summary", "commandsRun"]);
     assert.deepEqual(evaluator?.state.verificationModes, ["deterministic"]);
+    assert.equal(evaluator?.state.description, "Evaluator for subscription quality evidence.");
     assert.deepEqual(evaluator?.state.verificationProcedures, [{
       id: "procedure.subscription-tests",
       checkKind: "deterministic",
+      instruction: "Run the subscription verification rules and record the result.",
       allowedEvidenceKinds: ["test-result"],
     }]);
     const validationEdge = (await findLibraryEdgesFrom(db, "evaluator.subscription-quality", "validates_artifact")).find((edge) =>
@@ -1428,6 +1595,8 @@ test("installLibraryImportCandidates links selected imports to existing approved
   };
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
+    await writeApprovedDomain(libraryRoot, "design");
     await upsertLibraryObject(db, {
       objectKey: "agent.article-editor",
       objectKind: "agent_definition",
@@ -1553,6 +1722,7 @@ test("installLibraryImportCandidates preserves source markdown content for impor
   });
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     await mkdir(join(repoRoot, "engineering"), { recursive: true });
     await writeFile(join(repoRoot, "engineering", "engineering-frontend-developer.md"), sourceContent);
     const draft = await createLibraryImportDraft(db, {
@@ -1610,6 +1780,7 @@ test("installLibraryImportCandidates copies full source skill directory for impo
   });
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     await mkdir(join(skillRoot, "references"), { recursive: true });
     await mkdir(join(skillRoot, "scripts"), { recursive: true });
     await writeFile(
@@ -1744,6 +1915,8 @@ test("installLibraryImportCandidates adopts same-object draft files and syncs on
   });
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
+    await writeApprovedDomain(libraryRoot, "design");
     await upsertLibraryObject(db, {
       objectKey: "agent.article-editor",
       objectKind: "agent_definition",
@@ -1818,6 +1991,7 @@ test("approveLibraryImportDraft writes proposed files and syncs them to the grap
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-approve-"));
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     const draft = await createBrowserSkillImportDraft(db);
 
     const approved = await approveLibraryImportDraft(db, {
@@ -1911,6 +2085,7 @@ test("approveLibraryImportDraft no-ops approved drafts without rewriting files o
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-idempotent-"));
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     const draft = await createBrowserSkillImportDraft(db);
 
     const first = await approveLibraryImportDraft(db, {
@@ -1951,6 +2126,7 @@ test("approveLibraryImportDraft prevents double approval from overwriting the fi
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-double-"));
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     const draft = await createBrowserSkillImportDraft(db);
 
     await approveLibraryImportDraft(db, {
@@ -1981,6 +2157,7 @@ test("approveLibraryImportDraft marks failed application retryable and later app
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-retry-"));
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     const draft = await createBrowserSkillImportDraft(db);
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     const payload = resource?.payload as any;
@@ -2187,7 +2364,10 @@ test("approveLibraryImportDraft rejects existing graph objects before downgradin
       /library import object already exists: skill\.browser-verification/,
     );
 
-    assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
+    assert.equal(
+      (await listLibraryFiles({ root: libraryRoot })).some((file) => file.relativePath === "skills/browser-verification.skill.md"),
+      false,
+    );
     assert.equal((await findLibraryObjectByKey(db, "skill.browser-verification"))?.status, "approved");
   } finally {
     await db.close();
@@ -2200,6 +2380,7 @@ test("approveLibraryImportDraft cleans written files when graph transaction sees
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-late-conflict-"));
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     const draft = await createBrowserSkillImportDraft(db);
     let txCount = 0;
     const racingDb = {
@@ -2226,15 +2407,18 @@ test("approveLibraryImportDraft cleans written files when graph transaction sees
         actor: "operator",
         reason: "late graph conflict should rollback file side effects",
       }),
-      /library object already exists: skill\.browser-verification/,
+      /library import object already exists: skill\.browser-verification/,
     );
 
-    assert.deepEqual(await listLibraryFiles({ root: libraryRoot }), []);
+    assert.equal(
+      (await listLibraryFiles({ root: libraryRoot })).some((file) => file.relativePath === "skills/browser-verification.skill.md"),
+      false,
+    );
     assert.equal((await findLibraryObjectByKey(db, "skill.browser-verification"))?.status, "approved");
 
     const failed = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     assert.equal(failed?.status, "draft");
-    assert.match((failed?.payload as any).lastError.message, /library object already exists/);
+    assert.match((failed?.payload as any).lastError.message, /library import object already exists/);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -2293,6 +2477,7 @@ test("approveLibraryImportDraft resumes applying drafts and preserves in-flight 
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-applying-"));
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     const draft = await createBrowserSkillImportDraft(db);
     const resource = await getResourceByKeyPg(db, "library_import_draft", draft.draftId);
     const payload = resource?.payload as any;
@@ -2473,6 +2658,7 @@ test("POST /api/v2/library/import-drafts/:draftId/install installs selected cand
   };
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     const context = { db, libraryRoot, libraryImportLlmProvider } as any;
     const draftResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/import-drafts", {
       method: "POST",
@@ -2623,6 +2809,7 @@ test("POST /api/v2/library/import-drafts/:draftId/approve approves and writes sy
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-route-approve-"));
 
   try {
+    await writeRequiredPurposeSkills(libraryRoot);
     const context = { db, libraryRoot, libraryImportLlmProvider: browserSkillImportProvider } as any;
     const draftResponse = await handleRuntimeRoute(context, new Request("http://local/api/v2/library/import-drafts", {
       method: "POST",
@@ -2736,6 +2923,20 @@ test("approving an invalid or missing library import draft fails clearly", async
 
 function approvedPurposeSkill(id: string, purpose: "goal_design" | "composer_guidance"): string {
   return `---\nschemaVersion: southstar.library.skill_spec_file.v1\nid: ${id}\ntitle: ${purpose}\nscope: software\nstatus: approved\npurpose: ${purpose}\n---\n\n# Instructions\n\n${purpose} guidance.\n`;
+}
+
+async function writeRequiredPurposeSkills(root: string): Promise<void> {
+  await mkdir(join(root, "skills"), { recursive: true });
+  await writeFile(join(root, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+  await writeFile(join(root, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+}
+
+async function writeApprovedDomain(root: string, domain: string): Promise<void> {
+  await mkdir(join(root, "domains"), { recursive: true });
+  await writeFile(
+    join(root, `domains/${domain}.domain.yaml`),
+    `schemaVersion: southstar.library.domain_taxonomy_file.v1\nid: domain.${domain}\ntitle: ${domain}\nscope: ${domain}\nstatus: approved\naliases:\n  - ${domain}\n`,
+  );
 }
 
 function approvedWorkerSkill(input: { id: string; requiresToolRefs: string[] }): string {

@@ -118,6 +118,33 @@ test("resolver rejects ranker-invented evidence kinds", async () => {
   });
 });
 
+test("resolver rejects unknown executable contract fields already persisted in the graph", async () => {
+  await withDb(async (db) => {
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.article-html",
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.article-html@1",
+      state: { ...artifactState(["screenshot"]), legacyBypass: true },
+    });
+    await approvedEvaluator(db, "evaluator.offline-browser", "evaluator.offline-browser@2");
+    await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
+    const result = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract(),
+      requirementDraft: confirmedRequirementDraft(),
+      ranker: fixedRanker({
+        artifactRef: "artifact.article-html",
+        evaluatorRef: "evaluator.offline-browser",
+        verificationMode: "browser_interaction",
+        procedureRef: "procedure.offline-open",
+        expectedEvidenceKinds: ["screenshot"],
+      }),
+    });
+    assert.equal(result.ready, false);
+    assert.match(result.gaps.map((item) => item.message).join("\n"), /unsupported fields: legacyBypass/);
+  });
+});
+
 test("resolver ignores draft objects and stale graph edges", async () => {
   await withDb(async (db) => {
     await upsertLibraryObject(db, {
@@ -338,31 +365,14 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
   });
 });
 
-test("legacy approved files remain blocked when their evaluator contract is incomplete", async () => {
+test("legacy approved files fail closed before resolver use when their executable contract is incomplete", async () => {
   await withDb(async (db) => {
     const libraryRoot = resolve(process.cwd(), "library");
-    await syncLibraryFileToGraph(db, {
+    await assert.rejects(() => syncLibraryFileToGraph(db, {
       root: libraryRoot,
       relativePath: "artifacts/review-session-report.artifact.yaml",
-    });
-    await syncLibraryFileToGraph(db, {
-      root: libraryRoot,
-      relativePath: "evaluators/review-report-evaluator.evaluator.yaml",
-    });
-    const result = await resolveGoalValidationPg(db, {
-      goalContract: confirmedContract("artifact-ref"),
-      requirementDraft: confirmedRequirementDraft("artifact-ref"),
-      scope: "general",
-      ranker: fixedRanker({
-        artifactRef: "artifact.review-session-report",
-        evaluatorRef: "evaluator.review-report-evaluator",
-        verificationMode: "deterministic",
-        procedureRef: "procedure.review-report",
-      }),
-    });
-    assert.equal(result.ready, false);
-    assert.equal(result.bindings.length, 0);
-    assert.equal(result.gaps.some((gap) => gap.kind === "artifact"), true);
+    }), /mediaTypes/);
+    assert.equal(await findLibraryObjectByKey(db, "artifact.review-session-report"), null);
   });
 });
 
@@ -519,9 +529,12 @@ function artifactState(evidenceKinds: string[]): Record<string, unknown> {
     scope: "article",
     title: "Article HTML",
     artifactType: "article_html",
+    mediaTypes: ["text/html"],
     requiredFields: ["content"],
     validationRules: ["rule.self-contained-html"],
     evidenceKinds,
+    schemaRef: "schema.article-html.v1",
+    provenanceRequirements: ["workspace-artifact"],
   };
 }
 
@@ -529,6 +542,8 @@ function evaluatorState(evidenceKinds: string[]): Record<string, unknown> {
   return {
     scope: "article",
     title: "Offline browser evaluator",
+    validatesArtifactRefs: ["artifact.article-html"],
+    requiredInputs: ["accepted-artifact"],
     verificationModes: ["browser_interaction"],
     verificationProcedures: [{
       id: "procedure.offline-open",
@@ -537,7 +552,7 @@ function evaluatorState(evidenceKinds: string[]): Record<string, unknown> {
       allowedEvidenceKinds: evidenceKinds,
     }],
     evidenceKinds,
-    resultSchemaRef: "schema.evaluator-result.v1",
+    resultSchemaRef: "southstar.requirement_evaluator_result.v2",
     independencePolicy: "independent",
     failureClassifications: ["network_dependency", "unreadable_content"],
   };

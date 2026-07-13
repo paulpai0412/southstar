@@ -25,12 +25,12 @@ import {
 import {
   listLibraryFiles,
   readLibraryFile,
-  writeLibraryFile,
 } from "../design-library/files/library-file-store.ts";
 import {
   LibraryReconcileError,
   loadLibraryReadinessPg,
   reconcileLibraryFilesPg,
+  writeLibraryFileWithLockPg,
 } from "../design-library/files/library-reconcile-service.ts";
 import { listLibraryChatSessionSummariesPg, type LibraryChatAction } from "../read-models/library-chat.ts";
 import { buildLibraryGraphReadModel } from "../read-models/library-graph.ts";
@@ -38,8 +38,7 @@ import { buildLibraryWorkspaceReadModel } from "../read-models/library-workspace
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import {
   assertGoalValidationImportCurrentPg,
-  GoalValidationProviderNotConfiguredError,
-  resumeGoalValidationAfterLibraryImportPg,
+  resumeInstalledLibraryImportGoalValidationPg,
 } from "../orchestration/goal-validation-lifecycle.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
@@ -166,7 +165,11 @@ export async function handleLibraryRoute(
       llmProvider: context.libraryImportLlmProvider,
       transactionGuard: async (tx) => await assertGoalValidationImportCurrentPg(tx, draftId, { lockForInstall: true }),
     });
-    return json("library-import-candidate-install", await resumeLinkedGoalValidation(context, installed));
+    return json("library-import-candidate-install", await resumeInstalledLibraryImportGoalValidationPg(context.db, {
+      installed,
+      libraryImportLlmProvider: context.libraryImportLlmProvider,
+      libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+    }));
   }
 
   const importDraftInstallStreamMatch = url.pathname.match(/^\/api\/v2\/library\/import-drafts\/([^/]+)\/install\/stream$/);
@@ -397,12 +400,12 @@ export async function handleLibraryRoute(
     }
     if (request.method === "PATCH") {
       const body = await readJsonBody<{ content?: unknown }>(request);
-      await writeLibraryFile({
+      const file = await writeLibraryFileWithLockPg(context.db, {
         root: libraryRoot(context),
         relativePath,
         content: requiredString(body.content, "content"),
       });
-      return json("library-file", await readLibraryFile({ root: libraryRoot(context), relativePath }));
+      return json("library-file", file);
     }
   }
 
@@ -1045,7 +1048,11 @@ function libraryImportInstallEventStream(
           edgeIds: installed.graph.edgeIds,
         });
         emit("library.graph.snapshot", await installedImportGraphSnapshot(context, installed));
-        const result = await resumeLinkedGoalValidation(context, installed);
+        const result = await resumeInstalledLibraryImportGoalValidationPg(context.db, {
+          installed,
+          libraryImportLlmProvider: context.libraryImportLlmProvider,
+          libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+        });
         if (result.goalValidationResume) emit("goal_validation_resumed", result.goalValidationResume);
         emit("library.command.completed", result as unknown as Record<string, unknown>);
       } catch (error) {
@@ -1078,56 +1085,6 @@ function libraryImportInstallEventStream(
       "access-control-allow-origin": "*",
     },
   });
-}
-
-async function resumeLinkedGoalValidation(
-  context: RuntimeServerContext,
-  installed: Awaited<ReturnType<typeof installLibraryImportCandidates>>,
-): Promise<Awaited<ReturnType<typeof installLibraryImportCandidates>> & {
-  installed: true;
-  goalValidationResume?: Record<string, unknown>;
-}> {
-  const resource = await getResourceByKeyPg(context.db, "library_import_draft", installed.draftId);
-  const payload = asRecord(resource?.payload);
-  if (!optionalString(payload.originGoalDraftId)) return { ...installed, installed: true };
-  try {
-    const resumed = await resumeGoalValidationAfterLibraryImportPg(context.db, {
-      libraryImportDraftId: installed.draftId,
-      libraryImportLlmProvider: context.libraryImportLlmProvider,
-      libraryImportSourceFetcher: context.libraryImportSourceFetcher,
-      actor: optionalString(asRecord(payload.install).actor) ?? "operator",
-    });
-    return {
-      ...installed,
-      installed: true,
-      goalValidationResume: {
-        ok: true,
-        recoverable: false,
-        draftId: resumed.draftId,
-        status: resumed.status,
-        goalDesignPhase: resumed.phase,
-        resolutionHash: resumed.goalValidationResolution.resolutionHash,
-        ...(resumed.libraryImportDraftId ? { libraryImportDraftId: resumed.libraryImportDraftId } : {}),
-      },
-    };
-  } catch (error) {
-    return {
-      ...installed,
-      installed: true,
-      goalValidationResume: {
-        ok: false,
-        recoverable: true,
-        draftId: optionalString(payload.originGoalDraftId),
-        status: "library_review",
-        error: error instanceof Error ? error.message : String(error),
-        ...(error instanceof GoalValidationProviderNotConfiguredError ? {
-          code: error.code,
-          httpStatus: error.status,
-          readiness: error.readiness,
-        } : {}),
-      },
-    };
-  }
 }
 
 async function installedImportGraphSnapshot(

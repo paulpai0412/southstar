@@ -1,4 +1,8 @@
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
+import {
+  normalizeLibraryImportCandidateKindFields,
+  REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF,
+} from "../design-library/importers/library-import-candidate-schema.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import {
   resolveApprovedValidationCandidates,
@@ -361,7 +365,21 @@ function buildBinding(input: {
   recommendation: GoalValidationCandidateRecommendationV1;
 }): { binding?: RequirementValidationBindingV1; gaps: GoalValidationGapV1[]; missingKinds?: Set<"artifact" | "evaluator" | "capability" | "domain"> } {
   const state = input.evaluator.state;
-  const modes = stringArray(state.verificationModes ?? state.supportedVerificationModes);
+  const evaluatorContractIssue = validateExecutableContractState("evaluator", input.evaluator);
+  if (evaluatorContractIssue) {
+    return {
+      gaps: [gap({
+        kind: "evaluator",
+        requirementId: input.contractRequirement.id,
+        criterionIds: input.criterionIds,
+        requestedRef: input.evaluator.objectKey,
+        blocking: input.contractRequirement.blocking,
+        message: evaluatorContractIssue,
+      })],
+      missingKinds: new Set(["evaluator"]),
+    };
+  }
+  const modes = stringArray(state.verificationModes);
   if (!modes.includes(input.recommendation.verificationMode)) {
     return {
       gaps: [gap({
@@ -387,11 +405,7 @@ function buildBinding(input: {
       })],
     };
   }
-  const procedureMode = typeof procedure.verificationMode === "string"
-    ? procedure.verificationMode
-    : typeof procedure.checkKind === "string"
-      ? procedure.checkKind
-      : undefined;
+  const procedureMode = typeof procedure.checkKind === "string" ? procedure.checkKind : undefined;
   if (procedureMode !== input.recommendation.verificationMode) {
     return {
       gaps: [gap({
@@ -404,7 +418,7 @@ function buildBinding(input: {
       })],
     };
   }
-  if (state.independencePolicy !== "independent" && state.independence !== "independent") {
+  if (state.independencePolicy !== "independent") {
     return {
       gaps: [gap({
         kind: "independence",
@@ -423,18 +437,18 @@ function buildBinding(input: {
   const inventedEvidenceKinds = rankerEvidenceKinds.filter((kind) => !expectedEvidenceKinds.includes(kind));
   const procedureEvidenceKinds = uniqueStrings(procedure.allowedEvidenceKinds);
   const evaluatorEvidenceKinds = uniqueStrings(state.evidenceKinds);
-  const artifactEvidenceKinds = uniqueStrings([
-    ...stringArray(input.artifact.state.evidenceKinds),
-    ...stringArray(input.artifact.state.acceptableEvidenceKinds),
-  ]);
+  const artifactEvidenceKinds = uniqueStrings(stringArray(input.artifact.state.evidenceKinds));
   const resultSchemaRef = typeof state.resultSchemaRef === "string" ? state.resultSchemaRef.trim() : "";
+  const procedureInstruction = typeof procedure.instruction === "string" ? procedure.instruction.trim() : "";
   const unsupportedByProcedure = expectedEvidenceKinds.filter((kind) => !procedureEvidenceKinds.includes(kind));
   const unsupportedByEvaluator = expectedEvidenceKinds.filter((kind) => !evaluatorEvidenceKinds.includes(kind));
   const unsupportedByArtifact = expectedEvidenceKinds.filter((kind) => !artifactEvidenceKinds.includes(kind));
-  if (!resultSchemaRef || procedureEvidenceKinds.length === 0 || evaluatorEvidenceKinds.length === 0 || artifactEvidenceKinds.length === 0
+  if (resultSchemaRef !== REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF || !procedureInstruction
+    || procedureEvidenceKinds.length === 0 || evaluatorEvidenceKinds.length === 0 || artifactEvidenceKinds.length === 0
     || inventedEvidenceKinds.length > 0 || unsupportedByProcedure.length > 0 || unsupportedByEvaluator.length > 0 || unsupportedByArtifact.length > 0) {
     const details = [
-      !resultSchemaRef ? "evaluator resultSchemaRef is missing" : "",
+      resultSchemaRef !== REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF ? `evaluator resultSchemaRef must be ${REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF}` : "",
+      !procedureInstruction ? "verification procedure instruction is missing" : "",
       procedureEvidenceKinds.length === 0 ? "verification procedure allowedEvidenceKinds is missing" : "",
       evaluatorEvidenceKinds.length === 0 ? "evaluator evidenceKinds is missing" : "",
       artifactEvidenceKinds.length === 0 ? "artifact evidenceKinds is missing" : "",
@@ -540,14 +554,33 @@ function isRecommendation(value: unknown): value is GoalValidationCandidateRecom
 }
 
 function validateArtifactContract(object: LibraryObjectSummary): string | undefined {
-  const state = object.state;
-  if (typeof state.artifactType !== "string" || state.artifactType.trim().length === 0) {
-    return `Approved artifact ${object.objectKey} is missing artifactType`;
+  return validateExecutableContractState("artifact", object);
+}
+
+function validateExecutableContractState(
+  kind: "artifact" | "evaluator",
+  object: LibraryObjectSummary,
+): string | undefined {
+  try {
+    const record: Record<string, unknown> = {
+      objectKey: object.objectKey,
+      kind,
+      title: typeof object.state.title === "string" ? object.state.title : object.objectKey,
+      scope: typeof object.state.scope === "string" ? object.state.scope : object.scope,
+      selectedByDefault: true,
+    };
+    const hostOwnedFields = new Set([
+      "schemaVersion", "id", "title", "scope", "status", "body", "sourcePath", "sourceHash",
+      "declaredStatus", "reconcileReason", "importDraftId", "importCandidateKey", "importSourcePath",
+    ]);
+    for (const [key, value] of Object.entries(object.state)) {
+      if (!hostOwnedFields.has(key)) record[key] = value;
+    }
+    normalizeLibraryImportCandidateKindFields(record, kind, object.objectKey);
+    return undefined;
+  } catch (cause) {
+    return `Approved ${kind} ${object.objectKey} has an invalid executable contract: ${cause instanceof Error ? cause.message : String(cause)}`;
   }
-  if (!Array.isArray(state.validationRules) && typeof state.schemaRef !== "string" && !Array.isArray(state.requiredFields)) {
-    return `Approved artifact ${object.objectKey} is missing validationRules, schemaRef, or requiredFields`;
-  }
-  return undefined;
 }
 
 function procedureById(state: Record<string, unknown>, procedureRef: string): Record<string, unknown> | undefined {

@@ -1,5 +1,5 @@
-import { lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { link, lstat, mkdir, mkdtemp, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { SouthstarDb } from "../../db/postgres.ts";
 import { isCatalogCanonicalDomain } from "../canonical-domains.ts";
 import {
@@ -110,6 +110,114 @@ export async function writeNewLibraryFile(input: {
   await mkdir(dirname(safePath.absolutePath), { recursive: true });
   await writeFile(safePath.absolutePath, input.content, { encoding: "utf8", flag: "wx" });
   return { relativePath: safePath.relativePath };
+}
+
+export type LibraryFilePublication = {
+  stagingRoot: string;
+  publish(): Promise<void>;
+  rollbackPublished(): Promise<void>;
+  discard(): Promise<void>;
+};
+
+export async function prepareLibraryFilePublication(input: {
+  root: string;
+  files: Array<{
+    relativePath: string;
+    content: string | Buffer;
+    mode: "create" | "replace";
+    expectedContent?: string | Buffer;
+  }>;
+}): Promise<LibraryFilePublication> {
+  const libraryRoot = resolve(input.root);
+  const stagingRoot = await mkdtemp(join(dirname(libraryRoot), `.${basename(libraryRoot)}-southstar-stage-`));
+  const entries: Array<{
+    targetPath: string;
+    stagePath: string;
+    backupPath: string;
+    content: Buffer;
+    expectedContent?: Buffer;
+    mode: "create" | "replace";
+    published: boolean;
+  }> = [];
+  try {
+    for (const [index, file] of input.files.entries()) {
+      const target = await resolveLibraryPath({ root: input.root, relativePath: file.relativePath }, { allowMissingRoot: true });
+      const stagePath = join(stagingRoot, "files", file.relativePath);
+      const backupPath = join(stagingRoot, "backups", `${index}-${basename(file.relativePath)}`);
+      await mkdir(dirname(stagePath), { recursive: true });
+      await writeFile(stagePath, file.content);
+      entries.push({
+        targetPath: target.absolutePath,
+        stagePath,
+        backupPath,
+        content: Buffer.isBuffer(file.content) ? file.content : Buffer.from(file.content, "utf8"),
+        expectedContent: file.expectedContent === undefined
+          ? undefined
+          : Buffer.isBuffer(file.expectedContent) ? file.expectedContent : Buffer.from(file.expectedContent, "utf8"),
+        mode: file.mode,
+        published: false,
+      });
+    }
+  } catch (error) {
+    await rm(stagingRoot, { recursive: true, force: true });
+    throw error;
+  }
+
+  const rollbackPublished = async (): Promise<void> => {
+    for (const entry of [...entries].reverse()) {
+      if (!entry.published) continue;
+      const live = await readFile(entry.targetPath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      });
+      if (live && !live.equals(entry.content)) continue;
+      if (entry.mode === "replace") {
+        await mkdir(dirname(entry.targetPath), { recursive: true });
+        await rename(entry.backupPath, entry.targetPath);
+      } else {
+        await rm(entry.targetPath, { force: true });
+      }
+      entry.published = false;
+    }
+  };
+
+  return {
+    stagingRoot,
+    async publish() {
+      try {
+        for (const entry of entries) {
+          await mkdir(dirname(entry.targetPath), { recursive: true });
+          if (entry.mode === "replace") {
+            if (entry.expectedContent) {
+              const current = await readFile(entry.targetPath);
+              if (!current.equals(entry.expectedContent)) {
+                throw new Error(`library file changed since publication was prepared: ${entry.targetPath}`);
+              }
+            }
+            await mkdir(dirname(entry.backupPath), { recursive: true });
+            await rename(entry.targetPath, entry.backupPath);
+            try {
+              await rename(entry.stagePath, entry.targetPath);
+            } catch (error) {
+              await rename(entry.backupPath, entry.targetPath);
+              throw error;
+            }
+          } else {
+            await link(entry.stagePath, entry.targetPath);
+            await rm(entry.stagePath, { force: true });
+          }
+          entry.published = true;
+        }
+      } catch (error) {
+        await rollbackPublished();
+        throw error;
+      }
+    },
+    rollbackPublished,
+    async discard() {
+      await rm(stagingRoot, { recursive: true, force: true });
+    },
+  };
 }
 
 export async function removeLibraryFileIfContentMatches(input: {

@@ -12,6 +12,13 @@ import {
   isCatalogCanonicalDomain,
 } from "../canonical-domains.ts";
 import type { LibraryDefinitionKind, LibraryDefinitionStatus, LibraryEdgeType } from "../types.ts";
+import {
+  LIBRARY_VALIDATION_EVIDENCE_KINDS,
+  LIBRARY_VERIFICATION_MODES,
+  normalizeLibraryImportCandidateKindFields,
+  REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF,
+} from "./library-import-candidate-schema.ts";
+export { LIBRARY_VALIDATION_EVIDENCE_KINDS, LIBRARY_VERIFICATION_MODES } from "./library-import-candidate-schema.ts";
 
 const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
   "belongs_to_domain",
@@ -38,25 +45,6 @@ const ALLOWED_ONTOLOGY_EDGE_TYPES: LibraryImportEdgeType[] = [
 const MAX_PROMPT_DOCUMENT_CHARS = 120_000;
 const MAX_DOCUMENT_EXCERPT_CHARS = 1_200;
 const VOCABULARY_CANDIDATE_KINDS = new Set<LibraryImportCandidateKind>(["domain", "capability", "artifact", "evaluator"]);
-export const LIBRARY_VALIDATION_EVIDENCE_KINDS = [
-  "file-diff",
-  "test-result",
-  "command-output",
-  "url",
-  "screenshot",
-  "human-approval",
-  "artifact-ref",
-  "workspace-snapshot",
-  "policy-decision",
-] as const;
-const EVIDENCE_KINDS = new Set<string>(LIBRARY_VALIDATION_EVIDENCE_KINDS);
-export const LIBRARY_VERIFICATION_MODES = [
-  "deterministic",
-  "browser_interaction",
-  "semantic_review",
-  "human_approval",
-] as const;
-const VERIFICATION_MODES = new Set<string>(LIBRARY_VERIFICATION_MODES);
 
 export type LibraryImportLlmProvider = (input: {
   prompt: string;
@@ -239,8 +227,8 @@ export function buildLibraryImportCandidatePrompt(
     "For agent, skill, mcp, and tool candidates, domain must be one canonical domain key from CanonicalDomainTaxonomy. Do not invent domains and do not use software unless it appears in the taxonomy.",
     "Vocabulary candidate schemas are strict; omit fields that are not listed for that kind.",
     "domain may include aliases:string[]. capability requires description:string and requiredOperations:string[].",
-    "artifact requires artifactType:string, evidenceKinds:string[], validationRules:string[], schemaRef:string, and requiredFields:string[].",
-    "evaluator requires validatesArtifactRefs:string[], evidenceKinds:string[], verificationModes:string[], verificationProcedures:{id:string,checkKind:string,allowedEvidenceKinds:string[]}[], independencePolicy:'independent', resultSchemaRef:string, and failureClassifications:string[].",
+    "artifact requires artifactType:string, mediaTypes:string[], evidenceKinds:string[], validationRules:string[], schemaRef:string, requiredFields:string[], and provenanceRequirements:string[].",
+    `evaluator requires validatesArtifactRefs:string[], requiredInputs:string[], evidenceKinds:string[], verificationModes:string[], verificationProcedures:{id:string,checkKind:string,instruction:string,allowedEvidenceKinds:string[]}[], independencePolicy:'independent', resultSchemaRef:'${REQUIREMENT_EVALUATOR_RESULT_SCHEMA_REF}', and failureClassifications:string[].`,
     `evidenceKinds and allowedEvidenceKinds values are limited exactly to: ${LIBRARY_VALIDATION_EVIDENCE_KINDS.join(", ")}.`,
     `verificationModes and verificationProcedures.checkKind values are limited exactly to: ${LIBRARY_VERIFICATION_MODES.join(", ")}.`,
     "Every verification procedure checkKind must be declared in verificationModes, and every allowedEvidenceKinds value must also appear in the evaluator evidenceKinds.",
@@ -397,50 +385,7 @@ export function normalizeLibraryImportCandidates(
     const domain = pathDomain?.key ?? (!vocabularyCandidate && isCatalogCanonicalDomain(llmDomain) ? llmDomain : undefined);
     const scope = vocabularyCandidate ? (optionalString(candidate.scope) ?? options.scope) : (domain ?? options.scope);
     const title = optionalString(candidate.title);
-    const strictArray = (field: string): string[] => vocabularyCandidate
-      ? strictOptionalStringArray(candidate[field], `Library ${kind} candidate ${objectKey}.${field}`)
-      : stringArray(candidate[field]);
-    const aliases = strictArray("aliases");
-    const requiredOperations = strictArray("requiredOperations");
-    const evidenceKinds = strictArray("evidenceKinds");
-    const validatesArtifactRefs = strictArray("validatesArtifactRefs");
-    const validationRules = strictArray("validationRules");
-    const schemaRef = optionalString(candidate.schemaRef);
-    const requiredFields = strictArray("requiredFields");
-    const verificationModes = strictArray("verificationModes");
-    const verificationProcedures = normalizeVerificationProcedures(candidate.verificationProcedures, objectKey);
-    const independencePolicy = optionalString(candidate.independencePolicy);
-    const resultSchemaRef = optionalString(candidate.resultSchemaRef);
-    const failureClassifications = strictArray("failureClassifications");
-    const description = optionalString(candidate.description);
-    const artifactType = optionalString(candidate.artifactType);
-    if (kind === "capability" && (!description || requiredOperations.length === 0)) continue;
-    if (vocabularyCandidate) assertVocabularyCandidateKeys(candidate, kind, objectKey);
-    if (kind === "artifact" && (!artifactType || evidenceKinds.length === 0 || validationRules.length === 0 || !schemaRef || requiredFields.length === 0)) {
-      throw new Error(`Library artifact candidate ${objectKey} requires artifactType, evidenceKinds, validationRules, schemaRef, and requiredFields`);
-    }
-    if (kind === "evaluator" && (validatesArtifactRefs.length === 0 || evidenceKinds.length === 0
-      || verificationModes.length === 0 || verificationProcedures.length === 0 || independencePolicy !== "independent"
-      || !resultSchemaRef || failureClassifications.length === 0)) {
-      throw new Error(`Library evaluator candidate ${objectKey} is missing its complete reusable evaluator contract`);
-    }
-    if (evidenceKinds.some((value) => !EVIDENCE_KINDS.has(value))) {
-      throw new Error(`Library candidate ${objectKey} contains unsupported evidenceKinds`);
-    }
-    if (validatesArtifactRefs.some((value) => !value.startsWith("artifact."))) {
-      throw new Error(`Library evaluator candidate ${objectKey} contains an invalid validatesArtifactRefs value`);
-    }
-    if (verificationModes.some((value) => !VERIFICATION_MODES.has(value))) {
-      throw new Error(`Library evaluator candidate ${objectKey} contains unsupported verificationModes`);
-    }
-    for (const procedure of verificationProcedures) {
-      if (!verificationModes.includes(procedure.checkKind)) {
-        throw new Error(`Library evaluator candidate ${objectKey} procedure ${procedure.id} is not declared in verificationModes`);
-      }
-      if (procedure.allowedEvidenceKinds.some((value) => !EVIDENCE_KINDS.has(value) || !evidenceKinds.includes(value))) {
-        throw new Error(`Library evaluator candidate ${objectKey} procedure ${procedure.id} contains unsupported allowedEvidenceKinds`);
-      }
-    }
+    const kindFields = normalizeLibraryImportCandidateKindFields(candidate, kind, objectKey);
     seen.add(objectKey);
     candidates.push({
       objectKey,
@@ -452,88 +397,10 @@ export function normalizeLibraryImportCandidates(
       ...(sourcePath ? { sourcePath } : {}),
       selectedByDefault: typeof candidate.selectedByDefault === "boolean" ? candidate.selectedByDefault : true,
       confidence: clampConfidence(candidate.confidence),
-      ...(description ? { description } : {}),
-      ...(aliases.length > 0 ? { aliases } : {}),
-      ...(requiredOperations.length > 0 ? { requiredOperations } : {}),
-      ...(artifactType ? { artifactType } : {}),
-      ...(evidenceKinds.length > 0 ? { evidenceKinds } : {}),
-      ...(validationRules.length > 0 ? { validationRules } : {}),
-      ...(schemaRef ? { schemaRef } : {}),
-      ...(requiredFields.length > 0 ? { requiredFields } : {}),
-      ...(validatesArtifactRefs.length > 0 ? { validatesArtifactRefs } : {}),
-      ...(verificationModes.length > 0 ? { verificationModes: verificationModes as LibraryImportCandidate["verificationModes"] } : {}),
-      ...(verificationProcedures.length > 0 ? { verificationProcedures } : {}),
-      ...(independencePolicy === "independent" ? { independencePolicy } : {}),
-      ...(resultSchemaRef ? { resultSchemaRef } : {}),
-      ...(failureClassifications.length > 0 ? { failureClassifications } : {}),
+      ...kindFields,
     });
   }
   return candidates;
-}
-
-const VOCABULARY_COMMON_KEYS = new Set([
-  "objectKey", "kind", "title", "scope", "sourcePath", "selectedByDefault", "confidence", "classificationReason",
-]);
-
-function assertVocabularyCandidateKeys(
-  candidate: Record<string, unknown>,
-  kind: LibraryImportCandidateKind,
-  objectKey: string,
-): void {
-  const kindKeys: Record<"domain" | "capability" | "artifact" | "evaluator", string[]> = {
-    domain: ["aliases"],
-    capability: ["description", "requiredOperations"],
-    artifact: ["artifactType", "evidenceKinds", "validationRules", "schemaRef", "requiredFields"],
-    evaluator: [
-      "validatesArtifactRefs", "evidenceKinds", "verificationModes", "verificationProcedures",
-      "independencePolicy", "resultSchemaRef", "failureClassifications",
-    ],
-  };
-  if (!(kind in kindKeys)) return;
-  const allowed = new Set([...VOCABULARY_COMMON_KEYS, ...kindKeys[kind as keyof typeof kindKeys]]);
-  const unsupported = Object.keys(candidate).filter((key) => !allowed.has(key));
-  if (unsupported.length > 0) {
-    throw new Error(`Library ${kind} candidate ${objectKey} contains unsupported fields: ${unsupported.join(", ")}`);
-  }
-}
-
-function normalizeVerificationProcedures(
-  value: unknown,
-  objectKey: string,
-): NonNullable<LibraryImportCandidate["verificationProcedures"]> {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw new Error(`Library evaluator candidate ${objectKey} verificationProcedures must be an array`);
-  const seen = new Set<string>();
-  return value.map((item, index) => {
-    if (!isRecord(item)) throw new Error(`Library evaluator candidate ${objectKey} verificationProcedures[${index}] must be an object`);
-    const unsupported = Object.keys(item).filter((key) => !["id", "checkKind", "allowedEvidenceKinds"].includes(key));
-    if (unsupported.length > 0) {
-      throw new Error(`Library evaluator candidate ${objectKey} verificationProcedures[${index}] contains unsupported fields: ${unsupported.join(", ")}`);
-    }
-    const id = optionalString(item.id);
-    const checkKind = optionalString(item.checkKind);
-    const allowedEvidenceKinds = strictOptionalStringArray(
-      item.allowedEvidenceKinds,
-      `Library evaluator candidate ${objectKey} verificationProcedures[${index}].allowedEvidenceKinds`,
-    );
-    if (!id || seen.has(id) || !checkKind || !VERIFICATION_MODES.has(checkKind) || allowedEvidenceKinds.length === 0) {
-      throw new Error(`Library evaluator candidate ${objectKey} verificationProcedures[${index}] is invalid`);
-    }
-    seen.add(id);
-    return {
-      id,
-      checkKind: checkKind as NonNullable<LibraryImportCandidate["verificationProcedures"]>[number]["checkKind"],
-      allowedEvidenceKinds,
-    };
-  });
-}
-
-function strictOptionalStringArray(value: unknown, label: string): string[] {
-  if (value === undefined) return [];
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.trim().length === 0)) {
-    throw new Error(`${label} must be an array of non-empty strings`);
-  }
-  return [...new Set(value as string[])];
 }
 
 function normalizeEdges(

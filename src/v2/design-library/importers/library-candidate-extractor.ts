@@ -46,15 +46,19 @@ export type LibraryImportCandidate = {
   aliases?: string[];
   requiredOperations?: string[];
   artifactType?: string;
+  mediaTypes?: string[];
   evidenceKinds?: string[];
   validationRules?: string[];
   schemaRef?: string;
   requiredFields?: string[];
+  provenanceRequirements?: string[];
   validatesArtifactRefs?: string[];
+  requiredInputs?: string[];
   verificationModes?: Array<"deterministic" | "browser_interaction" | "semantic_review" | "human_approval">;
   verificationProcedures?: Array<{
     id: string;
     checkKind: "deterministic" | "browser_interaction" | "semantic_review" | "human_approval";
+    instruction: string;
     allowedEvidenceKinds: string[];
   }>;
   independencePolicy?: "independent";

@@ -1,6 +1,7 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { createLibraryImportDraft } from "../design-library/importers/library-import-draft-store.ts";
+import type { LibraryImportCandidateInstallResult } from "../design-library/importers/library-import-draft-store.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
 import type { GoalValidationResolutionV1 } from "../design-library/types.ts";
@@ -68,6 +69,60 @@ export class GoalValidationImportStaleError extends Error {
   constructor(readonly libraryImportDraftId: string, message: string) {
     super(`goal_validation_import_stale: ${message}`);
     this.name = "GoalValidationImportStaleError";
+  }
+}
+
+export async function resumeInstalledLibraryImportGoalValidationPg(
+  db: SouthstarDb,
+  input: {
+    installed: LibraryImportCandidateInstallResult;
+    libraryImportLlmProvider?: LibraryImportLlmProvider;
+    libraryImportSourceFetcher?: LibraryImportSourceFetcher;
+  },
+): Promise<LibraryImportCandidateInstallResult & {
+  installed: true;
+  goalValidationResume?: Record<string, unknown>;
+}> {
+  const resource = await getResourceByKeyPg(db, "library_import_draft", input.installed.draftId);
+  const payload = asRecord(resource?.payload);
+  if (!optionalString(payload.originGoalDraftId)) return { ...input.installed, installed: true };
+  try {
+    const resumed = await resumeGoalValidationAfterLibraryImportPg(db, {
+      libraryImportDraftId: input.installed.draftId,
+      libraryImportLlmProvider: input.libraryImportLlmProvider,
+      libraryImportSourceFetcher: input.libraryImportSourceFetcher,
+      actor: optionalString(asRecord(payload.install).actor) ?? "operator",
+    });
+    return {
+      ...input.installed,
+      installed: true,
+      goalValidationResume: {
+        ok: true,
+        recoverable: false,
+        draftId: resumed.draftId,
+        status: resumed.status,
+        goalDesignPhase: resumed.phase,
+        resolutionHash: resumed.goalValidationResolution.resolutionHash,
+        ...(resumed.libraryImportDraftId ? { libraryImportDraftId: resumed.libraryImportDraftId } : {}),
+      },
+    };
+  } catch (error) {
+    return {
+      ...input.installed,
+      installed: true,
+      goalValidationResume: {
+        ok: false,
+        recoverable: true,
+        draftId: optionalString(payload.originGoalDraftId),
+        status: "library_review",
+        error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof GoalValidationProviderNotConfiguredError ? {
+          code: error.code,
+          httpStatus: error.status,
+          readiness: error.readiness,
+        } : {}),
+      },
+    };
   }
 }
 
