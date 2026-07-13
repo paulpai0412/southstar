@@ -226,6 +226,59 @@ test("failed create publication preserves an operator file with identical conten
   }
 });
 
+test("create publication rollback preserves an in-place operator edit and immutable journal evidence", async () => {
+  const root = await createMinimalReadyLibraryRoot();
+  const relativePath = "skills/operator-create.skill.md";
+  const publishedContent = approvedSkill("skill.operator-create", "general", [], "Published content");
+  const operatorContent = "operator changed the created file in place";
+  const publication = await prepareLibraryFilePublication({
+    root,
+    identity: { kind: "library_file_patch", relativePath },
+    files: [{ relativePath, content: publishedContent, mode: "create" }],
+  });
+  try {
+    await publication.publish();
+    await writeFile(join(root, relativePath), operatorContent);
+
+    assert.equal(
+      await readFile(join(publication.stagingRoot, publication.manifest.entries[0]!.newContentRef), "utf8"),
+      publishedContent,
+    );
+    await publication.rollbackPublished();
+    assert.equal(await readFile(join(root, relativePath), "utf8"), operatorContent);
+  } finally {
+    await publication.discard();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("replace publication rollback preserves an in-place operator edit and immutable journal evidence", async () => {
+  const root = await createMinimalReadyLibraryRoot();
+  const relativePath = "skills/goal.skill.md";
+  const originalContent = await readFile(join(root, relativePath), "utf8");
+  const publishedContent = approvedSkill("skill.goal-any", "goal_design", [], "Published replacement");
+  const operatorContent = "operator changed the replacement in place";
+  const publication = await prepareLibraryFilePublication({
+    root,
+    identity: { kind: "library_file_patch", relativePath },
+    files: [{ relativePath, content: publishedContent, mode: "replace", expectedContent: originalContent }],
+  });
+  try {
+    await publication.publish();
+    await writeFile(join(root, relativePath), operatorContent);
+
+    assert.equal(
+      await readFile(join(publication.stagingRoot, publication.manifest.entries[0]!.newContentRef), "utf8"),
+      publishedContent,
+    );
+    await publication.rollbackPublished();
+    assert.equal(await readFile(join(root, relativePath), "utf8"), operatorContent);
+  } finally {
+    await publication.discard();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("startup recovery rolls forward a committed publication left before cleanup", async () => {
   await withPostgresTestDb(async (db) => {
     const root = await createMinimalReadyLibraryRoot();

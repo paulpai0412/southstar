@@ -243,27 +243,29 @@ function publicationFromManifest(
   const livePath = async (relativePath: string): Promise<string> => (
     await resolveLibraryPath({ root: manifest.libraryRoot, relativePath }, { allowMissingRoot: true })
   ).absolutePath;
-  const rollbackPublished = async (): Promise<void> => {
-    for (const entry of [...manifest.entries].reverse()) {
+  const rollbackEntries = async (entries: LibraryFilePublicationManifest["entries"]): Promise<void> => {
+    for (const entry of [...entries].reverse()) {
       const targetPath = await livePath(entry.relativePath);
       const live = await optionalFile(targetPath);
       if (entry.mode === "create") {
-        if (live && await sameFile(targetPath, join(stagingRoot, entry.newContentRef))) {
+        if (live && sha256(live) === entry.newHash) {
           await rm(targetPath, { force: true });
           await syncDirectory(dirname(targetPath));
         }
         continue;
       }
-      if (live && !(await sameFile(targetPath, join(stagingRoot, entry.newContentRef)))) continue;
+      if (live && sha256(live) !== entry.newHash) continue;
       if (!entry.originalContentRef) throw new Error(`publication original content is missing: ${entry.relativePath}`);
       await replaceTargetFromRef(join(stagingRoot, entry.originalContentRef), targetPath, manifest.publicationId);
     }
   };
+  const rollbackPublished = async (): Promise<void> => await rollbackEntries(manifest.entries);
   return {
     publicationId: manifest.publicationId,
     stagingRoot,
     manifest,
     async publish() {
+      const touchedEntries: LibraryFilePublicationManifest["entries"] = [];
       try {
         for (const entry of manifest.entries) {
           const targetPath = await livePath(entry.relativePath);
@@ -274,19 +276,24 @@ function publicationFromManifest(
             if (sha256(current) !== entry.expectedOriginalHash) {
               throw new Error(`library file changed since publication was prepared: ${targetPath}`);
             }
+            touchedEntries.push(entry);
             const backupPath = join(stagingRoot, entry.backupRef);
             await mkdir(dirname(backupPath), { recursive: true });
             await rename(targetPath, backupPath);
             await syncDirectory(dirname(targetPath));
             await syncDirectory(dirname(backupPath));
           }
-          await link(newContentPath, targetPath);
-          await syncDirectory(dirname(targetPath));
+          if (entry.mode === "replace") {
+            await replaceTargetFromRef(newContentPath, targetPath, manifest.publicationId);
+          } else {
+            await createTargetFromRef(newContentPath, targetPath, manifest.publicationId);
+            touchedEntries.push(entry);
+          }
         }
         manifest.phase = "published";
         await persistLibraryPublicationManifest(stagingRoot, manifest);
       } catch (error) {
-        await rollbackPublished();
+        await rollbackEntries(touchedEntries);
         throw error;
       }
     },
@@ -355,18 +362,26 @@ async function optionalFile(path: string): Promise<Buffer | undefined> {
   });
 }
 
-async function sameFile(leftPath: string, rightPath: string): Promise<boolean> {
-  const [left, right] = await Promise.all([lstat(leftPath), lstat(rightPath)]);
-  return left.dev === right.dev && left.ino === right.ino;
-}
-
 async function replaceTargetFromRef(ref: string, targetPath: string, publicationId: string): Promise<void> {
   await mkdir(dirname(targetPath), { recursive: true });
   const temporary = join(dirname(targetPath), `.${basename(targetPath)}.${publicationId}.tmp`);
   await rm(temporary, { force: true });
-  await link(ref, temporary);
+  await writeDurableFile(temporary, await readFile(ref));
   await rename(temporary, targetPath);
   await syncDirectory(dirname(targetPath));
+}
+
+async function createTargetFromRef(ref: string, targetPath: string, publicationId: string): Promise<void> {
+  await mkdir(dirname(targetPath), { recursive: true });
+  const temporary = join(dirname(targetPath), `.${basename(targetPath)}.${publicationId}.tmp`);
+  await rm(temporary, { force: true });
+  await writeDurableFile(temporary, await readFile(ref));
+  try {
+    await link(temporary, targetPath);
+    await syncDirectory(dirname(targetPath));
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
 function assertLibraryPublicationManifest(
