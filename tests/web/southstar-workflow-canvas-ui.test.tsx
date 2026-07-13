@@ -205,6 +205,50 @@ test("workflow generate proxy preserves terminal identity when enrichment fails"
   }
 });
 
+test("workflow generate proxy replay fallback preserves host requirement blockers", async () => {
+  const originalFetch = global.fetch;
+  const originalBaseUrl = process.env.SOUTHSTAR_V2_API_BASE_URL;
+  process.env.SOUTHSTAR_V2_API_BASE_URL = "http://runtime.test";
+  global.fetch = (async (url) => {
+    const pathname = new URL(String(url)).pathname;
+    if (pathname === "/api/v2/run-goal") {
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(`event: done\ndata: ${JSON.stringify({
+            draftId: "draft-replay",
+            draftStatus: "requirements_review",
+            goalRequirementDraftId: "draft-replay",
+            goalRequirementDraftHash: "hash-replay",
+            goalDesignPhase: "requirements_review",
+            goalRequirementDraft: { schemaVersion: "southstar.goal_requirement_draft.v1", revision: 1, draftHash: "hash-replay" },
+            confirmable: false,
+            validationIssues: [],
+            blockers: ["host blocker survives replay"],
+          })}\n\n`));
+          controller.close();
+        },
+      }), { status: 200, headers: { "content-type": "text/event-stream" } });
+    }
+    throw new Error(`unexpected fetch ${url}`);
+  }) as typeof fetch;
+  try {
+    const { POST } = await import("../../web/app/api/workflow/generate/route.ts");
+    const response = await POST(new Request("http://southstar.test/api/workflow/generate", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ prompt: "replay", cwd: "/workspace/project", idempotencyKey: "replay-key" }),
+    }) as never);
+    const stream = await response.text();
+    assert.match(stream, /event: goal_requirements/);
+    assert.match(stream, /host blocker survives replay/);
+    assert.doesNotMatch(stream, /"blockers":\[\]/);
+  } finally {
+    global.fetch = originalFetch;
+    if (originalBaseUrl === undefined) delete process.env.SOUTHSTAR_V2_API_BASE_URL;
+    else process.env.SOUTHSTAR_V2_API_BASE_URL = originalBaseUrl;
+  }
+});
+
 test("workflow generate proxy forwards Goal Design controls without browser skill execution", async () => {
   const originalFetch = global.fetch;
   const originalBaseUrl = process.env.SOUTHSTAR_V2_API_BASE_URL;
@@ -1153,8 +1197,23 @@ test("chat Goal Requirements events replace the AppShell anchor, not only editor
   assert.match(hook, /opts\.onGoalRequirements\?\.\(block\)/);
   assert.match(shell, /onGoalRequirements=\{handleGoalRequirementsContent\}/);
   assert.match(shell, /expectedDraftHash: content\.goalRequirementDraftHash/);
-  assert.match(shell, /currentOverride\.draft\.revision > content\.draft\.revision/);
+  assert.match(shell, /goalRequirementsContentShouldReplace\(currentOverride, content\)/);
   assert.match(shell, /goalRequirementRevisionAnchorRef\.current = next/);
+});
+
+test("Goal Requirements projection rejects an equal-revision late review frame", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { goalRequirementsContentShouldReplace } from "./web/components/GoalRequirementListBlock";
+    const draft = ${JSON.stringify(requirementDraftView())};
+    const current = { type: "goalRequirements", draftId: "draft-goal-1", status: "validation_ready", goalRequirementDraftHash: "hash-1", draft, confirmable: false, validationIssues: [] };
+    const lateReview = { ...current, status: "requirements_review", confirmable: true };
+    const accepted = goalRequirementsContentShouldReplace(current, lateReview);
+    createRoot(document.getElementById("root")).render(<div data-testid="guard-result">{accepted ? "accepted" : "rejected"}</div>);
+  `, async (page) => {
+    assert.equal(await page.locator('[data-testid="guard-result"]').textContent(), "rejected");
+  });
 });
 
 test("AppShell confirmation projection rejects a requirements_review response before mutation", async () => {

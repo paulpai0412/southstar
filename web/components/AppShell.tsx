@@ -12,7 +12,7 @@ import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
 import { GoalContractInspector } from "./GoalContractInspector";
 import { GoalSliceEditor } from "./GoalSliceEditor";
 import { GoalRequirementEditor } from "./GoalRequirementEditor";
-import { goalRequirementsConfirmationFromUnknown, goalRequirementsContentFromUnknown, type GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
+import { goalRequirementsConfirmationFromUnknown, goalRequirementsContentFromUnknown, goalRequirementsContentShouldReplace, type GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
 import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
@@ -760,11 +760,7 @@ export function AppShell() {
     // editor projection before applying the new content so the next prompt and
     // confirmation cannot reuse H1.
     const currentOverride = goalRequirementContentOverrideRef.current;
-    if (
-      currentOverride
-      && currentOverride.draftId === content.draftId
-      && currentOverride.draft.revision > content.draft.revision
-    ) return;
+    if (!goalRequirementsContentShouldReplace(currentOverride, content)) return;
     goalRequirementContentOverrideRef.current = content;
     setGoalRequirementContentOverride(content);
     const current = goalRequirementRevisionAnchorRef.current;

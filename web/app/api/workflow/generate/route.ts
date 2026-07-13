@@ -20,6 +20,7 @@ type RunGoalResult = {
   goalDesignPackageHash?: string;
   vocabularyGaps?: Array<{ kind: string; requestedRef: string; allowedRefs: string[] }>;
   libraryImportDraftId?: string;
+  blockers?: string[];
   confirmable?: boolean;
   validationIssues?: Array<{ path: string; message: string; code?: string }>;
   runId?: string;
@@ -174,7 +175,7 @@ async function sendGoalReceipt(
       goalRequirementDraft: result.goalRequirementDraft,
       confirmable: result.confirmable === true,
       validationIssues: result.validationIssues ?? [],
-      blockers: [],
+      blockers: result.blockers,
     };
     send("goal_requirements", { ...requirementReceipt, package: requirementReceipt });
     send("done", result);

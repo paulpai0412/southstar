@@ -189,7 +189,7 @@ test("SSE replay re-emits the persisted Goal Requirements block", async () => {
               interactionContractRefs: [],
             }],
             nonGoals: [],
-            blockingInputs: [],
+            blockingInputs: ["Choose the learner language before composing."],
           });
         },
         async revise() {
@@ -208,6 +208,7 @@ test("SSE replay re-emits the persisted Goal Requirements block", async () => {
     assert.equal(firstRequirements?.status, "requirements_review");
     assert.equal(firstRequirements?.confirmable, true);
     assert.deepEqual(firstRequirements?.validationIssues, []);
+    assert.deepEqual(firstRequirements?.blockers, ["Choose the learner language before composing."]);
     assert.ok(firstRequirements?.goalRequirementDraft);
     assert.equal(firstFrames.at(-1)?.event, "done");
 
@@ -222,6 +223,7 @@ test("SSE replay re-emits the persisted Goal Requirements block", async () => {
     assert.equal(replayRequirements?.goalRequirementDraftHash, firstRequirements?.goalRequirementDraftHash);
     assert.equal(replayRequirements?.confirmable, true);
     assert.deepEqual(replayRequirements?.validationIssues, []);
+    assert.deepEqual(replayRequirements?.blockers, ["Choose the learner language before composing."]);
     assert.deepEqual(replayRequirements?.goalRequirementDraft, firstRequirements?.goalRequirementDraft);
     assert.equal(replayFrames.at(-1)?.event, "done");
   } finally {

@@ -212,6 +212,22 @@ export function goalRequirementsContentFromUnknown(value: unknown): GoalRequirem
   });
 }
 
+/**
+ * Keep the host projection monotonic when duplicate SSE/replay frames arrive
+ * out of order. Equal-revision content must preserve the same draft identity
+ * and cannot move a requirement draft back to an earlier design phase.
+ */
+export function goalRequirementsContentShouldReplace(
+  current: GoalRequirementsContent | null,
+  incoming: GoalRequirementsContent,
+): boolean {
+  if (!current || current.draftId !== incoming.draftId) return true;
+  if (current.draft.revision > incoming.draft.revision) return false;
+  if (current.draft.revision < incoming.draft.revision) return true;
+  if (current.goalRequirementDraftHash !== incoming.goalRequirementDraftHash) return false;
+  return goalRequirementPhaseRank(incoming.status) >= goalRequirementPhaseRank(current.status);
+}
+
 export function goalRequirementsConfirmationFromUnknown(
   value: unknown,
   expected: { draftId: string; expectedDraftHash: string },
@@ -221,6 +237,15 @@ export function goalRequirementsConfirmationFromUnknown(
   if (content.draftId !== expected.draftId || content.goalRequirementDraftHash !== expected.expectedDraftHash) return null;
   if (content.status !== "validation_resolving" && content.status !== "validation_ready") return null;
   return content;
+}
+
+function goalRequirementPhaseRank(status: string): number {
+  switch (status) {
+    case "requirements_review": return 0;
+    case "validation_resolving": return 1;
+    case "validation_ready": return 2;
+    default: return 0;
+  }
 }
 
 function parseDraft(value: Record<string, unknown>): GoalRequirementDraftView | null {
