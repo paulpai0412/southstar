@@ -48,6 +48,7 @@ export type GoalValidationCandidateRankerInputV1 = {
 };
 
 export type GoalValidationCandidateRankerResultV1 =
+  | GoalValidationCandidateRecommendationV1
   | GoalValidationCandidateRecommendationV1[]
   | { recommendations: GoalValidationCandidateRecommendationV1[] };
 
