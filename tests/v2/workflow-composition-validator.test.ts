@@ -302,6 +302,10 @@ test("coverage maps every blocking requirement to producer and independent evalu
     artifactRefs: ["artifact.article_html"],
     evaluatorTaskIds: ["task-verify-article"],
     evaluatorProfileRefs: ["evaluator.article-browser-quality"],
+    evaluatorProfileVersionRefs: [],
+    validationBindingId: undefined,
+    criterionIds: [],
+    acceptanceCriteria: [],
     requiredEvidenceKinds: ["artifact-ref", "screenshot", "url"],
   });
 });

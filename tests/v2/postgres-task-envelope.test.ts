@@ -131,7 +131,7 @@ test("Postgres task envelope API returns the latest persisted task envelope befo
 test("Postgres server task envelope route uses new TaskEnvelope API", async () => {
   await withDb(async (db) => {
     await seedKnowledgeCard(db);
-    await seedSoftwareLibraryGraph(db);
+    const draft = await createFixturePlannerDraft(db, "implement calc sum");
     const server = await createSouthstarRuntimeServer({
       db: db as never,
       plannerClient: { generate: async () => { throw new Error("planner not used"); } },
@@ -141,10 +141,6 @@ test("Postgres server task envelope route uses new TaskEnvelope API", async () =
       createReconcileLoop: () => ({ start() {}, stop: async () => {} }),
     });
     try {
-      const draft = await api<{ draftId: string }>(server.url, "/api/v2/planner/drafts", {
-        method: "POST",
-        body: JSON.stringify({ goalPrompt: "implement calc sum" }),
-      });
       const run = await api<{ runId: string }>(server.url, "/api/v2/runs", {
         method: "POST",
         body: JSON.stringify({ draftId: draft.draftId }),

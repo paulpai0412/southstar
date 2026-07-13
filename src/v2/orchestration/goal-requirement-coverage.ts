@@ -116,7 +116,7 @@ export function buildGoalRequirementCoverage(input: {
         criterionIds: frozenBinding ? [...frozenBinding.criterionIds] : [],
         acceptanceCriteria: frozenBinding
           ? [...frozenBinding.acceptanceCriteria]
-          : [...requirement.acceptanceCriteria],
+          : [],
         requiredEvidenceKinds: uniqueSorted(frozenBindings.length > 0
           ? frozenEvidenceKinds
           : evaluatorTasks.flatMap(requiredEvidenceKindsForTask)) as EvidenceKind[],

@@ -37,6 +37,7 @@ test("agent library candidates exposes selected refs and alternatives for a task
       status: "validated",
       payload: {
         workflow: {
+          domain: "software",
           tasks: [{ id: "task-build", roleRef: "builder", agentProfileRef: "builder-codex", skillRefs: ["southstar"] }],
         },
       },
@@ -68,6 +69,7 @@ test("agent library routes expose /api/v2/agent-library and /api/v2/agent-librar
       status: "validated",
       payload: {
         workflow: {
+          domain: "software",
           tasks: [{ id: "task-build", roleRef: "builder", agentProfileRef: "builder-codex" }],
         },
       },

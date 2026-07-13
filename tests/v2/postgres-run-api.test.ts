@@ -59,6 +59,7 @@ import {
   reviseUiInteractionContractPg,
 } from "../../src/v2/orchestration/goal-design-draft-service.ts";
 import { finalizeGoalRequirementDraft, type GoalRequirementDraftInputV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
+import { resolveGoalValidationPg } from "../../src/v2/orchestration/goal-validation-resolver.ts";
 import {
   createPostgresPlannerDraft,
   createPostgresRunFromDraft,
@@ -463,6 +464,72 @@ test("validation_ready continues on the same planner draft into a V2 Slice revie
       "select count(*) from southstar.runtime_resources where resource_type = 'planner_draft'",
     );
     assert.equal(Number(plannerDraftCount.count), 1);
+  });
+});
+
+test("Requirement review through validated DAG has no late validation candidate gap", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    await seedGoalRequirementVocabulary(db);
+    await seedInlineArticleValidationAndCompositionGraph(db);
+    const goal = await createConfirmedGoalRequirementDraft(db, "Create a verified offline article without late validation discovery");
+    const validation = await resolveAndPersistGoalValidationPg(db, {
+      draftId: goal.draftId,
+      expectedGoalContractHash: goal.goalContractHash,
+      resolver: async (resolverDb, input) => resolveGoalValidationPg(resolverDb, {
+        ...input,
+        ranker: ({ artifactCandidates, evaluatorCandidatesByArtifact }) => {
+          const artifact = artifactCandidates.find((candidate) => candidate.ref === "artifact.offline-document");
+          const evaluator = evaluatorCandidatesByArtifact["artifact.offline-document"]?.find((candidate) => candidate.ref === "evaluator.offline-document");
+          if (!artifact || !evaluator) return { recommendations: [] };
+          return {
+            artifactRef: artifact.ref,
+            artifactVersionRef: artifact.versionRef,
+            evaluatorRef: evaluator.ref,
+            evaluatorVersionRef: evaluator.versionRef,
+            verificationMode: "browser_interaction",
+            procedureRef: "procedure.open-offline",
+            expectedEvidenceKinds: ["screenshot"],
+          };
+        },
+      }),
+    });
+    assert.equal(validation.status, "validation_ready", JSON.stringify(validation.validationGaps));
+    assert.deepEqual(validation.validationGaps, []);
+    assert.equal(validation.validationBindings.length, 1);
+    const validationView = await getPostgresPlannerDraftOrchestration(db, { draftId: goal.draftId });
+    assert.equal(validationView.goalDesignPhase, "validation_ready");
+
+    const sliced = await designAndPersistGoalSlicesPg(db, {
+      draftId: goal.draftId,
+      expectedResolutionHash: validation.goalValidationResolution.resolutionHash,
+      sliceDesigner: inlineArticleSliceDesigner(),
+    });
+    assert.equal(sliced.phase, "slice_review");
+    const sliceView = await getPostgresPlannerDraftOrchestration(db, { draftId: goal.draftId });
+    assert.equal(sliceView.goalDesignPhase, "slice_review");
+    const composer: WorkflowComposer = {
+      async compose(input) { return inlineArticleComposition(input.goalContract, sliced.goalDesignPackage.slicePlan.slices[0]!.id); },
+    };
+    const composed = await createPostgresPlannerDraft(db, {
+      goalPrompt: goal.goalContract.originalPrompt,
+      cwd: goal.goalContract.workspace.cwd,
+      goalInterpreter: fixedGoalInterpreter(goal.goalContract),
+      goalDesignPackage: sliced.goalDesignPackage,
+      goalRequirementDraftId: goal.draftId,
+      goalRequirementDraftHash: goal.goalRequirementDraftHash,
+      composer,
+    });
+    assert.equal(composed.status, "validated", JSON.stringify(composed.validationIssues));
+    assert.deepEqual(composed.validationIssues, []);
+    const composedView = await getPostgresPlannerDraftOrchestration(db, { draftId: composed.draftId });
+    assert.equal(composedView.status, "validated");
+    assert.deepEqual(composedView.validationIssues, []);
+    const stored = await getResourceByKeyPg(db, "planner_draft", composed.draftId);
+    const coverage = (stored!.payload as any).goalRequirementCoverage;
+    assert.equal(coverage.entries[0]!.criterionIds.length > 0, true);
+    assert.deepEqual(coverage.entries[0]!.acceptanceCriteria, goal.goalContract.requirements[0]!.acceptanceCriteria);
+    assert.equal(coverage.entries[0]!.validationBindingId, validation.validationBindings[0]!.id);
   });
 });
 
@@ -3385,6 +3452,194 @@ function visualContractInput(requirementId: string, criterionId: string) {
     flows: [{ id: "flow-review", steps: ["action-reveal"], successOutcome: "Answer is visible" }],
     criterionBindings: [{ criterionId, screenIds: ["screen-review"], elementIds: ["element-reveal"], actionIds: ["action-reveal"] }],
   };
+}
+
+function inlineArticleSliceDesigner(): GoalSliceDesigner {
+  return {
+    async design(input) {
+      const binding = input.validationBindings[0]!;
+      return finalizeGoalDesignPackageV2({
+        schemaVersion: "southstar.goal_design_package.v2",
+        revision: 1,
+        goalContract: input.goalContract,
+        requirementDraftHash: input.requirementDraft.draftHash,
+        validationBindings: input.validationBindings,
+        slicePlan: {
+          schemaVersion: "southstar.goal_slice_plan.v1",
+          goalContractHash: "host-filled",
+          revision: 1,
+          slices: [{
+            id: "slice-offline-document",
+            requirementIds: [binding.requirementId],
+            outcome: "Produce and verify the requested offline document",
+            stateOrArtifactOwner: binding.artifactContractRefs[0]!,
+            mutationBoundary: "the requested offline document artifact",
+            expectedArtifactRefs: binding.artifactContractRefs,
+            evaluatorContractRefs: [binding.id],
+            dependsOnSliceIds: [],
+            dependencyArtifactRefs: [],
+          }],
+        },
+        compositionStrategy: { mode: "single-run", sliceIds: ["slice-offline-document"], rationale: "one cohesive artifact boundary" },
+        templatePolicy: input.templatePolicy,
+        goalDesignSkillRef: input.skill.objectKey,
+        goalDesignSkillVersionRef: input.skill.versionRef,
+        workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
+        mode: input.mode,
+      });
+    },
+  };
+}
+
+function inlineArticleComposition(goalContract: GoalContractV1, sliceId: string): WorkflowCompositionPlan {
+  const requirementIds = goalContract.requirements.map((requirement) => requirement.id);
+  const task = (
+    id: string,
+    nodeType: "implement" | "verify",
+    dependsOn: string[],
+    inputArtifactRefs: string[],
+    outputArtifactRefs: string[],
+  ) => ({
+    id,
+    name: nodeType === "implement" ? "Produce Offline Document" : "Verify Offline Document",
+    responsibility: nodeType === "implement" ? "Produce the confirmed offline document outcome." : "Independently verify every confirmed criterion.",
+    requirementIds,
+    sliceId,
+    nodePromptSpec: {
+      nodeType,
+      goal: nodeType === "implement" ? "Produce the offline document." : "Verify the offline document against frozen criteria.",
+      requirements: ["Satisfy the linked confirmed requirement."],
+      boundaries: ["Stay within the declared artifact boundary."],
+      nonGoals: ["Do not introduce unrelated product behavior."],
+      deliverableDocuments: [],
+      expectedOutputs: outputArtifactRefs,
+      testCases: [],
+      acceptanceCriteria: [...goalContract.requirements[0]!.acceptanceCriteria],
+      ...(nodeType === "implement" ? { implementationScope: ["Produce only the linked outcome artifact."] } : { verificationChecks: ["Evaluate every frozen criterion with accepted evidence."] }),
+    },
+    dependsOn,
+    templateSlotRef: nodeType,
+    agentDefinitionRef: "agent.document-worker",
+    agentProfileRef: "profile.generated.document-worker",
+    instructionRefs: [],
+    skillRefs: [],
+    toolGrantRefs: [],
+    mcpGrantRefs: [],
+    vaultLeasePolicyRefs: [],
+    inputArtifactRefs,
+    outputArtifactRefs,
+    evaluatorProfileRef: "evaluator.offline-document",
+    recoveryStrategyRefs: [],
+    rationale: `${nodeType} the frozen slice with approved validation contracts.`,
+  });
+  return {
+    schemaVersion: "southstar.workflow_composition_plan.v1",
+    title: "Offline Document Delivery",
+    selectedWorkflowTemplateRef: "template.document-delivery",
+    rationale: "One producer followed by an independent criterion evaluator.",
+    tasks: [
+      task("produce-document", "implement", [], [], ["artifact.offline-document"]),
+      task("verify-document", "verify", ["produce-document"], ["artifact.offline-document"], []),
+    ],
+    rejectedCandidates: [],
+    generatedComponentProposals: [{
+      id: "profile.generated.document-worker",
+      kind: "agent_profile",
+      risk: "medium",
+      reason: "Compose a worker profile from the approved task primitives.",
+      validationStatus: "validated",
+      agentProfile: {
+        workerKind: "execution_worker",
+        provider: "pi",
+        model: "pi-agent-default",
+        thinkingLevel: "high",
+        harnessRef: "pi",
+        instruction: "Produce or independently verify the declared document artifact according to the node prompt contract.",
+        promptTemplateRef: "graph-generated",
+        contextPolicyRef: "context.generated",
+        sessionPolicyRef: "session.generated",
+        memoryScopes: [],
+        agentsMdRefs: [],
+        vaultLeasePolicyRefs: [],
+        toolPolicy: { allowedTools: [], deniedTools: [], requiresApprovalFor: [] },
+        budgetPolicy: { maxInputTokens: 120000, maxOutputTokens: 8192, maxWallTimeSeconds: 900 },
+        execution: {
+          engine: "tork",
+          image: "southstar/pi-agent:local",
+          command: ["southstar-agent-runner"],
+          env: {},
+          mounts: [],
+          timeoutSeconds: 900,
+          infraRetry: { maxAttempts: 1 },
+        },
+      },
+    }],
+  };
+}
+
+async function seedInlineArticleValidationAndCompositionGraph(db: SouthstarDb): Promise<void> {
+  await upsertLibraryObject(db, {
+    objectKey: "template.document-delivery",
+    objectKind: "workflow_template",
+    status: "approved",
+    headVersionId: "template.document-delivery@1",
+    state: { scope: "design/article", title: "Document delivery" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "agent.document-worker",
+    objectKind: "agent_definition",
+    status: "approved",
+    headVersionId: "agent.document-worker@1",
+    state: { scope: "design/article", title: "Document worker" },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "artifact.offline-document",
+    objectKind: "artifact_contract",
+    status: "approved",
+    headVersionId: "artifact.offline-document@1",
+    state: {
+      scope: "design/article",
+      title: "Offline document",
+      artifactType: "offline_document",
+      mediaTypes: ["text/html"],
+      evidenceKinds: ["screenshot"],
+      validationRules: ["The document opens without a network connection."],
+      schemaRef: "schema.offline-document.v1",
+      requiredFields: ["content"],
+      provenanceRequirements: ["workspace-artifact"],
+    },
+  });
+  await upsertLibraryObject(db, {
+    objectKey: "evaluator.offline-document",
+    objectKind: "evaluator_profile",
+    status: "approved",
+    headVersionId: "evaluator.offline-document@1",
+    state: {
+      scope: "design/article",
+      title: "Offline document evaluator",
+      validatesArtifactRefs: ["artifact.offline-document"],
+      requiredInputs: ["accepted-artifact"],
+      evidenceKinds: ["screenshot"],
+      verificationModes: ["browser_interaction"],
+      verificationProcedures: [{
+        id: "procedure.open-offline",
+        checkKind: "browser_interaction",
+        instruction: "Open the accepted document without network access and capture the rendered result.",
+        allowedEvidenceKinds: ["screenshot"],
+      }],
+      independencePolicy: "independent",
+      resultSchemaRef: "southstar.requirement_evaluator_result.v2",
+      failureClassifications: ["offline_open_failed"],
+    },
+  });
+  await upsertLibraryEdge(db, {
+    fromObjectKey: "evaluator.offline-document",
+    fromVersionRef: "evaluator.offline-document@1",
+    edgeType: "validates_artifact",
+    toObjectKey: "artifact.offline-document",
+    toVersionRef: "artifact.offline-document@1",
+    scope: "design/article",
+  });
 }
 
 async function createConfirmedGoalRequirementDraft(db: SouthstarDb, goalPrompt: string) {
