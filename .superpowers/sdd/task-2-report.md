@@ -47,7 +47,7 @@ Observed output:
 # duration_ms 6540.914158
 ```
 
-The 5 new Postgres tests passed, and the existing 20 reconcile/file-store tests passed (including the legacy single-file placeholder behavior, which remains outside the new complete-catalog reconcile path).
+The 5 new Postgres tests passed, and the existing 20 reconcile/file-store tests passed; legacy single-file tests now assert unresolved-reference failure and no placeholder synthesis.
 
 ### Type and whitespace checks
 
@@ -158,3 +158,7 @@ focused_exit=0
 tsc_exit=0
 diffcheck_exit=0
 ```
+
+## Report correction
+
+The original focused-gate sentence above was stale after `0cbffa7`: legacy single-file sync no longer preserves placeholder behavior. It now requires referenced graph objects and fails unresolved references without writing source or placeholder rows. No code or tests changed in this documentation-only correction.
