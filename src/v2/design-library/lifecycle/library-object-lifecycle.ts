@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import type { SouthstarDb } from "../../db/postgres.ts";
 import { upsertRuntimeResourcePg } from "../../stores/postgres-runtime-store.ts";
-import { findLibraryObjectByKeyForUpdate, updateLibraryObjectStatus } from "../library-graph-store.ts";
+import {
+  deactivateValidationEdgesForSource,
+  findLibraryObjectByKeyForUpdate,
+  updateLibraryObjectStatus,
+} from "../library-graph-store.ts";
 import type { LibraryDefinitionStatus, LibraryObjectSummary } from "../types.ts";
 
 export type LibraryObjectLifecycleAction = "approve" | "deprecate" | "block";
@@ -37,6 +41,9 @@ export async function applyLibraryObjectLifecycleAction(
       objectKey: input.objectKey,
       status: nextStatus,
     });
+    if (object.objectKind === "evaluator_profile" && nextStatus !== "approved") {
+      await deactivateValidationEdgesForSource(tx, { fromObjectKey: object.objectKey });
+    }
     await upsertRuntimeResourcePg(tx, {
       resourceType: "library_lifecycle_event",
       resourceKey: auditResourceKey,

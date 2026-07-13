@@ -169,6 +169,21 @@ export async function deactivateLibraryEdgesForSourceExcept(
   return result.rowCount ?? 0;
 }
 
+export async function deactivateValidationEdgesForSource(
+  db: SouthstarDb,
+  input: { fromObjectKey: string },
+): Promise<number> {
+  const result = await db.query(
+    `update southstar.library_edges
+        set status = 'inactive'
+      where from_object_key = $1
+        and edge_type in ('validates_artifact', 'validates')
+        and status = 'active'`,
+    [input.fromObjectKey],
+  );
+  return result.rowCount ?? 0;
+}
+
 /**
  * Keep inbound artifact-validation edges aligned with the target artifact's
  * current version. This runs inside the caller's transaction so an artifact

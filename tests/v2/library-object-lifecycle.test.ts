@@ -53,6 +53,63 @@ test("approves a draft library object and records lifecycle audit resource", asy
   }
 });
 
+test("deprecating an evaluator deactivates all validation edges immediately", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.lifecycle-report",
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.lifecycle-report@v1",
+      state: { title: "Lifecycle Report", scope: "general", artifactType: "report" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "evaluator.lifecycle-report",
+      objectKind: "evaluator_profile",
+      status: "approved",
+      headVersionId: "evaluator.lifecycle-report@v1",
+      state: { title: "Lifecycle Report Evaluator", scope: "general" },
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "evaluator.lifecycle-report",
+      fromVersionRef: "evaluator.lifecycle-report@v1",
+      edgeType: "validates_artifact",
+      toObjectKey: "artifact.lifecycle-report",
+      toVersionRef: "artifact.lifecycle-report@v1",
+      scope: "general",
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "evaluator.lifecycle-report",
+      fromVersionRef: "evaluator.lifecycle-report@v1",
+      edgeType: "validates",
+      toObjectKey: "artifact.lifecycle-report",
+      toVersionRef: "artifact.lifecycle-report@v1",
+      scope: "general",
+    });
+
+    await applyLibraryObjectLifecycleAction(db, {
+      objectKey: "evaluator.lifecycle-report",
+      action: "deprecate",
+      actor: "operator",
+      reason: "retired evaluator contract",
+    });
+
+    const edges = await db.query<{ edge_type: string; status: string }>(
+      `select edge_type, status
+         from southstar.library_edges
+        where from_object_key = $1
+        order by edge_type`,
+      ["evaluator.lifecycle-report"],
+    );
+    assert.deepEqual(edges.rows, [
+      { edge_type: "validates", status: "inactive" },
+      { edge_type: "validates_artifact", status: "inactive" },
+    ]);
+  } finally {
+    await db.close();
+  }
+});
+
 test("approving a deprecated object fails until it is edited into a new draft version", async () => {
   const db = await createTestPostgresDb();
   try {

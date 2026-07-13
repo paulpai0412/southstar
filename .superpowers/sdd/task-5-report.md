@@ -360,10 +360,12 @@ full lifecycle coverage.
   immediately, including both edge types, while preserving ordinary draft
   agent/tool edge behavior. This closes the evaluator downgrade/deprecation
   stale-edge window without changing unrelated Library draft semantics.
+- Operator lifecycle deprecate/block transitions use the same source cleanup,
+  so validation edges without file metadata are also inactivated immediately.
 - Regression coverage now proves generic-edge v1→v2 repin and approved
   evaluator downgrade deactivation on real file-backed Postgres objects.
 
 Final verification:
 
-- `npx tsx --test tests/v2/library-file-store.test.ts tests/v2/library-reconcile-postgres.test.ts tests/v2/library-candidate-resolver.test.ts tests/v2/goal-validation-resolver.test.ts` — 35/35 pass.
+- `npx tsx --test tests/v2/library-file-store.test.ts tests/v2/library-reconcile-postgres.test.ts tests/v2/library-candidate-resolver.test.ts tests/v2/goal-validation-resolver.test.ts tests/v2/library-object-lifecycle.test.ts` — 42/42 pass.
 - `npx tsc --noEmit --pretty false` and `git diff --check` — pass.

@@ -5,6 +5,7 @@ import { isCatalogCanonicalDomain } from "../canonical-domains.ts";
 import {
   createLibraryObject,
   deactivateLibraryEdgesForSourceExcept,
+  deactivateValidationEdgesForSource,
   findLibraryObjectByKey,
   findLibraryObjectByKeyForUpdate,
   repinInboundValidationEdgesForArtifact,
@@ -164,6 +165,9 @@ export async function syncLibraryFileRecordToGraph(
   if (object.objectKind === "artifact_contract") {
     await repinInboundValidationEdgesForArtifact(db, { artifactObjectKey: object.objectKey });
   }
+  if (object.objectKind === "evaluator_profile" && object.status !== "approved") {
+    await deactivateValidationEdgesForSource(db, { fromObjectKey: object.objectKey });
+  }
   const activeEdges = edgesToPersistForFile({
     status: object.status,
     objectKind: object.objectKind,
@@ -281,6 +285,9 @@ export async function syncLibraryFileRecordsToGraphPg(
   for (const object of objects) {
     if (object.objectKind === "artifact_contract") {
       await repinInboundValidationEdgesForArtifact(db, { artifactObjectKey: object.objectKey });
+    }
+    if (object.objectKind === "evaluator_profile" && object.status !== "approved") {
+      await deactivateValidationEdgesForSource(db, { fromObjectKey: object.objectKey });
     }
   }
 
