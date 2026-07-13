@@ -107,11 +107,11 @@ export async function compileWorkflowComposition(
   const { byProfileRef: profilesByRef, byProfileId: resolvedProfiles } = await resolveRuntimeProfiles(db, input.composition);
   const artifactContracts = mergeById(
     await resolveRuntimeArtifactContracts(db, input.composition),
-    input.goalDesignPackage ? compileGoalDesignArtifactContracts(input.goalDesignPackage) : [],
+    input.goalDesignPackage ? await compileGoalDesignArtifactContracts(db, input.goalDesignPackage) : [],
   );
   const evaluatorPipelines = mergeById(
     await resolveRuntimeEvaluatorPipelines(db, input.composition),
-    input.goalDesignPackage ? compileGoalDesignEvaluatorPipelines(input.goalDesignPackage) : [],
+    input.goalDesignPackage ? await compileGoalDesignEvaluatorPipelines(db, input.goalDesignPackage) : [],
   );
   const planHash = contentHashForPayload(input.composition);
   const profileRuntimeRefs = [...resolvedProfiles.values()].flatMap((profile) => [
@@ -127,13 +127,16 @@ export async function compileWorkflowComposition(
     profile.sessionPolicyRef,
     ...(profile.systemPromptRef ? [profile.systemPromptRef] : []),
   ]).filter(isLibraryBackedRef);
-  const selectedLibraryRefs = collectSelectedRefs(input.candidatePacket, input.composition, profileRuntimeRefs);
+  const bindingVersionRefs = goalDesignBindingVersionRefs(input.goalDesignPackage);
+  const selectedLibraryRefs = uniqueSorted([
+    ...collectSelectedRefs(input.candidatePacket, input.composition, profileRuntimeRefs),
+    ...bindingVersionRefs.map((pair) => pair.objectKey),
+  ]);
   const selectedLibraryRefSet = new Set(selectedLibraryRefs);
   const profileLibraryRefs = profileRuntimeRefs.filter((ref) => selectedLibraryRefSet.has(ref));
-  const libraryObjectVersionRefs = collectSelectedObjectVersionRefs(
-    input.candidatePacket,
-    input.composition,
-    profileLibraryRefs,
+  const libraryObjectVersionRefs = mergeLibraryObjectVersionRefs(
+    collectSelectedObjectVersionRefs(input.candidatePacket, input.composition, profileLibraryRefs),
+    bindingVersionRefs,
   );
   const libraryVersionRefs = [...new Set(libraryObjectVersionRefs.map((pair) => pair.versionRef))].sort();
   const selectedTemplateRef = input.composition.selectedWorkflowTemplateRef;
@@ -295,6 +298,7 @@ export async function compileWorkflowComposition(
   const goalRequirementCoverage = buildGoalRequirementCoverage({
     goalContract: input.goalContract,
     composition: input.composition,
+    goalDesignPackage: input.goalDesignPackage,
     targetRequirementIds: input.targetRequirementIds,
   });
 
@@ -486,9 +490,37 @@ async function resolveRuntimeEvaluatorPipelines(
   return [...pipelines.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
-export function compileGoalDesignArtifactContracts(
+export async function compileGoalDesignArtifactContracts(
+  db: SouthstarDb,
   packageValue: GoalDesignPackage,
-): ArtifactContract[] {
+): Promise<ArtifactContract[]> {
+  if (packageValue.schemaVersion === "southstar.goal_design_package.v2") {
+    const contracts = new Map<string, ArtifactContract>();
+    for (const binding of packageValue.validationBindings) {
+      for (const [index, artifactRef] of binding.artifactContractRefs.entries()) {
+        const versionRef = required(
+          binding.artifactContractVersionRefs[index],
+          `missing frozen artifact version for ${artifactRef}`,
+        );
+        const object = await requireApprovedPinnedLibraryObject(db, artifactRef, versionRef, "artifact_contract");
+        const state = object.state;
+        contracts.set(normalizeArtifactRef(artifactRef), {
+          id: normalizeArtifactRef(artifactRef),
+          artifactType: stringAt(state.artifactType, `${artifactRef}.artifactType`),
+          requiredFields: stringArrayAt(state.requiredFields, `${artifactRef}.requiredFields`),
+          evidenceFields: optionalStringArrayAt(state.evidenceFields) ?? [],
+          mediaTypes: stringArrayAt(state.mediaTypes, `${artifactRef}.mediaTypes`),
+          validationRules: stringArrayAt(state.validationRules, `${artifactRef}.validationRules`),
+          evidenceKinds: stringArrayAt(state.evidenceKinds, `${artifactRef}.evidenceKinds`),
+          schemaRef: stringAt(state.schemaRef, `${artifactRef}.schemaRef`),
+          provenanceRequirements: stringArrayAt(state.provenanceRequirements, `${artifactRef}.provenanceRequirements`),
+          libraryObjectRef: artifactRef,
+          libraryVersionRef: versionRef,
+        });
+      }
+    }
+    return [...contracts.values()].sort((left, right) => left.id.localeCompare(right.id));
+  }
   const contracts = new Map<string, ArtifactContract>();
   for (const artifactRef of uniqueSorted(packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs))) {
     const id = normalizeArtifactRef(artifactRef);
@@ -506,10 +538,81 @@ export function compileGoalDesignArtifactContracts(
   return [...contracts.values()].sort((left, right) => left.id.localeCompare(right.id));
 }
 
-export function compileGoalDesignEvaluatorPipelines(
+export async function compileGoalDesignEvaluatorPipelines(
+  db: SouthstarDb,
   packageValue: GoalDesignPackage,
-): EvaluatorPipelineDefinition[] {
-  if (packageValue.schemaVersion === "southstar.goal_design_package.v2") return [];
+): Promise<EvaluatorPipelineDefinition[]> {
+  if (packageValue.schemaVersion === "southstar.goal_design_package.v2") {
+    const pipelines = new Map<string, EvaluatorPipelineDefinition>();
+    for (const binding of packageValue.validationBindings) {
+      const object = await requireApprovedPinnedLibraryObject(
+        db,
+        binding.evaluatorProfileRef,
+        binding.evaluatorProfileVersionRef,
+        "evaluator_profile",
+      );
+      const state = object.state;
+      const procedures = evaluatorProcedures(state.verificationProcedures, binding.evaluatorProfileRef);
+      const acceptanceCriteriaById = new Map(
+        binding.criterionIds.map((criterionId, index) => [criterionId, binding.acceptanceCriteria[index]]),
+      );
+      const pipelineId = normalizeEvaluatorRef(binding.evaluatorProfileRef);
+      const existing = pipelines.get(pipelineId);
+      const steps = binding.criterionChecks.map((check): EvaluatorStepDefinition => {
+        const procedure = required(
+          procedures.get(check.procedureRef),
+          `missing frozen verification procedure ${check.procedureRef} in ${binding.evaluatorProfileRef}`,
+        );
+        if (procedure.checkKind !== binding.verificationMode) {
+          throw new Error(`verification mode mismatch for ${check.procedureRef}: expected ${binding.verificationMode}, got ${procedure.checkKind}`);
+        }
+        for (const evidenceKind of check.expectedEvidenceKinds) {
+          if (!procedure.allowedEvidenceKinds.includes(evidenceKind)) {
+            throw new Error(`unsupported evidence kind ${evidenceKind} for ${check.procedureRef}`);
+          }
+        }
+        return {
+          id: `${pipelineId}-${normalizeRuntimeId(check.criterionId)}`,
+          kind: evaluatorStepKind(binding.verificationMode),
+          required: true,
+          config: {
+            validationBindingId: binding.id,
+            requirementId: binding.requirementId,
+            criterionId: check.criterionId,
+            acceptanceCriterion: required(
+              acceptanceCriteriaById.get(check.criterionId),
+              `missing acceptance criterion for ${check.criterionId}`,
+            ),
+            procedureRef: check.procedureRef,
+            instruction: procedure.instruction,
+            verificationMode: binding.verificationMode,
+            expectedEvidenceKinds: check.expectedEvidenceKinds,
+            allowedEvidenceKinds: procedure.allowedEvidenceKinds,
+            requiredInputs: stringArrayAt(state.requiredInputs, `${binding.evaluatorProfileRef}.requiredInputs`),
+            resultSchemaRef: stringAt(state.resultSchemaRef, `${binding.evaluatorProfileRef}.resultSchemaRef`),
+            independence: binding.independence,
+            artifactContractRefs: binding.artifactContractRefs,
+            artifactContractVersionRefs: binding.artifactContractVersionRefs,
+            failureClassifications: binding.failureClassifications,
+          },
+        };
+      });
+      pipelines.set(pipelineId, {
+        id: pipelineId,
+        evaluators: [...(existing?.evaluators ?? []), ...steps],
+        libraryObjectRef: binding.evaluatorProfileRef,
+        libraryVersionRef: binding.evaluatorProfileVersionRef,
+        resultSchemaRef: stringAt(state.resultSchemaRef, `${binding.evaluatorProfileRef}.resultSchemaRef`),
+        artifactContractRefs: uniqueSorted([
+          ...(existing?.artifactContractRefs ?? []),
+          ...binding.artifactContractRefs.map(normalizeArtifactRef),
+        ]),
+        validationBindingIds: uniqueSorted([...(existing?.validationBindingIds ?? []), binding.id]),
+        onFailure: { defaultStrategy: "request-workflow-revision" },
+      });
+    }
+    return [...pipelines.values()].sort((left, right) => left.id.localeCompare(right.id));
+  }
   return packageValue.evaluatorContracts.map((contract): EvaluatorPipelineDefinition => ({
     id: normalizeEvaluatorRef(contract.id),
     evaluators: [{
@@ -528,11 +631,90 @@ export function compileGoalDesignEvaluatorPipelines(
   })).sort((left, right) => left.id.localeCompare(right.id));
 }
 
+async function requireApprovedPinnedLibraryObject(
+  db: SouthstarDb,
+  objectKey: string,
+  versionRef: string,
+  objectKind: "artifact_contract" | "evaluator_profile",
+) {
+  const object = await findLibraryObjectByKey(db, objectKey);
+  if (!object) throw new Error(`missing frozen Library object: ${objectKey}`);
+  if (object.objectKind !== objectKind) {
+    throw new Error(`frozen Library object kind mismatch for ${objectKey}: expected ${objectKind}, got ${object.objectKind}`);
+  }
+  if (object.status !== "approved") throw new Error(`frozen Library object is not approved: ${objectKey}`);
+  if (object.headVersionId !== versionRef) {
+    throw new Error(`frozen Library version mismatch for ${objectKey}: expected ${versionRef}, got ${object.headVersionId ?? "missing"}`);
+  }
+  return object;
+}
+
+function evaluatorProcedures(value: unknown, evaluatorRef: string): Map<string, {
+  checkKind: string;
+  instruction: string;
+  allowedEvidenceKinds: string[];
+}> {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`missing executable verification procedures for ${evaluatorRef}`);
+  }
+  const result = new Map<string, { checkKind: string; instruction: string; allowedEvidenceKinds: string[] }>();
+  for (const [index, raw] of value.entries()) {
+    const procedure = required(isRecord(raw) ? raw : null, `invalid verification procedure ${evaluatorRef}.${index}`);
+    const id = stringAt(procedure.id, `${evaluatorRef}.verificationProcedures.${index}.id`);
+    if (result.has(id)) throw new Error(`duplicate verification procedure ${id} in ${evaluatorRef}`);
+    result.set(id, {
+      checkKind: stringAt(procedure.checkKind, `${evaluatorRef}.verificationProcedures.${index}.checkKind`),
+      instruction: stringAt(procedure.instruction, `${evaluatorRef}.verificationProcedures.${index}.instruction`),
+      allowedEvidenceKinds: stringArrayAt(procedure.allowedEvidenceKinds, `${evaluatorRef}.verificationProcedures.${index}.allowedEvidenceKinds`),
+    });
+  }
+  return result;
+}
+
+function evaluatorStepKind(mode: string): EvaluatorStepDefinition["kind"] {
+  if (mode === "deterministic") return "test";
+  if (mode === "semantic_review") return "domain";
+  if (mode === "human_approval") return "policy";
+  return "checker-agent";
+}
+
 function mergeById<T extends { id: string }>(fallback: T[], preferred: T[]): T[] {
   const valuesById = new Map<string, T>();
   for (const value of fallback) valuesById.set(value.id, value);
   for (const value of preferred) valuesById.set(value.id, value);
   return [...valuesById.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function goalDesignBindingVersionRefs(packageValue: GoalDesignPackage | undefined): LibraryObjectVersionRef[] {
+  if (packageValue?.schemaVersion !== "southstar.goal_design_package.v2") return [];
+  const pairs: LibraryObjectVersionRef[] = [];
+  for (const binding of packageValue.validationBindings) {
+    pairs.push({ objectKey: binding.evaluatorProfileRef, versionRef: binding.evaluatorProfileVersionRef });
+    for (const [index, objectKey] of binding.artifactContractRefs.entries()) {
+      pairs.push({
+        objectKey,
+        versionRef: required(binding.artifactContractVersionRefs[index], `missing frozen artifact version for ${objectKey}`),
+      });
+    }
+  }
+  return mergeLibraryObjectVersionRefs([], pairs);
+}
+
+function mergeLibraryObjectVersionRefs(
+  base: LibraryObjectVersionRef[],
+  frozen: LibraryObjectVersionRef[],
+): LibraryObjectVersionRef[] {
+  const versions = new Map(base.map((pair) => [pair.objectKey, pair.versionRef]));
+  for (const pair of frozen) {
+    const current = versions.get(pair.objectKey);
+    if (current && current !== pair.versionRef) {
+      throw new Error(`conflicting immutable Library versions for ${pair.objectKey}: ${current} and ${pair.versionRef}`);
+    }
+    versions.set(pair.objectKey, pair.versionRef);
+  }
+  return [...versions.entries()]
+    .map(([objectKey, versionRef]) => ({ objectKey, versionRef }))
+    .sort((left, right) => left.objectKey.localeCompare(right.objectKey));
 }
 
 function defaultContextPolicies(): ContextPolicyDefinition[] {
@@ -882,6 +1064,10 @@ function normalizeArtifactRef(artifactRef: string): string {
 
 function normalizeEvaluatorRef(evaluatorRef: string): string {
   return evaluatorRef.replace(/^evaluator\./, "");
+}
+
+function normalizeRuntimeId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "-") || "criterion";
 }
 
 function roleIdFromAgentRef(agentRef: string): string {

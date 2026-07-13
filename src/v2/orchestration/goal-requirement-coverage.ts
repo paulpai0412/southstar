@@ -1,5 +1,6 @@
 import type { EvidenceKind } from "../artifacts/types.ts";
 import type { WorkflowCompositionPlan, WorkflowCompositionTask } from "../design-library/types.ts";
+import type { GoalDesignPackage } from "./goal-design.ts";
 import { goalContractHash, type GoalContractV1 } from "./goal-contract.ts";
 import {
   classifyWorkflowCompositionTask,
@@ -15,6 +16,10 @@ export type GoalRequirementCoverageV1 = {
     artifactRefs: string[];
     evaluatorTaskIds: string[];
     evaluatorProfileRefs: string[];
+    evaluatorProfileVersionRefs: string[];
+    validationBindingId?: string;
+    criterionIds: string[];
+    acceptanceCriteria: string[];
     requiredEvidenceKinds: EvidenceKind[];
   }>;
 };
@@ -48,6 +53,10 @@ export function storedGoalRequirementCoverage(value: unknown): GoalRequirementCo
       || !isStringArray(entry.artifactRefs)
       || !isStringArray(entry.evaluatorTaskIds)
       || !isStringArray(entry.evaluatorProfileRefs)
+      || (entry.evaluatorProfileVersionRefs !== undefined && !isStringArray(entry.evaluatorProfileVersionRefs))
+      || (entry.validationBindingId !== undefined && (typeof entry.validationBindingId !== "string" || entry.validationBindingId.length === 0))
+      || (entry.criterionIds !== undefined && !isStringArray(entry.criterionIds))
+      || (entry.acceptanceCriteria !== undefined && !isStringArray(entry.acceptanceCriteria))
       || !isEvidenceKindArray(entry.requiredEvidenceKinds)) return undefined;
     entries.push({
       requirementId: entry.requirementId,
@@ -55,6 +64,10 @@ export function storedGoalRequirementCoverage(value: unknown): GoalRequirementCo
       artifactRefs: entry.artifactRefs,
       evaluatorTaskIds: entry.evaluatorTaskIds,
       evaluatorProfileRefs: entry.evaluatorProfileRefs,
+      evaluatorProfileVersionRefs: (entry.evaluatorProfileVersionRefs as string[] | undefined) ?? [],
+      validationBindingId: entry.validationBindingId as string | undefined,
+      criterionIds: (entry.criterionIds as string[] | undefined) ?? [],
+      acceptanceCriteria: (entry.acceptanceCriteria as string[] | undefined) ?? [],
       requiredEvidenceKinds: entry.requiredEvidenceKinds,
     });
   }
@@ -68,6 +81,7 @@ export function storedGoalRequirementCoverage(value: unknown): GoalRequirementCo
 export function buildGoalRequirementCoverage(input: {
   goalContract: GoalContractV1;
   composition: WorkflowCompositionPlan;
+  goalDesignPackage?: GoalDesignPackage;
   targetRequirementIds?: string[];
 }): GoalRequirementCoverageV1 {
   const requirements = coverageRequirements(input.goalContract, input.targetRequirementIds);
@@ -78,15 +92,34 @@ export function buildGoalRequirementCoverage(input: {
       const linkedTasks = input.composition.tasks.filter((task) => task.requirementIds?.includes(requirement.id));
       const producerTasks = linkedTasks.filter(isProducerTask);
       const evaluatorTasks = linkedTasks.filter(isEvaluatorTask);
+      const frozenBindings = input.goalDesignPackage?.schemaVersion === "southstar.goal_design_package.v2"
+        ? input.goalDesignPackage.validationBindings.filter((binding) => binding.requirementId === requirement.id)
+        : [];
+      if (frozenBindings.length > 1) {
+        throw new Error(`multiple frozen validation bindings for ${requirement.id}`);
+      }
+      const frozenBinding = frozenBindings[0];
+      const frozenEvidenceKinds = frozenBindings.flatMap((binding) => binding.requiredEvidenceKinds);
+      if (frozenEvidenceKinds.some((kind) => !isEvidenceKind(kind))) {
+        throw new Error(`validation binding contains unsupported evidence kind for ${requirement.id}`);
+      }
       return {
         requirementId: requirement.id,
         producerTaskIds: uniqueSorted(producerTasks.map((task) => task.id)),
         artifactRefs: uniqueSorted(producerTasks.flatMap((task) => task.outputArtifactRefs)),
         evaluatorTaskIds: uniqueSorted(evaluatorTasks.map((task) => task.id)),
-        evaluatorProfileRefs: uniqueSorted(evaluatorTasks.map((task) => task.evaluatorProfileRef)),
-        requiredEvidenceKinds: uniqueSorted(
-          evaluatorTasks.flatMap(requiredEvidenceKindsForTask),
-        ) as EvidenceKind[],
+        evaluatorProfileRefs: uniqueSorted(frozenBindings.length > 0
+          ? frozenBindings.map((binding) => binding.evaluatorProfileRef)
+          : evaluatorTasks.map((task) => task.evaluatorProfileRef)),
+        evaluatorProfileVersionRefs: uniqueSorted(frozenBindings.map((binding) => binding.evaluatorProfileVersionRef)),
+        validationBindingId: frozenBinding?.id,
+        criterionIds: frozenBinding ? [...frozenBinding.criterionIds] : [],
+        acceptanceCriteria: frozenBinding
+          ? [...frozenBinding.acceptanceCriteria]
+          : [...requirement.acceptanceCriteria],
+        requiredEvidenceKinds: uniqueSorted(frozenBindings.length > 0
+          ? frozenEvidenceKinds
+          : evaluatorTasks.flatMap(requiredEvidenceKindsForTask)) as EvidenceKind[],
       };
     }),
   };
@@ -143,5 +176,9 @@ function isStringArray(value: unknown): value is string[] {
 }
 
 function isEvidenceKindArray(value: unknown): value is EvidenceKind[] {
-  return Array.isArray(value) && value.every((kind) => typeof kind === "string" && EVIDENCE_KINDS.some((candidate) => candidate === kind));
+  return Array.isArray(value) && value.every(isEvidenceKind);
+}
+
+function isEvidenceKind(kind: unknown): kind is EvidenceKind {
+  return typeof kind === "string" && EVIDENCE_KINDS.some((candidate) => candidate === kind);
 }

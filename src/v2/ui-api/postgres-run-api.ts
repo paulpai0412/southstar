@@ -30,6 +30,7 @@ import {
   validateGoalDesignPackageV2,
   type GoalDesignPackage,
 } from "../orchestration/goal-design.ts";
+import { storedGoalRequirementCoverage } from "../orchestration/goal-requirement-coverage.ts";
 import {
   goalRequirementDraftHash,
   validateGoalRequirementDraft,
@@ -583,6 +584,8 @@ export async function validatePostgresPlannerDraft(
       validationIssues: issues,
       orchestrationSnapshot,
       goalRequirementCoverage: refreshed.goalRequirementCoverage,
+      goalRequirementCoverageHash: contentHashForPayload(refreshed.goalRequirementCoverage),
+      workflowManifestHash: contentHashForPayload(refreshed.workflow),
     },
     summary: {
       ...summary,
@@ -760,7 +763,9 @@ async function createPlannerDraftFromComposition(
     goalContractHash: string;
   } = {
     workflow: compiled.workflow,
+    workflowManifestHash: contentHashForPayload(compiled.workflow),
     goalRequirementCoverage: compiled.goalRequirementCoverage,
+    goalRequirementCoverageHash: contentHashForPayload(compiled.goalRequirementCoverage),
     goalContract: input.goalContract,
     goalContractHash: input.goalContractHash,
     ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
@@ -981,7 +986,9 @@ async function createLibraryConstrainedPlannerDraft(
     goalContractHash: string;
   } = {
     workflow: compiled.workflow,
+    workflowManifestHash: contentHashForPayload(compiled.workflow),
     goalRequirementCoverage: compiled.goalRequirementCoverage,
+    goalRequirementCoverageHash: contentHashForPayload(compiled.goalRequirementCoverage),
       goalContract: input.goalContract,
       goalContractHash: input.goalContractHash,
       ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
@@ -1115,9 +1122,36 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   if (libraryObjectVersionRefs.length === 0 || !Array.isArray(orchestrationCompiler.libraryObjectVersionRefs)) {
     throw new Error(`planner draft is missing immutable Library selection metadata: ${input.draftId}`);
   }
-  const coverage = asRecord(draftPayload.goalRequirementCoverage);
-  if (coverage.schemaVersion !== "southstar.goal_requirement_coverage.v1") {
+  const coverage = storedGoalRequirementCoverage(draftPayload.goalRequirementCoverage);
+  if (!coverage) {
     throw new Error(`planner draft is missing Goal Contract coverage: ${input.draftId}`);
+  }
+  const coverageHash = contentHashForPayload(coverage);
+  if (stringValue(draftPayload.goalRequirementCoverageHash) !== coverageHash) {
+    throw new Error(`planner draft Goal Requirement Coverage hash mismatch: ${input.draftId}`);
+  }
+  const storedManifestHash = contentHashForPayload(bundle.workflow);
+  if (stringValue(draftPayload.workflowManifestHash) !== storedManifestHash) {
+    throw new Error(`planner draft workflow manifest hash mismatch: ${input.draftId}`);
+  }
+  const goalDesignPackage = storedGoalDesignPackage(draftPayload.goalDesignPackage);
+  if (draftPayload.goalDesignPackage !== undefined && !goalDesignPackage) {
+    throw new Error(`planner draft Goal Design Package is invalid: ${input.draftId}`);
+  }
+  if (goalDesignPackage) {
+    if (stringValue(draftPayload.goalDesignPackageHash) !== goalDesignPackage.packageHash) {
+      throw new Error(`planner draft Goal Design Package hash mismatch: ${input.draftId}`);
+    }
+    if (goalDesignPackage.goalContractHash !== contractHash) {
+      throw new Error(`planner draft Goal Design Package contract hash mismatch: ${input.draftId}`);
+    }
+    if (goalDesignPackage.schemaVersion === "southstar.goal_design_package.v2") {
+      const requirementDraftHash = stringValue(draftPayload.goalRequirementDraftHash)
+        ?? stringValue(sourcePlannerRequest.goalRequirementDraftHash);
+      if (!requirementDraftHash || goalDesignPackage.requirementDraftHash !== requirementDraftHash) {
+        throw new Error(`planner draft Goal Design Package requirement lineage mismatch: ${input.draftId}`);
+      }
+    }
   }
   const manifestHash = contentHashForPayload(workflow);
   const runtimeContext = {
@@ -1130,6 +1164,9 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
       : {}),
     goalContractHash: contractHash,
     manifestHash,
+    workflowManifestHash: storedManifestHash,
+    goalRequirementCoverageHash: coverageHash,
+    ...(goalDesignPackage ? { goalDesignPackageHash: goalDesignPackage.packageHash } : {}),
     scope: workflow.domain,
     outcomeStatus: "in_progress",
     ...(cwd ? { cwd, projectRoot: cwd } : {}),

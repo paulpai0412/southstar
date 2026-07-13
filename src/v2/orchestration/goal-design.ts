@@ -989,6 +989,7 @@ function validateValidationBindings(pkg: GoalDesignPackageV2, issues: GoalDesign
     const invalid = binding.schemaVersion !== "southstar.requirement_validation_binding.v1"
       || !nonEmpty(binding.id)
       || binding.criterionIds.length === 0
+      || binding.criterionIds.length !== binding.acceptanceCriteria.length
       || criterionIds.size !== binding.criterionIds.length
       || binding.artifactContractRefs.length === 0
       || binding.artifactContractRefs.length !== binding.artifactContractVersionRefs.length
@@ -1013,7 +1014,15 @@ function validateValidationBindings(pkg: GoalDesignPackageV2, issues: GoalDesign
     }
   }
   for (const requirement of pkg.goalContract.requirements) {
-    if (requirement.blocking && (requirementBindingCounts.get(requirement.id) ?? 0) === 0) {
+    const bindingCount = requirementBindingCounts.get(requirement.id) ?? 0;
+    if (bindingCount > 1) {
+      issues.push(issue(
+        "duplicate_validation_binding_id",
+        "validationBindings",
+        `requirement must have exactly one frozen validation binding: ${requirement.id}`,
+      ));
+    }
+    if (requirement.blocking && bindingCount === 0) {
       issues.push(issue(
         "requirement_missing_validation_binding",
         "validationBindings",

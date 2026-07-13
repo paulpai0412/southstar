@@ -3,9 +3,14 @@ import test from "node:test";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import { resolveWorkflowCandidates } from "../../src/v2/orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition } from "../../src/v2/orchestration/composition-compiler.ts";
+import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { DeterministicFixtureComposer } from "./fixtures/deterministic-workflow-composer.ts";
 import { goalContractHash, requirementSpecFromGoalContract } from "../../src/v2/orchestration/goal-contract.ts";
-import { finalizeGoalDesignPackage } from "../../src/v2/orchestration/goal-design.ts";
+import {
+  finalizeGoalDesignPackage,
+  finalizeGoalDesignPackageV2,
+  type GoalDesignPackageV2,
+} from "../../src/v2/orchestration/goal-design.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 import type { GeneratedAgentProfile, WorkflowCompositionPlan, WorkflowNodePromptSpec } from "../../src/v2/design-library/types.ts";
@@ -365,6 +370,136 @@ test("compiler materializes Goal Design host artifact and evaluator contracts wi
   }
 });
 
+test("compiler freezes approved Library artifact fields, evaluator procedures, criteria, and versions", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const goalContract = softwareGoalContract();
+    const requirement = goalContract.requirements[0]!;
+    const artifactRef = "artifact.frozen-output";
+    const artifactVersionRef = "artifact.frozen-output@2";
+    const evaluatorRef = "evaluator.frozen-output";
+    const evaluatorVersionRef = "evaluator.frozen-output@3";
+    await upsertLibraryObject(db, {
+      objectKey: artifactRef,
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: artifactVersionRef,
+      state: {
+        scope: "software",
+        title: "Frozen output",
+        artifactType: "verified_output",
+        mediaTypes: ["application/json"],
+        requiredFields: ["content"],
+        validationRules: ["rule.output-complete"],
+        evidenceKinds: ["screenshot"],
+        schemaRef: "schema.verified-output.v2",
+        provenanceRequirements: ["workspace-artifact"],
+      },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: evaluatorRef,
+      objectKind: "evaluator_profile",
+      status: "approved",
+      headVersionId: evaluatorVersionRef,
+      state: {
+        scope: "software",
+        title: "Frozen output evaluator",
+        validatesArtifactRefs: [artifactRef],
+        requiredInputs: ["accepted-artifact"],
+        verificationModes: ["browser_interaction"],
+        verificationProcedures: [{
+          id: "procedure.inspect-output",
+          checkKind: "browser_interaction",
+          instruction: "Inspect the accepted output and capture the observable result.",
+          allowedEvidenceKinds: ["screenshot"],
+        }],
+        evidenceKinds: ["screenshot"],
+        resultSchemaRef: "southstar.requirement_evaluator_result.v2",
+        independencePolicy: "independent",
+        failureClassifications: ["output_incomplete"],
+      },
+    });
+    const packageValue = frozenValidationPackage(goalContract, {
+      artifactRef,
+      artifactVersionRef,
+      evaluatorRef,
+      evaluatorVersionRef,
+    });
+    const candidatePacket = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const composition = hostContractComposition(goalContract, {
+      hostArtifactRef: artifactRef,
+      hostEvaluatorRef: evaluatorRef,
+    });
+
+    const compiled = await compileWorkflowComposition(db, {
+      runId: "draft-frozen-validation-contracts",
+      goalPrompt: goalContract.originalPrompt,
+      goalContract,
+      goalDesignPackage: packageValue,
+      candidatePacket,
+      composition,
+    });
+
+    const artifact = compiled.workflow.artifactContracts?.find((entry) => entry.libraryObjectRef === artifactRef);
+    assert.ok(artifact);
+    assert.deepEqual(artifact.requiredFields, ["content"]);
+    assert.deepEqual(artifact.validationRules, ["rule.output-complete"]);
+    assert.deepEqual(artifact.evidenceKinds, ["screenshot"]);
+    assert.deepEqual(artifact.provenanceRequirements, ["workspace-artifact"]);
+    assert.equal(artifact.libraryVersionRef, artifactVersionRef);
+    const pipeline = compiled.workflow.evaluatorPipelines?.find((entry) => entry.libraryObjectRef === evaluatorRef);
+    assert.ok(pipeline);
+    assert.equal(pipeline.libraryVersionRef, evaluatorVersionRef);
+    assert.equal(pipeline.evaluators[0]?.config.criterionId, "criterion-output");
+    assert.equal(pipeline.evaluators[0]?.config.procedureRef, "procedure.inspect-output");
+    assert.equal(pipeline.evaluators[0]?.config.acceptanceCriterion, requirement.acceptanceCriteria[0]);
+    const coverage = compiled.goalRequirementCoverage.entries[0]!;
+    assert.deepEqual(coverage.criterionIds, ["criterion-output"]);
+    assert.deepEqual(coverage.acceptanceCriteria, requirement.acceptanceCriteria);
+    assert.deepEqual(coverage.evaluatorProfileVersionRefs, [evaluatorVersionRef]);
+    assert.equal(coverage.validationBindingId, "binding-output");
+    assert.equal(
+      compiled.workflow.compiledFrom?.libraryObjectVersionRefs.find((entry) => entry.objectKey === artifactRef)?.versionRef,
+      artifactVersionRef,
+    );
+
+    await upsertLibraryObject(db, {
+      objectKey: artifactRef,
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.frozen-output@3",
+      state: {
+        scope: "software",
+        title: "Frozen output",
+        artifactType: "verified_output",
+        mediaTypes: ["application/json"],
+        requiredFields: ["content"],
+        validationRules: ["rule.output-complete"],
+        evidenceKinds: ["screenshot"],
+        schemaRef: "schema.verified-output.v3",
+        provenanceRequirements: ["workspace-artifact"],
+      },
+    });
+    await assert.rejects(
+      compileWorkflowComposition(db, {
+        runId: "draft-stale-validation-contracts",
+        goalPrompt: goalContract.originalPrompt,
+        goalContract,
+        goalDesignPackage: packageValue,
+        candidatePacket,
+        composition,
+      }),
+      /frozen Library version mismatch/,
+    );
+  } finally {
+    await db.close();
+  }
+});
+
 async function mirrorLibraryScope(
   db: Awaited<ReturnType<typeof createTestPostgresDb>>,
   input: { fromScope: string; toScope: string },
@@ -462,6 +597,70 @@ function hostContractComposition(
       hostGeneratedProfile("profile.generated.host-verify", "Verify the host Goal Design contract.", "validation_worker"),
     ],
   };
+}
+
+function frozenValidationPackage(
+  goalContract: ReturnType<typeof softwareGoalContract>,
+  input: {
+    artifactRef: string;
+    artifactVersionRef: string;
+    evaluatorRef: string;
+    evaluatorVersionRef: string;
+  },
+): GoalDesignPackageV2 {
+  const requirement = goalContract.requirements[0]!;
+  return finalizeGoalDesignPackageV2({
+    schemaVersion: "southstar.goal_design_package.v2",
+    revision: 1,
+    goalContract,
+    requirementDraftHash: "requirement-draft-hash",
+    validationBindings: [{
+      schemaVersion: "southstar.requirement_validation_binding.v1",
+      id: "binding-output",
+      requirementId: requirement.id,
+      criterionIds: ["criterion-output"],
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      artifactContractRefs: [input.artifactRef],
+      artifactContractVersionRefs: [input.artifactVersionRef],
+      evaluatorProfileRef: input.evaluatorRef,
+      evaluatorProfileVersionRef: input.evaluatorVersionRef,
+      verificationMode: "browser_interaction",
+      criterionChecks: [{
+        criterionId: "criterion-output",
+        procedureRef: "procedure.inspect-output",
+        expectedEvidenceKinds: ["screenshot"],
+      }],
+      requiredEvidenceKinds: ["screenshot"],
+      independence: "independent",
+      failureClassifications: ["output_incomplete"],
+    }],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [{
+        id: "slice-main",
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: input.artifactRef,
+        mutationBoundary: "single verified output",
+        expectedArtifactRefs: [input.artifactRef],
+        evaluatorContractRefs: ["binding-output"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-main"],
+      rationale: "one requirement and one verification boundary",
+    },
+    templatePolicy: { mode: "auto" },
+    goalDesignSkillRef: "skill.southstar-goal-design",
+    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
+    workspaceDiscoveryHash: "discovery-hash",
+    mode: "review_before_compose",
+  });
 }
 
 function withoutHostContractCandidates(

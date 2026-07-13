@@ -114,11 +114,23 @@ export type ArtifactContract = {
   artifactType: string;
   requiredFields: string[];
   evidenceFields: string[];
+  mediaTypes?: string[];
+  validationRules?: string[];
+  evidenceKinds?: string[];
+  schemaRef?: string;
+  provenanceRequirements?: string[];
+  libraryObjectRef?: string;
+  libraryVersionRef?: string;
 };
 
 export type EvaluatorPipelineDefinition = {
   id: string;
   evaluators: EvaluatorStepDefinition[];
+  libraryObjectRef?: string;
+  libraryVersionRef?: string;
+  resultSchemaRef?: string;
+  artifactContractRefs?: string[];
+  validationBindingIds?: string[];
   onFailure: {
     defaultStrategy:
       | "retry-same-agent"

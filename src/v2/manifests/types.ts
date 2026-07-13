@@ -204,6 +204,9 @@ export type SouthstarWorkflowManifest = {
 
 export type PlanBundle = {
   workflow: SouthstarWorkflowManifest;
+  workflowManifestHash?: string;
+  goalRequirementCoverageHash?: string;
+  goalDesignPackageHash?: string;
   executionProjection?: {
     executor: "tork";
     job: unknown;
