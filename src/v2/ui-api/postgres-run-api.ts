@@ -78,6 +78,7 @@ export type PostgresPlannerDraftResult = {
   workflowId: string;
   status: PostgresPlannerDraftStatus;
   goalContractHash: string;
+  goalRequirementDraftId?: string;
   goalRequirementDraftHash?: string;
   goalDesignPhase?: string;
   goalRequirementDraft?: GoalRequirementDraftV1;
@@ -104,7 +105,8 @@ export type PlannerDraftTaskSummary = {
   agentProfileRef?: string;
 };
 
-export type PostgresPlannerDraftOrchestrationView = PostgresPlannerDraftResult & {
+export type PostgresPlannerDraftOrchestrationView = Omit<PostgresPlannerDraftResult, "goalContractHash"> & {
+  goalContractHash?: string;
   orchestrationSnapshot?: unknown;
   plannerTrace?: unknown;
   repairAttempts?: unknown;
@@ -134,6 +136,8 @@ export type PlannerDraftLibraryHints = {
 
 export type PlannerDraftRequestContract = {
   goalPrompt: string;
+  goalRequirementDraftId?: string;
+  goalRequirementDraftHash?: string;
   orchestrationMode?: "llm-constrained";
   composerMode?: WorkflowComposerMode;
   cwd?: string;
@@ -184,6 +188,7 @@ type InterpretedPlannerDraftInput = CreatePostgresPlannerDraftInput & {
 };
 
 export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreatePostgresPlannerDraftInput): Promise<PostgresPlannerDraftResult> {
+  await assertGoalRequirementSourceLineage(db, input);
   const plannerRequest = plannerRequestSnapshot(input);
   input.onProgress?.({ stage: "request.normalized", message: "Planner draft request normalized." });
   const libraryVocabulary = await loadGoalContractLibraryVocabularyPg(db);
@@ -227,6 +232,25 @@ export async function createPostgresPlannerDraft(db: SouthstarDb, input: CreateP
     return createPlannerDraftFromComposition(db, draftInput, plannerRequest.compositionPlan);
   }
   return createLibraryConstrainedPlannerDraft(db, draftInput);
+}
+
+async function assertGoalRequirementSourceLineage(
+  db: SouthstarDb,
+  input: CreatePostgresPlannerDraftInput,
+): Promise<void> {
+  const hasId = input.goalRequirementDraftId !== undefined;
+  const hasHash = input.goalRequirementDraftHash !== undefined;
+  if (!hasId && !hasHash) return;
+  if (!hasId || !hasHash) throw new Error("goal requirement source lineage requires both goalRequirementDraftId and goalRequirementDraftHash");
+  const source = await getResourceByKeyPg(db, "planner_draft", input.goalRequirementDraftId!);
+  if (!source) throw new Error(`goal requirement source draft not found: ${input.goalRequirementDraftId}`);
+  const sourcePayload = asRecord(source.payload);
+  const sourceDraft = sourcePayload.goalRequirementDraft && typeof sourcePayload.goalRequirementDraft === "object"
+    ? sourcePayload.goalRequirementDraft as Record<string, unknown>
+    : undefined;
+  if (source.status === "stale" || sourceDraft?.draftHash !== input.goalRequirementDraftHash) {
+    throw new Error(`goal_requirement_draft_stale: ${input.goalRequirementDraftId}`);
+  }
 }
 
 export async function persistGoalContractVocabularyGapDraftPg(
@@ -550,6 +574,8 @@ export async function validatePostgresPlannerDraft(
 function preservedPlannerRequestFields(input: PlannerDraftRequestContract | undefined): Partial<PlannerDraftRequestContract> {
   if (!input) return {};
   return {
+    ...(input.goalRequirementDraftId !== undefined ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+    ...(input.goalRequirementDraftHash !== undefined ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
     ...(input.libraryHints !== undefined ? { libraryHints: plannerLibraryHintsSnapshot(input.libraryHints) } : {}),
   };
@@ -558,6 +584,8 @@ function preservedPlannerRequestFields(input: PlannerDraftRequestContract | unde
 function plannerRequestSnapshot(input: PlannerDraftRequestContract): PlannerDraftRequestContract {
   const snapshot: PlannerDraftRequestContract = {
     goalPrompt: input.goalPrompt,
+    ...(input.goalRequirementDraftId !== undefined ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+    ...(input.goalRequirementDraftHash !== undefined ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     ...(input.orchestrationMode !== undefined ? { orchestrationMode: input.orchestrationMode } : {}),
     ...(input.composerMode !== undefined ? { composerMode: input.composerMode } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
@@ -596,6 +624,8 @@ function plannerRequestFromStored(value: unknown): PlannerDraftRequestContract |
   if (!goalPrompt) return undefined;
   return plannerRequestSnapshot({
     goalPrompt,
+    goalRequirementDraftId: stringValue(record.goalRequirementDraftId),
+    goalRequirementDraftHash: stringValue(record.goalRequirementDraftHash),
     orchestrationMode: plannerRequestOrchestrationMode(record.orchestrationMode),
     composerMode: plannerRequestComposerMode(record.composerMode),
     cwd: stringValue(record.cwd),
@@ -692,6 +722,8 @@ async function createPlannerDraftFromComposition(
     goalRequirementCoverage: compiled.goalRequirementCoverage,
     goalContract: input.goalContract,
     goalContractHash: input.goalContractHash,
+    ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+    ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     ...(input.goalDesignPackage
       ? {
           goalDesignPackage: input.goalDesignPackage,
@@ -741,6 +773,8 @@ async function createPlannerDraftFromComposition(
     workflowId,
     status,
     goalContractHash: input.goalContractHash,
+    ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+    ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     blockers: [...input.goalContract.blockingInputs],
     validationIssues,
     taskSummaries,
@@ -781,6 +815,8 @@ async function createLibraryConstrainedPlannerDraft(
         plannerRequest: plannerRequestSnapshot(input),
         goalContract: input.goalContract,
         goalContractHash: input.goalContractHash,
+        ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+        ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
       },
       summary: {
         goalPrompt: input.goalPrompt,
@@ -800,6 +836,8 @@ async function createLibraryConstrainedPlannerDraft(
       workflowId,
       status,
       goalContractHash: input.goalContractHash,
+      ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+      ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
       blockers: [...input.goalContract.blockingInputs],
       validationIssues,
       taskSummaries,
@@ -843,6 +881,8 @@ async function createLibraryConstrainedPlannerDraft(
         plannerRequest: plannerRequestSnapshot(input),
         goalContract: input.goalContract,
         goalContractHash: input.goalContractHash,
+        ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+        ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
       },
       summary: {
         goalPrompt: input.goalPrompt,
@@ -862,6 +902,8 @@ async function createLibraryConstrainedPlannerDraft(
       workflowId,
       status,
       goalContractHash: input.goalContractHash,
+      ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+      ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
       blockers: [...input.goalContract.blockingInputs],
       validationIssues,
       taskSummaries,
@@ -901,6 +943,8 @@ async function createLibraryConstrainedPlannerDraft(
     goalRequirementCoverage: compiled.goalRequirementCoverage,
       goalContract: input.goalContract,
       goalContractHash: input.goalContractHash,
+      ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+      ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
       ...(input.goalDesignPackage
         ? {
             goalDesignPackage: input.goalDesignPackage,
@@ -954,6 +998,8 @@ async function createLibraryConstrainedPlannerDraft(
     workflowId: compiled.workflow.workflowId,
     status,
     goalContractHash: input.goalContractHash,
+    ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+    ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     blockers: [...input.goalContract.blockingInputs],
     validationIssues,
     taskSummaries,
@@ -1008,6 +1054,7 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   if (draft.status !== "validated") throw new Error(`planner draft is not validated: ${input.draftId}`);
   const draftPayload = asRecord(draft.payload);
   const draftSummary = asRecord(draft.summary);
+  const sourcePlannerRequest = asRecord(draftPayload.plannerRequest);
   const contract = storedOrLegacyGoalContract(draftPayload, draftSummary, input.draftId);
   const contractHash = goalContractHash(contract);
   assertStoredGoalContractHashes(draftPayload, draftSummary, contractHash);
@@ -1034,6 +1081,12 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const manifestHash = contentHashForPayload(workflow);
   const runtimeContext = {
     draftId: input.draftId,
+    ...(stringValue(draftPayload.goalRequirementDraftId) ?? stringValue(sourcePlannerRequest.goalRequirementDraftId)
+      ? { goalRequirementDraftId: stringValue(draftPayload.goalRequirementDraftId) ?? stringValue(sourcePlannerRequest.goalRequirementDraftId) }
+      : {}),
+    ...(stringValue(draftPayload.goalRequirementDraftHash) ?? stringValue(sourcePlannerRequest.goalRequirementDraftHash)
+      ? { goalRequirementDraftHash: stringValue(draftPayload.goalRequirementDraftHash) ?? stringValue(sourcePlannerRequest.goalRequirementDraftHash) }
+      : {}),
     goalContractHash: contractHash,
     manifestHash,
     scope: workflow.domain,
@@ -1151,30 +1204,41 @@ export async function getPostgresPlannerDraftOrchestration(
   const payload = asRecord(draft.payload);
   const summary = asRecord(draft.summary);
   const workflow = asRecord(payload.workflow);
+  const plannerRequest = asRecord(payload.plannerRequest);
   const workflowId = stringValue(summary.workflowId) ?? stringValue(workflow.workflowId) ?? "";
   const goalPrompt = stringValue(summary.goalPrompt) ?? stringValue(workflow.goalPrompt) ?? "";
   const validationIssues = parseValidationIssues(summary.validationIssues);
   const taskSummaries = parseTaskSummaries(summary.taskSummaries).length > 0
     ? parseTaskSummaries(summary.taskSummaries)
     : summarizeWorkflowTasksFromPayload(workflow.tasks);
-  const contract = storedOrLegacyGoalContract(payload, summary, input.draftId);
+  const stagedRequirement = payload.goalRequirementDraft && typeof payload.goalRequirementDraft === "object"
+    ? payload.goalRequirementDraft as GoalRequirementDraftV1
+    : undefined;
+  const contract = goalContractFromStored(payload.goalContract)
+    ?? (!stagedRequirement ? storedOrLegacyGoalContract(payload, summary, input.draftId) : undefined);
   const status = plannerDraftStatus(draft.status);
   const vocabularyGaps = parseVocabularyGaps(payload.vocabularyGaps);
+  const requirementOnly = Boolean(stagedRequirement && !contract);
 
   return {
     draftId: input.draftId,
     goalPrompt,
     workflowId,
     status,
-    goalContractHash: storedGoalContractHash(summary, payload, contract),
-    ...(stringValue(payload.goalRequirementDraftHash) ? { goalRequirementDraftHash: stringValue(payload.goalRequirementDraftHash) } : {}),
-    ...(stringValue(payload.goalDesignPhase) ? { goalDesignPhase: stringValue(payload.goalDesignPhase) } : {}),
-    ...(payload.goalRequirementDraft && typeof payload.goalRequirementDraft === "object"
-      ? { goalRequirementDraft: payload.goalRequirementDraft as GoalRequirementDraftV1 }
+    ...(contract ? { goalContractHash: storedGoalContractHash(summary, payload, contract) } : {}),
+    ...(stringValue(payload.goalRequirementDraftId) ?? stringValue(summary.goalRequirementDraftId) ?? stringValue(plannerRequest.goalRequirementDraftId)
+      ? { goalRequirementDraftId: stringValue(payload.goalRequirementDraftId) ?? stringValue(summary.goalRequirementDraftId) ?? stringValue(plannerRequest.goalRequirementDraftId) }
       : {}),
+    ...(stringValue(payload.goalRequirementDraftHash) ?? stringValue(summary.goalRequirementDraftHash) ?? stringValue(plannerRequest.goalRequirementDraftHash)
+      ? { goalRequirementDraftHash: stringValue(payload.goalRequirementDraftHash) ?? stringValue(summary.goalRequirementDraftHash) ?? stringValue(plannerRequest.goalRequirementDraftHash) }
+      : {}),
+    ...(stringValue(payload.goalDesignPhase) ? { goalDesignPhase: stringValue(payload.goalDesignPhase) } : {}),
+    ...(stagedRequirement ? { goalRequirementDraft: stagedRequirement } : {}),
     blockers: status === PLANNER_DRAFT_STATUS_NEEDS_LIBRARY_INPUT
       ? parseVocabularyGapBlockers(vocabularyGaps)
-      : [...contract.blockingInputs],
+      : requirementOnly
+        ? (Array.isArray(stagedRequirement?.blockingInputs) ? [...stagedRequirement.blockingInputs] : [])
+        : [...(contract?.blockingInputs ?? [])],
     validationIssues,
     taskSummaries,
     ...(vocabularyGaps.length > 0 ? { vocabularyGaps } : {}),

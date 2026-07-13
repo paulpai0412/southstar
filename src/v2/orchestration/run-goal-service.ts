@@ -49,6 +49,7 @@ export type RunGoalRequest = {
 
 export type RunGoalResult = {
   goalDesignPackageHash?: string;
+  goalRequirementDraftId?: string;
   goalRequirementDraftHash?: string;
   goalDesignPhase?: string;
   goalContractHash: string;
@@ -219,6 +220,8 @@ async function submitGoalRequirementDraftPg(
     draft = await preparePostgresGoalRequirementDraft(context.db, {
       goalPrompt: request.goalPrompt,
       cwd: request.cwd,
+      mode: request.goalDesignMode ?? "review_before_compose",
+      templatePolicy: request.templatePolicy ?? { mode: "auto" },
       requirementInterpreter: context.goalRequirementInterpreter!,
       onProgress(event) {
         observedStages.push(event.stage);
@@ -235,6 +238,7 @@ async function submitGoalRequirementDraftPg(
   }
   const result: RunGoalResult = {
     goalContractHash: "",
+    goalRequirementDraftId: draft.draftId,
     goalRequirementDraftHash: draft.goalRequirementDraftHash,
     goalDesignPhase: draft.phase,
     draftId: draft.draftId,

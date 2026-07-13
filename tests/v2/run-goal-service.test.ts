@@ -71,16 +71,22 @@ test("staged run-goal route persists requirement review and confirms with a hash
     const response = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/run-goal", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, idempotencyKey: "requirements-route-1" }),
+      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, idempotencyKey: "requirements-route-1", goalDesignMode: "auto_until_blocked", templatePolicy: { mode: "auto" } }),
     }));
     assert.equal(response.status, 200);
     const envelope = await response.json() as { ok: true; result: { draftId: string; draftStatus: string; goalRequirementDraftHash: string } };
     assert.equal(envelope.result.draftStatus, "requirements_review");
     assert.match(envelope.result.goalRequirementDraftHash, /^[a-f0-9]{64}$/);
+    const stagedResource = await db.one<{ payload_json: { plannerRequest?: { goalDesignMode?: string; templatePolicy?: { mode?: string } } } }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+      [envelope.result.draftId],
+    );
+    assert.equal(stagedResource.payload_json.plannerRequest?.goalDesignMode, "auto_until_blocked");
+    assert.equal(stagedResource.payload_json.plannerRequest?.templatePolicy?.mode, "auto");
     const replay = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/run-goal", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, idempotencyKey: "requirements-route-1" }),
+      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, idempotencyKey: "requirements-route-1", goalDesignMode: "auto_until_blocked", templatePolicy: { mode: "auto" } }),
     }));
     assert.equal(replay.status, 200);
     const replayEnvelope = await replay.json() as { ok: true; result: { draftStatus: string; goalRequirementDraftHash: string } };
@@ -99,6 +105,39 @@ test("staged run-goal route persists requirement review and confirms with a hash
     assert.equal(confirmedEnvelope.result.status, "validation_resolving");
     assert.equal(confirmedEnvelope.result.phase, "validation_resolving");
     assert.match(confirmedEnvelope.result.goalContractHash, /^[a-f0-9]{64}$/);
+
+    const missing = await handleRuntimeRoute(context, new Request(
+      "http://127.0.0.1/api/v2/planner/drafts/missing/goal-requirements/req",
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedDraftHash: envelope.result.goalRequirementDraftHash, patch: { statement: "x" } }),
+      },
+    ));
+    assert.equal(missing.status, 404);
+
+    const mismatch = await handleRuntimeRoute(context, new Request(
+      `http://127.0.0.1/api/v2/planner/drafts/${encodeURIComponent(envelope.result.draftId)}/goal-requirements/route-id`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          expectedDraftHash: envelope.result.goalRequirementDraftHash,
+          patch: { kind: "update", requirementId: "body-id", patch: { statement: "x" } },
+        }),
+      },
+    ));
+    assert.equal(mismatch.status, 409);
+
+    const malformed = await handleRuntimeRoute(context, new Request(
+      `http://127.0.0.1/api/v2/planner/drafts/${encodeURIComponent(envelope.result.draftId)}/goal-requirements/route-id`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedDraftHash: envelope.result.goalRequirementDraftHash, patch: { unknown: true } }),
+      },
+    ));
+    assert.equal(malformed.status, 422);
   } finally {
     await db.close();
   }

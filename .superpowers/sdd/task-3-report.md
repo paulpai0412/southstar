@@ -175,3 +175,44 @@ Full focused suites were also run. Existing unrelated environment failures remai
 - The staged Requirement route is backend-complete. The existing Workflow message block/right viewer still needs the later UI task to call these routes and render Requirement Review.
 - Confirmation accepts either an injected canonical-contract metadata provider/Goal interpreter or the existing stored contract. A generic metadata fallback is used only when neither is available; production routes always provide the Goal interpreter so domain/capability vocabulary remains library-derived.
 - Validation Resolution/candidate import is intentionally not performed in this task; confirmation stops at `validation_resolving` for the next resolver task.
+
+## Follow-up reviewer fixes
+
+Status: COMPLETE
+
+- Replaced requirement revision persistence's read-then-upsert with atomic insert-if-absent plus compare; a duplicate revision hash is idempotent and a different hash fails with `goal_requirement_revision_conflict` without overwriting the winner.
+- Added `goalRequirementDraftId` and `goalRequirementDraftHash` to staged planner payloads, generated planner bundles/request snapshots, run runtime context, and stale-resource matching. Source lineage is verified before generated DAG creation and materialization freeze checks include the source draft.
+- Requirement-only planner inspection no longer synthesizes a legacy Goal Contract/hash. Legacy planner drafts keep the compatibility projection, while staged drafts expose only their requirement draft fields until confirmation.
+- Goal submission now persists `goalDesignMode` and `templatePolicy` in the staged planner request. Requirement contract confirmation resolves outside the row lock, then locks/rechecks the expected hash before committing.
+- Removed the synthetic `domain: "general"` / `intent: "goal_execution"` metadata path. Confirmation fails closed with structured `goal_requirement_contract_metadata_missing` or `goal_requirement_contract_metadata_invalid` errors; caller-supplied metadata is accepted only when its domain/capability/artifact refs are in the approved Library vocabulary.
+- PATCH requirement routes reject URL/body requirement-id mismatches with HTTP 409, and retain 404 (missing draft) and 422 (malformed patch/metadata) mappings.
+
+Focused verification after the fixes:
+
+```text
+$ npx tsc --noEmit --pretty false
+PASS
+
+$ git diff --check
+PASS
+
+$ npx tsx --test tests/v2/postgres-run-api.test.ts --test-name-pattern='Goal submission persists requirements_review|Requirement revisions stale|Requirement revision persistence|Requirement confirmation is hash-bound|editing a confirmed requirement|generated planner DAG keeps source requirement lineage'
+PASS for all changed regressions (the suite still reports the unrelated Library import readiness failure: missing approved goal_design/composer_guidance skills)
+
+$ npx tsx --test tests/v2/run-goal-service.test.ts --test-name-pattern='staged run-goal route persists requirement review'
+PASS for the changed route regression (the suite still reports the unrelated /tmp/snap-private-tmp EACCES failures)
+
+$ npx tsx --test --test-name-pattern='Goal submission persists requirements_review|Requirement revisions stale|Requirement revision persistence|Requirement confirmation is hash-bound|editing a confirmed requirement|generated planner DAG keeps source requirement lineage' tests/v2/postgres-run-api.test.ts
+1..6
+# pass 6
+
+$ npx tsx --test --test-name-pattern='staged run-goal route persists requirement review' tests/v2/run-goal-service.test.ts
+1..1
+# pass 1
+
+$ npx tsx tests/v2/goal-requirement-draft.test.ts
+1..17
+# pass 17
+```
+
+The previous generic metadata-fallback concern is superseded: no fallback contract is created when interpreter/approved metadata is unavailable.

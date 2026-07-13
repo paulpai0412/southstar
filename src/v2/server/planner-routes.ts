@@ -144,11 +144,15 @@ export async function handlePlannerRoute(
   if (request.method === "PATCH" && goalRequirementPatchMatch) {
     const body = await readJsonBody<{ expectedDraftHash?: unknown; patch?: unknown; actor?: unknown }>(request);
     try {
+      const requirementId = decodeURIComponent(goalRequirementPatchMatch[2]!);
+      assertRawRequirementRouteTarget(requirementId, body.patch);
+      const patch = parseGoalRequirementPatch(body.patch);
+      assertRequirementRouteTarget(requirementId, patch);
       return json("goal-requirement-draft", await reviseGoalRequirementPg(context.db, {
         draftId: decodeURIComponent(goalRequirementPatchMatch[1]!),
-        requirementId: decodeURIComponent(goalRequirementPatchMatch[2]!),
+        requirementId,
         expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
-        patch: parseGoalRequirementPatch(body.patch),
+        patch,
         actor: optionalString(body.actor),
       }));
     } catch (error) {
@@ -809,6 +813,7 @@ function plannerDraftReceiptFromGoalResult(result: RunGoalResult, goalPrompt = "
     workflowId: "",
     status: result.draftStatus,
     goalContractHash: result.goalContractHash,
+    ...(result.goalRequirementDraftId ? { goalRequirementDraftId: result.goalRequirementDraftId } : {}),
     ...(result.goalRequirementDraftHash ? { goalRequirementDraftHash: result.goalRequirementDraftHash } : {}),
     ...(result.goalDesignPhase ? { goalDesignPhase: result.goalDesignPhase } : {}),
     ...(result.goalDesignPackageHash ? { goalDesignPackageHash: result.goalDesignPackageHash } : {}),
@@ -933,6 +938,27 @@ function parseGoalRequirementPatch(value: unknown): GoalRequirementDraftRevision
   return patch;
 }
 
+function assertRequirementRouteTarget(
+  routeRequirementId: string,
+  patch: GoalRequirementDraftRevisionPatchV1 | GoalRequirementDraftRevisionOperation,
+): void {
+  if ("kind" in patch && patch.requirementId !== routeRequirementId) {
+    throw new Error(`goal_requirement_route_target_conflict: ${routeRequirementId} does not match ${patch.requirementId}`);
+  }
+}
+
+function assertRawRequirementRouteTarget(routeRequirementId: string, value: unknown): void {
+  if (!isRecord(value)) return;
+  const targets: string[] = [];
+  if (typeof value.requirementId === "string") targets.push(value.requirementId);
+  if (Array.isArray(value.requirementIds)) {
+    targets.push(...value.requirementIds.filter((id): id is string => typeof id === "string"));
+  }
+  if (targets.some((target) => target !== routeRequirementId)) {
+    throw new Error(`goal_requirement_route_target_conflict: ${routeRequirementId} does not match ${targets.join(", ")}`);
+  }
+}
+
 function parseRequiredStringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`${field} must be an array of strings`);
@@ -965,6 +991,7 @@ function goalRequirementRevisionErrorResponse(error: unknown): Response {
   if (
     message.includes("goal_requirement_draft_stale")
     || message.includes("goal_requirement_revision_conflict")
+    || message.includes("goal_requirement_route_target_conflict")
     || message.includes("goal_requirements_already_materialized")
     || message.includes("goal_requirements_frozen")
     || message.includes("cannot be confirmed in phase")
@@ -977,6 +1004,8 @@ function goalRequirementRevisionErrorResponse(error: unknown): Response {
     || message.includes("patch")
     || message.includes("requirementId is required")
     || message.includes("Goal Requirement interpreter returned")
+    || message.includes("goal_requirement_contract_metadata_missing")
+    || message.includes("goal_requirement_contract_metadata_invalid")
   ) {
     return errorJson(message, 422);
   }

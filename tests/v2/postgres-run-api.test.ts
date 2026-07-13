@@ -39,6 +39,7 @@ import {
   loadCurrentGoalDesignPackagePg,
   loadCurrentGoalRequirementDraftPg,
   persistGoalDesignPackageRevisionPg,
+  persistGoalRequirementDraftRevisionPg,
   preparePostgresGoalRequirementDraft,
   preparePostgresGoalDesignDraft,
   retryPostgresGoalDesignAfterVocabularyApprovalPg,
@@ -94,15 +95,85 @@ test("Goal submission persists requirements_review before Slice design", async (
     assert.equal(result.phase, "requirements_review");
     const stored = await getResourceByKeyPg(db, "planner_draft", result.draftId);
     assert.equal((stored!.payload as Record<string, unknown>).goalDesignPhase, "requirements_review");
+    assert.equal((stored!.payload as Record<string, unknown>).goalRequirementDraftId, result.draftId);
+    assert.equal((stored!.payload as Record<string, unknown>).goalRequirementDraftHash, result.goalRequirementDraftHash);
     assert.equal(((stored!.payload as Record<string, any>).goalRequirementDraft as { revision: number }).revision, 1);
     assert.equal((stored!.payload as Record<string, unknown>).goalDesignPackage, undefined);
     assert.deepEqual(await loadCurrentGoalRequirementDraftPg(db, result.draftId), result.goalRequirementDraft);
+    const orchestration = await getPostgresPlannerDraftOrchestration(db, { draftId: result.draftId });
+    assert.equal("goalContractHash" in orchestration, false);
+    assert.equal(orchestration.goalRequirementDraftId, result.draftId);
+    assert.equal(orchestration.goalRequirementDraftHash, result.goalRequirementDraftHash);
+  });
+});
+
+test("Requirement revisions stale an unmaterialized generated DAG draft by source lineage", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: "Create an offline article",
+      cwd,
+      requirementInterpreter: requirementDraftInterpreter("Create an offline article", cwd),
+    });
+    const generatedDraftId = "generated-dag-for-requirement-lineage";
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: generatedDraftId,
+      scope: "planner",
+      status: "validated",
+      payload: {
+        goalRequirementDraftId: draft.draftId,
+        goalRequirementDraftHash: draft.goalRequirementDraftHash,
+      },
+      summary: {
+        goalRequirementDraftId: draft.draftId,
+        goalRequirementDraftHash: draft.goalRequirementDraftHash,
+      },
+    });
+    const revised = await reviseGoalRequirementPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      requirementId: draft.goalRequirementDraft.requirements[0]!.id,
+      patch: { statement: "Changed observable outcome" },
+    });
+    assert.equal(revised.invalidated?.dagDraft, true);
+    assert.equal((await getResourceByKeyPg(db, "planner_draft", generatedDraftId))?.status, "stale");
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: generatedDraftId }),
+      /planner draft is not validated/,
+    );
+  });
+});
+
+test("Requirement revision persistence preserves the first hash on duplicate revision races", async () => {
+  await withDb(async (db) => {
+    const cwd = process.cwd();
+    const first = finalizeGoalRequirementDraft(validGoalRequirementDraftInput("Immutable revision", cwd));
+    await persistGoalRequirementDraftRevisionPg(db, { draftId: "immutable-race", draft: first });
+    const conflicting = finalizeGoalRequirementDraft({
+      ...validGoalRequirementDraftInput("Immutable revision", cwd),
+      requirements: [{
+        ...validGoalRequirementDraftInput("Immutable revision", cwd).requirements[0]!,
+        statement: "A different revision payload must not overwrite the first.",
+      }],
+    });
+    await assert.rejects(
+      () => persistGoalRequirementDraftRevisionPg(db, { draftId: "immutable-race", draft: conflicting }),
+      /goal_requirement_revision_conflict/,
+    );
+    const stored = await db.one<{ payload_json: GoalRequirementDraftInputV1 }>(
+      "select payload_json from southstar.runtime_resources where resource_type = 'goal_requirement_draft_revision' and resource_key = $1",
+      ["immutable-race:revision:1"],
+    );
+    assert.equal((stored.payload_json as any).draftHash, first.draftHash);
   });
 });
 
 test("Requirement confirmation is hash-bound and idempotent", async () => {
   await withDb(async (db) => {
     await seedGoalDesignSkill(db);
+    await seedGoalRequirementVocabulary(db);
     const cwd = process.cwd();
     const draft = await preparePostgresGoalRequirementDraft(db, {
       goalPrompt: "Create an offline article",
@@ -131,9 +202,29 @@ test("Requirement confirmation is hash-bound and idempotent", async () => {
   });
 });
 
+test("Requirement confirmation fails closed without interpreter or approved metadata", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: "Create an offline article",
+      cwd,
+      requirementInterpreter: requirementDraftInterpreter("Create an offline article", cwd),
+    });
+    await assert.rejects(
+      () => confirmGoalRequirementsPg(db, {
+        draftId: draft.draftId,
+        expectedDraftHash: draft.goalRequirementDraftHash,
+      }),
+      /goal_requirement_contract_metadata_missing/,
+    );
+  });
+});
+
 test("editing a confirmed requirement stales validation and slice resources", async () => {
   await withDb(async (db) => {
     await seedGoalDesignSkill(db);
+    await seedGoalRequirementVocabulary(db);
     const cwd = process.cwd();
     const draft = await preparePostgresGoalRequirementDraft(db, {
       goalPrompt: "Create an offline article",
@@ -195,6 +286,12 @@ test("planner draft persists a design/article Goal Contract and uses its domain"
       headVersionId: "domain.design-article@v1",
       state: { scope: "design/article" },
     });
+    await seedGoalDesignSkill(db);
+    const sourceRequirement = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd: process.cwd(),
+      requirementInterpreter: requirementDraftInterpreter(goalPrompt, process.cwd()),
+    });
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt,
       cwd: "/workspace/article",
@@ -209,6 +306,47 @@ test("planner draft persists a design/article Goal Contract and uses its domain"
     assert.equal((stored!.summary as any).goalContractHash, draft.goalContractHash);
     assert.equal((stored!.summary as any).domain, "design/article");
     assert.equal(draft.goalPrompt, goalPrompt);
+  });
+});
+
+test("generated planner DAG keeps source requirement lineage through materialization", async () => {
+  await withDb(async (db) => {
+    const goalPrompt = "Turn notes.md into an offline HTML article";
+    const goalContract = articleGoalContract(goalPrompt);
+    await seedDeterministicWorkflowGraph(db, goalContract.domain);
+    await upsertLibraryObject(db, {
+      objectKey: "domain.design-article",
+      objectKind: "domain_taxonomy",
+      status: "approved",
+      headVersionId: "domain.design-article@lineage-test",
+      state: { scope: "design/article" },
+    });
+    await seedGoalDesignSkill(db);
+    const sourceRequirement = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd: process.cwd(),
+      requirementInterpreter: requirementDraftInterpreter(goalPrompt, process.cwd()),
+    });
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt,
+      cwd: "/workspace/article",
+      goalInterpreter: fixedGoalInterpreter(goalContract),
+      composer: new DeterministicFixtureComposer(),
+      goalRequirementDraftId: sourceRequirement.draftId,
+      goalRequirementDraftHash: sourceRequirement.goalRequirementDraftHash,
+    });
+    assert.equal(draft.status, "validated");
+    const stored = await getResourceByKeyPg(db, "planner_draft", draft.draftId);
+    assert.equal((stored!.payload as any).goalRequirementDraftId, sourceRequirement.draftId);
+    assert.equal((stored!.payload as any).goalRequirementDraftHash, sourceRequirement.goalRequirementDraftHash);
+    assert.equal((stored!.payload as any).plannerRequest.goalRequirementDraftId, sourceRequirement.draftId);
+    const run = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const runtime = await db.one<{ runtime_context_json: any }>(
+      "select runtime_context_json from southstar.workflow_runs where id = $1",
+      [run.runId],
+    );
+    assert.equal(runtime.runtime_context_json.goalRequirementDraftId, sourceRequirement.draftId);
+    assert.equal(runtime.runtime_context_json.goalRequirementDraftHash, sourceRequirement.goalRequirementDraftHash);
   });
 });
 
@@ -2170,6 +2308,16 @@ async function seedGoalDesignSkill(db: SouthstarDb): Promise<void> {
       purpose: "goal_design",
       body: "Design the smallest cohesive outcome slices and return the host schema.",
     },
+  });
+}
+
+async function seedGoalRequirementVocabulary(db: SouthstarDb): Promise<void> {
+  await upsertLibraryObject(db, {
+    objectKey: "domain.design-article",
+    objectKind: "domain_taxonomy",
+    status: "approved",
+    headVersionId: "domain.design-article@goal-requirement-test",
+    state: { scope: "design/article" },
   });
 }
 
