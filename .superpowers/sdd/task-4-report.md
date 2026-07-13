@@ -48,3 +48,27 @@ exit 0
 ## Concerns
 
 The requested combined legacy command still reports 12 failures (43/55 pass) from pre-Task-4 expectations: old chat tests lack an LLM provider, old approval tests do not seed the required `goal_design`/`composer_guidance` files, and three candidate-install tests still expect removed placeholder/domain synthesis. The new Task-4 tests and the complete-root route path pass; unrelated dirty worktree files were not staged.
+
+## Reviewer follow-up
+
+Follow-up implementation commit: `cbd05a3` (`fix: reconcile candidate installs atomically`)
+
+- Candidate installation now loads the complete catalog and calls `reconcileLibraryCatalogPg` in the same transaction as ontology-edge/resource writes.
+- Existing main/supporting files are snapshotted before overwrite and restored on any failure; newly created files retain the existing cleanup path.
+- Browser approval result types now include `reconcile` and `librarySnapshotHash`, and the readiness banner includes diagnostic paths.
+
+Follow-up verification:
+
+```text
+npx tsx --test --test-name-pattern='candidate install reconciles|candidate install restores' tests/v2/library-import-drafts.test.ts
+2 tests, 2 pass
+
+npx tsx --test --test-name-pattern='readiness diagnostics' tests/web/southstar-library-workspace-interaction.test.tsx
+1 test, 1 pass
+
+npx tsc --noEmit --pretty false
+exit 0
+
+git diff --check
+exit 0
+```
