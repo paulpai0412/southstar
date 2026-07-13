@@ -21,7 +21,7 @@ import {
   workflowTemplatePolicyFrom,
 } from "@/lib/agent-session-engine";
 import type { CompactResultInfo } from "@/lib/agent-session-engine";
-import { confirmGoalDesignStream, generateWorkflowDagStream } from "@/lib/workflow/generate-stream";
+import { confirmGoalDesignStream, generateWorkflowDagStream, WorkflowGenerateHttpError } from "@/lib/workflow/generate-stream";
 import { appendWorkflowStreamText, normalizeWorkflowStreamText } from "@/lib/workflow/stream-text";
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
 import type { ToolEntry } from "@/lib/tool-presets";
@@ -1110,10 +1110,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           return;
         }
         const message = e instanceof Error ? e.message : String(e);
-        addNotice({ type: "error", message });
+        const failure = e instanceof WorkflowGenerateHttpError && e.code === "library_not_ready"
+          ? `Library is not ready: ${e.message}. Open Library to review and sync diagnostics, then retry this Goal.`
+          : `Workflow generation failed: ${message}`;
+        addNotice({ type: "error", message: failure });
         setMessages((prev) => [...prev, {
           role: "assistant",
-          content: [{ type: "text", text: `Workflow generation failed: ${message}` }],
+          content: [{ type: "text", text: failure }],
           model: "workflow-generate",
           provider: "southstar",
           errorMessage: message,

@@ -302,6 +302,96 @@ test("generateWorkflowDagStream reports active, conflict, and streamed error sta
   }
 });
 
+test("generateWorkflowDagStream preserves structured Library readiness diagnostics", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () => new Response(JSON.stringify({
+    error: "library_not_ready",
+    message: "Library reconciliation has not produced a ready snapshot",
+    diagnostics: [{
+      code: "required_purpose_cardinality",
+      message: "expected exactly one approved goal_design skill, found 0",
+      fatal: true,
+      paths: [],
+      missingRefs: [],
+    }],
+  }), { status: 503, headers: { "content-type": "application/json" } })) as typeof fetch;
+
+  try {
+    const { generateWorkflowDagStream, WorkflowGenerateHttpError } = await import("../../web/lib/workflow/generate-stream.ts");
+    await assert.rejects(
+      () => generateWorkflowDagStream({ prompt: "Build a vocabulary app", cwd: "/workspace/project" }),
+      (error: unknown) => {
+        assert.ok(error instanceof WorkflowGenerateHttpError);
+        assert.equal(error.status, 503);
+        assert.equal(error.code, "library_not_ready");
+        assert.equal(error.message, "Library reconciliation has not produced a ready snapshot");
+        assert.deepEqual(error.diagnostics, [{
+          code: "required_purpose_cardinality",
+          message: "expected exactly one approved goal_design skill, found 0",
+          fatal: true,
+          paths: [],
+          missingRefs: [],
+        }]);
+        return true;
+      },
+    );
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test("Workflow chat maps Library readiness errors to actionable guidance", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+  assert.match(hook, /WorkflowGenerateHttpError/);
+  assert.match(hook, /Library is not ready: \$\{e\.message\}\. Open Library to review and sync diagnostics, then retry this Goal\./);
+  assert.match(hook, /content:\s*\[\{ type: "text", text: failure \}\]/);
+  assert.doesNotMatch(hook, /content:\s*\[\{ type: "text", text: `Workflow generation failed: \$\{message\}` \}\]/);
+});
+
+test("Workflow chat explains Library readiness failures", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { ChatWindow } from "./web/components/ChatWindow";
+    (globalThis as typeof globalThis & { process?: { env?: Record<string, string> } }).process = { env: {} };
+    if (typeof crypto.randomUUID !== "function") {
+      Object.defineProperty(crypto, "randomUUID", { configurable: true, value: () => "00000000-0000-4000-8000-000000000001" });
+    }
+    createRoot(document.getElementById("root")).render(
+      <ChatWindow session={null} newSessionCwd="/workspace/project" workflowMode workflowCwd="/workspace/project" />
+    );
+  `, async (page) => {
+    await page.route("**/api/models**", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ models: {}, modelList: [] }) });
+    });
+    await page.route("**/api/agent/new", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ sessionId: "workflow-test-session" }) });
+    });
+    await page.route("**/api/workflow/generate", async (route) => {
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({
+          error: "library_not_ready",
+          message: "Library reconciliation has not produced a ready snapshot",
+          diagnostics: [{ code: "required_purpose_cardinality", message: "expected exactly one approved goal_design skill, found 0", fatal: true, paths: [], missingRefs: [] }],
+        }),
+      });
+    });
+
+    const input = page.getByPlaceholder("Message… Type / for commands");
+    await input.fill("Build a vocabulary app");
+    const workflowRequest = page.waitForRequest("**/api/workflow/generate", { timeout: 5_000 });
+    await page.getByRole("button", { name: "Send" }).click();
+    await workflowRequest;
+    const body = page.locator("body");
+    await body.getByText(/Library is not ready/i).first().waitFor({ timeout: 5_000 });
+    const text = await body.textContent() ?? "";
+    assert.match(text, /Open Library to review and sync diagnostics/);
+    assert.doesNotMatch(text, /Workflow generation failed: \{/);
+  });
+});
+
 test("workflow generate proxy submits one prompt and adapts persisted mission truth", () => {
   const route = source("web/app/api/workflow/generate/route.ts");
   const readModel = source("src/v2/read-models/workflow-ui.ts");

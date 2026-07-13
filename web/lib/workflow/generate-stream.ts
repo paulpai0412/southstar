@@ -59,6 +59,38 @@ export type WorkflowGenerateStreamHandlers = {
   onDone?: () => void;
 };
 
+export class WorkflowGenerateHttpError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+    readonly diagnostics: unknown[] = [],
+  ) {
+    super(message);
+    this.name = "WorkflowGenerateHttpError";
+  }
+}
+
+async function throwWorkflowGenerateError(response: Response): Promise<never> {
+  const text = await response.text().catch(() => "");
+  let payload: { error?: unknown; message?: unknown; diagnostics?: unknown } = {};
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (parsed && typeof parsed === "object") payload = parsed as typeof payload;
+  } catch {
+    // Keep the plain response text when the upstream did not return JSON.
+  }
+  const message = typeof payload.message === "string" ? payload.message : "";
+  const code = typeof payload.error === "string" ? payload.error : undefined;
+  const diagnostics = Array.isArray(payload.diagnostics) ? payload.diagnostics : [];
+  throw new WorkflowGenerateHttpError(
+    message || text || `Workflow generation failed with HTTP ${response.status}`,
+    response.status,
+    code,
+    diagnostics,
+  );
+}
+
 export async function createPlannerDraftStream(input: {
   request: Record<string, unknown>;
   signal?: AbortSignal;
@@ -118,8 +150,7 @@ export async function generateWorkflowDagStream(input: {
   }
 
   if (!response.ok) {
-    const text = await response.text().catch(() => "");
-    throw new Error(text || `workflow generate failed with HTTP ${response.status}`);
+    await throwWorkflowGenerateError(response);
   }
   if (!response.body) {
     throw new Error("workflow generate response is missing a stream body");
