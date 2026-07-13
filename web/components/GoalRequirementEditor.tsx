@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import type { GoalRequirementDraftView, GoalRequirementSelection } from "@/lib/types";
+import type { GoalRequirementDraftView, GoalRequirementSelection, UiInteractionContractSelection } from "@/lib/types";
 
 type RequirementForm = {
   title: string;
@@ -23,10 +23,12 @@ export function GoalRequirementEditor({
   selection,
   onDraftChange,
   onDraftInvalidated,
+  onUiContractSelect,
 }: {
   selection: GoalRequirementSelection;
   onDraftChange?: (selection: GoalRequirementSelection) => void;
   onDraftInvalidated?: (selection: GoalRequirementSelection) => void;
+  onUiContractSelect?: (selection: UiInteractionContractSelection) => void;
 }) {
   const requirement = useMemo(() => selection.draft.requirements.find((item) => item.id === selection.requirementId) ?? null, [selection.draft, selection.requirementId]);
   const [form, setForm] = useState<RequirementForm>(() => requirement ? formFromRequirement(requirement) : emptyForm());
@@ -82,7 +84,10 @@ export function GoalRequirementEditor({
         <Field label="Assumptions"><ListField value={form.assumptions} onChange={(value) => setForm((current) => ({ ...current, assumptions: value }))} /></Field>
         <Field label="Open questions"><ListField value={form.openQuestions} onChange={(value) => setForm((current) => ({ ...current, openQuestions: value }))} /></Field>
         <Field label="Risk tags"><ListField value={form.riskTags} onChange={(value) => setForm((current) => ({ ...current, riskTags: value }))} /></Field>
-        <Field label="Interaction contract refs"><ListField value={form.interactionContractRefs} onChange={(value) => setForm((current) => ({ ...current, interactionContractRefs: value }))} /></Field>
+        <Field label="Interaction contract refs">
+          <ListField value={form.interactionContractRefs} onChange={(value) => setForm((current) => ({ ...current, interactionContractRefs: value }))} />
+          {requirement.interactionContractRefs.length > 0 ? <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>{requirement.interactionContractRefs.map((contractId) => <button key={contractId} type="button" data-testid="goal-requirement-open-ui-contract" onClick={() => onUiContractSelect?.({ draftId: selection.draftId, contractId, requirementId: requirement.id })} style={contractButtonStyle}>Open {contractId}</button>)}</div> : <span style={emptyHintStyle}>No visual contract is linked. Add a reference only when screen/state behavior needs structured review.</span>}
+        </Field>
       </div>
       <footer style={footerStyle}>
         <div style={{ color: state.status === "error" ? "#f87171" : "var(--text-dim)", fontSize: 11, overflowWrap: "anywhere", minWidth: 0 }}>{state.message ?? `expected draft ${selection.expectedDraftHash.slice(0, 12)}`}</div>
@@ -188,4 +193,6 @@ const inputStyle = { width: "100%", border: "1px solid var(--border)", borderRad
 const textareaStyle = { width: "100%", resize: "vertical" as const, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-panel)", color: "var(--text)", padding: "7px 8px", fontSize: 12, lineHeight: 1.45 } as const;
 const footerStyle = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, padding: "9px 10px", borderTop: "1px solid var(--border)", background: "var(--bg-panel)" } as const;
 const saveButtonStyle = { border: "1px solid var(--accent)", borderRadius: 7, background: "var(--accent)", color: "#fff", padding: "8px 10px", cursor: "pointer", fontSize: 12, fontWeight: 700, flexShrink: 0 } as const;
+const contractButtonStyle = { border: "1px solid var(--accent)", borderRadius: 6, background: "transparent", color: "var(--accent)", padding: "6px 8px", cursor: "pointer", fontSize: 10, fontWeight: 650 } as const;
+const emptyHintStyle = { color: "var(--text-dim)", fontSize: 10, lineHeight: 1.4 } as const;
 const emptyStyle = { padding: 12, color: "var(--text-muted)", fontSize: 12 } as const;

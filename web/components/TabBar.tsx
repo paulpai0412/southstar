@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { GoalRequirementSelection, GoalSliceSelection } from "@/lib/types";
+import type { GoalRequirementSelection, GoalSliceSelection, UiInteractionContractSelection } from "@/lib/types";
 import type { WorkflowDagNode } from "@/lib/workflow/types";
 import { getFileIcon } from "./FileIcons";
 
@@ -16,6 +16,7 @@ export interface Tab {
     | "workflowNodeProfile"
     | "goalSlice"
     | "goalRequirement"
+    | "uiInteractionContract"
     | "workflowGoalContract"
     | "libraryFile"
     | "operatorHistory"
@@ -32,6 +33,7 @@ export interface Tab {
   workflowNode?: WorkflowDagNode;
   goalSliceSelection?: GoalSliceSelection;
   goalRequirementSelection?: GoalRequirementSelection;
+  uiInteractionContractSelection?: UiInteractionContractSelection;
 }
 
 interface Props {

@@ -1108,6 +1108,55 @@ test("Requirement block renders coverage state and opens the existing sidecar ed
   });
 });
 
+test("visual requirement opens the existing sidecar with structured screen and state controls", async () => {
+  const draft = requirementDraftView();
+  draft.requirements[0]!.interactionContractRefs = ["ui-review"];
+  const contract = {
+    schemaVersion: "southstar.ui_interaction_contract.v1",
+    id: "ui-review",
+    revision: 2,
+    parentRevision: 1,
+    status: "confirmed",
+    requirementIds: ["req-review"],
+    screens: [{
+      id: "screen-review",
+      title: "Review",
+      purpose: "Review one word",
+      layout: { regions: [{ id: "main", role: "main", position: "center", childRefs: ["element-reveal"] }] },
+      elements: [{ id: "element-reveal", type: "button", label: "Reveal", visibleInStates: ["question"], enabledInStates: ["question"] }],
+      states: ["question", "answer"],
+      actions: [{ id: "action-reveal", triggerElementId: "element-reveal", fromState: "question", toState: "answer", expectedEffect: "Show answer" }],
+      responsiveRules: ["Action remains visible"],
+      accessibilityRules: ["Action has button role"],
+    }],
+    flows: [{ id: "flow-review", steps: ["action-reveal"], successOutcome: "Answer is visible" }],
+    criterionBindings: [{ criterionId: "criterion-review", screenIds: ["screen-review"], elementIds: ["element-reveal"], actionIds: ["action-reveal"] }],
+    contractHash: "a".repeat(64),
+  };
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementEditor } from "./web/components/GoalRequirementEditor";
+    import { UiInteractionContractViewer } from "./web/components/UiInteractionContractViewer";
+    const draft = ${JSON.stringify(draft)};
+    function Harness() {
+      const [ui, setUi] = useState(null);
+      return <aside data-testid="sidecar" style={{ width: 900, height: 700 }}>{ui ? <UiInteractionContractViewer selection={ui} /> : <GoalRequirementEditor selection={{ draftId: "draft-goal-1", expectedDraftHash: "hash-1", requirementId: "req-review", draft, status: "requirements_review", confirmable: false }} onUiContractSelect={setUi} />}</aside>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/ui-contracts/ui-review", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: contract }) });
+    });
+    await page.locator('[data-testid="goal-requirement-open-ui-contract"]').click();
+    await page.locator('[data-testid="ui-interaction-contract-viewer"]').waitFor();
+    assert.match(await page.locator('[data-testid="sidecar"]').textContent() ?? "", /screen-review/);
+    assert.equal(await page.locator('[data-element-id="element-reveal"]').count(), 1);
+    await page.locator('[data-testid="ui-state-answer"]').click();
+    assert.equal(await page.locator('[data-element-id="element-reveal"]').count(), 0);
+  });
+});
+
 test("Requirement confirm posts the displayed draft hash and never composes a DAG", async () => {
   const draft = requirementDraftView();
   let body: Record<string, unknown> | null = null;

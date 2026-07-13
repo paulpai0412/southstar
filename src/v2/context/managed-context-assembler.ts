@@ -5,6 +5,8 @@ import type { ArtifactContract } from "../design-library/runtime-types.ts";
 import type { SouthstarWorkflowManifest, WorkflowTaskDefinition } from "../manifests/types.ts";
 import { materializeTaskLibraryRefs } from "../orchestration/runtime-library-materializer.ts";
 import { loadRunLibrarySnapshotPg, requireSnapshotObject } from "../orchestration/run-library-snapshot.ts";
+import { validateGoalRequirementDraft, type GoalRequirementDraftV1 } from "../orchestration/goal-requirement-draft.ts";
+import { validateUiInteractionContract, type UiInteractionContractV1 } from "../orchestration/ui-interaction-contract.ts";
 import { upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
 import { assembleContextBlocks } from "./assembly-policy.ts";
@@ -103,6 +105,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         vaultLeasePolicyRefs: libraryRefs(task.vaultLeasePolicyRefs),
         libraryRoot: process.env.SOUTHSTAR_LIBRARY_ROOT ?? `${process.cwd()}/library`,
       });
+      const uiInteractionContracts = await readTaskUiInteractionContracts(db, input.runId, task);
 
       const contextPacketId = `ctx-${input.runId}-${input.taskId}-${input.attemptId}`;
       const taskEnvelopeId = `task-envelope-${input.runId}-${input.taskId}-${input.attemptId}`;
@@ -126,6 +129,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
         selectedMemories: assembly.selected.filter((block) => block.sourceType === "memory"),
         selectedKnowledgeCards: assembly.selected.filter((block) => block.sourceType === "knowledge_card"),
         priorArtifacts: assembly.selected.filter((block) => block.sourceType === "artifact"),
+        uiInteractionContracts,
         checkpointSummary: assembly.selected.find((block) => block.sourceType === "checkpoint"),
         failureSummary: assembly.selected.find((block) => block.sourceType === "failure"),
         skillInstructions: [
@@ -272,6 +276,46 @@ async function readWorkspaceHandle(db: SouthstarDb, runId: string): Promise<Task
       hostMountPath: projectRoot,
     },
   };
+}
+
+async function readTaskUiInteractionContracts(
+  db: SouthstarDb,
+  runId: string,
+  task: WorkflowTaskDefinition,
+): Promise<UiInteractionContractV1[]> {
+  const requirementIds = stringArray(asRecord(task.promptInputs).requirementIds);
+  if (requirementIds.length === 0) return [];
+  const run = await db.maybeOne<{ runtime_context_json: unknown }>(
+    "select runtime_context_json from southstar.workflow_runs where id = $1",
+    [runId],
+  );
+  const runtimeContext = asRecord(run?.runtime_context_json);
+  const draftId = stringValue(runtimeContext.goalRequirementDraftId) ?? stringValue(runtimeContext.draftId);
+  if (!draftId) return [];
+  const row = await db.maybeOne<{ payload_json: Record<string, unknown> }>(
+    "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+    [draftId],
+  );
+  if (!row) return [];
+  const draft = storedRequirementDraft(row.payload_json.goalRequirementDraft);
+  if (!draft || row.payload_json.goalRequirementDraftHash !== draft.draftHash) return [];
+  const storedHashes = asRecord(row.payload_json.uiInteractionContractHashes);
+  const contracts = Array.isArray(row.payload_json.uiInteractionContracts) ? row.payload_json.uiInteractionContracts : [];
+  return contracts.flatMap((value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    const contract = value as UiInteractionContractV1;
+    if (contract.status !== "confirmed"
+      || storedHashes[contract.id] !== contract.contractHash
+      || validateUiInteractionContract(contract, draft).length > 0
+      || !contract.requirementIds.some((id) => requirementIds.includes(id))) return [];
+    return [structuredClone(contract)];
+  });
+}
+
+function storedRequirementDraft(value: unknown): GoalRequirementDraftV1 | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const draft = value as GoalRequirementDraftV1;
+  return validateGoalRequirementDraft(draft).length === 0 ? draft : undefined;
 }
 
 function artifactContractsForTask(workflow: SouthstarWorkflowManifest, task: WorkflowTaskDefinition): ArtifactContract[] {

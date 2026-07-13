@@ -138,6 +138,39 @@ export type GoalRequirementSelection = {
   coveragePreview?: GoalRequirementCoveragePreview[];
 };
 
+export type UiInteractionElementType =
+  | "button" | "input" | "textarea" | "select" | "checkbox" | "text" | "heading"
+  | "list" | "card" | "form" | "table" | "image" | "link" | "status";
+
+export interface UiInteractionContractView {
+  schemaVersion: "southstar.ui_interaction_contract.v1";
+  id: string;
+  revision: number;
+  parentRevision?: number;
+  status: "draft" | "confirmed" | "superseded";
+  requirementIds: string[];
+  screens: Array<{
+    id: string;
+    title: string;
+    purpose: string;
+    layout: { regions: Array<{ id: string; role: string; position: string; childRefs: string[] }> };
+    elements: Array<{ id: string; type: UiInteractionElementType; label?: string; visibleInStates: string[]; enabledInStates: string[] }>;
+    states: string[];
+    actions: Array<{ id: string; triggerElementId: string; fromState: string; toState: string; targetScreenId?: string; expectedEffect: string }>;
+    responsiveRules: string[];
+    accessibilityRules: string[];
+  }>;
+  flows: Array<{ id: string; steps: string[]; successOutcome: string }>;
+  criterionBindings: Array<{ criterionId: string; screenIds: string[]; elementIds: string[]; actionIds: string[] }>;
+  contractHash: string;
+}
+
+export type UiInteractionContractSelection = {
+  draftId: string;
+  contractId: string;
+  requirementId?: string;
+};
+
 export type GoalSliceSelection = {
   draftId: string;
   status?: string;

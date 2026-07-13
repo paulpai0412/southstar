@@ -231,6 +231,7 @@ function renderContextPacketPrompt(
     formatBlocks("Memory", packet.selectedMemories),
     formatBlocks("Knowledge Cards", packet.selectedKnowledgeCards ?? []),
     formatPriorArtifacts(packet.priorArtifacts),
+    formatUiInteractionContracts(packet.uiInteractionContracts ?? []),
     formatBlocks("Checkpoint", packet.checkpointSummary ? [packet.checkpointSummary] : []),
     formatBlocks("Failure", packet.failureSummary ? [packet.failureSummary] : []),
     formatBlocks("Workspace", packet.workspaceSummary ? [packet.workspaceSummary] : []),
@@ -243,6 +244,35 @@ function renderContextPacketPrompt(
     `Forbidden actions: ${packet.forbiddenActions.length > 0 ? packet.forbiddenActions.join(", ") : "none"}`,
     "Return exactly one JSON object with keys: artifact, progress, metrics.",
   ].filter((line) => line !== "").join("\n");
+}
+
+function formatUiInteractionContracts(contracts: NonNullable<ContextPacket["uiInteractionContracts"]>): string {
+  if (contracts.length === 0) return "";
+  return [
+    "",
+    "UI Interaction Contracts:",
+    "Treat these confirmed, hash-bound structures as required product behavior. Do not replace them with arbitrary HTML, CSS, or scripts.",
+    ...contracts.map((contract) => [
+      `Contract ${contract.id} revision ${contract.revision} hash ${contract.contractHash}`,
+      `Requirement IDs: ${contract.requirementIds.join(", ")}`,
+      `Screens: ${contract.screens.map((screen) => screen.id).join(", ")}`,
+      `Structured contract: ${JSON.stringify({
+        screens: contract.screens.map((screen) => ({
+          id: screen.id,
+          title: screen.title,
+          purpose: screen.purpose,
+          layout: screen.layout,
+          elements: screen.elements,
+          states: screen.states,
+          actions: screen.actions,
+          responsiveRules: screen.responsiveRules,
+          accessibilityRules: screen.accessibilityRules,
+        })),
+        flows: contract.flows,
+        criterionBindings: contract.criterionBindings,
+      })}`,
+    ].join("\n")),
+  ].join("\n");
 }
 
 function formatNodePromptSpec(spec: ContextPacket["nodePromptSpec"]): string {

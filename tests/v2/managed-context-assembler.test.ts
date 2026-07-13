@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { createManagedContextAssembler } from "../../src/v2/context/managed-context-assembler.ts";
 import { upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { captureRunLibrarySnapshotPg } from "../../src/v2/orchestration/run-library-snapshot.ts";
-import { createWorkflowRunPg, createWorkflowTaskPg, listResourcesPg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { createWorkflowRunPg, createWorkflowTaskPg, listResourcesPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { finalizeGoalRequirementDraft } from "../../src/v2/orchestration/goal-requirement-draft.ts";
+import { finalizeUiInteractionContract, reviseUiInteractionContract } from "../../src/v2/orchestration/ui-interaction-contract.ts";
 
 test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, and assembly trace", async () => {
   const db = await createTestPostgresDb();
@@ -81,6 +83,65 @@ test("ManagedContextAssembler persists matching ContextPacket, TaskEnvelopeV2, a
     assert.equal(envelopes.length, 1);
     assert.equal(traces.length, 1);
     assert.equal((envelopes[0]?.payload as { envelope?: { contextPacket?: { id?: string } } }).envelope?.contextPacket?.id, packets[0]?.resourceKey);
+  } finally {
+    await db.close();
+  }
+});
+
+test("ManagedContextAssembler supplies only confirmed UI contracts owned by task requirements", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedManagedContextLibrary(db);
+    const visual = confirmedUiContracts();
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "planner_draft",
+      resourceKey: "draft-ui-context",
+      scope: "planner",
+      status: "dag_validated",
+      payload: {
+        goalRequirementDraft: visual.draft,
+        goalRequirementDraftHash: visual.draft.draftHash,
+        uiInteractionContracts: visual.contracts,
+        uiInteractionContractHashes: Object.fromEntries(visual.contracts.map((contract) => [contract.id, contract.contractHash])),
+      },
+      summary: {},
+    });
+    await createWorkflowRunPg(db, {
+      id: "run-managed-ui-context",
+      status: "running",
+      domain: "software",
+      goalPrompt: "build visual behavior",
+      workflowManifestJson: JSON.stringify(manifest(visual.draft.requirements[0]!.id)),
+      executionProjectionJson: "{}",
+      snapshotJson: "{}",
+      runtimeContextJson: JSON.stringify({ goalRequirementDraftId: "draft-ui-context" }),
+      metricsJson: "{}",
+    });
+    await captureManagedContextSnapshot(db, "run-managed-ui-context");
+    await createWorkflowTaskPg(db, {
+      id: "implement-feature",
+      runId: "run-managed-ui-context",
+      taskKey: "implement-feature",
+      status: "claimed",
+      sortOrder: 0,
+      dependsOn: [],
+      rootSessionId: "session-managed-ui-context",
+    });
+
+    const assembled = await createManagedContextAssembler(db).buildForTask({
+      runId: "run-managed-ui-context",
+      taskId: "implement-feature",
+      sessionId: "session-managed-ui-context",
+      attemptId: "implement-feature-attempt-1",
+      handExecutionId: "hand-ui-context",
+      dependsOn: [],
+    });
+
+    assert.equal(assembled.contextPacket.uiInteractionContracts?.length, 1);
+    assert.equal(assembled.contextPacket.uiInteractionContracts?.[0]?.id, "ui-owned");
+    assert.match(assembled.taskEnvelope.agentPrompt, /UI Interaction Contracts:/);
+    assert.match(assembled.taskEnvelope.agentPrompt, /screen-owned/);
+    assert.doesNotMatch(assembled.taskEnvelope.agentPrompt, /screen-unrelated/);
   } finally {
     await db.close();
   }
@@ -229,7 +290,70 @@ test("ManagedContextAssembler resolves runtime-only reviewer role/profile from w
   }
 });
 
-function manifest() {
+function confirmedUiContracts() {
+  const draft = finalizeGoalRequirementDraft({
+    goalPrompt: "Build two visual behaviors",
+    cwd: "/workspace",
+    summary: "Build owned and unrelated visual behaviors.",
+    requirements: [
+      visualRequirement("Owned behavior", "ui-owned"),
+      visualRequirement("Unrelated behavior", "ui-unrelated"),
+    ],
+    nonGoals: [],
+    blockingInputs: [],
+  });
+  const contracts = [
+    confirmedContract(draft, draft.requirements[0]!.id, draft.requirements[0]!.acceptanceCriteria[0]!.id, "ui-owned", "screen-owned"),
+    confirmedContract(draft, draft.requirements[1]!.id, draft.requirements[1]!.acceptanceCriteria[0]!.id, "ui-unrelated", "screen-unrelated"),
+  ];
+  return { draft, contracts };
+}
+
+function visualRequirement(title: string, contractRef: string) {
+  return {
+    title,
+    statement: `${title} is available.`,
+    source: "explicit" as const,
+    blocking: true,
+    userVisibleBehaviors: [title],
+    businessRules: [],
+    acceptanceCriteria: [{ statement: `${title} can be completed.`, evidenceIntent: ["screen state"] }],
+    expectedOutcomeArtifacts: [{ description: title }],
+    verificationIntent: ["Inspect state transition."],
+    assumptions: [],
+    openQuestions: [],
+    riskTags: [],
+    interactionContractRefs: [contractRef],
+  };
+}
+
+function confirmedContract(
+  draft: ReturnType<typeof finalizeGoalRequirementDraft>,
+  requirementId: string,
+  criterionId: string,
+  contractId: string,
+  screenId: string,
+) {
+  const initial = finalizeUiInteractionContract({
+    requirementIds: [requirementId],
+    screens: [{
+      id: screenId,
+      title: screenId,
+      purpose: "Show and complete one behavior",
+      layout: { regions: [{ id: `${screenId}-main`, role: "main", position: "center", childRefs: [`${screenId}-action`] }] },
+      elements: [{ id: `${screenId}-action`, type: "button", label: "Complete", visibleInStates: ["ready"], enabledInStates: ["ready"] }],
+      states: ["ready", "complete"],
+      actions: [{ id: `${screenId}-complete`, triggerElementId: `${screenId}-action`, fromState: "ready", toState: "complete", expectedEffect: "Complete behavior" }],
+      responsiveRules: ["Action remains visible."],
+      accessibilityRules: ["Action is keyboard accessible."],
+    }],
+    flows: [{ id: `${screenId}-flow`, steps: [`${screenId}-complete`], successOutcome: "Behavior is complete" }],
+    criterionBindings: [{ criterionId, screenIds: [screenId], elementIds: [`${screenId}-action`], actionIds: [`${screenId}-complete`] }],
+  }, draft, { id: contractId });
+  return reviseUiInteractionContract(initial, { kind: "confirm" }, draft);
+}
+
+function manifest(requirementId = "req-owned") {
   return {
     schemaVersion: "southstar.v2",
     workflowId: "wf-managed-context",
@@ -252,6 +376,7 @@ function manifest() {
       agentProfileRef: "software-maker-pi",
       evaluatorPipelineRef: "software-feature-quality",
       promptInputs: {
+        requirementIds: [requirementId],
         nodePromptSpec: {
           nodeType: "implement",
           goal: "Implement the feature end to end.",

@@ -12,6 +12,7 @@ import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
 import { GoalContractInspector } from "./GoalContractInspector";
 import { GoalSliceEditor } from "./GoalSliceEditor";
 import { GoalRequirementEditor } from "./GoalRequirementEditor";
+import { UiInteractionContractViewer } from "./UiInteractionContractViewer";
 import { goalRequirementsConfirmationFromUnknown, goalRequirementsContentFromUnknown, goalRequirementsContentShouldReplace, type GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
 import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
@@ -28,7 +29,7 @@ import { BranchNavigator } from "./BranchNavigator";
 import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
 import { buildOperatorIncidents } from "@/lib/operator/incidents";
-import type { GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelection, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
+import type { GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelection, SessionInfo, SessionTreeNode, UiInteractionContractSelection, WorkspaceSurface } from "@/lib/types";
 import type { WorkflowDag, WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -726,6 +727,18 @@ export function AppShell() {
     });
   }, [openSidecarTab]);
 
+  const handleUiInteractionContractSelect = useCallback((selection: UiInteractionContractSelection) => {
+    setChatWorkspaceSurface("workflow");
+    openSidecarTab({
+      id: `ui-interaction-contract:${selection.draftId}:${selection.contractId}`,
+      label: `UI ${selection.contractId}`,
+      filePath: `${selection.draftId}/ui-contracts/${selection.contractId}`,
+      kind: "uiInteractionContract",
+      draftId: selection.draftId,
+      uiInteractionContractSelection: selection,
+    });
+  }, [openSidecarTab]);
+
   const handleGoalRequirementChange = useCallback((selection: GoalRequirementSelection) => {
     goalRequirementRevisionAnchorRef.current = selection;
     goalRequirementContentOverrideRef.current = goalRequirementContentFromSelection(selection);
@@ -794,6 +807,11 @@ export function AppShell() {
         : tab
     )));
   }, []);
+
+  const handleUiContractReviewChange = useCallback((value: unknown) => {
+    const content = goalRequirementsContentFromUnknown(value);
+    if (content) handleGoalRequirementsContent(content);
+  }, [handleGoalRequirementsContent]);
 
   const handleConfirmRequirements = useCallback(async (confirmation: GoalRequirementsConfirmation): Promise<GoalRequirementsContent | void> => {
     const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(confirmation.draftId)}/confirm-requirements`, {
@@ -902,7 +920,10 @@ export function AppShell() {
       return <GoalSliceEditor selection={activeSidecarTab.goalSliceSelection} onPackageChange={handleGoalSlicePackageChange} />;
     }
     if (activeSidecarTab.kind === "goalRequirement" && activeSidecarTab.goalRequirementSelection) {
-      return <GoalRequirementEditor selection={activeSidecarTab.goalRequirementSelection} onDraftChange={handleGoalRequirementChange} onDraftInvalidated={handleGoalRequirementInvalidated} />;
+      return <GoalRequirementEditor selection={activeSidecarTab.goalRequirementSelection} onDraftChange={handleGoalRequirementChange} onDraftInvalidated={handleGoalRequirementInvalidated} onUiContractSelect={handleUiInteractionContractSelect} />;
+    }
+    if (activeSidecarTab.kind === "uiInteractionContract" && activeSidecarTab.uiInteractionContractSelection) {
+      return <UiInteractionContractViewer selection={activeSidecarTab.uiInteractionContractSelection} onReviewChange={handleUiContractReviewChange} />;
     }
     if (activeSidecarTab.kind === "workflowStaticNodeProfile" && activeSidecarTab.workflowNode) {
       return <WorkflowStaticNodeProfile node={activeSidecarTab.workflowNode} />;
@@ -939,7 +960,7 @@ export function AppShell() {
       );
     }
     return <FileViewer filePath={activeSidecarTab.filePath} cwd={currentCwd ?? undefined} />;
-  }, [activeSidecarTab, currentCwd, handleGoalRequirementChange, handleGoalRequirementInvalidated, handleGoalSlicePackageChange, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
+  }, [activeSidecarTab, currentCwd, handleGoalRequirementChange, handleGoalRequirementInvalidated, handleGoalSlicePackageChange, handleUiContractReviewChange, handleUiInteractionContractSelect, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!workflowCurrentCwd) return;

@@ -1,5 +1,6 @@
 import type { BudgetPolicy } from "../design-library/runtime-types.ts";
 import type { WorkflowNodePromptSpec } from "../design-library/types.ts";
+import type { UiInteractionContractV1 } from "../orchestration/ui-interaction-contract.ts";
 
 export const CONTEXT_ASSEMBLY_TRACE_RESOURCE_TYPE = "context_assembly_trace";
 export const CONTEXT_ASSEMBLY_TRACE_SCHEMA_VERSION = "southstar.context_assembly_trace.v1";
@@ -21,6 +22,8 @@ export type ContextPacket = {
   selectedMemories: ContextBlock[];
   selectedKnowledgeCards: ContextBlock[];
   priorArtifacts: ContextBlock[];
+  /** Confirmed goal-scoped visual contracts linked to this task's requirements. */
+  uiInteractionContracts?: UiInteractionContractV1[];
   checkpointSummary?: ContextBlock;
   workspaceSummary?: ContextBlock;
   failureSummary?: ContextBlock;
