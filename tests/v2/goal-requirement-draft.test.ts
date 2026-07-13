@@ -64,6 +64,32 @@ test("Requirement Draft preserves host ids and projects confirmed criteria to Go
   assert.equal(confirmed.workspace.cwd, "/workspace/article");
 });
 
+test("workspace projectRef is optional, preserved when valid, and rejected when malformed", () => {
+  const draft = finalizeGoalRequirementDraft(validInput({ projectRef: "project.article" }));
+  assert.equal(draft.workspace.projectRef, "project.article");
+  assert.equal(validateGoalRequirementDraft(draft).some((entry) => entry.code === "invalid_workspace"), false);
+
+  assert.throws(
+    () => finalizeGoalRequirementDraft(validInput({ projectRef: " " })),
+    /projectRef must be a non-empty string/,
+  );
+  assert.throws(
+    () => finalizeGoalRequirementDraft(validInput({ projectRef: 42 as never })),
+    /projectRef must be a non-empty string/,
+  );
+
+  for (const projectRef of ["", "   ", null, 42]) {
+    const malformed = {
+      ...draft,
+      workspace: { ...draft.workspace, projectRef },
+    } as unknown as GoalRequirementDraftV1;
+    assert.equal(
+      validateGoalRequirementDraft(malformed).some((entry) => entry.code === "invalid_workspace" && entry.path === "workspace.projectRef"),
+      true,
+    );
+  }
+});
+
 test("Requirement revision preserves ids for edits and creates lineage for split requirements", () => {
   const first = validDraft();
   const edited = reviseGoalRequirementDraft(first, {

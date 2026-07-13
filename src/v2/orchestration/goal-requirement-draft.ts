@@ -142,7 +142,7 @@ export function finalizeGoalRequirementDraft(input: GoalRequirementDraftInputV1)
     originalPrompt: input.goalPrompt,
     workspace: {
       cwd: input.cwd,
-      ...(input.projectRef ? { projectRef: input.projectRef } : {}),
+      ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
     },
     summary: input.summary,
     requirements,
@@ -167,7 +167,11 @@ export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): Goa
     issues.push(issue("invalid_parent_revision", "parentRevision", "parentRevision must be an earlier positive revision"));
   }
   if (!nonEmptyString(draft.originalPrompt)) issues.push(issue("invalid_original_prompt", "originalPrompt", "originalPrompt must be non-empty"));
-  if (!isRecord(draft.workspace) || !nonEmptyString(draft.workspace.cwd)) issues.push(issue("invalid_workspace", "workspace.cwd", "workspace.cwd must be non-empty"));
+  if (!isRecord(draft.workspace) || !nonEmptyString(draft.workspace.cwd)) {
+    issues.push(issue("invalid_workspace", "workspace.cwd", "workspace.cwd must be non-empty"));
+  } else if ("projectRef" in draft.workspace && !nonEmptyString(draft.workspace.projectRef)) {
+    issues.push(issue("invalid_workspace", "workspace.projectRef", "workspace.projectRef must be a non-empty string when present"));
+  }
   if (!nonEmptyString(draft.summary)) issues.push(issue("invalid_summary", "summary", "summary must be non-empty"));
   if (!stringArrayValid(draft.nonGoals)) issues.push(issue("invalid_non_goals", "nonGoals", "nonGoals must be an array of non-empty strings"));
   if (!stringArrayValid(draft.blockingInputs)) issues.push(issue("invalid_blocking_inputs", "blockingInputs", "blockingInputs must be an array of non-empty strings"));
@@ -308,7 +312,7 @@ export function confirmGoalRequirementDraft(
   return finalizeGoalContract({
     goalPrompt: draft.originalPrompt,
     cwd: draft.workspace.cwd,
-    ...(draft.workspace.projectRef ? { projectRef: draft.workspace.projectRef } : {}),
+    ...(draft.workspace.projectRef !== undefined ? { projectRef: draft.workspace.projectRef } : {}),
     interpretation: {
       ...interpretation,
       summary: draft.summary,
@@ -400,6 +404,7 @@ function finalizeRevision(draft: GoalRequirementDraftV1, requirements: GoalRequi
 function validateDraftInput(input: GoalRequirementDraftInputV1): void {
   if (!nonEmptyString(input.goalPrompt)) throw new Error("goalPrompt must be a non-empty string");
   if (!nonEmptyString(input.cwd)) throw new Error("cwd must be a non-empty string");
+  if (input.projectRef !== undefined && !nonEmptyString(input.projectRef)) throw new Error("projectRef must be a non-empty string when present");
   if (!nonEmptyString(input.summary)) throw new Error("summary must be a non-empty string");
   if (!Array.isArray(input.requirements) || input.requirements.length === 0) throw new Error("requirements must contain at least one requirement");
   if (!stringArrayValid(input.nonGoals) || !stringArrayValid(input.blockingInputs)) throw new Error("nonGoals and blockingInputs must be arrays of non-empty strings");
