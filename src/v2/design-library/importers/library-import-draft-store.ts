@@ -110,7 +110,8 @@ type SupportingLibraryImportFile = {
 
 type LibraryImportFileSnapshot = {
   relativePath: string;
-  content: string | Buffer;
+  original: string | Buffer;
+  installed: string | Buffer;
 };
 
 export type LibraryImportProgressListener = (event: {
@@ -407,7 +408,11 @@ export async function installLibraryImportCandidates(
       try {
         if (file.existingFile) {
           const existing = await readLibraryFile({ root: input.root, relativePath: file.relativePath });
-          overwrittenFiles.push({ relativePath: file.relativePath, content: existing.content });
+          overwrittenFiles.push({
+            relativePath: file.relativePath,
+            original: existing.content,
+            installed: file.content,
+          });
         }
         const write = file.existingFile ? writeLibraryFile : writeNewLibraryFile;
         await write({
@@ -420,7 +425,8 @@ export async function installLibraryImportCandidates(
           if (supportingFile.existingFile) {
             overwrittenFiles.push({
               relativePath: supportingFile.relativePath,
-              content: await readFile(resolveLibraryImportPath(input.root, supportingFile.relativePath)),
+              original: await readFile(resolveLibraryImportPath(input.root, supportingFile.relativePath)),
+              installed: supportingFile.content,
             });
           }
           await writeSupportingImportFile({
@@ -553,14 +559,19 @@ export async function installLibraryImportCandidates(
       };
     });
 
-    input.progress?.({
-      event: "library.import.install.completed",
-      data: {
-        draftId: input.draftId,
-        installedObjectCount: result.installedObjects.length,
-        installedEdgeCount: result.installedEdges.length,
-      },
-    });
+    try {
+      input.progress?.({
+        event: "library.import.install.completed",
+        data: {
+          draftId: input.draftId,
+          installedObjectCount: result.installedObjects.length,
+          installedEdgeCount: result.installedEdges.length,
+        },
+      });
+    } catch {
+      // The database transaction and file writes have committed. A progress
+      // observer failure must not roll back or delete committed Library state.
+    }
     return result;
   } catch (error) {
     await cleanupCreatedImportFiles(input.root, createdFiles);
@@ -1199,13 +1210,26 @@ async function restoreOverwrittenImportFiles(
   files: LibraryImportFileSnapshot[],
 ): Promise<void> {
   for (const file of [...files].reverse()) {
-    if (typeof file.content === "string") {
-      await writeLibraryFile({ root, relativePath: file.relativePath, content: file.content });
+    const absolutePath = resolveLibraryImportPath(root, file.relativePath);
+    let current: string | Buffer;
+    try {
+      current = typeof file.original === "string"
+        ? await readFile(absolutePath, "utf8")
+        : await readFile(absolutePath);
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    const matchesInstalled = typeof file.installed === "string"
+      ? typeof current === "string" && current === file.installed
+      : Buffer.isBuffer(current) && current.equals(file.installed);
+    if (!matchesInstalled) continue;
+    if (typeof file.original === "string") {
+      await writeLibraryFile({ root, relativePath: file.relativePath, content: file.original });
       continue;
     }
-    const absolutePath = resolveLibraryImportPath(root, file.relativePath);
     await mkdir(path.dirname(absolutePath), { recursive: true });
-    await writeFile(absolutePath, file.content);
+    await writeFile(absolutePath, file.original);
   }
 }
 

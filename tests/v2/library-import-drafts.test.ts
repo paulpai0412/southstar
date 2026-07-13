@@ -1004,6 +1004,98 @@ test("candidate install restores overwritten files when reconcile fails", async 
   }
 });
 
+test("candidate install preserves a concurrent edit during rollback", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-concurrent-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [{ objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true }],
+    proposedEdges: [],
+  });
+  const reviewPath = join(libraryRoot, "skills/review.skill.md");
+  const originalContent = approvedWorkerSkill({ id: "skill.review", requiresToolRefs: [] });
+  const concurrentContent = "concurrent operator edit";
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(reviewPath, originalContent);
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "review skill", content: "Create a review skill." },
+      scope: "software",
+      llmProvider: provider,
+    });
+    const racingDb = {
+      ...db,
+      tx: async (fn: (tx: typeof db) => Promise<unknown>) => await db.tx(async (tx) => {
+        const wrappedTx = {
+          ...tx,
+          query: async (sql: string, params?: unknown[]) => {
+            if (sql.includes("set status = 'installed'")) {
+              await writeFile(reviewPath, concurrentContent);
+              throw new Error("forced install resource failure");
+            }
+            return await tx.query(sql, params);
+          },
+        };
+        return await fn(wrappedTx as typeof db);
+      }),
+    } as typeof db;
+
+    await assert.rejects(
+      () => installLibraryImportCandidates(racingDb, {
+        root: libraryRoot,
+        draftId: draft.draftId,
+        selectedCandidateIds: ["skill.review"],
+        actor: "operator",
+        reason: "preserve concurrent edit",
+        llmProvider: provider,
+      }),
+      /forced install resource failure/,
+    );
+    assert.equal(await readFile(reviewPath, "utf8"), concurrentContent);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("candidate install ignores post-commit progress callback failures", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-candidate-progress-"));
+  const provider: LibraryImportLlmProvider = async () => ({
+    candidates: [{ objectKey: "skill.review", kind: "skill", title: "Review", selectedByDefault: true }],
+    proposedEdges: [],
+  });
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const draft = await createLibraryImportDraft(db, {
+      source: { kind: "paste", label: "review skill", content: "Create a review skill." },
+      scope: "software",
+      llmProvider: provider,
+    });
+    const installed = await installLibraryImportCandidates(db, {
+      root: libraryRoot,
+      draftId: draft.draftId,
+      selectedCandidateIds: ["skill.review"],
+      actor: "operator",
+      reason: "progress observer can fail",
+      llmProvider: provider,
+      progress: (event) => {
+        if (event.event === "library.import.install.completed") throw new Error("progress observer failed");
+      },
+    });
+    assert.equal(installed.status, "installed");
+    assert.equal((await findLibraryObjectByKey(db, "skill.review"))?.status, "approved");
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("installLibraryImportCandidates writes and syncs governed vocabulary files", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-vocabulary-import-"));
