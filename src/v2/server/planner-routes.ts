@@ -41,6 +41,7 @@ import {
   reviseGoalTemplatePolicyPg,
   confirmGoalRequirementsPg,
   reviseGoalRequirementPg,
+  reviseGoalRequirementFromChatPg,
   type GoalSlicePatchV1,
 } from "../orchestration/goal-design-draft-service.ts";
 import {
@@ -634,7 +635,10 @@ function createPlannerDraftRevisionStreamResponse(
     orchestrationMode?: unknown;
     composerMode?: unknown;
     expectedPackageHash?: unknown;
+    expectedDraftHash?: unknown;
     selectedSliceId?: unknown;
+    selectedRequirementId?: unknown;
+    selectedRequirementIds?: unknown;
   },
 ): Response {
   const encoder = new TextEncoder();
@@ -656,6 +660,42 @@ function createPlannerDraftRevisionStreamResponse(
         draftId,
       });
       try {
+        const currentRequirementView = await getPostgresPlannerDraftOrchestration(context.db, { draftId });
+        if (currentRequirementView.goalDesignPhase === "requirements_review") {
+          const requirementInterpreter = resolveGoalRequirementInterpreter(context);
+          if (!requirementInterpreter) throw new Error("goal requirement interpreter is not configured");
+          send("planner.stage", { stage: "requirements.revision.requested", message: "Accepted Requirement revision request." });
+          const result = await reviseGoalRequirementFromChatPg(context.db, {
+            draftId,
+            expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
+            message: requiredString(body.prompt, "prompt"),
+            selectedRequirementId: optionalString(body.selectedRequirementId),
+            selectedRequirementIds: optionalStringArray(body.selectedRequirementIds),
+            requirementInterpreter,
+            onDelta(text) { send("message.delta", { text }); },
+          });
+          if (result.kind === "needs_input") {
+            send("message.delta", { text: result.question });
+            send("done", result);
+            return;
+          }
+          send("goal_requirements", {
+            draftId: result.draftId,
+            status: result.status,
+            phase: result.phase,
+            goalRequirementDraftHash: result.goalRequirementDraftHash,
+            package: result,
+          });
+          send("draft", {
+            draftId: result.draftId,
+            status: result.status,
+            goalDesignPhase: result.phase,
+            goalRequirementDraftHash: result.goalRequirementDraftHash,
+            goalRequirementDraft: result.goalRequirementDraft,
+          });
+          send("done", result);
+          return;
+        }
         if (await isGoalDesignVocabularyGapDraftPg(context.db, draftId)) {
           send("planner.stage", { stage: "goal_design.vocabulary.retry", message: "Retrying Goal Design with approved Library vocabulary." });
           const draft = await retryPostgresGoalDesignAfterVocabularyApprovalPg(context.db, {
@@ -1100,6 +1140,14 @@ function requiredString(value: unknown, field: string): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
+}
+
+function optionalStringArray(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0)) {
+    throw new Error("selectedRequirementIds must be an array of non-empty strings");
+  }
+  return value as string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

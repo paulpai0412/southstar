@@ -369,6 +369,43 @@ export async function reviseGoalRequirementPg(
   });
 }
 
+/**
+ * Run the Goal Requirement interpreter for a chat revision, then persist the
+ * host-finalized draft through the same hash-checked revision path as manual
+ * edits. The interpreter supplies semantics; persistence owns lineage/status.
+ */
+export async function reviseGoalRequirementFromChatPg(
+  db: SouthstarDb,
+  input: {
+    draftId: string;
+    expectedDraftHash: string;
+    message: string;
+    selectedRequirementId?: string;
+    selectedRequirementIds?: string[];
+    actor?: string;
+    requirementInterpreter: GoalRequirementDraftInterpreter;
+    onDelta?: (text: string) => void;
+  },
+): Promise<GoalRequirementReviewResult | { kind: "needs_input"; question: string }> {
+  const current = await loadCurrentGoalRequirementDraftPg(db, input.draftId);
+  if (current.draftHash !== input.expectedDraftHash) throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
+  const result = await input.requirementInterpreter.revise({
+    currentDraft: current,
+    message: input.message,
+    ...(input.selectedRequirementId ? { selectedRequirementId: input.selectedRequirementId } : {}),
+    ...(input.selectedRequirementIds ? { selectedRequirementIds: input.selectedRequirementIds } : {}),
+    onDelta: input.onDelta,
+  });
+  if (result.kind === "needs_input") return result;
+  const persisted = await reviseGoalRequirementPg(db, {
+    draftId: input.draftId,
+    expectedDraftHash: input.expectedDraftHash,
+    patch: { kind: "replace", draft: result.draft },
+    actor: input.actor,
+  });
+  return persisted;
+}
+
 export async function confirmGoalRequirementsPg(
   db: SouthstarDb,
   input: {

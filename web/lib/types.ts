@@ -57,6 +57,82 @@ export interface GoalDesignContent {
   selectedSliceId?: string;
 }
 
+export type GoalDesignPhase =
+  | "requirements_review"
+  | "requirements_confirmed"
+  | "validation_resolving"
+  | "library_review"
+  | "validation_ready"
+  | "slice_review"
+  | "ready_to_compose"
+  | "composing"
+  | "dag_validated";
+
+export interface GoalAcceptanceCriterionView {
+  id: string;
+  statement: string;
+  evidenceIntent: string[];
+}
+
+export interface GoalRequirementView {
+  id: string;
+  title: string;
+  statement: string;
+  source: "explicit" | "inferred";
+  blocking: boolean;
+  userVisibleBehaviors: string[];
+  businessRules: string[];
+  acceptanceCriteria: GoalAcceptanceCriterionView[];
+  expectedOutcomeArtifacts: Array<{ description: string; mediaType?: string }>;
+  verificationIntent: string[];
+  assumptions: string[];
+  openQuestions: string[];
+  riskTags: string[];
+  interactionContractRefs: string[];
+  status: "needs_clarification" | "ready" | "confirmed" | "superseded";
+}
+
+export interface GoalRequirementDraftView {
+  schemaVersion: "southstar.goal_requirement_draft.v1";
+  revision: number;
+  parentRevision?: number;
+  originalPrompt: string;
+  workspace: { cwd: string; projectRef?: string };
+  summary: string;
+  requirements: GoalRequirementView[];
+  nonGoals: string[];
+  blockingInputs: string[];
+  draftHash: string;
+}
+
+export interface GoalRequirementCoveragePreview {
+  requirementId: string;
+  status: "ready" | "partial" | "missing" | "manual" | "unknown";
+  missingKinds?: string[];
+  artifactRefs?: string[];
+  evaluatorRefs?: string[];
+  blocking?: boolean;
+}
+
+export interface GoalRequirementsContent {
+  type: "goalRequirements";
+  draftId: string;
+  status: GoalDesignPhase | string;
+  goalRequirementDraftHash: string;
+  draft: GoalRequirementDraftView;
+  coveragePreview?: GoalRequirementCoveragePreview[];
+  /** Host-owned readiness projection. The browser must never infer this flag. */
+  confirmable?: boolean;
+  blockers?: string[];
+}
+
+export type GoalRequirementSelection = {
+  draftId: string;
+  expectedDraftHash: string;
+  requirementId: string;
+  draft: GoalRequirementDraftView;
+};
+
 export type GoalSliceSelection = {
   draftId: string;
   status?: string;
@@ -83,7 +159,7 @@ export interface WorkflowDagCustomDetails {
   dag: import("@/lib/workflow/types").WorkflowDag;
 }
 
-export type AssistantContentBlock = TextContent | ImageContent | ThinkingContent | ToolCallContent | WorkflowDagContent | GoalDesignContent | LibraryGraphContent | LibraryImportCandidatesContent;
+export type AssistantContentBlock = TextContent | ImageContent | ThinkingContent | ToolCallContent | WorkflowDagContent | GoalDesignContent | GoalRequirementsContent | LibraryGraphContent | LibraryImportCandidatesContent;
 
 export interface UserMessage {
   role: "user";

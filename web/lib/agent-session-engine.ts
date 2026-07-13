@@ -135,6 +135,29 @@ export function latestGoalDesignDraftIdentity(messages: AgentMessage[]): {
   return null;
 }
 
+export function latestGoalRequirementDraftIdentity(messages: AgentMessage[]): {
+  draftId: string;
+  status?: string;
+  expectedDraftHash: string;
+  requirementId?: string;
+} | null {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    if (message?.role !== "assistant" || !Array.isArray(message.content)) continue;
+    for (let j = message.content.length - 1; j >= 0; j -= 1) {
+      const block = message.content[j];
+      if (block.type !== "goalRequirements") continue;
+      if (!isPlannerDraftId(block.draftId) || typeof block.goalRequirementDraftHash !== "string") continue;
+      return {
+        draftId: block.draftId,
+        ...(typeof block.status === "string" ? { status: block.status } : {}),
+        expectedDraftHash: block.goalRequirementDraftHash,
+      };
+    }
+  }
+  return null;
+}
+
 function isPlannerDraftId(value: unknown): value is string {
   return typeof value === "string" && /^draft-/.test(value);
 }

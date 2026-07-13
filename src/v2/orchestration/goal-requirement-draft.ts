@@ -125,6 +125,10 @@ export type GoalRequirementDraftRevisionOperation =
       kind: "merge";
       requirementIds: string[];
       requirement: GoalRequirementDraftItemInputV1;
+    }
+  | {
+      kind: "replace";
+      draft: GoalRequirementDraftV1;
     };
 
 export type GoalRequirementDraftRevisionPatchV1 = Partial<Omit<GoalRequirementDraftItemInputV1, "id" | "status">>;
@@ -433,6 +437,22 @@ export function reviseGoalRequirementDraft(
       for (const index of indexes) requirements[index] = { ...requirements[index]!, status: "superseded" };
       requirements.push(materializeRequirement(operation.requirement));
       break;
+    }
+    case "replace": {
+      if (operation.draft.originalPrompt !== draft.originalPrompt
+        || operation.draft.workspace.cwd !== draft.workspace.cwd
+        || operation.draft.workspace.projectRef !== draft.workspace.projectRef) {
+        throw new Error("goal requirement revision cannot modify host-owned prompt or workspace");
+      }
+      // The interpreter owns semantic changes to the draft summary and the
+      // clarification/non-goal lists as well as the requirement rows. Keep
+      // those values while the host still owns revision lineage and hashing.
+      return finalizeRevision({
+        ...draft,
+        summary: operation.draft.summary,
+        nonGoals: [...operation.draft.nonGoals],
+        blockingInputs: [...operation.draft.blockingInputs],
+      }, operation.draft.requirements.map(cloneRequirement));
     }
     default:
       assertNever(operation);

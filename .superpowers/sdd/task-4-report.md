@@ -93,3 +93,33 @@ exit 0
 git diff --check
 exit 0
 ```
+
+## Requirement list and sidecar editor follow-up
+
+Implemented in this worktree as the requirement-review UI/runtime slice. The Workflow chat now renders a typed `goalRequirements` message block, opens the existing Sidecar viewer for requirement editing, and confirms requirements through the host-owned API. Session presentation was not changed.
+
+### Implemented
+
+- Added `GoalRequirementsContent` and `GoalRequirementSelection` browser read-model types.
+- Added `GoalRequirementListBlock` with explicit/inferred, blocking, acceptance-criteria, clarification, coverage, and visual-contract indicators.
+- Kept confirmation host-authoritative: the browser enables Confirm only when `confirmable === true` and always posts the displayed `goalRequirementDraftHash`.
+- Added `GoalRequirementEditor` in the existing Sidecar layout. It submits one structured PATCH with `expectedDraftHash` and preserves the returned revision/hash for subsequent chat edits.
+- Added thin Next.js proxies for requirement PATCH and requirement confirmation.
+- Added `goal_requirements` SSE forwarding/parsing and phase-aware Workflow chat revision parameters (`draftId`, `expectedDraftHash`, `selectedRequirementId`).
+- Added the minimal runtime phase-aware revision branch for `requirements_review`; it invokes the configured requirement interpreter and persists the resulting host-finalized revision. Interpreter semantic summary/non-goal/clarification changes are preserved while the host still owns lineage and hashing.
+- Added rendered UI and runtime SSE regression coverage.
+
+### Verification
+
+- `npx tsc --noEmit --pretty false`
+- `npm exec tsc -- --noEmit -p web/tsconfig.json --pretty false`
+- `npx tsx --test tests/v2/planner-draft-stream-route.test.ts` (3/3)
+- `npx tsx tests/web/southstar-workflow-canvas-ui.test.tsx` (49/49)
+- `npm --prefix web run build` (webpack compilation and TypeScript completed; static page generation was observed running to completion)
+- `git diff --check`
+
+### Scope notes
+
+- No fixture, seed, mock, canned domain data, or session-list presentation was added.
+- The editor is intentionally a focused requirement form; semantic validity remains in runtime validators/interpreters rather than client-side checks.
+- Confirmation returns the existing validation-resolving pipeline result; evaluator/library resolution remains host-owned and is not fabricated by the browser.

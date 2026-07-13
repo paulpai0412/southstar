@@ -19,6 +19,9 @@ export type WorkflowGenerateStageEvent = {
 export type WorkflowGenerateDraftEvent = {
   draftId?: string;
   status?: string;
+  goalDesignPhase?: string;
+  goalRequirementDraftHash?: string;
+  goalRequirementDraft?: unknown;
   goalDesignPackageHash?: string;
   vocabularyGaps?: Array<{ kind: string; requestedRef: string; allowedRefs: string[] }>;
   libraryImportDraftId?: string;
@@ -48,6 +51,7 @@ export type WorkflowGenerateStreamHandlers = {
   onHeartbeat?: (heartbeat: WorkflowGenerateHeartbeatEvent) => void;
   onDraft?: (draft: WorkflowGenerateDraftEvent) => void;
   onGoalDesign?: (goalDesign: Record<string, unknown>) => void;
+  onGoalRequirements?: (goalRequirements: Record<string, unknown>) => void;
   onDag?: (dag: WorkflowDag) => void;
   onGoalContract?: (mission: GoalMissionReadModel) => void;
   onCoverage?: (mission: GoalMissionReadModel) => void;
@@ -117,7 +121,9 @@ export async function generateWorkflowDagStream(input: {
   prompt: string;
   draftId?: string | null;
   expectedPackageHash?: string | null;
+  expectedDraftHash?: string | null;
   selectedSliceId?: string | null;
+  selectedRequirementId?: string | null;
   cwd?: string | null;
   projectRef?: string | null;
   goalDesignMode?: GoalDesignMode;
@@ -140,7 +146,9 @@ export async function generateWorkflowDagStream(input: {
       ...(!input.draftId && input.goalDesignMode ? { goalDesignMode: input.goalDesignMode } : {}),
       ...(!input.draftId && input.templatePolicy ? { templatePolicy: input.templatePolicy } : {}),
       ...(input.draftId && input.expectedPackageHash ? { expectedPackageHash: input.expectedPackageHash } : {}),
+      ...(input.draftId && input.expectedDraftHash ? { expectedDraftHash: input.expectedDraftHash } : {}),
       ...(input.draftId && input.selectedSliceId ? { selectedSliceId: input.selectedSliceId } : {}),
+      ...(input.draftId && input.selectedRequirementId ? { selectedRequirementId: input.selectedRequirementId } : {}),
     }),
   });
 
@@ -249,6 +257,10 @@ function dispatchFrame(frame: string, handlers: WorkflowGenerateStreamHandlers):
   }
   if (event === "goal_design") {
     handlers.onGoalDesign?.(data);
+    return;
+  }
+  if (event === "goal_requirements") {
+    handlers.onGoalRequirements?.(data);
     return;
   }
   if (event === "dag") {

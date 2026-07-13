@@ -151,6 +151,24 @@ test("generateWorkflowDagStream reuses an explicit idempotency key for recoverab
   }
 });
 
+test("generateWorkflowDagStream forwards goal_requirements SSE events", async () => {
+  const originalFetch = global.fetch;
+  global.fetch = (async () => new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode('event: goal_requirements\ndata: {"draftId":"draft-goal-1","status":"requirements_review","goalRequirementDraftHash":"hash-1","package":{"goalRequirementDraft":{"schemaVersion":"southstar.goal_requirement_draft.v1","revision":1,"originalPrompt":"Review","workspace":{"cwd":"/workspace"},"summary":"Review","requirements":[],"nonGoals":[],"blockingInputs":[],"draftHash":"hash-1"}}}\n\nevent: done\ndata: {}\n\n'));
+      controller.close();
+    },
+  }), { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
+  try {
+    const { generateWorkflowDagStream } = await import("../../web/lib/workflow/generate-stream.ts");
+    const received: string[] = [];
+    await generateWorkflowDagStream({ prompt: "Review", onGoalRequirements(value) { received.push(String(value.draftId)); } });
+    assert.deepEqual(received, ["draft-goal-1"]);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test("workflow generate proxy preserves terminal identity when enrichment fails", async () => {
   const originalFetch = global.fetch;
   const originalBaseUrl = process.env.SOUTHSTAR_V2_API_BASE_URL;
@@ -1024,6 +1042,48 @@ test("workflow Draft action gives immediate API feedback without native confirm"
   assert.doesNotMatch(block, /window\.confirm[\s\S]{0,120}createDraft/);
 });
 
+test("Requirement block renders coverage state and opens the existing sidecar editor", async () => {
+  const draft = requirementDraftView();
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    import { GoalRequirementEditor } from "./web/components/GoalRequirementEditor";
+    const draft = ${JSON.stringify(draft)};
+    function Harness() {
+      const [selection, setSelection] = useState(null);
+      return <><GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft, confirmable: false, coveragePreview: [{ requirementId: "req-review", status: "missing", missingKinds: ["evaluator"] }] }} onRequirementSelect={setSelection} />{selection ? <aside data-testid="sidecar"><GoalRequirementEditor selection={selection} /></aside> : null}</>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.getByText("Review flow").waitFor();
+    assert.match(await page.locator('[data-testid="goal-requirement-item-req-review"]').textContent() ?? "", /missing/);
+    await page.locator('[data-testid="goal-requirement-item-req-review"]').click();
+    await page.locator('[data-testid="sidecar"] [data-testid="goal-requirement-editor"]').waitFor();
+    assert.match(await page.locator('[data-testid="sidecar"]').textContent() ?? "", /Review flow/);
+  });
+});
+
+test("Requirement confirm posts the displayed draft hash and never composes a DAG", async () => {
+  const draft = requirementDraftView();
+  let body: Record<string, unknown> | null = null;
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    createRoot(document.getElementById("root")).render(<GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft: ${JSON.stringify(draft)}, confirmable: true }} />);
+  `, async (page) => {
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/confirm-requirements", async (route) => {
+      body = JSON.parse(route.request().postData() ?? "{}");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", phase: "validation_resolving", status: "validation_resolving", goalRequirementDraftHash: "hash-1", goalRequirementDraft: draft } }) });
+    });
+    await page.locator('[data-testid="goal-requirements-confirm"]').click();
+    await page.getByText(/Requirements confirmed/).waitFor();
+    assert.deepEqual(body, { expectedDraftHash: "hash-1" });
+    assert.equal(await page.locator("[data-testid=workflow-action-run]").count(), 0);
+  });
+});
+
 test("workflow node profile save marks its planner draft as needing validation", () => {
   const editor = source("web/components/WorkflowNodeProfileEditor.tsx");
   assert.match(editor, /southstar:planner-draft-updated/);
@@ -1089,6 +1149,36 @@ function scheduledDagWithMission(): any {
     nodes: [],
     edges: [],
     createdAt: "2026-07-11T00:00:00.000Z",
+  };
+}
+
+function requirementDraftView() {
+  return {
+    schemaVersion: "southstar.goal_requirement_draft.v1",
+    revision: 1,
+    originalPrompt: "Build a vocabulary app",
+    workspace: { cwd: "/workspace/project" },
+    summary: "Vocabulary app requirements",
+    requirements: [{
+      id: "req-review",
+      title: "Review flow",
+      statement: "A learner can review a word and record the result.",
+      source: "explicit",
+      blocking: true,
+      userVisibleBehaviors: ["Show a word", "Record remembered or forgotten"],
+      businessRules: ["A review updates progress"],
+      acceptanceCriteria: [{ id: "criterion-review", statement: "A completed review is persisted", evidenceIntent: ["database row"] }],
+      expectedOutcomeArtifacts: [{ description: "review flow implementation", mediaType: "text/plain" }],
+      verificationIntent: ["exercise review flow"],
+      assumptions: [],
+      openQuestions: [],
+      riskTags: [],
+      interactionContractRefs: [],
+      status: "ready",
+    }],
+    nonGoals: [],
+    blockingInputs: [],
+    draftHash: "hash-1",
   };
 }
 

@@ -58,8 +58,8 @@ export async function POST(request: NextRequest) {
     body: JSON.stringify({
       goalPrompt: prompt,
       cwd,
-      ...(projectRef ? { projectRef } : {}),
       idempotencyKey,
+      ...(projectRef ? { projectRef } : {}),
       ...(isGoalDesignMode(body.goalDesignMode) ? { goalDesignMode: body.goalDesignMode } : {}),
       ...(isTemplatePolicy(body.templatePolicy) ? { templatePolicy: body.templatePolicy } : {}),
     }),
@@ -121,7 +121,7 @@ async function proxyRunGoalStream(
       await sendGoalReceipt(data as RunGoalResult, send);
       return;
     }
-    if (["message", "message.delta", "planner.stage", "heartbeat", "goal_design", "draft", "dag", "execution_set", "error"].includes(event)) {
+    if (["message", "message.delta", "planner.stage", "heartbeat", "goal_design", "goal_requirements", "draft", "dag", "execution_set", "error"].includes(event)) {
       send(event, data);
     }
   };

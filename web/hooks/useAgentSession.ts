@@ -7,6 +7,8 @@ import type {
   ExtensionUiRequest,
   ExtensionWidgetItem,
   GoalDesignContent,
+  GoalRequirementsContent,
+  GoalRequirementSelection,
   GoalSliceSelection,
   SessionInfo,
   SessionTreeNode,
@@ -16,6 +18,7 @@ import { sendAgentCommand } from "@/lib/agent-client";
 import {
   buildSessionStats,
   latestGoalDesignDraftIdentity,
+  latestGoalRequirementDraftIdentity,
   latestWorkflowDraftId,
   readCompactResult,
   workflowTemplatePolicyFrom,
@@ -23,6 +26,7 @@ import {
 import type { CompactResultInfo } from "@/lib/agent-session-engine";
 import { confirmGoalDesignStream, generateWorkflowDagStream, WorkflowGenerateHttpError } from "@/lib/workflow/generate-stream";
 import { appendWorkflowStreamText, normalizeWorkflowStreamText } from "@/lib/workflow/stream-text";
+import { goalRequirementsContentFromUnknown } from "@/components/GoalRequirementListBlock";
 import { runLibraryChatCommand } from "@/lib/library/chat-stream";
 import type { ToolEntry } from "@/lib/tool-presets";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -206,6 +210,7 @@ export interface UseAgentSessionOptions {
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: import("@/lib/workflow/types").WorkflowDagNode) => void;
   goalDesignRevisionAnchor?: GoalSliceSelection | null;
+  goalRequirementRevisionAnchor?: GoalRequirementSelection | null;
   setToolPreset?: (preset: "none" | "default" | "full") => void;
 }
 
@@ -905,18 +910,22 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       let rawStreamedText = "";
       let generatedDag: WorkflowDag | null = null;
       let recoverableIdentity: { draftId: string; runId?: string; error: string } | null = null;
-      let reviewDraftIdentity: { draftId: string; status?: string; goalDesignPackageHash?: string } | null = null;
+      let reviewDraftIdentity: { draftId: string; status?: string; goalDesignPackageHash?: string; goalRequirementDraftHash?: string } | null = null;
       let executionSetIdentity: { executionSetId: string; sliceRunCount: number } | null = null;
       let goalDesignBlock: GoalDesignContent | null = null;
+      let goalRequirementsBlock: GoalRequirementsContent | null = null;
       const workflowAbortController = new AbortController();
       workflowAbortControllerRef.current?.abort();
       workflowAbortControllerRef.current = workflowAbortController;
       const goalDesignRevisionIdentity = opts.goalDesignRevisionAnchor ?? latestGoalDesignDraftIdentity(messages);
-      const revisionDraftId = goalDesignRevisionIdentity?.draftId ?? latestWorkflowDraftId(messages);
+      const requirementRevisionIdentity = opts.goalRequirementRevisionAnchor ?? latestGoalRequirementDraftIdentity(messages);
+      const revisionDraftId = requirementRevisionIdentity?.draftId ?? goalDesignRevisionIdentity?.draftId ?? latestWorkflowDraftId(messages);
       const updateStreamingMessage = () => {
         const streamedText = normalizeWorkflowStreamText(rawStreamedText);
         const content = [
           ...(streamedText ? [{ type: "text" as const, text: streamedText }] : []),
+          ...(goalRequirementsBlock ? [goalRequirementsBlock] : []),
+          ...(goalDesignBlock ? [goalDesignBlock] : []),
           ...(generatedDag ? [{ type: "workflowDag" as const, dag: generatedDag }] : []),
         ];
         dispatch({
@@ -948,7 +957,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           prompt: trimmedMessage,
           draftId: revisionDraftId,
           expectedPackageHash: goalDesignRevisionIdentity?.goalDesignPackageHash,
+          expectedDraftHash: requirementRevisionIdentity?.expectedDraftHash,
           selectedSliceId: goalDesignRevisionIdentity?.selectedSliceId,
+          selectedRequirementId: requirementRevisionIdentity?.requirementId,
           cwd: workflowCwd,
           ...(!revisionDraftId && workflowSubmissionRef.current ? { idempotencyKey: workflowSubmissionRef.current.idempotencyKey } : {}),
           goalDesignMode: "review_before_compose",
@@ -981,6 +992,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
                 draftId: draft.draftId,
                 status: draft.status,
                 ...(typeof draft.goalDesignPackageHash === "string" ? { goalDesignPackageHash: draft.goalDesignPackageHash } : {}),
+                ...(typeof draft.goalRequirementDraftHash === "string" ? { goalRequirementDraftHash: draft.goalRequirementDraftHash } : {}),
               };
             }
           },
@@ -1008,6 +1020,17 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               ...(goalDesign.package !== undefined ? { package: goalDesign.package } : {}),
             };
             appendWorkflowText(`[goal_design] ${draftId}${goalDesignPackageHash ? ` ${goalDesignPackageHash.slice(0, 12)}` : ""}`);
+          },
+          onGoalRequirements(goalRequirements) {
+            const block = goalRequirementsContentFromUnknown(goalRequirements);
+            if (!block) return;
+            goalRequirementsBlock = block;
+            reviewDraftIdentity = {
+              draftId: block.draftId,
+              status: block.status,
+              goalRequirementDraftHash: block.goalRequirementDraftHash,
+            };
+            appendWorkflowText(`[goal_requirements] ${block.draftId} ${block.goalRequirementDraftHash.slice(0, 12)}`);
           },
           onGoalContract(mission) {
             appendWorkflowText(`[goal] ${mission.goalContract.summary}`);
@@ -1041,7 +1064,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         });
 
         if (!generatedDag) {
-          const completedReviewDraft = reviewDraftIdentity as { draftId: string; status?: string; goalDesignPackageHash?: string } | null;
+          const completedReviewDraft = reviewDraftIdentity as { draftId: string; status?: string; goalDesignPackageHash?: string; goalRequirementDraftHash?: string } | null;
           if (completedReviewDraft) {
             const streamedText = normalizeWorkflowStreamText(rawStreamedText);
             const statusText = completedReviewDraft.status === "needs_library_input"
@@ -1054,6 +1077,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               content: [
                 { type: "text", text: streamedText || `Goal draft ${completedReviewDraft.draftId} ${statusText}.` },
                 ...(goalDesignBlock ? [goalDesignBlock] : []),
+                ...(goalRequirementsBlock ? [goalRequirementsBlock] : []),
               ],
               model: "workflow-generate",
               provider: "southstar",
@@ -1203,7 +1227,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setAgentPhase(null);
       dispatch({ type: "end" });
     }
-  }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, addNotice]);
+  }, [effectiveNewSessionCwd, isNew, newSessionModel, toolPreset, thinkingLevel, session, messages, agentRunning, connectEvents, ensureNewSession, promoteNewSession, waitForPromptSettlement, sessionKind, opts.workflowMode, opts.workflowCwd, opts.workflowTemplate, opts.libraryScope, opts.goalDesignRevisionAnchor, opts.goalRequirementRevisionAnchor, addNotice]);
 
   const handleConfirmGoalDesign = useCallback(async (selection: GoalSliceSelection) => {
     const packageHash = selection.goalDesignPackageHash;

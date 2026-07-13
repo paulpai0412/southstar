@@ -11,6 +11,8 @@ import { WorkflowResourceViewer } from "./WorkflowResourceViewer";
 import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
 import { GoalContractInspector } from "./GoalContractInspector";
 import { GoalSliceEditor } from "./GoalSliceEditor";
+import { GoalRequirementEditor } from "./GoalRequirementEditor";
+import type { GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
 import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
@@ -26,7 +28,7 @@ import { BranchNavigator } from "./BranchNavigator";
 import { useOperatorOverview } from "@/hooks/useOperatorOverview";
 import { useTheme } from "@/hooks/useTheme";
 import { buildOperatorIncidents } from "@/lib/operator/incidents";
-import type { GoalSliceSelection, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
+import type { GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelection, SessionInfo, SessionTreeNode, WorkspaceSurface } from "@/lib/types";
 import type { WorkflowDag, WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
@@ -203,9 +205,11 @@ export function AppShell() {
   const [sidecarMode, setSidecarMode] = useState<SidecarMode>("hidden");
   const [sidecarWidth, setSidecarWidth] = useState(DEFAULT_SIDECAR_WIDTH);
   const [goalDesignRevisionAnchor, setGoalDesignRevisionAnchor] = useState<GoalSliceSelection | null>(null);
+  const [goalRequirementRevisionAnchor, setGoalRequirementRevisionAnchor] = useState<GoalRequirementSelection | null>(null);
 
   useEffect(() => {
     setGoalDesignRevisionAnchor(null);
+    setGoalRequirementRevisionAnchor(null);
   }, [selectedSession?.id, workflowSelectedSession?.id, newSessionCwd, workflowNewSessionCwd]);
 
   const handleAtMention = useCallback((relativePath: string) => {
@@ -687,6 +691,41 @@ export function AppShell() {
     )));
   }, []);
 
+  const handleGoalRequirementSelect = useCallback((selection: GoalRequirementSelection) => {
+    setChatWorkspaceSurface("workflow");
+    setGoalRequirementRevisionAnchor(selection);
+    openSidecarTab({
+      id: `goal-requirement:${selection.draftId}:${selection.requirementId}`,
+      label: `Requirement ${selection.requirementId}`,
+      filePath: `${selection.draftId}/${selection.requirementId}`,
+      kind: "goalRequirement",
+      draftId: selection.draftId,
+      goalRequirementSelection: selection,
+    });
+  }, [openSidecarTab]);
+
+  const handleGoalRequirementChange = useCallback((selection: GoalRequirementSelection) => {
+    setGoalRequirementRevisionAnchor(selection);
+    setSidecarTabs((current) => current.map((tab) => (
+      tab.kind === "goalRequirement"
+        && tab.draftId === selection.draftId
+        && tab.goalRequirementSelection?.requirementId === selection.requirementId
+        ? { ...tab, goalRequirementSelection: selection, refreshKey: (tab.refreshKey ?? 0) + 1 }
+        : tab
+    )));
+  }, []);
+
+  const handleConfirmRequirements = useCallback(async (confirmation: GoalRequirementsConfirmation): Promise<GoalRequirementsContent | void> => {
+    const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(confirmation.draftId)}/confirm-requirements`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ expectedDraftHash: confirmation.expectedDraftHash }),
+    });
+    const payload = await response.json().catch(() => undefined) as { result?: GoalRequirementsContent; error?: string; message?: string } | undefined;
+    if (!response.ok) throw new Error(payload?.error ?? payload?.message ?? `HTTP ${response.status}`);
+    return payload?.result;
+  }, []);
+
   const handleGoalContractSelect = useCallback((dag: WorkflowDag) => {
     const scopeId = dag.runId ?? dag.draftId;
     if (!scopeId) return;
@@ -775,6 +814,9 @@ export function AppShell() {
     if (activeSidecarTab.kind === "goalSlice" && activeSidecarTab.goalSliceSelection) {
       return <GoalSliceEditor selection={activeSidecarTab.goalSliceSelection} onPackageChange={handleGoalSlicePackageChange} />;
     }
+    if (activeSidecarTab.kind === "goalRequirement" && activeSidecarTab.goalRequirementSelection) {
+      return <GoalRequirementEditor selection={activeSidecarTab.goalRequirementSelection} onDraftChange={handleGoalRequirementChange} />;
+    }
     if (activeSidecarTab.kind === "workflowStaticNodeProfile" && activeSidecarTab.workflowNode) {
       return <WorkflowStaticNodeProfile node={activeSidecarTab.workflowNode} />;
     }
@@ -810,7 +852,7 @@ export function AppShell() {
       );
     }
     return <FileViewer filePath={activeSidecarTab.filePath} cwd={currentCwd ?? undefined} />;
-  }, [activeSidecarTab, currentCwd, handleGoalSlicePackageChange, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
+  }, [activeSidecarTab, currentCwd, handleGoalRequirementChange, handleGoalSlicePackageChange, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!workflowCurrentCwd) return;
@@ -1589,7 +1631,10 @@ export function AppShell() {
                 workflowCwd={chatCurrentCwd}
                 onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
                 onGoalSliceSelect={handleGoalSliceSelect}
+                onGoalRequirementSelect={handleGoalRequirementSelect}
+                onConfirmRequirements={handleConfirmRequirements}
                 goalDesignRevisionAnchor={goalDesignRevisionAnchor}
+                goalRequirementRevisionAnchor={goalRequirementRevisionAnchor}
                 onGoalContractSelect={handleGoalContractSelect}
                 onWorkflowGoalRevise={handleWorkflowGoalRevise}
                 onLibraryGraphNodeSelect={handleLibraryGraphNodeSelect}
@@ -1618,7 +1663,10 @@ export function AppShell() {
               workflowCwd={workflowCurrentCwd}
               onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
               onGoalSliceSelect={handleGoalSliceSelect}
+              onGoalRequirementSelect={handleGoalRequirementSelect}
+              onConfirmRequirements={handleConfirmRequirements}
               goalDesignRevisionAnchor={goalDesignRevisionAnchor}
+              goalRequirementRevisionAnchor={goalRequirementRevisionAnchor}
               onGoalContractSelect={handleGoalContractSelect}
               onWorkflowGoalRevise={handleWorkflowGoalRevise}
             />
