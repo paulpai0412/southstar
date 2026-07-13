@@ -383,6 +383,14 @@ export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): Goa
   return issues;
 }
 
+export function goalRequirementDraftReadiness(draft: GoalRequirementDraftV1): {
+  confirmable: boolean;
+  issues: GoalRequirementDraftIssue[];
+} {
+  const issues = validateGoalRequirementDraft(draft);
+  return { confirmable: issues.length === 0, issues };
+}
+
 export function reviseGoalRequirementDraft(
   draft: GoalRequirementDraftV1,
   operation: GoalRequirementDraftRevisionOperation,
@@ -841,7 +849,7 @@ function renderRequirementRevisionPrompt(input: {
     }),
     "For kind=revision, return exactly kind, summary, and either draft or operation. Draft contains exactly summary, requirements, nonGoals, blockingInputs. Operation contains semantic fields only; the host chooses target ids from the host selections below.",
     "For kind=needs_input, return exactly kind and question.",
-    "Do not return requirement ids, status, revision, parentRevision, draftHash, hashes, Library refs, evaluatorContracts, slices, DAG fields, or execution fields.",
+    "Do not return requirement ids, status, revision, parentRevision, draftHash, hashes, library references, orchestration fields, or execution fields.",
     `SelectedRequirementId (host context only): ${input.selectedRequirementId ?? ""}`,
     `SelectedRequirementIds (host context only): ${JSON.stringify(input.selectedRequirementIds ?? [])}`,
     `UserMessage: ${input.message}`,
