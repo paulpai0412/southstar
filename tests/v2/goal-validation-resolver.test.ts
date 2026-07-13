@@ -173,6 +173,7 @@ test("resolver treats scope all as unscoped but requires pinned validation edges
     });
     assert.equal(unpinned.bindings.length, 0);
     assert.equal(unpinned.gaps.some((gap) => gap.kind === "edge"), true);
+    assert.equal(unpinned.gaps.find((gap) => gap.kind === "edge")!.candidateRefs.includes("evaluator.offline-browser"), true);
     await db.query("delete from southstar.library_edges");
     await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
     const pinned = await resolveGoalValidationPg(db, {

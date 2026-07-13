@@ -195,10 +195,12 @@ export async function resolveGoalValidationPg(
   const resolvedGaps = uniqueGaps(gaps).map((item) => {
     if (item.candidateRefs.length > 0) return item;
     const preview = previews.find((candidate) => candidate.requirementId === item.requirementId);
+    const previewArtifactRefs = preview?.artifactCandidates.map((candidate) => candidate.ref) ?? [];
+    const previewEvaluatorRefs = preview?.evaluatorCandidates.map((candidate) => candidate.ref) ?? [];
     const candidateRefs = item.kind === "artifact"
-      ? preview?.artifactCandidates.map((candidate) => candidate.ref) ?? []
+      ? previewArtifactRefs.length > 0 ? previewArtifactRefs : candidates.artifactContracts.map((candidate) => candidate.objectKey)
       : item.kind === "evaluator" || item.kind === "edge" || item.kind === "procedure" || item.kind === "evidence" || item.kind === "independence"
-        ? preview?.evaluatorCandidates.map((candidate) => candidate.ref) ?? []
+        ? previewEvaluatorRefs.length > 0 ? previewEvaluatorRefs : candidates.evaluatorProfiles.map((candidate) => candidate.objectKey)
         : [];
     return candidateRefs.length > 0 ? { ...item, candidateRefs } : item;
   });
