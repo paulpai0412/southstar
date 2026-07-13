@@ -54,7 +54,7 @@ export function GoalRequirementListBlock({
     try {
       if (onConfirmRequirements) {
         const next = updateFromResponse(await onConfirmRequirements(confirmation));
-        assertConfirmationResult(next);
+        assertConfirmationResult(next, currentBlock);
       } else {
         const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(currentBlock.draftId)}/confirm-requirements`, {
           method: "POST",
@@ -64,11 +64,12 @@ export function GoalRequirementListBlock({
         const payload = await response.json().catch(() => undefined) as unknown;
         if (!response.ok) throw new Error(errorMessage(payload) ?? `HTTP ${response.status}`);
         const next = updateFromResponse(payload);
-        assertConfirmationResult(next);
+        assertConfirmationResult(next, currentBlock);
       }
       setConfirmState("confirmed");
       setConfirmMessage("Requirements confirmed; resolving validation contracts.");
     } catch (error) {
+      setCurrentBlock((current) => ({ ...current, confirmable: false }));
       setConfirmState("error");
       setConfirmMessage(error instanceof Error ? error.message : String(error));
     }
@@ -109,6 +110,7 @@ export function GoalRequirementListBlock({
                 draft,
                 status: currentBlock.status,
                 confirmable,
+                ...(currentBlock.validationIssues ? { validationIssues: currentBlock.validationIssues } : {}),
                 ...(currentBlock.coveragePreview ? { coveragePreview: currentBlock.coveragePreview } : {}),
               })}
               style={itemButtonStyle}
@@ -164,24 +166,37 @@ function extractContent(value: unknown, previous: GoalRequirementsContent): Goal
   if (!rawDraft) return null;
   const draft = parseDraft(rawDraft);
   if (!draft) return null;
-  const status = stringValue(envelope.phase) ?? stringValue(envelope.status);
+  const phase = stringValue(envelope.phase);
+  const statusValue = stringValue(envelope.status);
+  if (phase && statusValue && phase !== statusValue) return null;
+  const status = phase ?? statusValue;
   const draftHash = stringValue(envelope.goalRequirementDraftHash) ?? stringValue(nested.goalRequirementDraftHash);
-  if (!status || !draftHash || draftHash !== draft.draftHash) return null;
+  const draftId = stringValue(envelope.draftId);
+  if (!draftId || (previous.draftId && draftId !== previous.draftId) || !status || !draftHash || draftHash !== draft.draftHash) return null;
+  if (typeof envelope.confirmable !== "boolean" || !Array.isArray(envelope.validationIssues)) return null;
+  if (envelope.validationIssues.some((item) => !isRecord(item) || typeof item.path !== "string" || typeof item.message !== "string")) return null;
   return {
     type: "goalRequirements",
-    draftId: stringValue(envelope.draftId) ?? previous.draftId,
+    draftId,
     status,
     goalRequirementDraftHash: draftHash,
     draft,
     coveragePreview: parseCoverage(envelope.coveragePreview ?? nested.coveragePreview) ?? previous.coveragePreview,
-    confirmable: typeof envelope.confirmable === "boolean" ? envelope.confirmable : false,
+    confirmable: envelope.confirmable,
+    validationIssues: envelope.validationIssues.filter((item): item is { path: string; message: string; code?: string } => isRecord(item) && typeof item.path === "string" && typeof item.message === "string").map((item) => ({ path: item.path as string, message: item.message as string, ...(typeof item.code === "string" ? { code: item.code } : {}) })),
     blockers: Array.isArray(envelope.blockers) ? envelope.blockers.filter((item): item is string => typeof item === "string") : previous.blockers,
   };
 }
 
-function assertConfirmationResult(content: GoalRequirementsContent): void {
+function assertConfirmationResult(content: GoalRequirementsContent, previous: GoalRequirementsContent): void {
   if (typeof content.confirmable !== "boolean") {
     throw new Error("Requirement confirmation response did not include host confirmation state.");
+  }
+  if (content.draftId !== previous.draftId || content.goalRequirementDraftHash !== previous.goalRequirementDraftHash) {
+    throw new Error("Requirement confirmation response did not preserve the displayed draft identity.");
+  }
+  if (content.status !== "validation_resolving" && content.status !== "validation_ready") {
+    throw new Error("Requirement confirmation response did not enter a validation phase.");
   }
 }
 
@@ -193,6 +208,7 @@ export function goalRequirementsContentFromUnknown(value: unknown): GoalRequirem
     goalRequirementDraftHash: "",
     draft: {} as GoalRequirementDraftView,
     confirmable: false,
+    validationIssues: [],
   });
 }
 

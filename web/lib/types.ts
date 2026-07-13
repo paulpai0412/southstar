@@ -123,6 +123,7 @@ export interface GoalRequirementsContent {
   coveragePreview?: GoalRequirementCoveragePreview[];
   /** Host-owned readiness projection. The browser must never infer this flag. */
   confirmable: boolean;
+  validationIssues?: Array<{ path: string; message: string; code?: string }>;
   blockers?: string[];
 }
 
@@ -133,6 +134,7 @@ export type GoalRequirementSelection = {
   draft: GoalRequirementDraftView;
   status?: string;
   confirmable?: boolean;
+  validationIssues?: Array<{ path: string; message: string; code?: string }>;
   coveragePreview?: GoalRequirementCoveragePreview[];
 };
 

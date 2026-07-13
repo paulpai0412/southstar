@@ -155,7 +155,7 @@ test("generateWorkflowDagStream forwards goal_requirements SSE events", async ()
   const originalFetch = global.fetch;
   global.fetch = (async () => new Response(new ReadableStream({
     start(controller) {
-      controller.enqueue(new TextEncoder().encode('event: goal_requirements\ndata: {"draftId":"draft-goal-1","status":"requirements_review","goalRequirementDraftHash":"hash-1","package":{"goalRequirementDraft":{"schemaVersion":"southstar.goal_requirement_draft.v1","revision":1,"originalPrompt":"Review","workspace":{"cwd":"/workspace"},"summary":"Review","requirements":[],"nonGoals":[],"blockingInputs":[],"draftHash":"hash-1"}}}\n\nevent: done\ndata: {}\n\n'));
+      controller.enqueue(new TextEncoder().encode('event: goal_requirements\ndata: {"draftId":"draft-goal-1","status":"requirements_review","phase":"requirements_review","confirmable":true,"validationIssues":[],"goalRequirementDraftHash":"hash-1","package":{"goalRequirementDraft":{"schemaVersion":"southstar.goal_requirement_draft.v1","revision":1,"originalPrompt":"Review","workspace":{"cwd":"/workspace"},"summary":"Review","requirements":[],"nonGoals":[],"blockingInputs":[],"draftHash":"hash-1"}}}\n\nevent: done\ndata: {}\n\n'));
       controller.close();
     },
   }), { status: 200, headers: { "content-type": "text/event-stream" } })) as typeof fetch;
@@ -1075,7 +1075,7 @@ test("Requirement confirm posts the displayed draft hash and never composes a DA
   `, async (page) => {
     await page.route("**/api/workflow/planner-drafts/draft-goal-1/confirm-requirements", async (route) => {
       body = JSON.parse(route.request().postData() ?? "{}");
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", phase: "validation_resolving", status: "validation_resolving", goalRequirementDraftHash: "hash-1", goalRequirementDraft: draft } }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", phase: "validation_resolving", status: "validation_resolving", goalRequirementDraftHash: "hash-1", goalRequirementDraft: draft, confirmable: false, validationIssues: [] } }) });
     });
     await page.locator('[data-testid="goal-requirements-confirm"]').click();
     await page.getByText(/Requirements confirmed/).waitFor();
@@ -1105,17 +1105,74 @@ test("Requirement edit replaces the message draft before confirm", async () => {
     await page.locator('[data-testid="goal-requirement-item-req-review"]').click();
     await page.locator('[data-testid="goal-requirement-editor"] textarea').nth(0).fill("Updated statement");
     await page.route("**/api/workflow/planner-drafts/draft-goal-1/goal-requirements/req-review", async (route) => {
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", goalRequirementDraftHash: "hash-2", goalRequirementDraft: { ...draft, revision: 2, draftHash: "hash-2", requirements: draft.requirements.map((item) => ({ ...item, statement: "Updated statement" })) } } }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", status: "requirements_review", phase: "requirements_review", confirmable: true, validationIssues: [], goalRequirementDraftHash: "hash-2", goalRequirementDraft: { ...draft, revision: 2, draftHash: "hash-2", requirements: draft.requirements.map((item) => ({ ...item, statement: "Updated statement" })) } } }) });
     });
     await page.locator('[data-testid="goal-requirement-save"]').click();
     await page.getByText(/Saved revision 2/).waitFor();
     await page.route("**/api/workflow/planner-drafts/draft-goal-1/confirm-requirements", async (route) => {
       confirmBody = JSON.parse(route.request().postData() ?? "{}");
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", status: "validation_resolving", phase: "validation_resolving", goalRequirementDraftHash: "hash-2", goalRequirementDraft: updatedDraftPayload, confirmable: false } }) });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", status: "validation_resolving", phase: "validation_resolving", goalRequirementDraftHash: "hash-2", goalRequirementDraft: updatedDraftPayload, confirmable: false, validationIssues: [] } }) });
     });
     await page.locator('[data-testid="goal-requirements-confirm"]').click();
     await page.getByText(/Requirements confirmed/).waitFor();
     assert.deepEqual(confirmBody, { expectedDraftHash: "hash-2" });
+  });
+});
+
+test("Chat H2 requirements event replaces H1 hash before the next confirmation", async () => {
+  const draft = requirementDraftView();
+  const revisedDraftPayload = { ...draft, revision: 2, draftHash: "hash-2", requirements: draft.requirements.map((item) => ({ ...item, statement: "Chat revised statement" })) };
+  let confirmBody: Record<string, unknown> | null = null;
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    const h1 = ${JSON.stringify(draft)};
+    const h2 = ${JSON.stringify(revisedDraftPayload)};
+    function Harness() {
+      const [block, setBlock] = useState({ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft: h1, confirmable: true });
+      return <><button data-testid="chat-h2" onClick={() => setBlock({ ...block, goalRequirementDraftHash: "hash-2", draft: h2 })}>chat H2</button><GoalRequirementListBlock block={block} /></>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.locator('[data-testid="chat-h2"]').click();
+    await page.getByText("Chat revised statement").waitFor();
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/confirm-requirements", async (route) => {
+      confirmBody = JSON.parse(route.request().postData() ?? "{}");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", status: "validation_resolving", phase: "validation_resolving", goalRequirementDraftHash: "hash-2", goalRequirementDraft: revisedDraftPayload, confirmable: false, validationIssues: [] } }) });
+    });
+    await page.locator('[data-testid="goal-requirements-confirm"]').click();
+    await page.getByText(/Requirements confirmed/).waitFor();
+    assert.deepEqual(confirmBody, { expectedDraftHash: "hash-2" });
+  });
+});
+
+test("chat Goal Requirements events replace the AppShell anchor, not only editor saves", () => {
+  const hook = source("web/hooks/useAgentSession.ts");
+  const shell = source("web/components/AppShell.tsx");
+  assert.match(hook, /opts\.onGoalRequirements\?\.\(block\)/);
+  assert.match(shell, /onGoalRequirements=\{handleGoalRequirementsContent\}/);
+  assert.match(shell, /expectedDraftHash: content\.goalRequirementDraftHash/);
+});
+
+test("Requirement editor fails closed on a malformed 2xx PATCH and invalidates the previous hash", async () => {
+  const draft = requirementDraftView();
+  let invalidated: Record<string, unknown> | null = null;
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementEditor } from "./web/components/GoalRequirementEditor";
+    const draft = ${JSON.stringify(draft)};
+    createRoot(document.getElementById("root")).render(<GoalRequirementEditor selection={{ draftId: "draft-goal-1", expectedDraftHash: "hash-1", requirementId: "req-review", draft, status: "requirements_review", confirmable: true }} onDraftInvalidated={(next) => { window.__invalidated = next; }} />);
+  `, async (page) => {
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/goal-requirements/req-review", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", status: "requirements_review", phase: "requirements_review", goalRequirementDraftHash: "hash-2", goalRequirementDraft: { ...draft, draftHash: "different-hash" }, confirmable: true, validationIssues: [] } }) });
+    });
+    await page.locator('[data-testid="goal-requirement-save"]').click();
+    await page.getByText(/valid goal requirement draft|invalid/i).waitFor();
+    const value = await page.evaluate(() => window.__invalidated as Record<string, unknown> | undefined);
+    assert.equal(value?.confirmable, false);
+    assert.equal(value?.expectedDraftHash, "");
   });
 });
 
@@ -1132,6 +1189,23 @@ test("Requirement confirm rejects a malformed host response", async () => {
     });
     await page.locator('[data-testid="goal-requirements-confirm"]').click();
     await page.getByText(/valid goal requirement draft|confirmation response/i).waitFor();
+    assert.equal(await page.getByText("Confirmed", { exact: true }).count(), 0);
+  });
+});
+
+test("Requirement confirm rejects requirements_review even when host incorrectly marks it confirmable", async () => {
+  const draft = requirementDraftView();
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    createRoot(document.getElementById("root")).render(<GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft: ${JSON.stringify(draft)}, confirmable: true }} />);
+  `, async (page) => {
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/confirm-requirements", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", status: "requirements_review", phase: "requirements_review", goalRequirementDraftHash: "hash-1", goalRequirementDraft: draft, confirmable: true, validationIssues: [] } }) });
+    });
+    await page.locator('[data-testid="goal-requirements-confirm"]').click();
+    await page.getByText(/validation_resolving|post-confirmation phase|confirmation response/i).waitFor();
     assert.equal(await page.getByText("Confirmed", { exact: true }).count(), 0);
   });
 });

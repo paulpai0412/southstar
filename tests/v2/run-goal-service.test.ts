@@ -79,6 +79,16 @@ test("staged run-goal route persists requirement review and confirms with a hash
     const envelope = await response.json() as { ok: true; result: { draftId: string; draftStatus: string; goalRequirementDraftHash: string } };
     assert.equal(envelope.result.draftStatus, "requirements_review");
     assert.match(envelope.result.goalRequirementDraftHash, /^[a-f0-9]{64}$/);
+    assert.equal((envelope.result as { confirmable?: unknown }).confirmable, true);
+    assert.deepEqual((envelope.result as { validationIssues?: unknown }).validationIssues, []);
+    const orchestration = await handleRuntimeRoute(context, new Request(
+      `http://127.0.0.1/api/v2/planner/drafts/${encodeURIComponent(envelope.result.draftId)}/orchestration`,
+      { method: "GET" },
+    ));
+    assert.equal(orchestration.status, 200);
+    const orchestrationEnvelope = await orchestration.json() as { result?: { confirmable?: unknown; validationIssues?: unknown } };
+    assert.equal(orchestrationEnvelope.result?.confirmable, true);
+    assert.deepEqual(orchestrationEnvelope.result?.validationIssues, []);
     const stagedResource = await db.one<{ payload_json: { plannerRequest?: { projectRef?: string; goalDesignMode?: string; templatePolicy?: { mode?: string } } } }>(
       "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
       [envelope.result.draftId],
@@ -92,9 +102,11 @@ test("staged run-goal route persists requirement review and confirms with a hash
       body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, projectRef, idempotencyKey: "requirements-route-1", goalDesignMode: "auto_until_blocked", templatePolicy: { mode: "auto" } }),
     }));
     assert.equal(replay.status, 200);
-    const replayEnvelope = await replay.json() as { ok: true; result: { draftStatus: string; goalRequirementDraftHash: string } };
+    const replayEnvelope = await replay.json() as { ok: true; result: { draftStatus: string; goalRequirementDraftHash: string; confirmable?: boolean; validationIssues?: unknown[] } };
     assert.equal(replayEnvelope.result.draftStatus, "requirements_review");
     assert.equal(replayEnvelope.result.goalRequirementDraftHash, envelope.result.goalRequirementDraftHash);
+    assert.equal(replayEnvelope.result.confirmable, true);
+    assert.deepEqual(replayEnvelope.result.validationIssues, []);
     const confirmed = await handleRuntimeRoute(context, new Request(
       `http://127.0.0.1/api/v2/planner/drafts/${encodeURIComponent(envelope.result.draftId)}/confirm-requirements`,
       {

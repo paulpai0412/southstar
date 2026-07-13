@@ -37,7 +37,7 @@ import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-ap
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
-import type { GoalRequirementDraftInterpreter } from "./goal-requirement-draft.ts";
+import type { GoalRequirementDraftInterpreter, GoalRequirementDraftIssue } from "./goal-requirement-draft.ts";
 
 export type RunGoalRequest = {
   goalPrompt: string;
@@ -65,6 +65,9 @@ export type RunGoalResult = {
   vocabularyGaps?: GoalContractVocabularyGapV1[];
   libraryImportDraftId?: string;
   schedulerExceptionId?: string;
+  /** Host-owned requirement review projection (present for requirement-review results). */
+  confirmable?: boolean;
+  validationIssues?: GoalRequirementDraftIssue[];
 };
 
 export type SliceRunResult = {
@@ -246,6 +249,8 @@ async function submitGoalRequirementDraftPg(
     draftId: draft.draftId,
     draftStatus: draft.status,
     blockers: draft.blockers,
+    confirmable: draft.confirmable,
+    validationIssues: draft.validationIssues,
   };
   try {
     await completeSubmissionPg(context.db, claim.submissionId, result, [...observedStages, "draft.requirements_review", "done"]);
@@ -257,6 +262,8 @@ async function submitGoalRequirementDraftPg(
     draftId: draft.draftId,
     goalRequirementDraftHash: draft.goalRequirementDraftHash,
     goalRequirementDraft: draft.goalRequirementDraft,
+    confirmable: draft.confirmable,
+    validationIssues: draft.validationIssues,
   });
   context.onStage?.("done");
   return result;

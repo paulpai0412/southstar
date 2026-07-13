@@ -45,6 +45,23 @@ git diff --check
 exit 0
 ```
 
+## Re-review resolution (`ab7e503` follow-up)
+
+The four re-review blockers are resolved without changing the existing workflow layout or introducing fixtures:
+
+- R1: `useAgentSession` now forwards every parsed `goal_requirements` event to `AppShell`. AppShell replaces the authoritative content projection and updates/clears the requirement revision anchor and open editor by draft id/hash, so a chat H2 revision is used for the next prompt and confirmation.
+- R2: requirement-review `RunGoalResult`, planner receipts, persisted planner-draft payload/summary, and orchestration read models now carry host `confirmable` and `validationIssues` instead of an empty-array placeholder. Direct run-goal, replay, SSE, and reload assertions cover these paths.
+- R3: the requirement editor validates PATCH draft id, status/phase, hash-to-draft binding, confirmation projection, and issue shape. Any malformed 2xx response invalidates the selection (`confirmable: false`, empty expected hash) and cannot preserve a stale confirmation anchor.
+- R4: confirmation requires the returned draft identity/hash to match the displayed draft and requires `validation_resolving` or `validation_ready`; a `requirements_review` response is rejected and disables confirmation.
+
+Follow-up tests:
+
+- `npx tsx --test --test-name-pattern='Goal submission persists requirements|Requirement confirmation is hash-bound|staged run-goal route' tests/v2/postgres-run-api.test.ts tests/v2/run-goal-service.test.ts`
+- `npx tsx --test --test-name-pattern='Chat H2|chat Goal Requirements|Requirement editor fails|Requirement confirm rejects requirements_review' tests/web/southstar-workflow-canvas-ui.test.tsx`
+- `npx tsc --noEmit --pretty false`
+- `npm exec tsc -- --noEmit -p web/tsconfig.json --pretty false`
+- `git diff --check`
+
 ## Reviewer follow-up: rollback race and post-commit progress
 
 Follow-up implementation commit: `6d450fc` (`fix: preserve concurrent library edits on rollback`)
@@ -117,6 +134,28 @@ Implemented in this worktree as the requirement-review UI/runtime slice. The Wor
 - `npx tsx tests/web/southstar-workflow-canvas-ui.test.tsx` (49/49)
 - `npm --prefix web run build` (webpack compilation and TypeScript completed; static page generation was observed running to completion)
 - `git diff --check`
+
+## Reviewer follow-up (re-review `e1b6782..ab7e503`)
+
+Static verification passed (`npx tsc --noEmit --pretty false`, `npm exec tsc -- --noEmit -p web/tsconfig.json --pretty false`). The `a1f1ce9` prompt change remains orchestration-neutral: it only broadens the semantic-only prohibition; the added readiness helper is a host validation utility and does not add LLM-owned workflow fields.
+
+### Important issues remaining
+
+**R1 — Chat revisions can still render and confirm the previous hash.**
+
+`AppShell` stores `goalRequirementContentOverride` when a requirement is selected or manually saved, and `MessageView` always prefers that override whenever the `draftId` matches (`web/components/MessageView.tsx:568-571`). A subsequent chat revision updates `goalRequirementsBlock` inside `useAgentSession` (`web/hooks/useAgentSession.ts:1024-1033`) but never clears or replaces the AppShell override. Therefore, after selecting/saving revision H1, a chat revision that produces H2 is received in the SSE message but the list still renders H1 and posts H1 on Confirm, causing a stale-draft rejection. Key the override by the authoritative draft hash/revision or update/clear it from every `goal_requirements` event, and add a chat-revision → confirm regression.
+
+**R2 — The host projection is not present on all result/read-model paths.**
+
+`RunGoalResult` and `submitGoalRequirementDraftPg` still omit `confirmable` and `validationIssues` (`src/v2/orchestration/run-goal-service.ts:51-68,241-249`). The non-stream `/api/v2/run-goal` response and `/api/v2/planner/drafts` response consequently cannot expose the host readiness state. `plannerDraftReceiptFromGoalResult` also hardcodes `validationIssues: []` (`src/v2/server/planner-routes.ts:858-874`). The persisted orchestration GET similarly returns summary issues but no `confirmable` (`src/v2/ui-api/postgres-run-api.ts:1245-1278`). Initial happy-path SSE now carries the fields, but idempotent/replay, direct API, and reload/read-model consumers do not. Carry the projection through the persisted submission/result/receipt and recompute or persist it in the orchestration read model; do not use the empty-array placeholder.
+
+**R3 — Requirement editor accepts a malformed host PATCH response as confirmable.**
+
+`GoalRequirementEditor.selectionFromResponse` accepts a response without `confirmable`, `status`, or a hash matching `draft.draftHash`, while spreading the previous selection (`web/components/GoalRequirementEditor.tsx:140-153`). `AppShell` then creates an override with `confirmable: selection.confirmable === true` and the possibly mismatched `expectedDraftHash` (`web/components/AppShell.tsx:36-45`). If the previous selection was confirmable, a malformed 200 PATCH can leave Confirm enabled and send a hash not bound to the displayed draft. Validate the host response with the same strict draft/hash/status/projection parser used for confirmation, failing closed on missing or mismatched fields, and cover malformed PATCH in the browser test.
+
+**R4 — Confirmation does not enforce a post-confirmation phase.**
+
+`assertConfirmationResult` only checks that `confirmable` is a boolean (`web/components/GoalRequirementListBlock.tsx:182-186`); `extractContent` only requires that some status/phase string exists. A malformed 200 response carrying the old `requirements_review` phase and `confirmable: true` would be shown as Confirmed even though the host has not entered `validation_resolving`/later. Require an allowed post-confirmation phase (or an explicit host acknowledgement contract) before setting the confirmed state.
 
 ### Scope notes
 

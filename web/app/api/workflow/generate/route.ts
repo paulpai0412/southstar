@@ -16,6 +16,8 @@ type RunGoalResult = {
   goalDesignPackageHash?: string;
   vocabularyGaps?: Array<{ kind: string; requestedRef: string; allowedRefs: string[] }>;
   libraryImportDraftId?: string;
+  confirmable?: boolean;
+  validationIssues?: Array<{ path: string; message: string; code?: string }>;
   runId?: string;
   runStatus?: string;
   executionSetId?: string;
@@ -149,6 +151,8 @@ async function sendGoalReceipt(result: RunGoalResult, send: SendWorkflowGenerate
     goalDesignPackageHash: result.goalDesignPackageHash,
     vocabularyGaps: result.vocabularyGaps,
     libraryImportDraftId: result.libraryImportDraftId,
+    confirmable: result.confirmable,
+    validationIssues: result.validationIssues,
   } });
   if (result.executionSetId) {
     send("execution_set", { executionSetId: result.executionSetId, sliceRuns: result.sliceRuns ?? [] });

@@ -86,6 +86,8 @@ export type PostgresPlannerDraftResult = {
   goalRequirementDraftHash?: string;
   goalDesignPhase?: string;
   goalRequirementDraft?: GoalRequirementDraftV1;
+  /** Host-owned readiness projection for requirement review drafts. */
+  confirmable?: boolean;
   goalDesignPackageHash?: string;
   goalDesignPackage?: GoalDesignPackageV1;
   blockers: string[];
@@ -1242,7 +1244,12 @@ export async function getPostgresPlannerDraftOrchestration(
   const plannerRequest = asRecord(payload.plannerRequest);
   const workflowId = stringValue(summary.workflowId) ?? stringValue(workflow.workflowId) ?? "";
   const goalPrompt = stringValue(summary.goalPrompt) ?? stringValue(workflow.goalPrompt) ?? "";
-  const validationIssues = parseValidationIssues(summary.validationIssues);
+  const validationIssues = parseValidationIssues(summary.validationIssues ?? payload.validationIssues);
+  const confirmable = typeof payload.confirmable === "boolean"
+    ? payload.confirmable
+    : typeof summary.confirmable === "boolean"
+      ? summary.confirmable
+      : undefined;
   const taskSummaries = parseTaskSummaries(summary.taskSummaries).length > 0
     ? parseTaskSummaries(summary.taskSummaries)
     : summarizeWorkflowTasksFromPayload(workflow.tasks);
@@ -1269,6 +1276,7 @@ export async function getPostgresPlannerDraftOrchestration(
       : {}),
     ...(stringValue(payload.goalDesignPhase) ? { goalDesignPhase: stringValue(payload.goalDesignPhase) } : {}),
     ...(stagedRequirement ? { goalRequirementDraft: stagedRequirement } : {}),
+    ...(confirmable !== undefined ? { confirmable } : {}),
     blockers: status === PLANNER_DRAFT_STATUS_NEEDS_LIBRARY_INPUT
       ? parseVocabularyGapBlockers(vocabularyGaps)
       : requirementOnly

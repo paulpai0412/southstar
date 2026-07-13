@@ -865,11 +865,12 @@ function plannerDraftReceiptFromGoalResult(result: RunGoalResult, goalPrompt = "
     ...(result.goalRequirementDraftId ? { goalRequirementDraftId: result.goalRequirementDraftId } : {}),
     ...(result.goalRequirementDraftHash ? { goalRequirementDraftHash: result.goalRequirementDraftHash } : {}),
     ...(result.goalDesignPhase ? { goalDesignPhase: result.goalDesignPhase } : {}),
+    ...(result.confirmable !== undefined ? { confirmable: result.confirmable } : {}),
     ...(result.goalDesignPackageHash ? { goalDesignPackageHash: result.goalDesignPackageHash } : {}),
     ...(result.vocabularyGaps ? { vocabularyGaps: result.vocabularyGaps } : {}),
     ...(result.libraryImportDraftId ? { libraryImportDraftId: result.libraryImportDraftId } : {}),
     blockers: result.blockers,
-    validationIssues: [],
+    validationIssues: result.validationIssues ?? [],
     taskSummaries: [],
   };
 }

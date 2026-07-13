@@ -41,6 +41,7 @@ function goalRequirementContentFromSelection(selection: GoalRequirementSelection
     goalRequirementDraftHash: selection.expectedDraftHash,
     draft: selection.draft,
     confirmable: selection.confirmable === true,
+    validationIssues: selection.validationIssues ?? [],
     ...(selection.coveragePreview ? { coveragePreview: selection.coveragePreview } : {}),
   };
 }
@@ -731,6 +732,53 @@ export function AppShell() {
     )));
   }, []);
 
+  const handleGoalRequirementInvalidated = useCallback((selection: GoalRequirementSelection) => {
+    setGoalRequirementRevisionAnchor(selection);
+    setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
+    setSidecarTabs((current) => current.map((tab) => (
+      tab.kind === "goalRequirement"
+        && tab.draftId === selection.draftId
+        && tab.goalRequirementSelection?.requirementId === selection.requirementId
+        ? { ...tab, goalRequirementSelection: selection, refreshKey: (tab.refreshKey ?? 0) + 1 }
+        : tab
+    )));
+  }, []);
+
+  const handleGoalRequirementsContent = useCallback((content: GoalRequirementsContent) => {
+    // A chat H2 event is a host-authoritative replacement, including when the
+    // draft id is stable and only the revision hash changes. Clear an older
+    // editor projection before applying the new content so the next prompt and
+    // confirmation cannot reuse H1.
+    setGoalRequirementContentOverride(content);
+    const current = goalRequirementRevisionAnchor;
+    if (!current || current.draftId !== content.draftId) {
+      setGoalRequirementRevisionAnchor(null);
+      return;
+    }
+    const requirement = content.draft.requirements.find((item) => item.id === current.requirementId);
+    if (!requirement) {
+      setGoalRequirementRevisionAnchor(null);
+      return;
+    }
+    const next = {
+      ...current,
+      expectedDraftHash: content.goalRequirementDraftHash,
+      draft: content.draft,
+      status: content.status,
+      confirmable: content.confirmable,
+      validationIssues: content.validationIssues,
+      ...(content.coveragePreview ? { coveragePreview: content.coveragePreview } : {}),
+    };
+    setGoalRequirementRevisionAnchor(next);
+    setSidecarTabs((tabs) => tabs.map((tab) => (
+      tab.kind === "goalRequirement"
+        && tab.draftId === content.draftId
+        && tab.goalRequirementSelection?.requirementId === current.requirementId
+        ? { ...tab, goalRequirementSelection: next, refreshKey: (tab.refreshKey ?? 0) + 1 }
+        : tab
+    )));
+  }, [goalRequirementRevisionAnchor]);
+
   const handleConfirmRequirements = useCallback(async (confirmation: GoalRequirementsConfirmation): Promise<GoalRequirementsContent | void> => {
     const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(confirmation.draftId)}/confirm-requirements`, {
       method: "POST",
@@ -834,7 +882,7 @@ export function AppShell() {
       return <GoalSliceEditor selection={activeSidecarTab.goalSliceSelection} onPackageChange={handleGoalSlicePackageChange} />;
     }
     if (activeSidecarTab.kind === "goalRequirement" && activeSidecarTab.goalRequirementSelection) {
-      return <GoalRequirementEditor selection={activeSidecarTab.goalRequirementSelection} onDraftChange={handleGoalRequirementChange} />;
+      return <GoalRequirementEditor selection={activeSidecarTab.goalRequirementSelection} onDraftChange={handleGoalRequirementChange} onDraftInvalidated={handleGoalRequirementInvalidated} />;
     }
     if (activeSidecarTab.kind === "workflowStaticNodeProfile" && activeSidecarTab.workflowNode) {
       return <WorkflowStaticNodeProfile node={activeSidecarTab.workflowNode} />;
@@ -871,7 +919,7 @@ export function AppShell() {
       );
     }
     return <FileViewer filePath={activeSidecarTab.filePath} cwd={currentCwd ?? undefined} />;
-  }, [activeSidecarTab, currentCwd, handleGoalRequirementChange, handleGoalSlicePackageChange, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
+  }, [activeSidecarTab, currentCwd, handleGoalRequirementChange, handleGoalRequirementInvalidated, handleGoalSlicePackageChange, openOperatorTaskSidecar, operator.model.attentionItems, operator.model.commandResults, operator.refresh]);
 
   const handleWorkflowSidebarNewSession = useCallback(() => {
     if (!workflowCurrentCwd) return;
@@ -1649,6 +1697,7 @@ export function AppShell() {
                 workflowMode={false}
                 workflowCwd={chatCurrentCwd}
                 onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
+                onGoalRequirements={handleGoalRequirementsContent}
                 onGoalSliceSelect={handleGoalSliceSelect}
                 onGoalRequirementSelect={handleGoalRequirementSelect}
                 onConfirmRequirements={handleConfirmRequirements}
@@ -1682,6 +1731,7 @@ export function AppShell() {
               workflowTemplate={selectedWorkflowTemplate}
               workflowCwd={workflowCurrentCwd}
               onWorkflowDagNodeSelect={handleWorkflowDagNodeSelect}
+              onGoalRequirements={handleGoalRequirementsContent}
               onGoalSliceSelect={handleGoalSliceSelect}
               onGoalRequirementSelect={handleGoalRequirementSelect}
               onConfirmRequirements={handleConfirmRequirements}

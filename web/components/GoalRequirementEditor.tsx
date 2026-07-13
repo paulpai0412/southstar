@@ -22,9 +22,11 @@ type RequirementForm = {
 export function GoalRequirementEditor({
   selection,
   onDraftChange,
+  onDraftInvalidated,
 }: {
   selection: GoalRequirementSelection;
   onDraftChange?: (selection: GoalRequirementSelection) => void;
+  onDraftInvalidated?: (selection: GoalRequirementSelection) => void;
 }) {
   const requirement = useMemo(() => selection.draft.requirements.find((item) => item.id === selection.requirementId) ?? null, [selection.draft, selection.requirementId]);
   const [form, setForm] = useState<RequirementForm>(() => requirement ? formFromRequirement(requirement) : emptyForm());
@@ -55,6 +57,12 @@ export function GoalRequirementEditor({
       onDraftChange?.(next);
       setState({ status: "saved", message: `Saved revision ${next.draft.revision}` });
     } catch (error) {
+      onDraftInvalidated?.({
+        ...selection,
+        expectedDraftHash: "",
+        confirmable: false,
+        status: "invalid",
+      });
       setState({ status: "error", message: error instanceof Error ? error.message : String(error) });
     }
   };
@@ -140,16 +148,28 @@ function patchFromForm(form: RequirementForm): Record<string, unknown> {
 function selectionFromResponse(value: unknown, previous: GoalRequirementSelection): GoalRequirementSelection | null {
   const envelope = isRecord(value) && isRecord(value.result) ? value.result : value;
   if (!isRecord(envelope) || !isRecord(envelope.goalRequirementDraft)) return null;
+  if (envelope.draftId !== previous.draftId) return null;
   const draft = envelope.goalRequirementDraft as unknown as GoalRequirementDraftView;
-  if (typeof draft.draftHash !== "string" || !Array.isArray(draft.requirements)) return null;
+  const status = typeof envelope.status === "string" ? envelope.status : undefined;
+  const phase = typeof envelope.phase === "string" ? envelope.phase : undefined;
+  const returnedHash = typeof envelope.goalRequirementDraftHash === "string" ? envelope.goalRequirementDraftHash : undefined;
+  if (!status || !phase || status !== phase || status !== (previous.status ?? "requirements_review")) return null;
+  if (typeof returnedHash !== "string" || returnedHash.length === 0 || returnedHash !== draft.draftHash || !Array.isArray(draft.requirements)) return null;
+  if (typeof envelope.confirmable !== "boolean" || !Array.isArray(envelope.validationIssues)) return null;
+  if (envelope.validationIssues.some((issue) => !isRecord(issue) || typeof issue.path !== "string" || typeof issue.message !== "string")) return null;
+  if (envelope.confirmable && envelope.validationIssues.length > 0) return null;
+  const validationIssues = envelope.validationIssues.map((issue) => ({
+    path: (issue as Record<string, unknown>).path as string,
+    message: (issue as Record<string, unknown>).message as string,
+    ...((issue as Record<string, unknown>).code && typeof (issue as Record<string, unknown>).code === "string" ? { code: (issue as Record<string, unknown>).code as string } : {}),
+  }));
   return {
     ...previous,
-    expectedDraftHash: typeof envelope.goalRequirementDraftHash === "string" ? envelope.goalRequirementDraftHash : draft.draftHash,
+    expectedDraftHash: returnedHash,
     draft,
-    ...(typeof envelope.phase === "string" || typeof envelope.status === "string"
-      ? { status: typeof envelope.phase === "string" ? envelope.phase : envelope.status as string }
-      : {}),
-    ...(typeof envelope.confirmable === "boolean" ? { confirmable: envelope.confirmable } : {}),
+    status,
+    confirmable: envelope.confirmable,
+    validationIssues,
   };
 }
 

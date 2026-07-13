@@ -229,6 +229,7 @@ export async function preparePostgresGoalRequirementDraft(
   });
   assertGoalRequirementDraftMatchesRequest(draft, input);
   const draftId = `draft-goal-requirements-${draft.draftHash.slice(0, 12)}`;
+  const readiness = goalRequirementReviewReadiness(draft, "requirements_review");
   await persistGoalRequirementDraftRevisionPg(db, { draftId, draft });
   await persistPlannerDraftResource(db, {
     resourceType: "planner_draft",
@@ -251,6 +252,8 @@ export async function preparePostgresGoalRequirementDraft(
       goalDesignSkillRef: skill.objectKey,
       goalDesignSkillVersionRef: skill.versionRef,
       workspaceDiscoveryHash: workspaceDiscovery.discoveryHash,
+      confirmable: readiness.confirmable,
+      validationIssues: readiness.validationIssues,
     },
     summary: {
       goalPrompt: input.goalPrompt,
@@ -258,7 +261,8 @@ export async function preparePostgresGoalRequirementDraft(
       planner: "goal-design",
       status: "requirements_review",
       goalDesignPhase: "requirements_review" satisfies GoalDesignPhase,
-      validationIssues: [],
+      confirmable: readiness.confirmable,
+      validationIssues: readiness.validationIssues,
       taskSummaries: [],
       goalRequirementDraftId: draftId,
       goalRequirementDraftHash: draft.draftHash,
@@ -281,7 +285,7 @@ export async function preparePostgresGoalRequirementDraft(
     goalPrompt: input.goalPrompt,
     goalRequirementDraft: draft,
     goalRequirementDraftHash: draft.draftHash,
-    ...goalRequirementReviewReadiness(draft, "requirements_review"),
+    ...readiness,
     blockers: draft.blockingInputs,
   };
   input.onProgress?.({
@@ -336,7 +340,9 @@ export async function reviseGoalRequirementPg(
       goalRequirementDraft: next,
       goalRequirementDraftHash: next.draftHash,
       goalDesignPhase: "requirements_review" satisfies GoalDesignPhase,
+      ...goalRequirementReviewReadiness(next, "requirements_review"),
     };
+    const readiness = goalRequirementReviewReadiness(next, "requirements_review");
     const updatedSummary = {
       ...row.summary_json,
       status: "requirements_review",
@@ -344,6 +350,8 @@ export async function reviseGoalRequirementPg(
       goalRequirementDraftHash: next.draftHash,
       requirementCount: next.requirements.filter((requirement) => requirement.status !== "superseded").length,
       staleReason: "goal_requirements_revised",
+      confirmable: readiness.confirmable,
+      validationIssues: readiness.validationIssues,
     };
     await upsertRuntimeResourcePg(tx, {
       id: row.id,
@@ -368,7 +376,7 @@ export async function reviseGoalRequirementPg(
       goalPrompt: next.originalPrompt,
       goalRequirementDraft: next,
       goalRequirementDraftHash: next.draftHash,
-      ...goalRequirementReviewReadiness(next, "requirements_review"),
+      ...readiness,
       blockers: next.blockingInputs,
       invalidated,
     };
@@ -490,6 +498,7 @@ export async function confirmGoalRequirementsPg(
     const metadata = preflightMetadata;
     const contract = confirmGoalRequirementDraft(current, metadata);
     const contractHash = goalContractHash(contract);
+    const readiness = goalRequirementReviewReadiness(current, "validation_resolving");
     await upsertRuntimeResourcePg(tx, {
       resourceType: "goal_contract_confirmation",
       resourceKey: input.draftId,
@@ -501,6 +510,8 @@ export async function confirmGoalRequirementsPg(
         goalRequirementDraftId: input.draftId,
         actor: input.actor ?? "user",
         goalRequirementDraftHash: current.draftHash,
+        confirmable: readiness.confirmable,
+        validationIssues: readiness.validationIssues,
         goalContract: contract,
         goalContractHash: contractHash,
         goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
@@ -509,6 +520,8 @@ export async function confirmGoalRequirementsPg(
         draftId: input.draftId,
         goalContractHash: contractHash,
         goalRequirementDraftHash: current.draftHash,
+        confirmable: readiness.confirmable,
+        validationIssues: readiness.validationIssues,
         goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
       },
     });
@@ -518,6 +531,8 @@ export async function confirmGoalRequirementsPg(
       goalContract: contract,
       goalContractHash: contractHash,
       goalRequirementDraftHash: current.draftHash,
+      confirmable: readiness.confirmable,
+      validationIssues: readiness.validationIssues,
       goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
       requirementConfirmation: {
         actor: input.actor ?? "user",
@@ -531,6 +546,8 @@ export async function confirmGoalRequirementsPg(
       goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
       goalContractHash: contractHash,
       goalRequirementDraftHash: current.draftHash,
+      confirmable: readiness.confirmable,
+      validationIssues: readiness.validationIssues,
     };
     await upsertRuntimeResourcePg(tx, {
       id: row.id,
@@ -555,7 +572,7 @@ export async function confirmGoalRequirementsPg(
       goalPrompt: current.originalPrompt,
       goalRequirementDraft: current,
       goalRequirementDraftHash: current.draftHash,
-      ...goalRequirementReviewReadiness(current, "validation_resolving"),
+      ...readiness,
       goalContract: contract,
       goalContractHash: contractHash,
       blockers: current.blockingInputs,

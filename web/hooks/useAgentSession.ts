@@ -209,6 +209,8 @@ export interface UseAgentSessionOptions {
   workflowTemplate?: unknown;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: import("@/lib/workflow/types").WorkflowDagNode) => void;
+  /** Receives every host-authoritative Goal Requirements SSE/result projection. */
+  onGoalRequirements?: (content: GoalRequirementsContent) => void;
   goalDesignRevisionAnchor?: GoalSliceSelection | null;
   goalRequirementRevisionAnchor?: GoalRequirementSelection | null;
   setToolPreset?: (preset: "none" | "default" | "full") => void;
@@ -1025,6 +1027,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
             const block = goalRequirementsContentFromUnknown(goalRequirements);
             if (!block) return;
             goalRequirementsBlock = block;
+            opts.onGoalRequirements?.(block);
             reviewDraftIdentity = {
               draftId: block.draftId,
               status: block.status,

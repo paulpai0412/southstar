@@ -93,6 +93,8 @@ test("Goal submission persists requirements_review before Slice design", async (
     });
     assert.equal(result.status, "requirements_review");
     assert.equal(result.phase, "requirements_review");
+    assert.equal(result.confirmable, true);
+    assert.deepEqual(result.validationIssues, []);
     const stored = await getResourceByKeyPg(db, "planner_draft", result.draftId);
     assert.equal((stored!.payload as Record<string, unknown>).goalDesignPhase, "requirements_review");
     assert.equal((stored!.payload as Record<string, unknown>).goalRequirementDraftId, result.draftId);
@@ -104,6 +106,12 @@ test("Goal submission persists requirements_review before Slice design", async (
     assert.equal("goalContractHash" in orchestration, false);
     assert.equal(orchestration.goalRequirementDraftId, result.draftId);
     assert.equal(orchestration.goalRequirementDraftHash, result.goalRequirementDraftHash);
+    assert.equal(orchestration.confirmable, true);
+    assert.deepEqual(orchestration.validationIssues, []);
+    assert.equal((stored!.payload as Record<string, unknown>).confirmable, true);
+    assert.deepEqual((stored!.payload as Record<string, unknown>).validationIssues, []);
+    assert.equal((stored!.summary as Record<string, unknown>).confirmable, true);
+    assert.deepEqual((stored!.summary as Record<string, unknown>).validationIssues, []);
   });
 });
 
@@ -199,8 +207,13 @@ test("Requirement confirmation is hash-bound and idempotent", async () => {
     assert.equal(first.phase, "validation_resolving");
     assert.equal(first.confirmable, false);
     assert.equal(replay.confirmable, false);
+    assert.deepEqual(first.validationIssues, []);
+    assert.deepEqual(replay.validationIssues, []);
     assert.equal(first.goalContractHash, replay.goalContractHash);
     assert.equal(first.goalRequirementDraftHash, replay.goalRequirementDraftHash);
+    const orchestration = await getPostgresPlannerDraftOrchestration(db, { draftId: draft.draftId });
+    assert.equal(orchestration.confirmable, false);
+    assert.deepEqual(orchestration.validationIssues, []);
   });
 });
 
