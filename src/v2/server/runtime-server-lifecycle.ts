@@ -7,6 +7,12 @@ import { createPiBrainProvider } from "../brain/pi-brain-provider.ts";
 import { loadSouthstarEnv, type SouthstarEnv } from "../config/env.ts";
 import { openSouthstarDb } from "../db/postgres.ts";
 import { createGithubLibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
+import {
+  LibraryReconcileError,
+  reconcileLibraryFilesPg,
+  type LibraryFileDiagnostic,
+  type LibraryReconcileResult,
+} from "../design-library/files/library-reconcile-service.ts";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { type RecoveryProviderActionInput, type RecoveryProviderActions } from "../executor/provider-actions.ts";
 import { TorkClient } from "../executor/tork-client.ts";
@@ -27,9 +33,23 @@ export type RuntimeServerPidRecord = {
   cwd: string;
 };
 
+export type RuntimeServerStartupFailureRecord = {
+  schemaVersion: "southstar.runtime_start_failure.v1";
+  code: "library_not_ready";
+  message: string;
+  diagnostics: LibraryFileDiagnostic[];
+  failedAt: string;
+};
+
 export type RuntimeServerStatusResult =
   | { status: "running"; pidFilePath: string; record: RuntimeServerPidRecord }
-  | { status: "stopped"; pidFilePath: string; staleRecord?: RuntimeServerPidRecord };
+  | { status: "stopped"; pidFilePath: string; staleRecord?: RuntimeServerPidRecord }
+  | {
+      status: "library_not_ready";
+      pidFilePath: string;
+      failureFilePath: string;
+      failure: RuntimeServerStartupFailureRecord;
+    };
 
 export type RuntimeServerStartResult =
   | { status: "started"; pidFilePath: string; record: RuntimeServerPidRecord }
@@ -48,7 +68,7 @@ export type RuntimeServerServeResult = {
 
 export type RuntimeServerLifecycle = ReturnType<typeof createRuntimeServerLifecycle>;
 
-type RuntimeServerLifecycleInput = {
+export type RuntimeServerLifecycleInput = {
   pidFilePath?: string;
   cwd?: string;
   envLoader?: () => SouthstarEnv;
@@ -61,10 +81,28 @@ type RuntimeServerLifecycleInput = {
   ensureDirectory?: (path: string) => Promise<void>;
   removeFile?: (path: string) => Promise<void>;
   runCommand?: (command: string, args: string[]) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+  libraryRoot?: string;
+  connectDb?: (databaseUrl: string) => Promise<SouthstarDb>;
+  prepareRuntimeLibrary?: typeof prepareRuntimeLibraryPg;
+  createRuntime?: (
+    host: string,
+    port: number,
+    env: SouthstarEnv,
+    db: SouthstarDb,
+    input: { callbackBaseUrl: string; libraryRoot: string },
+  ) => Promise<{ server: Pick<SouthstarRuntimeServer, "host" | "port" | "close"> }>;
+  waitForShutdownSignal?: () => Promise<"SIGINT" | "SIGTERM">;
 };
 
 const STARTUP_TIMEOUT_MS = 90_000;
 const SHUTDOWN_TIMEOUT_MS = 10_000;
+
+export async function prepareRuntimeLibraryPg(
+  db: SouthstarDb,
+  input: { libraryRoot: string },
+): Promise<LibraryReconcileResult> {
+  return await reconcileLibraryFilesPg(db, { root: input.libraryRoot, trigger: "startup" });
+}
 
 export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput = {}) {
   const envLoader = input.envLoader ?? (() => loadSouthstarEnv());
@@ -79,6 +117,11 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
   const runCommand = input.runCommand ?? runCommandSpawned;
   const cwd = input.cwd ?? process.cwd();
   const defaultPidFilePath = resolve(cwd, input.pidFilePath ?? ".southstar/runtime-server.pid");
+  const libraryRoot = resolve(cwd, input.libraryRoot ?? process.env.SOUTHSTAR_LIBRARY_ROOT ?? "library");
+  const connectDb = input.connectDb ?? ((databaseUrl: string) => connectSouthstarDbWithRetry(databaseUrl, { sleep }));
+  const prepareRuntimeLibrary = input.prepareRuntimeLibrary ?? prepareRuntimeLibraryPg;
+  const createRuntimeServer = input.createRuntime ?? createRuntime;
+  const waitForShutdown = input.waitForShutdownSignal ?? waitForShutdownSignal;
 
   return {
     async start(options: { host?: string; port?: number; pidFilePath?: string } = {}): Promise<RuntimeServerStartResult> {
@@ -92,6 +135,7 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
         host: options.host,
         port: options.port,
         env,
+        libraryRoot,
       });
       if (!launcherPid || launcherPid <= 0) throw new Error("failed to launch detached Southstar runtime server");
 
@@ -117,9 +161,15 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
     async status(options: { pidFilePath?: string } = {}): Promise<RuntimeServerStatusResult> {
       const pidFilePath = resolvePidFilePath(options.pidFilePath);
       const record = await readPidRecord(pidFilePath);
-      if (!record) return { status: "stopped", pidFilePath };
+      if (!record) {
+        const failure = await readStartupFailure(failureFilePath(pidFilePath));
+        if (failure) return { status: "library_not_ready", pidFilePath, failureFilePath: failureFilePath(pidFilePath), failure };
+        return { status: "stopped", pidFilePath };
+      }
       if (!isProcessRunning(record.pid)) {
         await removePidFile(pidFilePath);
+        const failure = await readStartupFailure(failureFilePath(pidFilePath));
+        if (failure) return { status: "library_not_ready", pidFilePath, failureFilePath: failureFilePath(pidFilePath), failure };
         return { status: "stopped", pidFilePath, staleRecord: record };
       }
       return { status: "running", pidFilePath, record };
@@ -127,20 +177,25 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
 
     async serve(options: { host?: string; port?: number; pidFilePath?: string } = {}): Promise<RuntimeServerServeResult> {
       const pidFilePath = resolvePidFilePath(options.pidFilePath);
+      const startupFailurePath = failureFilePath(pidFilePath);
+      await removeFile(startupFailurePath).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
       const env = envLoader();
       const listen = parseListenAddress(env.serverUrl);
       const host = options.host ?? defaultRuntimeListenHost(env, listen.host);
       const port = options.port ?? listen.port;
       await maybeStartSouthstarPostgresContainer(env, { runCommand });
-      const db = await connectSouthstarDbWithRetry(env.databaseUrl, { sleep });
+      const db = await connectDb(env.databaseUrl);
 
-      let server: SouthstarRuntimeServer | undefined;
+      let server: Pick<SouthstarRuntimeServer, "host" | "port" | "close"> | undefined;
       let signal: "SIGINT" | "SIGTERM" = "SIGTERM";
       const startedAt = now().toISOString();
       try {
         const publicBaseUrl = toBaseUrl(listen.host, port);
         const callbackBaseUrl = containerCallbackBaseUrl(env, publicBaseUrl, port);
-        const runtime = await createRuntime(host, port, env, db, { callbackBaseUrl });
+        await prepareRuntimeLibrary(db, { libraryRoot });
+        const runtime = await createRuntimeServer(host, port, env, db, { callbackBaseUrl, libraryRoot });
         server = runtime.server;
         const record: RuntimeServerPidRecord = {
           pid: process.pid,
@@ -150,8 +205,11 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
           startedAt,
           cwd,
         };
+        await removeFile(startupFailurePath).catch((error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT") throw error;
+        });
         await writePidRecord(pidFilePath, record);
-        signal = await waitForShutdownSignal();
+        signal = await waitForShutdown();
         await removePidFile(pidFilePath);
         await server.close();
         await db.close();
@@ -163,6 +221,15 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
         };
       } catch (error) {
         await removePidFile(pidFilePath);
+        if (error instanceof LibraryReconcileError) {
+          await writeStartupFailure(startupFailurePath, JSON.stringify({
+            schemaVersion: "southstar.runtime_start_failure.v1",
+            code: "library_not_ready",
+            message: error.message,
+            diagnostics: error.diagnostics,
+            failedAt: now().toISOString(),
+          } satisfies RuntimeServerStartupFailureRecord, null, 2));
+        }
         if (server) await server.close().catch(() => undefined);
         await db.close().catch(() => undefined);
         throw error;
@@ -175,7 +242,7 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
     return resolve(cwd, path);
   }
 
-  async function launchServeProcess(options: { pidFilePath: string; host?: string; port?: number; env: SouthstarEnv }): Promise<number> {
+  async function launchServeProcess(options: { pidFilePath: string; host?: string; port?: number; env: SouthstarEnv; libraryRoot: string }): Promise<number> {
     const cliScriptPath = resolve(cwd, "src/v2/cli.ts");
     const tsxLocalBin = resolve(cwd, "node_modules/.bin/tsx");
     const command = existsSync(tsxLocalBin) ? tsxLocalBin : "tsx";
@@ -193,6 +260,7 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
       `export SOUTHSTAR_SERVER_URL=${quoteShellArg(options.env.serverUrl)}`,
       ...(options.env.containerCallbackBaseUrl ? [`export SOUTHSTAR_CONTAINER_CALLBACK_BASE_URL=${quoteShellArg(options.env.containerCallbackBaseUrl)}`] : []),
       `export SOUTHSTAR_REQUIRE_DOCKER=${quoteShellArg(options.env.dockerRequired ? "1" : "0")}`,
+      `export SOUTHSTAR_LIBRARY_ROOT=${quoteShellArg(options.libraryRoot)}`,
       ...(options.env.piPlannerEndpoint ? [`export PI_PLANNER_ENDPOINT=${quoteShellArg(options.env.piPlannerEndpoint)}`] : []),
       `export SOUTHSTAR_PI_PLANNER_TIMEOUT_MS=${quoteShellArg(String(options.env.piPlannerTimeoutMs))}`,
       shellCommand,
@@ -209,6 +277,8 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
   async function waitForPidRecord(pid: number, pidFilePath: string): Promise<RuntimeServerPidRecord> {
     const deadline = Date.now() + STARTUP_TIMEOUT_MS;
     while (Date.now() < deadline) {
+      const failure = await readStartupFailure(failureFilePath(pidFilePath));
+      if (failure) throw new Error(`Southstar runtime Library is not ready: ${failure.message}`);
       const record = await readPidRecord(pidFilePath);
       if (record && isProcessRunning(record.pid)) return record;
       await sleep(150);
@@ -259,9 +329,30 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
     }
   }
 
+  async function readStartupFailure(path: string): Promise<RuntimeServerStartupFailureRecord | null> {
+    try {
+      return asStartupFailureRecord(JSON.parse(await readTextFile(path)) as unknown, path);
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return null;
+      if (error instanceof Error && error.message.startsWith("invalid runtime startup failure file")) return null;
+      throw error;
+    }
+  }
+
   async function writePidRecord(pidFilePath: string, record: RuntimeServerPidRecord): Promise<void> {
     await ensureDirectory(dirname(pidFilePath));
     await writeTextFile(pidFilePath, JSON.stringify(record, null, 2));
+  }
+
+  async function writeStartupFailure(path: string, text: string): Promise<void> {
+    try {
+      await writeTextFile(path, text);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      await ensureDirectory(dirname(path));
+      await writeTextFile(path, text);
+    }
   }
 
   async function removePidFile(pidFilePath: string): Promise<void> {
@@ -271,10 +362,14 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
+
+  function failureFilePath(pidFilePath: string): string {
+    return resolve(dirname(pidFilePath), "runtime-server-start.failure.json");
+  }
 }
 
 type CreatedRuntime = {
-  server: SouthstarRuntimeServer;
+  server: Pick<SouthstarRuntimeServer, "host" | "port" | "close">;
 };
 
 async function createRuntime(
@@ -282,7 +377,7 @@ async function createRuntime(
   port: number,
   env: SouthstarEnv,
   db: SouthstarDb,
-  options: { callbackBaseUrl?: string } = {},
+  options: { callbackBaseUrl?: string; libraryRoot?: string } = {},
 ): Promise<CreatedRuntime> {
   const baseUrl = options.callbackBaseUrl ?? toBaseUrl(host, port);
   const torkClient = new TorkClient({ baseUrl: env.torkBaseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
@@ -326,6 +421,7 @@ async function createRuntime(
       cancelJob: (jobId) => torkClient.cancelJob(jobId),
     },
     callbackUrl: `${baseUrl}/api/v2/tork/callback`,
+    libraryRoot: options.libraryRoot,
     libraryImportSourceFetcher: createGithubLibraryImportSourceFetcher(),
     libraryImportLlmProvider: async ({ prompt, sourceRepoPath }) => {
       if (!env.piPlannerEndpoint && sourceRepoPath) {
@@ -431,6 +527,24 @@ function asPidRecord(value: unknown, path: string): RuntimeServerPidRecord {
     url: value.url,
     startedAt: value.startedAt,
     cwd: value.cwd,
+  };
+}
+
+function asStartupFailureRecord(value: unknown, path: string): RuntimeServerStartupFailureRecord {
+  if (!isRecord(value)
+    || value.schemaVersion !== "southstar.runtime_start_failure.v1"
+    || value.code !== "library_not_ready"
+    || typeof value.message !== "string"
+    || !Array.isArray(value.diagnostics)
+    || typeof value.failedAt !== "string") {
+    throw new Error(`invalid runtime startup failure file: ${path}`);
+  }
+  return {
+    schemaVersion: "southstar.runtime_start_failure.v1",
+    code: "library_not_ready",
+    message: value.message,
+    diagnostics: value.diagnostics as LibraryFileDiagnostic[],
+    failedAt: value.failedAt,
   };
 }
 

@@ -27,6 +27,7 @@ import {
 import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-contract.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { startRunSchedulingPg } from "../../src/v2/server/run-execution-controller.ts";
+import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 
 test("materialization failure rolls back the prepared draft and leaves a retryable submission", async () => {
   const db = await createTestPostgresDb();
@@ -879,6 +880,29 @@ test("POST /api/v2/run-goal requires the one-prompt ingress contract and returns
   }
 });
 
+test("run-goal returns structured 503 before claiming a submission when Library is not ready", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    for (const accept of ["application/json", "text/event-stream"]) {
+      const response = await handleRuntimeRoute(runtimeContext(db, "Build a vocabulary app"), new Request("http://127.0.0.1/api/v2/run-goal", {
+        method: "POST",
+        headers: { accept, "content-type": "application/json" },
+        body: JSON.stringify(request("Build a vocabulary app", `library-not-ready-${accept}`)),
+      }));
+      assert.equal(response.status, 503);
+      assert.deepEqual(await response.json(), {
+        ok: false,
+        error: "library_not_ready",
+        message: "Library reconciliation has not produced a ready snapshot",
+        diagnostics: [],
+      });
+      assert.equal(await countGoalSubmissionClaims(db), 0);
+    }
+  } finally {
+    await db.close();
+  }
+});
+
 test("POST /api/v2/run-goal streams persisted stages and the JSON-equivalent done result", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -1254,6 +1278,27 @@ async function seedGoalDesignSkill(db: Awaited<ReturnType<typeof createTestPostg
       body: "Design the smallest cohesive outcome slices and return the host schema.",
     },
   });
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "library_readiness",
+    resourceKey: "library-readiness:current",
+    scope: "runtime",
+    status: "ready",
+    title: "Current Library readiness",
+    payload: {
+      schemaVersion: "southstar.library_readiness.v1",
+      ready: true,
+      status: "ready",
+      snapshotHash: "test-ready",
+      sourceRoot: "/workspace/software/library",
+      reconciledAt: new Date().toISOString(),
+      trigger: "startup",
+      includedCount: 1,
+      excludedCount: 0,
+      diagnostics: [],
+    },
+    summary: "ready",
+    metrics: { included: 1, excluded: 0 },
+  });
 }
 
 function inlineGoalDesigner(): GoalDesigner {
@@ -1504,6 +1549,12 @@ async function runtimeExceptionCount(db: Awaited<ReturnType<typeof createTestPos
 
 async function runCount(db: Awaited<ReturnType<typeof createTestPostgresDb>>): Promise<number> {
   return Number((await db.one<{ count: string }>("select count(*)::text as count from southstar.workflow_runs")).count);
+}
+
+async function countGoalSubmissionClaims(db: Awaited<ReturnType<typeof createTestPostgresDb>>): Promise<number> {
+  return Number((await db.one<{ count: string }>(
+    "select count(*)::text as count from southstar.runtime_resources where resource_type = 'goal_submission'",
+  )).count);
 }
 
 async function durableCounts(db: Awaited<ReturnType<typeof createTestPostgresDb>>) {

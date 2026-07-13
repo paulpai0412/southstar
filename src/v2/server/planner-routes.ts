@@ -22,6 +22,10 @@ import {
   type RunGoalRequest,
 } from "../orchestration/run-goal-service.ts";
 import {
+  LibraryNotReadyError,
+  requireLibraryReadinessPg,
+} from "../design-library/files/library-reconcile-service.ts";
+import {
   isReviewableGoalDesignDraftPg,
   isGoalDesignVocabularyGapDraftPg,
   retryPostgresGoalDesignAfterVocabularyApprovalPg,
@@ -47,6 +51,20 @@ export async function handlePlannerRoute(
   url: URL,
 ): Promise<Response | undefined> {
   if (request.method === "POST" && url.pathname === "/api/v2/run-goal") {
+    try {
+      await requireLibraryReadinessPg(context.db);
+    } catch (error: unknown) {
+      if (!(error instanceof LibraryNotReadyError)) throw error;
+      return new Response(JSON.stringify({
+        ok: false,
+        error: error.code,
+        message: error.message,
+        diagnostics: error.diagnostics,
+      }), {
+        status: error.status,
+        headers: { "content-type": "application/json", ...corsHeaders() },
+      });
+    }
     const body = await readJsonBody<Record<string, unknown>>(request);
     const runGoalRequest: RunGoalRequest = {
       goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),

@@ -1,11 +1,125 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { SouthstarEnv } from "../../src/v2/config/env.ts";
+import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
+import {
+  LibraryReconcileError,
+  type LibraryFileDiagnostic,
+  type LibraryReconcileResult,
+} from "../../src/v2/design-library/files/library-reconcile-service.ts";
 import {
   connectSouthstarDbWithRetry,
   createRuntimeServerLifecycle,
   maybeStartSouthstarPostgresContainer,
 } from "../../src/v2/server/runtime-server-lifecycle.ts";
+
+const fatalDiagnostic: LibraryFileDiagnostic = {
+  code: "required_purpose_cardinality",
+  message: "expected exactly one approved goal_design skill, found 0",
+  fatal: true,
+  paths: [],
+  missingRefs: [],
+};
+
+function readyReconcileResult(): LibraryReconcileResult {
+  return {
+    schemaVersion: "southstar.library_sync_snapshot.v1",
+    snapshotHash: "abc123",
+    status: "ready",
+    sourceRoot: "/workspace/southstar/library",
+    trigger: "startup",
+    included: [],
+    excluded: [],
+    deprecatedObjectKeys: [],
+    warnings: [],
+  };
+}
+
+test("serve reconciles Library before creating the runtime server", async () => {
+  const calls: string[] = [];
+  const testDb = { close: async () => {} } as SouthstarDb;
+  const testRuntimeHandle = { server: { host: "127.0.0.1", port: 3100, close: async () => {} } };
+  const lifecycle = createRuntimeServerLifecycle({
+    connectDb: async () => testDb,
+    prepareRuntimeLibrary: async (_db, input) => {
+      calls.push(`reconcile:${input.libraryRoot}`);
+      return readyReconcileResult();
+    },
+    createRuntime: async (_host, _port, _env, _db, input) => {
+      calls.push(`listen:${input.libraryRoot}`);
+      return testRuntimeHandle;
+    },
+    waitForShutdownSignal: async () => "SIGTERM",
+    writeTextFile: async () => {},
+    ensureDirectory: async () => {},
+    removeFile: async () => {},
+    envLoader: () => localEnv({ dockerRequired: false }),
+    cwd: "/workspace/southstar",
+  });
+  await lifecycle.serve({ host: "127.0.0.1", port: 3100 });
+  assert.deepEqual(calls, ["reconcile:/workspace/southstar/library", "listen:/workspace/southstar/library"]);
+});
+
+test("serve does not listen or write a ready pid record when Library reconcile fails", async () => {
+  let listened = false;
+  const writes: string[] = [];
+  const testDb = { close: async () => {} } as SouthstarDb;
+  const testRuntimeHandle = { server: { host: "127.0.0.1", port: 3100, close: async () => {} } };
+  const lifecycle = createRuntimeServerLifecycle({
+    connectDb: async () => testDb,
+    prepareRuntimeLibrary: async () => { throw new LibraryReconcileError([fatalDiagnostic]); },
+    createRuntime: async () => { listened = true; return testRuntimeHandle; },
+    writeTextFile: async (path) => { writes.push(path); },
+    ensureDirectory: async () => {},
+    removeFile: async () => {},
+    envLoader: () => localEnv({ dockerRequired: false }),
+    cwd: "/workspace/southstar",
+  });
+  await assert.rejects(lifecycle.serve({ host: "127.0.0.1", port: 3100 }), /expected exactly one approved goal_design skill/);
+  assert.equal(listened, false);
+  assert.equal(writes.some((path) => path.endsWith("runtime-server.pid")), false);
+  assert.equal(writes.some((path) => path.endsWith("runtime-server-start.failure.json")), true);
+});
+
+test("status reports a persisted Library reconcile startup failure", async () => {
+  const lifecycle = createRuntimeServerLifecycle({
+    cwd: "/workspace/southstar",
+    readTextFile: async (path) => {
+      if (path.endsWith("runtime-server-start.failure.json")) return JSON.stringify({
+        schemaVersion: "southstar.runtime_start_failure.v1",
+        code: "library_not_ready",
+        message: "expected exactly one approved goal_design skill, found 0",
+        diagnostics: [fatalDiagnostic],
+        failedAt: "2026-07-13T00:00:00.000Z",
+      });
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+  });
+  const status = await lifecycle.status();
+  assert.equal(status.status, "library_not_ready");
+  if (status.status === "library_not_ready") assert.equal(status.failure.code, "library_not_ready");
+});
+
+test("start surfaces Library startup failure without waiting for the startup timeout", async () => {
+  const lifecycle = createRuntimeServerLifecycle({
+    cwd: "/tmp/southstar",
+    envLoader: () => localEnv({ dockerRequired: false }),
+    runCommand: async () => ({ exitCode: 0, stdout: "100\n", stderr: "" }),
+    readTextFile: async (path) => {
+      if (path.endsWith("runtime-server-start.failure.json")) return JSON.stringify({
+        schemaVersion: "southstar.runtime_start_failure.v1",
+        code: "library_not_ready",
+        message: fatalDiagnostic.message,
+        diagnostics: [fatalDiagnostic],
+        failedAt: "2026-07-13T00:00:00.000Z",
+      });
+      throw Object.assign(new Error("missing"), { code: "ENOENT" });
+    },
+    ensureDirectory: async () => {},
+    removeFile: async () => {},
+  });
+  await assert.rejects(lifecycle.start(), /Southstar runtime Library is not ready/);
+});
 
 test("auto-starts southstar-postgres container for local Postgres runtime URLs", async () => {
   const commands: Array<{ command: string; args: string[] }> = [];

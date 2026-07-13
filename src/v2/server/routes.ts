@@ -8,6 +8,7 @@ import { decideRecoveryDecisionApprovalPg } from "../exceptions/recovery-approva
 import { createRecoveryDecisionApplier } from "../exceptions/recovery-decision-applier.ts";
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../exceptions/types.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
+import { loadLibraryReadinessPg } from "../design-library/files/library-reconcile-service.ts";
 import { buildAgentLibraryCandidatesReadModelPg, buildAgentLibraryReadModelPg } from "../read-models/agent-library.ts";
 import { appendHistoryEventPg, getResourceByKeyPg, listResourcesPg } from "../stores/postgres-runtime-store.ts";
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
@@ -82,12 +83,28 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
 
     if (request.method === "GET" && url.pathname === "/api/v2/runtime/health") {
       const database = await databaseHealth(context);
+      const library = database.ok ? await loadLibraryReadinessPg(context.db) : null;
       return json("runtime-health", {
         database,
         managedRuntime: { configured: Boolean(context.managedRuntime) },
         torkObservation: { configured: Boolean(context.torkObservationClient) },
         loops: { configured: context.runtimeLoopRegistry?.list().length ?? 0 },
-      }, database.ok ? 200 : 503);
+        library: library ? {
+          ready: true,
+          status: library.status,
+          snapshotHash: library.snapshotHash,
+          includedCount: library.includedCount,
+          excludedCount: library.excludedCount,
+          diagnostics: library.diagnostics,
+        } : {
+          ready: false,
+          status: "not_ready",
+          snapshotHash: null,
+          includedCount: 0,
+          excludedCount: 0,
+          diagnostics: [],
+        },
+      }, database.ok && Boolean(library?.ready) ? 200 : 503);
     }
 
     if (request.method === "GET" && url.pathname === "/api/v2/runtime/loops") {

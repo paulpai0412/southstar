@@ -5,10 +5,12 @@ import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createRuntimeLoopRegistry } from "../../src/v2/server/runtime-loop-registry.ts";
 import type { RuntimeServerContext } from "../../src/v2/server/runtime-context.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 
 test("runtime loop routes expose health and run manual ticks", async () => {
   const db = await createTestPostgresDb();
   try {
+    await persistReadyLibraryResource(db, "runtime-loop-ready");
     let tickCount = 0;
     const registry = createRuntimeLoopRegistry();
     registry.register({
@@ -22,7 +24,7 @@ test("runtime loop routes expose health and run manual ticks", async () => {
 
     const context = createContext(db, { runtimeLoopRegistry: registry, manualRuntimeLoopControls: true });
 
-    const health = await call<{ database: { ok: boolean }; managedRuntime: { configured: boolean }; torkObservation: { configured: boolean }; loops: { configured: number } }>(
+    const health = await call<{ database: { ok: boolean }; managedRuntime: { configured: boolean }; torkObservation: { configured: boolean }; loops: { configured: number }; library: { ready: boolean; snapshotHash: string | null } }>(
       context,
       "GET",
       "/api/v2/runtime/health",
@@ -32,6 +34,8 @@ test("runtime loop routes expose health and run manual ticks", async () => {
     assert.equal(health.result.managedRuntime.configured, false);
     assert.equal(health.result.torkObservation.configured, false);
     assert.equal(health.result.loops.configured, 1);
+    assert.equal(health.result.library.ready, true);
+    assert.equal(health.result.library.snapshotHash, "runtime-loop-ready");
 
     const tick = await call<{ loopId: string; status: string; result: { processed: number } }>(
       context,
@@ -160,6 +164,30 @@ function createContext(db: RuntimeServerContext["db"], overrides: Partial<Runtim
     executorProvider: { executorType: "tork", submit: async () => { throw new Error("executor not used"); } },
     ...overrides,
   };
+}
+
+async function persistReadyLibraryResource(db: RuntimeServerContext["db"], snapshotHash: string): Promise<void> {
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "library_readiness",
+    resourceKey: "library-readiness:current",
+    scope: "runtime",
+    status: "ready",
+    title: "Current Library readiness",
+    payload: {
+      schemaVersion: "southstar.library_readiness.v1",
+      ready: true,
+      status: "ready",
+      snapshotHash,
+      sourceRoot: "/workspace/southstar/library",
+      reconciledAt: new Date().toISOString(),
+      trigger: "startup",
+      includedCount: 0,
+      excludedCount: 0,
+      diagnostics: [],
+    },
+    summary: "ready",
+    metrics: { included: 0, excluded: 0 },
+  });
 }
 
 async function call<T>(
