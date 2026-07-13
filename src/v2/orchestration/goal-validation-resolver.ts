@@ -361,10 +361,10 @@ function buildBinding(input: {
       })],
     };
   }
-  const expectedEvidenceKinds = uniqueStrings(
-    input.recommendation.expectedEvidenceKinds
-      ?? input.requirement.acceptanceCriteria.flatMap((criterion) => criterion.evidenceIntent),
-  );
+  const expectedEvidenceKinds = uniqueStrings([
+    ...input.requirement.acceptanceCriteria.flatMap((criterion) => criterion.evidenceIntent),
+    ...(input.recommendation.expectedEvidenceKinds ?? []),
+  ]);
   const allowedEvidenceKinds = uniqueStrings([
     ...stringArray(procedure.allowedEvidenceKinds),
     ...stringArray(state.evidenceKinds),
@@ -398,7 +398,10 @@ function buildBinding(input: {
   const criterionChecks = input.requirement.acceptanceCriteria.map((criterion) => ({
     criterionId: criterion.id,
     procedureRef: input.recommendation.procedureRef,
-    expectedEvidenceKinds: uniqueStrings(input.recommendation.expectedEvidenceKinds ?? criterion.evidenceIntent),
+    expectedEvidenceKinds: uniqueStrings([
+      ...criterion.evidenceIntent,
+      ...(input.recommendation.expectedEvidenceKinds ?? []),
+    ]),
   }));
   const bindingWithoutId = {
     schemaVersion: "southstar.requirement_validation_binding.v1" as const,
