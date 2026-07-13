@@ -41,7 +41,7 @@ import {
   requirementSpecFromGoalContract,
   type GoalContractV1,
 } from "./goal-contract.ts";
-import type { GoalDesignPackageV1 } from "./goal-design.ts";
+import type { GoalDesignPackage } from "./goal-design.ts";
 import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 
 export type CompileWorkflowCompositionInput = {
@@ -50,7 +50,7 @@ export type CompileWorkflowCompositionInput = {
   goalContract: GoalContractV1;
   candidatePacket: CandidatePacket;
   composition: WorkflowCompositionPlan;
-  goalDesignPackage?: GoalDesignPackageV1;
+  goalDesignPackage?: GoalDesignPackage;
   targetRequirementIds?: string[];
   scope?: string;
   manifestDomain?: string;
@@ -86,8 +86,12 @@ export async function compileWorkflowComposition(
 ): Promise<CompiledWorkflowComposition> {
   const goalDomain = nonEmptyString(input.goalContract.domain)
     ?? nonEmptyString(input.goalDesignPackage?.goalContract.domain);
-  const libraryScope = nonEmptyString(input.scope) ?? goalDomain ?? "all";
-  const manifestDomain = nonEmptyString(input.manifestDomain) ?? goalDomain ?? domainForManifestFallback(libraryScope);
+  const explicitScope = nonEmptyString(input.scope);
+  const libraryScope = explicitScope ?? goalDomain ?? "all";
+  const manifestDomain = nonEmptyString(input.manifestDomain)
+    ?? explicitScope
+    ?? goalDomain
+    ?? domainForManifestFallback(libraryScope);
   const taskDomain = workflowTaskDomain(manifestDomain);
   const validation = await validateWorkflowCompositionPlan(db, input.candidatePacket, input.composition, {
     scope: libraryScope,
@@ -483,7 +487,7 @@ async function resolveRuntimeEvaluatorPipelines(
 }
 
 export function compileGoalDesignArtifactContracts(
-  packageValue: GoalDesignPackageV1,
+  packageValue: GoalDesignPackage,
 ): ArtifactContract[] {
   const contracts = new Map<string, ArtifactContract>();
   for (const artifactRef of uniqueSorted(packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs))) {
@@ -503,8 +507,9 @@ export function compileGoalDesignArtifactContracts(
 }
 
 export function compileGoalDesignEvaluatorPipelines(
-  packageValue: GoalDesignPackageV1,
+  packageValue: GoalDesignPackage,
 ): EvaluatorPipelineDefinition[] {
+  if (packageValue.schemaVersion === "southstar.goal_design_package.v2") return [];
   return packageValue.evaluatorContracts.map((contract): EvaluatorPipelineDefinition => ({
     id: normalizeEvaluatorRef(contract.id),
     evaluators: [{

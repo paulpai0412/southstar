@@ -6,7 +6,12 @@ import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import { startRunSchedulingPg } from "../server/run-execution-controller.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-api/postgres-run-api.ts";
-import { finalizeGoalDesignPackage, type GoalDesignPackageV1, type GoalSliceV1 } from "./goal-design.ts";
+import {
+  finalizeGoalDesignPackage,
+  finalizeGoalDesignPackageV2,
+  type GoalDesignPackage,
+  type GoalSliceV1,
+} from "./goal-design.ts";
 import { loadCurrentGoalDesignPackagePg } from "./goal-design-draft-service.ts";
 import { finalizeGoalContract, goalContractHash, type GoalContractInterpreter, type GoalContractV1 } from "./goal-contract.ts";
 import { loadRunLibrarySnapshotPg } from "./run-library-snapshot.ts";
@@ -390,12 +395,34 @@ function updateEntry(
   };
 }
 
-function goalDesignPackageForSlice(pkg: GoalDesignPackageV1, slice: GoalSliceV1): GoalDesignPackageV1 {
+function goalDesignPackageForSlice(pkg: GoalDesignPackage, slice: GoalSliceV1): GoalDesignPackage {
   const sliceGoalContract = goalContractForSlice(pkg.goalContract, slice);
+  if (pkg.schemaVersion === "southstar.goal_design_package.v2") {
+    return finalizeGoalDesignPackageV2({
+      schemaVersion: "southstar.goal_design_package.v2",
+      revision: pkg.revision,
+      ...(pkg.parentRevision !== undefined ? { parentRevision: pkg.parentRevision } : {}),
+      goalContract: sliceGoalContract,
+      requirementDraftHash: pkg.requirementDraftHash,
+      validationBindings: pkg.validationBindings.filter((binding) => slice.evaluatorContractRefs.includes(binding.id)),
+      slicePlan: {
+        schemaVersion: "southstar.goal_slice_plan.v1",
+        goalContractHash: "host-filled",
+        revision: pkg.slicePlan.revision,
+        slices: [{ ...slice, dependsOnSliceIds: [], dependencyArtifactRefs: [] }],
+      },
+      compositionStrategy: { mode: "single-run", sliceIds: [slice.id], rationale: `Compose slice ${slice.id} as one ordinary run.` },
+      templatePolicy: pkg.templatePolicy,
+      goalDesignSkillRef: pkg.goalDesignSkillRef,
+      goalDesignSkillVersionRef: pkg.goalDesignSkillVersionRef,
+      workspaceDiscoveryHash: pkg.workspaceDiscoveryHash,
+      mode: pkg.mode,
+    });
+  }
   return finalizeGoalDesignPackage({
     schemaVersion: "southstar.goal_design_package.v1",
     revision: pkg.revision,
-    parentRevision: pkg.parentRevision,
+    ...(pkg.parentRevision !== undefined ? { parentRevision: pkg.parentRevision } : {}),
     goalContract: sliceGoalContract,
     evaluatorContracts: pkg.evaluatorContracts.filter((contract) => slice.evaluatorContractRefs.includes(contract.id)),
     slicePlan: {

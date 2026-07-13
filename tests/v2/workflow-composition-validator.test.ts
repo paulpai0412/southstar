@@ -9,7 +9,11 @@ import {
   storedGoalRequirementCoverage,
 } from "../../src/v2/orchestration/goal-requirement-coverage.ts";
 import { requirementSpecFromGoalContract, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
-import { finalizeGoalDesignPackage, type GoalDesignPackageV1 } from "../../src/v2/orchestration/goal-design.ts";
+import {
+  finalizeGoalDesignPackage,
+  finalizeGoalDesignPackageV2,
+  type GoalDesignPackageV1,
+} from "../../src/v2/orchestration/goal-design.ts";
 import { classifyWorkflowCompositionTask } from "../../src/v2/orchestration/workflow-node-classifier.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 import { articleGoalContract, softwareGoalContract, subscriptionGoalContract } from "./fixtures/goal-contract.ts";
@@ -79,6 +83,31 @@ test("composer tasks must belong to the authoritative Slice Plan", async () => {
 
     assert.equal(validation.ok, false);
     assert.equal(validation.issues.some((issue) => issue.code === "unknown_slice_id"), true);
+  } finally {
+    await db.close();
+  }
+});
+
+test("composer verify and review tasks cannot replace a frozen V2 evaluator profile", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedSoftwareLibraryGraph(db);
+    const goalContract = softwareGoalContract();
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpecFromGoalContract(goalContract),
+      scope: "software",
+    });
+    const packageValue = validGoalDesignPackageV2(goalContract);
+    const plan = validComposition(goalContract);
+    for (const taskValue of plan.tasks) taskValue.sliceId = "slice-main";
+    plan.tasks.find((taskValue) => taskValue.id === "verify-feature")!.evaluatorProfileRef = "evaluator.software-feature-quality";
+
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan, {
+      goalContract,
+      goalDesignPackage: packageValue,
+    });
+
+    assert.equal(validation.issues.some((issue) => issue.code === "evaluator_binding_mismatch"), true);
   } finally {
     await db.close();
   }
@@ -682,6 +711,63 @@ function validGoalDesignPackage(goalContract: GoalContractV1): GoalDesignPackage
       mode: "single-run",
       sliceIds: ["slice-main"],
       rationale: "single test fixture slice",
+    },
+    templatePolicy: { mode: "auto" },
+    goalDesignSkillRef: "skill.southstar-goal-design",
+    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
+    workspaceDiscoveryHash: "workspace-discovery-test",
+    mode: "review_before_compose",
+  });
+}
+
+function validGoalDesignPackageV2(goalContract: GoalContractV1) {
+  const requirement = goalContract.requirements[0]!;
+  const artifactRefs = goalContract.expectedArtifactRefs;
+  return finalizeGoalDesignPackageV2({
+    schemaVersion: "southstar.goal_design_package.v2",
+    revision: 1,
+    goalContract,
+    requirementDraftHash: "confirmed-requirement-draft-hash",
+    validationBindings: [{
+      schemaVersion: "southstar.requirement_validation_binding.v1",
+      id: "binding-main",
+      requirementId: requirement.id,
+      criterionIds: ["criterion-main"],
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      artifactContractRefs: artifactRefs,
+      artifactContractVersionRefs: artifactRefs.map((ref) => `${ref}@test`),
+      evaluatorProfileRef: "evaluator.software-verification-quality",
+      evaluatorProfileVersionRef: "evaluator.software-verification-quality@test",
+      verificationMode: "deterministic",
+      criterionChecks: [{
+        criterionId: "criterion-main",
+        procedureRef: "procedure.run-tests",
+        expectedEvidenceKinds: ["test_result"],
+      }],
+      requiredEvidenceKinds: ["test_result"],
+      independence: "independent",
+      failureClassifications: ["implementation_gap"],
+    }],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [{
+        id: "slice-main",
+        requirementIds: [requirement.id],
+        outcome: goalContract.summary,
+        stateOrArtifactOwner: artifactRefs[0]!,
+        mutationBoundary: "single cohesive implementation boundary",
+        expectedArtifactRefs: artifactRefs,
+        evaluatorContractRefs: ["binding-main"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-main"],
+      rationale: "single requirement slice",
     },
     templatePolicy: { mode: "auto" },
     goalDesignSkillRef: "skill.southstar-goal-design",

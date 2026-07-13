@@ -18,9 +18,10 @@ import {
 } from "./goal-design-draft-service.ts";
 import {
   validateGoalDesignPackage,
+  validateGoalDesignPackageV2,
+  type GoalDesignPackage,
   type GoalDesigner,
   type GoalDesignMode,
-  type GoalDesignPackageV1,
   type WorkflowTemplatePolicyV1,
 } from "./goal-design.ts";
 import {
@@ -492,7 +493,7 @@ function sliceRunStatus(status: string): SliceRunResult["runStatus"] {
 
 type GoalDesignConfirmationPreparation = {
   confirmationId: string;
-  package: GoalDesignPackageV1;
+  package: GoalDesignPackage;
   goalPrompt: string;
   cwd: string;
   projectRef?: string;
@@ -1001,10 +1002,13 @@ function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function storedGoalDesignPackage(value: unknown): GoalDesignPackageV1 | undefined {
+function storedGoalDesignPackage(value: unknown): GoalDesignPackage | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const pkg = value as GoalDesignPackageV1;
-  return validateGoalDesignPackage(pkg).length === 0 ? pkg : undefined;
+  const pkg = value as GoalDesignPackage;
+  const issues = pkg.schemaVersion === "southstar.goal_design_package.v2"
+    ? validateGoalDesignPackageV2(pkg)
+    : validateGoalDesignPackage(pkg);
+  return issues.length === 0 ? pkg : undefined;
 }
 
 function optionalString(value: unknown): string | undefined {

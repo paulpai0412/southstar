@@ -545,6 +545,7 @@ export type WorkflowCompositionValidationIssueCode =
   | "requirement_not_owned_by_slice"
   | "slice_without_producer"
   | "slice_without_evaluator"
+  | "evaluator_binding_mismatch"
   | "slice_plan_revision_required"
   | "producer_dependency_without_artifact_flow"
   | "missing_required_task_group"

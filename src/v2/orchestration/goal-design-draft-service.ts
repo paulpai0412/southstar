@@ -1,15 +1,20 @@
 import type { SouthstarDb } from "../db/postgres.ts";
+import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import {
   upsertRuntimeResourcePg,
   insertRuntimeResourceIfAbsentPg,
 } from "../stores/postgres-runtime-store.ts";
 import {
   finalizeGoalDesignPackage,
+  finalizeGoalDesignPackageV2,
   loadGoalDesignSkillPg,
   validateGoalDesignPackage,
+  validateGoalDesignPackageV2,
+  type GoalDesignPackage,
   type GoalDesignMode,
   type GoalDesignPackageV1,
   type GoalDesigner,
+  type GoalSliceDesigner,
   type GoalSliceV1,
   type WorkflowTemplatePolicyV1,
 } from "./goal-design.ts";
@@ -36,6 +41,7 @@ import type { LibraryImportLlmProvider } from "../design-library/importers/libra
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
 import type { SubmitGoalContext } from "./run-goal-service.ts";
 import { discoverGoalWorkspace } from "./goal-workspace-discovery.ts";
+import type { GoalValidationResolutionV1 } from "../design-library/types.ts";
 import type {
   PlannerDraftPersistence,
   PlannerDraftProgressListener,
@@ -110,6 +116,20 @@ export type GoalRequirementReviewResult = {
     dagDraft: boolean;
   };
   validationGaps?: unknown[];
+};
+
+export type GoalSliceReviewResult = {
+  draftId: string;
+  status: "ready_for_review";
+  phase: "slice_review";
+  goalPrompt: string;
+  goalRequirementDraftId: string;
+  goalRequirementDraftHash: string;
+  goalContract: GoalContractV1;
+  goalContractHash: string;
+  goalDesignPackage: GoalDesignPackage;
+  goalDesignPackageHash: string;
+  blockers: string[];
 };
 
 export {
@@ -590,9 +610,124 @@ export async function confirmGoalRequirementsPg(
   });
 }
 
+/**
+ * Continue the same staged planner draft from frozen validation bindings into
+ * a reviewable Slice Plan. The model runs outside the transaction; the final
+ * write uses the resolution hash as a compare-and-swap guard.
+ */
+export async function designAndPersistGoalSlicesPg(
+  db: SouthstarDb,
+  input: {
+    draftId: string;
+    expectedResolutionHash: string;
+    sliceDesigner: GoalSliceDesigner;
+    onDelta?: (text: string) => void;
+  },
+): Promise<GoalSliceReviewResult> {
+  const preflight = await db.maybeOne<PlannerDraftResourceRow>(
+    `select id, resource_key, run_id, task_id, session_id, scope, status, title,
+            payload_json, summary_json, metrics_json, expires_at
+       from southstar.runtime_resources
+      where resource_type = 'planner_draft' and resource_key = $1`,
+    [input.draftId],
+  );
+  if (!preflight) throw new Error(`planner draft not found: ${input.draftId}`);
+  const source = sliceDesignSourceFromPlannerRow(preflight, input.expectedResolutionHash);
+  const workspaceDiscovery = await discoverGoalWorkspace(source.requirementDraft.workspace.cwd);
+  const skill = await loadGoalDesignSkillPg(db);
+  const storedSkillRef = optionalNonEmptyString(source.payload.goalDesignSkillRef);
+  const storedSkillVersionRef = optionalNonEmptyString(source.payload.goalDesignSkillVersionRef);
+  if ((storedSkillRef && storedSkillRef !== skill.objectKey)
+    || (storedSkillVersionRef && storedSkillVersionRef !== skill.versionRef)) {
+    throw new Error(`goal_design_skill_changed: ${input.draftId}`);
+  }
+  const plannerRequest = asRecord(source.payload.plannerRequest);
+  const mode: GoalDesignMode = plannerRequest.goalDesignMode === "auto_until_blocked"
+    ? "auto_until_blocked"
+    : "review_before_compose";
+  const templatePolicy = storedTemplatePolicy(plannerRequest.templatePolicy);
+  const pkg = await input.sliceDesigner.design({
+    goalContract: source.goalContract,
+    requirementDraft: source.requirementDraft,
+    validationBindings: source.resolution.bindings,
+    workspaceDiscovery,
+    mode,
+    templatePolicy,
+    skill,
+    onDelta: input.onDelta,
+  });
+  if (pkg.requirementDraftHash !== source.requirementDraft.draftHash
+    || pkg.goalContractHash !== source.goalContractHash
+    || pkg.validationBindingsHash !== contentHashForPayload(source.resolution.bindings)) {
+    throw new Error(`goal_slice_design_lineage_mismatch: ${input.draftId}`);
+  }
+
+  return await db.tx(async (tx) => {
+    const locked = await tx.one<PlannerDraftResourceRow>(
+      `select id, resource_key, run_id, task_id, session_id, scope, status, title,
+              payload_json, summary_json, metrics_json, expires_at
+         from southstar.runtime_resources
+        where resource_type = 'planner_draft' and resource_key = $1
+        for update`,
+      [input.draftId],
+    );
+    const current = sliceDesignSourceFromPlannerRow(locked, input.expectedResolutionHash);
+    if (current.requirementDraft.draftHash !== source.requirementDraft.draftHash
+      || current.goalContractHash !== source.goalContractHash
+      || contentHashForPayload(current.resolution.bindings) !== pkg.validationBindingsHash) {
+      throw new Error(`goal_validation_resolution_stale: ${input.draftId}`);
+    }
+    await persistGoalDesignPackageRevisionPg(tx, { draftId: input.draftId, package: pkg });
+    await upsertRuntimeResourcePg(tx, {
+      id: locked.id,
+      resourceType: "planner_draft",
+      resourceKey: input.draftId,
+      ...(locked.run_id ? { runId: locked.run_id } : {}),
+      ...(locked.task_id ? { taskId: locked.task_id } : {}),
+      ...(locked.session_id ? { sessionId: locked.session_id } : {}),
+      scope: locked.scope,
+      status: "ready_for_review",
+      title: "Goal Slice Plan Ready For Review",
+      payload: {
+        ...locked.payload_json,
+        goalDesignPhase: "slice_review" satisfies GoalDesignPhase,
+        goalDesignPackage: pkg,
+        goalDesignPackageHash: pkg.packageHash,
+        slicePlan: pkg.slicePlan,
+        workspaceDiscoveryHash: workspaceDiscovery.discoveryHash,
+      },
+      summary: {
+        ...locked.summary_json,
+        status: "ready_for_review",
+        goalDesignPhase: "slice_review" satisfies GoalDesignPhase,
+        goalDesignPackageHash: pkg.packageHash,
+        sliceCount: pkg.slicePlan.slices.length,
+        templatePolicy: pkg.templatePolicy,
+        validationIssues: [],
+        taskSummaries: [],
+      },
+      metrics: locked.metrics_json,
+      ...(locked.expires_at ? { expiresAt: locked.expires_at } : {}),
+    });
+    return {
+      draftId: input.draftId,
+      status: "ready_for_review",
+      phase: "slice_review",
+      goalPrompt: current.requirementDraft.originalPrompt,
+      goalRequirementDraftId: input.draftId,
+      goalRequirementDraftHash: current.requirementDraft.draftHash,
+      goalContract: current.goalContract,
+      goalContractHash: current.goalContractHash,
+      goalDesignPackage: pkg,
+      goalDesignPackageHash: pkg.packageHash,
+      blockers: [],
+    };
+  });
+}
+
 export async function persistGoalDesignPackageRevisionPg(
   db: SouthstarDb,
-  input: { draftId: string; package: GoalDesignPackageV1 },
+  input: { draftId: string; package: GoalDesignPackage },
 ): Promise<void> {
   const resourceKey = `${input.draftId}:revision:${input.package.revision}`;
   const existing = await db.maybeOne<{ payload_json: Record<string, unknown> }>(
@@ -606,7 +741,7 @@ export async function persistGoalDesignPackageRevisionPg(
     }
     return;
   }
-  const issues = validateGoalDesignPackage(input.package);
+  const issues = validateStoredGoalDesignPackage(input.package);
   if (issues.length > 0) {
     throw new Error(`invalid Goal Design package: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
   }
@@ -637,7 +772,7 @@ export async function persistGoalDesignPackageRevisionPg(
 export async function loadCurrentGoalDesignPackagePg(
   db: SouthstarDb,
   draftId: string,
-): Promise<GoalDesignPackageV1> {
+): Promise<GoalDesignPackage> {
   const row = await db.maybeOne<{ payload_json: Record<string, unknown> }>(
     "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
     [draftId],
@@ -711,7 +846,7 @@ export async function retryPostgresGoalDesignAfterVocabularyApprovalPg(
 export async function reviseGoalSlicePg(
   db: SouthstarDb,
   input: { draftId: string; sliceId: string; expectedPackageHash: string; patch: GoalSlicePatchV1 },
-): Promise<GoalDesignPackageV1> {
+): Promise<GoalDesignPackage> {
   return await persistValidatedGoalDesignRevisionPg(db, {
     draftId: input.draftId,
     expectedPackageHash: input.expectedPackageHash,
@@ -722,24 +857,36 @@ export async function reviseGoalSlicePg(
       const slices = current.slicePlan.slices.map((slice, index) => (
         index === sliceIndex ? { ...slice, ...input.patch } : slice
       ));
-      return finalizeGoalDesignPackage({
-        schemaVersion: "southstar.goal_design_package.v1",
-        revision: nextRevision,
-        parentRevision: current.revision,
-        goalContract: current.goalContract,
-        evaluatorContracts: current.evaluatorContracts,
-        slicePlan: {
-          ...current.slicePlan,
-          revision: nextRevision,
-          slices,
-        },
-        compositionStrategy: current.compositionStrategy,
-        templatePolicy: current.templatePolicy,
-        goalDesignSkillRef: current.goalDesignSkillRef,
-        goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
-        workspaceDiscoveryHash: current.workspaceDiscoveryHash,
-        mode: current.mode,
-      });
+      return current.schemaVersion === "southstar.goal_design_package.v2"
+        ? finalizeGoalDesignPackageV2({
+            schemaVersion: "southstar.goal_design_package.v2",
+            revision: nextRevision,
+            parentRevision: current.revision,
+            goalContract: current.goalContract,
+            requirementDraftHash: current.requirementDraftHash,
+            validationBindings: current.validationBindings,
+            slicePlan: { ...current.slicePlan, revision: nextRevision, slices },
+            compositionStrategy: current.compositionStrategy,
+            templatePolicy: current.templatePolicy,
+            goalDesignSkillRef: current.goalDesignSkillRef,
+            goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
+            workspaceDiscoveryHash: current.workspaceDiscoveryHash,
+            mode: current.mode,
+          })
+        : finalizeGoalDesignPackage({
+            schemaVersion: "southstar.goal_design_package.v1",
+            revision: nextRevision,
+            parentRevision: current.revision,
+            goalContract: current.goalContract,
+            evaluatorContracts: current.evaluatorContracts,
+            slicePlan: { ...current.slicePlan, revision: nextRevision, slices },
+            compositionStrategy: current.compositionStrategy,
+            templatePolicy: current.templatePolicy,
+            goalDesignSkillRef: current.goalDesignSkillRef,
+            goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
+            workspaceDiscoveryHash: current.workspaceDiscoveryHash,
+            mode: current.mode,
+          });
     },
   });
 }
@@ -747,26 +894,42 @@ export async function reviseGoalSlicePg(
 export async function reviseGoalTemplatePolicyPg(
   db: SouthstarDb,
   input: { draftId: string; expectedPackageHash: string; templatePolicy: WorkflowTemplatePolicyV1 },
-): Promise<GoalDesignPackageV1> {
+): Promise<GoalDesignPackage> {
   return await persistValidatedGoalDesignRevisionPg(db, {
     draftId: input.draftId,
     expectedPackageHash: input.expectedPackageHash,
     buildNext(current) {
       const nextRevision = current.revision + 1;
-      return finalizeGoalDesignPackage({
-        schemaVersion: "southstar.goal_design_package.v1",
-        revision: nextRevision,
-        parentRevision: current.revision,
-        goalContract: current.goalContract,
-        evaluatorContracts: current.evaluatorContracts,
-        slicePlan: current.slicePlan,
-        compositionStrategy: current.compositionStrategy,
-        templatePolicy: input.templatePolicy,
-        goalDesignSkillRef: current.goalDesignSkillRef,
-        goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
-        workspaceDiscoveryHash: current.workspaceDiscoveryHash,
-        mode: current.mode,
-      });
+      return current.schemaVersion === "southstar.goal_design_package.v2"
+        ? finalizeGoalDesignPackageV2({
+            schemaVersion: "southstar.goal_design_package.v2",
+            revision: nextRevision,
+            parentRevision: current.revision,
+            goalContract: current.goalContract,
+            requirementDraftHash: current.requirementDraftHash,
+            validationBindings: current.validationBindings,
+            slicePlan: { ...current.slicePlan, revision: nextRevision },
+            compositionStrategy: current.compositionStrategy,
+            templatePolicy: input.templatePolicy,
+            goalDesignSkillRef: current.goalDesignSkillRef,
+            goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
+            workspaceDiscoveryHash: current.workspaceDiscoveryHash,
+            mode: current.mode,
+          })
+        : finalizeGoalDesignPackage({
+            schemaVersion: "southstar.goal_design_package.v1",
+            revision: nextRevision,
+            parentRevision: current.revision,
+            goalContract: current.goalContract,
+            evaluatorContracts: current.evaluatorContracts,
+            slicePlan: { ...current.slicePlan, revision: nextRevision },
+            compositionStrategy: current.compositionStrategy,
+            templatePolicy: input.templatePolicy,
+            goalDesignSkillRef: current.goalDesignSkillRef,
+            goalDesignSkillVersionRef: current.goalDesignSkillVersionRef,
+            workspaceDiscoveryHash: current.workspaceDiscoveryHash,
+            mode: current.mode,
+          });
     },
   });
 }
@@ -783,6 +946,9 @@ export async function reviseGoalDesignFromChatPg(
   const designer = context.goalDesigner;
   if (!designer) throw new Error("Goal Design revision requires a goal designer");
   const current = await loadCurrentGoalDesignPackagePg(context.db, input.draftId);
+  if (current.schemaVersion !== "southstar.goal_design_package.v1") {
+    throw new Error("Goal Design chat revision for Package V2 requires the staged Slice designer");
+  }
   if (current.packageHash !== input.expectedPackageHash) {
     throw new Error(`goal_design_package_stale: ${input.draftId}`);
   }
@@ -832,9 +998,9 @@ async function persistValidatedGoalDesignRevisionPg(
   input: {
     draftId: string;
     expectedPackageHash: string;
-    buildNext: (current: GoalDesignPackageV1) => GoalDesignPackageV1;
+    buildNext: (current: GoalDesignPackage) => GoalDesignPackage;
   },
-): Promise<GoalDesignPackageV1> {
+): Promise<GoalDesignPackage> {
   return await db.tx(async (tx) => {
     const draft = await tx.one<PlannerDraftResourceRow>(
       `select id, resource_key, run_id, task_id, session_id, scope, status, title,
@@ -855,7 +1021,7 @@ async function persistValidatedGoalDesignRevisionPg(
     }
     await assertNoMaterializedGoalDesignRunTx(tx, input.draftId, current.packageHash);
     const next = input.buildNext(current);
-    const issues = validateGoalDesignPackage(next);
+    const issues = validateStoredGoalDesignPackage(next);
     if (issues.length > 0) {
       throw new Error(`invalid Goal Design package: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
     }
@@ -1473,10 +1639,84 @@ function asRecord(value: unknown): Record<string, unknown> {
     : {};
 }
 
-function goalDesignPackageFromStored(value: unknown): GoalDesignPackageV1 | undefined {
+function goalDesignPackageFromStored(value: unknown): GoalDesignPackage | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const pkg = value as GoalDesignPackageV1;
-  return validateGoalDesignPackage(pkg).length === 0 ? pkg : undefined;
+  const pkg = value as GoalDesignPackage;
+  return validateStoredGoalDesignPackage(pkg).length === 0 ? pkg : undefined;
+}
+
+function validateStoredGoalDesignPackage(pkg: GoalDesignPackage) {
+  return pkg.schemaVersion === "southstar.goal_design_package.v2"
+    ? validateGoalDesignPackageV2(pkg)
+    : validateGoalDesignPackage(pkg as GoalDesignPackageV1);
+}
+
+type SliceDesignSource = {
+  payload: Record<string, unknown>;
+  requirementDraft: GoalRequirementDraftV1;
+  goalContract: GoalContractV1;
+  goalContractHash: string;
+  resolution: GoalValidationResolutionV1;
+};
+
+function sliceDesignSourceFromPlannerRow(
+  row: PlannerDraftResourceRow,
+  expectedResolutionHash: string,
+): SliceDesignSource {
+  const payload = asRecord(row.payload_json);
+  const phase = goalDesignPhaseFromPayload(payload);
+  if (row.status !== "validation_ready" || phase !== "validation_ready") {
+    throw new Error(`goal validation is not ready for Slice Design: ${row.resource_key}`);
+  }
+  const requirementDraft = goalRequirementDraftFromStored(payload.goalRequirementDraft);
+  if (!requirementDraft || payload.goalRequirementDraftHash !== requirementDraft.draftHash) {
+    throw new Error(`Goal Requirement draft lineage is invalid: ${row.resource_key}`);
+  }
+  const goalContract = storedGoalContract(payload.goalContract);
+  if (!goalContract) throw new Error(`Goal Contract not found: ${row.resource_key}`);
+  const contractHash = goalContractHash(goalContract);
+  if (payload.goalContractHash !== contractHash) throw new Error(`Goal Contract lineage is invalid: ${row.resource_key}`);
+  const resolution = storedGoalValidationResolution(payload.goalValidationResolution);
+  if (!resolution || resolution.resolutionHash !== expectedResolutionHash) {
+    throw new Error(`goal_validation_resolution_stale: ${row.resource_key}`);
+  }
+  if (resolution.goalContractHash !== contractHash
+    || resolution.requirementDraftHash !== requirementDraft.draftHash
+    || resolution.gaps.length > 0
+    || resolution.ready !== true
+    || resolution.bindings.length === 0) {
+    throw new Error(`goal validation resolution is not complete: ${row.resource_key}`);
+  }
+  return { payload, requirementDraft, goalContract, goalContractHash: contractHash, resolution };
+}
+
+function storedGoalValidationResolution(value: unknown): GoalValidationResolutionV1 | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const resolution = value as GoalValidationResolutionV1;
+  if (resolution.schemaVersion !== "southstar.goal_validation_resolution.v1"
+    || !Array.isArray(resolution.bindings)
+    || !Array.isArray(resolution.gaps)
+    || !nonEmptyResolutionHash(resolution.resolutionHash)) return undefined;
+  const { resolutionHash: _resolutionHash, ...withoutHash } = resolution;
+  return contentHashForPayload(withoutHash) === resolution.resolutionHash ? resolution : undefined;
+}
+
+function storedTemplatePolicy(value: unknown): WorkflowTemplatePolicyV1 {
+  const policy = asRecord(value);
+  if (policy.mode === "prefer" || policy.mode === "require") {
+    const templateRef = optionalNonEmptyString(policy.templateRef);
+    const versionRef = optionalNonEmptyString(policy.versionRef);
+    if (templateRef && versionRef) return { mode: policy.mode, templateRef, versionRef };
+  }
+  return { mode: "auto" };
+}
+
+function optionalNonEmptyString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value : undefined;
+}
+
+function nonEmptyResolutionHash(value: unknown): value is string {
+  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 }
 
 function packageHashFromPayload(value: unknown): string | undefined {

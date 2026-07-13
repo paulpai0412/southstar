@@ -6,7 +6,7 @@ import type { HandProvider } from "../hands/types.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
-import type { GoalDesigner } from "../orchestration/goal-design.ts";
+import type { GoalDesigner, GoalSliceDesigner } from "../orchestration/goal-design.ts";
 import type { GoalContractInterpreter } from "../orchestration/goal-contract.ts";
 import type { GoalRequirementDraftInterpreter } from "../orchestration/goal-requirement-draft.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
@@ -20,6 +20,7 @@ export type RuntimeServerContext = {
   goalInterpreter?: GoalContractInterpreter;
   goalRequirementInterpreter?: GoalRequirementDraftInterpreter;
   goalDesigner?: GoalDesigner;
+  goalSliceDesigner?: GoalSliceDesigner;
   workflowComposer?: WorkflowComposer;
   executorProvider: ExecutorProvider;
   torkObservationClient?: TorkObservationClient;

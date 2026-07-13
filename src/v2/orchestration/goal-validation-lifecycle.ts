@@ -78,6 +78,7 @@ export async function resumeInstalledLibraryImportGoalValidationPg(
     installed: LibraryImportCandidateInstallResult;
     libraryImportLlmProvider?: LibraryImportLlmProvider;
     libraryImportSourceFetcher?: LibraryImportSourceFetcher;
+    onValidationReady?: (result: GoalValidationLifecycleResult) => Promise<Record<string, unknown>>;
   },
 ): Promise<LibraryImportCandidateInstallResult & {
   installed: true;
@@ -86,13 +87,17 @@ export async function resumeInstalledLibraryImportGoalValidationPg(
   const resource = await getResourceByKeyPg(db, "library_import_draft", input.installed.draftId);
   const payload = asRecord(resource?.payload);
   if (!optionalString(payload.originGoalDraftId)) return { ...input.installed, installed: true };
+  let resumed: GoalValidationLifecycleResult | undefined;
   try {
-    const resumed = await resumeGoalValidationAfterLibraryImportPg(db, {
+    resumed = await resumeGoalValidationAfterLibraryImportPg(db, {
       libraryImportDraftId: input.installed.draftId,
       libraryImportLlmProvider: input.libraryImportLlmProvider,
       libraryImportSourceFetcher: input.libraryImportSourceFetcher,
       actor: optionalString(asRecord(payload.install).actor) ?? "operator",
     });
+    const continued = resumed.status === "validation_ready" && input.onValidationReady
+      ? await input.onValidationReady(resumed)
+      : undefined;
     return {
       ...input.installed,
       installed: true,
@@ -100,9 +105,10 @@ export async function resumeInstalledLibraryImportGoalValidationPg(
         ok: true,
         recoverable: false,
         draftId: resumed.draftId,
-        status: resumed.status,
-        goalDesignPhase: resumed.phase,
+        status: optionalString(continued?.status) ?? resumed.status,
+        goalDesignPhase: optionalString(continued?.phase) ?? resumed.phase,
         resolutionHash: resumed.goalValidationResolution.resolutionHash,
+        ...(continued ? { continued } : {}),
         ...(resumed.libraryImportDraftId ? { libraryImportDraftId: resumed.libraryImportDraftId } : {}),
       },
     };
@@ -114,7 +120,9 @@ export async function resumeInstalledLibraryImportGoalValidationPg(
         ok: false,
         recoverable: true,
         draftId: optionalString(payload.originGoalDraftId),
-        status: "library_review",
+        status: resumed?.status ?? "library_review",
+        goalDesignPhase: resumed?.phase ?? "library_review",
+        ...(resumed ? { resolutionHash: resumed.goalValidationResolution.resolutionHash } : {}),
         error: error instanceof Error ? error.message : String(error),
         ...(error instanceof GoalValidationProviderNotConfiguredError ? {
           code: error.code,

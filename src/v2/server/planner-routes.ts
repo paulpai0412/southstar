@@ -4,6 +4,7 @@ import type { WorkflowComposerMode } from "../orchestration/composer-registry.ts
 import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
 import {
   createLlmGoalDesigner,
+  createLlmGoalSliceDesigner,
   type GoalDesignMode,
   type WorkflowTemplatePolicyV1,
 } from "../orchestration/goal-design.ts";
@@ -40,6 +41,7 @@ import {
   reviseGoalSlicePg,
   reviseGoalTemplatePolicyPg,
   confirmGoalRequirementsPg,
+  designAndPersistGoalSlicesPg,
   reviseGoalRequirementPg,
   reviseGoalRequirementFromChatPg,
   type GoalSlicePatchV1,
@@ -178,12 +180,20 @@ export async function handlePlannerRoute(
       if (!confirmed.goalContractHash) {
         return json("goal-requirement-confirmation", confirmed);
       }
-      return json("goal-requirement-confirmation", await resolveAndPersistGoalValidationPg(context.db, {
+      const validation = await resolveAndPersistGoalValidationPg(context.db, {
         draftId: confirmed.draftId,
         expectedGoalContractHash: confirmed.goalContractHash,
         libraryImportLlmProvider: context.libraryImportLlmProvider,
         libraryImportSourceFetcher: context.libraryImportSourceFetcher,
         actor: optionalString(body.actor),
+      });
+      if (validation.status !== "validation_ready") {
+        return json("goal-requirement-confirmation", validation);
+      }
+      return json("goal-requirement-confirmation", await designAndPersistGoalSlicesPg(context.db, {
+        draftId: validation.draftId,
+        expectedResolutionHash: validation.goalValidationResolution.resolutionHash,
+        sliceDesigner: resolveGoalSliceDesigner(context),
       }));
     } catch (error) {
       return goalRequirementRevisionErrorResponse(error);
@@ -1139,6 +1149,19 @@ export function resolveGoalDesigner(context: RuntimeServerContext) {
   if (context.goalDesigner) return context.goalDesigner;
   return createLlmGoalDesigner(context.db, {
     model: process.env.SOUTHSTAR_GOAL_DESIGN_MODEL ?? "southstar-runtime-goal-designer",
+    client: {
+      generateText: ({ prompt }) => context.plannerClient.generate(prompt),
+      generateTextStream: context.plannerClient.generateStream
+        ? ({ prompt }, handlers) => context.plannerClient.generateStream!(prompt, { onDelta: handlers.onDelta })
+        : undefined,
+    },
+  });
+}
+
+export function resolveGoalSliceDesigner(context: RuntimeServerContext) {
+  if (context.goalSliceDesigner) return context.goalSliceDesigner;
+  return createLlmGoalSliceDesigner({
+    model: process.env.SOUTHSTAR_GOAL_SLICE_MODEL ?? "southstar-runtime-goal-slice-designer",
     client: {
       generateText: ({ prompt }) => context.plannerClient.generate(prompt),
       generateTextStream: context.plannerClient.generateStream

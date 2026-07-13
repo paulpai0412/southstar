@@ -40,6 +40,8 @@ import {
   assertGoalValidationImportCurrentPg,
   resumeInstalledLibraryImportGoalValidationPg,
 } from "../orchestration/goal-validation-lifecycle.ts";
+import { createLlmGoalSliceDesigner } from "../orchestration/goal-design.ts";
+import { designAndPersistGoalSlicesPg } from "../orchestration/goal-design-draft-service.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
 
@@ -169,6 +171,7 @@ export async function handleLibraryRoute(
       installed,
       libraryImportLlmProvider: context.libraryImportLlmProvider,
       libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+      onValidationReady: goalSliceContinuation(context),
     }));
   }
 
@@ -414,6 +417,29 @@ export async function handleLibraryRoute(
 
 function libraryRoot(context: RuntimeServerContext): string {
   return context.libraryRoot ?? process.env.SOUTHSTAR_LIBRARY_ROOT ?? "library";
+}
+
+function goalSliceContinuation(context: RuntimeServerContext) {
+  if (!context.goalSliceDesigner && !context.plannerClient) return undefined;
+  const sliceDesigner = context.goalSliceDesigner ?? createLlmGoalSliceDesigner({
+    model: process.env.SOUTHSTAR_GOAL_SLICE_MODEL ?? "southstar-runtime-goal-slice-designer",
+    client: {
+      generateText: ({ prompt }) => context.plannerClient.generate(prompt),
+      generateTextStream: context.plannerClient.generateStream
+        ? ({ prompt }, handlers) => context.plannerClient.generateStream!(prompt, { onDelta: handlers.onDelta })
+        : undefined,
+    },
+  });
+  return async (result: {
+    draftId: string;
+    goalValidationResolution: { resolutionHash: string };
+  }): Promise<Record<string, unknown>> => (
+    await designAndPersistGoalSlicesPg(context.db, {
+      draftId: result.draftId,
+      expectedResolutionHash: result.goalValidationResolution.resolutionHash,
+      sliceDesigner,
+    }) as unknown as Record<string, unknown>
+  );
 }
 
 async function readJsonBody<T>(request: Request): Promise<T> {
@@ -1052,6 +1078,7 @@ function libraryImportInstallEventStream(
           installed,
           libraryImportLlmProvider: context.libraryImportLlmProvider,
           libraryImportSourceFetcher: context.libraryImportSourceFetcher,
+          onValidationReady: goalSliceContinuation(context),
         });
         if (result.goalValidationResume) emit("goal_validation_resumed", result.goalValidationResume);
         emit("library.command.completed", result as unknown as Record<string, unknown>);

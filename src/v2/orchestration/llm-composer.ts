@@ -10,7 +10,7 @@ import type {
 import type { SouthstarDb } from "../db/postgres.ts";
 import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
 import type { GoalContractV1 } from "./goal-contract.ts";
-import type { GoalDesignPackageV1 } from "./goal-design.ts";
+import type { GoalDesignPackage } from "./goal-design.ts";
 import {
   GENERATED_AGENT_PROFILE_ALLOWED_VALUES,
   GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
@@ -432,6 +432,15 @@ export function renderComposerPrompt(
 ): string {
   const boundedPacket = boundCandidatePacket(candidatePacket);
   const forbiddenGoalDesignRefs = goalDesignPackage ? goalDesignForbiddenRefs(goalDesignPackage) : [];
+  const frozenValidationConstraints = goalDesignPackage?.schemaVersion === "southstar.goal_design_package.v2"
+    ? [
+        "FrozenValidationBindings are authoritative and immutable during DAG composition.",
+        "For every verify or review task, evaluatorProfileRef must equal the evaluatorProfileRef of a frozen binding for one of that task's requirementIds.",
+        "Use each frozen binding's artifactContractRefs as the artifacts that its evaluator profile validates.",
+        "Do not use a validation binding id as evaluatorProfileRef, and do not replace or invent evaluator profile or artifact refs.",
+        "Preserve evaluatorProfileVersionRef and artifactContractVersionRefs through the supplied Library candidate graph; the host validates their selected versions.",
+      ]
+    : [];
   const sliceConstraints = goalDesignPackage
       ? [
         "GoalDesignPackage is authoritative.",
@@ -475,6 +484,7 @@ export function renderComposerPrompt(
     "Every task must include requirementIds selected from GoalContractRequirements, except explicit coordination or summary nodes may use an empty array.",
     "Every blocking Goal Contract requirement must have an executable producer with an output artifact and a distinct independent evaluator task using verify or review that produces evidence.",
     ...(goalDesignPackage ? sliceConstraints : ["Use the Goal Contract and WorkflowComposerSopSkill to choose the smallest executable DAG."]),
+    ...frozenValidationConstraints,
     "nodePromptSpec.nodeType must be one of plan, implement, verify, repair, review, summary, or general. Choose it from the node's role in the DAG, not from the worker profile name alone.",
     "nodePromptSpec must be specific to that node, not a copy of the global goal. Implementation nodes must include concrete boundaries and expected outputs. Validation/review nodes must include concrete testCases or verification checks and acceptanceCriteria.",
     "The generated profile instruction must explain the worker's exact responsibility, selected skills/tools/MCP grants, success criteria, and what artifact/error report it must produce.",
@@ -512,6 +522,13 @@ export function renderComposerPrompt(
           "",
           "GoalDesignPackage:",
           JSON.stringify(goalDesignPackage),
+          ...(goalDesignPackage.schemaVersion === "southstar.goal_design_package.v2"
+            ? [
+                "",
+                "FrozenValidationBindings:",
+                JSON.stringify(goalDesignPackage.validationBindings),
+              ]
+            : []),
           "",
           "SliceConstraints:",
           JSON.stringify(sliceConstraints),
@@ -549,7 +566,7 @@ export function renderComposerPrompt(
   ].join("\n");
 }
 
-function goalDesignForbiddenRefs(goalDesignPackage: GoalDesignPackageV1): string[] {
+function goalDesignForbiddenRefs(goalDesignPackage: GoalDesignPackage): string[] {
   const refs = [
     goalDesignPackage.goalDesignSkillRef,
     goalDesignPackage.goalDesignSkillVersionRef,

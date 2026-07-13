@@ -31,13 +31,16 @@ import {
 } from "../../src/v2/orchestration/goal-contract.ts";
 import {
   finalizeGoalDesignPackage,
+  finalizeGoalDesignPackageV2,
   type GoalDesigner,
   type GoalDesignMode,
   type GoalDesignPackageV1,
+  type GoalSliceDesigner,
   type WorkflowTemplatePolicyV1,
 } from "../../src/v2/orchestration/goal-design.ts";
 import {
   confirmGoalRequirementsPg,
+  designAndPersistGoalSlicesPg,
   loadCurrentGoalDesignPackagePg,
   loadCurrentGoalRequirementDraftPg,
   resolveAndPersistGoalValidationPg,
@@ -325,6 +328,79 @@ test("candidate install resumes the same Goal draft and reaches validation_ready
     } finally {
       await rm(libraryRoot, { recursive: true, force: true });
     }
+  });
+});
+
+test("validation_ready continues on the same planner draft into a V2 Slice review", async () => {
+  await withDb(async (db) => {
+    const goal = await createConfirmedGoalRequirementDraft(db, "Create an offline article with frozen validation");
+    const resolution = validationResolution(goal, true);
+    const validation = await resolveAndPersistGoalValidationPg(db, {
+      draftId: goal.draftId,
+      expectedGoalContractHash: goal.goalContractHash,
+      resolver: async () => resolution,
+    });
+    assert.equal(validation.status, "validation_ready");
+    let receivedBindingId: string | undefined;
+    const sliceDesigner: GoalSliceDesigner = {
+      async design(input) {
+        const binding = input.validationBindings[0]!;
+        receivedBindingId = binding.id;
+        return finalizeGoalDesignPackageV2({
+          schemaVersion: "southstar.goal_design_package.v2",
+          revision: 1,
+          goalContract: input.goalContract,
+          requirementDraftHash: input.requirementDraft.draftHash,
+          validationBindings: input.validationBindings,
+          slicePlan: {
+            schemaVersion: "southstar.goal_slice_plan.v1",
+            goalContractHash: "host-filled",
+            revision: 1,
+            slices: [{
+              id: "slice-offline-article",
+              requirementIds: [input.goalContract.requirements[0]!.id],
+              outcome: "Deliver a verified offline article",
+              stateOrArtifactOwner: binding.artifactContractRefs[0]!,
+              mutationBoundary: "one offline article artifact",
+              expectedArtifactRefs: binding.artifactContractRefs,
+              evaluatorContractRefs: [binding.id],
+              dependsOnSliceIds: [],
+              dependencyArtifactRefs: [],
+            }],
+          },
+          compositionStrategy: {
+            mode: "single-run",
+            sliceIds: ["slice-offline-article"],
+            rationale: "one cohesive outcome boundary",
+          },
+          templatePolicy: input.templatePolicy,
+          goalDesignSkillRef: input.skill.objectKey,
+          goalDesignSkillVersionRef: input.skill.versionRef,
+          workspaceDiscoveryHash: input.workspaceDiscovery.discoveryHash,
+          mode: input.mode,
+        });
+      },
+    };
+
+    const designed = await designAndPersistGoalSlicesPg(db, {
+      draftId: goal.draftId,
+      expectedResolutionHash: resolution.resolutionHash,
+      sliceDesigner,
+    });
+
+    assert.equal(designed.draftId, goal.draftId);
+    assert.equal(designed.status, "ready_for_review");
+    assert.equal(designed.phase, "slice_review");
+    assert.equal(designed.goalDesignPackage.schemaVersion, "southstar.goal_design_package.v2");
+    assert.equal(receivedBindingId, resolution.bindings[0]!.id);
+    assert.equal((await loadCurrentGoalDesignPackagePg(db, goal.draftId)).packageHash, designed.goalDesignPackageHash);
+    const stored = await getResourceByKeyPg(db, "planner_draft", goal.draftId);
+    assert.equal(stored?.status, "ready_for_review");
+    assert.equal((stored?.payload as any).goalDesignPhase, "slice_review");
+    const plannerDraftCount = await db.one<{ count: string }>(
+      "select count(*) from southstar.runtime_resources where resource_type = 'planner_draft'",
+    );
+    assert.equal(Number(plannerDraftCount.count), 1);
   });
 });
 

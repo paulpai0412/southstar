@@ -25,7 +25,11 @@ import {
   type GoalContractVocabularyGapV1,
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
-import { validateGoalDesignPackage, type GoalDesignPackageV1 } from "../orchestration/goal-design.ts";
+import {
+  validateGoalDesignPackage,
+  validateGoalDesignPackageV2,
+  type GoalDesignPackage,
+} from "../orchestration/goal-design.ts";
 import {
   goalRequirementDraftHash,
   validateGoalRequirementDraft,
@@ -89,7 +93,7 @@ export type PostgresPlannerDraftResult = {
   /** Host-owned readiness projection for requirement review drafts. */
   confirmable?: boolean;
   goalDesignPackageHash?: string;
-  goalDesignPackage?: GoalDesignPackageV1;
+  goalDesignPackage?: GoalDesignPackage;
   blockers: string[];
   validationIssues: PlannerDraftValidationIssue[];
   taskSummaries: PlannerDraftTaskSummary[];
@@ -169,7 +173,7 @@ export type PlannerDraftPersistence = (resource: Parameters<typeof upsertRuntime
 
 export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
   goalInterpreter: GoalContractInterpreter;
-  goalDesignPackage?: GoalDesignPackageV1;
+  goalDesignPackage?: GoalDesignPackage;
   composer?: WorkflowComposer;
   onProgress?: PlannerDraftProgressListener;
   onGoalContractDelta?: (text: string) => void;
@@ -1047,7 +1051,7 @@ async function persistTemplateFallbackIfNeeded(
   db: SouthstarDb,
   input: {
     draftId: string;
-    goalDesignPackage?: GoalDesignPackageV1;
+    goalDesignPackage?: GoalDesignPackage;
     attempts: Array<{
       validation: { ok: boolean; issues: WorkflowCompositionValidationIssue[] };
       composition?: WorkflowCompositionPlan;
@@ -1599,10 +1603,13 @@ function requiredStoredGoalContract(value: unknown, draftId: string): GoalContra
   return contract;
 }
 
-function storedGoalDesignPackage(value: unknown): GoalDesignPackageV1 | undefined {
+function storedGoalDesignPackage(value: unknown): GoalDesignPackage | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const pkg = value as GoalDesignPackageV1;
-  return validateGoalDesignPackage(pkg).length === 0 ? pkg : undefined;
+  const pkg = value as GoalDesignPackage;
+  const issues = pkg.schemaVersion === "southstar.goal_design_package.v2"
+    ? validateGoalDesignPackageV2(pkg)
+    : validateGoalDesignPackage(pkg);
+  return issues.length === 0 ? pkg : undefined;
 }
 
 function storedOrLegacyGoalContract(

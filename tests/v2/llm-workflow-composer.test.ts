@@ -7,7 +7,7 @@ import {
   parseWorkflowCompositionPlanFromText,
   WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA,
 } from "../../src/v2/orchestration/llm-composer.ts";
-import { finalizeGoalDesignPackage } from "../../src/v2/orchestration/goal-design.ts";
+import { finalizeGoalDesignPackage, finalizeGoalDesignPackageV2 } from "../../src/v2/orchestration/goal-design.ts";
 import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 const GOAL_CONTRACT = softwareGoalContract();
@@ -119,6 +119,34 @@ test("LLM composer prompt forbids using Goal Design skill refs as DAG primitives
   assert.match(prompts[0] ?? "", /library\/skills\/southstar-goal-design\.skill\.md/);
   assert.match(prompts[0] ?? "", /must never be used as agentDefinitionRef, skillRefs, instructionRefs, agentProfileRef, evaluatorProfileRef, toolGrantRefs, or mcpGrantRefs/i);
   assert.match(prompts[0] ?? "", /GoalDesignPackage is a planning constraint, not a selectable Library primitive/i);
+});
+
+test("LLM composer freezes V2 validation binding evaluator and artifact refs", async () => {
+  const prompts: string[] = [];
+  const composer = new LlmWorkflowComposer({
+    model: "test-model",
+    maxOutputChars: 20_000,
+    client: {
+      async generateText(input) {
+        prompts.push(input.prompt);
+        return JSON.stringify(validPlan());
+      },
+    },
+  });
+  const goalDesignPackage = goalDesignPackageV2();
+
+  await composer.compose({
+    goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
+    candidatePacket: candidatePacket(),
+    goalDesignPackage,
+  });
+
+  assert.match(prompts[0] ?? "", /FrozenValidationBindings are authoritative and immutable/i);
+  assert.match(prompts[0] ?? "", new RegExp(goalDesignPackage.validationBindings[0]!.evaluatorProfileRef));
+  assert.match(prompts[0] ?? "", new RegExp(goalDesignPackage.validationBindings[0]!.evaluatorProfileVersionRef));
+  assert.match(prompts[0] ?? "", /Do not use a validation binding id as evaluatorProfileRef/i);
+  assert.match(prompts[0] ?? "", /do not replace or invent evaluator profile or artifact refs/i);
 });
 
 test("LLM composer uses streaming text client and relays true deltas", async () => {
@@ -592,6 +620,64 @@ function goalDesignPackage() {
         mutationBoundary: "one cohesive implementation boundary",
         expectedArtifactRefs: [artifactRef],
         evaluatorContractRefs: ["eval-main"],
+        dependsOnSliceIds: [],
+        dependencyArtifactRefs: [],
+      }],
+    },
+    compositionStrategy: {
+      mode: "single-run",
+      sliceIds: ["slice-main"],
+      rationale: "one atomic requirement boundary",
+    },
+    templatePolicy: { mode: "auto" },
+    goalDesignSkillRef: "skill.southstar-goal-design",
+    goalDesignSkillVersionRef: "skill.southstar-goal-design@test",
+    workspaceDiscoveryHash: "workspace-test",
+    mode: "auto_until_blocked",
+  });
+}
+
+function goalDesignPackageV2() {
+  const requirement = GOAL_CONTRACT.requirements[0]!;
+  const artifactRef = GOAL_CONTRACT.expectedArtifactRefs[0]!;
+  const bindingId = "binding.main";
+  return finalizeGoalDesignPackageV2({
+    schemaVersion: "southstar.goal_design_package.v2",
+    revision: 1,
+    goalContract: GOAL_CONTRACT,
+    requirementDraftHash: "confirmed-requirement-draft-hash",
+    validationBindings: [{
+      schemaVersion: "southstar.requirement_validation_binding.v1",
+      id: bindingId,
+      requirementId: requirement.id,
+      criterionIds: ["criterion-main"],
+      acceptanceCriteria: [...requirement.acceptanceCriteria],
+      artifactContractRefs: [artifactRef],
+      artifactContractVersionRefs: [`${artifactRef}@v2`],
+      evaluatorProfileRef: "evaluator.frozen-main",
+      evaluatorProfileVersionRef: "evaluator.frozen-main@v3",
+      verificationMode: "deterministic",
+      criterionChecks: [{
+        criterionId: "criterion-main",
+        procedureRef: "procedure.run-tests",
+        expectedEvidenceKinds: ["test_result"],
+      }],
+      requiredEvidenceKinds: ["test_result"],
+      independence: "independent",
+      failureClassifications: ["implementation_gap"],
+    }],
+    slicePlan: {
+      schemaVersion: "southstar.goal_slice_plan.v1",
+      goalContractHash: "host-filled",
+      revision: 1,
+      slices: [{
+        id: "slice-main",
+        requirementIds: [requirement.id],
+        outcome: requirement.statement,
+        stateOrArtifactOwner: artifactRef,
+        mutationBoundary: "one cohesive implementation boundary",
+        expectedArtifactRefs: [artifactRef],
+        evaluatorContractRefs: [bindingId],
         dependsOnSliceIds: [],
         dependencyArtifactRefs: [],
       }],

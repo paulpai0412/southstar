@@ -24,14 +24,14 @@ import {
   isCoverageExceptionTask,
   isProducerTask,
 } from "./goal-requirement-coverage.ts";
-import type { GoalDesignPackageV1 } from "./goal-design.ts";
+import type { GoalDesignPackage } from "./goal-design.ts";
 import type { GoalContractV1 } from "./goal-contract.ts";
 import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 
 export type ValidateWorkflowCompositionOptions = {
   scope?: string;
   goalContract?: GoalContractV1;
-  goalDesignPackage?: GoalDesignPackageV1;
+  goalDesignPackage?: GoalDesignPackage;
   targetRequirementIds?: string[];
 };
 
@@ -91,7 +91,7 @@ function workflowValidationScope(options: ValidateWorkflowCompositionOptions): s
 
 function validateGoalDesignSlicePlan(
   plan: WorkflowCompositionPlan,
-  packageValue: GoalDesignPackageV1,
+  packageValue: GoalDesignPackage,
   issues: WorkflowCompositionValidationIssue[],
 ): void {
   const slicesById = new Map(packageValue.slicePlan.slices.map((slice) => [slice.id, slice]));
@@ -112,7 +112,21 @@ function validateGoalDesignSlicePlan(
     tasks.push(task);
     taskIdsBySlice.set(sliceId, tasks);
     const ownedRequirementIds = new Set(slice.requirementIds);
-    if (nodeType === "verify" || nodeType === "review") continue;
+    if (nodeType === "verify" || nodeType === "review") {
+      if (packageValue.schemaVersion === "southstar.goal_design_package.v2") {
+        const allowedEvaluatorRefs = new Set(packageValue.validationBindings
+          .filter((binding) => task.requirementIds.includes(binding.requirementId))
+          .map((binding) => binding.evaluatorProfileRef));
+        if (allowedEvaluatorRefs.size > 0 && !allowedEvaluatorRefs.has(task.evaluatorProfileRef)) {
+          issues.push(issue(
+            "evaluator_binding_mismatch",
+            `tasks.${taskIndex}.evaluatorProfileRef`,
+            `task ${task.id} must use a frozen evaluator profile for its requirement bindings`,
+          ));
+        }
+      }
+      continue;
+    }
     for (const requirementId of task.requirementIds) {
       if (ownedRequirementIds.has(requirementId)) continue;
       issues.push(issue(
@@ -922,7 +936,7 @@ async function validateEdgeConstraints(
   plan: WorkflowCompositionPlan,
   issues: WorkflowCompositionValidationIssue[],
   scope: string,
-  packageValue?: GoalDesignPackageV1,
+  packageValue?: GoalDesignPackage,
 ): Promise<void> {
   const generatedProfileRefs = validatedGeneratedAgentProfiles(plan);
   const hostArtifactRefs = new Set(packageValue?.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs) ?? []);
@@ -1082,16 +1096,26 @@ function candidateRefs(packet: CandidatePacket): Set<string> {
   return refs;
 }
 
-function goalDesignHostRefs(packageValue: GoalDesignPackageV1): Set<string> {
+function goalDesignHostRefs(packageValue: GoalDesignPackage): Set<string> {
   return new Set([
     ...packageValue.slicePlan.slices.flatMap((slice) => slice.expectedArtifactRefs),
-    ...packageValue.evaluatorContracts.map((contract) => contract.id),
+    ...(packageValue.schemaVersion === "southstar.goal_design_package.v1"
+      ? packageValue.evaluatorContracts.map((contract) => contract.id)
+      : []),
   ]);
 }
 
-function goalDesignEvaluatorArtifactRefs(packageValue: GoalDesignPackageV1 | undefined): Map<string, Set<string>> {
+function goalDesignEvaluatorArtifactRefs(packageValue: GoalDesignPackage | undefined): Map<string, Set<string>> {
   const result = new Map<string, Set<string>>();
   if (!packageValue) return result;
+  if (packageValue.schemaVersion === "southstar.goal_design_package.v2") {
+    for (const binding of packageValue.validationBindings) {
+      const refs = result.get(binding.evaluatorProfileRef) ?? new Set<string>();
+      for (const artifactRef of binding.artifactContractRefs) refs.add(artifactRef);
+      result.set(binding.evaluatorProfileRef, refs);
+    }
+    return result;
+  }
   const artifactRefsByRequirementId = new Map<string, Set<string>>();
   for (const slice of packageValue.slicePlan.slices) {
     for (const requirementId of slice.requirementIds) {
