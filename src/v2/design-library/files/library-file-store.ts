@@ -7,6 +7,7 @@ import {
   deactivateLibraryEdgesForSourceExcept,
   findLibraryObjectByKey,
   findLibraryObjectByKeyForUpdate,
+  repinInboundValidationEdgesForArtifact,
   upsertLibraryEdge,
   upsertLibraryObject,
 } from "../library-graph-store.ts";
@@ -160,6 +161,9 @@ export async function syncLibraryFileRecordToGraph(
     : projection.object;
   await assertReferencedLibraryObjectsExist(db, projection);
   const object = await upsertLibraryObject(db, objectInput);
+  if (object.objectKind === "artifact_contract") {
+    await repinInboundValidationEdgesForArtifact(db, { artifactObjectKey: object.objectKey });
+  }
   await deactivateLibraryEdgesForSourceExcept(db, {
     fromObjectKey: projection.object.objectKey,
     sourcePath: file.path,
@@ -262,6 +266,12 @@ export async function syncLibraryFileRecordsToGraphPg(
   const objects: LibraryObjectSummary[] = [];
   for (const { projection } of projections) {
     objects.push(await upsertLibraryObject(db, projection.object));
+  }
+
+  for (const object of objects) {
+    if (object.objectKind === "artifact_contract") {
+      await repinInboundValidationEdgesForArtifact(db, { artifactObjectKey: object.objectKey });
+    }
   }
 
   const edges: LibraryEdgeRecord[] = [];

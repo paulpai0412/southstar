@@ -250,3 +250,59 @@ Final compatibility verification rerun:
   including the ready file-backed pair and blocked legacy pair.
 - `npx tsx --test tests/v2/goal-validation-resolver.test.ts tests/v2/library-file-parser.test.ts tests/v2/library-file-store.test.ts tests/v2/library-candidate-resolver.test.ts` — 41/41 pass.
 - `npx tsc --noEmit --pretty false` and `git diff --check` — pass.
+
+## Artifact head repin follow-up
+
+- Artifact file sync now transactionally repins active inbound
+  `validates_artifact` edges to the artifact's current head version without
+  requiring evaluator resync. Approved evaluator source heads are used; stale
+  or non-executable sources are deactivated. Recreated edges retain scope,
+  weight, and source metadata, while stale rows remain inactive for audit.
+- A real file-backed Postgres regression syncs the approved flashcard artifact
+  as v1, syncs its evaluator once, then syncs an in-memory v2 artifact record
+  without evaluator resync. It proves the old edge is inactive, the new edge
+  is pinned and metadata-preserving, and validation resolution remains
+  `ready=true`.
+
+Repin verification:
+
+- `npx tsx --test tests/v2/library-file-store.test.ts tests/v2/library-reconcile-postgres.test.ts tests/v2/library-candidate-resolver.test.ts tests/v2/goal-validation-resolver.test.ts` — 34/34 pass.
+
+## Review: compatibility follow-up 7c81d1d..ae31a1e
+
+Spec Compliance: **CONDITIONAL PASS**.
+
+Verified:
+
+- File-backed sync resolves each target's current head and writes both
+  `fromVersionRef` and `toVersionRef`; missing target versions fail closed
+  (`library-file-store.ts:160-205,266-307`). The integration test confirms the
+  edge values and a real approved flashcard artifact/evaluator pair resolves
+  with `ready=true` (`tests/v2/goal-validation-resolver.test.ts:218-263`).
+- Nested `allowedEvidenceKinds` arrays in evaluator procedures are parsed and
+  survive sync; the authored evaluator files provide mode-matching procedures,
+  result schemas, independence policy, evidence kinds, and failure classes.
+- The legacy pair remains blocked when strict artifact/evaluator fields are
+  absent, preserving fail-closed behavior (`tests/v2/goal-validation-resolver.test.ts:265-293`).
+- The modified flashcard YAML files are Library authoring files under
+  `library/`, not test fixtures, seed runtime code, or hardcoded resolver
+  branches. Focused combined verification passes 41/41; TypeScript and diff
+  checks pass.
+
+Remaining important lifecycle issue:
+
+1. Versioned inbound edges are not refreshed when only the target artifact file
+   changes. `versionedEdge()` pins the target head only while syncing the source
+   evaluator file; `deactivateLibraryEdgesForSourceExcept()` keys retained edges
+   by edge type/target/scope and ignores endpoint versions. Therefore an
+   artifact revision leaves evaluator edges pointing at the old target head,
+   and the resolver correctly returns no ready binding until every referencing
+   evaluator file is resynced. Either update inbound validation edges when a
+   target head changes, or provide a transactional graph reconcile that rewrites
+   all affected pinned edges. Add a regression test for artifact v1 → v2 sync
+   followed by resolver readiness without evaluator reimport.
+
+Task quality assessment: **strong and operational for the initial file-backed
+pair; conditional until target-version edge refresh is handled**. The legacy
+blocked test and real sync→resolve test materially validate the intended
+boundary without adding seed/fixture behavior.

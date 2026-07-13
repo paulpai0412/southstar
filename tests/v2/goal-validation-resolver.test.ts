@@ -3,7 +3,12 @@ import test from "node:test";
 import { resolve } from "node:path";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { findLibraryObjectByKey } from "../../src/v2/design-library/library-graph-store.ts";
-import { syncLibraryFileToGraph } from "../../src/v2/design-library/files/library-file-store.ts";
+import {
+  readLibraryFile,
+  syncLibraryFileRecordToGraph,
+  syncLibraryFileToGraph,
+} from "../../src/v2/design-library/files/library-file-store.ts";
+import { parseLibraryFileContent } from "../../src/v2/design-library/files/library-file-parser.ts";
 import { confirmGoalRequirementDraft, finalizeGoalRequirementDraft } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import {
   assertGoalValidationResolutionReady,
@@ -228,6 +233,69 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
     assert.equal(result.gaps.length, 0);
     assert.equal(result.bindings[0]!.artifactContractVersionRefs[0], artifact!.headVersionId);
     assert.equal(result.bindings[0]!.evaluatorProfileVersionRef, evaluator!.headVersionId);
+
+    const artifactFile = await readLibraryFile({
+      root: libraryRoot,
+      relativePath: "artifacts/flashcard-deck-contract.artifact.yaml",
+    });
+    const v2Content = artifactFile.content.replace(
+      'title: "Flashcard Deck Contract"',
+      'title: "Flashcard Deck Contract v2"',
+    );
+    const parsedV2 = parseLibraryFileContent({
+      path: "library/artifacts/flashcard-deck-contract.artifact.yaml",
+      content: v2Content,
+    });
+    assert.equal(parsedV2.ok, true);
+    if (!parsedV2.ok) throw new Error("expected v2 artifact file to parse");
+    const oldArtifactVersion = artifact.headVersionId;
+    const oldEdge = await db.one<{
+      id: string;
+      metadata_json: Record<string, unknown>;
+    }>(
+      `select id, metadata_json
+         from southstar.library_edges
+        where from_object_key = $1 and edge_type = 'validates_artifact' and to_object_key = $2 and status = 'active'`,
+      [evaluator!.objectKey, artifact!.objectKey],
+    );
+
+    const syncedV2 = await syncLibraryFileRecordToGraph(db, parsedV2.file);
+    assert.notEqual(syncedV2.object.headVersionId, oldArtifactVersion);
+    const activeEdges = await db.query<{
+      id: string;
+      from_version_ref: string | null;
+      to_version_ref: string | null;
+      status: string;
+      metadata_json: Record<string, unknown>;
+    }>(
+      `select id, from_version_ref, to_version_ref, status, metadata_json
+         from southstar.library_edges
+        where from_object_key = $1 and edge_type = 'validates_artifact' and to_object_key = $2
+        order by id`,
+      [evaluator!.objectKey, artifact!.objectKey],
+    );
+    const activeAfterRepin = activeEdges.rows.filter((candidate) => candidate.status === "active");
+    assert.equal(activeAfterRepin.length, 1);
+    assert.equal(activeAfterRepin[0]!.id === oldEdge.id, false);
+    assert.equal(activeAfterRepin[0]!.from_version_ref, evaluator!.headVersionId);
+    assert.equal(activeAfterRepin[0]!.to_version_ref, syncedV2.object.headVersionId);
+    assert.deepEqual(activeAfterRepin[0]!.metadata_json, oldEdge.metadata_json);
+    assert.equal(activeEdges.rows.find((candidate) => candidate.id === oldEdge.id)?.status, "inactive");
+
+    const afterRepin = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract("artifact-ref"),
+      requirementDraft: confirmedRequirementDraft("artifact-ref"),
+      scope: "general",
+      ranker: fixedRanker({
+        artifactRef: "artifact.flashcard-deck-contract",
+        evaluatorRef: "evaluator.flashcard-deck-contract-validator",
+        verificationMode: "deterministic",
+        procedureRef: "procedure.flashcard-deck-contract",
+      }),
+    });
+    assert.equal(afterRepin.ready, true);
+    assert.equal(afterRepin.gaps.length, 0);
+    assert.equal(afterRepin.bindings[0]!.artifactContractVersionRefs[0], syncedV2.object.headVersionId);
   });
 });
 

@@ -169,6 +169,103 @@ export async function deactivateLibraryEdgesForSourceExcept(
   return result.rowCount ?? 0;
 }
 
+/**
+ * Keep inbound artifact-validation edges aligned with the target artifact's
+ * current version. This runs inside the caller's transaction so an artifact
+ * head change cannot expose a half-repinned validation graph. Existing edge
+ * metadata is carried forward; stale rows are retained as inactive audit
+ * history rather than silently deleted.
+ */
+export async function repinInboundValidationEdgesForArtifact(
+  db: SouthstarDb,
+  input: { artifactObjectKey: string },
+): Promise<{ repinned: number; deactivated: number }> {
+  const artifact = await findLibraryObjectByKeyForUpdate(db, input.artifactObjectKey);
+  if (!artifact || artifact.objectKind !== "artifact_contract" || !artifact.headVersionId) {
+    throw new Error(`unresolved Library artifact version ${input.artifactObjectKey}`);
+  }
+
+  const inbound = await db.query<{
+    id: string;
+    from_object_key: string;
+    from_version_ref: string | null;
+    edge_type: LibraryEdgeType;
+    to_object_key: string;
+    to_version_ref: string | null;
+    scope: string;
+    weight: number;
+    metadata_json: Record<string, unknown>;
+    source_status: LibraryDefinitionStatus;
+    source_head_version_id: string | null;
+    source_object_kind: LibraryDefinitionKind;
+  }>(
+    `select
+        edge.id,
+        edge.from_object_key,
+        edge.from_version_ref,
+        edge.edge_type,
+        edge.to_object_key,
+        edge.to_version_ref,
+        edge.scope,
+        edge.weight,
+        edge.metadata_json,
+        source.status as source_status,
+        source.head_version_id as source_head_version_id,
+        source.object_kind as source_object_kind
+       from southstar.library_edges edge
+       join southstar.library_objects source
+         on source.object_key = edge.from_object_key
+      where edge.to_object_key = $1
+        and edge.edge_type = 'validates_artifact'
+        and edge.status = 'active'
+      for update of edge, source`,
+    [input.artifactObjectKey],
+  );
+
+  let repinned = 0;
+  let deactivated = 0;
+  for (const edge of inbound.rows) {
+    const sourceIsExecutable = artifact.status === "approved"
+      && edge.source_object_kind === "evaluator_profile"
+      && edge.source_status === "approved"
+      && Boolean(edge.source_head_version_id);
+    if (!sourceIsExecutable) {
+      const result = await db.query(
+        `update southstar.library_edges
+            set status = 'inactive'
+          where id = $1 and status = 'active'`,
+        [edge.id],
+      );
+      deactivated += result.rowCount ?? 0;
+      continue;
+    }
+
+    const current = await upsertLibraryEdge(db, {
+      fromObjectKey: edge.from_object_key,
+      fromVersionRef: edge.source_head_version_id!,
+      edgeType: edge.edge_type,
+      toObjectKey: artifact.objectKey,
+      toVersionRef: artifact.headVersionId,
+      scope: edge.scope,
+      status: "active",
+      weight: edge.weight,
+      metadata: edge.metadata_json,
+    });
+    if (current.id !== edge.id) {
+      const result = await db.query(
+        `update southstar.library_edges
+            set status = 'inactive'
+          where id = $1 and status = 'active'`,
+        [edge.id],
+      );
+      deactivated += result.rowCount ?? 0;
+    }
+    repinned += 1;
+  }
+
+  return { repinned, deactivated };
+}
+
 export async function findApprovedLibraryObjectsByKind(
   db: SouthstarDb,
   objectKind: LibraryDefinitionKind,
