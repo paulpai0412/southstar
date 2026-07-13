@@ -66,6 +66,7 @@ export type GoalRequirementDraftInputV1 = {
 };
 
 export type GoalRequirementDraftIssueCode =
+  | "invalid_draft"
   | "invalid_schema_version"
   | "invalid_revision"
   | "invalid_parent_revision"
@@ -77,10 +78,15 @@ export type GoalRequirementDraftIssueCode =
   | "duplicate_criterion_id"
   | "invalid_requirement"
   | "invalid_criterion"
+  | "invalid_artifact"
   | "invalid_requirement_status"
+  | "invalid_non_goals"
+  | "invalid_blocking_inputs"
   | "blocking_requirement_missing_criteria"
   | "blocking_requirement_has_open_question"
   | "no_active_requirements"
+  | "missing_draft_hash"
+  | "invalid_draft_hash"
   | "draft_hash_mismatch";
 
 export type GoalRequirementDraftIssue = {
@@ -93,7 +99,7 @@ export type GoalRequirementDraftRevisionOperation =
   | {
       kind: "update";
       requirementId: string;
-      patch: Partial<GoalRequirementDraftItemInputV1>;
+      patch: GoalRequirementDraftRevisionPatchV1;
     }
   | {
       kind: "create";
@@ -117,6 +123,8 @@ export type GoalRequirementDraftRevisionOperation =
       requirementIds: string[];
       requirement: GoalRequirementDraftItemInputV1;
     };
+
+export type GoalRequirementDraftRevisionPatchV1 = Partial<Omit<GoalRequirementDraftItemInputV1, "id" | "status">>;
 
 type DraftWithoutHash = Omit<GoalRequirementDraftV1, "draftHash">;
 
@@ -146,6 +154,9 @@ export function finalizeGoalRequirementDraft(input: GoalRequirementDraftInputV1)
 
 export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): GoalRequirementDraftIssue[] {
   const issues: GoalRequirementDraftIssue[] = [];
+  if (!isRecord(draft)) {
+    return [issue("invalid_draft", "draft", "Goal Requirement Draft must be an object")];
+  }
   if (draft.schemaVersion !== "southstar.goal_requirement_draft.v1") {
     issues.push(issue("invalid_schema_version", "schemaVersion", "unsupported Goal Requirement Draft schema version"));
   }
@@ -156,21 +167,30 @@ export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): Goa
     issues.push(issue("invalid_parent_revision", "parentRevision", "parentRevision must be an earlier positive revision"));
   }
   if (!nonEmptyString(draft.originalPrompt)) issues.push(issue("invalid_original_prompt", "originalPrompt", "originalPrompt must be non-empty"));
-  if (!draft.workspace || !nonEmptyString(draft.workspace.cwd)) issues.push(issue("invalid_workspace", "workspace.cwd", "workspace.cwd must be non-empty"));
+  if (!isRecord(draft.workspace) || !nonEmptyString(draft.workspace.cwd)) issues.push(issue("invalid_workspace", "workspace.cwd", "workspace.cwd must be non-empty"));
   if (!nonEmptyString(draft.summary)) issues.push(issue("invalid_summary", "summary", "summary must be non-empty"));
-  if (!Array.isArray(draft.requirements) || draft.requirements.length === 0) {
+  if (!stringArrayValid(draft.nonGoals)) issues.push(issue("invalid_non_goals", "nonGoals", "nonGoals must be an array of non-empty strings"));
+  if (!stringArrayValid(draft.blockingInputs)) issues.push(issue("invalid_blocking_inputs", "blockingInputs", "blockingInputs must be an array of non-empty strings"));
+  const requirements = Array.isArray(draft.requirements) ? draft.requirements : [];
+  if (requirements.length === 0) {
     issues.push(issue("empty_requirements", "requirements", "requirements must contain at least one requirement"));
   }
 
   const requirementIds = new Set<string>();
   const criterionIds = new Set<string>();
-  for (const [requirementIndex, requirement] of (draft.requirements ?? []).entries()) {
+  for (const [requirementIndex, rawRequirement] of requirements.entries()) {
     const path = `requirements.${requirementIndex}`;
+    if (!isRecord(rawRequirement)) {
+      issues.push(issue("invalid_requirement", path, "requirement must be an object"));
+      continue;
+    }
+    const requirement = rawRequirement as unknown as GoalRequirementDraftItemV1;
     if (!nonEmptyString(requirement.id)) issues.push(issue("invalid_requirement", `${path}.id`, "requirement id must be non-empty"));
     if (requirement.id && requirementIds.has(requirement.id)) issues.push(issue("duplicate_requirement_id", `${path}.id`, `duplicate requirement id: ${requirement.id}`));
     if (requirement.id) requirementIds.add(requirement.id);
     if (!validateRequirementShape(requirement)) {
       issues.push(issue("invalid_requirement", path, "requirement is missing a valid field or field type"));
+      collectNestedRequirementIssues(requirement, path, issues);
       continue;
     }
     if (!VALID_STATUSES.has(requirement.status)) {
@@ -191,10 +211,14 @@ export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): Goa
       if (criterion.id) criterionIds.add(criterion.id);
     }
   }
-  if (Array.isArray(draft.requirements) && draft.requirements.length > 0 && draft.requirements.every((requirement) => requirement.status === "superseded")) {
+  if (requirements.length > 0 && requirements.every((requirement) => isRecord(requirement) && requirement.status === "superseded")) {
     issues.push(issue("no_active_requirements", "requirements", "at least one requirement must remain active"));
   }
-  if (typeof draft.draftHash === "string" && draft.draftHash.length > 0) {
+  if (draft.draftHash === undefined || draft.draftHash === null || (typeof draft.draftHash === "string" && draft.draftHash.trim().length === 0)) {
+    issues.push(issue("missing_draft_hash", "draftHash", "draftHash must be a non-empty canonical hash"));
+  } else if (typeof draft.draftHash !== "string" || !/^[a-f0-9]{64}$/.test(draft.draftHash)) {
+    issues.push(issue("invalid_draft_hash", "draftHash", "draftHash must be a lowercase SHA-256 hex hash"));
+  } else {
     const { draftHash: _draftHash, ...withoutHash } = draft;
     if (goalRequirementDraftHash(withoutHash) !== draft.draftHash) {
       issues.push(issue("draft_hash_mismatch", "draftHash", "draftHash does not match the canonical draft payload"));
@@ -215,6 +239,9 @@ export function reviseGoalRequirementDraft(
       const index = findRequirementIndex(requirements, operation.requirementId);
       const existing = requirements[index]!;
       const patch = operation.patch;
+      if ("id" in patch || "status" in patch) {
+        throw new Error("goal requirement revision patch cannot modify host-owned id or status; use supersede or restore");
+      }
       const merged: GoalRequirementDraftItemInputV1 = {
         ...toRequirementInput(existing),
         ...patch,
@@ -286,6 +313,7 @@ export function confirmGoalRequirementDraft(
       ...interpretation,
       summary: draft.summary,
       requirements: active.map((requirement) => ({
+        id: requirement.id,
         statement: requirement.statement,
         acceptanceCriteria: requirement.acceptanceCriteria.map((criterion) => criterion.statement),
         blocking: requirement.blocking,
@@ -310,7 +338,6 @@ const REVISION_REVIEWABLE_ISSUES = new Set<GoalRequirementDraftIssueCode>([
   "blocking_requirement_missing_criteria",
   "blocking_requirement_has_open_question",
   "no_active_requirements",
-  "draft_hash_mismatch",
 ]);
 
 function materializeRequirement(
@@ -375,13 +402,14 @@ function validateDraftInput(input: GoalRequirementDraftInputV1): void {
   if (!nonEmptyString(input.cwd)) throw new Error("cwd must be a non-empty string");
   if (!nonEmptyString(input.summary)) throw new Error("summary must be a non-empty string");
   if (!Array.isArray(input.requirements) || input.requirements.length === 0) throw new Error("requirements must contain at least one requirement");
-  if (!Array.isArray(input.nonGoals) || !Array.isArray(input.blockingInputs)) throw new Error("nonGoals and blockingInputs must be arrays");
+  if (!stringArrayValid(input.nonGoals) || !stringArrayValid(input.blockingInputs)) throw new Error("nonGoals and blockingInputs must be arrays of non-empty strings");
   for (const [index, requirement] of input.requirements.entries()) {
     if (!validateRequirementInputShape(requirement)) throw new Error(`requirements.${index} is invalid`);
   }
 }
 
-function validateRequirementInputShape(requirement: GoalRequirementDraftItemInputV1): boolean {
+function validateRequirementInputShape(requirement: unknown): boolean {
+  if (!isRecord(requirement)) return false;
   return Boolean(
     nonEmptyString(requirement.title)
     && nonEmptyString(requirement.statement)
@@ -390,9 +418,9 @@ function validateRequirementInputShape(requirement: GoalRequirementDraftItemInpu
     && stringArrayValid(requirement.userVisibleBehaviors)
     && stringArrayValid(requirement.businessRules)
     && Array.isArray(requirement.acceptanceCriteria)
-    && requirement.acceptanceCriteria.every((criterion) => nonEmptyString(criterion.statement) && stringArrayValid(criterion.evidenceIntent))
+    && requirement.acceptanceCriteria.every(criterionInputShape)
     && Array.isArray(requirement.expectedOutcomeArtifacts)
-    && requirement.expectedOutcomeArtifacts.every((artifact) => nonEmptyString(artifact.description) && (artifact.mediaType === undefined || nonEmptyString(artifact.mediaType)))
+    && requirement.expectedOutcomeArtifacts.every(artifactInputShape)
     && stringArrayValid(requirement.verificationIntent)
     && stringArrayValid(requirement.assumptions)
     && stringArrayValid(requirement.openQuestions)
@@ -401,12 +429,55 @@ function validateRequirementInputShape(requirement: GoalRequirementDraftItemInpu
   );
 }
 
-function validateRequirementShape(requirement: GoalRequirementDraftItemV1): boolean {
+function validateRequirementShape(requirement: unknown): boolean {
+  if (!isRecord(requirement)) return false;
   return Boolean(
     validateRequirementInputShape(requirement)
     && nonEmptyString(requirement.id)
-    && requirement.acceptanceCriteria.every((criterion) => nonEmptyString(criterion.id))
+    && Array.isArray(requirement.acceptanceCriteria)
+    && requirement.acceptanceCriteria.every(criterionDraftShape)
   );
+}
+
+function criterionInputShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return nonEmptyString(value.statement) && stringArrayValid(value.evidenceIntent);
+}
+
+function criterionDraftShape(value: unknown): boolean {
+  return isRecord(value) && nonEmptyString(value.id) && criterionInputShape(value);
+}
+
+function artifactInputShape(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return nonEmptyString(value.description)
+    && (value.mediaType === undefined || nonEmptyString(value.mediaType));
+}
+
+function collectNestedRequirementIssues(
+  requirement: unknown,
+  path: string,
+  issues: GoalRequirementDraftIssue[],
+): void {
+  if (!isRecord(requirement)) return;
+  if (!Array.isArray(requirement.acceptanceCriteria)) {
+    issues.push(issue("invalid_criterion", `${path}.acceptanceCriteria`, "acceptanceCriteria must be an array"));
+  } else {
+    for (const [criterionIndex, criterion] of requirement.acceptanceCriteria.entries()) {
+      if (!criterionDraftShape(criterion)) {
+        issues.push(issue("invalid_criterion", `${path}.acceptanceCriteria.${criterionIndex}`, "criterion needs id, statement, and evidenceIntent"));
+      }
+    }
+  }
+  if (!Array.isArray(requirement.expectedOutcomeArtifacts)) {
+    issues.push(issue("invalid_artifact", `${path}.expectedOutcomeArtifacts`, "expectedOutcomeArtifacts must be an array"));
+  } else {
+    for (const [artifactIndex, artifact] of requirement.expectedOutcomeArtifacts.entries()) {
+      if (!artifactInputShape(artifact)) {
+        issues.push(issue("invalid_artifact", `${path}.expectedOutcomeArtifacts.${artifactIndex}`, "artifact needs description and an optional non-empty mediaType"));
+      }
+    }
+  }
 }
 
 function assertUniqueIds(requirements: GoalRequirementDraftItemV1[]): void {
@@ -462,6 +533,10 @@ function statusFor(openQuestions: string[]): GoalRequirementDraftItemV1["status"
 
 function stringArrayValid(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((entry) => typeof entry === "string" && entry.trim().length > 0);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nonEmptyString(value: unknown): value is string {

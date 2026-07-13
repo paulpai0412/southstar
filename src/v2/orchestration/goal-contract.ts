@@ -80,6 +80,8 @@ export class GoalContractVocabularyGapError extends Error {
 }
 
 export type GoalRequirementInterpretationV1 = Omit<GoalRequirementV1, "id" | "expectedArtifacts"> & {
+  /** Host-provided lineage id. LLM interpretation payloads must not include this field. */
+  id?: string;
   expectedArtifacts?: GoalExpectedArtifactV1[];
 };
 
@@ -153,6 +155,8 @@ const LEGACY_INTERPRETATION_KEYS = [
 
 const REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source", "expectedArtifacts"] as const;
 const LEGACY_REQUIREMENT_KEYS = ["statement", "acceptanceCriteria", "blocking", "source"] as const;
+const REQUIREMENT_KEYS_WITH_ID = ["id", ...REQUIREMENT_KEYS] as const;
+const LEGACY_REQUIREMENT_KEYS_WITH_ID = ["id", ...LEGACY_REQUIREMENT_KEYS] as const;
 const WORK_TYPES = new Set<RequirementSpecV2["workType"]>([
   "software_feature",
   "bugfix",
@@ -204,13 +208,13 @@ export async function interpretGoalContractWithLlm(
 
 export function finalizeGoalContract(input: FinalizeGoalContractInputV1): GoalContractV1 {
   validateHostInput(input);
-  const interpretation = validateInterpretation(input.interpretation);
+  const interpretation = validateInterpretation(input.interpretation, { allowRequirementIds: true });
   return materializeContract(input, interpretation, 1);
 }
 
 export function reviseGoalContract(input: ReviseGoalContractInputV1): GoalContractV1 {
   validateHostInput(input);
-  const interpretation = validateInterpretation(input.interpretation);
+  const interpretation = validateInterpretation(input.interpretation, { allowRequirementIds: true });
   const previousByStatement = new Map(
     input.previousContract.requirements.map((requirement) => [normalizeStatement(requirement.statement), requirement]),
   );
@@ -333,7 +337,9 @@ function materializedRequirements(
 ): GoalRequirementV1[] {
   const materialized = requirements.map((requirement) => ({
     ...requirement,
-    id: "id" in requirement ? requirement.id : requirementId(requirement.statement),
+    id: typeof requirement.id === "string" && requirement.id.length > 0
+      ? requirement.id
+      : requirementId(requirement.statement),
     acceptanceCriteria: [...requirement.acceptanceCriteria],
     expectedArtifacts: [...(requirement.expectedArtifacts ?? [])],
   }));
@@ -442,7 +448,10 @@ function parseInterpretation(text: string): GoalContractInterpretationV1 {
   return validateInterpretation(parsed, { requireWorkType: true });
 }
 
-function validateInterpretation(value: unknown, options: { requireWorkType?: boolean } = {}): GoalContractInterpretationV1 {
+function validateInterpretation(
+  value: unknown,
+  options: { requireWorkType?: boolean; allowRequirementIds?: boolean } = {},
+): GoalContractInterpretationV1 {
   const object = requiredObject(value, "$");
   if (options.requireWorkType && !("workType" in object)) {
     throw new Error("$ is missing required fields: workType");
@@ -456,7 +465,7 @@ function validateInterpretation(value: unknown, options: { requireWorkType?: boo
     intent: requiredString(object.intent, "intent"),
     workType: optionalWorkType(object.workType),
     summary: requiredString(object.summary, "summary"),
-    requirements: requirements.map((requirement, index) => validateRequirement(requirement, index)),
+    requirements: requirements.map((requirement, index) => validateRequirement(requirement, index, options)),
     expectedArtifactRefs: libraryRefArray(object.expectedArtifactRefs, "expectedArtifactRefs", "artifact."),
     requiredCapabilities: libraryRefArray(object.requiredCapabilities, "requiredCapabilities", "capability."),
     nonGoals: descriptiveStringArray(object.nonGoals, "nonGoals"),
@@ -493,10 +502,17 @@ function goalContractVocabularyGaps(
   return gaps;
 }
 
-function validateRequirement(value: unknown, index: number): GoalRequirementInterpretationV1 {
+function validateRequirement(
+  value: unknown,
+  index: number,
+  options: { allowRequirementIds?: boolean } = {},
+): GoalRequirementInterpretationV1 {
   const path = `requirements.${index}`;
   const object = requiredObject(value, path);
-  const allowedKeys = "expectedArtifacts" in object ? REQUIREMENT_KEYS : LEGACY_REQUIREMENT_KEYS;
+  const hasId = options.allowRequirementIds === true && "id" in object;
+  const allowedKeys = "expectedArtifacts" in object
+    ? (hasId ? REQUIREMENT_KEYS_WITH_ID : REQUIREMENT_KEYS)
+    : (hasId ? LEGACY_REQUIREMENT_KEYS_WITH_ID : LEGACY_REQUIREMENT_KEYS);
   exactKeys(object, allowedKeys, path);
   const acceptanceCriteria = stringArray(object.acceptanceCriteria, `${path}.acceptanceCriteria`);
   if (acceptanceCriteria.length === 0) {
@@ -507,6 +523,7 @@ function validateRequirement(value: unknown, index: number): GoalRequirementInte
     throw new Error(`${path}.source must be explicit or inferred`);
   }
   return {
+    ...(hasId ? { id: requiredString(object.id, `${path}.id`) } : {}),
     statement: requiredString(object.statement, `${path}.statement`),
     acceptanceCriteria,
     blocking: object.blocking,

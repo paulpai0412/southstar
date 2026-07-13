@@ -60,6 +60,7 @@ test("Requirement Draft preserves host ids and projects confirmed criteria to Go
   assert.deepEqual(confirmed.requirements[0]!.acceptanceCriteria, [
     "article.html opens while the network is disabled",
   ]);
+  assert.equal(confirmed.requirements[0]!.id, draft.requirements[0]!.id);
   assert.equal(confirmed.workspace.cwd, "/workspace/article");
 });
 
@@ -139,5 +140,62 @@ test("draft hash excludes the host hash field and validation catches tampering",
   const { draftHash: _draftHash, ...withoutHash } = draft;
   assert.equal(goalRequirementDraftHash(withoutHash), draft.draftHash);
   const issues = validateGoalRequirementDraft({ ...draft, draftHash: "tampered" });
-  assert.equal(issues.some((issue) => issue.code === "draft_hash_mismatch"), true);
+  assert.equal(issues.some((issue) => issue.code === "invalid_draft_hash"), true);
+  assert.equal(validateGoalRequirementDraft({ ...withoutHash, draftHash: "" }).some((issue) => issue.code === "missing_draft_hash"), true);
+  assert.equal(validateGoalRequirementDraft({ ...draft, draftHash: 7 as never }).some((issue) => issue.code === "invalid_draft_hash"), true);
+  assert.equal(validateGoalRequirementDraft({ ...draft, draftHash: "0".repeat(64) }).some((issue) => issue.code === "draft_hash_mismatch"), true);
+  assert.throws(
+    () => reviseGoalRequirementDraft({ ...draft, draftHash: "0".repeat(64) }, {
+      kind: "update",
+      requirementId: draft.requirements[0]!.id,
+      patch: { statement: "must not apply to a stale draft" },
+    }),
+    /draft_hash_mismatch/,
+  );
+});
+
+test("validation reports malformed nested values and top-level string arrays without throwing", () => {
+  const draft = validDraft();
+  const malformed = {
+    ...draft,
+    nonGoals: ["", 7],
+    blockingInputs: [null],
+    requirements: [
+      null,
+      {
+        ...draft.requirements[0]!,
+        acceptanceCriteria: [null],
+        expectedOutcomeArtifacts: [null],
+      },
+    ],
+  } as unknown as GoalRequirementDraftV1;
+
+  const issues = validateGoalRequirementDraft(malformed);
+  const codes = new Set(issues.map((entry) => entry.code));
+  assert.equal(codes.has("invalid_non_goals"), true);
+  assert.equal(codes.has("invalid_blocking_inputs"), true);
+  assert.equal(codes.has("invalid_requirement"), true);
+  assert.equal(codes.has("invalid_criterion"), true);
+  assert.equal(codes.has("invalid_artifact"), true);
+});
+
+test("update patches cannot overwrite host-owned ids or lifecycle status", () => {
+  const draft = validDraft();
+  const requirementId = draft.requirements[0]!.id;
+  assert.throws(
+    () => reviseGoalRequirementDraft(draft, {
+      kind: "update",
+      requirementId,
+      patch: { id: "req-attacker" } as never,
+    }),
+    /host-owned id or status/,
+  );
+  assert.throws(
+    () => reviseGoalRequirementDraft(draft, {
+      kind: "update",
+      requirementId,
+      patch: { status: "superseded" } as never,
+    }),
+    /host-owned id or status/,
+  );
 });
