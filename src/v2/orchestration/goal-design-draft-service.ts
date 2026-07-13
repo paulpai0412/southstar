@@ -395,6 +395,11 @@ export async function confirmGoalRequirementsPg(
   }
   const preflightPhase = goalDesignPhaseFromPayload(preflightPayload) ?? "requirements_review";
   const preflightContract = storedGoalContract(preflightPayload.goalContract);
+  if (!preflightContract || !["validation_resolving", "library_review", "validation_ready"].includes(preflightPhase)) {
+    if (preflightPhase !== "requirements_review" && preflightPhase !== "requirements_confirmed") {
+      throw new Error(`goal requirements cannot be confirmed in phase ${preflightPhase}: ${input.draftId}`);
+    }
+  }
   const preflightMetadata = preflightContract && ["validation_resolving", "library_review", "validation_ready"].includes(preflightPhase)
     ? undefined
     : await resolveGoalRequirementContractMetadata(db, preflightDraft, { ...input, draftId: input.draftId });
@@ -1218,7 +1223,7 @@ async function markRequirementDerivedResourcesStaleTx(
     `update southstar.runtime_resources
         set status = 'stale', payload_json = payload_json || $2::jsonb,
             summary_json = summary_json || $2::jsonb, updated_at = now()
-      where resource_type in ('goal_design_package_revision', 'goal_design_confirmation', 'goal_slice_plan')
+      where resource_type in ('goal_design_package_revision', 'goal_design_confirmation', 'goal_slice_plan', 'goal_execution_set')
         and (
           resource_key = $1
           or payload_json->>'draftId' = $1

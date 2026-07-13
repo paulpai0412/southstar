@@ -29,6 +29,8 @@ export type GoalExecutionSetV1 = {
   draftId: string;
   goalDesignPackageHash: string;
   cwd: string;
+  goalRequirementDraftId?: string;
+  goalRequirementDraftHash?: string;
   launchOrder: string[];
   entries: GoalExecutionSetEntryV1[];
   status: "created" | "running" | "terminal";
@@ -46,7 +48,12 @@ export type GoalExecutionSetOutcomeV1 = {
 
 export async function materializeGoalExecutionSetPg(
   context: SubmitGoalContext,
-  input: { draftId: string; expectedPackageHash: string },
+  input: {
+    draftId: string;
+    expectedPackageHash: string;
+    goalRequirementDraftId?: string;
+    goalRequirementDraftHash?: string;
+  },
 ): Promise<GoalExecutionSetV1> {
   const existing = await loadGoalExecutionSetByDraftPg(context.db, input.draftId);
   if (existing) return existing;
@@ -70,6 +77,8 @@ export async function materializeGoalExecutionSetPg(
       goalInterpreter: fixedGoalInterpreter(slicePackage.goalContract),
       goalDesignPackage: slicePackage,
       composer: context.composer,
+      ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+      ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     });
     if (sliceDraft.status !== "validated") {
       throw new Error(`slice planner draft is not validated: ${slice.id}:${sliceDraft.status}`);
@@ -82,6 +91,8 @@ export async function materializeGoalExecutionSetPg(
       packageHash: pkg.packageHash,
       runId: run.runId,
       goalContract: pkg.goalContract,
+      ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+      ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     });
     entries.push({
       sliceId: slice.id,
@@ -101,6 +112,8 @@ export async function materializeGoalExecutionSetPg(
     draftId: input.draftId,
     goalDesignPackageHash: pkg.packageHash,
     cwd,
+    ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+    ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     launchOrder,
     entries,
     status: "created",
@@ -161,6 +174,8 @@ async function attachExecutionSetRunMetadataPg(
     packageHash: string;
     runId: string;
     goalContract: GoalContractV1;
+    goalRequirementDraftId?: string;
+    goalRequirementDraftHash?: string;
   },
 ): Promise<{ manifestHash: string; librarySnapshotHash: string; approvalId: string; runStatus: "created" | "awaiting_approval" }> {
   return await db.tx(async (tx) => {
@@ -213,6 +228,8 @@ async function attachExecutionSetRunMetadataPg(
           dependencyArtifactRefs: [...input.slice.dependencyArtifactRefs],
           goalDesignPackageHash: input.packageHash,
           parentGoalContractHash: goalContractHash(input.goalContract),
+          ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+          ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
           cwd: input.goalContract.workspace.cwd,
           projectRoot: input.goalContract.workspace.cwd,
         }),
@@ -332,6 +349,8 @@ async function persistExecutionSetPg(db: SouthstarDb, executionSet: GoalExecutio
       draftId: executionSet.draftId,
       goalDesignPackageHash: executionSet.goalDesignPackageHash,
       cwd: executionSet.cwd,
+      ...(executionSet.goalRequirementDraftId ? { goalRequirementDraftId: executionSet.goalRequirementDraftId } : {}),
+      ...(executionSet.goalRequirementDraftHash ? { goalRequirementDraftHash: executionSet.goalRequirementDraftHash } : {}),
       entryCount: executionSet.entries.length,
       status: executionSet.status,
     },

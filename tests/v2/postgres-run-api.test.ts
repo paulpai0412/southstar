@@ -286,12 +286,6 @@ test("planner draft persists a design/article Goal Contract and uses its domain"
       headVersionId: "domain.design-article@v1",
       state: { scope: "design/article" },
     });
-    await seedGoalDesignSkill(db);
-    const sourceRequirement = await preparePostgresGoalRequirementDraft(db, {
-      goalPrompt,
-      cwd: process.cwd(),
-      requirementInterpreter: requirementDraftInterpreter(goalPrompt, process.cwd()),
-    });
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt,
       cwd: "/workspace/article",
@@ -311,6 +305,8 @@ test("planner draft persists a design/article Goal Contract and uses its domain"
 
 test("generated planner DAG keeps source requirement lineage through materialization", async () => {
   await withDb(async (db) => {
+    const cwd = await mkdtemp(join(tmpdir(), "southstar-goal-lineage-"));
+    try {
     const goalPrompt = "Turn notes.md into an offline HTML article";
     const goalContract = articleGoalContract(goalPrompt);
     await seedDeterministicWorkflowGraph(db, goalContract.domain);
@@ -324,12 +320,67 @@ test("generated planner DAG keeps source requirement lineage through materializa
     await seedGoalDesignSkill(db);
     const sourceRequirement = await preparePostgresGoalRequirementDraft(db, {
       goalPrompt,
-      cwd: process.cwd(),
-      requirementInterpreter: requirementDraftInterpreter(goalPrompt, process.cwd()),
+      cwd,
+      requirementInterpreter: requirementDraftInterpreter(goalPrompt, cwd),
     });
+    await confirmGoalRequirementsPg(db, {
+      draftId: sourceRequirement.draftId,
+      expectedDraftHash: sourceRequirement.goalRequirementDraftHash,
+      goalContractMetadata: {
+        domain: "design/article",
+        intent: "publish_article",
+        workType: "general",
+        expectedArtifactRefs: [],
+        requiredCapabilities: [],
+        assumptions: [],
+        requestedSideEffects: [],
+      },
+    });
+    await assert.rejects(
+      () => createPostgresPlannerDraft(db, {
+        goalPrompt,
+        cwd,
+        goalInterpreter: fixedGoalInterpreter(goalContract),
+        composer: new DeterministicFixtureComposer(),
+        goalRequirementDraftId: sourceRequirement.draftId,
+        goalRequirementDraftHash: sourceRequirement.goalRequirementDraftHash,
+      }),
+      /goal_requirement_draft_stale/,
+    );
+    await db.query(
+      `update southstar.runtime_resources
+          set status = 'validation_ready',
+              payload_json = payload_json || '{"goalDesignPhase":"validation_ready"}'::jsonb,
+              updated_at = now()
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [sourceRequirement.draftId],
+    );
+    await assert.rejects(
+      () => createPostgresPlannerDraft(db, {
+        goalPrompt,
+        cwd: "/workspace/article",
+        goalInterpreter: fixedGoalInterpreter(goalContract),
+        composer: new DeterministicFixtureComposer(),
+        goalRequirementDraftId: sourceRequirement.draftId,
+        goalRequirementDraftHash: sourceRequirement.goalRequirementDraftHash,
+      }),
+      /goal_requirement_source_workspace_mismatch/,
+    );
+    await assert.rejects(
+      () => createPostgresPlannerDraft(db, {
+        goalPrompt,
+        cwd,
+        projectRef: "different-project",
+        goalInterpreter: fixedGoalInterpreter(goalContract),
+        composer: new DeterministicFixtureComposer(),
+        goalRequirementDraftId: sourceRequirement.draftId,
+        goalRequirementDraftHash: sourceRequirement.goalRequirementDraftHash,
+      }),
+      /goal_requirement_source_workspace_mismatch/,
+    );
     const draft = await createPostgresPlannerDraft(db, {
       goalPrompt,
-      cwd: "/workspace/article",
+      cwd,
       goalInterpreter: fixedGoalInterpreter(goalContract),
       composer: new DeterministicFixtureComposer(),
       goalRequirementDraftId: sourceRequirement.draftId,
@@ -347,6 +398,18 @@ test("generated planner DAG keeps source requirement lineage through materializa
     );
     assert.equal(runtime.runtime_context_json.goalRequirementDraftId, sourceRequirement.draftId);
     assert.equal(runtime.runtime_context_json.goalRequirementDraftHash, sourceRequirement.goalRequirementDraftHash);
+    await assert.rejects(
+      () => reviseGoalRequirementPg(db, {
+        draftId: sourceRequirement.draftId,
+        expectedDraftHash: sourceRequirement.goalRequirementDraftHash,
+        requirementId: sourceRequirement.goalRequirementDraft.requirements[0]!.id,
+        patch: { statement: "Must not revise after a source run materializes" },
+      }),
+      /goal_requirements_already_materialized/,
+    );
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 

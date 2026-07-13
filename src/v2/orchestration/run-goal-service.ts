@@ -378,9 +378,13 @@ export async function continueGoalDesignToRunPg(
       const executionSet = await materializeGoalExecutionSetPg(context, {
         draftId: input.draftId,
         expectedPackageHash: input.expectedPackageHash,
+        ...(prepared.goalRequirementDraftId ? { goalRequirementDraftId: prepared.goalRequirementDraftId } : {}),
+        ...(prepared.goalRequirementDraftHash ? { goalRequirementDraftHash: prepared.goalRequirementDraftHash } : {}),
       });
       const result: RunGoalResult = {
         goalContractHash: prepared.package.goalContractHash,
+        ...(prepared.goalRequirementDraftId ? { goalRequirementDraftId: prepared.goalRequirementDraftId } : {}),
+        ...(prepared.goalRequirementDraftHash ? { goalRequirementDraftHash: prepared.goalRequirementDraftHash } : {}),
         goalDesignPackageHash: prepared.package.packageHash,
         draftId: input.draftId,
         draftStatus: "validated",
@@ -402,6 +406,8 @@ export async function continueGoalDesignToRunPg(
       goalInterpreter: fixedGoalInterpreter(prepared.package.goalContract),
       goalDesignPackage: prepared.package,
       composer: context.composer,
+      ...(prepared.goalRequirementDraftId ? { goalRequirementDraftId: prepared.goalRequirementDraftId } : {}),
+      ...(prepared.goalRequirementDraftHash ? { goalRequirementDraftHash: prepared.goalRequirementDraftHash } : {}),
       onProgress(event) {
         observedStages.push(event.stage);
         context.onStage?.(event.stage);
@@ -472,6 +478,8 @@ type GoalDesignConfirmationPreparation = {
   package: GoalDesignPackageV1;
   goalPrompt: string;
   cwd: string;
+  goalRequirementDraftId?: string;
+  goalRequirementDraftHash?: string;
   stages: string[];
   result?: RunGoalResult;
   schedulingRequest?: RunGoalResult;
@@ -495,6 +503,10 @@ async function prepareGoalDesignConfirmationPg(
       throw new Error(`goal_design_package_stale: ${input.draftId}`);
     }
     const plannerRequest = asRecord(draft.payload_json.plannerRequest);
+    const goalRequirementDraftId = optionalString(draft.payload_json.goalRequirementDraftId)
+      ?? optionalString(plannerRequest.goalRequirementDraftId);
+    const goalRequirementDraftHash = optionalString(draft.payload_json.goalRequirementDraftHash)
+      ?? optionalString(plannerRequest.goalRequirementDraftHash);
     const goalPrompt = optionalString(plannerRequest.goalPrompt)
       ?? pkg.goalContract.originalPrompt;
     const cwd = optionalString(plannerRequest.cwd)
@@ -513,6 +525,8 @@ async function prepareGoalDesignConfirmationPg(
         "Goal Design Confirmation",
         JSON.stringify({
           draftId: input.draftId,
+          ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
+          ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
           packageHash: input.expectedPackageHash,
           confirmationMode: input.confirmationMode,
           stages: [],
@@ -530,6 +544,8 @@ async function prepareGoalDesignConfirmationPg(
         package: pkg,
         goalPrompt,
         cwd,
+        ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
+        ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages: [],
       };
     }
@@ -544,6 +560,8 @@ async function prepareGoalDesignConfirmationPg(
           existing.id,
           JSON.stringify({
             draftId: input.draftId,
+            ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
+            ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
             packageHash: input.expectedPackageHash,
             confirmationMode: input.confirmationMode,
             stages: [],
@@ -561,6 +579,8 @@ async function prepareGoalDesignConfirmationPg(
         package: pkg,
         goalPrompt,
         cwd,
+        ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
+        ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages: [],
       };
     }
@@ -574,6 +594,8 @@ async function prepareGoalDesignConfirmationPg(
         package: pkg,
         goalPrompt,
         cwd,
+        ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
+        ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages,
         result: requireRunGoalResult(existing.payload_json.result),
         ...(existing.payload_json.schedulingState === "requested"
@@ -600,6 +622,8 @@ async function prepareGoalDesignConfirmationPg(
         package: pkg,
         goalPrompt,
         cwd,
+        ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
+        ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages: [],
       };
     }

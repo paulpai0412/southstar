@@ -216,3 +216,25 @@ $ npx tsx tests/v2/goal-requirement-draft.test.ts
 ```
 
 The previous generic metadata-fallback concern is superseded: no fallback contract is created when interpreter/approved metadata is unavailable.
+
+## Follow-up reviewer fixes: production composition lineage
+
+- `continueGoalDesignToRunPg` now carries confirmed source requirement id/hash into both single-DAG composition and per-slice execution-set materialization.
+- `GoalExecutionSetV1`, each slice run runtime context, and execution-set summaries persist the same source lineage; requirement invalidation also marks execution-set resources stale.
+- Planner source lineage is accepted only from a confirmed/validation-ready source draft with a valid stored Goal Contract/hash and matching workspace `cwd`/`projectRef`. Requirement-review and unresolved validation phases fail closed.
+- Regression coverage now proves pre-validation rejection, cwd/projectRef mismatch rejection, source lineage on generated DAG and run runtime context, and `goal_requirements_already_materialized` freeze behavior when revising after the generated run exists.
+
+Additional verification:
+
+```text
+$ npx tsx --test --test-name-pattern='generated planner DAG keeps source requirement lineage|editing a confirmed requirement' tests/v2/postgres-run-api.test.ts
+1..2
+# pass 2
+
+$ npx tsx --test --test-name-pattern='staged run-goal route persists requirement review' tests/v2/run-goal-service.test.ts
+1..1
+# pass 1
+
+$ npx tsc --noEmit --pretty false && git diff --check
+PASS
+```

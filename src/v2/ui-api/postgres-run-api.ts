@@ -136,6 +136,7 @@ export type PlannerDraftLibraryHints = {
 
 export type PlannerDraftRequestContract = {
   goalPrompt: string;
+  projectRef?: string;
   goalRequirementDraftId?: string;
   goalRequirementDraftHash?: string;
   orchestrationMode?: "llm-constrained";
@@ -248,7 +249,21 @@ async function assertGoalRequirementSourceLineage(
   const sourceDraft = sourcePayload.goalRequirementDraft && typeof sourcePayload.goalRequirementDraft === "object"
     ? sourcePayload.goalRequirementDraft as Record<string, unknown>
     : undefined;
-  if (source.status === "stale" || sourceDraft?.draftHash !== input.goalRequirementDraftHash) {
+  const sourceContract = goalContractFromStored(sourcePayload.goalContract);
+  const sourcePhase = stringValue(sourcePayload.goalDesignPhase);
+  const sourceContractHash = stringValue(sourcePayload.goalContractHash);
+  const sourceWorkspace = asRecord(sourceDraft?.workspace);
+  const sourceProjectRef = stringValue(sourceWorkspace.projectRef);
+  if (sourceWorkspace.cwd !== input.cwd || sourceProjectRef !== (input.projectRef ?? undefined)) {
+    throw new Error(`goal_requirement_source_workspace_mismatch: ${input.goalRequirementDraftId}`);
+  }
+  if (
+    source.status === "stale"
+    || !["validation_ready", "slice_review", "ready_to_compose", "composing", "dag_validated"].includes(sourcePhase ?? "")
+    || !sourceContract
+    || sourceContractHash !== goalContractHash(sourceContract)
+    || sourceDraft?.draftHash !== input.goalRequirementDraftHash
+  ) {
     throw new Error(`goal_requirement_draft_stale: ${input.goalRequirementDraftId}`);
   }
 }
@@ -574,6 +589,7 @@ export async function validatePostgresPlannerDraft(
 function preservedPlannerRequestFields(input: PlannerDraftRequestContract | undefined): Partial<PlannerDraftRequestContract> {
   if (!input) return {};
   return {
+    ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
     ...(input.goalRequirementDraftId !== undefined ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
     ...(input.goalRequirementDraftHash !== undefined ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     ...(input.cwd !== undefined ? { cwd: input.cwd } : {}),
@@ -584,6 +600,7 @@ function preservedPlannerRequestFields(input: PlannerDraftRequestContract | unde
 function plannerRequestSnapshot(input: PlannerDraftRequestContract): PlannerDraftRequestContract {
   const snapshot: PlannerDraftRequestContract = {
     goalPrompt: input.goalPrompt,
+    ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
     ...(input.goalRequirementDraftId !== undefined ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
     ...(input.goalRequirementDraftHash !== undefined ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     ...(input.orchestrationMode !== undefined ? { orchestrationMode: input.orchestrationMode } : {}),
@@ -624,6 +641,7 @@ function plannerRequestFromStored(value: unknown): PlannerDraftRequestContract |
   if (!goalPrompt) return undefined;
   return plannerRequestSnapshot({
     goalPrompt,
+    projectRef: stringValue(record.projectRef),
     goalRequirementDraftId: stringValue(record.goalRequirementDraftId),
     goalRequirementDraftHash: stringValue(record.goalRequirementDraftHash),
     orchestrationMode: plannerRequestOrchestrationMode(record.orchestrationMode),
