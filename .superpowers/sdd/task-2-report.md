@@ -222,6 +222,12 @@ Review fixes implemented in the follow-up commit:
 Follow-up verification:
 
 - `npx tsc --noEmit --pretty false` — PASS
-- `npx tsx tests/v2/goal-requirement-draft.test.ts` — PASS (17 tests)
+- `npx tsx tests/v2/goal-requirement-draft.test.ts` — PASS (18 tests)
 - `npx tsx tests/v2/goal-design.test.ts` — PASS (6 tests)
+- `git diff --check` — PASS
+
+After the clarification regression was added, the focused requirement draft command was rerun:
+
+- `npx tsc --noEmit --pretty false` — PASS
+- `npx tsx tests/v2/goal-requirement-draft.test.ts` — PASS (18 tests)
 - `git diff --check` — PASS
