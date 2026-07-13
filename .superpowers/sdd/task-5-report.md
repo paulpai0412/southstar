@@ -159,6 +159,54 @@ Resolved the review findings:
 - Actionable gaps are populated with the approved artifact/evaluator candidate
   refs that can resolve them.
 
+## Final review: c6a0daa..e6558f6
+
+Spec Compliance: **CONDITIONAL — resolver invariants are now fail-closed, but
+the current approved file-authored Library cannot yet produce a ready binding**.
+
+Verified resolved requirements:
+
+- `ready` is computed from every blocking preview and blocking gap, and
+  `assertGoalValidationResolutionReady()` fails closed when the optional
+  backward-compatible `ready` field is absent (`goal-validation-resolver.ts:205-233`,
+  `design-library/types.ts:321-330`).
+- Evidence is criterion-derived; ranker extras are rejected, and procedure,
+  evaluator, artifact, and result-schema declarations are required
+  (`goal-validation-resolver.ts:415-475`).
+- Procedure mode/check kind is checked; `scope: "all"` reads all edge scopes;
+  validation edges require active exact endpoint head versions; candidate refs
+  are populated from the preview candidate set (`candidate-resolver.ts:49-89`,
+  `goal-validation-resolver.ts:195-203`).
+- Focused Postgres tests pass: 6/6, including invented evidence, readiness,
+  unpinned edges, and `scope: "all"`. `npx tsc --noEmit --pretty false` also
+  passes.
+
+Remaining critical integration issue:
+
+1. The strict pinned-edge and object-state checks are incompatible with the
+   repository's current file-authored Library graph. `projectLibraryFileToGraph`
+   emits `validates_artifact` edges without `fromVersionRef`/`toVersionRef`
+   (`src/v2/design-library/files/library-file-store.ts:345-386`), while the
+   resolver now requires both refs to equal current heads
+   (`src/v2/orchestration/candidate-resolver.ts:49-55`). Existing approved
+   evaluator files such as `library/evaluators/flashcard-deck-validator.evaluator.yaml`
+   declare only `validatesArtifactRefs` and `evidenceKinds`; they do not declare
+   verification modes/procedures, result schema, or independence policy. Existing
+   artifact files such as `library/artifacts/flashcard-deck-spec.artifact.yaml`
+   declare `artifactType` and evidence kinds but no validation rules/schema/required
+   fields. Consequently, all current real file-backed candidates resolve to
+   gaps and `ready=false`; only the synthetic test graph with manually enriched
+   state can bind.
+
+This is acceptable only if the next Library authoring/migration task updates the
+file projection and existing approved evaluator/artifact files before Task 9
+invokes the readiness gate. Otherwise Task 5 is not operational in the current
+product. Add an integration test that syncs one real approved evaluator/artifact
+file pair and proves a ready binding after the schema/edge migration.
+
+Task quality assessment: **invariant implementation is strong and fail-closed;
+production compatibility remains blocked by the Library authoring contract**.
+
 Follow-up verification:
 
 - `npx tsc --noEmit --pretty false` — pass.
