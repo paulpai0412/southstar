@@ -29,6 +29,12 @@ export const LIBRARY_IMPORT_CANDIDATE_COMMON_FIELDS = [
   "selectedByDefault", "confidence", "description",
 ] as const;
 
+const LIBRARY_FILE_CONTRACT_COMMON_FIELDS = [
+  "objectKey", "kind", "title", "scope", "description",
+] as const;
+
+export type LibraryContractSchemaSurface = "import_candidate" | "library_file";
+
 export const LIBRARY_IMPORT_CANDIDATE_KIND_FIELDS: Record<LibraryImportCandidateKind, readonly string[]> = {
   agent: [],
   skill: [],
@@ -50,8 +56,12 @@ export function assertLibraryImportCandidateExactKeys(
   record: Record<string, unknown>,
   kind: LibraryImportCandidateKind,
   objectKey: string,
+  surface: LibraryContractSchemaSurface = "import_candidate",
 ): void {
-  const allowed = new Set([...LIBRARY_IMPORT_CANDIDATE_COMMON_FIELDS, ...LIBRARY_IMPORT_CANDIDATE_KIND_FIELDS[kind]]);
+  const commonFields = surface === "library_file"
+    ? LIBRARY_FILE_CONTRACT_COMMON_FIELDS
+    : LIBRARY_IMPORT_CANDIDATE_COMMON_FIELDS;
+  const allowed = new Set([...commonFields, ...LIBRARY_IMPORT_CANDIDATE_KIND_FIELDS[kind]]);
   const unsupported = Object.keys(record).filter((key) => !allowed.has(key));
   if (unsupported.length > 0) {
     throw new Error(`library import ${kind} candidate ${objectKey} contains unsupported fields: ${unsupported.join(", ")}`);
@@ -62,8 +72,9 @@ export function normalizeLibraryImportCandidateKindFields(
   record: Record<string, unknown>,
   kind: LibraryImportCandidateKind,
   objectKey: string,
+  options: { surface?: LibraryContractSchemaSurface } = {},
 ): Partial<LibraryImportCandidate> {
-  assertLibraryImportCandidateExactKeys(record, kind, objectKey);
+  assertLibraryImportCandidateExactKeys(record, kind, objectKey, options.surface);
   const description = optionalNonEmptyString(record.description, `candidates.${objectKey}.description`);
   if (kind === "agent" || kind === "skill" || kind === "tool" || kind === "mcp") {
     return description ? { description } : {};

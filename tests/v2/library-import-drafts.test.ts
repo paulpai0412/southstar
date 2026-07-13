@@ -249,6 +249,9 @@ test("library import candidate prompt and host parser support governed vocabular
   assert.match(prompt, /resultSchemaRef/);
   assert.match(prompt, /failureClassifications/);
   assert.match(prompt, /southstar\.requirement_evaluator_result\.v2/);
+  assert.match(prompt, /reusable applicability/i);
+  assert.match(prompt, /Goal-specific acceptance criteria/i);
+  assert.match(prompt, /RequirementValidationBinding/);
 
   const candidates = normalizeLibraryImportCandidates([
     {
@@ -356,6 +359,39 @@ test("library import candidate prompt and host parser support governed vocabular
     provenanceRequirements: ["workspace-artifact"],
     selectedByDefault: true,
   }], { scope: "membership", sourcePaths: new Set() }), /validationRules must be a non-empty array of non-empty strings/);
+
+  assert.throws(
+    () => normalizeLibraryImportCandidates([null], { scope: "membership", sourcePaths: new Set() }),
+    /candidate 0 must be an object/,
+  );
+  assert.throws(
+    () => normalizeLibraryImportCandidates([{
+      objectKey: "artifact.unsupported-kind",
+      kind: "report",
+      title: "Unsupported kind",
+      scope: "membership",
+    }], { scope: "membership", sourcePaths: new Set() }),
+    /candidate 0 has unsupported kind/,
+  );
+  assert.throws(
+    () => normalizeLibraryImportCandidates([
+      {
+        objectKey: "domain.membership",
+        kind: "domain",
+        title: "Membership",
+        scope: "membership",
+        selectedByDefault: true,
+      },
+      {
+        objectKey: "domain.membership",
+        kind: "domain",
+        title: "Membership duplicate",
+        scope: "membership",
+        selectedByDefault: true,
+      },
+    ], { scope: "membership", sourcePaths: new Set() }),
+    /duplicate objectKey: domain\.membership/,
+  );
 });
 
 test("candidate install rejects tampered persisted validation contracts instead of normalizing them", async () => {

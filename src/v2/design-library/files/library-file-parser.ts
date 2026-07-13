@@ -132,7 +132,6 @@ export function parseLibraryFileContent(input: { path: string; content: string }
         kind: format.kind,
         title: title ?? id,
         scope: scope ?? "invalid",
-        selectedByDefault: true,
       };
       const hostOwnedFields = new Set([
         "schemaVersion", "id", "title", "scope", "status",
@@ -141,7 +140,7 @@ export function parseLibraryFileContent(input: { path: string; content: string }
       for (const [key, value] of Object.entries(parsed.data)) {
         if (!hostOwnedFields.has(key)) candidateDefinition[key] = value;
       }
-      normalizeLibraryImportCandidateKindFields(candidateDefinition, format.kind, id);
+      normalizeLibraryImportCandidateKindFields(candidateDefinition, format.kind, id, { surface: "library_file" });
     } catch (cause) {
       issues.push(error(
         format.kind,

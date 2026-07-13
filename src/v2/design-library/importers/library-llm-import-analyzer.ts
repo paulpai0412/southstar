@@ -232,6 +232,9 @@ export function buildLibraryImportCandidatePrompt(
     `evidenceKinds and allowedEvidenceKinds values are limited exactly to: ${LIBRARY_VALIDATION_EVIDENCE_KINDS.join(", ")}.`,
     `verificationModes and verificationProcedures.checkKind values are limited exactly to: ${LIBRARY_VERIFICATION_MODES.join(", ")}.`,
     "Every verification procedure checkKind must be declared in verificationModes, and every allowedEvidenceKinds value must also appear in the evaluator evidenceKinds.",
+    "Artifact and evaluator candidates must describe reusable applicability: reusable evidence shapes, verification methods, and procedures that can serve more than one Goal Contract.",
+    "Do not copy Goal-specific acceptance criteria, screen names, sample values, or one-off feature wording into reusable Library contracts. Goal-specific acceptance criteria remain in RequirementValidationBinding, not in artifact or evaluator candidates.",
+    "A domain-specific contract is allowed only when the source establishes a reusable domain concept; do not turn the current Goal request itself into a permanent contract.",
     "Vocabulary candidates describe only concepts evidenced by UserImportRequest or source documents. Do not invent organization policy. status, schemaVersion, file path, and graph version are host-owned and must be omitted.",
     "If source paths clearly map to a canonical domain prefix, use that domain even when the item is broadly useful.",
     "If the user asks to import agents from a repo catalog, inspect the repo and return one agent candidate per real agent definition. Do not collapse many agents into a summary candidate.",
@@ -337,7 +340,8 @@ function normalizeLlmImportAnalysis(
   options: { scope: string; sourcePaths: Set<string> },
 ): { candidates: LibraryImportCandidate[]; proposedEdges: LibraryImportProposedEdge[] } {
   const value = typeof raw === "string" ? safeJsonParse(raw) : raw;
-  const record = isRecord(value) ? value : {};
+  if (!isRecord(value)) throw new Error("library import analysis must be a JSON object");
+  const record = value;
   const candidates = normalizeLibraryImportCandidates(record.candidates, options);
   const candidateKeys = new Set(candidates.map((candidate) => candidate.objectKey));
   const proposedEdges = normalizeEdges(edgeArrayFromRecord(record), candidateKeys);
@@ -362,19 +366,24 @@ export function normalizeLibraryImportCandidates(
   value: unknown,
   options: { scope: string; sourcePaths: Set<string> },
 ): LibraryImportCandidate[] {
-  if (!Array.isArray(value)) return [];
+  if (!Array.isArray(value)) throw new Error("library import candidates must be an array");
   const candidates: LibraryImportCandidate[] = [];
   const seen = new Set<string>();
-  for (const candidate of value) {
-    if (!isRecord(candidate)) continue;
+  for (const [index, candidate] of value.entries()) {
+    if (!isRecord(candidate)) throw new Error(`library import candidate ${index} must be an object`);
     const kind = normalizeKind(candidate.kind);
-    if (!kind) continue;
+    if (!kind) throw new Error(`library import candidate ${index} has unsupported kind`);
     const objectKey = canonicalizeObjectKeyFromSourcePath(
       kind,
       optionalString(candidate.objectKey) ?? objectKeyFromKindAndTitle(kind, optionalString(candidate.title)),
       optionalString(candidate.sourcePath),
     );
-    if (!objectKey || !objectKey.startsWith(`${kind}.`) || seen.has(objectKey)) continue;
+    if (!objectKey || !objectKey.startsWith(`${kind}.`)) {
+      throw new Error(`library import candidate ${index} has invalid objectKey for kind ${kind}`);
+    }
+    if (seen.has(objectKey)) throw new Error(`library import candidates contain duplicate objectKey: ${objectKey}`);
+    seen.add(objectKey);
+    const kindFields = normalizeLibraryImportCandidateKindFields(candidate, kind, objectKey);
     const sourcePath = optionalString(candidate.sourcePath);
     if (sourcePath && options.sourcePaths.size > 0 && !options.sourcePaths.has(sourcePath)) continue;
     const vocabularyCandidate = VOCABULARY_CANDIDATE_KINDS.has(kind);
@@ -385,8 +394,6 @@ export function normalizeLibraryImportCandidates(
     const domain = pathDomain?.key ?? (!vocabularyCandidate && isCatalogCanonicalDomain(llmDomain) ? llmDomain : undefined);
     const scope = vocabularyCandidate ? (optionalString(candidate.scope) ?? options.scope) : (domain ?? options.scope);
     const title = optionalString(candidate.title);
-    const kindFields = normalizeLibraryImportCandidateKindFields(candidate, kind, objectKey);
-    seen.add(objectKey);
     candidates.push({
       objectKey,
       kind,
@@ -443,7 +450,7 @@ function safeJsonParse(value: string): unknown {
   try {
     return JSON.parse(value);
   } catch {
-    return {};
+    throw new Error("library import analysis returned invalid JSON");
   }
 }
 

@@ -217,18 +217,136 @@ title: Unknown Field
 scope: general
 status: approved
 artifactType: report
-mediaTypes: [application/json]
-evidenceKinds: [artifact-ref]
-validationRules: [rule.report]
+mediaTypes:
+  - application/json
+evidenceKinds:
+  - artifact-ref
+validationRules:
+  - rule.report
 schemaRef: schema.report.v1
-requiredFields: [summary]
-provenanceRequirements: [workspace-artifact]
+requiredFields:
+  - summary
+provenanceRequirements:
+  - workspace-artifact
 legacyBypass: true
 `,
   });
   assert.equal(artifact.ok, false);
   if (artifact.ok) throw new Error("expected artifact parse failure");
   assert.match(artifact.issues.map((issue) => issue.message).join("\n"), /unsupported fields: legacyBypass/);
+});
+
+test("rejects import-candidate metadata in authored artifact and evaluator files", () => {
+  const artifact = parseLibraryFileContent({
+    path: "library/artifacts/candidate-metadata.artifact.yaml",
+    content: `schemaVersion: southstar.library.artifact_contract_file.v1
+id: artifact.candidate-metadata
+title: Candidate Metadata
+scope: general
+status: approved
+artifactType: report
+mediaTypes:
+  - application/json
+evidenceKinds:
+  - artifact-ref
+validationRules:
+  - rule.report
+schemaRef: schema.report.v1
+requiredFields:
+  - summary
+provenanceRequirements:
+  - workspace-artifact
+confidence: 0.9
+`,
+  });
+  assert.equal(artifact.ok, false);
+  if (artifact.ok) throw new Error("expected artifact candidate metadata rejection");
+  assert.match(artifact.issues.map((issue) => issue.message).join("\n"), /unsupported fields: confidence/);
+
+  const evaluator = parseLibraryFileContent({
+    path: "library/evaluators/candidate-metadata.evaluator.yaml",
+    content: `schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.candidate-metadata
+title: Candidate Metadata Evaluator
+scope: general
+status: approved
+validatesArtifactRefs:
+  - artifact.candidate-metadata
+requiredInputs:
+  - accepted-artifact
+evidenceKinds:
+  - test-result
+verificationModes:
+  - deterministic
+verificationProcedures:
+  - id: procedure.report
+    checkKind: deterministic
+    instruction: Validate the report.
+    allowedEvidenceKinds:
+      - test-result
+independencePolicy: independent
+resultSchemaRef: southstar.requirement_evaluator_result.v2
+failureClassifications:
+  - validation_failure
+classificationReason: generated for one import
+`,
+  });
+  assert.equal(evaluator.ok, false);
+  if (evaluator.ok) throw new Error("expected evaluator candidate metadata rejection");
+  assert.match(evaluator.issues.map((issue) => issue.message).join("\n"), /unsupported fields: classificationReason/);
+});
+
+test("rejects duplicate evaluator procedures and unsupported procedure values", () => {
+  const base = `schemaVersion: southstar.library.evaluator_profile_file.v1
+id: evaluator.strict-procedures
+title: Strict Procedures
+scope: general
+status: approved
+validatesArtifactRefs:
+  - artifact.report
+requiredInputs:
+  - accepted-artifact
+evidenceKinds:
+  - test-result
+verificationModes:
+  - deterministic
+independencePolicy: independent
+resultSchemaRef: southstar.requirement_evaluator_result.v2
+failureClassifications:
+  - validation_failure
+`;
+  const duplicate = parseLibraryFileContent({
+    path: "library/evaluators/duplicate.evaluator.yaml",
+    content: `${base}verificationProcedures:
+  - id: procedure.same
+    checkKind: deterministic
+    instruction: Validate once.
+    allowedEvidenceKinds:
+      - test-result
+  - id: procedure.same
+    checkKind: deterministic
+    instruction: Validate twice.
+    allowedEvidenceKinds:
+      - test-result
+`,
+  });
+  assert.equal(duplicate.ok, false);
+  if (duplicate.ok) throw new Error("expected duplicate procedure rejection");
+  assert.match(duplicate.issues.map((issue) => issue.message).join("\n"), /duplicate verification procedure id/);
+
+  const unsupported = parseLibraryFileContent({
+    path: "library/evaluators/unsupported.evaluator.yaml",
+    content: `${base}verificationProcedures:
+  - id: procedure.unsupported
+    checkKind: shell_magic
+    instruction: Validate somehow.
+    allowedEvidenceKinds:
+      - test-result
+`,
+  });
+  assert.equal(unsupported.ok, false);
+  if (unsupported.ok) throw new Error("expected unsupported procedure rejection");
+  assert.match(unsupported.issues.map((issue) => issue.message).join("\n"), /not declared in verificationModes|unsupported verificationModes/);
 });
 
 test("parses mcp yaml file", () => {

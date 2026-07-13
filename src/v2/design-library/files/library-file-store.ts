@@ -551,9 +551,9 @@ export async function syncNewLibraryFileRecordsToGraph(db: SouthstarDb, files: L
     validateLibraryFileGraphReferences(file);
     return { file, projection: projectLibraryFileToGraph(file) };
   });
-  const importedKeys = new Set(projections.map(({ projection }) => projection.object.objectKey));
+  const importedObjects = new Map(projections.map(({ projection }) => [projection.object.objectKey, projection.object]));
   for (const { projection } of projections) {
-    await assertReferencedLibraryObjectsExist(db, projection, importedKeys);
+    await assertReferencedLibraryObjectsExist(db, projection, importedObjects);
   }
   const objects = [];
   for (const { projection } of projections) {
@@ -628,13 +628,15 @@ export async function syncLibraryFileRecordsToGraphPg(
       },
     };
   });
-  const available = new Set(projections.map(({ projection }) => projection.object.objectKey));
+  const available = new Map(projections.map(({ projection }) => [projection.object.objectKey, projection.object]));
   for (const { projection } of projections) {
     if (projection.object.status !== "approved") continue;
     for (const edge of projection.edges) {
-      if (!available.has(edge.toObjectKey)) {
+      const target = available.get(edge.toObjectKey);
+      if (!target) {
         throw new Error(`unresolved Library reference ${edge.toObjectKey} from ${projection.object.objectKey}`);
       }
+      assertLibraryReferenceTarget(projection, edge, target);
     }
   }
 
@@ -686,6 +688,7 @@ async function versionedEdge(
   if (!target || !target.headVersionId) {
     throw new Error(`unresolved Library reference version ${edge.toObjectKey} from ${edge.fromObjectKey}`);
   }
+  assertValidationArtifactTarget(edge, target);
   return {
     ...edge,
     fromVersionRef,
@@ -800,19 +803,50 @@ function validateReferencedObjects(projection: LibraryFileGraphProjection): void
     if (!isKnownLibraryObjectKey(edge.toObjectKey)) {
       throw new Error(`unsupported referenced object key prefix: ${edge.toObjectKey}`);
     }
+    if (edge.edgeType === "validates_artifact" && projection.object.objectKind !== "evaluator_profile") {
+      throw new Error(`validates_artifact source must be an evaluator_profile: ${projection.object.objectKey}`);
+    }
   }
 }
 
 async function assertReferencedLibraryObjectsExist(
   db: SouthstarDb,
   projection: LibraryFileGraphProjection,
-  availableKeys: ReadonlySet<string> = new Set(),
+  availableObjects: ReadonlyMap<string, LibraryReferenceTarget> = new Map(),
 ): Promise<void> {
   for (const edge of projection.edges) {
     if (edge.toObjectKey === projection.object.objectKey) continue;
-    if (availableKeys.has(edge.toObjectKey)) continue;
-    if (await findLibraryObjectByKey(db, edge.toObjectKey)) continue;
-    throw new Error(`unresolved Library reference ${edge.toObjectKey} from ${projection.object.objectKey}`);
+    const target = availableObjects.get(edge.toObjectKey) ?? await findLibraryObjectByKey(db, edge.toObjectKey);
+    if (!target) throw new Error(`unresolved Library reference ${edge.toObjectKey} from ${projection.object.objectKey}`);
+    assertLibraryReferenceTarget(projection, edge, target);
+  }
+}
+
+type LibraryReferenceTarget = Pick<LibraryObjectSummary,
+  "objectKey" | "objectKind" | "status" | "headVersionId"
+>;
+
+function assertLibraryReferenceTarget(
+  projection: LibraryFileGraphProjection,
+  edge: LibraryFileGraphProjection["edges"][number],
+  target: LibraryReferenceTarget,
+): void {
+  if (edge.edgeType !== "validates_artifact") return;
+  if (projection.object.objectKind !== "evaluator_profile") {
+    throw new Error(`validates_artifact source must be an evaluator_profile: ${projection.object.objectKey}`);
+  }
+  assertValidationArtifactTarget(edge, target);
+}
+
+function assertValidationArtifactTarget(
+  edge: LibraryFileGraphProjection["edges"][number],
+  target: LibraryReferenceTarget,
+): void {
+  if (edge.edgeType !== "validates_artifact") return;
+  if (target.objectKind !== "artifact_contract" || target.status !== "approved" || !target.headVersionId) {
+    throw new Error(
+      `evaluator ${edge.fromObjectKey} must reference an approved artifact_contract with a version: ${edge.toObjectKey}`,
+    );
   }
 }
 

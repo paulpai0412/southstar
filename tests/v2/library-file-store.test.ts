@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { applyLibraryObjectLifecycleAction } from "../../src/v2/design-library/lifecycle/library-object-lifecycle.ts";
-import { listLibraryFiles, readLibraryFile, syncLibraryFileToGraph, writeLibraryFile } from "../../src/v2/design-library/files/library-file-store.ts";
+import {
+  listLibraryFiles,
+  readLibraryFile,
+  syncLibraryFileToGraph,
+  syncNewLibraryFileRecordsToGraph,
+  writeLibraryFile,
+} from "../../src/v2/design-library/files/library-file-store.ts";
 import { findLibraryEdgesFrom, findLibraryObjectByKey, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -593,3 +599,142 @@ status: draft
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("approved evaluator edges require an approved versioned artifact contract target", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-library-validation-target-"));
+  const db = await createTestPostgresDb();
+  const evaluatorPath = "evaluators/report.evaluator.yaml";
+
+  try {
+    await writeLibraryFile({ root, relativePath: evaluatorPath, content: approvedEvaluatorFile("artifact.report") });
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.report",
+      objectKind: "skill_spec",
+      status: "approved",
+      headVersionId: "artifact.report@wrong-kind",
+      state: { scope: "general" },
+    });
+    await assert.rejects(
+      syncLibraryFileToGraph(db, { root, relativePath: evaluatorPath }),
+      /must reference an approved artifact_contract/,
+    );
+    assert.equal(await findLibraryObjectByKey(db, "evaluator.report"), null);
+
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.report",
+      objectKind: "artifact_contract",
+      status: "draft",
+      headVersionId: "artifact.report@draft",
+      state: { scope: "general" },
+    });
+    await assert.rejects(
+      syncLibraryFileToGraph(db, { root, relativePath: evaluatorPath }),
+      /must reference an approved artifact_contract/,
+    );
+    assert.equal(await findLibraryObjectByKey(db, "evaluator.report"), null);
+  } finally {
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("same-batch evaluator sync rejects an artifact-prefixed wrong-kind target", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-library-validation-batch-"));
+  const db = await createTestPostgresDb();
+  try {
+    await writeLibraryFile({
+      root,
+      relativePath: "skills/wrong-kind.skill.md",
+      content: `---
+schemaVersion: southstar.library.skill_spec_file.v1
+id: artifact.wrong-kind
+title: Wrong Kind
+scope: general
+status: approved
+---
+
+# Instructions
+
+This is not an artifact contract.
+`,
+    });
+    await writeLibraryFile({
+      root,
+      relativePath: "evaluators/wrong-kind.evaluator.yaml",
+      content: approvedEvaluatorFile("artifact.wrong-kind", "evaluator.wrong-kind"),
+    });
+    const records = await Promise.all([
+      readLibraryFile({ root, relativePath: "skills/wrong-kind.skill.md" }),
+      readLibraryFile({ root, relativePath: "evaluators/wrong-kind.evaluator.yaml" }),
+    ]).then((files) => files.map((file) => {
+      if (!file.parsed.ok) throw new Error("expected valid library file");
+      return file.parsed.file;
+    }));
+
+    await assert.rejects(
+      syncNewLibraryFileRecordsToGraph(db, records),
+      /must reference an approved artifact_contract/,
+    );
+    assert.equal(await findLibraryObjectByKey(db, "evaluator.wrong-kind"), null);
+    assert.equal(await findLibraryObjectByKey(db, "artifact.wrong-kind"), null);
+  } finally {
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("approved evaluator edge pins the approved artifact contract version", async () => {
+  const root = await mkdtemp(join(tmpdir(), "southstar-library-validation-version-"));
+  const db = await createTestPostgresDb();
+  try {
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.report",
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.report@approved-v2",
+      state: { scope: "general" },
+    });
+    await writeLibraryFile({
+      root,
+      relativePath: "evaluators/report.evaluator.yaml",
+      content: approvedEvaluatorFile("artifact.report"),
+    });
+    await syncLibraryFileToGraph(db, { root, relativePath: "evaluators/report.evaluator.yaml" });
+    const edge = (await findLibraryEdgesFrom(db, "evaluator.report", "validates_artifact", {
+      scope: "general",
+      status: "active",
+    }))[0];
+    assert.equal(edge?.toObjectKey, "artifact.report");
+    assert.equal(edge?.toVersionRef, "artifact.report@approved-v2");
+  } finally {
+    await db.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function approvedEvaluatorFile(artifactRef: string, evaluatorRef = "evaluator.report"): string {
+  return `schemaVersion: southstar.library.evaluator_profile_file.v1
+id: ${evaluatorRef}
+title: Report Evaluator
+scope: general
+status: approved
+validatesArtifactRefs:
+  - ${artifactRef}
+requiredInputs:
+  - accepted-artifact
+evidenceKinds:
+  - test-result
+verificationModes:
+  - deterministic
+verificationProcedures:
+  - id: procedure.report
+    checkKind: deterministic
+    instruction: Validate the accepted report using its declared rules.
+    allowedEvidenceKinds:
+      - test-result
+independencePolicy: independent
+resultSchemaRef: southstar.requirement_evaluator_result.v2
+failureClassifications:
+  - validation_failure
+`;
+}
