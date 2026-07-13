@@ -290,6 +290,28 @@ test("stale host selection returns needs_input without streaming semantic output
   assert.deepEqual(deltas, []);
 });
 
+test("LLM clarification response is returned without forwarding semantic deltas", async () => {
+  const deltas: string[] = [];
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-needs-input",
+    client: {
+      async generateTextStream(_input, handlers) {
+        handlers.onDelta?.("clarification-text");
+        return JSON.stringify({ kind: "needs_input", question: "Which article language should be used?" });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: validDraft(),
+    message: "choose the language",
+    onDelta: (delta) => deltas.push(delta),
+  });
+  assert.equal(result.kind, "needs_input");
+  if (result.kind !== "needs_input") assert.fail("expected needs_input");
+  assert.match(result.question, /language/i);
+  assert.deepEqual(deltas, []);
+});
+
 test("merge requires plural host selections and does not emit unvalidated deltas", async () => {
   const deltas: string[] = [];
   const interpreter = createLlmGoalRequirementDraftInterpreter({
