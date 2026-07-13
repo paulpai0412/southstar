@@ -591,21 +591,28 @@ test("library readiness API helper reads the current snapshot and maps reconcile
   }
 });
 
-test("LibrarySidebarPanel renders current Library readiness diagnostics", async () => {
+test("Library readiness summary is outside the session list and diagnostics stay collapsed", async () => {
   await withBrowserHarness(`
     import React from "react";
     import { createRoot } from "react-dom/client";
-    import { LibrarySidebarPanel, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
+    import { LibrarySidebarPanel, LibraryWorkspace, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
 
     createRoot(document.getElementById("root")).render(
-      <LibraryWorkspaceProvider>
-        <LibrarySidebarPanel />
+      <LibraryWorkspaceProvider defaultCwd="/workspace">
+        <div style={{ display: "grid", gridTemplateColumns: "260px minmax(0, 1fr)", height: "100vh" }}>
+          <LibrarySidebarPanel />
+          <LibraryWorkspace />
+        </div>
       </LibraryWorkspaceProvider>
     );
   `, async (page) => {
     await page.locator('[data-testid="library-readiness"]').waitFor();
     await page.getByText("Library ready").waitFor();
     await page.getByText("1 included · 1 excluded").waitFor();
+    assert.equal(await page.locator('[data-testid="library-sidebar"] [data-testid="library-readiness"]').count(), 0);
+    assert.equal(await page.locator('[data-testid="library-readiness"] details').count(), 1);
+    assert.equal(await page.getByText("missing tool.absent").isVisible().catch(() => false), false);
+    await page.locator('[data-testid="library-readiness"] details').evaluate((element) => (element as HTMLDetailsElement).open = true);
     await page.getByText("missing tool.absent").waitFor();
     await page.getByText(/skills\/imported\.skill\.md/).waitFor();
   }, async (page) => {
@@ -1021,12 +1028,12 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
       return editor?.value === "title: Frontend Developer";
     });
 
-    assert.equal(await page.getByText("software/agents/frontend-developer.agent.md").count(), 1);
+    assert.equal(await page.getByText("evaluators/flashcard-functional-verifier.evaluator.yaml").count(), 1);
     assert.equal(await page.locator('[data-testid="library-file-editor"]').inputValue(), "title: Frontend Developer");
     assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/workspace"), true);
     assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/objects/agent.frontend-developer"), true);
     assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/graph"), true);
-    assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/files/software/agents/frontend-developer.agent.md"), true);
+    assert.equal(requests.some((request) => request.method === "GET" && request.path === "/api/library/files/evaluators/flashcard-functional-verifier.evaluator.yaml"), true);
   }, async (page) => {
     await page.route("**/api/library/**", async (route) => {
       const request = route.request();
@@ -1085,15 +1092,15 @@ test("LibraryWorkspace opens the right file viewer when a chat graph node is sel
       if (url.pathname === "/api/library/objects/agent.frontend-developer") {
         await route.fulfill({
           contentType: "application/json",
-          body: libraryObjectDetailEnvelope("agent.frontend-developer", "software/agents/frontend-developer.agent.md"),
+          body: libraryObjectDetailEnvelope("agent.frontend-developer", "library/evaluators/flashcard-functional-verifier.evaluator.yaml"),
         });
         return;
       }
 
-      if (url.pathname === "/api/library/files/software/agents/frontend-developer.agent.md") {
+      if (url.pathname === "/api/library/files/evaluators/flashcard-functional-verifier.evaluator.yaml") {
         await route.fulfill({
           contentType: "application/json",
-          body: libraryFileEnvelope("software/agents/frontend-developer.agent.md", "title: Frontend Developer"),
+          body: libraryFileEnvelope("evaluators/flashcard-functional-verifier.evaluator.yaml", "title: Frontend Developer"),
         });
         return;
       }

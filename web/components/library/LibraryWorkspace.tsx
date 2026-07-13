@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { readLibraryFile, readLibraryGraphNeighborhood, readLibraryObjectDetail, readLibraryReadiness, readinessFromReconcile, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
+import { normalizeLibraryRelativePath, readLibraryFile, readLibraryGraphNeighborhood, readLibraryObjectDetail, readLibraryReadiness, readinessFromReconcile, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
 import type { LibraryFileEnvelope, LibraryGraphReadModel, LibraryObjectDetail, LibraryReadinessView, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
 import type { SessionInfo, WorkspaceSurface } from "@/lib/types";
 import { ChatWindow } from "../ChatWindow";
@@ -260,14 +260,15 @@ export function LibraryWorkspaceProvider({
     setEdgeGraph(null);
 
     const loadSourcePath = (sourcePath: string) => {
-      selectedFilePathRef.current = sourcePath;
-      setSelectedFilePath(sourcePath);
+      const relativePath = normalizeLibraryRelativePath(sourcePath);
+      selectedFilePathRef.current = relativePath;
+      setSelectedFilePath(relativePath);
       setFileRecord(null);
       updateDirtyFileContent("");
-      onOpenFile?.({ objectKey: object.objectKey, title: object.title, sourcePath });
-      readLibraryFile(sourcePath)
+      onOpenFile?.({ objectKey: object.objectKey, title: object.title, sourcePath: relativePath });
+      readLibraryFile(relativePath)
         .then((record) => {
-          if (loadRequestRef.current !== requestId || selectedFilePathRef.current !== sourcePath) return;
+          if (loadRequestRef.current !== requestId || selectedFilePathRef.current !== relativePath) return;
           setFileRecord(record);
           updateDirtyFileContent(record.content);
         })
@@ -461,7 +462,6 @@ export function LibrarySidebarPanel() {
   const context = useLibraryWorkspaceContext();
   return (
     <div data-testid="library-sidebar" style={{ height: "100%", minHeight: 0, overflow: "auto" }}>
-      <LibraryReadinessBanner readiness={context.readiness} />
       <LibrarySidebar
         model={context.model}
         sessions={context.librarySessions}
@@ -527,27 +527,30 @@ function LibraryWorkspaceContent() {
         color: "var(--text)",
       }}
     >
-      <main data-testid="library-chat-workspace" style={{ minWidth: 0, overflow: "hidden" }}>
-        {canRenderLibraryChat ? (
-          <ChatWindow
-            key={context.librarySessionKey}
-            session={context.selectedLibrarySession}
-            newSessionCwd={context.selectedLibrarySession ? null : context.selectedCwd}
-            sessionKind="library"
-            libraryScope={context.selectedScope}
-            onAgentEnd={context.onAgentEnd}
-            onSessionCreated={context.handleSharedSessionCreated}
-            modelsRefreshKey={context.modelsRefreshKey}
-            workflowMode={false}
-            workflowCwd={context.selectedCwd}
-            onLibraryGraphNodeSelect={context.handleSelectGraphNode}
-            onWorkspaceSurfaceChange={context.onWorkspaceSurfaceChange}
-          />
-        ) : (
-          <div data-testid="library-chat-empty-new" style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
-            Select or create a Library session
-          </div>
-        )}
+      <main data-testid="library-chat-workspace" style={{ minWidth: 0, overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        <LibraryReadinessBanner readiness={context.readiness} />
+        <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
+          {canRenderLibraryChat ? (
+            <ChatWindow
+              key={context.librarySessionKey}
+              session={context.selectedLibrarySession}
+              newSessionCwd={context.selectedLibrarySession ? null : context.selectedCwd}
+              sessionKind="library"
+              libraryScope={context.selectedScope}
+              onAgentEnd={context.onAgentEnd}
+              onSessionCreated={context.handleSharedSessionCreated}
+              modelsRefreshKey={context.modelsRefreshKey}
+              workflowMode={false}
+              workflowCwd={context.selectedCwd}
+              onLibraryGraphNodeSelect={context.handleSelectGraphNode}
+              onWorkspaceSurfaceChange={context.onWorkspaceSurfaceChange}
+            />
+          ) : (
+            <div data-testid="library-chat-empty-new" style={{ height: "100%", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 13 }}>
+              Select or create a Library session
+            </div>
+          )}
+        </div>
       </main>
     </div>
   );
@@ -602,7 +605,7 @@ function findWorkspaceObjectByKey(model: LibraryWorkspaceModel | null, objectKey
 
 function sourcePathFromObjectDetail(detail: LibraryObjectDetail): string | undefined {
   const sourcePath = detail.object.state?.sourcePath;
-  return typeof sourcePath === "string" && sourcePath.length > 0 ? sourcePath : undefined;
+  return typeof sourcePath === "string" && sourcePath.length > 0 ? normalizeLibraryRelativePath(sourcePath) : undefined;
 }
 
 function readPiLibrarySessions(payload: unknown): SessionInfo[] {

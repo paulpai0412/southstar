@@ -208,5 +208,10 @@ async function requestLibraryJson<T>(url: string, init?: RequestInit): Promise<T
 }
 
 function libraryFileUrl(relativePath: string): string {
-  return `/api/library/files/${relativePath.split("/").map(encodeURIComponent).join("/")}`;
+  return `/api/library/files/${normalizeLibraryRelativePath(relativePath).split("/").map(encodeURIComponent).join("/")}`;
+}
+
+export function normalizeLibraryRelativePath(relativePath: string): string {
+  const normalized = relativePath.replaceAll("\\", "/");
+  return normalized === "library" ? "" : normalized.startsWith("library/") ? normalized.slice("library/".length) : normalized;
 }
