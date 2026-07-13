@@ -327,7 +327,7 @@ export type GoalValidationResolutionV1 = {
   bindings: RequirementValidationBindingV1[];
   gaps: GoalValidationGapV1[];
   /** True only when no blocking requirement has an unresolved gap. */
-  ready: boolean;
+  ready?: boolean;
   resolutionHash: string;
 };
 
