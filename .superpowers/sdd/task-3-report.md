@@ -79,3 +79,64 @@ Error: EACCES: permission denied, scandir '/tmp/snap-private-tmp'
 ```
 
 The new readiness test passed in that run (`run-goal returns structured 503 before claiming a submission when Library is not ready`), as did all lifecycle and route tests. Unrelated pre-existing worktree changes were not staged or committed.
+
+## Follow-up race fix
+
+Follow-up regression: `start()` now removes the prior `runtime-server-start.failure.json` before launching the detached child. A failure written by that new child remains observable by `waitForPidRecord`; only the stale prior record is cleared.
+
+Follow-up red/green verification:
+
+```text
+$ npx tsx --test --test-name-pattern='clears a stale Library startup failure' tests/v2/runtime-server-lifecycle.test.ts
+...
+not ok 1 - start clears a stale Library startup failure before launching a new child
+error: 'Southstar runtime Library is not ready: expected exactly one approved goal_design skill, found 0'
+```
+
+After the fix:
+
+```text
+$ npx tsx --test --test-name-pattern='clears a stale Library startup failure' tests/v2/runtime-server-lifecycle.test.ts
+1..1
+# tests 1
+# pass 1
+# fail 0
+```
+
+```text
+$ npx tsx --test tests/v2/runtime-server-lifecycle.test.ts
+1..13
+# tests 13
+# pass 13
+# fail 0
+```
+
+```text
+$ npx tsc -p tsconfig.json --noEmit --pretty false
+Process exited with code 0.
+
+$ npx tsx --test tests/v2/runtime-loop-routes.test.ts tests/v2/routes.test.ts
+1..5
+# tests 5
+# pass 5
+# fail 0
+
+$ npx tsx --test --test-name-pattern='run-goal returns structured 503|POST /api/v2/run-goal requires the one-prompt|POST /api/v2/run-goal streams' tests/v2/run-goal-service.test.ts
+1..3
+# tests 3
+# pass 3
+# fail 0
+```
+
+Fresh requested focused command after the race fix:
+
+```text
+$ npx tsx --test tests/v2/runtime-server-lifecycle.test.ts tests/v2/run-goal-service.test.ts tests/v2/routes.test.ts
+1..47
+# tests 47
+# pass 42
+# fail 5
+# cancelled 0
+```
+
+The same five unrelated pre-existing failures remain: `EACCES: permission denied, scandir '/tmp/snap-private-tmp'` from workspace discovery.

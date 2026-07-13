@@ -129,6 +129,9 @@ export function createRuntimeServerLifecycle(input: RuntimeServerLifecycleInput 
       const running = await readRunningRecord(pidFilePath);
       if (running) return { status: "already-running", pidFilePath, record: running };
       const env = envLoader();
+      await removeFile(failureFilePath(pidFilePath)).catch((error: NodeJS.ErrnoException) => {
+        if (error.code !== "ENOENT") throw error;
+      });
 
       const launcherPid = await launchServeProcess({
         pidFilePath,

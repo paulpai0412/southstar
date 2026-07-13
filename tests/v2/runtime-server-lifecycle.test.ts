@@ -121,6 +121,55 @@ test("start surfaces Library startup failure without waiting for the startup tim
   await assert.rejects(lifecycle.start(), /Southstar runtime Library is not ready/);
 });
 
+test("start clears a stale Library startup failure before launching a new child", async () => {
+  let failureCleared = false;
+  let childLaunched = false;
+  const removed: string[] = [];
+  const lifecycle = createRuntimeServerLifecycle({
+    cwd: "/tmp/southstar",
+    envLoader: () => localEnv({ dockerRequired: false }),
+    runCommand: async () => {
+      childLaunched = true;
+      return { exitCode: 0, stdout: "100\n", stderr: "" };
+    },
+    readTextFile: async (path) => {
+      if (path.endsWith("runtime-server-start.failure.json")) {
+        if (!failureCleared) return JSON.stringify({
+          schemaVersion: "southstar.runtime_start_failure.v1",
+          code: "library_not_ready",
+          message: fatalDiagnostic.message,
+          diagnostics: [fatalDiagnostic],
+          failedAt: "2026-07-13T00:00:00.000Z",
+        });
+        throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      }
+      if (!childLaunched) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return JSON.stringify({
+        pid: 200,
+        host: "127.0.0.1",
+        port: 3100,
+        url: "http://127.0.0.1:3100",
+        startedAt: "2026-07-13T00:00:00.000Z",
+        cwd: "/tmp/southstar",
+      });
+    },
+    processKill: (pid) => {
+      if (pid === 100 || pid === 200) return;
+      throw Object.assign(new Error("no such process"), { code: "ESRCH" });
+    },
+    ensureDirectory: async () => {},
+    removeFile: async (path) => {
+      removed.push(path);
+      if (path.endsWith("runtime-server-start.failure.json")) failureCleared = true;
+    },
+  });
+
+  const started = await lifecycle.start();
+  assert.equal(started.status, "started");
+  assert.equal(childLaunched, true);
+  assert.equal(removed.some((path) => path.endsWith("runtime-server-start.failure.json")), true);
+});
+
 test("auto-starts southstar-postgres container for local Postgres runtime URLs", async () => {
   const commands: Array<{ command: string; args: string[] }> = [];
   const waited: Array<{ host: string; port: number; timeoutMs: number }> = [];
