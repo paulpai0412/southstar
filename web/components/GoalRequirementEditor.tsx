@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
-import type { GoalRequirementDraftView, GoalRequirementSelection, GoalRequirementsContent } from "@/lib/types";
+import type { GoalRequirementDraftView, GoalRequirementSelection } from "@/lib/types";
 
 type RequirementForm = {
   title: string;
@@ -146,6 +146,10 @@ function selectionFromResponse(value: unknown, previous: GoalRequirementSelectio
     ...previous,
     expectedDraftHash: typeof envelope.goalRequirementDraftHash === "string" ? envelope.goalRequirementDraftHash : draft.draftHash,
     draft,
+    ...(typeof envelope.phase === "string" || typeof envelope.status === "string"
+      ? { status: typeof envelope.phase === "string" ? envelope.phase : envelope.status as string }
+      : {}),
+    ...(typeof envelope.confirmable === "boolean" ? { confirmable: envelope.confirmable } : {}),
   };
 }
 

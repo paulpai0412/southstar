@@ -39,6 +39,7 @@ interface Props {
   onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsContent | void>;
   goalDesignRevisionAnchor?: GoalSliceSelection | null;
   goalRequirementRevisionAnchor?: GoalRequirementSelection | null;
+  goalRequirementContentOverride?: GoalRequirementsContent | null;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
   onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
@@ -117,7 +118,7 @@ function Typewriter({ phrases }: { phrases: string[] }) {
   );
 }
 
-export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalDesignRevisionAnchor, goalRequirementRevisionAnchor, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
+export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSessionStatsChange, onSessionStatsPanelOpen, onContextUsageChange, sessionKind, libraryScope, workflowMode, workflowTemplate, workflowCwd, onWorkflowDagNodeSelect, onGoalSliceSelect, onConfirmGoalDesign, onGoalRequirementSelect, onConfirmRequirements, goalDesignRevisionAnchor, goalRequirementRevisionAnchor, goalRequirementContentOverride, onGoalContractSelect, onWorkflowGoalRevise, onLibraryGraphNodeSelect, onWorkspaceSurfaceChange }: Props) {
   const {
     loading, error, messages, entryIds, streamState,
     agentRunning, modelNames, modelList, modelThinkingLevels, modelThinkingLevelMaps, toolPreset, thinkingLevel,
@@ -443,6 +444,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
                     onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign}
                     onGoalRequirementSelect={onGoalRequirementSelect}
                     onConfirmRequirements={onConfirmRequirements}
+                    goalRequirementContentOverride={goalRequirementContentOverride}
                     onGoalContractSelect={onGoalContractSelect}
                     onWorkflowGoalRevise={onWorkflowGoalRevise}
                     onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
@@ -462,7 +464,7 @@ export function ChatWindow({ session, newSessionCwd, onAgentEnd, onSessionCreate
             })()}
 
             {streamState.isStreaming && streamState.streamingMessage && (
-              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
+              <MessageView message={streamState.streamingMessage as AgentMessage} isStreaming modelNames={modelNames} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign ?? handleConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} goalRequirementContentOverride={goalRequirementContentOverride} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />
             )}
 
             {agentRunning && !streamState.streamingMessage && (

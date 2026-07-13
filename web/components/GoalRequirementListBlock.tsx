@@ -35,9 +35,11 @@ export function GoalRequirementListBlock({
   const coverage = useMemo(() => new Map((currentBlock.coveragePreview ?? []).map((entry) => [entry.requirementId, entry])), [currentBlock.coveragePreview]);
   const confirmable = currentBlock.confirmable === true;
 
-  const updateFromResponse = (value: unknown): void => {
+  const updateFromResponse = (value: unknown): GoalRequirementsContent => {
     const next = extractContent(value, currentBlock);
-    if (next) setCurrentBlock(next);
+    if (!next) throw new Error("Requirement confirmation response did not include a valid draft, status, and draft hash.");
+    setCurrentBlock(next);
+    return next;
   };
 
   const confirm = async () => {
@@ -51,7 +53,8 @@ export function GoalRequirementListBlock({
     };
     try {
       if (onConfirmRequirements) {
-        updateFromResponse(await onConfirmRequirements(confirmation));
+        const next = updateFromResponse(await onConfirmRequirements(confirmation));
+        assertConfirmationResult(next);
       } else {
         const response = await fetch(`/api/workflow/planner-drafts/${encodeURIComponent(currentBlock.draftId)}/confirm-requirements`, {
           method: "POST",
@@ -60,7 +63,8 @@ export function GoalRequirementListBlock({
         });
         const payload = await response.json().catch(() => undefined) as unknown;
         if (!response.ok) throw new Error(errorMessage(payload) ?? `HTTP ${response.status}`);
-        updateFromResponse(payload);
+        const next = updateFromResponse(payload);
+        assertConfirmationResult(next);
       }
       setConfirmState("confirmed");
       setConfirmMessage("Requirements confirmed; resolving validation contracts.");
@@ -103,6 +107,9 @@ export function GoalRequirementListBlock({
                 expectedDraftHash: currentBlock.goalRequirementDraftHash,
                 requirementId: requirement.id,
                 draft,
+                status: currentBlock.status,
+                confirmable,
+                ...(currentBlock.coveragePreview ? { coveragePreview: currentBlock.coveragePreview } : {}),
               })}
               style={itemButtonStyle}
             >
@@ -147,20 +154,35 @@ function extractContent(value: unknown, previous: GoalRequirementsContent): Goal
   const envelope = isRecord(value) && isRecord(value.result) ? value.result : value;
   if (!isRecord(envelope)) return null;
   const nested = isRecord(envelope.package) ? envelope.package : envelope;
-  const rawDraft = isRecord(nested.goalRequirementDraft) ? nested.goalRequirementDraft : isRecord(envelope.goalRequirementDraft) ? envelope.goalRequirementDraft : undefined;
+  const rawDraft = isRecord(nested.goalRequirementDraft)
+    ? nested.goalRequirementDraft
+    : isRecord(envelope.goalRequirementDraft)
+      ? envelope.goalRequirementDraft
+      : isRecord(envelope.draft)
+        ? envelope.draft
+        : undefined;
   if (!rawDraft) return null;
   const draft = parseDraft(rawDraft);
   if (!draft) return null;
+  const status = stringValue(envelope.phase) ?? stringValue(envelope.status);
+  const draftHash = stringValue(envelope.goalRequirementDraftHash) ?? stringValue(nested.goalRequirementDraftHash);
+  if (!status || !draftHash || draftHash !== draft.draftHash) return null;
   return {
     type: "goalRequirements",
     draftId: stringValue(envelope.draftId) ?? previous.draftId,
-    status: stringValue(envelope.phase) ?? stringValue(envelope.status) ?? previous.status,
-    goalRequirementDraftHash: stringValue(envelope.goalRequirementDraftHash) ?? draft.draftHash,
+    status,
+    goalRequirementDraftHash: draftHash,
     draft,
     coveragePreview: parseCoverage(envelope.coveragePreview ?? nested.coveragePreview) ?? previous.coveragePreview,
-    ...(typeof envelope.confirmable === "boolean" ? { confirmable: envelope.confirmable } : previous.confirmable !== undefined ? { confirmable: previous.confirmable } : {}),
+    confirmable: typeof envelope.confirmable === "boolean" ? envelope.confirmable : false,
     blockers: Array.isArray(envelope.blockers) ? envelope.blockers.filter((item): item is string => typeof item === "string") : previous.blockers,
   };
+}
+
+function assertConfirmationResult(content: GoalRequirementsContent): void {
+  if (typeof content.confirmable !== "boolean") {
+    throw new Error("Requirement confirmation response did not include host confirmation state.");
+  }
 }
 
 export function goalRequirementsContentFromUnknown(value: unknown): GoalRequirementsContent | null {
@@ -170,6 +192,7 @@ export function goalRequirementsContentFromUnknown(value: unknown): GoalRequirem
     status: "requirements_review",
     goalRequirementDraftHash: "",
     draft: {} as GoalRequirementDraftView,
+    confirmable: false,
   });
 }
 

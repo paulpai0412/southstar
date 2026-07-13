@@ -159,6 +159,7 @@ test("requirement review revise stream is phase-aware and returns a goal_require
         },
       },
     });
+    assert.equal(draft.confirmable, true);
     const requirementId = draft.goalRequirementDraft.requirements[0]!.id;
     const context = {
       db,
@@ -186,11 +187,63 @@ test("requirement review revise stream is phase-aware and returns a goal_require
     assert.equal(response.status, 200);
     const frames = parseSse(await response.text());
     assert.ok(frames.some((frame) => frame.event === "planner.stage" && frame.data.stage === "requirements.revision.requested"));
-    const requirements = frames.find((frame) => frame.event === "goal_requirements")?.data as { goalRequirementDraftHash?: string; package?: { goalRequirementDraft?: { summary?: string; requirements?: Array<{ statement?: string }> } } } | undefined;
+    const requirements = frames.find((frame) => frame.event === "goal_requirements")?.data as { confirmable?: boolean; goalRequirementDraftHash?: string; package?: { confirmable?: boolean; goalRequirementDraft?: { summary?: string; requirements?: Array<{ statement?: string }> } } } | undefined;
+    assert.equal(requirements?.confirmable, true);
+    assert.equal(requirements?.package?.confirmable, true);
     assert.match(String(requirements?.goalRequirementDraftHash), /^[a-f0-9]{64}$/);
     assert.equal(requirements?.package?.goalRequirementDraft?.summary, "Updated review flow");
     assert.equal(requirements?.package?.goalRequirementDraft?.requirements?.[0]?.statement, "A learner can review a word and record the result.");
     assert.equal(frames.at(-1)?.event, "done");
+  } finally {
+    await db.close();
+  }
+});
+
+test("planner draft requirement SSE exposes host confirmable state", async () => {
+  const db = await createTestPostgresDb();
+  const cwd = process.cwd();
+  try {
+    await seedGoalDesignSkill(db);
+    const draft = finalizeGoalRequirementDraft({
+      goalPrompt: "Create a review flow",
+      cwd,
+      summary: "Review flow",
+      requirements: [{
+        title: "Review flow",
+        statement: "A learner can review a word.",
+        source: "explicit",
+        blocking: true,
+        userVisibleBehaviors: ["Show a word"],
+        businessRules: [],
+        acceptanceCriteria: [{ statement: "A review is persisted", evidenceIntent: ["database evidence"] }],
+        expectedOutcomeArtifacts: [{ description: "review UI", mediaType: "text/html" }],
+        verificationIntent: ["complete one review"],
+        assumptions: [],
+        openQuestions: [],
+        riskTags: [],
+        interactionContractRefs: [],
+      }],
+      nonGoals: [],
+      blockingInputs: [],
+    });
+    const context = {
+      db,
+      goalRequirementInterpreter: {
+        async interpret() { return draft; },
+        async revise() { return { kind: "needs_input" as const, question: "No revision expected." }; },
+      },
+      plannerClient: { generate: async () => { throw new Error("planner not used"); } },
+      executorProvider: { executorType: "tork" as const, submit: async () => { throw new Error("executor not used"); } },
+    };
+    const response = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/planner/drafts/stream", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goalPrompt: draft.originalPrompt, cwd, idempotencyKey: "requirement-sse-confirmable", goalDesignMode: "review_before_compose" }),
+    }));
+    assert.equal(response.status, 200);
+    const frames = parseSse(await response.text());
+    const requirements = frames.find((frame) => frame.event === "goal_requirements")?.data as { confirmable?: boolean; package?: { confirmable?: boolean } } | undefined;
+    assert.equal(requirements?.confirmable, true);
   } finally {
     await db.close();
   }

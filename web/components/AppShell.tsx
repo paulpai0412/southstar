@@ -12,7 +12,7 @@ import { WorkflowNodeProfileEditor } from "./WorkflowNodeProfileEditor";
 import { GoalContractInspector } from "./GoalContractInspector";
 import { GoalSliceEditor } from "./GoalSliceEditor";
 import { GoalRequirementEditor } from "./GoalRequirementEditor";
-import type { GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
+import { goalRequirementsContentFromUnknown, type GoalRequirementsConfirmation } from "./GoalRequirementListBlock";
 import { WorkflowStaticNodeProfile } from "./WorkflowStaticNodeProfile";
 import { OperatorSidebar } from "./operator/OperatorSidebar";
 import { OperatorTaskTabs } from "./operator/OperatorTaskTabs";
@@ -32,6 +32,18 @@ import type { GoalRequirementSelection, GoalRequirementsContent, GoalSliceSelect
 import type { WorkflowDag, WorkflowDagNode, WorkflowTemplateSummary } from "@/lib/workflow/types";
 import type { ChatInputHandle } from "./ChatInput";
 import type { SessionStatsInfo } from "@/lib/pi-types";
+
+function goalRequirementContentFromSelection(selection: GoalRequirementSelection): GoalRequirementsContent {
+  return {
+    type: "goalRequirements",
+    draftId: selection.draftId,
+    status: selection.status ?? "requirements_review",
+    goalRequirementDraftHash: selection.expectedDraftHash,
+    draft: selection.draft,
+    confirmable: selection.confirmable === true,
+    ...(selection.coveragePreview ? { coveragePreview: selection.coveragePreview } : {}),
+  };
+}
 import type { ReactNode } from "react";
 
 type SessionCopyField = "file" | "id";
@@ -206,10 +218,12 @@ export function AppShell() {
   const [sidecarWidth, setSidecarWidth] = useState(DEFAULT_SIDECAR_WIDTH);
   const [goalDesignRevisionAnchor, setGoalDesignRevisionAnchor] = useState<GoalSliceSelection | null>(null);
   const [goalRequirementRevisionAnchor, setGoalRequirementRevisionAnchor] = useState<GoalRequirementSelection | null>(null);
+  const [goalRequirementContentOverride, setGoalRequirementContentOverride] = useState<GoalRequirementsContent | null>(null);
 
   useEffect(() => {
     setGoalDesignRevisionAnchor(null);
     setGoalRequirementRevisionAnchor(null);
+    setGoalRequirementContentOverride(null);
   }, [selectedSession?.id, workflowSelectedSession?.id, newSessionCwd, workflowNewSessionCwd]);
 
   const handleAtMention = useCallback((relativePath: string) => {
@@ -694,6 +708,7 @@ export function AppShell() {
   const handleGoalRequirementSelect = useCallback((selection: GoalRequirementSelection) => {
     setChatWorkspaceSurface("workflow");
     setGoalRequirementRevisionAnchor(selection);
+    setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
     openSidecarTab({
       id: `goal-requirement:${selection.draftId}:${selection.requirementId}`,
       label: `Requirement ${selection.requirementId}`,
@@ -706,6 +721,7 @@ export function AppShell() {
 
   const handleGoalRequirementChange = useCallback((selection: GoalRequirementSelection) => {
     setGoalRequirementRevisionAnchor(selection);
+    setGoalRequirementContentOverride(goalRequirementContentFromSelection(selection));
     setSidecarTabs((current) => current.map((tab) => (
       tab.kind === "goalRequirement"
         && tab.draftId === selection.draftId
@@ -721,9 +737,12 @@ export function AppShell() {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ expectedDraftHash: confirmation.expectedDraftHash }),
     });
-    const payload = await response.json().catch(() => undefined) as { result?: GoalRequirementsContent; error?: string; message?: string } | undefined;
+    const payload = await response.json().catch(() => undefined) as { result?: unknown; error?: string; message?: string } | undefined;
     if (!response.ok) throw new Error(payload?.error ?? payload?.message ?? `HTTP ${response.status}`);
-    return payload?.result;
+    const result = goalRequirementsContentFromUnknown(payload?.result);
+    if (!result) throw new Error("Requirement confirmation response did not include a valid goal requirement result.");
+    setGoalRequirementContentOverride(result);
+    return result;
   }, []);
 
   const handleGoalContractSelect = useCallback((dag: WorkflowDag) => {
@@ -1635,6 +1654,7 @@ export function AppShell() {
                 onConfirmRequirements={handleConfirmRequirements}
                 goalDesignRevisionAnchor={goalDesignRevisionAnchor}
                 goalRequirementRevisionAnchor={goalRequirementRevisionAnchor}
+                goalRequirementContentOverride={goalRequirementContentOverride}
                 onGoalContractSelect={handleGoalContractSelect}
                 onWorkflowGoalRevise={handleWorkflowGoalRevise}
                 onLibraryGraphNodeSelect={handleLibraryGraphNodeSelect}
@@ -1667,6 +1687,7 @@ export function AppShell() {
               onConfirmRequirements={handleConfirmRequirements}
               goalDesignRevisionAnchor={goalDesignRevisionAnchor}
               goalRequirementRevisionAnchor={goalRequirementRevisionAnchor}
+              goalRequirementContentOverride={goalRequirementContentOverride}
               onGoalContractSelect={handleGoalContractSelect}
               onWorkflowGoalRevise={handleWorkflowGoalRevise}
             />

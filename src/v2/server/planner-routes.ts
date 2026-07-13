@@ -684,6 +684,8 @@ function createPlannerDraftRevisionStreamResponse(
             status: result.status,
             phase: result.phase,
             goalRequirementDraftHash: result.goalRequirementDraftHash,
+            confirmable: result.confirmable,
+            validationIssues: result.validationIssues,
             package: result,
           });
           send("draft", {

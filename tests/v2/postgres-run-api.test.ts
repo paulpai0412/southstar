@@ -197,6 +197,8 @@ test("Requirement confirmation is hash-bound and idempotent", async () => {
     const replay = await confirmGoalRequirementsPg(db, input);
     assert.equal(first.status, "validation_resolving");
     assert.equal(first.phase, "validation_resolving");
+    assert.equal(first.confirmable, false);
+    assert.equal(replay.confirmable, false);
     assert.equal(first.goalContractHash, replay.goalContractHash);
     assert.equal(first.goalRequirementDraftHash, replay.goalRequirementDraftHash);
   });

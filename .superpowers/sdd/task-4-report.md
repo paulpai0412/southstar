@@ -123,3 +123,77 @@ Implemented in this worktree as the requirement-review UI/runtime slice. The Wor
 - No fixture, seed, mock, canned domain data, or session-list presentation was added.
 - The editor is intentionally a focused requirement form; semantic validity remains in runtime validators/interpreters rather than client-side checks.
 - Confirmation returns the existing validation-resolving pipeline result; evaluator/library resolution remains host-owned and is not fabricated by the browser.
+
+## Task 4 reviewer assessment
+
+### Spec Compliance verdict: FAIL (one critical integration gap)
+
+The component and route seams are present and preserve the existing Workflow chat, AppShell Sidecar, and host-owned hash flow. However, the production event path never supplies the host-projected `confirmable` flag that the browser deliberately requires, so a real Requirement Review cannot be confirmed.
+
+### Strengths
+
+- `GoalRequirementListBlock` is rendered through the existing `MessageView`/`ChatWindow` path and opens the existing AppShell Sidecar (`web/components/MessageView.tsx:565-567`, `web/components/AppShell.tsx:694-705,817-818`).
+- The browser posts the displayed `goalRequirementDraftHash` and does not derive a validity decision (`web/components/GoalRequirementListBlock.tsx:36,47-50,132-139`; `web/components/GoalRequirementEditor.tsx:43-47`).
+- Revision requests carry `draftId`, `expectedDraftHash`, and the selected requirement into the phase-aware stream (`web/hooks/useAgentSession.ts:920-963`; `src/v2/server/planner-routes.ts:663-675`).
+- The tests verify the existing sidecar and that confirming does not call a DAG action (`tests/web/southstar-workflow-canvas-ui.test.tsx:1045-1085`).
+
+### Critical issues
+
+**C1 — Production Requirement Review is permanently unconfirmable.**
+
+`GoalRequirementListBlock` enables confirmation only when `currentBlock.confirmable === true` (`web/components/GoalRequirementListBlock.tsx:34-36,132-140`). The initial host result type and persisted result contain no `confirmable` field (`src/v2/orchestration/goal-design-draft-service.ts:272-281`), and both production SSE paths forward those results without adding it (`src/v2/server/planner-routes.ts:364-367,682-688`). `extractContent` consequently preserves `undefined` (`web/components/GoalRequirementListBlock.tsx:154-162`), leaving the button disabled forever. The only green confirmation test injects `confirmable: true` directly into a browser fixture (`tests/web/southstar-workflow-canvas-ui.test.tsx:1067-1078`), so it does not exercise the real event contract.
+
+Fix by adding a host-computed `confirmable`/blockers projection to the persisted/read-model result and every `goal_requirements` event, then add a route/SSE regression proving the production payload enables the button only from that projection. Do not make the browser infer it from phase, blockers, or coverage.
+
+### Important issues
+
+**I1 — Editing a requirement leaves the list block on the old hash.**
+
+`GoalRequirementEditor` calls `onDraftChange` with the new revision (`web/components/GoalRequirementEditor.tsx:47-52`), but AppShell only updates the Sidecar tab and revision anchor (`web/components/AppShell.tsx:707-716`). The original `GoalRequirementListBlock` keeps its local `currentBlock` at the old draft/hash because it has no draft-change callback (`web/components/GoalRequirementListBlock.tsx:17-33`; `web/components/MessageView.tsx:565-567`). After a save, clicking Confirm sends the stale displayed hash and receives `goal_requirement_draft_stale`; the normal edit → confirm flow is broken. Propagate the host response back to the message block (or make the block consume a shared draft anchor) and add a rendered regression for edit then confirm.
+
+**I2 — The UI reports success when a confirm callback returns no host result.**
+
+The confirm handler sets `confirmState` to `confirmed` after `onConfirmRequirements` even if that callback returns `undefined`, and the fallback path likewise accepts any `2xx` response without requiring a valid result (`web/components/GoalRequirementListBlock.tsx:51-69`). This can display a false confirmation while the host projection is unknown. Require a valid host response containing the next phase/hash (or an explicit host acknowledgement) before entering the confirmed state, with a focused failure test.
+
+### Minor issues
+
+- The browser confirmation test uses a synthetic `confirmable: true` block and does not assert that an actual `goal_requirements` SSE payload with no projection remains disabled; add both positive and negative event-contract coverage.
+- `GoalRequirementEditor` imports `GoalRequirementsContent` but does not use it (`web/components/GoalRequirementEditor.tsx:5`); harmless, but clean it while touching the file.
+
+### Task quality assessment
+
+The task implementation is structurally well-scoped and follows the requested UI layout/authority boundaries. It is not ready to merge until C1 is fixed; I1 should be fixed in the same task because it breaks the primary edit-and-confirm interaction. No broad suites were run during this review; `git diff --check 406c1c3..e1b6782` is clean.
+
+## Follow-up resolution
+
+Status: RESOLVED.
+
+- C1: `GoalRequirementReviewResult` now carries host-computed `confirmable` and `validationIssues` for initial, revised, and post-confirm phases. Initial and revision `goal_requirements` SSE payloads include the projection; post-confirm results explicitly report `confirmable: false`. The browser treats missing projections as non-confirmable and never derives readiness.
+- I1: Sidecar PATCH responses now carry status/hash/confirmable into the AppShell requirement content override. The existing message block consumes that override, so the next Confirm posts the latest saved hash.
+- I2: Confirm requires a response with a valid draft, matching draft hash, phase/status, and host `confirmable` state. Malformed 2xx responses surface an error and never enter the confirmed state.
+- Removed the unused `GoalRequirementsContent` editor import.
+
+Follow-up verification:
+
+```text
+npx tsc --noEmit --pretty false
+exit 0
+
+npm exec tsc -- --noEmit -p web/tsconfig.json --pretty false
+exit 0
+
+npx tsx --test tests/v2/planner-draft-stream-route.test.ts
+4 tests, 4 pass
+
+npx tsx --test --test-name-pattern='Requirement confirmation is hash-bound and idempotent' tests/v2/postgres-run-api.test.ts
+1 test, 1 pass
+
+npx tsx tests/web/southstar-workflow-canvas-ui.test.tsx
+51 tests, 51 pass
+
+npm --prefix web run build
+webpack compilation, TypeScript, and static page generation completed
+
+git diff --check
+exit 0
+```

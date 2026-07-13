@@ -22,9 +22,11 @@ import {
 } from "./goal-contract.ts";
 import {
   confirmGoalRequirementDraft,
+  goalRequirementDraftReadiness,
   reviseGoalRequirementDraft,
   validateGoalRequirementDraft,
   type GoalRequirementDraftInterpreter,
+  type GoalRequirementDraftIssue,
   type GoalRequirementDraftRevisionOperation,
   type GoalRequirementDraftRevisionPatchV1,
   type GoalRequirementDraftV1,
@@ -97,6 +99,8 @@ export type GoalRequirementReviewResult = {
   goalRequirementDraftId?: string;
   goalRequirementDraft: GoalRequirementDraftV1;
   goalRequirementDraftHash: string;
+  confirmable: boolean;
+  validationIssues: GoalRequirementDraftIssue[];
   goalContract?: GoalContractV1;
   goalContractHash?: string;
   blockers: string[];
@@ -277,6 +281,7 @@ export async function preparePostgresGoalRequirementDraft(
     goalPrompt: input.goalPrompt,
     goalRequirementDraft: draft,
     goalRequirementDraftHash: draft.draftHash,
+    ...goalRequirementReviewReadiness(draft, "requirements_review"),
     blockers: draft.blockingInputs,
   };
   input.onProgress?.({
@@ -363,6 +368,7 @@ export async function reviseGoalRequirementPg(
       goalPrompt: next.originalPrompt,
       goalRequirementDraft: next,
       goalRequirementDraftHash: next.draftHash,
+      ...goalRequirementReviewReadiness(next, "requirements_review"),
       blockers: next.blockingInputs,
       invalidated,
     };
@@ -468,6 +474,7 @@ export async function confirmGoalRequirementsPg(
         goalPrompt: current.originalPrompt,
         goalRequirementDraft: current,
         goalRequirementDraftHash: current.draftHash,
+        ...goalRequirementReviewReadiness(current, phase),
         goalContract: existingContract,
         goalContractHash: goalContractHash(existingContract),
         blockers: current.blockingInputs,
@@ -548,6 +555,7 @@ export async function confirmGoalRequirementsPg(
       goalPrompt: current.originalPrompt,
       goalRequirementDraft: current,
       goalRequirementDraftHash: current.draftHash,
+      ...goalRequirementReviewReadiness(current, "validation_resolving"),
       goalContract: contract,
       goalContractHash: contractHash,
       blockers: current.blockingInputs,
@@ -1407,6 +1415,17 @@ const GOAL_DESIGN_PHASES = new Set<GoalDesignPhase>([
   "composing",
   "dag_validated",
 ]);
+
+function goalRequirementReviewReadiness(
+  draft: GoalRequirementDraftV1,
+  phase: GoalDesignPhase,
+): Pick<GoalRequirementReviewResult, "confirmable" | "validationIssues"> {
+  const readiness = goalRequirementDraftReadiness(draft);
+  return {
+    confirmable: phase === "requirements_review" && readiness.confirmable,
+    validationIssues: readiness.issues,
+  };
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)

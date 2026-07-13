@@ -1084,6 +1084,58 @@ test("Requirement confirm posts the displayed draft hash and never composes a DA
   });
 });
 
+test("Requirement edit replaces the message draft before confirm", async () => {
+  const draft = requirementDraftView();
+  const updatedDraftPayload = { ...draft, revision: 2, draftHash: "hash-2", requirements: draft.requirements.map((item) => ({ ...item, statement: "Updated statement" })) };
+  let confirmBody: Record<string, unknown> | null = null;
+  await withBrowserHarness(`
+    import React, { useState } from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    import { GoalRequirementEditor } from "./web/components/GoalRequirementEditor";
+    const initialDraft = ${JSON.stringify(draft)};
+    const updatedDraft = ${JSON.stringify(updatedDraftPayload)};
+    function Harness() {
+      const [block, setBlock] = useState({ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft: initialDraft, confirmable: true });
+      const [selection, setSelection] = useState(null);
+      return <><GoalRequirementListBlock block={block} onRequirementSelect={setSelection} />{selection ? <aside data-testid="sidecar"><GoalRequirementEditor selection={selection} onDraftChange={(_next) => { setBlock((current) => ({ ...current, draft: updatedDraft, goalRequirementDraftHash: "hash-2", confirmable: true })); }} /></aside> : null}</>;
+    }
+    createRoot(document.getElementById("root")).render(<Harness />);
+  `, async (page) => {
+    await page.locator('[data-testid="goal-requirement-item-req-review"]').click();
+    await page.locator('[data-testid="goal-requirement-editor"] textarea').nth(0).fill("Updated statement");
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/goal-requirements/req-review", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", goalRequirementDraftHash: "hash-2", goalRequirementDraft: { ...draft, revision: 2, draftHash: "hash-2", requirements: draft.requirements.map((item) => ({ ...item, statement: "Updated statement" })) } } }) });
+    });
+    await page.locator('[data-testid="goal-requirement-save"]').click();
+    await page.getByText(/Saved revision 2/).waitFor();
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/confirm-requirements", async (route) => {
+      confirmBody = JSON.parse(route.request().postData() ?? "{}");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { draftId: "draft-goal-1", status: "validation_resolving", phase: "validation_resolving", goalRequirementDraftHash: "hash-2", goalRequirementDraft: updatedDraftPayload, confirmable: false } }) });
+    });
+    await page.locator('[data-testid="goal-requirements-confirm"]').click();
+    await page.getByText(/Requirements confirmed/).waitFor();
+    assert.deepEqual(confirmBody, { expectedDraftHash: "hash-2" });
+  });
+});
+
+test("Requirement confirm rejects a malformed host response", async () => {
+  const draft = requirementDraftView();
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { GoalRequirementListBlock } from "./web/components/GoalRequirementListBlock";
+    createRoot(document.getElementById("root")).render(<GoalRequirementListBlock block={{ type: "goalRequirements", draftId: "draft-goal-1", status: "requirements_review", goalRequirementDraftHash: "hash-1", draft: ${JSON.stringify(draft)}, confirmable: true }} />);
+  `, async (page) => {
+    await page.route("**/api/workflow/planner-drafts/draft-goal-1/confirm-requirements", async (route) => {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ result: { status: "validation_resolving" } }) });
+    });
+    await page.locator('[data-testid="goal-requirements-confirm"]').click();
+    await page.getByText(/valid goal requirement draft|confirmation response/i).waitFor();
+    assert.equal(await page.getByText("Confirmed", { exact: true }).count(), 0);
+  });
+});
+
 test("workflow node profile save marks its planner draft as needing validation", () => {
   const editor = source("web/components/WorkflowNodeProfileEditor.tsx");
   assert.match(editor, /southstar:planner-draft-updated/);
