@@ -79,16 +79,16 @@ export class GoalContractVocabularyGapError extends Error {
   }
 }
 
-type GoalRequirementInterpretation = Omit<GoalRequirementV1, "id" | "expectedArtifacts"> & {
+export type GoalRequirementInterpretationV1 = Omit<GoalRequirementV1, "id" | "expectedArtifacts"> & {
   expectedArtifacts?: GoalExpectedArtifactV1[];
 };
 
-type GoalContractInterpretation = {
+export type GoalContractInterpretationV1 = {
   domain: string;
   intent: string;
   workType?: RequirementSpecV2["workType"];
   summary: string;
-  requirements: GoalRequirementInterpretation[];
+  requirements: GoalRequirementInterpretationV1[];
   expectedArtifactRefs: string[];
   requiredCapabilities: string[];
   nonGoals: string[];
@@ -98,14 +98,14 @@ type GoalContractInterpretation = {
   requestedSideEffects: string[];
 };
 
-type FinalizeGoalContractInput = {
+export type FinalizeGoalContractInputV1 = {
   goalPrompt: string;
   cwd: string;
   projectRef?: string;
-  interpretation: GoalContractInterpretation;
+  interpretation: GoalContractInterpretationV1;
 };
 
-type ReviseGoalContractInput = FinalizeGoalContractInput & {
+export type ReviseGoalContractInputV1 = FinalizeGoalContractInputV1 & {
   previousContract: GoalContractV1;
 };
 
@@ -202,13 +202,13 @@ export async function interpretGoalContractWithLlm(
   throw new Error("Goal Contract interpreter exhausted attempts");
 }
 
-export function finalizeGoalContract(input: FinalizeGoalContractInput): GoalContractV1 {
+export function finalizeGoalContract(input: FinalizeGoalContractInputV1): GoalContractV1 {
   validateHostInput(input);
   const interpretation = validateInterpretation(input.interpretation);
   return materializeContract(input, interpretation, 1);
 }
 
-export function reviseGoalContract(input: ReviseGoalContractInput): GoalContractV1 {
+export function reviseGoalContract(input: ReviseGoalContractInputV1): GoalContractV1 {
   validateHostInput(input);
   const interpretation = validateInterpretation(input.interpretation);
   const previousByStatement = new Map(
@@ -295,8 +295,8 @@ export function requirementSpecFromGoalContract(contract: GoalContractV1): Requi
 }
 
 function materializeContract(
-  input: Pick<FinalizeGoalContractInput, "goalPrompt" | "cwd" | "projectRef">,
-  interpretation: GoalContractInterpretation | (Omit<GoalContractInterpretation, "requirements"> & { requirements: GoalRequirementV1[] }),
+  input: Pick<FinalizeGoalContractInputV1, "goalPrompt" | "cwd" | "projectRef">,
+  interpretation: GoalContractInterpretationV1 | (Omit<GoalContractInterpretationV1, "requirements"> & { requirements: GoalRequirementV1[] }),
   revision: number,
 ): GoalContractV1 {
   const requirements = materializedRequirements(interpretation.requirements);
@@ -329,7 +329,7 @@ function requirementId(statement: string): string {
 }
 
 function materializedRequirements(
-  requirements: Array<GoalRequirementInterpretation | GoalRequirementV1>,
+  requirements: Array<GoalRequirementInterpretationV1 | GoalRequirementV1>,
 ): GoalRequirementV1[] {
   const materialized = requirements.map((requirement) => ({
     ...requirement,
@@ -432,7 +432,7 @@ function renderInterpreterRepairPrompt(originalPrompt: string, response: string,
   ].join("\n");
 }
 
-function parseInterpretation(text: string): GoalContractInterpretation {
+function parseInterpretation(text: string): GoalContractInterpretationV1 {
   let parsed: unknown;
   try {
     parsed = JSON.parse(text.trim());
@@ -442,7 +442,7 @@ function parseInterpretation(text: string): GoalContractInterpretation {
   return validateInterpretation(parsed, { requireWorkType: true });
 }
 
-function validateInterpretation(value: unknown, options: { requireWorkType?: boolean } = {}): GoalContractInterpretation {
+function validateInterpretation(value: unknown, options: { requireWorkType?: boolean } = {}): GoalContractInterpretationV1 {
   const object = requiredObject(value, "$");
   if (options.requireWorkType && !("workType" in object)) {
     throw new Error("$ is missing required fields: workType");
@@ -468,7 +468,7 @@ function validateInterpretation(value: unknown, options: { requireWorkType?: boo
 }
 
 function goalContractVocabularyGaps(
-  interpretation: GoalContractInterpretation,
+  interpretation: GoalContractInterpretationV1,
   vocabulary: GoalContractLibraryVocabulary | undefined,
 ): GoalContractVocabularyGapV1[] {
   if (!vocabulary) return [];
@@ -493,7 +493,7 @@ function goalContractVocabularyGaps(
   return gaps;
 }
 
-function validateRequirement(value: unknown, index: number): GoalRequirementInterpretation {
+function validateRequirement(value: unknown, index: number): GoalRequirementInterpretationV1 {
   const path = `requirements.${index}`;
   const object = requiredObject(value, path);
   const allowedKeys = "expectedArtifacts" in object ? REQUIREMENT_KEYS : LEGACY_REQUIREMENT_KEYS;
@@ -515,7 +515,7 @@ function validateRequirement(value: unknown, index: number): GoalRequirementInte
   };
 }
 
-function validateHostInput(input: Pick<FinalizeGoalContractInput, "goalPrompt" | "cwd" | "projectRef">): void {
+function validateHostInput(input: Pick<FinalizeGoalContractInputV1, "goalPrompt" | "cwd" | "projectRef">): void {
   requiredString(input.goalPrompt, "goalPrompt");
   requiredString(input.cwd, "cwd");
   if (input.projectRef !== undefined) requiredString(input.projectRef, "projectRef");

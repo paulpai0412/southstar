@@ -48,6 +48,7 @@ await import("./composition-repair-loop.test.ts");
 await import("./workflow-composer-registry.test.ts");
 await import("./llm-workflow-composer.test.ts");
 await import("./goal-contract.test.ts");
+await import("./goal-requirement-draft.test.ts");
 await import("./goal-design.test.ts");
 await import("./goal-workspace-discovery.test.ts");
 await import("./runtime-library-materializer.test.ts");
