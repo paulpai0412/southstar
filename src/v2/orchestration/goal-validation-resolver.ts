@@ -72,6 +72,15 @@ export type ResolveGoalValidationInput = {
   scope?: string;
 };
 
+export class GoalValidationNotReadyError extends Error {
+  readonly code = "goal_validation_not_ready";
+
+  constructor(readonly resolution: GoalValidationResolutionV1) {
+    super("Goal Validation is not ready for composition: one or more blocking requirements remain unresolved");
+    this.name = "GoalValidationNotReadyError";
+  }
+}
+
 export type { GoalValidationResolutionV1 } from "../design-library/types.ts";
 export type {
   GoalValidationGapV1,
@@ -162,6 +171,7 @@ export async function resolveGoalValidationPg(
     previews.push({
       schemaVersion: "southstar.requirement_coverage_preview.v1",
       requirementId: contractRequirement.id,
+      blocking: contractRequirement.blocking,
       status,
       artifactCandidates: artifactPreview.map(toCoverageCandidate),
       evaluatorCandidates: evaluatorPreview.map(toCoverageCandidate),
@@ -182,18 +192,44 @@ export async function resolveGoalValidationPg(
     }));
   }
 
+  const resolvedGaps = uniqueGaps(gaps).map((item) => {
+    if (item.candidateRefs.length > 0) return item;
+    const preview = previews.find((candidate) => candidate.requirementId === item.requirementId);
+    const candidateRefs = item.kind === "artifact"
+      ? preview?.artifactCandidates.map((candidate) => candidate.ref) ?? []
+      : item.kind === "evaluator" || item.kind === "edge" || item.kind === "procedure" || item.kind === "evidence" || item.kind === "independence"
+        ? preview?.evaluatorCandidates.map((candidate) => candidate.ref) ?? []
+        : [];
+    return candidateRefs.length > 0 ? { ...item, candidateRefs } : item;
+  });
   const resolutionWithoutHash = {
     schemaVersion: "southstar.goal_validation_resolution.v1" as const,
     goalContractHash: goalContractHash(input.goalContract),
     requirementDraftHash: input.requirementDraft.draftHash || goalRequirementDraftHash(input.requirementDraft),
     previews,
     bindings,
-    gaps: uniqueGaps(gaps),
+    gaps: resolvedGaps,
+    ready: false,
   };
+  const blockingRequirementIds = new Set(
+    previews.filter((preview) => preview.blocking).map((preview) => preview.requirementId),
+  );
+  const bindingRequirementIds = new Set(bindings.map((binding) => binding.requirementId));
+  resolutionWithoutHash.ready = !resolutionWithoutHash.gaps.some((item) => item.blocking)
+    && previews.filter((preview) => blockingRequirementIds.has(preview.requirementId)).every((preview) =>
+      preview.status === "ready" && bindingRequirementIds.has(preview.requirementId));
   return {
     ...resolutionWithoutHash,
     resolutionHash: contentHashForPayload(resolutionWithoutHash),
   };
+}
+
+export function goalValidationResolutionReady(resolution: GoalValidationResolutionV1): boolean {
+  return resolution.ready && !resolution.gaps.some((gap) => gap.blocking);
+}
+
+export function assertGoalValidationResolutionReady(resolution: GoalValidationResolutionV1): void {
+  if (!goalValidationResolutionReady(resolution)) throw new GoalValidationNotReadyError(resolution);
 }
 
 async function resolveRequirementAttempt(input: {
@@ -349,6 +385,23 @@ function buildBinding(input: {
       })],
     };
   }
+  const procedureMode = typeof procedure.verificationMode === "string"
+    ? procedure.verificationMode
+    : typeof procedure.checkKind === "string"
+      ? procedure.checkKind
+      : undefined;
+  if (procedureMode !== input.recommendation.verificationMode) {
+    return {
+      gaps: [gap({
+        kind: "procedure",
+        requirementId: input.contractRequirement.id,
+        criterionIds: input.criterionIds,
+        requestedRef: input.recommendation.procedureRef,
+        blocking: input.contractRequirement.blocking,
+        message: `Verification procedure ${input.recommendation.procedureRef} is not compatible with ${input.recommendation.verificationMode}`,
+      })],
+    };
+  }
   if (state.independencePolicy !== "independent" && state.independence !== "independent") {
     return {
       gaps: [gap({
@@ -361,28 +414,32 @@ function buildBinding(input: {
       })],
     };
   }
-  const expectedEvidenceKinds = uniqueStrings([
-    ...input.requirement.acceptanceCriteria.flatMap((criterion) => criterion.evidenceIntent),
-    ...(input.recommendation.expectedEvidenceKinds ?? []),
-  ]);
-  const allowedEvidenceKinds = uniqueStrings([
-    ...stringArray(procedure.allowedEvidenceKinds),
-    ...stringArray(state.evidenceKinds),
-    ...stringArray(state.requiredEvidenceKinds),
-  ]);
+  const expectedEvidenceKinds = uniqueStrings(
+    input.requirement.acceptanceCriteria.flatMap((criterion) => criterion.evidenceIntent),
+  );
+  const rankerEvidenceKinds = uniqueStrings(input.recommendation.expectedEvidenceKinds ?? []);
+  const inventedEvidenceKinds = rankerEvidenceKinds.filter((kind) => !expectedEvidenceKinds.includes(kind));
+  const procedureEvidenceKinds = uniqueStrings(procedure.allowedEvidenceKinds);
+  const evaluatorEvidenceKinds = uniqueStrings(state.evidenceKinds);
   const artifactEvidenceKinds = uniqueStrings([
     ...stringArray(input.artifact.state.evidenceKinds),
     ...stringArray(input.artifact.state.acceptableEvidenceKinds),
-    ...stringArray(input.artifact.state.evidenceFields),
   ]);
-  const unsupported = expectedEvidenceKinds.filter((kind) =>
-    allowedEvidenceKinds.length > 0 && !allowedEvidenceKinds.includes(kind));
-  const artifactUnsupported = expectedEvidenceKinds.filter((kind) =>
-    artifactEvidenceKinds.length > 0 && !artifactEvidenceKinds.includes(kind));
-  if (unsupported.length > 0 || artifactUnsupported.length > 0) {
+  const resultSchemaRef = typeof state.resultSchemaRef === "string" ? state.resultSchemaRef.trim() : "";
+  const unsupportedByProcedure = expectedEvidenceKinds.filter((kind) => !procedureEvidenceKinds.includes(kind));
+  const unsupportedByEvaluator = expectedEvidenceKinds.filter((kind) => !evaluatorEvidenceKinds.includes(kind));
+  const unsupportedByArtifact = expectedEvidenceKinds.filter((kind) => !artifactEvidenceKinds.includes(kind));
+  if (!resultSchemaRef || procedureEvidenceKinds.length === 0 || evaluatorEvidenceKinds.length === 0 || artifactEvidenceKinds.length === 0
+    || inventedEvidenceKinds.length > 0 || unsupportedByProcedure.length > 0 || unsupportedByEvaluator.length > 0 || unsupportedByArtifact.length > 0) {
     const details = [
-      unsupported.length > 0 ? `evaluator does not allow ${unsupported.join(", ")}` : "",
-      artifactUnsupported.length > 0 ? `artifact does not accept ${artifactUnsupported.join(", ")}` : "",
+      !resultSchemaRef ? "evaluator resultSchemaRef is missing" : "",
+      procedureEvidenceKinds.length === 0 ? "verification procedure allowedEvidenceKinds is missing" : "",
+      evaluatorEvidenceKinds.length === 0 ? "evaluator evidenceKinds is missing" : "",
+      artifactEvidenceKinds.length === 0 ? "artifact evidenceKinds is missing" : "",
+      inventedEvidenceKinds.length > 0 ? `ranker invented evidence kinds ${inventedEvidenceKinds.join(", ")}` : "",
+      unsupportedByProcedure.length > 0 ? `procedure does not allow ${unsupportedByProcedure.join(", ")}` : "",
+      unsupportedByEvaluator.length > 0 ? `evaluator does not allow ${unsupportedByEvaluator.join(", ")}` : "",
+      unsupportedByArtifact.length > 0 ? `artifact does not accept ${unsupportedByArtifact.join(", ")}` : "",
     ].filter(Boolean).join("; ");
     return {
       gaps: [gap({
@@ -398,10 +455,7 @@ function buildBinding(input: {
   const criterionChecks = input.requirement.acceptanceCriteria.map((criterion) => ({
     criterionId: criterion.id,
     procedureRef: input.recommendation.procedureRef,
-    expectedEvidenceKinds: uniqueStrings([
-      ...criterion.evidenceIntent,
-      ...(input.recommendation.expectedEvidenceKinds ?? []),
-    ]),
+    expectedEvidenceKinds: uniqueStrings(criterion.evidenceIntent),
   }));
   const bindingWithoutId = {
     schemaVersion: "southstar.requirement_validation_binding.v1" as const,
@@ -530,6 +584,7 @@ function emptyPreview(
   return {
     schemaVersion: "southstar.requirement_coverage_preview.v1",
     requirementId: requirement.id,
+    blocking: requirement.blocking,
     status,
     artifactCandidates: [],
     evaluatorCandidates: [],

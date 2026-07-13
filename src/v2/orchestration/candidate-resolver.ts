@@ -50,8 +50,8 @@ export async function resolveApprovedValidationCandidates(
         const evaluator = approvedEvaluators.get(edge.fromObjectKey);
         return evaluator !== undefined
           && evaluator.headVersionId !== null
-          && (edge.fromVersionRef === null || edge.fromVersionRef === evaluator.headVersionId)
-          && (edge.toVersionRef === null || edge.toVersionRef === artifact.headVersionId);
+          && edge.fromVersionRef === evaluator.headVersionId
+          && edge.toVersionRef === artifact.headVersionId;
       })
       .map((edge) => approvedEvaluators.get(edge.fromObjectKey)!)
       .filter((evaluator, index, all) => all.findIndex((candidate) => candidate.objectKey === evaluator.objectKey) === index)
@@ -66,7 +66,7 @@ async function approvedObjectsForValidation(
   scope: string | undefined,
 ): Promise<LibraryObjectSummary[]> {
   const scoped = await findApprovedLibraryObjectsByKind(db, kind, scope);
-  if (!scope) return scoped;
+  if (!scope || scope === "all") return scoped;
   const global = await findApprovedLibraryObjectsByKind(db, kind, "global");
   const byKey = new Map([...scoped, ...global].map((object) => [object.objectKey, object]));
   return [...byKey.values()].sort((left, right) => left.objectKey.localeCompare(right.objectKey));
@@ -77,7 +77,7 @@ async function validationEdgesTo(
   artifactRef: string,
   scope: string | undefined,
 ) {
-  const scopes = scope ? [scope, "global"] : [undefined];
+  const scopes = scope && scope !== "all" ? [scope, "global"] : [undefined];
   const edges = [];
   for (const edgeScope of scopes) {
     edges.push(

@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { confirmGoalRequirementDraft, finalizeGoalRequirementDraft } from "../../src/v2/orchestration/goal-requirement-draft.ts";
-import { resolveGoalValidationPg, type GoalValidationCandidateRanker, type GoalValidationCandidateRecommendationV1 } from "../../src/v2/orchestration/goal-validation-resolver.ts";
+import {
+  assertGoalValidationResolutionReady,
+  resolveGoalValidationPg,
+  type GoalValidationCandidateRanker,
+  type GoalValidationCandidateRecommendationV1,
+} from "../../src/v2/orchestration/goal-validation-resolver.ts";
 import type { GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import type { GoalRequirementDraftV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
@@ -30,6 +35,8 @@ test("resolver binds only approved artifact and evaluator versions", async () =>
     assert.equal(result.bindings[0]!.evaluatorProfileVersionRef, "evaluator.offline-browser@2");
     assert.deepEqual(result.bindings[0]!.acceptanceCriteria, contract.requirements[0]!.acceptanceCriteria);
     assert.equal(result.previews[0]!.status, "ready");
+    assert.equal(result.ready, true);
+    assert.doesNotThrow(() => assertGoalValidationResolutionReady(result));
   });
 });
 
@@ -48,6 +55,8 @@ test("resolver reports a structured gap instead of selecting draft or invented r
     assert.deepEqual(result.bindings, []);
     assert.deepEqual(result.gaps.map((gap) => gap.kind).sort(), ["artifact", "evaluator"]);
     assert.equal(result.previews[0]!.status, "missing");
+    assert.equal(result.ready, false);
+    assert.throws(() => assertGoalValidationResolutionReady(result), /not ready/);
   });
 });
 
@@ -77,6 +86,27 @@ test("resolver rejects criteria drift and evaluator evidence that the artifact c
     });
     assert.equal(result.bindings.length, 0);
     assert.equal(result.gaps.some((gap) => gap.kind === "criteria"), true);
+  });
+});
+
+test("resolver rejects ranker-invented evidence kinds", async () => {
+  await withDb(async (db) => {
+    await approvedArtifact(db, "artifact.article-html", "artifact.article-html@1", ["screenshot"]);
+    await approvedEvaluator(db, "evaluator.offline-browser", "evaluator.offline-browser@2", ["screenshot"]);
+    await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
+    const result = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract(),
+      requirementDraft: confirmedRequirementDraft(),
+      ranker: fixedRanker({
+        artifactRef: "artifact.article-html",
+        evaluatorRef: "evaluator.offline-browser",
+        verificationMode: "browser_interaction",
+        procedureRef: "procedure.offline-open",
+        expectedEvidenceKinds: ["screenshot", "invented-evidence"],
+      }),
+    });
+    assert.equal(result.bindings.length, 0);
+    assert.equal(result.gaps.some((gap) => gap.kind === "evidence" && gap.message.includes("invented")), true);
   });
 });
 
@@ -116,6 +146,43 @@ test("resolver ignores draft objects and stale graph edges", async () => {
     });
     assert.equal(result.bindings.length, 0);
     assert.equal(result.gaps.some((gap) => gap.kind === "artifact"), true);
+  });
+});
+
+test("resolver treats scope all as unscoped but requires pinned validation edges", async () => {
+  await withDb(async (db) => {
+    await approvedArtifact(db, "artifact.article-html", "artifact.article-html@1");
+    await approvedEvaluator(db, "evaluator.offline-browser", "evaluator.offline-browser@2");
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "evaluator.offline-browser",
+      edgeType: "validates_artifact",
+      toObjectKey: "artifact.article-html",
+      scope: "article",
+    });
+    const ranker = fixedRanker({
+      artifactRef: "artifact.article-html",
+      evaluatorRef: "evaluator.offline-browser",
+      verificationMode: "browser_interaction",
+      procedureRef: "procedure.offline-open",
+    });
+    const unpinned = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract(),
+      requirementDraft: confirmedRequirementDraft(),
+      ranker,
+      scope: "all",
+    });
+    assert.equal(unpinned.bindings.length, 0);
+    assert.equal(unpinned.gaps.some((gap) => gap.kind === "edge"), true);
+    await db.query("delete from southstar.library_edges");
+    await validatesArtifactEdge(db, "evaluator.offline-browser", "artifact.article-html");
+    const pinned = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract(),
+      requirementDraft: confirmedRequirementDraft(),
+      ranker,
+      scope: "all",
+    });
+    assert.equal(pinned.bindings.length, 1);
+    assert.equal(pinned.gaps.length, 0);
   });
 });
 

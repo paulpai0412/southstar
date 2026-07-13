@@ -265,6 +265,7 @@ export type RequirementCoverageCandidateV1 = {
 export type RequirementCoveragePreviewV1 = {
   schemaVersion: "southstar.requirement_coverage_preview.v1";
   requirementId: string;
+  blocking: boolean;
   status: "ready" | "partial" | "missing" | "manual";
   artifactCandidates: RequirementCoverageCandidateV1[];
   evaluatorCandidates: RequirementCoverageCandidateV1[];
@@ -325,6 +326,8 @@ export type GoalValidationResolutionV1 = {
   previews: RequirementCoveragePreviewV1[];
   bindings: RequirementValidationBindingV1[];
   gaps: GoalValidationGapV1[];
+  /** True only when no blocking requirement has an unresolved gap. */
+  ready: boolean;
   resolutionHash: string;
 };
 
