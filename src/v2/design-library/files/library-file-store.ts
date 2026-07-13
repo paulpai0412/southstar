@@ -15,7 +15,13 @@ import {
   upsertLibraryEdge,
   upsertLibraryObject,
 } from "../library-graph-store.ts";
-import type { LibraryDefinitionKind, LibraryDefinitionStatus, LibraryEdgeType } from "../types.ts";
+import type {
+  LibraryDefinitionKind,
+  LibraryDefinitionStatus,
+  LibraryEdgeRecord,
+  LibraryEdgeType,
+  LibraryObjectSummary,
+} from "../types.ts";
 import { parseLibraryFileContent } from "./library-file-parser.ts";
 import type { LibraryFileGraphProjection, LibraryFileParseResult, LibraryFileRecord } from "./library-file-types.ts";
 
@@ -201,6 +207,84 @@ export async function syncNewLibraryFileRecordsToGraph(db: SouthstarDb, files: L
     results.push({ object, edges });
   }
   return results;
+}
+
+export type LibraryGraphSyncInput = {
+  executable: LibraryFileRecord[];
+  nonExecutable: Array<{ file: LibraryFileRecord; status: "draft" | "deprecated" | "blocked"; reason?: string }>;
+};
+
+export type LibraryGraphSyncResult = {
+  objects: LibraryObjectSummary[];
+  edges: LibraryEdgeRecord[];
+  results: Array<{ object: LibraryObjectSummary; edges: LibraryEdgeRecord[] }>;
+};
+
+/**
+ * Synchronize a complete file catalog in two phases. Every object row is
+ * present before edges are written, and only executable (approved, closed)
+ * files receive active edges. Missing references therefore remain represented
+ * by a blocked object rather than a synthetic placeholder.
+ */
+export async function syncLibraryFileRecordsToGraphPg(
+  db: SouthstarDb,
+  input: LibraryGraphSyncInput,
+): Promise<LibraryGraphSyncResult> {
+  const all = [
+    ...input.executable.map((file) => ({ file, forcedStatus: "approved" as const })),
+    ...input.nonExecutable.map(({ file, status }) => ({ file, forcedStatus: status })),
+  ];
+  const projections = all.map(({ file, forcedStatus }) => {
+    validateLibraryFileGraphReferences(file);
+    const projection = projectLibraryFileToGraph(file);
+    return {
+      file,
+      projection: {
+        ...projection,
+        object: {
+          ...projection.object,
+          status: forcedStatus,
+          state: { ...projection.object.state, status: forcedStatus, declaredStatus: file.status },
+        },
+      },
+    };
+  });
+  const available = new Set(projections.map(({ projection }) => projection.object.objectKey));
+  for (const { projection } of projections) {
+    if (projection.object.status !== "approved") continue;
+    for (const edge of projection.edges) {
+      if (!available.has(edge.toObjectKey)) {
+        throw new Error(`unresolved Library reference ${edge.toObjectKey} from ${projection.object.objectKey}`);
+      }
+    }
+  }
+
+  const objects: LibraryObjectSummary[] = [];
+  for (const { projection } of projections) {
+    objects.push(await upsertLibraryObject(db, projection.object));
+  }
+
+  const edges: LibraryEdgeRecord[] = [];
+  for (const { file, projection } of projections) {
+    const activeEdges = projection.object.status === "approved" ? projection.edges : [];
+    await deactivateLibraryEdgesForSourceExcept(db, {
+      fromObjectKey: projection.object.objectKey,
+      sourcePath: file.path,
+      keepEdges: activeEdges,
+    });
+    for (const edge of activeEdges) {
+      edges.push(await upsertLibraryEdge(db, { ...edge, status: "active", weight: 1 }));
+    }
+  }
+
+  return {
+    objects,
+    edges,
+    results: projections.map(({ projection }) => ({
+      object: objects.find((object) => object.objectKey === projection.object.objectKey)!,
+      edges: edges.filter((edge) => edge.fromObjectKey === projection.object.objectKey),
+    })),
+  };
 }
 
 export function projectLibraryFileToGraph(file: LibraryFileRecord): LibraryFileGraphProjection {

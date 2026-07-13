@@ -211,6 +211,49 @@ export async function findLibraryObjectByKeyForUpdate(
   return row ? mapObject(row) : null;
 }
 
+export async function listFileBackedLibraryObjectsForUpdate(db: SouthstarDb): Promise<LibraryObjectSummary[]> {
+  const result = await db.query<LibraryObjectRow>(
+    `select id, object_key, object_kind, status, head_version_id, state_json
+       from southstar.library_objects
+      where state_json->>'sourcePath' like 'library/%'
+      order by object_key
+      for update`,
+  );
+  return result.rows.map(mapObject);
+}
+
+export async function deactivateOutgoingLibraryEdges(db: SouthstarDb, objectKey: string): Promise<number> {
+  const result = await db.query(
+    `update southstar.library_edges
+        set status = 'inactive'
+      where from_object_key = $1 and status = 'active'`,
+    [objectKey],
+  );
+  return result.rowCount ?? 0;
+}
+
+export async function appendLibraryHistoryEvent(db: SouthstarDb, input: {
+  objectId: string;
+  eventType: "file_reconciled" | "file_deprecated";
+  payload: Record<string, unknown>;
+}): Promise<void> {
+  const next = await db.one<{ sequence: number }>(
+    `select coalesce(max(sequence), 0) + 1 as sequence
+       from southstar.library_history
+      where object_id = $1`,
+    [input.objectId],
+  );
+  const id = `libhist-${createHash("sha256")
+    .update(`${input.objectId}|${next.sequence}|${input.eventType}`)
+    .digest("hex").slice(0, 20)}`;
+  await db.query(
+    `insert into southstar.library_history (
+       id, object_id, sequence, event_type, actor_type, payload_json
+     ) values ($1, $2, $3, $4, 'library_reconcile', $5::jsonb)`,
+    [id, input.objectId, next.sequence, input.eventType, JSON.stringify(input.payload)],
+  );
+}
+
 export async function updateLibraryObjectStatus(
   db: SouthstarDb,
   input: { objectKey: string; status: LibraryDefinitionStatus },
