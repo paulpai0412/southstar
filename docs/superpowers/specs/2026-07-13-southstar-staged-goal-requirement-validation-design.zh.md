@@ -32,6 +32,7 @@ Goal Prompt
 3. 每個 blocking requirement 都要有可執行、可追溯的 validation binding，但不為每個 Goal 新增 Library evaluator。
 4. Library 保存可重用的 domain、capability、artifact contract 與 evaluator profile；Goal 保存本次 acceptance criteria、UI interaction contract 與 validation binding。
 5. LLM 提議語意內容；程式擁有 schema、版本、hash、approval、coverage、證據與完成判定。
+6. Library、Workflow 與 Operator 左側清單使用持久化、可人工修改的 semantic title/tooltip；LLM 不從 readiness diagnostics、原始 log 或截斷 first message 直接決定顯示內容。
 
 ## 2. 與既有設計的關係
 
@@ -111,6 +112,7 @@ Goal Prompt
 6. 含 UI layout 的 requirement 可在右側 viewer 中檢視 screen、state、flow、viewport 與 element，並以 chat 或 structured editor 修正。
 7. DAG、runtime evaluator 與 completion gate 能逐 criterion 追蹤 evidence 與 verdict。
 8. 不加入 domain-specific hardcode、seed、fixture fallback、fake、mock 或 canned DAG。
+9. Library、Workflow 與 Operator 清單能以有意義的 title/tooltip 說明 session/run 的目的、可重用內容與目前狀態，且人工修改不被後續 LLM 靜默覆寫。
 
 ### 4.2 非目標
 
@@ -121,6 +123,8 @@ Goal Prompt
 - 不在 Requirement 階段決定 framework、檔案、API route、task count 或 implementation order。
 - 不在本設計加入 child-run；既有 single-run 與 per-slice-runs 決策維持不變。
 - 不要求初版提供像素級自由拖拉 UI editor；visual review 以結構化低擬真 contract 為主。
+- 不在每次 sidebar render、refresh 或 list API 呼叫時同步呼叫 LLM。
+- 不讓 LLM title/tooltip 取代 workflow run status、Library reconcile status、時間、workspace 或其他 host-owned facts。
 
 ## 5. Canonical Domain Model
 
@@ -620,6 +624,7 @@ LLM evaluator可以執行 semantic review並提出 findings，但 host validator
 - 將 criteria映射到profile procedure形成check plan；
 - 產生 Slice proposal與DAG composition；
 - evaluator task執行被profile允許的semantic judgement並輸出structured findings。
+- 從bounded semantic packet提出session title、purpose summary、reuse hint與搜尋keywords；不輸出runtime status、時間、count或secret-bearing path。
 
 ### 12.2 Program
 
@@ -634,6 +639,7 @@ LLM evaluator可以執行 semantic review並提出 findings，但 host validator
 - 驗證criteria preservation、slice ownership、dependency flow與DAG；
 - freeze Goal/Library/manifest/coverage；
 - 驗證evidence與criterion results並計算completion。
+- 驗證並持久化session presentation schema、source hash、revision與manual lock；將LLM semantic description和host-owned dynamic facts組合成tooltip。
 
 ### 12.3 User
 
@@ -642,6 +648,7 @@ LLM evaluator可以執行 semantic review並提出 findings，但 host validator
 - review、修改與approve Library candidate；
 - 確認Slice Plan；
 - 執行human approval類verification與高風險effect approval。
+- 可編輯、鎖定或明確要求重新產生session title/tooltip；普通session內容更新不得覆寫manual fields。
 
 ## 13. Existing Modules to Deepen
 
@@ -692,6 +699,12 @@ LLM evaluator可以執行 semantic review並提出 findings，但 host validator
   - 顯示Goal validation gap change set與resume status。
 - `web/components/AppShell.tsx`
   - 保留既有layout，只增加viewer content selection。
+- `web/lib/session-reader.ts`與現有sessions routes
+  - 讀取/更新Pi session presentation metadata，並保留`name || firstMessage`作為legacy fallback。
+- `web/components/library/LibrarySidebar.tsx`、`web/components/WorkflowSidebar.tsx`
+  - 透過同一SessionPresentation read model呈現title、tooltip與edit/regenerate actions。
+- `src/v2/read-models/operator-*`與`web/components/operator/OperatorSidebar.tsx`
+  - 將workflow run presentation resource投影到Operator run rows；run status仍來自runtime truth。
 
 不新增新的top-level navigation、page shell、state store或parallel REST client。
 
@@ -765,6 +778,16 @@ LLM evaluator可以執行 semantic review並提出 findings，但 host validator
 4. host由criterion results計算requirement verdict。
 5. Completion Gate只在所有blocking criteria passed時標記Goal satisfied。
 
+### 15.7 Meaningful reusable session presentation
+
+1. 新Workflow session收到第一個meaningful Goal prompt後，背景產生provisional title/tooltip；sidebar不等待LLM才顯示。
+2. Goal Contract confirm後，若title/tooltip未被人工修改且semantic source hash改變，背景更新為confirmed purpose summary。
+3. Library session title/tooltip來源是使用者import/authoring intent與selected candidate/object refs，不包含Library readiness diagnostic全文。
+4. Operator run title/tooltip來源是frozen Goal Contract與run outcome summary；status、attention count與updated time由host即時渲染。
+5. 使用者修改title或tooltip後，manual lock阻止自動更新；明確點擊Regenerate才建立新revision。
+6. session fork沿用parent presentation作為provisional context，但在child第一個meaningful message後產生新的descriptor並保留lineage。
+7. LLM不可用時，sidebar使用既有name/goal summary/first meaningful message fallback，session仍可開啟、搜尋與修改。
+
 ## 16. Rollout Boundaries
 
 為控制改動範圍，建議依現有 seam 分批，但共用一份canonical design：
@@ -775,11 +798,132 @@ LLM evaluator可以執行 semantic review並提出 findings，但 host validator
 4. evaluator/artifact schema深化與criterion-level runtime結果；
 5. UI Interaction Contract與right-viewer preview；
 6. browser visual evaluator integration與完整E2E。
+7. SessionPresentation generation/read models與三個既有sidebar的統一呈現。
 
 每一批都沿用同一 planner draft/resource lineage；不得為Visual Goal、Library Gap或Evaluator另建一條workflow creation path。
 
-## 17. 最終產品行為
+## 17. Session List Semantic Presentation
 
-使用者只需要在既有Workflow chat說明Goal。Southstar先讓使用者看懂並修正「要完成什麼、如何判斷完成」，再處理Library是否具備可重用的驗證能力。若缺能力，系統在同一Goal context中提出candidate，人工approve後自動續跑。含UI的需求在同一右側viewer確認screen/layout/state，而不是等執行後才發現理解不同。只有當Requirement、visual contract、validation binding與Slice Plan都一致且版本化後，Composer才產生DAG。
+### 17.1 Scope and existing sources
+
+產品上三個左側清單的來源不同：
+
+- Library：Pi `.jsonl` session，`kind=library`；
+- Workflow：Pi `.jsonl` session，`kind=workflow`；
+- Operator：Postgres workflow run read model，不是Pi session。
+
+不應為了UI一致性混淆三者的lifecycle truth。新增一個小而深的`SessionPresentation` interface，由兩個adapter提供：
+
+```ts
+type SessionPresentationV1 = {
+  schemaVersion: "southstar.session_presentation.v1";
+  surface: "library" | "workflow" | "operator";
+  subjectId: string;
+  revision: number;
+  title: string;
+  purposeSummary: string;
+  reuseHint: string;
+  keywords: string[];
+  source: "llm" | "manual" | "fallback";
+  sourceHash: string;
+  generatedAt?: string;
+  manualLocks: Array<"title" | "purposeSummary" | "reuseHint" | "keywords">;
+  parentSubjectId?: string;
+};
+```
+
+Pi session adapter沿用現有session metadata/append-only custom entry seam；Operator adapter沿用既有`runtime_resources`，以run id為subject key。兩者都不新增database table，也不取代Pi session file或`workflow_runs`。
+
+### 17.2 LLM output contract
+
+LLM只回傳strict semantic fields：
+
+```ts
+type SessionPresentationProposalV1 = {
+  title: string;
+  purposeSummary: string;
+  reuseHint: string;
+  keywords: string[];
+};
+```
+
+生成prompt只接收bounded、secret-safe semantic packet：
+
+- surface kind；
+- first meaningful user intent；
+- confirmed Goal summary/requirements，若存在；
+- Library candidate/object keys與approval outcome，若存在；
+- Operator run frozen Goal summary與outcome summary，若存在；
+- parent presentation summary，若為fork。
+
+不得把下列資料送給命名LLM：
+
+- Library readiness diagnostics全文；
+- raw runtime logs、stack trace、tool output；
+- secret、vault payload、credential或environment；
+-完整絕對路徑；
+-整份chat transcript。
+
+Host validator負責長度、allowed keys、空值、控制字元、重複keyword、source hash與revision。LLM不得輸出status、message count、attention count、updated time或cwd；這些由read model即時提供。
+
+### 17.3 Generation timing
+
+LLM generation是持久化transition後的非同步enhancement，不是list rendering dependency：
+
+- Workflow：第一個meaningful Goal prompt持久化後產生provisional descriptor；Goal Contract confirm後，若semantic source hash改變且field未manual lock，產生confirmed revision。
+- Library：第一個meaningful import/authoring request持久化後產生provisional descriptor；candidate selection或approve/import後可產生confirmed revision。
+- Operator：run建立時可先使用Goal Contract host fallback；run進入terminal outcome後，若未manual lock，可產生包含outcome用途的revision。
+- Fork：先顯示parent-derived provisional descriptor；child第一個meaningful user intent持久化後產生自己的descriptor。
+
+不因普通message、heartbeat、readiness refresh、task progress或sidebar reload自動重生。只有semantic source hash改變、使用者明確Regenerate，或上述lifecycle transition才觸發。
+
+同一subject/sourceHash使用idempotency key，避免重複LLM call。LLM失敗只記錄presentation generation error/fallback，不影響session/run lifecycle。
+
+### 17.4 Tooltip composition
+
+Tooltip不應是一段完全由LLM生成且容易過期的文字。Read model將穩定semantic內容與host-owned dynamic facts組合：
+
+```text
+{title}
+{purposeSummary}
+Reuse: {reuseHint}
+Project: {host project label}
+Status: {host current status}
+Updated: {host relative time}
+```
+
+各surface可附加host-owned facts：
+
+- Library：candidate/object count、draft/installed/approved狀態；
+- Workflow：Goal Design phase、DAG/run linkage；
+- Operator：run/outcome/health status、attention count。
+
+Sidebar row保持compact title與既有time/count/status badge；hover/focus顯示完整tooltip。Tooltip也必須可由鍵盤focus與accessible description讀取，不能只有mouse hover。
+
+### 17.5 Edit, lock and regenerate
+
+沿用現有rename action，將session details編輯擴充為：
+
+- Edit title；
+- Edit purpose/tooltip semantic content；
+- Edit reuse hint/keywords；
+- Regenerate unlocked fields；
+- Restore previous revision。
+
+人工儲存的field加入`manualLocks`，後續自動generation不得覆寫。Regenerate需要使用者明確選擇要重生哪些fields；未選欄位保持lock。Operator presentation修改只改UI metadata，不改Goal Contract、run status、history或completion truth。
+
+### 17.6 Reuse and search
+
+Session list與未來搜尋使用persisted title、purpose summary、reuse hint與keywords，而不是重新摘要chat。重新開啟時，使用者應能從tooltip理解：
+
+- 這個session/run原本要解決什麼；
+- 已形成哪些可重用Goal、Library candidate/object、DAG或outcome；
+- 目前是否適合continue、fork、revise或inspect。
+
+Reuse action本身仍走既有open/fork/revise/template path；SessionPresentation只提供discoverability與人類可理解identity，不複製執行狀態。
+
+## 18. 最終產品行為
+
+使用者只需要在既有Workflow chat說明Goal。Southstar先讓使用者看懂並修正「要完成什麼、如何判斷完成」，再處理Library是否具備可重用的驗證能力。若缺能力，系統在同一Goal context中提出candidate，人工approve後自動續跑。含UI的需求在同一右側viewer確認screen/layout/state，而不是等執行後才發現理解不同。只有當Requirement、visual contract、validation binding與Slice Plan都一致且版本化後，Composer才產生DAG。Library、Workflow與Operator左側清單則以持久化semantic title/tooltip保留這些工作的目的與可重用價值，人工修改不被後續LLM覆寫。
 
 這個流程深化既有Goal Design module的interface與persistence locality，不建立新的平台。
