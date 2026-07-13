@@ -306,3 +306,64 @@ Task quality assessment: **strong and operational for the initial file-backed
 pair; conditional until target-version edge refresh is handled**. The legacy
 blocked test and real sync→resolve test materially validate the intended
 boundary without adding seed/fixture behavior.
+
+## Final lifecycle review: ae31a1e..13dcc94
+
+Spec Compliance: **CONDITIONAL PASS**.
+
+Verified:
+
+- Artifact sync locks the current artifact row and repins inbound active
+  `validates_artifact` edges inside the caller transaction. Only approved
+  `evaluator_profile` sources with a current head are retained; non-approved,
+  non-evaluator, or headless sources are inactivated
+  (`library-graph-store.ts:179-255`).
+- Recreated edges preserve scope, weight, and `metadata_json`; old versioned
+  rows are retained as inactive audit history. The v1→v2 integration regression
+  proves exactly one active edge, old edge inactive, metadata unchanged, and
+  resolver `ready=true` without evaluator resync
+  (`tests/v2/goal-validation-resolver.test.ts:244-313`).
+- Batch reconcile also invokes repin after object upserts, so the operation is
+  transactional for the complete file catalog. Combined lifecycle tests pass
+  34/34.
+
+Remaining issues:
+
+1. `repinInboundValidationEdgesForArtifact()` filters only
+   `edge_type = 'validates_artifact'`. The resolver still accepts the generic
+   `validates` edge type, so a manually/legacy graph-backed evaluator using
+   `validates` remains pinned to the old artifact head after an artifact
+   revision and is rejected until its source is resynced. Either repin both
+   accepted validation edge types or explicitly remove `validates` from the
+   resolver contract. Add a regression for the generic edge.
+
+2. Source status changes are filtered by the resolver, but an evaluator changed
+   from approved to draft/deprecated is not immediately inactivated at sync
+   time; repin runs on artifact sync, not evaluator sync. This leaves an active
+   stale row in the graph until a later artifact update. If the audit invariant
+   requires stale rows to be inactive immediately, invoke the same inbound-edge
+   cleanup when an evaluator source loses executable status.
+
+Task quality assessment: **strong transactional lifecycle repair with minor
+contract coverage gaps**. The requested approved-source filtering, metadata
+preservation, stale-row audit, and artifact v1→v2 readiness regression are
+implemented and verified; address generic `validates` handling before claiming
+full lifecycle coverage.
+
+## Final lifecycle compatibility follow-up
+
+- Artifact repin now covers both resolver-supported edge types:
+  `validates_artifact` and generic `validates`. Each old active row is retained
+  as inactive audit history and recreated with the current artifact and
+  approved evaluator head refs while carrying source metadata.
+- Non-approved evaluator source syncs now remove its active validation edges
+  immediately, including both edge types, while preserving ordinary draft
+  agent/tool edge behavior. This closes the evaluator downgrade/deprecation
+  stale-edge window without changing unrelated Library draft semantics.
+- Regression coverage now proves generic-edge v1→v2 repin and approved
+  evaluator downgrade deactivation on real file-backed Postgres objects.
+
+Final verification:
+
+- `npx tsx --test tests/v2/library-file-store.test.ts tests/v2/library-reconcile-postgres.test.ts tests/v2/library-candidate-resolver.test.ts tests/v2/goal-validation-resolver.test.ts` — 35/35 pass.
+- `npx tsc --noEmit --pretty false` and `git diff --check` — pass.

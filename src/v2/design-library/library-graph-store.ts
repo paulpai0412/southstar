@@ -216,7 +216,7 @@ export async function repinInboundValidationEdgesForArtifact(
        join southstar.library_objects source
          on source.object_key = edge.from_object_key
       where edge.to_object_key = $1
-        and edge.edge_type = 'validates_artifact'
+        and edge.edge_type in ('validates_artifact', 'validates')
         and edge.status = 'active'
       for update of edge, source`,
     [input.artifactObjectKey],

@@ -164,13 +164,18 @@ export async function syncLibraryFileRecordToGraph(
   if (object.objectKind === "artifact_contract") {
     await repinInboundValidationEdgesForArtifact(db, { artifactObjectKey: object.objectKey });
   }
+  const activeEdges = edgesToPersistForFile({
+    status: object.status,
+    objectKind: object.objectKind,
+    edges: projection.edges,
+  });
   await deactivateLibraryEdgesForSourceExcept(db, {
     fromObjectKey: projection.object.objectKey,
     sourcePath: file.path,
-    keepEdges: projection.edges,
+    keepEdges: activeEdges,
   });
   const edges = [];
-  for (const edge of projection.edges) {
+  for (const edge of activeEdges) {
     edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, object.headVersionId)));
   }
   return { object, edges };
@@ -192,13 +197,18 @@ export async function syncNewLibraryFileRecordsToGraph(db: SouthstarDb, files: L
 
   const results = [];
   for (const { file, projection } of projections) {
+    const activeEdges = edgesToPersistForFile({
+      status: projection.object.status,
+      objectKind: projection.object.objectKind,
+      edges: projection.edges,
+    });
     await deactivateLibraryEdgesForSourceExcept(db, {
       fromObjectKey: projection.object.objectKey,
       sourcePath: file.path,
-      keepEdges: projection.edges,
+      keepEdges: activeEdges,
     });
     const edges = [];
-    for (const edge of projection.edges) {
+    for (const edge of activeEdges) {
       edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, projection.object.headVersionId)));
     }
     const object = objects.find((candidate) => candidate.objectKey === projection.object.objectKey);
@@ -377,6 +387,15 @@ function edgeProjection(file: LibraryFileRecord): LibraryFileGraphProjection["ed
   }
 
   return edges;
+}
+
+function edgesToPersistForFile(input: {
+  status: LibraryDefinitionStatus;
+  objectKind: LibraryDefinitionKind;
+  edges: LibraryFileGraphProjection["edges"];
+}): LibraryFileGraphProjection["edges"] {
+  if (input.status === "approved" || input.objectKind !== "evaluator_profile") return input.edges;
+  return input.edges.filter((edge) => edge.edgeType !== "validates_artifact" && edge.edgeType !== "validates");
 }
 
 function addRefs(

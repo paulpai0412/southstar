@@ -210,6 +210,15 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
     const evaluator = await findLibraryObjectByKey(db, "evaluator.flashcard-deck-contract-validator");
     assert.ok(artifact?.headVersionId);
     assert.ok(evaluator?.headVersionId);
+    await upsertLibraryEdge(db, {
+      fromObjectKey: evaluator!.objectKey,
+      fromVersionRef: evaluator!.headVersionId!,
+      edgeType: "validates",
+      toObjectKey: artifact!.objectKey,
+      toVersionRef: artifact!.headVersionId!,
+      scope: "general",
+      metadata: { sourcePath: "library/evaluators/flashcard-deck-contract-validator.evaluator.yaml", edgeOrigin: "generic-validation" },
+    });
     const edge = await db.one<{ from_version_ref: string; to_version_ref: string }>(
       `select from_version_ref, to_version_ref
          from southstar.library_edges
@@ -258,6 +267,15 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
         where from_object_key = $1 and edge_type = 'validates_artifact' and to_object_key = $2 and status = 'active'`,
       [evaluator!.objectKey, artifact!.objectKey],
     );
+    const oldGenericEdge = await db.one<{
+      id: string;
+      metadata_json: Record<string, unknown>;
+    }>(
+      `select id, metadata_json
+         from southstar.library_edges
+        where from_object_key = $1 and edge_type = 'validates' and to_object_key = $2 and status = 'active'`,
+      [evaluator!.objectKey, artifact!.objectKey],
+    );
 
     const syncedV2 = await syncLibraryFileRecordToGraph(db, parsedV2.file);
     assert.notEqual(syncedV2.object.headVersionId, oldArtifactVersion);
@@ -281,6 +299,27 @@ test("real approved flashcard files sync versioned edges and produce a ready bin
     assert.equal(activeAfterRepin[0]!.to_version_ref, syncedV2.object.headVersionId);
     assert.deepEqual(activeAfterRepin[0]!.metadata_json, oldEdge.metadata_json);
     assert.equal(activeEdges.rows.find((candidate) => candidate.id === oldEdge.id)?.status, "inactive");
+
+    const genericEdges = await db.query<{
+      id: string;
+      from_version_ref: string | null;
+      to_version_ref: string | null;
+      status: string;
+      metadata_json: Record<string, unknown>;
+    }>(
+      `select id, from_version_ref, to_version_ref, status, metadata_json
+         from southstar.library_edges
+        where from_object_key = $1 and edge_type = 'validates' and to_object_key = $2
+        order by id`,
+      [evaluator!.objectKey, artifact!.objectKey],
+    );
+    const activeGenericAfterRepin = genericEdges.rows.filter((candidate) => candidate.status === "active");
+    assert.equal(activeGenericAfterRepin.length, 1);
+    assert.equal(activeGenericAfterRepin[0]!.id === oldGenericEdge.id, false);
+    assert.equal(activeGenericAfterRepin[0]!.from_version_ref, evaluator!.headVersionId);
+    assert.equal(activeGenericAfterRepin[0]!.to_version_ref, syncedV2.object.headVersionId);
+    assert.deepEqual(activeGenericAfterRepin[0]!.metadata_json, oldGenericEdge.metadata_json);
+    assert.equal(genericEdges.rows.find((candidate) => candidate.id === oldGenericEdge.id)?.status, "inactive");
 
     const afterRepin = await resolveGoalValidationPg(db, {
       goalContract: confirmedContract("artifact-ref"),
@@ -324,6 +363,59 @@ test("legacy approved files remain blocked when their evaluator contract is inco
     assert.equal(result.ready, false);
     assert.equal(result.bindings.length, 0);
     assert.equal(result.gaps.some((gap) => gap.kind === "artifact"), true);
+  });
+});
+
+test("evaluator downgrade deactivates all active validation edges on source sync", async () => {
+  await withDb(async (db) => {
+    const libraryRoot = resolve(process.cwd(), "library");
+    await syncLibraryFileToGraph(db, {
+      root: libraryRoot,
+      relativePath: "artifacts/flashcard-deck-contract.artifact.yaml",
+    });
+    await syncLibraryFileToGraph(db, {
+      root: libraryRoot,
+      relativePath: "evaluators/flashcard-deck-contract-validator.evaluator.yaml",
+    });
+    const evaluator = await findLibraryObjectByKey(db, "evaluator.flashcard-deck-contract-validator");
+    const artifact = await findLibraryObjectByKey(db, "artifact.flashcard-deck-contract");
+    assert.ok(evaluator?.headVersionId);
+    assert.ok(artifact?.headVersionId);
+    await upsertLibraryEdge(db, {
+      fromObjectKey: evaluator!.objectKey,
+      fromVersionRef: evaluator!.headVersionId!,
+      edgeType: "validates",
+      toObjectKey: artifact!.objectKey,
+      toVersionRef: artifact!.headVersionId!,
+      scope: "general",
+      metadata: { sourcePath: "library/evaluators/flashcard-deck-contract-validator.evaluator.yaml", edgeOrigin: "generic-validation" },
+    });
+
+    const evaluatorFile = await readLibraryFile({
+      root: libraryRoot,
+      relativePath: "evaluators/flashcard-deck-contract-validator.evaluator.yaml",
+    });
+    const downgradedContent = evaluatorFile.content.replace("status: approved", "status: draft");
+    const parsedDowngraded = parseLibraryFileContent({
+      path: "library/evaluators/flashcard-deck-contract-validator.evaluator.yaml",
+      content: downgradedContent,
+    });
+    assert.equal(parsedDowngraded.ok, true);
+    if (!parsedDowngraded.ok) throw new Error("expected downgraded evaluator file to parse");
+    const downgraded = await syncLibraryFileRecordToGraph(db, parsedDowngraded.file);
+    assert.equal(downgraded.object.status, "draft");
+
+    const edges = await db.query<{ edge_type: string; status: string }>(
+      `select edge_type, status
+         from southstar.library_edges
+        where from_object_key = $1 and to_object_key = $2
+        order by edge_type, status`,
+      [evaluator!.objectKey, artifact!.objectKey],
+    );
+    assert.deepEqual(edges.rows, [
+      { edge_type: "validates", status: "inactive" },
+      { edge_type: "validates_artifact", status: "inactive" },
+    ]);
   });
 });
 
