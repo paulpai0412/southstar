@@ -45,6 +45,27 @@ git diff --check
 exit 0
 ```
 
+## Reviewer follow-up: rollback race and post-commit progress
+
+Follow-up implementation commit: `6d450fc` (`fix: preserve concurrent library edits on rollback`)
+
+- Overwrite snapshots now retain both original and installed bytes. Rollback restores only when the current file still matches the installed content, preserving a concurrent operator edit; text and Buffer files use content-appropriate comparisons.
+- Completion progress callbacks are isolated after commit and cannot trigger filesystem cleanup when an observer throws.
+- Added regressions for concurrent overwrite edits and throwing post-commit progress observers.
+
+Verification:
+
+```text
+npx tsx --test --test-name-pattern='candidate install restores|candidate install preserves|post-commit progress' tests/v2/library-import-drafts.test.ts
+3 tests, 3 pass
+
+npx tsc --noEmit --pretty false
+exit 0
+
+git diff --check
+exit 0
+```
+
 ## Concerns
 
 The requested combined legacy command still reports 12 failures (43/55 pass) from pre-Task-4 expectations: old chat tests lack an LLM provider, old approval tests do not seed the required `goal_design`/`composer_guidance` files, and three candidate-install tests still expect removed placeholder/domain synthesis. The new Task-4 tests and the complete-root route path pass; unrelated dirty worktree files were not staged.
