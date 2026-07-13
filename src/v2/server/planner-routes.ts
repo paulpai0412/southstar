@@ -8,6 +8,12 @@ import {
   type WorkflowTemplatePolicyV1,
 } from "../orchestration/goal-design.ts";
 import {
+  createLlmGoalRequirementDraftInterpreter,
+  type GoalRequirementDraftInterpreter,
+  type GoalRequirementDraftRevisionOperation,
+  type GoalRequirementDraftRevisionPatchV1,
+} from "../orchestration/goal-requirement-draft.ts";
+import {
   interpretGoalContractWithLlm,
   type GoalContractInterpreter,
 } from "../orchestration/goal-contract.ts";
@@ -33,6 +39,8 @@ import {
   reviseGoalDesignFromChatPg,
   reviseGoalSlicePg,
   reviseGoalTemplatePolicyPg,
+  confirmGoalRequirementsPg,
+  reviseGoalRequirementPg,
   type GoalSlicePatchV1,
 } from "../orchestration/goal-design-draft-service.ts";
 import {
@@ -88,6 +96,7 @@ export async function handlePlannerRoute(
     return json("run-goal", await submitClaimedGoalPg({
       db: context.db,
       goalInterpreter: resolveGoalInterpreter(context),
+      goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
       goalDesigner: resolveGoalDesigner(context),
       composer: resolvePlannerWorkflowComposer(context),
       libraryImportLlmProvider: context.libraryImportLlmProvider,
@@ -128,6 +137,37 @@ export async function handlePlannerRoute(
       }, { draftId, expectedPackageHash }));
     } catch (error) {
       return goalDesignConfirmationErrorResponse(error);
+    }
+  }
+
+  const goalRequirementPatchMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/goal-requirements\/([^/]+)$/);
+  if (request.method === "PATCH" && goalRequirementPatchMatch) {
+    const body = await readJsonBody<{ expectedDraftHash?: unknown; patch?: unknown; actor?: unknown }>(request);
+    try {
+      return json("goal-requirement-draft", await reviseGoalRequirementPg(context.db, {
+        draftId: decodeURIComponent(goalRequirementPatchMatch[1]!),
+        requirementId: decodeURIComponent(goalRequirementPatchMatch[2]!),
+        expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
+        patch: parseGoalRequirementPatch(body.patch),
+        actor: optionalString(body.actor),
+      }));
+    } catch (error) {
+      return goalRequirementRevisionErrorResponse(error);
+    }
+  }
+
+  const goalRequirementConfirmMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/confirm-requirements$/);
+  if (request.method === "POST" && goalRequirementConfirmMatch) {
+    const body = await readJsonBody<{ expectedDraftHash?: unknown; actor?: unknown }>(request);
+    try {
+      return json("goal-requirement-confirmation", await confirmGoalRequirementsPg(context.db, {
+        draftId: decodeURIComponent(goalRequirementConfirmMatch[1]!),
+        expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
+        actor: optionalString(body.actor),
+        goalInterpreter: resolveGoalInterpreter(context),
+      }));
+    } catch (error) {
+      return goalRequirementRevisionErrorResponse(error);
     }
   }
 
@@ -191,6 +231,7 @@ export async function handlePlannerRoute(
       plannerDraftReceiptFromGoalResult(await submitGoalPg({
         db: context.db,
         goalInterpreter: resolveGoalInterpreter(context),
+        goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
         goalDesigner: resolveGoalDesigner(context),
         composer: resolvePlannerWorkflowComposer(context),
         libraryImportLlmProvider: context.libraryImportLlmProvider,
@@ -307,12 +348,14 @@ function createRunGoalStreamResponse(
         const result = await submitClaimedGoalPg({
           db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
+          goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
           goalDesigner: resolveGoalDesigner(context),
           composer: resolvePlannerWorkflowComposer(context),
           libraryImportLlmProvider: context.libraryImportLlmProvider,
           libraryImportSourceFetcher: context.libraryImportSourceFetcher,
           onStage(stage, data) {
             if (stage === "goal_design.persisted") send("goal_design", data ?? {});
+            if (stage === "requirements.persisted") send("goal_requirements", data ?? {});
             if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
           },
         }, request, claim);
@@ -466,7 +509,7 @@ function sendGoalDesignConfirmationResultFrames(
   send("draft", {
     draftId: result.draftId,
     draftStatus: result.draftStatus,
-    goalContractHash: result.goalContractHash,
+    ...(result.goalContractHash ? { goalContractHash: result.goalContractHash } : {}),
     goalDesignPackageHash: result.goalDesignPackageHash,
     blockers: result.blockers,
   });
@@ -523,6 +566,7 @@ function createPlannerDraftStreamResponse(
         const result = await submitGoalPg({
           db: context.db,
           goalInterpreter: resolveGoalInterpreter(context),
+          goalRequirementInterpreter: resolveGoalRequirementInterpreter(context),
           goalDesigner: resolveGoalDesigner(context),
           composer: resolvePlannerWorkflowComposer(context, {
             onStreamDegraded(message) {
@@ -533,6 +577,7 @@ function createPlannerDraftStreamResponse(
           libraryImportSourceFetcher: context.libraryImportSourceFetcher,
           onStage(stage, data) {
             if (stage === "goal_design.persisted") send("goal_design", data ?? {});
+            if (stage === "requirements.persisted") send("goal_requirements", data ?? {});
             if (stage !== "done") send("planner.stage", { stage, ...(data ?? {}) });
           },
         }, request);
@@ -764,6 +809,8 @@ function plannerDraftReceiptFromGoalResult(result: RunGoalResult, goalPrompt = "
     workflowId: "",
     status: result.draftStatus,
     goalContractHash: result.goalContractHash,
+    ...(result.goalRequirementDraftHash ? { goalRequirementDraftHash: result.goalRequirementDraftHash } : {}),
+    ...(result.goalDesignPhase ? { goalDesignPhase: result.goalDesignPhase } : {}),
     ...(result.goalDesignPackageHash ? { goalDesignPackageHash: result.goalDesignPackageHash } : {}),
     ...(result.vocabularyGaps ? { vocabularyGaps: result.vocabularyGaps } : {}),
     ...(result.libraryImportDraftId ? { libraryImportDraftId: result.libraryImportDraftId } : {}),
@@ -824,6 +871,68 @@ function parseGoalSlicePatch(value: unknown): GoalSlicePatchV1 {
   return patch;
 }
 
+function parseGoalRequirementPatch(value: unknown): GoalRequirementDraftRevisionPatchV1 | GoalRequirementDraftRevisionOperation {
+  if (!isRecord(value)) throw new Error("patch must be an object");
+  if (typeof value.kind === "string") {
+    if (value.kind === "supersede" || value.kind === "restore") {
+      return {
+        kind: value.kind,
+        requirementId: requiredString(value.requirementId, "patch.requirementId"),
+      } as GoalRequirementDraftRevisionOperation;
+    }
+    if (value.kind === "update") {
+      return {
+        kind: "update",
+        requirementId: requiredString(value.requirementId, "patch.requirementId"),
+        patch: parseGoalRequirementPatch(value.patch),
+      } as GoalRequirementDraftRevisionOperation;
+    }
+    throw new Error("patch.kind must be update, supersede, or restore");
+  }
+  const patch: GoalRequirementDraftRevisionPatchV1 = {};
+  const allowed = new Set([
+    "title", "statement", "source", "blocking", "userVisibleBehaviors", "businessRules",
+    "acceptanceCriteria", "expectedOutcomeArtifacts", "verificationIntent", "assumptions",
+    "openQuestions", "riskTags", "interactionContractRefs",
+  ]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new Error(`patch.${key} is not editable`);
+  }
+  if (value.title !== undefined) patch.title = requiredString(value.title, "patch.title");
+  if (value.statement !== undefined) patch.statement = requiredString(value.statement, "patch.statement");
+  if (value.source !== undefined) {
+    if (value.source !== "explicit" && value.source !== "inferred") throw new Error("patch.source must be explicit or inferred");
+    patch.source = value.source;
+  }
+  if (value.blocking !== undefined) {
+    if (typeof value.blocking !== "boolean") throw new Error("patch.blocking must be boolean");
+    patch.blocking = value.blocking;
+  }
+  for (const field of ["userVisibleBehaviors", "businessRules", "verificationIntent", "assumptions", "openQuestions", "riskTags", "interactionContractRefs"] as const) {
+    if (value[field] !== undefined) patch[field] = parseRequiredStringArray(value[field], `patch.${field}`);
+  }
+  if (value.acceptanceCriteria !== undefined) {
+    if (!Array.isArray(value.acceptanceCriteria) || value.acceptanceCriteria.some((criterion) => !isRecord(criterion))) {
+      throw new Error("patch.acceptanceCriteria must be an array of objects");
+    }
+    patch.acceptanceCriteria = value.acceptanceCriteria.map((criterion, index) => ({
+      ...(criterion.id === undefined ? {} : { id: requiredString(criterion.id, `patch.acceptanceCriteria.${index}.id`) }),
+      statement: requiredString(criterion.statement, `patch.acceptanceCriteria.${index}.statement`),
+      evidenceIntent: parseRequiredStringArray(criterion.evidenceIntent, `patch.acceptanceCriteria.${index}.evidenceIntent`),
+    }));
+  }
+  if (value.expectedOutcomeArtifacts !== undefined) {
+    if (!Array.isArray(value.expectedOutcomeArtifacts) || value.expectedOutcomeArtifacts.some((artifact) => !isRecord(artifact))) {
+      throw new Error("patch.expectedOutcomeArtifacts must be an array of objects");
+    }
+    patch.expectedOutcomeArtifacts = value.expectedOutcomeArtifacts.map((artifact, index) => ({
+      description: requiredString(artifact.description, `patch.expectedOutcomeArtifacts.${index}.description`),
+      ...(artifact.mediaType === undefined ? {} : { mediaType: requiredString(artifact.mediaType, `patch.expectedOutcomeArtifacts.${index}.mediaType`) }),
+    }));
+  }
+  return patch;
+}
+
 function parseRequiredStringArray(value: unknown, field: string): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
     throw new Error(`${field} must be an array of strings`);
@@ -847,6 +956,32 @@ function goalDesignRevisionErrorResponse(error: unknown): Response {
     || message.includes("patch.")
   ) {
     return errorJson(message, 422);
+  }
+  throw error;
+}
+
+function goalRequirementRevisionErrorResponse(error: unknown): Response {
+  const message = error instanceof Error ? error.message : String(error);
+  if (
+    message.includes("goal_requirement_draft_stale")
+    || message.includes("goal_requirement_revision_conflict")
+    || message.includes("goal_requirements_already_materialized")
+    || message.includes("goal_requirements_frozen")
+    || message.includes("cannot be confirmed in phase")
+  ) {
+    return errorJson(message, 409);
+  }
+  if (
+    message.includes("invalid Goal Requirement draft")
+    || message.includes("goal_requirement_draft_invalid")
+    || message.includes("patch")
+    || message.includes("requirementId is required")
+    || message.includes("Goal Requirement interpreter returned")
+  ) {
+    return errorJson(message, 422);
+  }
+  if (message.includes("Goal Requirement draft not found") || message.includes("planner draft not found")) {
+    return errorJson(message, 404);
   }
   throw error;
 }
@@ -888,6 +1023,25 @@ export function resolveGoalInterpreter(context: RuntimeServerContext): GoalContr
       },
     }),
   };
+}
+
+/**
+ * Resolve the staged Requirement interpreter. Test/runtime callers that inject
+ * the legacy Goal Designer remain on that explicit legacy path; production
+ * server contexts (which do not inject a designer) use the LLM interpreter.
+ */
+export function resolveGoalRequirementInterpreter(context: RuntimeServerContext): GoalRequirementDraftInterpreter | undefined {
+  if (context.goalRequirementInterpreter) return context.goalRequirementInterpreter;
+  if (context.goalDesigner) return undefined;
+  return createLlmGoalRequirementDraftInterpreter({
+    model: process.env.SOUTHSTAR_GOAL_REQUIREMENT_MODEL ?? "southstar-runtime-goal-requirement-interpreter",
+    client: {
+      generateText: ({ prompt }) => context.plannerClient.generate(prompt),
+      generateTextStream: context.plannerClient.generateStream
+        ? ({ prompt }, handlers) => context.plannerClient.generateStream!(prompt, { onDelta: handlers.onDelta })
+        : undefined,
+    },
+  });
 }
 
 export function resolveGoalDesigner(context: RuntimeServerContext) {

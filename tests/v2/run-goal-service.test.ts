@@ -11,6 +11,7 @@ import {
   type ResolvedGoalDesignSkillV1,
   type WorkflowTemplatePolicyV1,
 } from "../../src/v2/orchestration/goal-design.ts";
+import { finalizeGoalRequirementDraft } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import {
   GoalSubmissionConflictError,
   GoalSubmissionPendingError,
@@ -28,6 +29,80 @@ import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-cont
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { startRunSchedulingPg } from "../../src/v2/server/run-execution-controller.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+
+test("staged run-goal route persists requirement review and confirms with a hash", async () => {
+  const db = await createTestPostgresDb();
+  const cwd = process.cwd();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const context = {
+      ...runtimeContext(db, "Create a vocabulary app"),
+      goalRequirementInterpreter: {
+        async interpret() {
+          return finalizeGoalRequirementDraft({
+            goalPrompt: "Create a vocabulary app",
+            cwd,
+            summary: "Create a vocabulary app with a reviewable offline flow.",
+            requirements: [{
+              title: "Vocabulary review",
+              statement: "A user can review a vocabulary item offline.",
+              source: "explicit" as const,
+              blocking: true,
+              userVisibleBehaviors: ["The item and answer are shown."],
+              businessRules: [],
+              acceptanceCriteria: [{ statement: "A vocabulary item can be reviewed offline.", evidenceIntent: ["browser evidence"] }],
+              expectedOutcomeArtifacts: [{ description: "Vocabulary review UI", mediaType: "text/html" }],
+              verificationIntent: ["Open the app and complete one review."],
+              assumptions: [],
+              openQuestions: [],
+              riskTags: [],
+              interactionContractRefs: [],
+            }],
+            nonGoals: [],
+            blockingInputs: [],
+          });
+        },
+        async revise() {
+          throw new Error("revision not used in route test");
+        },
+      },
+    };
+    const response = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/run-goal", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, idempotencyKey: "requirements-route-1" }),
+    }));
+    assert.equal(response.status, 200);
+    const envelope = await response.json() as { ok: true; result: { draftId: string; draftStatus: string; goalRequirementDraftHash: string } };
+    assert.equal(envelope.result.draftStatus, "requirements_review");
+    assert.match(envelope.result.goalRequirementDraftHash, /^[a-f0-9]{64}$/);
+    const replay = await handleRuntimeRoute(context, new Request("http://127.0.0.1/api/v2/run-goal", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ goalPrompt: "Create a vocabulary app", cwd, idempotencyKey: "requirements-route-1" }),
+    }));
+    assert.equal(replay.status, 200);
+    const replayEnvelope = await replay.json() as { ok: true; result: { draftStatus: string; goalRequirementDraftHash: string } };
+    assert.equal(replayEnvelope.result.draftStatus, "requirements_review");
+    assert.equal(replayEnvelope.result.goalRequirementDraftHash, envelope.result.goalRequirementDraftHash);
+    const confirmed = await handleRuntimeRoute(context, new Request(
+      `http://127.0.0.1/api/v2/planner/drafts/${encodeURIComponent(envelope.result.draftId)}/confirm-requirements`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ expectedDraftHash: envelope.result.goalRequirementDraftHash, actor: "tester" }),
+      },
+    ));
+    assert.equal(confirmed.status, 200);
+    const confirmedEnvelope = await confirmed.json() as { ok: true; result: { status: string; phase: string; goalContractHash: string } };
+    assert.equal(confirmedEnvelope.result.status, "validation_resolving");
+    assert.equal(confirmedEnvelope.result.phase, "validation_resolving");
+    assert.match(confirmedEnvelope.result.goalContractHash, /^[a-f0-9]{64}$/);
+  } finally {
+    await db.close();
+  }
+});
 
 test("materialization failure rolls back the prepared draft and leaves a retryable submission", async () => {
   const db = await createTestPostgresDb();

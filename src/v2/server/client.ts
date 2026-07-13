@@ -105,6 +105,13 @@ type RevisePlannerDraftRequest = {
   expectedPackageHash?: string;
   selectedSliceId?: string;
 };
+type ReviseGoalRequirementRequest = {
+  draftId: string;
+  requirementId: string;
+  expectedDraftHash: string;
+  patch: unknown;
+  actor?: string;
+};
 type SaveWorkflowTemplateRequest = {
   draftId: string;
   templateId: string;
@@ -279,6 +286,25 @@ export function createRuntimeServerClient(input: { baseUrl: string }) {
         ...(body.orchestrationMode !== undefined ? { orchestrationMode: body.orchestrationMode } : {}),
         ...(body.composerMode !== undefined ? { composerMode: body.composerMode } : {}),
       });
+    },
+    reviseGoalRequirement(body: ReviseGoalRequirementRequest) {
+      return patch(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/goal-requirements/${encodeURIComponent(body.requirementId)}`,
+        {
+          expectedDraftHash: body.expectedDraftHash,
+          patch: body.patch,
+          ...(body.actor !== undefined ? { actor: body.actor } : {}),
+        },
+      );
+    },
+    confirmGoalRequirements(body: { draftId: string; expectedDraftHash: string; actor?: string }) {
+      return post(
+        `${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/confirm-requirements`,
+        {
+          expectedDraftHash: body.expectedDraftHash,
+          ...(body.actor !== undefined ? { actor: body.actor } : {}),
+        },
+      );
     },
     revisePlannerDraftStream(body: RevisePlannerDraftRequest, onEvent: RuntimeSseListener, signal?: AbortSignal) {
       return postSse(`${baseUrl}/api/v2/planner/drafts/${encodeURIComponent(body.draftId)}/revise/stream`, {

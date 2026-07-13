@@ -26,6 +26,7 @@ import {
   type GoalContractV1,
 } from "../orchestration/goal-contract.ts";
 import { validateGoalDesignPackage, type GoalDesignPackageV1 } from "../orchestration/goal-design.ts";
+import type { GoalRequirementDraftV1 } from "../orchestration/goal-requirement-draft.ts";
 import { captureRunLibrarySnapshotPg } from "../orchestration/run-library-snapshot.ts";
 import {
   appendHistoryEventPg,
@@ -53,6 +54,10 @@ const PLANNER_DRAFT_STATUS_NEEDS_INPUT = "needs_input";
 const PLANNER_DRAFT_STATUS_NEEDS_LIBRARY_INPUT = "needs_library_input";
 const PLANNER_DRAFT_STATUS_READY_FOR_REVIEW = "ready_for_review";
 const PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE = "template_incompatible";
+const PLANNER_DRAFT_STATUS_REQUIREMENTS_REVIEW = "requirements_review";
+const PLANNER_DRAFT_STATUS_VALIDATION_RESOLVING = "validation_resolving";
+const PLANNER_DRAFT_STATUS_LIBRARY_REVIEW = "library_review";
+const PLANNER_DRAFT_STATUS_VALIDATION_READY = "validation_ready";
 
 export type PostgresPlannerDraftStatus =
   | typeof PLANNER_DRAFT_STATUS_NEEDS_INPUT
@@ -61,7 +66,11 @@ export type PostgresPlannerDraftStatus =
   | typeof PLANNER_DRAFT_STATUS_NEEDS_VALIDATION
   | typeof PLANNER_DRAFT_STATUS_READY_FOR_REVIEW
   | typeof PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE
-  | typeof PLANNER_DRAFT_STATUS_VALIDATED;
+  | typeof PLANNER_DRAFT_STATUS_VALIDATED
+  | typeof PLANNER_DRAFT_STATUS_REQUIREMENTS_REVIEW
+  | typeof PLANNER_DRAFT_STATUS_VALIDATION_RESOLVING
+  | typeof PLANNER_DRAFT_STATUS_LIBRARY_REVIEW
+  | typeof PLANNER_DRAFT_STATUS_VALIDATION_READY;
 
 export type PostgresPlannerDraftResult = {
   draftId: string;
@@ -69,6 +78,9 @@ export type PostgresPlannerDraftResult = {
   workflowId: string;
   status: PostgresPlannerDraftStatus;
   goalContractHash: string;
+  goalRequirementDraftHash?: string;
+  goalDesignPhase?: string;
+  goalRequirementDraft?: GoalRequirementDraftV1;
   goalDesignPackageHash?: string;
   goalDesignPackage?: GoalDesignPackageV1;
   blockers: string[];
@@ -1155,6 +1167,11 @@ export async function getPostgresPlannerDraftOrchestration(
     workflowId,
     status,
     goalContractHash: storedGoalContractHash(summary, payload, contract),
+    ...(stringValue(payload.goalRequirementDraftHash) ? { goalRequirementDraftHash: stringValue(payload.goalRequirementDraftHash) } : {}),
+    ...(stringValue(payload.goalDesignPhase) ? { goalDesignPhase: stringValue(payload.goalDesignPhase) } : {}),
+    ...(payload.goalRequirementDraft && typeof payload.goalRequirementDraft === "object"
+      ? { goalRequirementDraft: payload.goalRequirementDraft as GoalRequirementDraftV1 }
+      : {}),
     blockers: status === PLANNER_DRAFT_STATUS_NEEDS_LIBRARY_INPUT
       ? parseVocabularyGapBlockers(vocabularyGaps)
       : [...contract.blockingInputs],
@@ -1572,6 +1589,10 @@ function plannerDraftStatus(value: string): PostgresPlannerDraftStatus {
     || value === PLANNER_DRAFT_STATUS_READY_FOR_REVIEW
     || value === PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE
     || value === PLANNER_DRAFT_STATUS_VALIDATED
+    || value === PLANNER_DRAFT_STATUS_REQUIREMENTS_REVIEW
+    || value === PLANNER_DRAFT_STATUS_VALIDATION_RESOLVING
+    || value === PLANNER_DRAFT_STATUS_LIBRARY_REVIEW
+    || value === PLANNER_DRAFT_STATUS_VALIDATION_READY
   ) return value;
   throw new Error(`unsupported planner draft status: ${value}`);
 }

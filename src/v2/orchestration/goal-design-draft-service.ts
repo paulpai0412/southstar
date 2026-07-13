@@ -15,9 +15,19 @@ import {
 import {
   GoalContractVocabularyGapError,
   goalContractHash,
+  storedGoalContract,
   type GoalContractInterpreter,
   type GoalContractV1,
 } from "./goal-contract.ts";
+import {
+  confirmGoalRequirementDraft,
+  reviseGoalRequirementDraft,
+  validateGoalRequirementDraft,
+  type GoalRequirementDraftInterpreter,
+  type GoalRequirementDraftRevisionOperation,
+  type GoalRequirementDraftRevisionPatchV1,
+  type GoalRequirementDraftV1,
+} from "./goal-requirement-draft.ts";
 import { createLibraryImportDraft } from "../design-library/importers/library-import-draft-store.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
@@ -62,6 +72,53 @@ export type GoalSlicePatchV1 = Partial<Pick<GoalSliceV1,
   | "mergeReason"
 >>;
 
+/**
+ * Durable phases for a Goal Design draft. These are projections over the
+ * existing planner_draft runtime resource; they are deliberately not a
+ * second workflow engine or table.
+ */
+export type GoalDesignPhase =
+  | "requirements_review"
+  | "requirements_confirmed"
+  | "validation_resolving"
+  | "library_review"
+  | "validation_ready"
+  | "slice_review"
+  | "ready_to_compose"
+  | "composing"
+  | "dag_validated";
+
+export type GoalRequirementReviewResult = {
+  draftId: string;
+  status: "requirements_review" | "validation_resolving" | "library_review" | "validation_ready";
+  phase: GoalDesignPhase;
+  goalPrompt: string;
+  goalRequirementDraft: GoalRequirementDraftV1;
+  goalRequirementDraftHash: string;
+  goalContract?: GoalContractV1;
+  goalContractHash?: string;
+  blockers: string[];
+  invalidated?: {
+    validationBindings: boolean;
+    slicePlan: boolean;
+    dagDraft: boolean;
+  };
+  validationGaps?: unknown[];
+};
+
+export type GoalRequirementContractMetadata = Pick<
+  GoalContractV1,
+  "domain" | "intent" | "workType" | "expectedArtifactRefs" | "requiredCapabilities" | "assumptions" | "requestedSideEffects"
+>;
+
+export type GoalRequirementRevisionInput = {
+  draftId: string;
+  expectedDraftHash: string;
+  requirementId?: string;
+  patch: GoalRequirementDraftRevisionPatchV1 | GoalRequirementDraftRevisionOperation;
+  actor?: string;
+};
+
 export type GoalDesignChatRevisionResult =
   | {
       kind: "revision";
@@ -71,6 +128,344 @@ export type GoalDesignChatRevisionResult =
       changedSliceIds: string[];
     }
   | { kind: "needs_input"; question: string };
+
+/** Persist one immutable Requirement Draft revision. */
+export async function persistGoalRequirementDraftRevisionPg(
+  db: SouthstarDb,
+  input: { draftId: string; draft: GoalRequirementDraftV1; actor?: string },
+): Promise<void> {
+  const issues = validateGoalRequirementDraft(input.draft);
+  if (issues.length > 0) {
+    throw new Error(`invalid Goal Requirement draft: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
+  }
+  const resourceKey = `${input.draftId}:revision:${input.draft.revision}`;
+  const existing = await db.maybeOne<{ payload_json: Record<string, unknown> }>(
+    "select payload_json from southstar.runtime_resources where resource_type = 'goal_requirement_draft_revision' and resource_key = $1",
+    [resourceKey],
+  );
+  if (existing) {
+    const existingDraft = existing.payload_json as unknown as GoalRequirementDraftV1;
+    if (existingDraft.draftHash !== input.draft.draftHash) {
+      throw new Error(`goal_requirement_revision_conflict: ${resourceKey}`);
+    }
+    return;
+  }
+  await upsertRuntimeResourcePg(db, {
+    resourceType: "goal_requirement_draft_revision",
+    resourceKey,
+    scope: "planner",
+    status: "persisted",
+    title: `Goal Requirement Draft revision ${input.draft.revision}`,
+    payload: input.draft,
+    summary: {
+      draftId: input.draftId,
+      revision: input.draft.revision,
+      parentRevision: input.draft.parentRevision,
+      draftHash: input.draft.draftHash,
+      ...(input.actor ? { actor: input.actor } : {}),
+      requirementCount: input.draft.requirements.filter((requirement) => requirement.status !== "superseded").length,
+    },
+  });
+}
+
+export async function loadCurrentGoalRequirementDraftPg(
+  db: SouthstarDb,
+  draftId: string,
+): Promise<GoalRequirementDraftV1> {
+  const row = await db.maybeOne<{ payload_json: Record<string, unknown> }>(
+    "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+    [draftId],
+  );
+  const draft = row ? goalRequirementDraftFromStored(row.payload_json.goalRequirementDraft) : undefined;
+  if (!draft) throw new Error(`Goal Requirement draft not found: ${draftId}`);
+  return draft;
+}
+
+/**
+ * Create the first durable Requirement Review draft. No Goal Contract,
+ * evaluator binding, slice, or Composer work is performed here.
+ */
+export async function preparePostgresGoalRequirementDraft(
+  db: SouthstarDb,
+  input: {
+    goalPrompt: string;
+    cwd: string;
+    projectRef?: string;
+    mode?: GoalDesignMode;
+    templatePolicy?: WorkflowTemplatePolicyV1;
+    requirementInterpreter: GoalRequirementDraftInterpreter;
+    persistDraft?: PlannerDraftPersistence;
+    onProgress?: PlannerDraftProgressListener;
+  },
+): Promise<GoalRequirementReviewResult> {
+  input.onProgress?.({ stage: "request.normalized", message: "Goal Requirement request normalized." });
+  const skill = await loadGoalDesignSkillPg(db);
+  const workspaceDiscovery = await discoverGoalWorkspace(input.cwd);
+  const draft = await input.requirementInterpreter.interpret({
+    goalPrompt: input.goalPrompt,
+    cwd: input.cwd,
+    ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
+    workspaceDiscovery,
+    goalDesignSkill: skill,
+  });
+  assertGoalRequirementDraftMatchesRequest(draft, input);
+  const draftId = `draft-goal-requirements-${draft.draftHash.slice(0, 12)}`;
+  await persistGoalRequirementDraftRevisionPg(db, { draftId, draft });
+  await persistPlannerDraftResource(db, {
+    resourceType: "planner_draft",
+    resourceKey: draftId,
+    scope: "planner",
+    status: "requirements_review",
+    title: "Goal Requirements Ready For Review",
+    payload: {
+      goalRequirementDraft: draft,
+      goalRequirementDraftHash: draft.draftHash,
+      goalDesignPhase: "requirements_review" satisfies GoalDesignPhase,
+      plannerRequest: {
+        goalPrompt: input.goalPrompt,
+        cwd: input.cwd,
+        ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
+        ...(input.mode !== undefined ? { goalDesignMode: input.mode } : {}),
+        ...(input.templatePolicy !== undefined ? { templatePolicy: input.templatePolicy } : {}),
+      },
+      goalDesignSkillRef: skill.objectKey,
+      goalDesignSkillVersionRef: skill.versionRef,
+      workspaceDiscoveryHash: workspaceDiscovery.discoveryHash,
+    },
+    summary: {
+      goalPrompt: input.goalPrompt,
+      workflowId: "",
+      planner: "goal-design",
+      status: "requirements_review",
+      goalDesignPhase: "requirements_review" satisfies GoalDesignPhase,
+      validationIssues: [],
+      taskSummaries: [],
+      goalRequirementDraftHash: draft.draftHash,
+      requirementCount: draft.requirements.filter((requirement) => requirement.status !== "superseded").length,
+      blockers: draft.blockingInputs,
+      plannerRequest: {
+        goalPrompt: input.goalPrompt,
+        cwd: input.cwd,
+        ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
+        ...(input.mode !== undefined ? { goalDesignMode: input.mode } : {}),
+        ...(input.templatePolicy !== undefined ? { templatePolicy: input.templatePolicy } : {}),
+      },
+    },
+  }, input.persistDraft);
+  const result: GoalRequirementReviewResult = {
+    draftId,
+    status: "requirements_review",
+    phase: "requirements_review",
+    goalPrompt: input.goalPrompt,
+    goalRequirementDraft: draft,
+    goalRequirementDraftHash: draft.draftHash,
+    blockers: draft.blockingInputs,
+  };
+  input.onProgress?.({
+    stage: "requirements.persisted",
+    ok: true,
+    issueCount: draft.blockingInputs.length,
+    message: "Goal Requirement Draft persisted for review.",
+    draftId,
+    draftStatus: "requirements_review",
+    package: result,
+  });
+  return result;
+}
+
+export async function reviseGoalRequirementPg(
+  db: SouthstarDb,
+  input: GoalRequirementRevisionInput,
+): Promise<GoalRequirementReviewResult> {
+  return await db.tx(async (tx) => {
+    const row = await tx.maybeOne<PlannerDraftResourceRow>(
+      `select id, resource_key, run_id, task_id, session_id, scope, status, title,
+              payload_json, summary_json, metrics_json, expires_at
+         from southstar.runtime_resources
+        where resource_type = 'planner_draft' and resource_key = $1
+        for update`,
+      [input.draftId],
+    );
+    if (!row) throw new Error(`planner draft not found: ${input.draftId}`);
+    const payload = asRecord(row.payload_json);
+    const current = goalRequirementDraftFromStored(payload.goalRequirementDraft);
+    if (!current) throw new Error(`Goal Requirement draft not found: ${input.draftId}`);
+    if (current.draftHash !== input.expectedDraftHash) {
+      throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
+    }
+    const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
+    if (phase === "dag_validated") throw new Error(`goal_requirements_frozen: ${input.draftId}`);
+    await assertNoMaterializedGoalRequirementRunTx(tx, input.draftId);
+    const operation = toRequirementRevisionOperation(input);
+    const next = reviseGoalRequirementDraft(current, operation);
+    await persistGoalRequirementDraftRevisionPg(tx, { draftId: input.draftId, draft: next, actor: input.actor });
+    const invalidated = await markRequirementDerivedResourcesStaleTx(tx, {
+      draftId: input.draftId,
+      oldDraftHash: current.draftHash,
+      nextDraftHash: next.draftHash,
+    });
+    invalidated.validationBindings ||= Boolean(payload.validationBindings || payload.requirementValidationBindings || payload.goalValidationResolution);
+    invalidated.slicePlan ||= Boolean(payload.slicePlan || payload.goalDesignPackage || payload.goalDesignPackageHash);
+    invalidated.dagDraft ||= Boolean(payload.workflow || payload.workflowManifest || payload.composition);
+    const nextPayload = withoutGoalRequirementDerived(payload);
+    const updatedPayload = {
+      ...nextPayload,
+      goalRequirementDraft: next,
+      goalRequirementDraftHash: next.draftHash,
+      goalDesignPhase: "requirements_review" satisfies GoalDesignPhase,
+    };
+    const updatedSummary = {
+      ...row.summary_json,
+      status: "requirements_review",
+      goalDesignPhase: "requirements_review" satisfies GoalDesignPhase,
+      goalRequirementDraftHash: next.draftHash,
+      requirementCount: next.requirements.filter((requirement) => requirement.status !== "superseded").length,
+      staleReason: "goal_requirements_revised",
+    };
+    await upsertRuntimeResourcePg(tx, {
+      id: row.id,
+      resourceType: "planner_draft",
+      resourceKey: input.draftId,
+      ...(row.run_id ? { runId: row.run_id } : {}),
+      ...(row.task_id ? { taskId: row.task_id } : {}),
+      ...(row.session_id ? { sessionId: row.session_id } : {}),
+      scope: row.scope,
+      status: "requirements_review",
+      ...(row.title ? { title: row.title } : {}),
+      payload: updatedPayload,
+      summary: updatedSummary,
+      metrics: row.metrics_json,
+      ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
+    });
+    return {
+      draftId: input.draftId,
+      status: "requirements_review",
+      phase: "requirements_review",
+      goalPrompt: next.originalPrompt,
+      goalRequirementDraft: next,
+      goalRequirementDraftHash: next.draftHash,
+      blockers: next.blockingInputs,
+      invalidated,
+    };
+  });
+}
+
+export async function confirmGoalRequirementsPg(
+  db: SouthstarDb,
+  input: {
+    draftId: string;
+    expectedDraftHash: string;
+    actor?: string;
+    goalInterpreter?: GoalContractInterpreter;
+    goalContractMetadata?: GoalRequirementContractMetadata;
+  },
+): Promise<GoalRequirementReviewResult> {
+  return await db.tx(async (tx) => {
+    const row = await tx.maybeOne<PlannerDraftResourceRow>(
+      `select id, resource_key, run_id, task_id, session_id, scope, status, title,
+              payload_json, summary_json, metrics_json, expires_at
+         from southstar.runtime_resources
+        where resource_type = 'planner_draft' and resource_key = $1
+        for update`,
+      [input.draftId],
+    );
+    if (!row) throw new Error(`planner draft not found: ${input.draftId}`);
+    const payload = asRecord(row.payload_json);
+    const current = goalRequirementDraftFromStored(payload.goalRequirementDraft);
+    if (!current) throw new Error(`Goal Requirement draft not found: ${input.draftId}`);
+    if (current.draftHash !== input.expectedDraftHash) {
+      throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
+    }
+    const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
+    const existingContract = storedGoalContract(payload.goalContract);
+    if (existingContract && ["validation_resolving", "library_review", "validation_ready"].includes(phase)) {
+      return {
+        draftId: input.draftId,
+        status: phase as GoalRequirementReviewResult["status"],
+        phase,
+        goalPrompt: current.originalPrompt,
+        goalRequirementDraft: current,
+        goalRequirementDraftHash: current.draftHash,
+        goalContract: existingContract,
+        goalContractHash: goalContractHash(existingContract),
+        blockers: current.blockingInputs,
+        ...(Array.isArray(payload.validationGaps) ? { validationGaps: payload.validationGaps } : {}),
+      };
+    }
+    if (phase !== "requirements_review" && phase !== "requirements_confirmed") {
+      throw new Error(`goal requirements cannot be confirmed in phase ${phase}: ${input.draftId}`);
+    }
+    const metadata = await resolveGoalRequirementContractMetadata(tx, current, payload, input);
+    const contract = confirmGoalRequirementDraft(current, metadata);
+    const contractHash = goalContractHash(contract);
+    await upsertRuntimeResourcePg(tx, {
+      resourceType: "goal_contract_confirmation",
+      resourceKey: input.draftId,
+      scope: "planner",
+      status: "persisted",
+      title: "Goal Contract Confirmed",
+      payload: {
+        draftId: input.draftId,
+        actor: input.actor ?? "user",
+        goalRequirementDraftHash: current.draftHash,
+        goalContract: contract,
+        goalContractHash: contractHash,
+        goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
+      },
+      summary: {
+        draftId: input.draftId,
+        goalContractHash: contractHash,
+        goalRequirementDraftHash: current.draftHash,
+        goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
+      },
+    });
+    const updatedPayload = {
+      ...payload,
+      goalContract: contract,
+      goalContractHash: contractHash,
+      goalRequirementDraftHash: current.draftHash,
+      goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
+      requirementConfirmation: {
+        actor: input.actor ?? "user",
+        confirmedAt: new Date().toISOString(),
+        draftHash: current.draftHash,
+      },
+    };
+    const updatedSummary = {
+      ...row.summary_json,
+      status: "validation_resolving",
+      goalDesignPhase: "validation_resolving" satisfies GoalDesignPhase,
+      goalContractHash: contractHash,
+      goalRequirementDraftHash: current.draftHash,
+    };
+    await upsertRuntimeResourcePg(tx, {
+      id: row.id,
+      resourceType: "planner_draft",
+      resourceKey: input.draftId,
+      ...(row.run_id ? { runId: row.run_id } : {}),
+      ...(row.task_id ? { taskId: row.task_id } : {}),
+      ...(row.session_id ? { sessionId: row.session_id } : {}),
+      scope: row.scope,
+      status: "validation_resolving",
+      ...(row.title ? { title: row.title } : {}),
+      payload: updatedPayload,
+      summary: updatedSummary,
+      metrics: row.metrics_json,
+      ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
+    });
+    return {
+      draftId: input.draftId,
+      status: "validation_resolving",
+      phase: "validation_resolving",
+      goalPrompt: current.originalPrompt,
+      goalRequirementDraft: current,
+      goalRequirementDraftHash: current.draftHash,
+      goalContract: contract,
+      goalContractHash: contractHash,
+      blockers: current.blockingInputs,
+    };
+  });
+}
 
 export async function persistGoalDesignPackageRevisionPg(
   db: SouthstarDb,
@@ -681,6 +1076,196 @@ async function persistPlannerDraftResource(
 ): Promise<void> {
   if (persistDraft) return await persistDraft(resource);
   await upsertRuntimeResourcePg(db, resource);
+}
+
+function goalRequirementDraftFromStored(value: unknown): GoalRequirementDraftV1 | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const draft = value as GoalRequirementDraftV1;
+  return validateGoalRequirementDraft(draft).length === 0 ? draft : undefined;
+}
+
+function goalDesignPhaseFromPayload(payload: Record<string, unknown>): GoalDesignPhase | undefined {
+  const value = payload.goalDesignPhase;
+  return typeof value === "string" && GOAL_DESIGN_PHASES.has(value as GoalDesignPhase)
+    ? value as GoalDesignPhase
+    : undefined;
+}
+
+function assertGoalRequirementDraftMatchesRequest(
+  draft: GoalRequirementDraftV1,
+  input: { goalPrompt: string; cwd: string; projectRef?: string },
+): void {
+  const issues = validateGoalRequirementDraft(draft);
+  if (issues.length > 0) {
+    throw new Error(`invalid Goal Requirement draft: ${issues.map((issue) => `${issue.code} at ${issue.path}`).join("; ")}`);
+  }
+  if (draft.originalPrompt !== input.goalPrompt || draft.workspace.cwd !== input.cwd || draft.workspace.projectRef !== input.projectRef) {
+    throw new Error("Goal Requirement interpreter returned a draft with host-owned workspace or prompt fields that do not match the request");
+  }
+  if (draft.revision !== 1 || draft.parentRevision !== undefined) {
+    throw new Error("initial Goal Requirement draft must start at revision 1 without parentRevision");
+  }
+}
+
+function toRequirementRevisionOperation(input: GoalRequirementRevisionInput): GoalRequirementDraftRevisionOperation {
+  if (isRequirementRevisionOperation(input.patch)) return input.patch;
+  if (!input.requirementId) throw new Error("requirementId is required for a requirement patch");
+  return { kind: "update", requirementId: input.requirementId, patch: input.patch };
+}
+
+function isRequirementRevisionOperation(
+  value: GoalRequirementRevisionInput["patch"],
+): value is GoalRequirementDraftRevisionOperation {
+  return typeof value === "object" && value !== null && "kind" in value;
+}
+
+function withoutGoalRequirementDerived(payload: Record<string, unknown>): Record<string, unknown> {
+  const {
+    goalContract: _goalContract,
+    goalContractHash: _goalContractHash,
+    goalDesignPackage: _goalDesignPackage,
+    goalDesignPackageHash: _goalDesignPackageHash,
+    validationBindings: _validationBindings,
+    goalRequirementCoverage: _goalRequirementCoverage,
+    requirementValidationBindings: _requirementValidationBindings,
+    ...rest
+  } = payload;
+  return rest;
+}
+
+async function assertNoMaterializedGoalRequirementRunTx(db: SouthstarDb, draftId: string): Promise<void> {
+  const materialized = await db.maybeOne<{ id: string }>(
+    `select wr.id
+       from southstar.workflow_runs wr
+      where wr.runtime_context_json->>'draftId' = $1
+      limit 1`,
+    [draftId],
+  );
+  if (materialized) throw new Error(`goal_requirements_already_materialized: ${draftId}`);
+}
+
+async function markRequirementDerivedResourcesStaleTx(
+  db: SouthstarDb,
+  input: { draftId: string; oldDraftHash: string; nextDraftHash: string },
+): Promise<{ validationBindings: boolean; slicePlan: boolean; dagDraft: boolean }> {
+  const stalePayload = JSON.stringify({
+    staleReason: "goal_requirements_revised",
+    supersededByDraftHash: input.nextDraftHash,
+    staleAt: new Date().toISOString(),
+  });
+  const bindings = await db.query(
+    `update southstar.runtime_resources
+        set status = 'stale', payload_json = payload_json || $2::jsonb,
+            summary_json = summary_json || $2::jsonb, updated_at = now()
+      where resource_type in ('goal_contract_confirmation', 'goal_validation_resolution', 'goal_requirement_validation_binding')
+        and (resource_key = $1 or payload_json->>'draftId' = $1)
+        and status <> 'stale'`,
+    [input.draftId, stalePayload],
+  );
+  const slices = await db.query(
+    `update southstar.runtime_resources
+        set status = 'stale', payload_json = payload_json || $2::jsonb,
+            summary_json = summary_json || $2::jsonb, updated_at = now()
+      where resource_type in ('goal_design_package_revision', 'goal_design_confirmation', 'goal_slice_plan')
+        and (resource_key = $1 or payload_json->>'draftId' = $1)
+        and status <> 'stale'`,
+    [input.draftId, stalePayload],
+  );
+  const dagDrafts = await db.query(
+    `update southstar.runtime_resources pd
+        set status = 'stale', payload_json = pd.payload_json || $2::jsonb,
+            summary_json = pd.summary_json || $2::jsonb, updated_at = now()
+      where pd.resource_type = 'planner_draft'
+        and pd.resource_key <> $1
+        and (
+          pd.payload_json->>'draftId' = $1
+          or pd.payload_json->>'goalRequirementDraftHash' = $3
+          or pd.payload_json->>'goalDesignPackageHash' is not null
+             and pd.payload_json->'plannerRequest'->>'draftId' = $1
+        )
+        and pd.status <> 'stale'
+        and not exists (
+          select 1 from southstar.workflow_runs wr
+           where wr.runtime_context_json->>'draftId' = pd.resource_key
+        )`,
+    [input.draftId, stalePayload, input.oldDraftHash],
+  );
+  return {
+    validationBindings: (bindings.rowCount ?? 0) > 0,
+    slicePlan: (slices.rowCount ?? 0) > 0,
+    dagDraft: (dagDrafts.rowCount ?? 0) > 0,
+  };
+}
+
+async function resolveGoalRequirementContractMetadata(
+  db: SouthstarDb,
+  draft: GoalRequirementDraftV1,
+  payload: Record<string, unknown>,
+  input: {
+    goalInterpreter?: GoalContractInterpreter;
+    goalContractMetadata?: GoalRequirementContractMetadata;
+  },
+): Promise<GoalRequirementContractMetadata> {
+  if (input.goalContractMetadata) return input.goalContractMetadata;
+  const stored = storedGoalContract(payload.goalContract);
+  if (stored) return contractMetadata(stored);
+  if (input.goalInterpreter) {
+    const skill = await loadGoalDesignSkillPg(db);
+    const workspaceDiscovery = await discoverGoalWorkspace(draft.workspace.cwd);
+    try {
+      const interpreted = await input.goalInterpreter.interpret({
+        goalPrompt: draft.originalPrompt,
+        cwd: draft.workspace.cwd,
+        ...(draft.workspace.projectRef !== undefined ? { projectRef: draft.workspace.projectRef } : {}),
+        libraryVocabulary: await loadGoalContractLibraryVocabularyPg(db),
+        goalDesignSkill: skill,
+        workspaceDiscovery,
+      });
+      return contractMetadata(interpreted);
+    } catch (error) {
+      if (error instanceof GoalContractVocabularyGapError) return contractMetadata(error.goalContract);
+      throw error;
+    }
+  }
+  return {
+    domain: "general",
+    intent: "goal_execution",
+    workType: "general",
+    expectedArtifactRefs: [],
+    requiredCapabilities: [],
+    assumptions: [...new Set(draft.requirements.flatMap((requirement) => requirement.assumptions))],
+    requestedSideEffects: [],
+  };
+}
+
+function contractMetadata(contract: GoalContractV1): GoalRequirementContractMetadata {
+  return {
+    domain: contract.domain,
+    intent: contract.intent,
+    workType: contract.workType,
+    expectedArtifactRefs: [...contract.expectedArtifactRefs],
+    requiredCapabilities: [...contract.requiredCapabilities],
+    assumptions: [...contract.assumptions],
+    requestedSideEffects: [...contract.requestedSideEffects],
+  };
+}
+
+const GOAL_DESIGN_PHASES = new Set<GoalDesignPhase>([
+  "requirements_review",
+  "requirements_confirmed",
+  "validation_resolving",
+  "library_review",
+  "validation_ready",
+  "slice_review",
+  "ready_to_compose",
+  "composing",
+  "dag_validated",
+]);
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
 }
 
 function goalDesignPackageFromStored(value: unknown): GoalDesignPackageV1 | undefined {

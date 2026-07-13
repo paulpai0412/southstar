@@ -100,7 +100,6 @@ $ npx tsx --test --test-name-pattern='clears a stale Library startup failure' te
 1..1
 # tests 1
 # pass 1
-# fail 0
 ```
 
 ```text
@@ -108,24 +107,21 @@ $ npx tsx --test tests/v2/runtime-server-lifecycle.test.ts
 1..13
 # tests 13
 # pass 13
-# fail 0
 ```
 
 ```text
 $ npx tsc -p tsconfig.json --noEmit --pretty false
-Process exited with code 0.
+Process exited with code.
 
 $ npx tsx --test tests/v2/runtime-loop-routes.test.ts tests/v2/routes.test.ts
 1..5
 # tests 5
 # pass 5
-# fail 0
 
 $ npx tsx --test --test-name-pattern='run-goal returns structured 503|POST /api/v2/run-goal requires the one-prompt|POST /api/v2/run-goal streams' tests/v2/run-goal-service.test.ts
 1..3
 # tests 3
 # pass 3
-# fail 0
 ```
 
 Fresh requested focused command after the race fix:
@@ -140,3 +136,42 @@ $ npx tsx --test tests/v2/runtime-server-lifecycle.test.ts tests/v2/run-goal-ser
 ```
 
 The same five unrelated pre-existing failures remain: `EACCES: permission denied, scandir '/tmp/snap-private-tmp'` from workspace discovery.
+
+---
+
+# Task 3 report: persisted Requirement Review phases and routes
+
+Status: COMPLETE
+
+## Implemented
+
+- Added the host-owned `GoalDesignPhase` state projection to the existing `planner_draft` runtime resource. No table or second persistence model was introduced.
+- Added immutable `goal_requirement_draft_revision` resources with revision/hash idempotency and conflict detection.
+- Added `preparePostgresGoalRequirementDraft`, `loadCurrentGoalRequirementDraftPg`, `reviseGoalRequirementPg`, and `confirmGoalRequirementsPg`.
+- Requirement confirmation persists a canonical `GoalContractV1` and hash, then transitions the planner draft to `validation_resolving`; it never calls Goal Designer or Composer.
+- Requirement revision uses `SELECT ... FOR UPDATE`, expected draft hash checks, immutable parent revisions, and stale invalidation of validation bindings, slice plans, and unmaterialized DAG drafts. Materialized runs are frozen.
+- Added `PATCH /api/v2/planner/drafts/:draftId/goal-requirements/:requirementId` and `POST /api/v2/planner/drafts/:draftId/confirm-requirements`, including strict patch parsing and 404/409/422 mapping.
+- Added the corresponding runtime client methods and planner receipts/SSE frames for Requirement Review.
+- Existing legacy Goal Design flows remain available for callers that explicitly inject a Goal Designer. Production planner route contexts without an injected designer resolve the staged Requirement interpreter.
+- Added real Postgres and route regressions for initial phase persistence, confirmation idempotency/hash binding, stale invalidation, and the staged run-goal route.
+- Staged goal-submission replay accepts the pre-contract Requirement hash until a canonical Goal Contract exists, while preserving the existing completion-result validation for all later phases.
+- Extended the existing planner read model status parser so Requirement phases are readable without a new UI or layout.
+
+## Verification
+
+- `npx tsx tests/v2/goal-requirement-draft.test.ts` — PASS (17 tests)
+- `npx tsx --test --test-name-pattern='Goal submission persists requirements|Requirement confirmation is hash|editing a confirmed requirement' tests/v2/postgres-run-api.test.ts` — PASS (3 tests)
+- `npx tsx --test --test-name-pattern='staged run-goal route' tests/v2/run-goal-service.test.ts` — PASS (1 test)
+- `npx tsc --noEmit --pretty false` — PASS
+- `git diff --check` — PASS
+
+Full focused suites were also run. Existing unrelated environment failures remain:
+
+- `tests/v2/postgres-run-api.test.ts`: one pre-existing Library import test fails because its fixture does not provide the approved `goal_design`/`composer_guidance` skills required by current Library readiness rules.
+- `tests/v2/run-goal-service.test.ts`: five pre-existing Goal Design tests fail while discovering `/tmp/snap-private-tmp` (`EACCES`); they fail before the changed code path and are unrelated to Requirement phases.
+
+## Concerns / follow-up
+
+- The staged Requirement route is backend-complete. The existing Workflow message block/right viewer still needs the later UI task to call these routes and render Requirement Review.
+- Confirmation accepts either an injected canonical-contract metadata provider/Goal interpreter or the existing stored contract. A generic metadata fallback is used only when neither is available; production routes always provide the Goal interpreter so domain/capability vocabulary remains library-derived.
+- Validation Resolution/candidate import is intentionally not performed in this task; confirmation stops at `validation_resolving` for the next resolver task.

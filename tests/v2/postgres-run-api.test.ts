@@ -35,13 +35,18 @@ import {
   type WorkflowTemplatePolicyV1,
 } from "../../src/v2/orchestration/goal-design.ts";
 import {
+  confirmGoalRequirementsPg,
   loadCurrentGoalDesignPackagePg,
+  loadCurrentGoalRequirementDraftPg,
   persistGoalDesignPackageRevisionPg,
+  preparePostgresGoalRequirementDraft,
   preparePostgresGoalDesignDraft,
   retryPostgresGoalDesignAfterVocabularyApprovalPg,
   reviseGoalDesignFromChatPg,
   reviseGoalSlicePg,
+  reviseGoalRequirementPg,
 } from "../../src/v2/orchestration/goal-design-draft-service.ts";
+import { finalizeGoalRequirementDraft, type GoalRequirementDraftInputV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import {
   createPostgresPlannerDraft,
   createPostgresRunFromDraft,
@@ -75,6 +80,108 @@ const FIXTURE_TASK_IDS = [
   "review-code-quality",
   "summarize-completion",
 ];
+
+test("Goal submission persists requirements_review before Slice design", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const result = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: "Create an offline article",
+      cwd,
+      requirementInterpreter: requirementDraftInterpreter("Create an offline article", cwd),
+    });
+    assert.equal(result.status, "requirements_review");
+    assert.equal(result.phase, "requirements_review");
+    const stored = await getResourceByKeyPg(db, "planner_draft", result.draftId);
+    assert.equal((stored!.payload as Record<string, unknown>).goalDesignPhase, "requirements_review");
+    assert.equal(((stored!.payload as Record<string, any>).goalRequirementDraft as { revision: number }).revision, 1);
+    assert.equal((stored!.payload as Record<string, unknown>).goalDesignPackage, undefined);
+    assert.deepEqual(await loadCurrentGoalRequirementDraftPg(db, result.draftId), result.goalRequirementDraft);
+  });
+});
+
+test("Requirement confirmation is hash-bound and idempotent", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: "Create an offline article",
+      cwd,
+      requirementInterpreter: requirementDraftInterpreter("Create an offline article", cwd),
+    });
+    const input = {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      goalContractMetadata: {
+        domain: "design/article",
+        intent: "publish_article",
+        workType: "general" as const,
+        expectedArtifactRefs: [],
+        requiredCapabilities: [],
+        assumptions: [],
+        requestedSideEffects: [],
+      },
+    };
+    const first = await confirmGoalRequirementsPg(db, input);
+    const replay = await confirmGoalRequirementsPg(db, input);
+    assert.equal(first.status, "validation_resolving");
+    assert.equal(first.phase, "validation_resolving");
+    assert.equal(first.goalContractHash, replay.goalContractHash);
+    assert.equal(first.goalRequirementDraftHash, replay.goalRequirementDraftHash);
+  });
+});
+
+test("editing a confirmed requirement stales validation and slice resources", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: "Create an offline article",
+      cwd,
+      requirementInterpreter: requirementDraftInterpreter("Create an offline article", cwd),
+    });
+    await confirmGoalRequirementsPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      goalContractMetadata: {
+        domain: "design/article",
+        intent: "publish_article",
+        workType: "general",
+        expectedArtifactRefs: [],
+        requiredCapabilities: [],
+        assumptions: [],
+        requestedSideEffects: [],
+      },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "goal_validation_resolution",
+      resourceKey: draft.draftId,
+      scope: "planner",
+      status: "ready",
+      payload: { draftId: draft.draftId },
+    });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "goal_slice_plan",
+      resourceKey: draft.draftId,
+      scope: "planner",
+      status: "ready",
+      payload: { draftId: draft.draftId },
+    });
+    const revised = await reviseGoalRequirementPg(db, {
+      draftId: draft.draftId,
+      expectedDraftHash: draft.goalRequirementDraftHash,
+      requirementId: draft.goalRequirementDraft.requirements[0]!.id,
+      patch: { statement: "Changed observable outcome" },
+    });
+    assert.equal(revised.status, "requirements_review");
+    assert.equal(revised.invalidated?.validationBindings, true);
+    assert.equal(revised.invalidated?.slicePlan, true);
+    const validation = await getResourceByKeyPg(db, "goal_validation_resolution", draft.draftId);
+    const slice = await getResourceByKeyPg(db, "goal_slice_plan", draft.draftId);
+    assert.equal(validation?.status, "stale");
+    assert.equal(slice?.status, "stale");
+  });
+});
 
 test("planner draft persists a design/article Goal Contract and uses its domain", async () => {
   await withDb(async (db) => {
@@ -2064,6 +2171,45 @@ async function seedGoalDesignSkill(db: SouthstarDb): Promise<void> {
       body: "Design the smallest cohesive outcome slices and return the host schema.",
     },
   });
+}
+
+function requirementDraftInterpreter(goalPrompt: string, cwd: string) {
+  return {
+    async interpret() {
+      return finalizeGoalRequirementDraft(validGoalRequirementDraftInput(goalPrompt, cwd));
+    },
+    async revise() {
+      throw new Error("revision not used in creation test");
+    },
+  };
+}
+
+function validGoalRequirementDraftInput(goalPrompt: string, cwd: string): GoalRequirementDraftInputV1 {
+  return {
+    goalPrompt,
+    cwd,
+    summary: "Create and verify the requested offline article.",
+    requirements: [{
+      title: "Offline article",
+      statement: "Create a readable article that opens without a network connection.",
+      source: "explicit",
+      blocking: true,
+      userVisibleBehaviors: ["The article opens from a local file."],
+      businessRules: [],
+      acceptanceCriteria: [{
+        statement: "The article opens offline as a single HTML file.",
+        evidenceIntent: ["browser evidence"],
+      }],
+      expectedOutcomeArtifacts: [{ description: "Offline article", mediaType: "text/html" }],
+      verificationIntent: ["Open the generated file in a browser without network access."],
+      assumptions: [],
+      openQuestions: [],
+      riskTags: [],
+      interactionContractRefs: [],
+    }],
+    nonGoals: [],
+    blockingInputs: [],
+  };
 }
 
 function routeGoalDesigner(): GoalDesigner {

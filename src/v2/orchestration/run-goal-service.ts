@@ -12,7 +12,9 @@ import type { WorkflowComposer } from "./composer.ts";
 import { materializeGoalExecutionSetPg } from "./goal-execution-set.ts";
 import {
   loadCurrentGoalDesignPackagePg,
+  preparePostgresGoalRequirementDraft,
   preparePostgresGoalDesignDraft,
+  type GoalRequirementReviewResult,
 } from "./goal-design-draft-service.ts";
 import {
   validateGoalDesignPackage,
@@ -35,6 +37,7 @@ import { createPostgresPlannerDraft, createPostgresRunFromDraft } from "../ui-ap
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
+import type { GoalRequirementDraftInterpreter } from "./goal-requirement-draft.ts";
 
 export type RunGoalRequest = {
   goalPrompt: string;
@@ -46,9 +49,11 @@ export type RunGoalRequest = {
 
 export type RunGoalResult = {
   goalDesignPackageHash?: string;
+  goalRequirementDraftHash?: string;
+  goalDesignPhase?: string;
   goalContractHash: string;
   draftId: string;
-  draftStatus: "needs_input" | "needs_library_input" | "invalid" | "template_incompatible" | "ready_for_review" | "validated";
+  draftStatus: "requirements_review" | "validation_resolving" | "library_review" | "validation_ready" | "needs_input" | "needs_library_input" | "invalid" | "template_incompatible" | "ready_for_review" | "validated";
   runId?: string;
   runStatus?: "created" | "awaiting_approval" | "scheduling";
   approvalId?: string;
@@ -70,6 +75,7 @@ export type SliceRunResult = {
 export type SubmitGoalContext = {
   db: SouthstarDb;
   goalInterpreter: GoalContractInterpreter;
+  goalRequirementInterpreter?: GoalRequirementDraftInterpreter;
   goalDesigner?: GoalDesigner;
   composer?: WorkflowComposer;
   libraryImportLlmProvider?: LibraryImportLlmProvider;
@@ -115,6 +121,9 @@ export async function submitClaimedGoalPg(
   if (claim.schedulingRequest) {
     for (const stage of claim.stages) context.onStage?.(stage);
     return await completeGoalSchedulingHandoffPg(context, claim.submissionId);
+  }
+  if (context.goalRequirementInterpreter) {
+    return await submitGoalRequirementDraftPg(context, request, claim);
   }
   if (context.goalDesigner) {
     return await submitGoalDesignDraftPg(context, request, claim);
@@ -197,6 +206,54 @@ export async function submitClaimedGoalPg(
   if (!transaction.autoSchedule || !transaction.result.runId) return transaction.result;
 
   return await completeGoalSchedulingHandoffPg(context, claim.submissionId);
+}
+
+async function submitGoalRequirementDraftPg(
+  context: SubmitGoalContext,
+  request: RunGoalRequest,
+  claim: GoalSubmissionClaim,
+): Promise<RunGoalResult> {
+  const observedStages: string[] = [];
+  let draft: GoalRequirementReviewResult;
+  try {
+    draft = await preparePostgresGoalRequirementDraft(context.db, {
+      goalPrompt: request.goalPrompt,
+      cwd: request.cwd,
+      requirementInterpreter: context.goalRequirementInterpreter!,
+      onProgress(event) {
+        observedStages.push(event.stage);
+        if (event.stage === "requirements.persisted") {
+          context.onStage?.(event.stage, event.package as Record<string, unknown> | undefined);
+        } else {
+          context.onStage?.(event.stage);
+        }
+      },
+    });
+  } catch (error) {
+    await failSubmissionPg(context.db, claim.submissionId, error, observedStages);
+    throw error;
+  }
+  const result: RunGoalResult = {
+    goalContractHash: "",
+    goalRequirementDraftHash: draft.goalRequirementDraftHash,
+    goalDesignPhase: draft.phase,
+    draftId: draft.draftId,
+    draftStatus: draft.status,
+    blockers: draft.blockers,
+  };
+  try {
+    await completeSubmissionPg(context.db, claim.submissionId, result, [...observedStages, "draft.requirements_review", "done"]);
+  } catch (error) {
+    await failSubmissionPg(context.db, claim.submissionId, error, observedStages);
+    throw error;
+  }
+  context.onStage?.("draft.requirements_review", {
+    draftId: draft.draftId,
+    goalRequirementDraftHash: draft.goalRequirementDraftHash,
+    goalRequirementDraft: draft.goalRequirementDraft,
+  });
+  context.onStage?.("done");
+  return result;
 }
 
 async function submitGoalDesignDraftPg(
@@ -856,7 +913,9 @@ function validateRequest(request: RunGoalRequest): void {
 
 function requireRunGoalResult(value: unknown): RunGoalResult {
   const result = asRecord(value);
-  if (!requiredString(result.goalContractHash, "goalContractHash") || !requiredString(result.draftId, "draftId")) {
+  const hasContractHash = typeof result.goalContractHash === "string" && result.goalContractHash.length > 0;
+  const stagedRequirementReview = ["requirements_review", "validation_resolving", "library_review", "validation_ready"].includes(String(result.draftStatus));
+  if ((!hasContractHash && !(stagedRequirementReview && typeof result.goalRequirementDraftHash === "string" && result.goalRequirementDraftHash.length > 0)) || !requiredString(result.draftId, "draftId")) {
     throw new Error("invalid completed goal submission result");
   }
   return result as RunGoalResult;
