@@ -550,6 +550,97 @@ test("library file API helpers report HTTP and non-JSON failures predictably", a
   }
 });
 
+test("library readiness API helper reads the current snapshot and maps reconcile results", async () => {
+  const api = await import("../../web/lib/library/api.ts");
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    assert.equal(String(input), "/api/library/readiness");
+    return new Response(JSON.stringify({ ok: true, result: {
+      readiness: {
+        ready: true,
+        status: "ready_with_warnings",
+        snapshotHash: "snapshot-hash",
+        includedCount: 1,
+        excludedCount: 1,
+        diagnostics: [{ code: "reconcile_excluded", message: "missing tool.absent", paths: ["skills/imported.skill.md"], missingRefs: ["tool.absent"] }],
+      },
+    } }));
+  };
+  try {
+    const readiness = await api.readLibraryReadiness();
+    assert.equal(readiness.snapshotHash, "snapshot-hash");
+    const mapped = api.readinessFromReconcile({
+      schemaVersion: "southstar.library_sync_snapshot.v1",
+      snapshotHash: "mapped-hash",
+      status: "ready_with_warnings",
+      sourceRoot: "library",
+      trigger: "library_save",
+      included: [{ path: "skills/goal.skill.md", objectKey: "skill.goal", objectKind: "skill_spec", sourceHash: "hash", versionRef: "skill.goal@hash" }],
+      excluded: [{ path: "skills/imported.skill.md", objectKey: "skill.imported", reason: "missing tool.absent", missingRefs: ["tool.absent"] }],
+      deprecatedObjectKeys: [],
+      warnings: ["missing tool.absent"],
+    });
+    assert.deepEqual(mapped.diagnostics[0], {
+      code: "reconcile_excluded",
+      message: "missing tool.absent",
+      paths: ["skills/imported.skill.md"],
+      missingRefs: ["tool.absent"],
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("LibrarySidebarPanel renders current Library readiness diagnostics", async () => {
+  await withBrowserHarness(`
+    import React from "react";
+    import { createRoot } from "react-dom/client";
+    import { LibrarySidebarPanel, LibraryWorkspaceProvider } from "./web/components/library/LibraryWorkspace";
+
+    createRoot(document.getElementById("root")).render(
+      <LibraryWorkspaceProvider>
+        <LibrarySidebarPanel />
+      </LibraryWorkspaceProvider>
+    );
+  `, async (page) => {
+    await page.locator('[data-testid="library-readiness"]').waitFor();
+    await page.getByText("Library ready").waitFor();
+    await page.getByText("1 included · 1 excluded").waitFor();
+    await page.getByText("missing tool.absent").waitFor();
+  }, async (page) => {
+    await page.route("**/api/sessions**", async (route) => {
+      await route.fulfill({ contentType: "application/json", body: JSON.stringify({ sessions: [] }) });
+    });
+    await page.route("**/api/library/**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/library/workspace") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, result: { selectedScope: "all", domains: [] } }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/library/readiness") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true, result: {
+            readiness: {
+              ready: true,
+              status: "ready_with_warnings",
+              snapshotHash: "abcdef1234567890",
+              includedCount: 1,
+              excludedCount: 1,
+              diagnostics: [{ code: "reconcile_excluded", message: "missing tool.absent", paths: ["skills/imported.skill.md"], missingRefs: ["tool.absent"] }],
+            },
+          } }),
+        });
+        return;
+      }
+      await route.abort();
+    });
+  });
+});
+
 test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs clean content", async () => {
   const requests: Array<{ method: string; path: string; query?: string; body?: string }> = [];
   let fileContent = validAgentContent("agent.planner", "Planner Agent");
@@ -592,6 +683,7 @@ test("LibraryWorkspace loads selected object files, saves dirty edits, and syncs
         .map((request) => [request.method, request.path]),
       [
       ["GET", "/api/library/workspace"],
+      ["GET", "/api/library/readiness"],
       ["GET", "/api/library/objects/agent.planner"],
       ["GET", "/api/library/graph"],
       ["GET", "/api/library/files/software/agents/planner.agent.md"],
@@ -707,6 +799,7 @@ test("LibraryWorkspace defaults to all domains so imported catalog agents are vi
 
     assert.deepEqual(requests.filter((request) => request.path !== "/api/sessions"), [
       { path: "/api/library/workspace", query: "scope=all" },
+      { path: "/api/library/readiness", query: "" },
     ]);
     assert.equal(requests.some((request) => request.path === "/api/sessions" && request.query === "scope=all&kind=library&limit=50&compact=1"), true);
   }, async (page) => {

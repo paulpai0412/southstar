@@ -25,9 +25,13 @@ import {
 import {
   listLibraryFiles,
   readLibraryFile,
-  syncLibraryFileToGraph,
   writeLibraryFile,
 } from "../design-library/files/library-file-store.ts";
+import {
+  LibraryReconcileError,
+  loadLibraryReadinessPg,
+  reconcileLibraryFilesPg,
+} from "../design-library/files/library-reconcile-service.ts";
 import { listLibraryChatSessionSummariesPg, type LibraryChatAction } from "../read-models/library-chat.ts";
 import { buildLibraryGraphReadModel } from "../read-models/library-graph.ts";
 import { buildLibraryWorkspaceReadModel } from "../read-models/library-workspace.ts";
@@ -43,6 +47,27 @@ export async function handleLibraryRoute(
   request: Request,
   url: URL,
 ): Promise<Response | undefined> {
+  if (request.method === "GET" && url.pathname === "/api/v2/library/readiness") {
+    const readiness = await loadLibraryReadinessPg(context.db);
+    return json("library-readiness", {
+      readiness: readiness ? {
+        ready: true,
+        status: readiness.status,
+        snapshotHash: readiness.snapshotHash,
+        includedCount: readiness.includedCount,
+        excludedCount: readiness.excludedCount,
+        diagnostics: readiness.diagnostics,
+      } : {
+        ready: false,
+        status: "not_ready",
+        snapshotHash: null,
+        includedCount: 0,
+        excludedCount: 0,
+        diagnostics: [],
+      },
+    });
+  }
+
   if (request.method === "GET" && url.pathname === "/api/v2/library/workspace") {
     return json(
       "library-workspace",
@@ -330,13 +355,29 @@ export async function handleLibraryRoute(
 
   const syncMatch = url.pathname.match(/^\/api\/v2\/library\/files\/(.+)\/sync$/);
   if (request.method === "POST" && syncMatch) {
-    return json(
-      "library-file-sync",
-      await syncLibraryFileToGraph(context.db, {
-        root: libraryRoot(context),
-        relativePath: decodeURIComponent(syncMatch[1]!),
-      }),
-    );
+    const root = libraryRoot(context);
+    const relativePath = decodeURIComponent(syncMatch[1]!);
+    const file = await readLibraryFile({ root, relativePath });
+    if (!file.parsed.ok) {
+      return new Response(JSON.stringify({ ok: false, error: "library_file_invalid", issues: file.parsed.issues }), {
+        status: 422,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    let reconcile;
+    try {
+      reconcile = await reconcileLibraryFilesPg(context.db, { root, trigger: "library_save" });
+    } catch (error: unknown) {
+      if (!(error instanceof LibraryReconcileError)) throw error;
+      return new Response(JSON.stringify({ ok: false, error: error.code, diagnostics: error.diagnostics }), {
+        status: 422,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return json("library-file-sync", {
+      file: { relativePath, parsed: file.parsed },
+      reconcile,
+    });
   }
 
   const fileMatch = url.pathname.match(/^\/api\/v2\/library\/files\/(.+)$/);

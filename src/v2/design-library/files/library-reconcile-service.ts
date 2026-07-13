@@ -8,6 +8,7 @@ import {
 import {
   appendLibraryHistoryEvent,
   deactivateOutgoingLibraryEdges,
+  findLibraryObjectByKeyForUpdate,
   listFileBackedLibraryObjectsForUpdate,
   updateLibraryObjectStatus,
 } from "../library-graph-store.ts";
@@ -238,6 +239,20 @@ export async function reconcileLibraryFilesPg(
   input: { root: string; trigger: LibraryReconcileTrigger },
 ): Promise<LibraryReconcileResult> {
   const catalog = await loadLibraryFileCatalog({ root: input.root });
+  const { result } = await reconcileLibraryCatalogPg(db, { ...input, catalog });
+  return result;
+}
+
+export async function reconcileLibraryCatalogPg(
+  db: SouthstarDb,
+  input: {
+    catalog: LibraryFileCatalog;
+    root: string;
+    trigger: LibraryReconcileTrigger;
+    rejectExistingObjectKeys?: ReadonlySet<string>;
+  },
+): Promise<{ result: LibraryReconcileResult; graphSync: Awaited<ReturnType<typeof syncLibraryFileRecordsToGraphPg>> }> {
+  const catalog = input.catalog;
   const closed = resolveClosedApprovedLibraryFileSet(catalog.records);
   const purposeDiagnostics = validateRequiredLibraryPurposes(closed.included);
   const fatal = [...catalog.diagnostics, ...closed.diagnostics, ...purposeDiagnostics].filter((item) => item.fatal);
@@ -247,6 +262,11 @@ export async function reconcileLibraryFilesPg(
   return db.tx(async (tx) => {
     await tx.query("select pg_advisory_xact_lock(hashtext($1))", ["southstar.library.reconcile.v1"]);
     const existing = await listFileBackedLibraryObjectsForUpdate(tx);
+    for (const objectKey of [...(input.rejectExistingObjectKeys ?? [])].sort()) {
+      if (await findLibraryObjectByKeyForUpdate(tx, objectKey)) {
+        throw new Error(`library import object already exists: ${objectKey}`);
+      }
+    }
     const existingByKey = new Map(existing.map((item) => [item.objectKey, item]));
     const effectiveExecutable = closed.included.filter((file) => {
       const current = existingByKey.get(file.objectKey);
@@ -276,7 +296,7 @@ export async function reconcileLibraryFilesPg(
         reason: excludedKeys.has(file.objectKey) ? "reference closure incomplete" : undefined,
       }));
 
-    const synced = await syncLibraryFileRecordsToGraphPg(tx, { executable: effectiveExecutable, nonExecutable });
+    const graphSync = await syncLibraryFileRecordsToGraphPg(tx, { executable: effectiveExecutable, nonExecutable });
     const presentKeys = new Set(catalog.records.map((item) => item.objectKey));
     const deprecatedObjectKeys: string[] = [];
     for (const object of existing) {
@@ -292,7 +312,7 @@ export async function reconcileLibraryFilesPg(
       deprecatedObjectKeys.push(object.objectKey);
     }
 
-    for (const object of synced.objects) {
+    for (const object of graphSync.objects) {
       const before = existing.find((item) => item.objectKey === object.objectKey);
       if (before?.headVersionId === object.headVersionId && before.status === object.status) continue;
       await appendLibraryHistoryEvent(tx, {
@@ -365,6 +385,6 @@ export async function reconcileLibraryFilesPg(
       summary: result.status,
       metrics: { included: result.included.length, excluded: result.excluded.length },
     });
-    return result;
+    return { result, graphSync };
   });
 }

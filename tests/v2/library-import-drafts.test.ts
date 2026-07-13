@@ -1479,6 +1479,56 @@ test("approveLibraryImportDraft writes proposed files and syncs them to the grap
   }
 });
 
+test("import approval cannot publish an unclosed approved object", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-closed-set-"));
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const draftId = "library-import-draft-unclosed";
+    const importedContent = approvedWorkerSkill({ id: "skill.imported", requiresToolRefs: ["tool.absent"] });
+    await upsertRuntimeResourcePg(db, {
+      resourceType: "library_import_draft",
+      resourceKey: draftId,
+      scope: "library",
+      status: "draft",
+      title: "Import unclosed skill",
+      payload: {
+        schemaVersion: "southstar.library.import_draft.v1",
+        draftId,
+        status: "draft",
+        proposal: {
+          files: [{ relativePath: "skills/imported.skill.md", content: importedContent }],
+          objectKeys: ["skill.imported"],
+          objectSummaries: [{
+            objectKey: "skill.imported",
+            objectKind: "skill_spec",
+            title: "Imported",
+            scope: "software",
+            status: "draft",
+            relativePath: "skills/imported.skill.md",
+          }],
+          dependencies: [],
+        },
+      },
+      summary: {},
+    });
+
+    const result = await approveLibraryImportDraft(db, { root: libraryRoot, draftId, actor: "operator", reason: "test closure" });
+    assert.equal(result.reconcile.status, "ready_with_warnings");
+    assert.equal(result.reconcile.excluded.find((item) => item.objectKey === "skill.imported")?.missingRefs[0], "tool.absent");
+    assert.equal((await findLibraryObjectByKey(db, "skill.imported"))?.status, "blocked");
+    const retry = await approveLibraryImportDraft(db, { root: libraryRoot, draftId, actor: "retry", reason: "idempotent retry" });
+    assert.equal(retry.librarySnapshotHash, result.librarySnapshotHash);
+    assert.equal(retry.reconcile.snapshotHash, result.reconcile.snapshotHash);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
 test("approveLibraryImportDraft no-ops approved drafts without rewriting files or approval metadata", async () => {
   const db = await createTestPostgresDb();
   const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-import-idempotent-"));
@@ -2223,3 +2273,11 @@ test("approving an invalid or missing library import draft fails clearly", async
     await rm(libraryRoot, { recursive: true, force: true });
   }
 });
+
+function approvedPurposeSkill(id: string, purpose: "goal_design" | "composer_guidance"): string {
+  return `---\nschemaVersion: southstar.library.skill_spec_file.v1\nid: ${id}\ntitle: ${purpose}\nscope: software\nstatus: approved\npurpose: ${purpose}\n---\n\n# Instructions\n\n${purpose} guidance.\n`;
+}
+
+function approvedWorkerSkill(input: { id: string; requiresToolRefs: string[] }): string {
+  return `---\nschemaVersion: southstar.library.skill_spec_file.v1\nid: ${input.id}\ntitle: Imported worker\nscope: software\nstatus: approved\nrequiresToolRefs:\n${input.requiresToolRefs.map((ref) => `  - ${ref}`).join("\n")}\n---\n\n# Instructions\n\nImported worker instructions.\n`;
+}

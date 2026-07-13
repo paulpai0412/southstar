@@ -92,9 +92,30 @@ export type LibraryFileEnvelope = {
   parsed: LibraryFileParseResult;
 };
 
+export type LibraryReadinessView = {
+  ready: boolean;
+  status: "ready" | "ready_with_warnings" | "not_ready";
+  snapshotHash: string | null;
+  includedCount: number;
+  excludedCount: number;
+  diagnostics: Array<{ code: string; message: string; paths: string[]; missingRefs: string[] }>;
+};
+
+export type LibraryReconcileResult = {
+  schemaVersion: "southstar.library_sync_snapshot.v1";
+  snapshotHash: string;
+  status: "ready" | "ready_with_warnings";
+  sourceRoot: string;
+  trigger: "startup" | "library_save" | "import_approval";
+  included: Array<{ path: string; objectKey: string; objectKind: string; sourceHash: string; versionRef: string }>;
+  excluded: Array<{ path: string; objectKey?: string; reason: string; missingRefs: string[] }>;
+  deprecatedObjectKeys: string[];
+  warnings: string[];
+};
+
 export type LibraryFileSyncResult = {
-  object?: unknown;
-  edges?: unknown[];
+  file: { relativePath: string; parsed: LibraryFileParseResult };
+  reconcile: LibraryReconcileResult;
 };
 
 export type LibraryImportSourceDocument = {

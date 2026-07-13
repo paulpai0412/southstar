@@ -8,6 +8,8 @@ import type {
   LibraryImportSourceDocument,
   LibraryObjectDeleteResult,
   LibraryObjectDetail,
+  LibraryReadinessView,
+  LibraryReconcileResult,
 } from "./types";
 
 export type LibraryImportSource =
@@ -103,6 +105,29 @@ export async function syncLibraryFile(relativePath: string): Promise<LibraryFile
   return requestLibraryJson<LibraryFileSyncResult>(`${libraryFileUrl(relativePath)}/sync`, {
     method: "POST",
   });
+}
+
+export async function readLibraryReadiness(): Promise<LibraryReadinessView> {
+  const body = await requestLibraryJson<{ readiness: LibraryReadinessView }>("/api/library/readiness", {
+    cache: "no-store",
+  });
+  return body.readiness;
+}
+
+export function readinessFromReconcile(result: LibraryReconcileResult): LibraryReadinessView {
+  return {
+    ready: true,
+    status: result.status,
+    snapshotHash: result.snapshotHash,
+    includedCount: result.included.length,
+    excludedCount: result.excluded.length,
+    diagnostics: result.excluded.map((item) => ({
+      code: "reconcile_excluded",
+      message: item.reason,
+      paths: item.path ? [item.path] : [],
+      missingRefs: item.missingRefs,
+    })),
+  };
 }
 
 export async function createLibraryImportDraft(input: {

@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
 import { getResourceByKeyPg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { loadLibraryReadinessPg } from "../../src/v2/design-library/files/library-reconcile-service.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -65,6 +66,9 @@ allowedToolRefs:
 Builds React interfaces.
 `;
     const contentToWrite = `${content}  \n`;
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
 
     const patchResponse = await handleRuntimeRoute(
       context,
@@ -88,7 +92,7 @@ Builds React interfaces.
     assert.equal(listed.kind, "library-files");
     assert.deepEqual(
       listed.result.files.map((file: { relativePath: string }) => file.relativePath),
-      [relativePath],
+      ["agents/frontend-developer.agent.md", "skills/composer.skill.md", "skills/goal.skill.md"],
     );
 
     const readResponse = await handleRuntimeRoute(context, new Request(`http://local/api/v2/library/files/${relativePath}`));
@@ -107,7 +111,11 @@ Builds React interfaces.
     assert.equal(syncResponse.status, 200);
     const synced = await readEnvelope(syncResponse);
     assert.equal(synced.kind, "library-file-sync");
-    assert.equal(synced.result.object.objectKey, "agent.frontend-developer");
+    assert.equal(synced.result.file.relativePath, relativePath);
+    assert.deepEqual(synced.result.reconcile.included.map((item: { objectKey: string }) => item.objectKey), [
+      "skill.test-composer",
+      "skill.test-goal",
+    ]);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -126,6 +134,40 @@ test("library routes allow browser PATCH preflight", async () => {
 
     assert.equal(response.status, 204);
     assert.match(response.headers.get("access-control-allow-methods") ?? "", /PATCH/);
+  } finally {
+    await db.close();
+    await rm(libraryRoot, { recursive: true, force: true });
+  }
+});
+
+test("Library file sync reconciles the complete root and publishes readiness", async () => {
+  const db = await createTestPostgresDb();
+  const libraryRoot = await mkdtemp(join(tmpdir(), "southstar-library-route-reconcile-"));
+
+  try {
+    await mkdir(join(libraryRoot, "skills"), { recursive: true });
+    await writeFile(join(libraryRoot, "skills/goal.skill.md"), approvedPurposeSkill("skill.test-goal", "goal_design"));
+    await writeFile(join(libraryRoot, "skills/composer.skill.md"), approvedPurposeSkill("skill.test-composer", "composer_guidance"));
+    const response = await handleRuntimeRoute(
+      { db, libraryRoot } as any,
+      new Request("http://local/api/v2/library/files/skills%2Fgoal.skill.md/sync", { method: "POST" }),
+    );
+    assert.equal(response.status, 200);
+    const body = (await response.json() as any).result;
+    assert.equal(body.file.relativePath, "skills/goal.skill.md");
+    assert.deepEqual(body.reconcile.included.map((item: { objectKey: string }) => item.objectKey).sort(), [
+      "skill.test-composer",
+      "skill.test-goal",
+    ]);
+    assert.equal((await loadLibraryReadinessPg(db))?.snapshotHash, body.reconcile.snapshotHash);
+    const readinessResponse = await handleRuntimeRoute(
+      { db, libraryRoot } as any,
+      new Request("http://local/api/v2/library/readiness"),
+    );
+    assert.equal(readinessResponse.status, 200);
+    const readiness = (await readinessResponse.json() as any).result.readiness;
+    assert.equal(readiness.ready, true);
+    assert.equal(readiness.snapshotHash, body.reconcile.snapshotHash);
   } finally {
     await db.close();
     await rm(libraryRoot, { recursive: true, force: true });
@@ -702,6 +744,10 @@ function parseSseFrames(text: string): Array<{ event: string; data: any }> {
       if (!event || !data) throw new Error(`invalid SSE frame: ${frame}`);
       return { event, data: JSON.parse(data) };
     });
+}
+
+function approvedPurposeSkill(id: string, purpose: "goal_design" | "composer_guidance"): string {
+  return `---\nschemaVersion: southstar.library.skill_spec_file.v1\nid: ${id}\ntitle: ${purpose}\nscope: software\nstatus: approved\npurpose: ${purpose}\n---\n\n# Instructions\n\n${purpose} guidance.\n`;
 }
 
 async function seedObject(

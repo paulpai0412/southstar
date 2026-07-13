@@ -6,14 +6,18 @@ import { parseLibraryFileContent } from "../files/library-file-parser.ts";
 import {
   readLibraryFile,
   removeLibraryFileIfContentMatches,
-  syncNewLibraryFileRecordsToGraph,
   syncLibraryFileRecordToGraph,
-  syncLibraryFileToGraph,
   validateLibraryFileGraphReferences,
   writeLibraryFile,
   writeNewLibraryFile,
 } from "../files/library-file-store.ts";
 import type { LibraryFileRecord } from "../files/library-file-types.ts";
+import {
+  loadLibraryFileCatalog,
+  reconcileLibraryCatalogPg,
+  type LibraryReconcileResult,
+} from "../files/library-reconcile-service.ts";
+import type { LibraryGraphSyncResult } from "../files/library-file-store.ts";
 import { upsertRuntimeResourcePg } from "../../stores/postgres-runtime-store.ts";
 import type { LibraryImportProposal } from "./library-import-proposal.ts";
 import {
@@ -59,7 +63,9 @@ export type LibraryImportDraftApprovalResult = {
   status: "approved";
   proposal: LibraryImportProposal;
   files: Array<{ relativePath: string }>;
-  synced: Array<Awaited<ReturnType<typeof syncLibraryFileToGraph>>>;
+  synced: LibraryGraphSyncResult["results"];
+  reconcile: LibraryReconcileResult;
+  librarySnapshotHash: string;
 };
 
 export type LibraryImportCandidateInstallResult = {
@@ -254,8 +260,16 @@ export async function approveLibraryImportDraft(
       files,
       objectKeys: reserved.proposal.objectKeys,
     };
-    const synced = await db.tx(async (tx) => {
-      const syncedFiles = await syncNewLibraryFileRecordsToGraph(tx, preflighted.map((file) => file.file));
+    const catalog = await loadLibraryFileCatalog({ root: input.root });
+    const importedKeys = new Set(preflighted.map((file) => file.file.objectKey));
+    const { reconcile, synced } = await db.tx(async (tx) => {
+      const { result: reconcile, graphSync } = await reconcileLibraryCatalogPg(tx, {
+        catalog,
+        root: input.root,
+        trigger: "import_approval",
+        rejectExistingObjectKeys: importedKeys,
+      });
+      const synced = graphSync.results.filter((item) => importedKeys.has(item.object.objectKey));
       const updated = await tx.query(
         `update southstar.runtime_resources
             set status = 'approved',
@@ -273,7 +287,12 @@ export async function approveLibraryImportDraft(
             ...withoutTransientApplyState(reserved.payload),
             status: "approved",
             approval: reserved.approval,
-            applied,
+            applied: {
+              ...applied,
+              reconcile,
+              librarySnapshotHash: reconcile.snapshotHash,
+              synced,
+            },
           }),
           JSON.stringify({
             ...reserved.summary,
@@ -288,10 +307,21 @@ export async function approveLibraryImportDraft(
       if ((updated.rowCount ?? 0) === 0) {
         throw new Error(`library import draft approval lease was lost: ${input.draftId}`);
       }
-      return syncedFiles;
+      return {
+        reconcile,
+        synced,
+      };
     });
 
-    return { draftId: input.draftId, status: "approved", proposal: reserved.proposal, files, synced };
+    return {
+      draftId: input.draftId,
+      status: "approved",
+      proposal: reserved.proposal,
+      files,
+      synced,
+      reconcile,
+      librarySnapshotHash: reconcile.snapshotHash,
+    };
   } catch (error) {
     await cleanupCreatedImportFiles(input.root, createdFiles);
     await markLibraryImportDraftApplyFailed(db, reserved, error);
@@ -1377,7 +1407,17 @@ function approvedResultFromPayload(
         return { relativePath: requiredString(record.relativePath, "applied.files.relativePath") };
       })
     : proposal.files.map((file) => ({ relativePath: file.relativePath }));
-  return { draftId, status: "approved", proposal, files, synced: [] };
+  const reconcile = asRecord(applied.reconcile) as unknown as LibraryReconcileResult;
+  const librarySnapshotHash = typeof applied.librarySnapshotHash === "string"
+    ? applied.librarySnapshotHash
+    : reconcile.snapshotHash;
+  if (!librarySnapshotHash || typeof reconcile.snapshotHash !== "string") {
+    throw new Error(`approved library import draft is missing reconcile snapshot: ${draftId}`);
+  }
+  const synced = Array.isArray(applied.synced)
+    ? applied.synced as LibraryGraphSyncResult["results"]
+    : [];
+  return { draftId, status: "approved", proposal, files, synced, reconcile, librarySnapshotHash };
 }
 
 type LibraryImportDraftResourceRow = {

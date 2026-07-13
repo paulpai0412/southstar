@@ -1,11 +1,12 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { readLibraryFile, readLibraryGraphNeighborhood, readLibraryObjectDetail, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
-import type { LibraryFileEnvelope, LibraryGraphReadModel, LibraryObjectDetail, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
+import { readLibraryFile, readLibraryGraphNeighborhood, readLibraryObjectDetail, readLibraryReadiness, readinessFromReconcile, saveLibraryFile, syncLibraryFile, unwrapEnvelope } from "@/lib/library/api";
+import type { LibraryFileEnvelope, LibraryGraphReadModel, LibraryObjectDetail, LibraryReadinessView, LibraryWorkspaceModel, LibraryWorkspaceObject } from "@/lib/library/types";
 import type { SessionInfo, WorkspaceSurface } from "@/lib/types";
 import { ChatWindow } from "../ChatWindow";
 import { LibraryFileViewer } from "./LibraryFileViewer";
+import { LibraryReadinessBanner } from "./LibraryReadinessBanner";
 import type { LibraryGraphChartNode } from "./LibraryGraphChart";
 import { LibrarySidebar } from "./LibrarySidebar";
 
@@ -17,6 +18,7 @@ type LibraryWorkspaceContextValue = {
   fileRecord: LibraryFileEnvelope | null;
   objectDetail: LibraryObjectDetail | null;
   edgeGraph: LibraryGraphReadModel | null;
+  readiness: LibraryReadinessView;
   dirtyFileContent: string;
   statusFilter: string;
   saving: boolean;
@@ -52,6 +54,15 @@ type SelectableLibraryObject = Pick<LibraryWorkspaceObject, "objectKey" | "title
 
 const LibraryWorkspaceContext = createContext<LibraryWorkspaceContextValue | null>(null);
 
+const NOT_READY_LIBRARY_READINESS: LibraryReadinessView = {
+  ready: false,
+  status: "not_ready",
+  snapshotHash: null,
+  includedCount: 0,
+  excludedCount: 0,
+  diagnostics: [],
+};
+
 export function LibraryWorkspaceProvider({
   children,
   active = true,
@@ -80,6 +91,7 @@ export function LibraryWorkspaceProvider({
   const [fileRecord, setFileRecord] = useState<LibraryFileEnvelope | null>(null);
   const [objectDetail, setObjectDetail] = useState<LibraryObjectDetail | null>(null);
   const [edgeGraph, setEdgeGraph] = useState<LibraryGraphReadModel | null>(null);
+  const [readiness, setReadiness] = useState<LibraryReadinessView>(NOT_READY_LIBRARY_READINESS);
   const [dirtyFileContent, setDirtyFileContent] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [saving, setSaving] = useState(false);
@@ -105,6 +117,11 @@ export function LibraryWorkspaceProvider({
       .catch(() => {
         if (!cancelled) setModel({ selectedScope, domains: [] });
       });
+    readLibraryReadiness()
+      .then((currentReadiness) => {
+        if (!cancelled) setReadiness(currentReadiness);
+      })
+      .catch(() => undefined);
     return () => {
       cancelled = true;
     };
@@ -334,8 +351,10 @@ export function LibraryWorkspaceProvider({
         setSaving(false);
         setSyncing(true);
         return syncLibraryFile(savePath)
-          .then(() => {
-            if (syncRequestRef.current !== syncRequestId || selectedFilePathRef.current !== savePath || !objectKey) return;
+          .then((result) => {
+            if (syncRequestRef.current !== syncRequestId || selectedFilePathRef.current !== savePath) return;
+            setReadiness(readinessFromReconcile(result.reconcile));
+            if (!objectKey) return;
             void readLibraryObjectDetail(objectKey)
               .then((detail) => {
                 if (syncRequestRef.current === syncRequestId && selectedFilePathRef.current === savePath) setObjectDetail(detail);
@@ -370,6 +389,7 @@ export function LibraryWorkspaceProvider({
     fileRecord,
     objectDetail,
     edgeGraph,
+    readiness,
     dirtyFileContent,
     statusFilter,
     saving,
@@ -421,6 +441,7 @@ export function LibraryWorkspaceProvider({
     onWorkspaceSurfaceChange,
     refreshWorkspace,
     edgeGraph,
+    readiness,
     saving,
     selectedFilePath,
     selectedObjectKey,
@@ -440,6 +461,7 @@ export function LibrarySidebarPanel() {
   const context = useLibraryWorkspaceContext();
   return (
     <div data-testid="library-sidebar" style={{ height: "100%", minHeight: 0, overflow: "auto" }}>
+      <LibraryReadinessBanner readiness={context.readiness} />
       <LibrarySidebar
         model={context.model}
         sessions={context.librarySessions}
