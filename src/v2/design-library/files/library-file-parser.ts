@@ -184,12 +184,19 @@ function parseSimpleYamlObject(content: string): { data: Record<string, unknown>
   let currentArrayKey: string | null = null;
   let currentArrayObject: Record<string, unknown> | null = null;
   let currentObjectKey: string | null = null;
+  let currentNestedArrayKey: string | null = null;
 
   for (let index = 0; index < lines.length; index++) {
     const rawLine = lines[index]!;
     const line = rawLine.trimEnd();
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
+
+    if (line.startsWith("      - ") && currentArrayObject && currentNestedArrayKey) {
+      const nested = currentArrayObject[currentNestedArrayKey];
+      if (Array.isArray(nested)) nested.push(scalar(line.slice(8).trim()));
+      continue;
+    }
 
     if (line.startsWith("  - ") && currentArrayKey) {
       const item = line.slice(4).trim();
@@ -210,6 +217,12 @@ function parseSimpleYamlObject(content: string): { data: Record<string, unknown>
     if (line.startsWith("    ") && currentArrayKey && currentArrayObject) {
       const entry = parseKeyValue(trimmed);
       if (!entry) continue;
+      if (entry.value === "" && nextContentLine(lines, index)?.startsWith("      - ")) {
+        currentNestedArrayKey = entry.key;
+        currentArrayObject[entry.key] = [];
+        continue;
+      }
+      currentNestedArrayKey = null;
       currentArrayObject[entry.key] = scalar(entry.value);
       continue;
     }
@@ -227,6 +240,7 @@ function parseSimpleYamlObject(content: string): { data: Record<string, unknown>
     currentArrayKey = null;
     currentArrayObject = null;
     currentObjectKey = null;
+    currentNestedArrayKey = null;
 
     if (entry.value === "") {
       const nextLine = nextContentLine(lines, index)?.trimStart();

@@ -6,6 +6,22 @@ status: approved
 validatesArtifactRefs:
   - "artifact.flashcard-deck-contract"
   - "artifact.flashcard-session-record"
+resultSchemaRef: "schema.flashcard-contract-evaluation.v1"
+verificationModes:
+  - "deterministic"
+independencePolicy: "independent"
+verificationProcedures:
+  - id: "procedure.flashcard-contract-fields"
+    checkKind: "deterministic"
+    verificationMode: "deterministic"
+    instruction: "Check deck contract identity, language metadata, and review-session references against the approved artifact schema."
+    allowedEvidenceKinds:
+      - "workspace-snapshot"
+      - "file-diff"
+      - "artifact-ref"
+failureClassifications:
+  - "contract_violation"
+  - "orphaned_session_reference"
 evidenceKinds:
   - "workspace-snapshot"
   - "file-diff"

@@ -5,6 +5,22 @@ scope: "general"
 status: approved
 validatesArtifactRefs:
   - "artifact.flashcard-deck-contract"
+resultSchemaRef: "schema.flashcard-deck-contract-validation.v1"
+verificationModes:
+  - "deterministic"
+independencePolicy: "independent"
+verificationProcedures:
+  - id: "procedure.flashcard-deck-contract"
+    checkKind: "deterministic"
+    verificationMode: "deterministic"
+    instruction: "Validate the flashcard deck contract fields and card identity rules from the produced artifact."
+    allowedEvidenceKinds:
+      - "artifact-ref"
+      - "test-result"
+      - "file-diff"
+failureClassifications:
+  - "contract_violation"
+  - "card_identity_violation"
 evidenceKinds:
   - "artifact-ref"
   - "test-result"

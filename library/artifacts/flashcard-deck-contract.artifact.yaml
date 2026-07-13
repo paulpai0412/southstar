@@ -4,6 +4,16 @@ title: "Flashcard Deck Contract"
 scope: "general"
 status: approved
 artifactType: "flashcard-deck"
+schemaRef: "schema.flashcard-deck-contract.v1"
+requiredFields:
+  - "deckId"
+  - "cards"
+  - "sourceLanguage"
+  - "targetLanguage"
+validationRules:
+  - "rule.deck-id-stable"
+  - "rule.deck-cards-non-empty"
+  - "rule.card-front-back-required"
 evidenceKinds:
   - "workspace-snapshot"
   - "file-diff"

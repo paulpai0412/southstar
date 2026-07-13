@@ -4,6 +4,15 @@ title: "Flashcard Session Record"
 scope: "general"
 status: approved
 artifactType: "flashcard-session-record"
+schemaRef: "schema.flashcard-session-record.v1"
+requiredFields:
+  - "sessionId"
+  - "startedAt"
+  - "reviewedCardIds"
+  - "results"
+validationRules:
+  - "rule.session-id-stable"
+  - "rule.review-results-reference-deck-cards"
 evidenceKinds:
   - "artifact-ref"
   - "workspace-snapshot"

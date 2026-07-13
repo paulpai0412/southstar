@@ -207,9 +207,46 @@ file pair and proves a ready binding after the schema/edge migration.
 Task quality assessment: **invariant implementation is strong and fail-closed;
 production compatibility remains blocked by the Library authoring contract**.
 
+## Final follow-up: c6a0daa..fe2a993
+
+Candidate gap fallback is now actionable even when the preview has no
+artifact/evaluator candidates: gaps use the approved closed-set refs, and the
+unpinned-edge test asserts the evaluator ref is exposed. Focused resolver tests
+remain green (6/6).
+
+The production compatibility blocker above remains unchanged: current
+file-authored graph edges are unversioned and current approved evaluator/
+artifact files lack the strict state fields required for a ready binding.
+
+## Compatibility implementation: file-backed Library ready path
+
+Status: complete.
+
+- File graph projection now resolves each referenced target from Postgres at
+  edge write time and persists `fromVersionRef` and `toVersionRef` for every
+  active edge. Missing target versions fail closed; no placeholder is added.
+- The YAML parser now supports nested evidence arrays inside evaluator
+  verification procedure objects.
+- Existing approved flashcard artifact/evaluator authoring files now carry
+  schema refs, required fields, validation rules, evidence kinds, independent
+  evaluator policy, result schemas, mode-matching procedures, and failure
+  classifications.
+- A real Postgres integration test syncs those files, asserts version-pinned
+  graph edges, and resolves a `ready=true` binding. Resolver/candidate and
+  existing library parser/store suites remain green.
+- A separate file-backed regression keeps an older approved artifact/evaluator
+  pair blocked when the strict validation contract fields are absent.
+
 Follow-up verification:
 
 - `npx tsc --noEmit --pretty false` — pass.
 - `npx tsx --test tests/v2/goal-validation-resolver.test.ts` — 6/6 pass.
 - `npx tsx --test tests/v2/goal-validation-resolver.test.ts tests/v2/library-candidate-resolver.test.ts` — 11/11 pass.
 - `git diff --check` — pass.
+
+Final compatibility verification rerun:
+
+- `npx tsx --test tests/v2/goal-validation-resolver.test.ts` — 8/8 pass,
+  including the ready file-backed pair and blocked legacy pair.
+- `npx tsx --test tests/v2/goal-validation-resolver.test.ts tests/v2/library-file-parser.test.ts tests/v2/library-file-store.test.ts tests/v2/library-candidate-resolver.test.ts` — 41/41 pass.
+- `npx tsc --noEmit --pretty false` and `git diff --check` — pass.

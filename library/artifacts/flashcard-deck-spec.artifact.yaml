@@ -4,6 +4,15 @@ title: "Flashcard Deck Specification"
 scope: "general"
 status: approved
 artifactType: "flashcard-deck"
+schemaRef: "schema.flashcard-deck-spec.v1"
+requiredFields:
+  - "cards"
+  - "front"
+  - "back"
+validationRules:
+  - "rule.deck-cards-non-empty"
+  - "rule.card-front-back-required"
+  - "rule.deck-json-serializable"
 evidenceKinds:
   - "workspace-snapshot"
   - "file-diff"

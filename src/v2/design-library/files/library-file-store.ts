@@ -167,7 +167,7 @@ export async function syncLibraryFileRecordToGraph(
   });
   const edges = [];
   for (const edge of projection.edges) {
-    edges.push(await upsertLibraryEdge(db, { ...edge, status: "active", weight: 1 }));
+    edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, object.headVersionId)));
   }
   return { object, edges };
 }
@@ -195,7 +195,7 @@ export async function syncNewLibraryFileRecordsToGraph(db: SouthstarDb, files: L
     });
     const edges = [];
     for (const edge of projection.edges) {
-      edges.push(await upsertLibraryEdge(db, { ...edge, status: "active", weight: 1 }));
+      edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, projection.object.headVersionId)));
     }
     const object = objects.find((candidate) => candidate.objectKey === projection.object.objectKey);
     if (!object) throw new Error(`library object sync result missing: ${projection.object.objectKey}`);
@@ -273,7 +273,9 @@ export async function syncLibraryFileRecordsToGraphPg(
       keepEdges: activeEdges,
     });
     for (const edge of activeEdges) {
-      edges.push(await upsertLibraryEdge(db, { ...edge, status: "active", weight: 1 }));
+      const source = objects.find((object) => object.objectKey === projection.object.objectKey);
+      if (!source) throw new Error(`library object sync result missing: ${projection.object.objectKey}`);
+      edges.push(await upsertLibraryEdge(db, await versionedEdge(db, edge, source.headVersionId)));
     }
   }
 
@@ -284,6 +286,24 @@ export async function syncLibraryFileRecordsToGraphPg(
       object: objects.find((object) => object.objectKey === projection.object.objectKey)!,
       edges: edges.filter((edge) => edge.fromObjectKey === projection.object.objectKey),
     })),
+  };
+}
+
+async function versionedEdge(
+  db: SouthstarDb,
+  edge: LibraryFileGraphProjection["edges"][number],
+  fromVersionRef: string,
+): Promise<Parameters<typeof upsertLibraryEdge>[1]> {
+  const target = await findLibraryObjectByKey(db, edge.toObjectKey);
+  if (!target || !target.headVersionId) {
+    throw new Error(`unresolved Library reference version ${edge.toObjectKey} from ${edge.fromObjectKey}`);
+  }
+  return {
+    ...edge,
+    fromVersionRef,
+    toVersionRef: target.headVersionId,
+    status: "active",
+    weight: 1,
   };
 }
 

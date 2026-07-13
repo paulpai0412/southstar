@@ -6,6 +6,22 @@ status: approved
 validatesArtifactRefs:
   - "artifact.vocabulary-corpus-contract"
   - "artifact.flashcard-deck-contract"
+resultSchemaRef: "schema.flashcard-artifact-evaluation.v1"
+verificationModes:
+  - "deterministic"
+independencePolicy: "independent"
+verificationProcedures:
+  - id: "procedure.flashcard-artifact-schema"
+    checkKind: "deterministic"
+    verificationMode: "deterministic"
+    instruction: "Validate corpus and deck required fields, card identity, and serialization rules without mutating the workspace."
+    allowedEvidenceKinds:
+      - "test-result"
+      - "command-output"
+      - "artifact-ref"
+failureClassifications:
+  - "schema_violation"
+  - "missing_required_field"
 evidenceKinds:
   - "test-result"
   - "command-output"

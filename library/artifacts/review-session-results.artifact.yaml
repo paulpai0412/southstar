@@ -4,6 +4,14 @@ title: "Review Session Results"
 scope: "general"
 status: approved
 artifactType: "review-session-report"
+schemaRef: "schema.review-session-results.v1"
+requiredFields:
+  - "sessionId"
+  - "reviewedCardIds"
+  - "results"
+validationRules:
+  - "rule.review-results-reference-deck-cards"
+  - "rule.review-session-has-outcome"
 evidenceKinds:
   - "command-output"
   - "test-result"

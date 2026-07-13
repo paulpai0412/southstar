@@ -4,6 +4,14 @@ title: "Flashcard Verification Report"
 scope: "general"
 status: approved
 artifactType: "verification-report"
+schemaRef: "schema.flashcard-verification-report.v1"
+requiredFields:
+  - "checks"
+  - "pass"
+  - "verifiedArtifactRefs"
+validationRules:
+  - "rule.report-has-check-results"
+  - "rule.report-verifies-input-artifacts"
 evidenceKinds:
   - "test-result"
   - "command-output"

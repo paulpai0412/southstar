@@ -4,6 +4,14 @@ title: "Vocabulary Corpus Contract"
 scope: "general"
 status: approved
 artifactType: "vocabulary-corpus"
+schemaRef: "schema.vocabulary-corpus.v1"
+requiredFields:
+  - "entries"
+  - "language"
+  - "source"
+validationRules:
+  - "rule.corpus-entries-non-empty"
+  - "rule.entry-term-and-translation-required"
 evidenceKinds:
   - "artifact-ref"
   - "workspace-snapshot"

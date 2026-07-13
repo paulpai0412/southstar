@@ -6,6 +6,22 @@ status: approved
 validatesArtifactRefs:
   - "artifact.flashcard-deck-spec"
   - "artifact.review-session-results"
+resultSchemaRef: "schema.local-flashcard-verification.v1"
+verificationModes:
+  - "browser_interaction"
+independencePolicy: "independent"
+verificationProcedures:
+  - id: "procedure.local-flashcard-flow"
+    checkKind: "browser_interaction"
+    verificationMode: "browser_interaction"
+    instruction: "Open the local vocabulary app, review cards, and verify the persisted session result and deck rendering."
+    allowedEvidenceKinds:
+      - "test-result"
+      - "command-output"
+      - "workspace-snapshot"
+failureClassifications:
+  - "interaction_failure"
+  - "session_persistence_failure"
 evidenceKinds:
   - "test-result"
   - "command-output"

@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { resolve } from "node:path";
 import { upsertLibraryEdge, upsertLibraryObject } from "../../src/v2/design-library/library-graph-store.ts";
+import { findLibraryObjectByKey } from "../../src/v2/design-library/library-graph-store.ts";
+import { syncLibraryFileToGraph } from "../../src/v2/design-library/files/library-file-store.ts";
 import { confirmGoalRequirementDraft, finalizeGoalRequirementDraft } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import {
   assertGoalValidationResolutionReady,
@@ -187,6 +190,75 @@ test("resolver treats scope all as unscoped but requires pinned validation edges
   });
 });
 
+test("real approved flashcard files sync versioned edges and produce a ready binding", async () => {
+  await withDb(async (db) => {
+    const libraryRoot = resolve(process.cwd(), "library");
+    await syncLibraryFileToGraph(db, {
+      root: libraryRoot,
+      relativePath: "artifacts/flashcard-deck-contract.artifact.yaml",
+    });
+    await syncLibraryFileToGraph(db, {
+      root: libraryRoot,
+      relativePath: "evaluators/flashcard-deck-contract-validator.evaluator.yaml",
+    });
+    const artifact = await findLibraryObjectByKey(db, "artifact.flashcard-deck-contract");
+    const evaluator = await findLibraryObjectByKey(db, "evaluator.flashcard-deck-contract-validator");
+    assert.ok(artifact?.headVersionId);
+    assert.ok(evaluator?.headVersionId);
+    const edge = await db.one<{ from_version_ref: string; to_version_ref: string }>(
+      `select from_version_ref, to_version_ref
+         from southstar.library_edges
+        where from_object_key = $1 and edge_type = 'validates_artifact' and to_object_key = $2`,
+      [evaluator!.objectKey, artifact!.objectKey],
+    );
+    assert.equal(edge.from_version_ref, evaluator!.headVersionId);
+    assert.equal(edge.to_version_ref, artifact!.headVersionId);
+    const result = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract("artifact-ref"),
+      requirementDraft: confirmedRequirementDraft("artifact-ref"),
+      scope: "general",
+      ranker: fixedRanker({
+        artifactRef: "artifact.flashcard-deck-contract",
+        evaluatorRef: "evaluator.flashcard-deck-contract-validator",
+        verificationMode: "deterministic",
+        procedureRef: "procedure.flashcard-deck-contract",
+      }),
+    });
+    assert.equal(result.ready, true);
+    assert.equal(result.gaps.length, 0);
+    assert.equal(result.bindings[0]!.artifactContractVersionRefs[0], artifact!.headVersionId);
+    assert.equal(result.bindings[0]!.evaluatorProfileVersionRef, evaluator!.headVersionId);
+  });
+});
+
+test("legacy approved files remain blocked when their evaluator contract is incomplete", async () => {
+  await withDb(async (db) => {
+    const libraryRoot = resolve(process.cwd(), "library");
+    await syncLibraryFileToGraph(db, {
+      root: libraryRoot,
+      relativePath: "artifacts/review-session-report.artifact.yaml",
+    });
+    await syncLibraryFileToGraph(db, {
+      root: libraryRoot,
+      relativePath: "evaluators/review-report-evaluator.evaluator.yaml",
+    });
+    const result = await resolveGoalValidationPg(db, {
+      goalContract: confirmedContract("artifact-ref"),
+      requirementDraft: confirmedRequirementDraft("artifact-ref"),
+      scope: "general",
+      ranker: fixedRanker({
+        artifactRef: "artifact.review-session-report",
+        evaluatorRef: "evaluator.review-report-evaluator",
+        verificationMode: "deterministic",
+        procedureRef: "procedure.review-report",
+      }),
+    });
+    assert.equal(result.ready, false);
+    assert.equal(result.bindings.length, 0);
+    assert.equal(result.gaps.some((gap) => gap.kind === "artifact"), true);
+  });
+});
+
 async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
   const db = await createTestPostgresDb();
   try {
@@ -196,7 +268,7 @@ async function withDb(run: (db: SouthstarDb) => Promise<void>): Promise<void> {
   }
 }
 
-function confirmedRequirementDraft(): GoalRequirementDraftV1 {
+function confirmedRequirementDraft(evidenceIntent = "screenshot"): GoalRequirementDraftV1 {
   return finalizeGoalRequirementDraft({
     goalPrompt: "Build an offline article viewer",
     cwd: "/workspace/article",
@@ -210,7 +282,7 @@ function confirmedRequirementDraft(): GoalRequirementDraftV1 {
       businessRules: ["no network dependency"],
       acceptanceCriteria: [{
         statement: "The rendered article opens offline and is readable",
-        evidenceIntent: ["screenshot"],
+        evidenceIntent: [evidenceIntent],
       }],
       expectedOutcomeArtifacts: [{ description: "self-contained HTML article", mediaType: "text/html" }],
       verificationIntent: ["browser interaction"],
@@ -224,8 +296,8 @@ function confirmedRequirementDraft(): GoalRequirementDraftV1 {
   });
 }
 
-function confirmedContract(): GoalContractV1 {
-  const draft = confirmedRequirementDraft();
+function confirmedContract(evidenceIntent = "screenshot"): GoalContractV1 {
+  const draft = confirmedRequirementDraft(evidenceIntent);
   return confirmGoalRequirementDraft(draft, {
     domain: "article",
     intent: "build_offline_article",

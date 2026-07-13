@@ -57,8 +57,10 @@ export type LibraryFileGraphProjection = {
   };
   edges: Array<{
     fromObjectKey: string;
+    fromVersionRef?: string;
     edgeType: LibraryEdgeType;
     toObjectKey: string;
+    toVersionRef?: string;
     scope: string;
     metadata: Record<string, unknown>;
   }>;

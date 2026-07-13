@@ -7,6 +7,22 @@ validatesArtifactRefs:
   - "artifact.flashcard-deck-contract"
   - "artifact.flashcard-session-record"
   - "artifact.flashcard-verification-report"
+resultSchemaRef: "schema.flashcard-system-verification.v1"
+verificationModes:
+  - "browser_interaction"
+independencePolicy: "independent"
+verificationProcedures:
+  - id: "procedure.flashcard-system-interaction"
+    checkKind: "browser_interaction"
+    verificationMode: "browser_interaction"
+    instruction: "Exercise the local flashcard flow, record review outcomes, and verify the resulting report without external network access."
+    allowedEvidenceKinds:
+      - "test-result"
+      - "command-output"
+      - "workspace-snapshot"
+failureClassifications:
+  - "interaction_failure"
+  - "review_state_not_persisted"
 evidenceKinds:
   - "test-result"
   - "command-output"
