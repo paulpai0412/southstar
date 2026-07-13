@@ -73,6 +73,11 @@ export type ResolveGoalValidationInput = {
 };
 
 export type { GoalValidationResolutionV1 } from "../design-library/types.ts";
+export type {
+  GoalValidationGapV1,
+  RequirementCoveragePreviewV1,
+  RequirementValidationBindingV1,
+} from "../design-library/types.ts";
 
 type RequirementAttempt = {
   binding?: RequirementValidationBindingV1;
