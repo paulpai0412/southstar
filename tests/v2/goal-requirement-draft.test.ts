@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createLlmGoalRequirementDraftInterpreter,
   confirmGoalRequirementDraft,
   finalizeGoalRequirementDraft,
   goalRequirementDraftHash,
@@ -9,6 +10,8 @@ import {
   type GoalRequirementDraftInputV1,
   type GoalRequirementDraftV1,
 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
+import type { ResolvedGoalDesignSkillV1 } from "../../src/v2/orchestration/goal-design.ts";
+import type { WorkspaceGoalDiscoveryV1 } from "../../src/v2/orchestration/goal-workspace-discovery.ts";
 
 function validInput(overrides: Partial<GoalRequirementDraftInputV1> = {}): GoalRequirementDraftInputV1 {
   return {
@@ -42,6 +45,179 @@ function validInput(overrides: Partial<GoalRequirementDraftInputV1> = {}): GoalR
 function validDraft(overrides: Partial<GoalRequirementDraftInputV1> = {}): GoalRequirementDraftV1 {
   return finalizeGoalRequirementDraft({ ...validInput(), ...overrides });
 }
+
+function discovery(cwd: string): WorkspaceGoalDiscoveryV1 {
+  return {
+    schemaVersion: "southstar.workspace_goal_discovery.v1",
+    cwd,
+    entries: [{ path: "article.html", kind: "file", size: 100, contentHash: "a".repeat(64) }],
+    instructionDocuments: [],
+    projectMetadata: [],
+    truncated: false,
+    discoveryHash: "b".repeat(64),
+  };
+}
+
+function skill(): ResolvedGoalDesignSkillV1 {
+  return {
+    objectKey: "skill.goal-design",
+    versionRef: "skill.goal-design@1",
+    stateHash: "c".repeat(64),
+    body: "Clarify the requested outcome into independently verifiable requirements.",
+  };
+}
+
+test("LLM Requirement interpreter returns rich requirements without Library refs or Slices", async () => {
+  const prompts: string[] = [];
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-requirement-test",
+    client: {
+      async generateText({ prompt }) {
+        prompts.push(prompt);
+        return JSON.stringify({
+          summary: "Create an offline article",
+          requirements: [{
+            title: "Offline delivery",
+            statement: "The article opens without a network",
+            source: "explicit",
+            blocking: true,
+            userVisibleBehaviors: ["Open locally"],
+            businessRules: ["No network"],
+            acceptanceCriteria: [{
+              statement: "article.html opens with network disabled",
+              evidenceIntent: ["browser interaction"],
+            }],
+            expectedOutcomeArtifacts: [{ description: "Offline HTML", mediaType: "text/html" }],
+            verificationIntent: ["Open in a browser"],
+            assumptions: [],
+            openQuestions: [],
+            riskTags: [],
+            interactionContractRefs: [],
+          }],
+          nonGoals: [],
+          blockingInputs: [],
+        });
+      },
+    },
+  });
+  const draft = await interpreter.interpret({
+    goalPrompt: "Create an offline article",
+    cwd: "/workspace/article",
+    workspaceDiscovery: discovery("/workspace/article"),
+    goalDesignSkill: skill(),
+  });
+  assert.equal(draft.revision, 1);
+  assert.match(prompts[0] ?? "", /GoalRequirementDraftOutputSchema/);
+  assert.match(prompts[0] ?? "", /Do not return host-owned fields/);
+  assert.doesNotMatch(prompts[0] ?? "", /evaluatorContracts|slicePlan|agentDefinitionRef/);
+  assert.match(draft.requirements[0]!.id, /^req-/);
+  assert.equal(draft.requirements[0]!.status, "ready");
+});
+
+test("LLM revision cannot supply host ids, hashes or status", async () => {
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-invalid-revision",
+    client: { async generateText() {
+      return JSON.stringify({ kind: "revision", requirementId: "req-invented", draftHash: "bad" });
+    } },
+  });
+  await assert.rejects(
+    () => interpreter.revise({ currentDraft: validDraft(), message: "change it" }),
+    /invalid Goal Requirement revision/,
+  );
+});
+
+test("LLM Requirement interpreter performs at most one schema repair", async () => {
+  let calls = 0;
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-repair-test",
+    client: {
+      async generateText() {
+        calls += 1;
+        if (calls === 1) return JSON.stringify({ ...validInput(), id: "host-field" });
+        return JSON.stringify({
+          summary: "Create an offline article",
+          requirements: [validInput().requirements[0]!],
+          nonGoals: [],
+          blockingInputs: [],
+        });
+      },
+    },
+  });
+  const draft = await interpreter.interpret({
+    goalPrompt: "Create an offline article",
+    cwd: "/workspace/article",
+    workspaceDiscovery: discovery("/workspace/article"),
+    goalDesignSkill: skill(),
+  });
+  assert.equal(calls, 2);
+  assert.equal(draft.requirements.length, 1);
+});
+
+test("LLM revision finalizes semantic content while preserving host lineage", async () => {
+  const current = validDraft();
+  const existingId = current.requirements[0]!.id;
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-valid-revision",
+    client: {
+      async generateText() {
+        return JSON.stringify({
+          kind: "revision",
+          summary: "Clarified the article behavior.",
+          draft: {
+            summary: "Clarified offline article",
+            requirements: [{
+              ...validInput().requirements[0]!,
+              statement: "The revised article opens without a network",
+            }],
+            nonGoals: [],
+            blockingInputs: [],
+          },
+        });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: current,
+    message: "clarify the article behavior",
+    selectedRequirementId: existingId,
+  });
+  assert.equal(result.kind, "revision");
+  if (result.kind !== "revision") assert.fail("expected revision");
+  assert.equal(result.draft.revision, current.revision + 1);
+  assert.equal(result.draft.parentRevision, current.revision);
+  assert.equal(result.draft.requirements[0]!.id, existingId);
+  assert.equal(result.draft.requirements[0]!.statement, "The revised article opens without a network");
+});
+
+test("LLM revision operation targets only host-selected requirement", async () => {
+  const current = validDraft();
+  const existingId = current.requirements[0]!.id;
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-operation-revision",
+    client: {
+      async generateText() {
+        return JSON.stringify({
+          kind: "revision",
+          summary: "Updated the observable statement.",
+          operation: {
+            kind: "update",
+            patch: { statement: "The article opens offline in a browser" },
+          },
+        });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: current,
+    message: "make the statement browser-observable",
+    selectedRequirementId: existingId,
+  });
+  assert.equal(result.kind, "revision");
+  if (result.kind !== "revision") assert.fail("expected revision");
+  assert.equal(result.draft.requirements[0]!.id, existingId);
+  assert.equal(result.draft.requirements[0]!.statement, "The article opens offline in a browser");
+});
 
 test("Requirement Draft preserves host ids and projects confirmed criteria to GoalContractV1", () => {
   const draft = finalizeGoalRequirementDraft(validInput());

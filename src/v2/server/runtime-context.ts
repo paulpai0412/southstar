@@ -8,6 +8,7 @@ import type { LibraryImportSourceFetcher } from "../design-library/importers/lib
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import type { GoalDesigner } from "../orchestration/goal-design.ts";
 import type { GoalContractInterpreter } from "../orchestration/goal-contract.ts";
+import type { GoalRequirementDraftInterpreter } from "../orchestration/goal-requirement-draft.ts";
 import type { PiPlannerClient } from "../planner/types.ts";
 import type { SessionStore } from "../session/types.ts";
 import type { RuntimeLoopController } from "./runtime-loops.ts";
@@ -17,6 +18,7 @@ export type RuntimeServerContext = {
   db: SouthstarDb;
   plannerClient: PiPlannerClient;
   goalInterpreter?: GoalContractInterpreter;
+  goalRequirementInterpreter?: GoalRequirementDraftInterpreter;
   goalDesigner?: GoalDesigner;
   workflowComposer?: WorkflowComposer;
   executorProvider: ExecutorProvider;

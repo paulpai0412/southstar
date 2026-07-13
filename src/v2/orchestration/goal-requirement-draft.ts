@@ -4,6 +4,9 @@ import {
   type GoalContractV1,
 } from "./goal-contract.ts";
 import type { RequirementSpecV2 } from "../design-library/types.ts";
+import type { ResolvedGoalDesignSkillV1 } from "./goal-design.ts";
+import type { LlmTextClient } from "./llm-composer.ts";
+import type { WorkspaceGoalDiscoveryV1 } from "./goal-workspace-discovery.ts";
 
 export type GoalAcceptanceCriterionDraftV1 = {
   id: string;
@@ -126,6 +129,32 @@ export type GoalRequirementDraftRevisionOperation =
 
 export type GoalRequirementDraftRevisionPatchV1 = Partial<Omit<GoalRequirementDraftItemInputV1, "id" | "status">>;
 
+export type GoalRequirementDraftInterpreter = {
+  interpret(input: {
+    goalPrompt: string;
+    cwd: string;
+    projectRef?: string;
+    workspaceDiscovery: WorkspaceGoalDiscoveryV1;
+    goalDesignSkill: ResolvedGoalDesignSkillV1;
+    onDelta?: (text: string) => void;
+  }): Promise<GoalRequirementDraftV1>;
+  revise(input: {
+    currentDraft: GoalRequirementDraftV1;
+    message: string;
+    selectedRequirementId?: string;
+    onDelta?: (text: string) => void;
+  }): Promise<
+    | { kind: "revision"; draft: GoalRequirementDraftV1; summary: string }
+    | { kind: "needs_input"; question: string }
+  >;
+};
+
+export type LlmGoalRequirementDraftOptions = {
+  model: string;
+  client: LlmTextClient;
+  maxOutputChars?: number;
+};
+
 type DraftWithoutHash = Omit<GoalRequirementDraftV1, "draftHash">;
 
 export function goalRequirementDraftHash(draft: DraftWithoutHash): string {
@@ -150,6 +179,113 @@ export function finalizeGoalRequirementDraft(input: GoalRequirementDraftInputV1)
     blockingInputs: [...input.blockingInputs],
   };
   return { ...draft, draftHash: goalRequirementDraftHash(draft) };
+}
+
+/**
+ * Create the production Goal Requirement interpreter. The model only supplies
+ * semantic requirement content; all lineage, status, hashes and revisions are
+ * materialized by the host finalizers below.
+ */
+export function createLlmGoalRequirementDraftInterpreter(
+  options: LlmGoalRequirementDraftOptions,
+): GoalRequirementDraftInterpreter {
+  return {
+    async interpret(input) {
+      return interpretGoalRequirementDraftWithLlm({ ...input, ...options });
+    },
+    async revise(input) {
+      return reviseGoalRequirementDraftWithLlm({ ...input, ...options });
+    },
+  };
+}
+
+export async function interpretGoalRequirementDraftWithLlm(input: {
+  goalPrompt: string;
+  cwd: string;
+  projectRef?: string;
+  workspaceDiscovery: WorkspaceGoalDiscoveryV1;
+  goalDesignSkill: ResolvedGoalDesignSkillV1;
+  onDelta?: (text: string) => void;
+} & LlmGoalRequirementDraftOptions): Promise<GoalRequirementDraftV1> {
+  const basePrompt = renderRequirementInterpretationPrompt(input);
+  let prompt = basePrompt;
+  const maxOutputChars = input.maxOutputChars ?? MAX_REQUIREMENT_RESPONSE_CHARS;
+  for (let attempt = 1; attempt <= MAX_REQUIREMENT_ATTEMPTS; attempt += 1) {
+    const deltas: string[] = [];
+    const response = input.client.generateTextStream
+      ? await input.client.generateTextStream(
+        { model: input.model, prompt, temperature: 0, cwd: input.cwd },
+        { onDelta: (delta) => deltas.push(delta) },
+      )
+      : await input.client.generateText({ model: input.model, prompt, temperature: 0, cwd: input.cwd });
+    try {
+      if (response.length > maxOutputChars) throw new Error(`response exceeds ${maxOutputChars} characters`);
+      const semantic = parseRequirementDraftSemantic(response);
+      const draft = finalizeGoalRequirementDraft({
+        goalPrompt: input.goalPrompt,
+        cwd: input.cwd,
+        ...(input.projectRef !== undefined ? { projectRef: input.projectRef } : {}),
+        ...semantic,
+      });
+      for (const delta of deltas) input.onDelta?.(delta);
+      return draft;
+    } catch (error) {
+      if (attempt === MAX_REQUIREMENT_ATTEMPTS) {
+        throw new Error(`invalid Goal Requirement draft: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      prompt = renderRequirementRepairPrompt(basePrompt, response, error);
+    }
+  }
+  throw new Error("Goal Requirement interpreter exhausted attempts");
+}
+
+async function reviseGoalRequirementDraftWithLlm(input: {
+  currentDraft: GoalRequirementDraftV1;
+  message: string;
+  selectedRequirementId?: string;
+  onDelta?: (text: string) => void;
+} & LlmGoalRequirementDraftOptions): Promise<
+  | { kind: "revision"; draft: GoalRequirementDraftV1; summary: string }
+  | { kind: "needs_input"; question: string }
+> {
+  const basePrompt = renderRequirementRevisionPrompt(input);
+  let prompt = basePrompt;
+  const maxOutputChars = input.maxOutputChars ?? MAX_REQUIREMENT_RESPONSE_CHARS;
+  for (let attempt = 1; attempt <= MAX_REQUIREMENT_ATTEMPTS; attempt += 1) {
+    const deltas: string[] = [];
+    const response = input.client.generateTextStream
+      ? await input.client.generateTextStream(
+        {
+          model: input.model,
+          prompt,
+          temperature: 0,
+          cwd: input.currentDraft.workspace.cwd,
+        },
+        { onDelta: (delta) => deltas.push(delta) },
+      )
+      : await input.client.generateText({
+        model: input.model,
+        prompt,
+        temperature: 0,
+        cwd: input.currentDraft.workspace.cwd,
+      });
+    try {
+      if (response.length > maxOutputChars) throw new Error(`response exceeds ${maxOutputChars} characters`);
+      const payload = parseRequirementRevisionPayload(response);
+      for (const delta of deltas) input.onDelta?.(delta);
+      if (payload.kind === "needs_input") return payload;
+      const draft = "draft" in payload
+        ? applySemanticRequirementRevision(input.currentDraft, payload.draft, input.selectedRequirementId)
+        : applySemanticRequirementOperation(input.currentDraft, payload.operation, input.selectedRequirementId);
+      return { kind: "revision", draft, summary: payload.summary };
+    } catch (error) {
+      if (attempt === MAX_REQUIREMENT_ATTEMPTS) {
+        throw new Error(`invalid Goal Requirement revision: ${error instanceof Error ? error.message : String(error)}`);
+      }
+      prompt = renderRequirementRepairPrompt(basePrompt, response, error);
+    }
+  }
+  throw new Error("Goal Requirement revision exhausted attempts");
 }
 
 export function validateGoalRequirementDraft(draft: GoalRequirementDraftV1): GoalRequirementDraftIssue[] {
@@ -558,4 +694,416 @@ function issue(code: GoalRequirementDraftIssueCode, path: string, message: strin
 
 function assertNever(value: never): never {
   throw new Error(`unsupported requirement draft operation: ${JSON.stringify(value)}`);
+}
+
+const MAX_REQUIREMENT_ATTEMPTS = 2;
+const MAX_REQUIREMENT_RESPONSE_CHARS = 40_000;
+const REQUIREMENT_SEMANTIC_KEYS = [
+  "title",
+  "statement",
+  "source",
+  "blocking",
+  "userVisibleBehaviors",
+  "businessRules",
+  "acceptanceCriteria",
+  "expectedOutcomeArtifacts",
+  "verificationIntent",
+  "assumptions",
+  "openQuestions",
+  "riskTags",
+  "interactionContractRefs",
+] as const;
+const REQUIREMENT_CRITERION_KEYS = ["statement", "evidenceIntent"] as const;
+const REQUIREMENT_ARTIFACT_KEYS = ["description", "mediaType"] as const;
+const REQUIREMENT_TOP_LEVEL_KEYS = ["summary", "requirements", "nonGoals", "blockingInputs"] as const;
+
+type GoalRequirementDraftSemanticV1 = Omit<GoalRequirementDraftInputV1, "goalPrompt" | "cwd" | "projectRef">;
+type GoalRequirementDraftSemanticPatchV1 = Partial<Omit<GoalRequirementDraftItemInputV1, "id" | "status">>;
+type GoalRequirementDraftRevisionOperationSemanticV1 =
+  | { kind: "update"; patch: GoalRequirementDraftSemanticPatchV1 }
+  | { kind: "create"; requirement: GoalRequirementDraftItemInputV1 }
+  | { kind: "supersede" }
+  | { kind: "restore" }
+  | { kind: "split"; requirements: GoalRequirementDraftItemInputV1[] }
+  | { kind: "merge"; requirement: GoalRequirementDraftItemInputV1 };
+type GoalRequirementDraftRevisionPayloadV1 =
+  | { kind: "revision"; summary: string; draft: GoalRequirementDraftSemanticV1 }
+  | { kind: "revision"; summary: string; operation: GoalRequirementDraftRevisionOperationSemanticV1 }
+  | { kind: "needs_input"; question: string };
+
+function renderRequirementInterpretationPrompt(input: {
+  goalPrompt: string;
+  cwd: string;
+  projectRef?: string;
+  workspaceDiscovery: WorkspaceGoalDiscoveryV1;
+  goalDesignSkill: ResolvedGoalDesignSkillV1;
+}): string {
+  return [
+    "Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft.",
+    `GoalDesignSkillRef: ${input.goalDesignSkill.objectKey}`,
+    `GoalDesignSkillVersionRef: ${input.goalDesignSkill.versionRef}`,
+    input.goalDesignSkill.body,
+    "",
+    "GoalRequirementDraftOutputSchema:",
+    JSON.stringify({
+      summary: "string",
+      requirements: [{
+        title: "string",
+        statement: "string",
+        source: "explicit | inferred",
+        blocking: "boolean",
+        userVisibleBehaviors: ["string"],
+        businessRules: ["string"],
+        acceptanceCriteria: [{ statement: "string", evidenceIntent: ["string"] }],
+        expectedOutcomeArtifacts: [{ description: "string", mediaType: "string?" }],
+        verificationIntent: ["string"],
+        assumptions: ["string"],
+        openQuestions: ["string"],
+        riskTags: ["string"],
+        interactionContractRefs: ["string"],
+      }],
+      nonGoals: ["string"],
+      blockingInputs: ["string"],
+    }),
+    "Return JSON only with exactly these top-level keys: summary, requirements, nonGoals, blockingInputs.",
+    "Return exactly the requirement fields shown above. Every array item must be a non-empty string unless it is an object shown in the schema.",
+    "Use [] for empty arrays. Do not use null, false, objects, or empty strings as array entries.",
+    "Requirements must describe independently verifiable observable outcomes, including user-visible behaviors, rules, acceptance criteria, expected artifacts, and verification intent.",
+    "Do not return Library object references, workflow plans, graph nodes, agent assignments, tool grants, or execution sequencing.",
+    "Do not return host-owned fields: schemaVersion, originalPrompt, workspace, projectRef, id, revision, parentRevision, status, draftHash, or any hash.",
+    "blockingInputs are only unavailable decisions that require the user; do not use them for local workspace facts discoverable below.",
+    `GoalPrompt: ${input.goalPrompt}`,
+    `WorkspaceCwd: ${input.cwd}`,
+    ...(input.projectRef !== undefined ? [`ProjectRef: ${input.projectRef}`] : []),
+    "WorkspaceDiscovery:",
+    JSON.stringify(input.workspaceDiscovery),
+  ].join("\n");
+}
+
+function renderRequirementRevisionPrompt(input: {
+  currentDraft: GoalRequirementDraftV1;
+  message: string;
+  selectedRequirementId?: string;
+}): string {
+  return [
+    "Use the approved Goal Design skill already used for this Requirement Draft to revise semantic requirements.",
+    "Return JSON only.",
+    "RevisionResponseSchema:",
+    JSON.stringify({
+      kind: "revision | needs_input",
+      summary: "string (revision only)",
+      draft: {
+        summary: "string",
+        requirements: [{ "...semantic requirement fields": "same as RequirementDraftOutputSchema" }],
+        nonGoals: ["string"],
+        blockingInputs: ["string"],
+      },
+      operation: {
+        kind: "update | create | supersede | restore | split | merge",
+        patch: "semantic fields only (update)",
+        requirement: "semantic requirement (create/merge)",
+        requirements: ["semantic requirements (split)"],
+      },
+      question: "string (needs_input only)",
+    }),
+    "For kind=revision, return exactly kind, summary, and either draft or operation. Draft contains exactly summary, requirements, nonGoals, blockingInputs. Operation contains semantic fields only; the host chooses target ids from SelectedRequirementId.",
+    "For kind=needs_input, return exactly kind and question.",
+    "Do not return requirement ids, status, revision, parentRevision, draftHash, hashes, Library refs, evaluatorContracts, slices, DAG fields, or execution fields.",
+    `SelectedRequirementId (host context only): ${input.selectedRequirementId ?? ""}`,
+    `UserMessage: ${input.message}`,
+    `CurrentRequirementDraft: ${JSON.stringify(input.currentDraft)}`,
+  ].join("\n");
+}
+
+function renderRequirementRepairPrompt(basePrompt: string, response: string, error: unknown): string {
+  return [
+    basePrompt,
+    "",
+    `The previous response was invalid: ${error instanceof Error ? error.message : String(error)}`,
+    "Return one corrected JSON object only. Preserve valid semantic meaning and remove every host-owned or workflow field.",
+    `PreviousResponse: ${response.slice(0, MAX_REQUIREMENT_RESPONSE_CHARS)}`,
+  ].join("\n");
+}
+
+function parseRequirementDraftSemantic(text: string): GoalRequirementDraftSemanticV1 {
+  const parsed = parseJsonObject(text, "Goal Requirement draft");
+  exactSemanticKeys(parsed, REQUIREMENT_TOP_LEVEL_KEYS, "$");
+  const requirements = requiredArray(parsed.requirements, "requirements");
+  if (requirements.length === 0) throw new Error("requirements must contain at least one requirement");
+  const semantic = {
+    summary: requiredString(parsed.summary, "summary"),
+    requirements: requirements.map((value, index) => parseSemanticRequirement(value, index)),
+    nonGoals: requiredStringArray(parsed.nonGoals, "nonGoals"),
+    blockingInputs: requiredStringArray(parsed.blockingInputs, "blockingInputs"),
+  };
+  return semantic;
+}
+
+function parseRequirementRevisionPayload(text: string): GoalRequirementDraftRevisionPayloadV1 {
+  const parsed = parseJsonObject(text, "Goal Requirement revision");
+  const kind = requiredString(parsed.kind, "kind");
+  if (kind === "needs_input") {
+    exactSemanticKeys(parsed, ["kind", "question"], "$");
+    return { kind, question: requiredString(parsed.question, "question") };
+  }
+  if (kind !== "revision") throw new Error("kind must be revision or needs_input");
+  const summary = requiredString(parsed.summary, "summary");
+  if ("draft" in parsed && "operation" in parsed) throw new Error("revision must contain either draft or operation, not both");
+  if ("draft" in parsed) {
+    exactSemanticKeys(parsed, ["kind", "summary", "draft"], "$");
+    const draft = parseJsonObject(parsed.draft, "draft");
+    exactSemanticKeys(draft, REQUIREMENT_TOP_LEVEL_KEYS, "draft");
+    const requirements = requiredArray(draft.requirements, "draft.requirements");
+    if (requirements.length === 0) throw new Error("draft.requirements must contain at least one requirement");
+    return {
+      kind,
+      summary,
+      draft: {
+        summary: requiredString(draft.summary, "draft.summary"),
+        requirements: requirements.map((value, index) => parseSemanticRequirement(value, index, "draft.requirements")),
+        nonGoals: requiredStringArray(draft.nonGoals, "draft.nonGoals"),
+        blockingInputs: requiredStringArray(draft.blockingInputs, "draft.blockingInputs"),
+      },
+    };
+  }
+  exactSemanticKeys(parsed, ["kind", "summary", "operation"], "$");
+  return { kind, summary, operation: parseSemanticOperation(parsed.operation) };
+}
+
+function parseSemanticOperation(value: unknown): GoalRequirementDraftRevisionOperationSemanticV1 {
+  const object = parseJsonObject(value, "operation");
+  const kind = requiredString(object.kind, "operation.kind");
+  switch (kind) {
+    case "update":
+      exactSemanticKeys(object, ["kind", "patch"], "operation");
+      return { kind, patch: parseSemanticPatch(object.patch, "operation.patch") };
+    case "create":
+      exactSemanticKeys(object, ["kind", "requirement"], "operation");
+      return { kind, requirement: parseSemanticRequirement(object.requirement, 0, "operation.requirement") };
+    case "supersede":
+    case "restore":
+      exactSemanticKeys(object, ["kind"], "operation");
+      return { kind };
+    case "split": {
+      exactSemanticKeys(object, ["kind", "requirements"], "operation");
+      const requirements = requiredArray(object.requirements, "operation.requirements");
+      if (requirements.length < 2) throw new Error("operation.requirements must contain at least two requirements");
+      return { kind, requirements: requirements.map((entry, index) => parseSemanticRequirement(entry, index, "operation.requirements")) };
+    }
+    case "merge":
+      exactSemanticKeys(object, ["kind", "requirement"], "operation");
+      return { kind, requirement: parseSemanticRequirement(object.requirement, 0, "operation.requirement") };
+    default:
+      throw new Error("operation.kind must be update, create, supersede, restore, split, or merge");
+  }
+}
+
+function parseSemanticPatch(value: unknown, path: string): GoalRequirementDraftSemanticPatchV1 {
+  const object = parseJsonObject(value, path);
+  exactOptionalKeys(object, REQUIREMENT_SEMANTIC_KEYS, path);
+  const patch: GoalRequirementDraftSemanticPatchV1 = {};
+  if ("title" in object) patch.title = requiredString(object.title, `${path}.title`);
+  if ("statement" in object) patch.statement = requiredString(object.statement, `${path}.statement`);
+  if ("source" in object) {
+    if (object.source !== "explicit" && object.source !== "inferred") throw new Error(`${path}.source must be explicit or inferred`);
+    patch.source = object.source;
+  }
+  if ("blocking" in object) {
+    if (typeof object.blocking !== "boolean") throw new Error(`${path}.blocking must be boolean`);
+    patch.blocking = object.blocking;
+  }
+  for (const key of ["userVisibleBehaviors", "businessRules", "verificationIntent", "assumptions", "openQuestions", "riskTags", "interactionContractRefs"] as const) {
+    if (key in object) patch[key] = requiredStringArray(object[key], `${path}.${key}`);
+  }
+  if ("acceptanceCriteria" in object) {
+    patch.acceptanceCriteria = requiredArray(object.acceptanceCriteria, `${path}.acceptanceCriteria`).map((criterion, index) => {
+      const criterionPath = `${path}.acceptanceCriteria.${index}`;
+      const criterionObject = parseJsonObject(criterion, criterionPath);
+      exactSemanticKeys(criterionObject, REQUIREMENT_CRITERION_KEYS, criterionPath);
+      return {
+        statement: requiredString(criterionObject.statement, `${criterionPath}.statement`),
+        evidenceIntent: requiredStringArray(criterionObject.evidenceIntent, `${criterionPath}.evidenceIntent`),
+      };
+    });
+  }
+  if ("expectedOutcomeArtifacts" in object) {
+    patch.expectedOutcomeArtifacts = requiredArray(object.expectedOutcomeArtifacts, `${path}.expectedOutcomeArtifacts`).map((artifact, index) => {
+      const artifactPath = `${path}.expectedOutcomeArtifacts.${index}`;
+      const artifactObject = parseJsonObject(artifact, artifactPath);
+      exactOptionalKeys(artifactObject, REQUIREMENT_ARTIFACT_KEYS, artifactPath);
+      return {
+        description: requiredString(artifactObject.description, `${artifactPath}.description`),
+        ...(artifactObject.mediaType !== undefined ? { mediaType: requiredString(artifactObject.mediaType, `${artifactPath}.mediaType`) } : {}),
+      };
+    });
+  }
+  return patch;
+}
+
+function parseSemanticRequirement(value: unknown, index: number, prefix = "requirements"): GoalRequirementDraftItemInputV1 {
+  const path = `${prefix}.${index}`;
+  const object = parseJsonObject(value, path);
+  exactSemanticKeys(object, REQUIREMENT_SEMANTIC_KEYS, path);
+  const acceptanceCriteria = requiredArray(object.acceptanceCriteria, `${path}.acceptanceCriteria`).map((criterion, criterionIndex) => {
+    const criterionPath = `${path}.acceptanceCriteria.${criterionIndex}`;
+    const criterionObject = parseJsonObject(criterion, criterionPath);
+    exactSemanticKeys(criterionObject, REQUIREMENT_CRITERION_KEYS, criterionPath);
+    return {
+      statement: requiredString(criterionObject.statement, `${criterionPath}.statement`),
+      evidenceIntent: requiredStringArray(criterionObject.evidenceIntent, `${criterionPath}.evidenceIntent`),
+    };
+  });
+  const artifacts = requiredArray(object.expectedOutcomeArtifacts, `${path}.expectedOutcomeArtifacts`).map((artifact, artifactIndex) => {
+    const artifactPath = `${path}.expectedOutcomeArtifacts.${artifactIndex}`;
+    const artifactObject = parseJsonObject(artifact, artifactPath);
+    exactOptionalKeys(artifactObject, REQUIREMENT_ARTIFACT_KEYS, artifactPath);
+    const output: { description: string; mediaType?: string } = {
+      description: requiredString(artifactObject.description, `${artifactPath}.description`),
+    };
+    if (artifactObject.mediaType !== undefined) output.mediaType = requiredString(artifactObject.mediaType, `${artifactPath}.mediaType`);
+    return output;
+  });
+  return {
+    title: requiredString(object.title, `${path}.title`),
+    statement: requiredString(object.statement, `${path}.statement`),
+    source: object.source === "explicit" || object.source === "inferred"
+      ? object.source
+      : fail(`${path}.source must be explicit or inferred`),
+    blocking: typeof object.blocking === "boolean" ? object.blocking : fail(`${path}.blocking must be boolean`),
+    userVisibleBehaviors: requiredStringArray(object.userVisibleBehaviors, `${path}.userVisibleBehaviors`),
+    businessRules: requiredStringArray(object.businessRules, `${path}.businessRules`),
+    acceptanceCriteria,
+    expectedOutcomeArtifacts: artifacts,
+    verificationIntent: requiredStringArray(object.verificationIntent, `${path}.verificationIntent`),
+    assumptions: requiredStringArray(object.assumptions, `${path}.assumptions`),
+    openQuestions: requiredStringArray(object.openQuestions, `${path}.openQuestions`),
+    riskTags: requiredStringArray(object.riskTags, `${path}.riskTags`),
+    interactionContractRefs: requiredStringArray(object.interactionContractRefs, `${path}.interactionContractRefs`),
+  };
+}
+
+function applySemanticRequirementRevision(
+  currentDraft: GoalRequirementDraftV1,
+  semantic: GoalRequirementDraftSemanticV1,
+  selectedRequirementId?: string,
+): GoalRequirementDraftV1 {
+  const materialized = finalizeGoalRequirementDraft({
+    goalPrompt: currentDraft.originalPrompt,
+    cwd: currentDraft.workspace.cwd,
+    ...(currentDraft.workspace.projectRef !== undefined ? { projectRef: currentDraft.workspace.projectRef } : {}),
+    ...semantic,
+  });
+  const byStatement = new Map(currentDraft.requirements.map((requirement) => [normalize(requirement.statement), requirement]));
+  const selected = selectedRequirementId === undefined
+    ? undefined
+    : currentDraft.requirements.find((requirement) => requirement.id === selectedRequirementId);
+  const requirements = materialized.requirements.map((requirement, index) => {
+    const existing = byStatement.get(normalize(requirement.statement)) ?? (index === 0 ? selected : undefined);
+    return existing
+      ? materializeRequirement(toRequirementInput(requirement), existing.id, existing.status === "superseded" ? "superseded" : undefined, existing)
+      : requirement;
+  });
+  const included = new Set(requirements.map((requirement) => requirement.id));
+  for (const existing of currentDraft.requirements) {
+    if (!included.has(existing.id) && existing.source === "explicit") requirements.push(cloneRequirement(existing));
+  }
+  return finalizeRevision(
+    {
+      ...currentDraft,
+      summary: semantic.summary,
+      nonGoals: semantic.nonGoals,
+      blockingInputs: semantic.blockingInputs,
+    },
+    requirements,
+  );
+}
+
+function applySemanticRequirementOperation(
+  draft: GoalRequirementDraftV1,
+  operation: GoalRequirementDraftRevisionOperationSemanticV1,
+  selectedRequirementId?: string,
+): GoalRequirementDraftV1 {
+  switch (operation.kind) {
+    case "create":
+      return reviseGoalRequirementDraft(draft, { kind: "create", requirement: operation.requirement });
+    case "update":
+      return reviseGoalRequirementDraft(draft, {
+        kind: "update",
+        requirementId: requireSelectedRequirementId(selectedRequirementId),
+        patch: operation.patch,
+      });
+    case "supersede":
+      return reviseGoalRequirementDraft(draft, {
+        kind: "supersede",
+        requirementId: requireSelectedRequirementId(selectedRequirementId),
+      });
+    case "restore":
+      return reviseGoalRequirementDraft(draft, {
+        kind: "restore",
+        requirementId: requireSelectedRequirementId(selectedRequirementId),
+      });
+    case "split":
+      return reviseGoalRequirementDraft(draft, {
+        kind: "split",
+        requirementId: requireSelectedRequirementId(selectedRequirementId),
+        requirements: operation.requirements,
+      });
+    case "merge":
+      throw new Error("merge revision requires host-selected multiple requirement ids");
+    default:
+      return assertNever(operation);
+  }
+}
+
+function requireSelectedRequirementId(selectedRequirementId: string | undefined): string {
+  if (!selectedRequirementId || selectedRequirementId.trim().length === 0) {
+    throw new Error("revision operation requires a selected requirement id supplied by the host");
+  }
+  return selectedRequirementId;
+}
+
+function parseJsonObject(text: unknown, label: string): Record<string, unknown> {
+  let parsed: unknown = text;
+  if (typeof text === "string") {
+    try {
+      parsed = JSON.parse(text.trim());
+    } catch {
+      throw new Error(`${label} returned invalid JSON`);
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error(`${label} must be an object`);
+  return parsed as Record<string, unknown>;
+}
+
+function exactSemanticKeys(object: Record<string, unknown>, keys: readonly string[], path: string): void {
+  const actual = Object.keys(object).sort();
+  const expected = [...keys].sort();
+  const unexpected = actual.filter((key) => !expected.includes(key));
+  const missing = expected.filter((key) => !actual.includes(key));
+  if (unexpected.length > 0 || missing.length > 0) {
+    throw new Error(`${path} has invalid fields; unexpected=${unexpected.join(",")}; missing=${missing.join(",")}`);
+  }
+}
+
+function exactOptionalKeys(object: Record<string, unknown>, keys: readonly string[], path: string): void {
+  const unexpected = Object.keys(object).filter((key) => !keys.includes(key));
+  if (unexpected.length > 0) throw new Error(`${path} contains unexpected fields: ${unexpected.join(", ")}`);
+}
+
+function requiredArray(value: unknown, path: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+  return value;
+}
+
+function requiredStringArray(value: unknown, path: string): string[] {
+  return requiredArray(value, path).map((entry, index) => requiredString(entry, `${path}.${index}`));
+}
+
+function requiredString(value: unknown, path: string): string {
+  if (typeof value !== "string" || value.trim().length === 0) throw new Error(`${path} must be a non-empty string`);
+  return value;
+}
+
+function fail(message: string): never {
+  throw new Error(message);
 }

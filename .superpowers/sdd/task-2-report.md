@@ -162,3 +162,46 @@ diffcheck_exit=0
 ## Report correction
 
 The original focused-gate sentence above was stale after `0cbffa7`: legacy single-file sync no longer preserves placeholder behavior. It now requires referenced graph objects and fails unresolved references without writing source or placeholder rows. No code or tests changed in this documentation-only correction.
+
+---
+
+# Goal Requirement Interpreter implementation report
+
+Status: COMPLETE
+
+## Scope
+
+Implemented the LLM Requirement Interpretation and Revision boundary. The LLM now produces only semantic Requirement Draft content. The host owns identifiers, criterion ids, lifecycle status, revision lineage, canonical hashes, and operation targets.
+
+## Changes
+
+- Added `GoalRequirementDraftInterpreter` and `createLlmGoalRequirementDraftInterpreter()`.
+- Added strict semantic output parsing for the complete requirement schema, including observable behaviors, business rules, acceptance criteria/evidence intent, expected outcome artifacts, verification intent, assumptions, open questions, risk tags, and interaction contract references.
+- Added strict revision parsing for either a semantic replacement draft or a semantic host-normalized operation (`update`, `create`, `supersede`, `restore`, `split`, `merge`). LLM responses cannot provide ids, status, revisions, parent revisions, hashes, or workflow/library fields.
+- Added one bounded repair attempt for interpretation and revision responses; the second invalid response fails closed with an `invalid Goal Requirement ...` error.
+- Added stream delta forwarding only after a response passes host validation and finalization.
+- Added `goalRequirementInterpreter` to `RuntimeServerContext` while retaining the existing Goal Contract interpreter for legacy routes.
+- Clarified Goal Contract semantic-vs-host-owned interpretation types.
+
+## TDD evidence
+
+The focused test initially failed because `createLlmGoalRequirementDraftInterpreter` was not exported. After implementation, focused tests cover:
+
+- strict requirement output and absence of workflow fields in the prompt;
+- rejection of host-owned fields in revisions;
+- one and only one bounded repair attempt;
+- host lineage preservation for semantic revisions;
+- host-selected target normalization for update operations;
+- existing requirement draft lifecycle and hash invariants.
+
+## Verification
+
+- `npx tsc --noEmit --pretty false` — PASS
+- `npx tsx tests/v2/goal-requirement-draft.test.ts` — PASS (13 tests)
+- `npx tsx tests/v2/goal-design.test.ts` — PASS (6 tests)
+- `git diff --check` — PASS
+
+## Concerns
+
+- Revision `merge` operations require multiple host-selected ids. The current public revision interface exposes one optional `selectedRequirementId`, so semantic replacement drafts should be used for merge-like edits until a plural selection UI is introduced.
+- The interpreter is intentionally not wired into Goal Design routes yet; Task 3/6 owns persisted phases and route selection. The runtime context field is available for that integration.

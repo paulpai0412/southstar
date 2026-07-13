@@ -79,10 +79,19 @@ export class GoalContractVocabularyGapError extends Error {
   }
 }
 
-export type GoalRequirementInterpretationV1 = Omit<GoalRequirementV1, "id" | "expectedArtifacts"> & {
+/** Semantic requirement payload accepted by host finalization. It contains no lineage fields. */
+export type GoalRequirementSemanticV1 = Omit<GoalRequirementV1, "id" | "expectedArtifacts"> & {
+  expectedArtifacts?: GoalExpectedArtifactV1[];
+};
+
+/**
+ * Legacy Goal Contract interpretation input. The optional id is accepted only
+ * when a host-owned, already-confirmed draft is projected into a contract;
+ * LLM-facing interpreters must use GoalRequirementSemanticV1 and reject ids.
+ */
+export type GoalRequirementInterpretationV1 = GoalRequirementSemanticV1 & {
   /** Host-provided lineage id. LLM interpretation payloads must not include this field. */
   id?: string;
-  expectedArtifacts?: GoalExpectedArtifactV1[];
 };
 
 export type GoalContractInterpretationV1 = {
