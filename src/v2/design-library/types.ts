@@ -249,6 +249,85 @@ export type CandidateSummary = {
   reason: string;
 };
 
+/** Verification modes that a reusable evaluator profile may explicitly support. */
+export type RequirementValidationMode =
+  | "deterministic"
+  | "browser_interaction"
+  | "semantic_review"
+  | "human_approval";
+
+export type RequirementCoverageCandidateV1 = {
+  ref: string;
+  versionRef: string;
+  reason: string;
+};
+
+export type RequirementCoveragePreviewV1 = {
+  schemaVersion: "southstar.requirement_coverage_preview.v1";
+  requirementId: string;
+  status: "ready" | "partial" | "missing" | "manual";
+  artifactCandidates: RequirementCoverageCandidateV1[];
+  evaluatorCandidates: RequirementCoverageCandidateV1[];
+  missingKinds: Array<"artifact" | "evaluator" | "capability" | "domain">;
+  criterionIds: string[];
+  acceptanceCriteria: string[];
+};
+
+export type RequirementValidationBindingV1 = {
+  schemaVersion: "southstar.requirement_validation_binding.v1";
+  id: string;
+  requirementId: string;
+  criterionIds: string[];
+  acceptanceCriteria: string[];
+  artifactContractRefs: string[];
+  artifactContractVersionRefs: string[];
+  evaluatorProfileRef: string;
+  evaluatorProfileVersionRef: string;
+  verificationMode: RequirementValidationMode;
+  criterionChecks: Array<{
+    criterionId: string;
+    procedureRef: string;
+    expectedEvidenceKinds: string[];
+  }>;
+  requiredEvidenceKinds: string[];
+  independence: "independent";
+  failureClassifications: string[];
+};
+
+export type GoalValidationGapKind =
+  | "artifact"
+  | "evaluator"
+  | "capability"
+  | "domain"
+  | "criteria"
+  | "version"
+  | "edge"
+  | "procedure"
+  | "evidence"
+  | "independence"
+  | "manual";
+
+export type GoalValidationGapV1 = {
+  schemaVersion: "southstar.goal_validation_gap.v1";
+  kind: GoalValidationGapKind;
+  requirementId: string;
+  criterionIds: string[];
+  requestedRef?: string;
+  blocking: boolean;
+  message: string;
+  candidateRefs: string[];
+};
+
+export type GoalValidationResolutionV1 = {
+  schemaVersion: "southstar.goal_validation_resolution.v1";
+  goalContractHash: string;
+  requirementDraftHash: string;
+  previews: RequirementCoveragePreviewV1[];
+  bindings: RequirementValidationBindingV1[];
+  gaps: GoalValidationGapV1[];
+  resolutionHash: string;
+};
+
 export type GraphMetadataNodeCandidate = {
   ref: string;
   kind: LibraryDefinitionKind;

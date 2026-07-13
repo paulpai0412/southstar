@@ -12,3 +12,30 @@ Verification:
 - `git diff --check` — pass.
 
 The test covers structured stream parsing and the rendered workflow-chat guidance without introducing production fallbacks or fixture composer behavior.
+
+# Task 5 report: approved Library validation resolver
+
+Status: complete
+
+Implemented `resolveGoalValidationPg()` and the approved validation candidate
+closed-set helper. The resolver consumes the confirmed Goal Contract and
+Requirement Draft, accepts semantic ranker recommendations, and host-validates
+all artifact/evaluator refs, current versions, graph edges, verification
+procedures, evidence compatibility, criteria preservation, and independent
+evaluation policy before producing a version-pinned binding. Missing or
+incompatible candidates are returned as structured gaps; no Library object is
+created or selected outside the approved graph.
+
+Added real Postgres tests covering approved binding, invented/draft refs,
+criteria drift/evidence mismatch, and stale graph edges. Registered the focused
+suite in `tests/v2/index.test.ts`.
+
+Verification:
+
+- `npx tsc --noEmit --pretty false` — pass.
+- `npx tsx --test tests/v2/goal-validation-resolver.test.ts` — 4/4 pass.
+- `npx tsx --test tests/v2/goal-validation-resolver.test.ts tests/v2/library-candidate-resolver.test.ts` — 9/9 pass.
+- `git diff --check` — pass.
+
+No fixtures, seed graph, domain special cases, or LLM calls were added to the
+production resolver.

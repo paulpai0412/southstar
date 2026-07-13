@@ -6,7 +6,12 @@ import {
   listLibraryObjects,
 } from "../design-library/library-graph-store.ts";
 import { isRuntimeProfilePrimitiveCandidate, resolveGraphProfileCandidates } from "../design-library/profile-composer/graph-profile-candidate-resolver.ts";
-import type { CandidatePacket, CandidateSummary, RequirementSpecV2 } from "../design-library/types.ts";
+import type {
+  CandidatePacket,
+  CandidateSummary,
+  LibraryObjectSummary,
+  RequirementSpecV2,
+} from "../design-library/types.ts";
 import { buildGraphMetadataCandidatePacket } from "./graph-metadata-packet.ts";
 import type { WorkflowTemplatePolicyV1 } from "./goal-design.ts";
 
@@ -15,6 +20,74 @@ export type ResolveWorkflowCandidatesInput = {
   scope: string;
   templatePolicy?: WorkflowTemplatePolicyV1;
 };
+
+/**
+ * Closed approved graph set consumed by Goal Validation.  Workflow candidate
+ * resolution intentionally remains broader; this helper adds the stricter
+ * version pin and edge checks required before a validation binding is frozen.
+ */
+export type ApprovedValidationCandidatesV1 = {
+  artifactContracts: LibraryObjectSummary[];
+  evaluatorProfiles: LibraryObjectSummary[];
+  evaluatorProfilesByArtifact: Record<string, LibraryObjectSummary[]>;
+};
+
+export async function resolveApprovedValidationCandidates(
+  db: SouthstarDb,
+  input: { scope?: string } = {},
+): Promise<ApprovedValidationCandidatesV1> {
+  const artifacts = (await approvedObjectsForValidation(db, "artifact_contract", input.scope))
+    .filter((object) => object.headVersionId !== null);
+  const evaluators = (await approvedObjectsForValidation(db, "evaluator_profile", input.scope))
+    .filter((object) => object.headVersionId !== null);
+  const approvedEvaluators = new Map(evaluators.map((evaluator) => [evaluator.objectKey, evaluator]));
+  const evaluatorProfilesByArtifact: Record<string, LibraryObjectSummary[]> = {};
+  for (const artifact of artifacts) {
+    const edges = await validationEdgesTo(db, artifact.objectKey, input.scope);
+    evaluatorProfilesByArtifact[artifact.objectKey] = edges
+      .filter((edge) => edge.status === "active")
+      .filter((edge) => {
+        const evaluator = approvedEvaluators.get(edge.fromObjectKey);
+        return evaluator !== undefined
+          && evaluator.headVersionId !== null
+          && (edge.fromVersionRef === null || edge.fromVersionRef === evaluator.headVersionId)
+          && (edge.toVersionRef === null || edge.toVersionRef === artifact.headVersionId);
+      })
+      .map((edge) => approvedEvaluators.get(edge.fromObjectKey)!)
+      .filter((evaluator, index, all) => all.findIndex((candidate) => candidate.objectKey === evaluator.objectKey) === index)
+      .sort((left, right) => left.objectKey.localeCompare(right.objectKey));
+  }
+  return { artifactContracts: artifacts, evaluatorProfiles: evaluators, evaluatorProfilesByArtifact };
+}
+
+async function approvedObjectsForValidation(
+  db: SouthstarDb,
+  kind: "artifact_contract" | "evaluator_profile",
+  scope: string | undefined,
+): Promise<LibraryObjectSummary[]> {
+  const scoped = await findApprovedLibraryObjectsByKind(db, kind, scope);
+  if (!scope) return scoped;
+  const global = await findApprovedLibraryObjectsByKind(db, kind, "global");
+  const byKey = new Map([...scoped, ...global].map((object) => [object.objectKey, object]));
+  return [...byKey.values()].sort((left, right) => left.objectKey.localeCompare(right.objectKey));
+}
+
+async function validationEdgesTo(
+  db: SouthstarDb,
+  artifactRef: string,
+  scope: string | undefined,
+) {
+  const scopes = scope ? [scope, "global"] : [undefined];
+  const edges = [];
+  for (const edgeScope of scopes) {
+    edges.push(
+      ...(await findLibraryEdgesTo(db, artifactRef, "validates_artifact", { scope: edgeScope })),
+      ...(await findLibraryEdgesTo(db, artifactRef, "validates", { scope: edgeScope })),
+    );
+  }
+  const byId = new Map(edges.map((edge) => [edge.id, edge]));
+  return [...byId.values()];
+}
 
 export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveWorkflowCandidatesInput): Promise<CandidatePacket> {
   const approvedWorkflowTemplateCandidates = (

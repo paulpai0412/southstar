@@ -41,6 +41,7 @@ await import("./library-chat-routes.test.ts");
 await import("./library-import-drafts.test.ts");
 await import("./node-profile-draft-service.test.ts");
 await import("./library-candidate-resolver.test.ts");
+await import("./goal-validation-resolver.test.ts");
 await import("./workflow-composition-validator.test.ts");
 await import("./workflow-composition-compiler.test.ts");
 await import("./workflow-dynamic-profile-composition.test.ts");
