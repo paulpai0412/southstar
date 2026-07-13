@@ -205,3 +205,23 @@ The focused test initially failed because `createLlmGoalRequirementDraftInterpre
 
 - Revision `merge` operations require multiple host-selected ids. The current public revision interface exposes one optional `selectedRequirementId`, so semantic replacement drafts should be used for merge-like edits until a plural selection UI is introduced.
 - The interpreter is intentionally not wired into Goal Design routes yet; Task 3/6 owns persisted phases and route selection. The runtime context field is available for that integration.
+
+---
+
+# Task 2 follow-up review fixes
+
+Status: COMPLETE
+
+Review fixes implemented in the follow-up commit:
+
+- Revision `onDelta` callbacks are now forwarded only after host selection, semantic parsing, operation application, finalization, and lineage validation succeed. `needs_input` and failed target/merge paths emit no semantic deltas.
+- Semantic replacement drafts require explicit host mapping through `selectedRequirementIds` (one id per edited requirement; the singular field remains a one-requirement convenience). Requirement ids are preserved by this explicit mapping rather than statement/index matching; unknown or stale ids return structured `needs_input`.
+- Merge operations now use plural host-selected ids and execute through the existing host `merge` revision operation. Missing/insufficient merge selections return structured `needs_input` before applying or streaming anything.
+- Added regression coverage for valid stream forwarding, stale selection, valid/invalid merge selection, and multi-requirement statement changes with deterministic host id preservation.
+
+Follow-up verification:
+
+- `npx tsc --noEmit --pretty false` — PASS
+- `npx tsx tests/v2/goal-requirement-draft.test.ts` — PASS (17 tests)
+- `npx tsx tests/v2/goal-design.test.ts` — PASS (6 tests)
+- `git diff --check` — PASS

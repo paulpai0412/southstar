@@ -193,10 +193,12 @@ test("LLM revision finalizes semantic content while preserving host lineage", as
 test("LLM revision operation targets only host-selected requirement", async () => {
   const current = validDraft();
   const existingId = current.requirements[0]!.id;
+  const deltas: string[] = [];
   const interpreter = createLlmGoalRequirementDraftInterpreter({
     model: "inline-operation-revision",
     client: {
-      async generateText() {
+      async generateTextStream(_input, handlers) {
+        handlers.onDelta?.("validated-update");
         return JSON.stringify({
           kind: "revision",
           summary: "Updated the observable statement.",
@@ -212,11 +214,154 @@ test("LLM revision operation targets only host-selected requirement", async () =
     currentDraft: current,
     message: "make the statement browser-observable",
     selectedRequirementId: existingId,
+    onDelta: (delta) => deltas.push(delta),
   });
   assert.equal(result.kind, "revision");
   if (result.kind !== "revision") assert.fail("expected revision");
   assert.equal(result.draft.requirements[0]!.id, existingId);
   assert.equal(result.draft.requirements[0]!.statement, "The article opens offline in a browser");
+  assert.deepEqual(deltas, ["validated-update"]);
+});
+
+test("LLM revision preserves explicit host mapping for multiple edited requirements", async () => {
+  const first = validDraft();
+  const current = reviseGoalRequirementDraft(first, {
+    kind: "create",
+    requirement: {
+      ...validInput().requirements[0]!,
+      title: "Reader navigation",
+      statement: "The reader can navigate the article",
+    },
+  });
+  const selectedIds = current.requirements.map((requirement) => requirement.id);
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-multi-lineage-revision",
+    client: {
+      async generateText() {
+        return JSON.stringify({
+          kind: "revision",
+          summary: "Changed both requirement statements.",
+          draft: {
+            summary: "Two clarified outcomes",
+            requirements: [
+              { ...validInput().requirements[0]!, statement: "The article opens offline in a browser" },
+              { ...validInput().requirements[0]!, title: "Reader navigation", statement: "The reader navigates between article sections" },
+            ],
+            nonGoals: [],
+            blockingInputs: [],
+          },
+        });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: current,
+    message: "clarify both outcomes",
+    selectedRequirementIds: selectedIds,
+  });
+  assert.equal(result.kind, "revision");
+  if (result.kind !== "revision") assert.fail("expected revision");
+  assert.deepEqual(result.draft.requirements.slice(0, 2).map((requirement) => requirement.id), selectedIds);
+  assert.equal(result.draft.requirements[0]!.statement, "The article opens offline in a browser");
+  assert.equal(result.draft.requirements[1]!.statement, "The reader navigates between article sections");
+});
+
+test("stale host selection returns needs_input without streaming semantic output", async () => {
+  let calls = 0;
+  const deltas: string[] = [];
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-stale-selection",
+    client: {
+      async generateTextStream(_input, handlers) {
+        calls += 1;
+        handlers.onDelta?.("should-not-be-emitted");
+        return JSON.stringify({ kind: "needs_input", question: "choose" });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: validDraft(),
+    message: "edit it",
+    selectedRequirementId: "req-stale",
+    onDelta: (delta) => deltas.push(delta),
+  });
+  assert.equal(result.kind, "needs_input");
+  assert.equal(calls, 0);
+  assert.deepEqual(deltas, []);
+});
+
+test("merge requires plural host selections and does not emit unvalidated deltas", async () => {
+  const deltas: string[] = [];
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-merge-selection",
+    client: {
+      async generateTextStream(_input, handlers) {
+        handlers.onDelta?.("semantic-merge");
+        return JSON.stringify({
+          kind: "revision",
+          summary: "merge",
+          operation: {
+            kind: "merge",
+            requirement: validInput().requirements[0]!,
+          },
+        });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: validDraft(),
+    message: "merge selected requirements",
+    selectedRequirementIds: [],
+    onDelta: (delta) => deltas.push(delta),
+  });
+  assert.equal(result.kind, "needs_input");
+  assert.match(result.question, /at least two/i);
+  assert.deepEqual(deltas, []);
+});
+
+test("valid merge applies host-selected ids before forwarding stream deltas", async () => {
+  const first = validDraft();
+  const current = reviseGoalRequirementDraft(first, {
+    kind: "create",
+    requirement: {
+      ...validInput().requirements[0]!,
+      title: "Reader navigation",
+      statement: "The reader can navigate the article",
+    },
+  });
+  const selectedIds = current.requirements.map((requirement) => requirement.id);
+  const deltas: string[] = [];
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-valid-merge",
+    client: {
+      async generateTextStream(_input, handlers) {
+        handlers.onDelta?.("validated-merge");
+        return JSON.stringify({
+          kind: "revision",
+          summary: "Merged related outcomes.",
+          operation: {
+            kind: "merge",
+            requirement: {
+              ...validInput().requirements[0]!,
+              title: "Offline article",
+              statement: "The complete article is available offline",
+            },
+          },
+        });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: current,
+    message: "merge the outcomes",
+    selectedRequirementIds: selectedIds,
+    onDelta: (delta) => deltas.push(delta),
+  });
+  assert.equal(result.kind, "revision");
+  if (result.kind !== "revision") assert.fail("expected revision");
+  assert.equal(result.draft.requirements.filter((requirement) => requirement.status === "superseded").length, 2);
+  assert.equal(result.draft.requirements.filter((requirement) => requirement.status !== "superseded").length, 1);
+  assert.deepEqual(deltas, ["validated-merge"]);
 });
 
 test("Requirement Draft preserves host ids and projects confirmed criteria to GoalContractV1", () => {

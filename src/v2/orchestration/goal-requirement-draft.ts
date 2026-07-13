@@ -142,6 +142,7 @@ export type GoalRequirementDraftInterpreter = {
     currentDraft: GoalRequirementDraftV1;
     message: string;
     selectedRequirementId?: string;
+    selectedRequirementIds?: string[];
     onDelta?: (text: string) => void;
   }): Promise<
     | { kind: "revision"; draft: GoalRequirementDraftV1; summary: string }
@@ -243,11 +244,14 @@ async function reviseGoalRequirementDraftWithLlm(input: {
   currentDraft: GoalRequirementDraftV1;
   message: string;
   selectedRequirementId?: string;
+  selectedRequirementIds?: string[];
   onDelta?: (text: string) => void;
 } & LlmGoalRequirementDraftOptions): Promise<
   | { kind: "revision"; draft: GoalRequirementDraftV1; summary: string }
   | { kind: "needs_input"; question: string }
 > {
+  const selectionIssue = validateHostSelection(input.currentDraft, input.selectedRequirementId, input.selectedRequirementIds);
+  if (selectionIssue) return { kind: "needs_input", question: selectionIssue };
   const basePrompt = renderRequirementRevisionPrompt(input);
   let prompt = basePrompt;
   const maxOutputChars = input.maxOutputChars ?? MAX_REQUIREMENT_RESPONSE_CHARS;
@@ -272,11 +276,19 @@ async function reviseGoalRequirementDraftWithLlm(input: {
     try {
       if (response.length > maxOutputChars) throw new Error(`response exceeds ${maxOutputChars} characters`);
       const payload = parseRequirementRevisionPayload(response);
-      for (const delta of deltas) input.onDelta?.(delta);
       if (payload.kind === "needs_input") return payload;
-      const draft = "draft" in payload
-        ? applySemanticRequirementRevision(input.currentDraft, payload.draft, input.selectedRequirementId)
-        : applySemanticRequirementOperation(input.currentDraft, payload.operation, input.selectedRequirementId);
+      const payloadSelectionIssue = revisionSelectionQuestion(payload, input.selectedRequirementId, input.selectedRequirementIds);
+      if (payloadSelectionIssue) return { kind: "needs_input", question: payloadSelectionIssue };
+      const result = "draft" in payload
+        ? applySemanticRequirementRevision(input.currentDraft, payload.draft, input.selectedRequirementId, input.selectedRequirementIds)
+        : applySemanticRequirementOperation(
+          input.currentDraft,
+          payload.operation,
+          input.selectedRequirementId,
+          input.selectedRequirementIds,
+        );
+      for (const delta of deltas) input.onDelta?.(delta);
+      const draft = result;
       return { kind: "revision", draft, summary: payload.summary };
     } catch (error) {
       if (attempt === MAX_REQUIREMENT_ATTEMPTS) {
@@ -784,6 +796,7 @@ function renderRequirementRevisionPrompt(input: {
   currentDraft: GoalRequirementDraftV1;
   message: string;
   selectedRequirementId?: string;
+  selectedRequirementIds?: string[];
 }): string {
   return [
     "Use the approved Goal Design skill already used for this Requirement Draft to revise semantic requirements.",
@@ -806,10 +819,11 @@ function renderRequirementRevisionPrompt(input: {
       },
       question: "string (needs_input only)",
     }),
-    "For kind=revision, return exactly kind, summary, and either draft or operation. Draft contains exactly summary, requirements, nonGoals, blockingInputs. Operation contains semantic fields only; the host chooses target ids from SelectedRequirementId.",
+    "For kind=revision, return exactly kind, summary, and either draft or operation. Draft contains exactly summary, requirements, nonGoals, blockingInputs. Operation contains semantic fields only; the host chooses target ids from the host selections below.",
     "For kind=needs_input, return exactly kind and question.",
     "Do not return requirement ids, status, revision, parentRevision, draftHash, hashes, Library refs, evaluatorContracts, slices, DAG fields, or execution fields.",
     `SelectedRequirementId (host context only): ${input.selectedRequirementId ?? ""}`,
+    `SelectedRequirementIds (host context only): ${JSON.stringify(input.selectedRequirementIds ?? [])}`,
     `UserMessage: ${input.message}`,
     `CurrentRequirementDraft: ${JSON.stringify(input.currentDraft)}`,
   ].join("\n");
@@ -986,19 +1000,26 @@ function applySemanticRequirementRevision(
   currentDraft: GoalRequirementDraftV1,
   semantic: GoalRequirementDraftSemanticV1,
   selectedRequirementId?: string,
+  selectedRequirementIds?: string[],
 ): GoalRequirementDraftV1 {
+  const mappedIds = selectedRequirementIds
+    ?? (selectedRequirementId !== undefined ? [selectedRequirementId] : undefined);
+  if (!mappedIds || mappedIds.length !== semantic.requirements.length) {
+    throw new Error("semantic replacement requires one host-selected requirement id for every edited requirement");
+  }
+  const existingById = new Map(currentDraft.requirements.map((requirement) => [requirement.id, requirement]));
+  const uniqueIds = new Set(mappedIds);
+  if (uniqueIds.size !== mappedIds.length) throw new Error("semantic replacement host requirement ids must be unique");
+  const missingId = mappedIds.find((id) => !existingById.has(id));
+  if (missingId) throw new Error(`unknown selected requirement id: ${missingId}`);
   const materialized = finalizeGoalRequirementDraft({
     goalPrompt: currentDraft.originalPrompt,
     cwd: currentDraft.workspace.cwd,
     ...(currentDraft.workspace.projectRef !== undefined ? { projectRef: currentDraft.workspace.projectRef } : {}),
     ...semantic,
   });
-  const byStatement = new Map(currentDraft.requirements.map((requirement) => [normalize(requirement.statement), requirement]));
-  const selected = selectedRequirementId === undefined
-    ? undefined
-    : currentDraft.requirements.find((requirement) => requirement.id === selectedRequirementId);
   const requirements = materialized.requirements.map((requirement, index) => {
-    const existing = byStatement.get(normalize(requirement.statement)) ?? (index === 0 ? selected : undefined);
+    const existing = existingById.get(mappedIds[index]!);
     return existing
       ? materializeRequirement(toRequirementInput(requirement), existing.id, existing.status === "superseded" ? "superseded" : undefined, existing)
       : requirement;
@@ -1022,6 +1043,7 @@ function applySemanticRequirementOperation(
   draft: GoalRequirementDraftV1,
   operation: GoalRequirementDraftRevisionOperationSemanticV1,
   selectedRequirementId?: string,
+  selectedRequirementIds?: string[],
 ): GoalRequirementDraftV1 {
   switch (operation.kind) {
     case "create":
@@ -1029,27 +1051,31 @@ function applySemanticRequirementOperation(
     case "update":
       return reviseGoalRequirementDraft(draft, {
         kind: "update",
-        requirementId: requireSelectedRequirementId(selectedRequirementId),
+        requirementId: requireSelectedRequirementId(selectedRequirementId ?? singleSelectedRequirementId(selectedRequirementIds)),
         patch: operation.patch,
       });
     case "supersede":
       return reviseGoalRequirementDraft(draft, {
         kind: "supersede",
-        requirementId: requireSelectedRequirementId(selectedRequirementId),
+        requirementId: requireSelectedRequirementId(selectedRequirementId ?? singleSelectedRequirementId(selectedRequirementIds)),
       });
     case "restore":
       return reviseGoalRequirementDraft(draft, {
         kind: "restore",
-        requirementId: requireSelectedRequirementId(selectedRequirementId),
+        requirementId: requireSelectedRequirementId(selectedRequirementId ?? singleSelectedRequirementId(selectedRequirementIds)),
       });
     case "split":
       return reviseGoalRequirementDraft(draft, {
         kind: "split",
-        requirementId: requireSelectedRequirementId(selectedRequirementId),
+        requirementId: requireSelectedRequirementId(selectedRequirementId ?? singleSelectedRequirementId(selectedRequirementIds)),
         requirements: operation.requirements,
       });
     case "merge":
-      throw new Error("merge revision requires host-selected multiple requirement ids");
+      return reviseGoalRequirementDraft(draft, {
+        kind: "merge",
+        requirementIds: requireSelectedRequirementIds(selectedRequirementIds),
+        requirement: operation.requirement,
+      });
     default:
       return assertNever(operation);
   }
@@ -1060,6 +1086,71 @@ function requireSelectedRequirementId(selectedRequirementId: string | undefined)
     throw new Error("revision operation requires a selected requirement id supplied by the host");
   }
   return selectedRequirementId;
+}
+
+function requireSelectedRequirementIds(selectedRequirementIds: string[] | undefined): string[] {
+  if (!selectedRequirementIds || selectedRequirementIds.length < 2) {
+    throw new Error("merge revision requires at least two host-selected requirement ids");
+  }
+  const unique = new Set(selectedRequirementIds);
+  if (unique.size !== selectedRequirementIds.length) throw new Error("merge revision host requirement ids must be unique");
+  return [...selectedRequirementIds];
+}
+
+function singleSelectedRequirementId(selectedRequirementIds: string[] | undefined): string | undefined {
+  return selectedRequirementIds?.length === 1 ? selectedRequirementIds[0] : undefined;
+}
+
+function revisionSelectionQuestion(
+  payload: Exclude<GoalRequirementDraftRevisionPayloadV1, { kind: "needs_input" }>,
+  selectedRequirementId: string | undefined,
+  selectedRequirementIds: string[] | undefined,
+): string | undefined {
+  if ("draft" in payload) {
+    const mappedIds = selectedRequirementIds ?? (selectedRequirementId === undefined ? undefined : [selectedRequirementId]);
+    if (!mappedIds) return "Select one host requirement for each edited requirement before applying a semantic replacement.";
+    if (mappedIds.length !== payload.draft.requirements.length) {
+      return "Select exactly one host requirement for each edited requirement before applying a semantic replacement.";
+    }
+    return undefined;
+  }
+  switch (payload.operation.kind) {
+    case "merge":
+      if (!selectedRequirementIds || selectedRequirementIds.length < 2) {
+        return "Select at least two host requirements before merging them.";
+      }
+      return undefined;
+    case "update":
+    case "supersede":
+    case "restore":
+    case "split":
+      if (selectedRequirementId === undefined && singleSelectedRequirementId(selectedRequirementIds) === undefined) {
+        return "Select one host requirement before applying this revision operation.";
+      }
+      return undefined;
+    case "create":
+      return undefined;
+    default:
+      return assertNever(payload.operation);
+  }
+}
+
+function validateHostSelection(
+  draft: GoalRequirementDraftV1,
+  selectedRequirementId: string | undefined,
+  selectedRequirementIds: string[] | undefined,
+): string | undefined {
+  const known = new Set(draft.requirements.map((requirement) => requirement.id));
+  if (selectedRequirementId !== undefined && !known.has(selectedRequirementId)) {
+    return `Selected requirement ${selectedRequirementId} is stale; choose an existing requirement before revising.`;
+  }
+  if (selectedRequirementIds !== undefined) {
+    const unique = new Set(selectedRequirementIds);
+    if (unique.size !== selectedRequirementIds.length) return "Selected requirements must be unique.";
+    const missing = selectedRequirementIds.find((id) => !known.has(id));
+    if (missing) return `Selected requirement ${missing} is stale; choose existing requirements before revising.`;
+  }
+  return undefined;
 }
 
 function parseJsonObject(text: unknown, label: string): Record<string, unknown> {
