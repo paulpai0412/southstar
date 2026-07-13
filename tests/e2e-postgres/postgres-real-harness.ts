@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage } from "node:http";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { Client } from "pg";
 import { initializeSouthstarSchema } from "../../src/v2/db/init.ts";
@@ -17,6 +17,7 @@ import { createRuntimeLoopRegistry } from "../../src/v2/server/runtime-loop-regi
 import { createSouthstarRuntimeServer, type SouthstarRuntimeServer } from "../../src/v2/server/http-server.ts";
 import { recordSandboxEvaluatorOutputPg } from "../../src/v2/evolution/sandbox.ts";
 import { createGithubLibraryImportSourceFetcher } from "../../src/v2/design-library/importers/library-source-fetcher.ts";
+import { prepareRuntimeLibraryPg } from "../../src/v2/server/runtime-server-lifecycle.ts";
 import type { WorkflowComposer } from "../../src/v2/orchestration/composer.ts";
 import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../../src/v2/orchestration/llm-composer.ts";
 import { loadSouthstarEnv } from "../../src/v2/config/env.ts";
@@ -443,6 +444,7 @@ export async function createRealRuntimeServer(input: {
   infra: RealPostgresInfra;
   workflowComposer?: WorkflowComposer;
   runRoot?: string;
+  libraryRoot?: string;
 }): Promise<SouthstarRuntimeServer> {
   const torkClient = new TorkClient({ baseUrl: input.infra.torkBaseUrl, requestTimeoutMs: 20_000, retryCount: 2 });
   const port = await freeTcpPort();
@@ -474,10 +476,13 @@ export async function createRealRuntimeServer(input: {
     heartbeatUrl: `${callbackBaseUrl}/api/v2/executor/heartbeat`,
     liveEventUrl: `${callbackBaseUrl}/api/v2/executor/live-event`,
   });
+  const libraryRoot = input.libraryRoot ?? resolve(process.cwd(), "library");
+  await prepareRuntimeLibraryPg(input.db, { libraryRoot });
   return await createSouthstarRuntimeServer({
     host: "0.0.0.0",
     port,
     db: input.db as never,
+    libraryRoot,
     plannerClient,
     workflowComposer,
     libraryImportSourceFetcher: createGithubLibraryImportSourceFetcher(),

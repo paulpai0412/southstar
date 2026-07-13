@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import test from "node:test";
 import { chromium, type Browser, type Page } from "playwright";
-import { syncLibraryFileToGraph } from "../../src/v2/design-library/files/library-file-store.ts";
+import { loadLibraryReadinessPg } from "../../src/v2/design-library/files/library-reconcile-service.ts";
+import { findLibraryObjectByKey } from "../../src/v2/design-library/library-graph-store.ts";
+import { loadGoalDesignSkillPg } from "../../src/v2/orchestration/goal-design.ts";
 import { getResourceByKeyPg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import {
   createInitializedRealPostgresE2E,
@@ -15,8 +17,10 @@ import {
   waitForPostgresRunStatus,
 } from "../e2e-postgres/postgres-real-harness.ts";
 
-const ROOT = join(import.meta.dirname, "../..");
-const WORKSPACE = process.env.SOUTHSTAR_CASE32_PROJECT_CWD ?? join(process.env.HOME ?? "/home/timmypai", "apps", "southstar-vocab");
+const ROOT = resolve(import.meta.dirname, "../..");
+const WORKSPACE = process.env.SOUTHSTAR_E2E_PROJECT_CWD
+  ?? process.env.SOUTHSTAR_CASE32_PROJECT_CWD
+  ?? join(process.env.HOME ?? "/home/timmypai", "apps", "southstar-vocab");
 const GOAL = "Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations.";
 const IMPORT_PROMPT = "Import library vocabulary candidates for this vocabulary-learning goal. Produce only the domain, capabilities, artifact contracts, and evaluator profiles needed to implement and verify the local flashcard vocabulary system. Do not invent external integrations.";
 
@@ -29,7 +33,6 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
   let browser: Browser | undefined;
 
   try {
-    await syncBaseLibrary(env.db);
     tork = await startIsolatedRealTork({
       postgresAdminUrl: env.adminUrl,
       materializationRoot,
@@ -39,10 +42,28 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
       callbackHost: process.env.SOUTHSTAR_CALLBACK_HOST,
     });
     await probeRealPostgresTorkPi(tork.infra);
-    runtime = await createRealRuntimeServer({ db: env.db, infra: tork.infra, runRoot: materializationRoot });
+    runtime = await createRealRuntimeServer({
+      db: env.db,
+      infra: tork.infra,
+      runRoot: materializationRoot,
+      libraryRoot: resolve(ROOT, "library"),
+    });
+    const readiness = await loadLibraryReadinessPg(env.db);
+    assert.equal(readiness?.ready, true);
+    assert.equal(readiness?.trigger, "startup");
+    const goalSkill = await loadGoalDesignSkillPg(env.db);
+    assert.ok(goalSkill.versionRef);
+    const goalSkillObject = await findLibraryObjectByKey(env.db, goalSkill.objectKey);
+    assert.equal(goalSkillObject?.state.purpose, "goal_design");
+    assert.match(String(goalSkillObject?.state.sourcePath), /^library\/skills\//);
     web = await startWebApp(runtime.url);
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    const workflowGenerateBodies: unknown[] = [];
+    page.on("request", (request) => {
+      if (!request.url().endsWith("/api/workflow/generate") || request.method() !== "POST") return;
+      workflowGenerateBodies.push(request.postDataJSON());
+    });
     const snapshotRoot = join(ROOT, "artifacts", "case32-browser");
     await mkdir(snapshotRoot, { recursive: true });
 
@@ -119,6 +140,11 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
     const confirmationResult = doneFrame(confirmationText) as { draftId?: string; runId?: string; draftStatus?: string };
     assert.equal(confirmationResult.draftStatus, "validated");
     assert.ok(confirmationResult.runId, "Goal confirmation must persist a run");
+    assert.ok(workflowGenerateBodies.length > 0);
+    for (const body of workflowGenerateBodies) {
+      const keys = JSON.stringify(body);
+      assert.doesNotMatch(keys, /"(?:skillBody|goalDesignSkill|goalDesignSkillId|composerSkillId)"/);
+    }
     await page.getByTestId("workflow-dag-block").last().waitFor({ state: "visible", timeout: 20 * 60 * 1000 });
     const dagText = await page.getByTestId("workflow-dag-block").last().innerText();
     assert.match(dagText, /DAG/);
@@ -169,31 +195,6 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
     await rm(materializationRoot, { recursive: true, force: true });
   }
 });
-
-async function syncBaseLibrary(db: Parameters<typeof syncLibraryFileToGraph>[0]): Promise<void> {
-  const libraryRoot = join(ROOT, "library");
-  for (const relativePath of [
-    "domains/software.domain.yaml",
-    "capabilities/repo-read.capability.yaml",
-    "capabilities/repo-write.capability.yaml",
-    "capabilities/test-execution.capability.yaml",
-    "artifacts/implementation-report.artifact.yaml",
-    "artifacts/verification-report.artifact.yaml",
-    "artifacts/completion-report.artifact.yaml",
-    "tools/workspace-read.tool.yaml",
-    "tools/workspace-write.tool.yaml",
-    "tools/test-runner.tool.yaml",
-    "mcp/filesystem-workspace.mcp.yaml",
-    "mcp/browser-playwright.mcp.yaml",
-    "skills/software-delivery.skill.md",
-    "skills/southstar-goal-design.skill.md",
-    "skills/southstar-slice-to-dag-composer.skill.md",
-    "agents/software-delivery-engineer.agent.md",
-    "evaluators/software-quality.evaluator.yaml",
-  ]) {
-    await syncLibraryFileToGraph(db, { root: libraryRoot, relativePath });
-  }
-}
 
 async function chooseCwd(page: Page, sidebarTestId: string): Promise<void> {
   const picker = page.getByTestId(sidebarTestId).getByTestId("project-scope-picker");
