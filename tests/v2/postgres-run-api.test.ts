@@ -55,6 +55,8 @@ import {
   reviseGoalDesignFromChatPg,
   reviseGoalSlicePg,
   reviseGoalRequirementPg,
+  loadCurrentUiInteractionContractPg,
+  reviseUiInteractionContractPg,
 } from "../../src/v2/orchestration/goal-design-draft-service.ts";
 import { finalizeGoalRequirementDraft, type GoalRequirementDraftInputV1 } from "../../src/v2/orchestration/goal-requirement-draft.ts";
 import {
@@ -122,6 +124,65 @@ test("Goal submission persists requirements_review before Slice design", async (
     assert.deepEqual((stored!.payload as Record<string, unknown>).validationIssues, []);
     assert.equal((stored!.summary as Record<string, unknown>).confirmable, true);
     assert.deepEqual((stored!.summary as Record<string, unknown>).validationIssues, []);
+  });
+});
+
+test("visual requirements remain unconfirmable until a versioned UI contract is confirmed", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const goalPrompt = "Create a review interaction";
+    const semanticDraft = visualRequirementDraft(goalPrompt, cwd);
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt,
+      cwd,
+      requirementInterpreter: {
+        async interpret() { return semanticDraft; },
+        async revise() { return { kind: "revision", draft: semanticDraft, summary: "unchanged" }; },
+      },
+    });
+    assert.equal(draft.confirmable, false);
+    assert.ok(draft.validationIssues.some((entry) => entry.code === "missing_ui_interaction_contract"));
+    await assert.rejects(
+      () => confirmGoalRequirementsPg(db, {
+        draftId: draft.draftId,
+        expectedDraftHash: draft.goalRequirementDraftHash,
+        goalContractMetadata: {
+          domain: "design/article",
+          intent: "review",
+          workType: "general",
+          expectedArtifactRefs: [],
+          requiredCapabilities: [],
+          assumptions: [],
+          requestedSideEffects: [],
+        },
+      }),
+      /goal_requirement_not_confirmable/,
+    );
+
+    const requirement = draft.goalRequirementDraft.requirements[0]!;
+    const created = await reviseUiInteractionContractPg(db, {
+      draftId: draft.draftId,
+      contractId: "ui-review",
+      contract: visualContractInput(requirement.id, requirement.acceptanceCriteria[0]!.id),
+    });
+    assert.equal(created.confirmable, false);
+    assert.ok(created.validationIssues.some((entry) => entry.code === "unconfirmed_ui_interaction_contract"));
+    const contract = created.uiInteractionContracts![0]!;
+    const confirmed = await reviseUiInteractionContractPg(db, {
+      draftId: draft.draftId,
+      contractId: contract.id,
+      expectedContractHash: contract.contractHash,
+      patch: { kind: "confirm" },
+    });
+    assert.equal(confirmed.confirmable, true);
+    assert.deepEqual(confirmed.validationIssues, []);
+    const current = await loadCurrentUiInteractionContractPg(db, { draftId: draft.draftId, contractId: "ui-review" });
+    assert.equal(current.status, "confirmed");
+    assert.equal(current.revision, 2);
+    assert.equal(current.parentRevision, 1);
+    assert.ok(await getResourceByKeyPg(db, "ui_interaction_contract_revision", `${draft.draftId}:ui-review:revision:1`));
+    assert.ok(await getResourceByKeyPg(db, "ui_interaction_contract_revision", `${draft.draftId}:ui-review:revision:2`));
   });
 });
 
@@ -3279,6 +3340,50 @@ function validGoalRequirementDraftInput(goalPrompt: string, cwd: string, project
     }],
     nonGoals: [],
     blockingInputs: [],
+  };
+}
+
+function visualRequirementDraft(goalPrompt: string, cwd: string) {
+  return finalizeGoalRequirementDraft({
+    goalPrompt,
+    cwd,
+    summary: "Review a card and reveal its answer.",
+    requirements: [{
+      title: "Review card",
+      statement: "A learner can reveal the answer for a card.",
+      source: "explicit",
+      blocking: true,
+      userVisibleBehaviors: ["The answer is hidden until requested."],
+      businessRules: [],
+      acceptanceCriteria: [{ statement: "Reveal changes question to answer state.", evidenceIntent: ["screen state"] }],
+      expectedOutcomeArtifacts: [{ description: "Review interaction" }],
+      verificationIntent: ["Exercise reveal."],
+      assumptions: [],
+      openQuestions: [],
+      riskTags: [],
+      interactionContractRefs: ["ui-review"],
+    }],
+    nonGoals: [],
+    blockingInputs: [],
+  });
+}
+
+function visualContractInput(requirementId: string, criterionId: string) {
+  return {
+    requirementIds: [requirementId],
+    screens: [{
+      id: "screen-review",
+      title: "Review",
+      purpose: "Review one card",
+      layout: { regions: [{ id: "region-main", role: "main" as const, position: "center" as const, childRefs: ["element-reveal"] }] },
+      elements: [{ id: "element-reveal", type: "button" as const, label: "Reveal", visibleInStates: ["question"], enabledInStates: ["question"] }],
+      states: ["question", "answer"],
+      actions: [{ id: "action-reveal", triggerElementId: "element-reveal", fromState: "question", toState: "answer", expectedEffect: "Show answer" }],
+      responsiveRules: ["Action remains visible on narrow screens."],
+      accessibilityRules: ["Action has a button role."],
+    }],
+    flows: [{ id: "flow-review", steps: ["action-reveal"], successOutcome: "Answer is visible" }],
+    criterionBindings: [{ criterionId, screenIds: ["screen-review"], elementIds: ["element-reveal"], actionIds: ["action-reveal"] }],
   };
 }
 

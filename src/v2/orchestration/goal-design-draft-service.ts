@@ -36,6 +36,16 @@ import {
   type GoalRequirementDraftRevisionPatchV1,
   type GoalRequirementDraftV1,
 } from "./goal-requirement-draft.ts";
+import {
+  finalizeUiInteractionContract,
+  persistUiInteractionContractRevisionPg,
+  reviseUiInteractionContract,
+  validateUiInteractionContract,
+  type UiInteractionContractInputV1,
+  type UiInteractionContractIssue,
+  type UiInteractionContractRevisionOperation,
+  type UiInteractionContractV1,
+} from "./ui-interaction-contract.ts";
 import { createLibraryImportDraft } from "../design-library/importers/library-import-draft-store.ts";
 import type { LibraryImportLlmProvider } from "../design-library/importers/library-llm-import-analyzer.ts";
 import type { LibraryImportSourceFetcher } from "../design-library/importers/library-source-fetcher.ts";
@@ -106,7 +116,8 @@ export type GoalRequirementReviewResult = {
   goalRequirementDraft: GoalRequirementDraftV1;
   goalRequirementDraftHash: string;
   confirmable: boolean;
-  validationIssues: GoalRequirementDraftIssue[];
+  validationIssues: GoalRequirementReviewIssue[];
+  uiInteractionContracts?: UiInteractionContractV1[];
   goalContract?: GoalContractV1;
   goalContractHash?: string;
   blockers: string[];
@@ -116,6 +127,21 @@ export type GoalRequirementReviewResult = {
     dagDraft: boolean;
   };
   validationGaps?: unknown[];
+};
+
+export type GoalRequirementReviewIssue = GoalRequirementDraftIssue | UiInteractionContractIssue | {
+  code: "missing_ui_interaction_contract" | "unconfirmed_ui_interaction_contract";
+  path: string;
+  message: string;
+};
+
+export type UiInteractionContractRevisionInput = {
+  draftId: string;
+  contractId: string;
+  expectedContractHash?: string;
+  contract?: UiInteractionContractInputV1;
+  patch?: UiInteractionContractRevisionOperation;
+  actor?: string;
 };
 
 export type GoalSliceReviewResult = {
@@ -230,6 +256,117 @@ export async function loadCurrentGoalRequirementDraftPg(
   return draft;
 }
 
+export async function loadCurrentUiInteractionContractPg(
+  db: SouthstarDb,
+  input: { draftId: string; contractId: string },
+): Promise<UiInteractionContractV1> {
+  const row = await db.maybeOne<{ payload_json: Record<string, unknown> }>(
+    "select payload_json from southstar.runtime_resources where resource_type = 'planner_draft' and resource_key = $1",
+    [input.draftId],
+  );
+  if (!row) throw new Error(`planner draft not found: ${input.draftId}`);
+  const draft = goalRequirementDraftFromStored(row.payload_json.goalRequirementDraft);
+  if (!draft) throw new Error(`Goal Requirement draft not found: ${input.draftId}`);
+  const contract = uiInteractionContractsFromStored(row.payload_json.uiInteractionContracts, draft)
+    .find((entry) => entry.id === input.contractId);
+  if (!contract) throw new Error(`UI interaction contract not found: ${input.contractId}`);
+  return contract;
+}
+
+/**
+ * Create or revise a goal-scoped visual contract in the existing planner
+ * draft. Semantic screen data may come from an LLM or structured UI, while
+ * this host path owns identity, lineage, validation, confirmation and hashes.
+ */
+export async function reviseUiInteractionContractPg(
+  db: SouthstarDb,
+  input: UiInteractionContractRevisionInput,
+): Promise<GoalRequirementReviewResult> {
+  return await db.tx(async (tx) => {
+    const row = await tx.maybeOne<PlannerDraftResourceRow>(
+      `select id, resource_key, run_id, task_id, session_id, scope, status, title,
+              payload_json, summary_json, metrics_json, expires_at
+         from southstar.runtime_resources
+        where resource_type = 'planner_draft' and resource_key = $1
+        for update`,
+      [input.draftId],
+    );
+    if (!row) throw new Error(`planner draft not found: ${input.draftId}`);
+    const payload = asRecord(row.payload_json);
+    const requirementDraft = goalRequirementDraftFromStored(payload.goalRequirementDraft);
+    if (!requirementDraft) throw new Error(`Goal Requirement draft not found: ${input.draftId}`);
+    const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
+    if (phase !== "requirements_review") throw new Error(`ui_interaction_contract_frozen: ${input.draftId}`);
+    await assertNoMaterializedGoalRequirementRunTx(tx, input.draftId);
+
+    const contracts = uiInteractionContractsFromStored(payload.uiInteractionContracts, requirementDraft);
+    const currentIndex = contracts.findIndex((entry) => entry.id === input.contractId);
+    let next: UiInteractionContractV1;
+    if (currentIndex < 0) {
+      if (!input.contract || input.patch) throw new Error("creating a UI interaction contract requires contract semantic content and no patch");
+      if (input.expectedContractHash !== undefined) throw new Error(`ui_interaction_contract_stale: ${input.contractId}`);
+      next = finalizeUiInteractionContract(input.contract, requirementDraft, { id: input.contractId });
+      contracts.push(next);
+    } else {
+      const current = contracts[currentIndex]!;
+      if (!input.expectedContractHash || current.contractHash !== input.expectedContractHash) {
+        throw new Error(`ui_interaction_contract_stale: ${input.contractId}`);
+      }
+      if (!input.patch || input.contract) throw new Error("revising a UI interaction contract requires exactly one structured patch");
+      next = reviseUiInteractionContract(current, input.patch, requirementDraft);
+      contracts[currentIndex] = next;
+    }
+    await persistUiInteractionContractRevisionPg(tx, {
+      draftId: input.draftId,
+      contract: next,
+      requirementDraft,
+      actor: input.actor,
+    });
+    const readiness = goalRequirementReviewReadiness(requirementDraft, phase, contracts);
+    const updatedPayload = {
+      ...payload,
+      uiInteractionContracts: contracts,
+      uiInteractionContractHashes: Object.fromEntries(contracts.map((entry) => [entry.id, entry.contractHash])),
+      confirmable: readiness.confirmable,
+      validationIssues: readiness.validationIssues,
+    };
+    const updatedSummary = {
+      ...row.summary_json,
+      confirmable: readiness.confirmable,
+      validationIssues: readiness.validationIssues,
+      uiInteractionContractCount: contracts.length,
+      confirmedUiInteractionContractCount: contracts.filter((entry) => entry.status === "confirmed").length,
+    };
+    await upsertRuntimeResourcePg(tx, {
+      id: row.id,
+      resourceType: "planner_draft",
+      resourceKey: input.draftId,
+      ...(row.run_id ? { runId: row.run_id } : {}),
+      ...(row.task_id ? { taskId: row.task_id } : {}),
+      ...(row.session_id ? { sessionId: row.session_id } : {}),
+      scope: row.scope,
+      status: row.status,
+      ...(row.title ? { title: row.title } : {}),
+      payload: updatedPayload,
+      summary: updatedSummary,
+      metrics: row.metrics_json,
+      ...(row.expires_at ? { expiresAt: row.expires_at } : {}),
+    });
+    return {
+      draftId: input.draftId,
+      goalRequirementDraftId: input.draftId,
+      status: "requirements_review",
+      phase: "requirements_review",
+      goalPrompt: requirementDraft.originalPrompt,
+      goalRequirementDraft: requirementDraft,
+      goalRequirementDraftHash: requirementDraft.draftHash,
+      ...readiness,
+      uiInteractionContracts: contracts,
+      blockers: requirementDraft.blockingInputs,
+    };
+  });
+}
+
 /**
  * Create the first durable Requirement Review draft. No Goal Contract,
  * evaluator binding, slice, or Composer work is performed here.
@@ -259,7 +396,8 @@ export async function preparePostgresGoalRequirementDraft(
   });
   assertGoalRequirementDraftMatchesRequest(draft, input);
   const draftId = `draft-goal-requirements-${draft.draftHash.slice(0, 12)}`;
-  const readiness = goalRequirementReviewReadiness(draft, "requirements_review");
+  const uiInteractionContracts: UiInteractionContractV1[] = [];
+  const readiness = goalRequirementReviewReadiness(draft, "requirements_review", uiInteractionContracts);
   await persistGoalRequirementDraftRevisionPg(db, { draftId, draft });
   await persistPlannerDraftResource(db, {
     resourceType: "planner_draft",
@@ -282,6 +420,8 @@ export async function preparePostgresGoalRequirementDraft(
       goalDesignSkillRef: skill.objectKey,
       goalDesignSkillVersionRef: skill.versionRef,
       workspaceDiscoveryHash: workspaceDiscovery.discoveryHash,
+      uiInteractionContracts,
+      uiInteractionContractHashes: {},
       confirmable: readiness.confirmable,
       validationIssues: readiness.validationIssues,
     },
@@ -316,6 +456,7 @@ export async function preparePostgresGoalRequirementDraft(
     goalRequirementDraft: draft,
     goalRequirementDraftHash: draft.draftHash,
     ...readiness,
+    uiInteractionContracts,
     blockers: draft.blockingInputs,
   };
   input.onProgress?.({
@@ -365,14 +506,17 @@ export async function reviseGoalRequirementPg(
     invalidated.slicePlan ||= Boolean(payload.slicePlan || payload.goalDesignPackage || payload.goalDesignPackageHash);
     invalidated.dagDraft ||= Boolean(payload.workflow || payload.workflowManifest || payload.composition);
     const nextPayload = withoutGoalRequirementDerived(payload);
+    const uiInteractionContracts: UiInteractionContractV1[] = [];
+    const readiness = goalRequirementReviewReadiness(next, "requirements_review", uiInteractionContracts);
     const updatedPayload = {
       ...nextPayload,
       goalRequirementDraft: next,
       goalRequirementDraftHash: next.draftHash,
       goalDesignPhase: "requirements_review" satisfies GoalDesignPhase,
-      ...goalRequirementReviewReadiness(next, "requirements_review"),
+      uiInteractionContracts,
+      uiInteractionContractHashes: {},
+      ...readiness,
     };
-    const readiness = goalRequirementReviewReadiness(next, "requirements_review");
     const updatedSummary = {
       ...row.summary_json,
       status: "requirements_review",
@@ -407,6 +551,7 @@ export async function reviseGoalRequirementPg(
       goalRequirementDraft: next,
       goalRequirementDraftHash: next.draftHash,
       ...readiness,
+      uiInteractionContracts,
       blockers: next.blockingInputs,
       invalidated,
     };
@@ -475,6 +620,11 @@ export async function confirmGoalRequirementsPg(
     throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
   }
   const preflightPhase = goalDesignPhaseFromPayload(preflightPayload) ?? "requirements_review";
+  const preflightUiContracts = uiInteractionContractsFromStored(preflightPayload.uiInteractionContracts, preflightDraft);
+  if (preflightPhase === "requirements_review") {
+    const readiness = goalRequirementReviewReadiness(preflightDraft, preflightPhase, preflightUiContracts);
+    if (!readiness.confirmable) throw new Error(`goal_requirement_not_confirmable: ${JSON.stringify(readiness.validationIssues)}`);
+  }
   const preflightContract = storedGoalContract(preflightPayload.goalContract);
   if (!preflightContract || !["validation_resolving", "library_review", "validation_ready"].includes(preflightPhase)) {
     if (preflightPhase !== "requirements_review" && preflightPhase !== "requirements_confirmed") {
@@ -502,6 +652,7 @@ export async function confirmGoalRequirementsPg(
       throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
     }
     const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
+    const uiInteractionContracts = uiInteractionContractsFromStored(payload.uiInteractionContracts, current);
     const existingContract = storedGoalContract(payload.goalContract);
     if (existingContract && ["validation_resolving", "library_review", "validation_ready"].includes(phase)) {
       return {
@@ -512,7 +663,8 @@ export async function confirmGoalRequirementsPg(
         goalPrompt: current.originalPrompt,
         goalRequirementDraft: current,
         goalRequirementDraftHash: current.draftHash,
-        ...goalRequirementReviewReadiness(current, phase),
+        ...goalRequirementReviewReadiness(current, phase, uiInteractionContracts),
+        uiInteractionContracts,
         goalContract: existingContract,
         goalContractHash: goalContractHash(existingContract),
         blockers: current.blockingInputs,
@@ -522,13 +674,19 @@ export async function confirmGoalRequirementsPg(
     if (phase !== "requirements_review" && phase !== "requirements_confirmed") {
       throw new Error(`goal requirements cannot be confirmed in phase ${phase}: ${input.draftId}`);
     }
+    if (phase === "requirements_review") {
+      const confirmationReadiness = goalRequirementReviewReadiness(current, phase, uiInteractionContracts);
+      if (!confirmationReadiness.confirmable) {
+        throw new Error(`goal_requirement_not_confirmable: ${JSON.stringify(confirmationReadiness.validationIssues)}`);
+      }
+    }
     if (!preflightMetadata) {
       throw new Error(`goal requirements confirmation metadata was superseded: ${input.draftId}`);
     }
     const metadata = preflightMetadata;
     const contract = confirmGoalRequirementDraft(current, metadata);
     const contractHash = goalContractHash(contract);
-    const readiness = goalRequirementReviewReadiness(current, "validation_resolving");
+    const readiness = goalRequirementReviewReadiness(current, "validation_resolving", uiInteractionContracts);
     await upsertRuntimeResourcePg(tx, {
       resourceType: "goal_contract_confirmation",
       resourceKey: input.draftId,
@@ -603,6 +761,7 @@ export async function confirmGoalRequirementsPg(
       goalRequirementDraft: current,
       goalRequirementDraftHash: current.draftHash,
       ...readiness,
+      uiInteractionContracts,
       goalContract: contract,
       goalContractHash: contractHash,
       blockers: current.blockingInputs,
@@ -1433,6 +1592,8 @@ function withoutGoalRequirementDerived(payload: Record<string, unknown>): Record
     goalValidationResolution: _goalValidationResolution,
     validationGaps: _validationGaps,
     libraryImportDraftId: _libraryImportDraftId,
+    uiInteractionContracts: _uiInteractionContracts,
+    uiInteractionContractHashes: _uiInteractionContractHashes,
     ...rest
   } = payload;
   return rest;
@@ -1463,7 +1624,7 @@ async function markRequirementDerivedResourcesStaleTx(
     `update southstar.runtime_resources
         set status = 'stale', payload_json = payload_json || $2::jsonb,
             summary_json = summary_json || $2::jsonb, updated_at = now()
-      where resource_type in ('goal_contract_confirmation', 'goal_validation_resolution', 'goal_validation_resolution_revision', 'goal_requirement_validation_binding')
+      where resource_type in ('goal_contract_confirmation', 'goal_validation_resolution', 'goal_validation_resolution_revision', 'goal_requirement_validation_binding', 'ui_interaction_contract_revision')
         and (
           resource_key = $1
           or payload_json->>'draftId' = $1
@@ -1625,12 +1786,44 @@ const GOAL_DESIGN_PHASES = new Set<GoalDesignPhase>([
 function goalRequirementReviewReadiness(
   draft: GoalRequirementDraftV1,
   phase: GoalDesignPhase,
+  contracts: UiInteractionContractV1[] = [],
 ): Pick<GoalRequirementReviewResult, "confirmable" | "validationIssues"> {
   const readiness = goalRequirementDraftReadiness(draft);
+  const uiIssues = uiInteractionContractReadinessIssues(draft, contracts);
+  const issues: GoalRequirementReviewIssue[] = [...readiness.issues, ...uiIssues];
   return {
-    confirmable: phase === "requirements_review" && readiness.confirmable,
-    validationIssues: readiness.issues,
+    confirmable: phase === "requirements_review" && issues.length === 0,
+    validationIssues: issues,
   };
+}
+
+function uiInteractionContractsFromStored(value: unknown, draft: GoalRequirementDraftV1): UiInteractionContractV1[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is UiInteractionContractV1 => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    return validateUiInteractionContract(entry as UiInteractionContractV1, draft).length === 0;
+  }).map((entry) => structuredClone(entry));
+}
+
+function uiInteractionContractReadinessIssues(
+  draft: GoalRequirementDraftV1,
+  contracts: UiInteractionContractV1[],
+): GoalRequirementReviewIssue[] {
+  const issues: GoalRequirementReviewIssue[] = [];
+  const byId = new Map(contracts.map((entry) => [entry.id, entry]));
+  for (const [requirementIndex, requirement] of draft.requirements.entries()) {
+    if (requirement.status === "superseded") continue;
+    for (const [refIndex, contractId] of requirement.interactionContractRefs.entries()) {
+      const path = `requirements.${requirementIndex}.interactionContractRefs.${refIndex}`;
+      const contract = byId.get(contractId);
+      if (!contract) {
+        issues.push({ code: "missing_ui_interaction_contract", path, message: `UI interaction contract is not available: ${contractId}` });
+      } else if (contract.status !== "confirmed") {
+        issues.push({ code: "unconfirmed_ui_interaction_contract", path, message: `UI interaction contract is not confirmed: ${contractId}` });
+      }
+    }
+  }
+  return issues;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

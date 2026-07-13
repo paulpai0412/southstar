@@ -44,8 +44,14 @@ import {
   designAndPersistGoalSlicesPg,
   reviseGoalRequirementPg,
   reviseGoalRequirementFromChatPg,
+  loadCurrentUiInteractionContractPg,
+  reviseUiInteractionContractPg,
   type GoalSlicePatchV1,
 } from "../orchestration/goal-design-draft-service.ts";
+import type {
+  UiInteractionContractInputV1,
+  UiInteractionContractRevisionOperation,
+} from "../orchestration/ui-interaction-contract.ts";
 import { resolveAndPersistGoalValidationPg } from "../orchestration/goal-validation-lifecycle.ts";
 import {
   createPostgresRunFromDraft,
@@ -159,6 +165,41 @@ export async function handlePlannerRoute(
         requirementId,
         expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
         patch,
+        actor: optionalString(body.actor),
+      }));
+    } catch (error) {
+      return goalRequirementRevisionErrorResponse(error);
+    }
+  }
+
+  const uiContractMatch = url.pathname.match(/^\/api\/v2\/planner\/drafts\/([^/]+)\/ui-contracts\/([^/]+)$/);
+  if (request.method === "GET" && uiContractMatch) {
+    try {
+      return json("ui-interaction-contract", await loadCurrentUiInteractionContractPg(context.db, {
+        draftId: decodeURIComponent(uiContractMatch[1]!),
+        contractId: decodeURIComponent(uiContractMatch[2]!),
+      }));
+    } catch (error) {
+      return goalRequirementRevisionErrorResponse(error);
+    }
+  }
+  if (request.method === "PATCH" && uiContractMatch) {
+    const body = await readJsonBody<{
+      expectedContractHash?: unknown;
+      contract?: unknown;
+      patch?: unknown;
+      actor?: unknown;
+    }>(request);
+    try {
+      const contract = body.contract === undefined ? undefined : parseUiInteractionContractInput(body.contract);
+      const patch = body.patch === undefined ? undefined : parseUiInteractionContractPatch(body.patch);
+      if ((contract ? 1 : 0) + (patch ? 1 : 0) !== 1) throw new Error("exactly one of contract or patch is required");
+      return json("goal-requirement-draft", await reviseUiInteractionContractPg(context.db, {
+        draftId: decodeURIComponent(uiContractMatch[1]!),
+        contractId: decodeURIComponent(uiContractMatch[2]!),
+        ...(body.expectedContractHash !== undefined ? { expectedContractHash: requiredString(body.expectedContractHash, "expectedContractHash") } : {}),
+        ...(contract ? { contract } : {}),
+        ...(patch ? { patch } : {}),
         actor: optionalString(body.actor),
       }));
     } catch (error) {
@@ -948,6 +989,72 @@ function parseGoalSlicePatch(value: unknown): GoalSlicePatchV1 {
   return patch;
 }
 
+function parseUiInteractionContractInput(value: unknown): UiInteractionContractInputV1 {
+  if (!isRecord(value)) throw new Error("contract must be an object");
+  assertAllowedFields(value, ["requirementIds", "screens", "flows", "criterionBindings"], "contract");
+  if (!Array.isArray(value.screens) || !Array.isArray(value.flows) || !Array.isArray(value.criterionBindings)) {
+    throw new Error("contract screens, flows, and criterionBindings must be arrays");
+  }
+  return {
+    requirementIds: parseRequiredStringArray(value.requirementIds, "contract.requirementIds"),
+    screens: structuredClone(value.screens) as UiInteractionContractInputV1["screens"],
+    flows: structuredClone(value.flows) as UiInteractionContractInputV1["flows"],
+    criterionBindings: structuredClone(value.criterionBindings) as UiInteractionContractInputV1["criterionBindings"],
+  };
+}
+
+function parseUiInteractionContractPatch(value: unknown): UiInteractionContractRevisionOperation {
+  if (!isRecord(value)) throw new Error("patch must be an object");
+  const kind = requiredString(value.kind, "patch.kind");
+  if (kind === "confirm") {
+    assertAllowedFields(value, ["kind"], "patch");
+    return { kind };
+  }
+  if (kind === "replace") {
+    assertAllowedFields(value, ["kind", "contract"], "patch");
+    return { kind, contract: parseUiInteractionContractInput(value.contract) };
+  }
+  if (kind === "update_element") {
+    assertAllowedFields(value, ["kind", "screenId", "elementId", "patch"], "patch");
+    if (!isRecord(value.patch)) throw new Error("patch.patch must be an object");
+    assertAllowedFields(value.patch, ["type", "label", "visibleInStates", "enabledInStates"], "patch.patch");
+    return {
+      kind,
+      screenId: requiredString(value.screenId, "patch.screenId"),
+      elementId: requiredString(value.elementId, "patch.elementId"),
+      patch: structuredClone(value.patch),
+    } as UiInteractionContractRevisionOperation;
+  }
+  if (kind === "update_action") {
+    assertAllowedFields(value, ["kind", "screenId", "actionId", "patch"], "patch");
+    if (!isRecord(value.patch)) throw new Error("patch.patch must be an object");
+    assertAllowedFields(value.patch, ["triggerElementId", "fromState", "toState", "targetScreenId", "expectedEffect"], "patch.patch");
+    return {
+      kind,
+      screenId: requiredString(value.screenId, "patch.screenId"),
+      actionId: requiredString(value.actionId, "patch.actionId"),
+      patch: structuredClone(value.patch),
+    } as UiInteractionContractRevisionOperation;
+  }
+  if (kind === "update_screen") {
+    assertAllowedFields(value, ["kind", "screenId", "patch"], "patch");
+    if (!isRecord(value.patch)) throw new Error("patch.patch must be an object");
+    assertAllowedFields(value.patch, ["title", "purpose", "responsiveRules", "accessibilityRules"], "patch.patch");
+    return {
+      kind,
+      screenId: requiredString(value.screenId, "patch.screenId"),
+      patch: structuredClone(value.patch),
+    } as UiInteractionContractRevisionOperation;
+  }
+  throw new Error("patch.kind must be replace, update_element, update_action, update_screen, or confirm");
+}
+
+function assertAllowedFields(value: Record<string, unknown>, allowed: string[], path: string): void {
+  const allowedSet = new Set(allowed);
+  const unknown = Object.keys(value).filter((key) => !allowedSet.has(key));
+  if (unknown.length > 0) throw new Error(`${path} contains unsupported fields: ${unknown.join(", ")}`);
+}
+
 function parseGoalRequirementPatch(value: unknown): GoalRequirementDraftRevisionPatchV1 | GoalRequirementDraftRevisionOperation {
   if (!isRecord(value)) throw new Error("patch must be an object");
   if (typeof value.kind === "string") {
@@ -1066,6 +1173,8 @@ function goalRequirementRevisionErrorResponse(error: unknown): Response {
     || message.includes("goal_requirement_route_target_conflict")
     || message.includes("goal_requirements_already_materialized")
     || message.includes("goal_requirements_frozen")
+    || message.includes("ui_interaction_contract_stale")
+    || message.includes("ui_interaction_contract_frozen")
     || message.includes("cannot be confirmed in phase")
   ) {
     return errorJson(message, 409);
@@ -1078,10 +1187,16 @@ function goalRequirementRevisionErrorResponse(error: unknown): Response {
     || message.includes("Goal Requirement interpreter returned")
     || message.includes("goal_requirement_contract_metadata_missing")
     || message.includes("goal_requirement_contract_metadata_invalid")
+    || message.includes("invalid UI interaction contract")
+    || message.includes("UI interaction contract operation")
+    || message.includes("exactly one of contract or patch")
+    || message.includes("creating a UI interaction contract")
+    || message.includes("revising a UI interaction contract")
+    || message.includes("goal_requirement_not_confirmable")
   ) {
     return errorJson(message, 422);
   }
-  if (message.includes("Goal Requirement draft not found") || message.includes("planner draft not found")) {
+  if (message.includes("Goal Requirement draft not found") || message.includes("planner draft not found") || message.includes("UI interaction contract not found")) {
     return errorJson(message, 404);
   }
   throw error;
