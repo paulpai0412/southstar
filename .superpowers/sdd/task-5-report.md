@@ -369,3 +369,29 @@ Final verification:
 
 - `npx tsx --test tests/v2/library-file-store.test.ts tests/v2/library-reconcile-postgres.test.ts tests/v2/library-candidate-resolver.test.ts tests/v2/goal-validation-resolver.test.ts tests/v2/library-object-lifecycle.test.ts` — 42/42 pass.
 - `npx tsc --noEmit --pretty false` and `git diff --check` — pass.
+
+## Final Task 5 lifecycle verdict at 8795842
+
+Spec Compliance: **PASS**.
+
+The final lifecycle requirements are satisfied:
+
+- Artifact repin handles both `validates_artifact` and `validates` in one
+  transaction, keeps old rows inactive for audit, preserves metadata/scope/
+  weight, and leaves the v1→v2 resolver path `ready=true`.
+- File sync and operator deprecate/block transitions call the same narrowly
+  scoped `deactivateValidationEdgesForSource()` helper. It targets only the two
+  validation edge types, so ordinary agent/tool/capability edges are not
+  blanket-deactivated; metadata-less validation rows are also covered.
+- The source filter remains fail-closed: only approved evaluator profiles with
+  current heads can be repinned. Existing ordinary-edge reconciliation keeps
+  declared non-validation edges intact.
+- Lifecycle regression coverage passes: 35/35 for the requested file/store/
+  resolver suite, plus 7/7 lifecycle tests (42/42 combined as reported).
+  TypeScript and diff checks pass.
+
+Quality assessment: **ready for Task 5 handoff**. The implementation is
+transactional, version-pinned, audit-preserving, and avoids fixture/seed or
+domain-specific runtime behavior. A separate ordinary-edge assertion would be
+useful future coverage, but the production SQL edge-type filter is explicit and
+the requested safety boundary is enforced.
