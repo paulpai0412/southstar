@@ -254,9 +254,20 @@ async function reviseGoalRequirementDraftWithLlm(input: {
   | { kind: "revision"; draft: GoalRequirementDraftV1; summary: string }
   | { kind: "needs_input"; question: string }
 > {
-  const selectionIssue = validateHostSelection(input.currentDraft, input.selectedRequirementId, input.selectedRequirementIds);
+  const normalizedSelection = normalizeHostSelection(input.selectedRequirementId, input.selectedRequirementIds);
+  if (normalizedSelection.kind === "needs_input") return normalizedSelection;
+  const revisionInput = {
+    ...input,
+    selectedRequirementId: normalizedSelection.selectedRequirementId,
+    selectedRequirementIds: normalizedSelection.selectedRequirementIds,
+  };
+  const selectionIssue = validateHostSelection(
+    input.currentDraft,
+    revisionInput.selectedRequirementId,
+    revisionInput.selectedRequirementIds,
+  );
   if (selectionIssue) return { kind: "needs_input", question: selectionIssue };
-  const basePrompt = renderRequirementRevisionPrompt(input);
+  const basePrompt = renderRequirementRevisionPrompt(revisionInput);
   let prompt = basePrompt;
   const maxOutputChars = input.maxOutputChars ?? MAX_REQUIREMENT_RESPONSE_CHARS;
   for (let attempt = 1; attempt <= MAX_REQUIREMENT_ATTEMPTS; attempt += 1) {
@@ -281,15 +292,24 @@ async function reviseGoalRequirementDraftWithLlm(input: {
       if (response.length > maxOutputChars) throw new Error(`response exceeds ${maxOutputChars} characters`);
       const payload = parseRequirementRevisionPayload(response);
       if (payload.kind === "needs_input") return payload;
-      const payloadSelectionIssue = revisionSelectionQuestion(payload, input.selectedRequirementId, input.selectedRequirementIds);
+      const payloadSelectionIssue = revisionSelectionQuestion(
+        payload,
+        revisionInput.selectedRequirementId,
+        revisionInput.selectedRequirementIds,
+      );
       if (payloadSelectionIssue) return { kind: "needs_input", question: payloadSelectionIssue };
       const result = "draft" in payload
-        ? applySemanticRequirementRevision(input.currentDraft, payload.draft, input.selectedRequirementId, input.selectedRequirementIds)
+        ? applySemanticRequirementRevision(
+          input.currentDraft,
+          payload.draft,
+          revisionInput.selectedRequirementId,
+          revisionInput.selectedRequirementIds,
+        )
         : applySemanticRequirementOperation(
           input.currentDraft,
           payload.operation,
-          input.selectedRequirementId,
-          input.selectedRequirementIds,
+          revisionInput.selectedRequirementId,
+          revisionInput.selectedRequirementIds,
         );
       for (const delta of deltas) input.onDelta?.(delta);
       const draft = result;
@@ -1179,6 +1199,24 @@ function validateHostSelection(
     if (missing) return `Selected requirement ${missing} is stale; choose existing requirements before revising.`;
   }
   return undefined;
+}
+
+function normalizeHostSelection(
+  selectedRequirementId: string | undefined,
+  selectedRequirementIds: string[] | undefined,
+):
+  | { kind: "selection"; selectedRequirementId: string | undefined; selectedRequirementIds: string[] | undefined }
+  | { kind: "needs_input"; question: string } {
+  if (selectedRequirementId === undefined || selectedRequirementIds === undefined) {
+    return { kind: "selection", selectedRequirementId, selectedRequirementIds };
+  }
+  if (selectedRequirementIds.length === 1 && selectedRequirementIds[0] === selectedRequirementId) {
+    return { kind: "selection", selectedRequirementId, selectedRequirementIds: undefined };
+  }
+  return {
+    kind: "needs_input",
+    question: "Choose either one requirement or multiple requirements before revising; the current host selections conflict.",
+  };
 }
 
 function parseJsonObject(text: unknown, label: string): Record<string, unknown> {

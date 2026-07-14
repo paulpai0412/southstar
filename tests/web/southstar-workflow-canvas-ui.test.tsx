@@ -1265,6 +1265,40 @@ test("Goal Requirements projection rejects an equal-revision late review frame",
   });
 });
 
+test("Goal Requirements projection keeps the complete Goal Design phase order monotonic", async () => {
+  const { goalRequirementsContentShouldReplace } = await import("../../web/components/GoalRequirementListBlock.tsx");
+  const draft = requirementDraftView();
+  const base = {
+    type: "goalRequirements" as const,
+    draftId: "draft-goal-1",
+    goalRequirementDraftHash: "hash-1",
+    draft,
+    confirmable: false,
+    validationIssues: [],
+  };
+  const orderedPhases = [
+    "requirements_review",
+    "requirements_confirmed",
+    "validation_resolving",
+    "library_review",
+    "validation_ready",
+    "slice_review",
+    "ready_to_compose",
+    "composing",
+    "dag_validated",
+  ];
+  for (let index = 1; index < orderedPhases.length; index += 1) {
+    assert.equal(goalRequirementsContentShouldReplace(
+      { ...base, status: orderedPhases[index - 1]! },
+      { ...base, status: orderedPhases[index]! },
+    ), true, `${orderedPhases[index]} should replace ${orderedPhases[index - 1]}`);
+  }
+  assert.equal(goalRequirementsContentShouldReplace(
+    { ...base, status: "dag_validated" },
+    { ...base, status: "ready_to_compose" },
+  ), false);
+});
+
 test("AppShell confirmation projection rejects a requirements_review response before mutation", async () => {
   await withBrowserHarness(`
     import React from "react";

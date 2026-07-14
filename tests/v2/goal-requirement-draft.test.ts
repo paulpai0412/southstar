@@ -290,6 +290,69 @@ test("stale host selection returns needs_input without streaming semantic output
   assert.deepEqual(deltas, []);
 });
 
+test("equivalent singular and plural host selections are normalized before prompting the LLM", async () => {
+  const current = validDraft();
+  const selectedRequirementId = current.requirements[0]!.id;
+  const prompts: string[] = [];
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-normalized-selection",
+    client: {
+      async generateText({ prompt }) {
+        prompts.push(prompt);
+        return JSON.stringify({
+          kind: "revision",
+          summary: "Updated the selected requirement.",
+          operation: {
+            kind: "update",
+            patch: { statement: "The article opens offline from local storage" },
+          },
+        });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: current,
+    message: "clarify the selected requirement",
+    selectedRequirementId,
+    selectedRequirementIds: [selectedRequirementId],
+  });
+  assert.equal(result.kind, "revision");
+  assert.match(prompts[0] ?? "", new RegExp(`SelectedRequirementId \\(host context only\\): ${selectedRequirementId}`));
+  assert.match(prompts[0] ?? "", /SelectedRequirementIds \(host context only\): \[\]/);
+});
+
+test("conflicting singular and plural host selections require clarification before calling the LLM", async () => {
+  const first = validDraft();
+  const current = reviseGoalRequirementDraft(first, {
+    kind: "create",
+    requirement: {
+      ...validInput().requirements[0]!,
+      title: "Reader navigation",
+      statement: "The reader can navigate the article",
+    },
+  });
+  let calls = 0;
+  const interpreter = createLlmGoalRequirementDraftInterpreter({
+    model: "inline-conflicting-selection",
+    client: {
+      async generateText() {
+        calls += 1;
+        return JSON.stringify({ kind: "needs_input", question: "choose" });
+      },
+    },
+  });
+  const result = await interpreter.revise({
+    currentDraft: current,
+    message: "revise the selection",
+    selectedRequirementId: current.requirements[0]!.id,
+    selectedRequirementIds: current.requirements.map((requirement) => requirement.id),
+  });
+  assert.equal(result.kind, "needs_input");
+  if (result.kind !== "needs_input") assert.fail("expected needs_input");
+  assert.match(result.question, /choose either one requirement or multiple requirements/i);
+  assert.equal(calls, 0);
+});
+
 test("LLM clarification response is returned without forwarding semantic deltas", async () => {
   const deltas: string[] = [];
   const interpreter = createLlmGoalRequirementDraftInterpreter({

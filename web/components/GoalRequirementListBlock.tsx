@@ -242,9 +242,15 @@ export function goalRequirementsConfirmationFromUnknown(
 function goalRequirementPhaseRank(status: string): number {
   switch (status) {
     case "requirements_review": return 0;
-    case "validation_resolving": return 1;
-    case "validation_ready": return 2;
-    default: return 0;
+    case "requirements_confirmed": return 1;
+    case "validation_resolving": return 2;
+    case "library_review": return 3;
+    case "validation_ready": return 4;
+    case "slice_review": return 5;
+    case "ready_to_compose": return 6;
+    case "composing": return 7;
+    case "dag_validated": return 8;
+    default: return -1;
   }
 }
 
