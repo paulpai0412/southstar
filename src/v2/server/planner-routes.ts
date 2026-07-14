@@ -582,6 +582,7 @@ function sendGoalDesignConfirmationResultFrames(
     draftStatus: result.draftStatus,
     ...(result.goalContractHash ? { goalContractHash: result.goalContractHash } : {}),
     goalDesignPackageHash: result.goalDesignPackageHash,
+    goalDesignPhase: result.goalDesignPhase,
     blockers: result.blockers,
   });
   if (result.runId) {
@@ -1150,6 +1151,7 @@ function goalDesignRevisionErrorResponse(error: unknown): Response {
   if (
     message.includes("goal_design_package_stale")
     || message.includes("goal_design_already_materialized")
+    || message.includes("goal_design_frozen")
     || message.includes("not ready for review")
   ) {
     return errorJson(message, 409);

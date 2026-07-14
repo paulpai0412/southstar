@@ -14,6 +14,7 @@ import {
   loadCurrentGoalDesignPackagePg,
   preparePostgresGoalRequirementDraft,
   preparePostgresGoalDesignDraft,
+  type GoalDesignPhase,
   type GoalRequirementReviewIssue,
   type GoalRequirementReviewResult,
 } from "./goal-design-draft-service.ts";
@@ -387,9 +388,26 @@ export async function continueGoalDesignToRunPg(
     return prepared.result;
   }
 
-  const observedStages: string[] = [];
+  const observedStages: string[] = ["goal_design.ready_to_compose"];
   let composedDraft: Awaited<ReturnType<typeof createPostgresPlannerDraft>>;
   try {
+    await transitionGoalDesignPhasePg(context.db, {
+      draftId: input.draftId,
+      expectedPackageHash: input.expectedPackageHash,
+      allowedFrom: ["ready_to_compose"],
+      to: "composing",
+      reason: "composition_started",
+      confirmationId: prepared.confirmationId,
+    });
+    observedStages.push("goal_design.composing");
+    context.onStage?.("goal_design.ready_to_compose", {
+      draftId: input.draftId,
+      goalDesignPackageHash: input.expectedPackageHash,
+    });
+    context.onStage?.("goal_design.composing", {
+      draftId: input.draftId,
+      goalDesignPackageHash: input.expectedPackageHash,
+    });
     if (prepared.package.compositionStrategy.mode === "per-slice-runs") {
       const executionSet = await materializeGoalExecutionSetPg(context, {
         draftId: input.draftId,
@@ -404,6 +422,7 @@ export async function continueGoalDesignToRunPg(
         goalDesignPackageHash: prepared.package.packageHash,
         draftId: input.draftId,
         draftStatus: "validated",
+        goalDesignPhase: "dag_validated",
         executionSetId: executionSet.id,
         sliceRuns: executionSet.entries.map((entry) => ({
           sliceId: entry.sliceId,
@@ -413,7 +432,28 @@ export async function continueGoalDesignToRunPg(
         })),
         blockers: [],
       };
-      await completeConfirmationPg(context.db, prepared.confirmationId, result, ["goal_execution_set.materialized", "done"]);
+      await context.db.tx(async (tx) => {
+        await transitionGoalDesignPhaseTx(tx, {
+          draftId: input.draftId,
+          expectedPackageHash: input.expectedPackageHash,
+          allowedFrom: ["composing"],
+          to: "dag_validated",
+          reason: "execution_set_validated",
+          confirmationId: prepared.confirmationId,
+          details: { goalExecutionSetId: executionSet.id },
+        });
+        await completeConfirmationPg(tx, prepared.confirmationId, result, [
+          ...observedStages,
+          "goal_execution_set.materialized",
+          "dag.validated",
+          "done",
+        ]);
+      });
+      context.onStage?.("dag.validated", {
+        draftId: input.draftId,
+        goalDesignPackageHash: input.expectedPackageHash,
+        goalExecutionSetId: executionSet.id,
+      });
       return result;
     }
     composedDraft = await createPostgresPlannerDraft(context.db, {
@@ -431,7 +471,13 @@ export async function continueGoalDesignToRunPg(
       },
     });
   } catch (error) {
-    await failConfirmationPg(context.db, prepared.confirmationId, error, observedStages);
+    await failGoalDesignConfirmationPg(context.db, {
+      draftId: input.draftId,
+      expectedPackageHash: input.expectedPackageHash,
+      confirmationId: prepared.confirmationId,
+      error,
+      stages: observedStages,
+    });
     throw error;
   }
 
@@ -446,40 +492,78 @@ export async function continueGoalDesignToRunPg(
       goalDesignPackageHash: prepared.package.packageHash,
       draftId: composedDraft.draftId,
       draftStatus,
+      goalDesignPhase: "ready_to_compose",
       blockers: composedDraft.blockers,
       ...(prepared.goalRequirementDraftId ? { goalRequirementDraftId: prepared.goalRequirementDraftId } : {}),
       ...(prepared.goalRequirementDraftHash ? { goalRequirementDraftHash: prepared.goalRequirementDraftHash } : {}),
       ...(composedDraft.vocabularyGaps ? { vocabularyGaps: composedDraft.vocabularyGaps } : {}),
       ...(composedDraft.libraryImportDraftId ? { libraryImportDraftId: composedDraft.libraryImportDraftId } : {}),
     };
-    await completeConfirmationPg(context.db, prepared.confirmationId, result, [...observedStages, "done"]);
+    await context.db.tx(async (tx) => {
+      await transitionGoalDesignPhaseTx(tx, {
+        draftId: input.draftId,
+        expectedPackageHash: input.expectedPackageHash,
+        allowedFrom: ["composing"],
+        to: "ready_to_compose",
+        reason: "composition_not_validated",
+        confirmationId: prepared.confirmationId,
+        details: { composedDraftId: composedDraft.draftId, composedDraftStatus: draftStatus },
+      });
+      await completeConfirmationPg(tx, prepared.confirmationId, result, [...observedStages, "done"]);
+    });
     return result;
   }
 
-  const transaction = await context.db.tx(async (tx) => {
-    await assertCurrentGoalDesignPackageHashTx(tx, input.draftId, input.expectedPackageHash);
-    const confirmation = await tx.one<{ status: string; payload_json: Record<string, unknown> }>(
-      "select status, payload_json from southstar.runtime_resources where id = $1 for update",
-      [prepared.confirmationId],
-    );
-    if (confirmation.status === "completed") {
-      return {
-        result: requireRunGoalResult(confirmation.payload_json.result),
-        stages: stringArray(confirmation.payload_json.stages),
-        autoSchedule: confirmation.payload_json.schedulingState === "requested",
-      };
-    }
-    if (confirmation.status !== "composing") {
-      throw new Error(`goal design confirmation is not composing: ${prepared.confirmationId}`);
-    }
-    return await createRunRequestFromValidatedDraftTx(tx, {
-      draft: {
-        ...composedDraft,
-        goalDesignPackageHash: prepared.package.packageHash,
-      },
-      resourceId: prepared.confirmationId,
-      observedStages,
+  let transaction: Awaited<ReturnType<typeof createRunRequestFromValidatedDraftTx>>;
+  try {
+    transaction = await context.db.tx(async (tx) => {
+      await assertCurrentGoalDesignPackageHashTx(tx, input.draftId, input.expectedPackageHash);
+      const confirmation = await tx.one<{ status: string; payload_json: Record<string, unknown> }>(
+        "select status, payload_json from southstar.runtime_resources where id = $1 for update",
+        [prepared.confirmationId],
+      );
+      if (confirmation.status === "completed") {
+        return {
+          result: requireRunGoalResult(confirmation.payload_json.result),
+          stages: stringArray(confirmation.payload_json.stages),
+          autoSchedule: confirmation.payload_json.schedulingState === "requested",
+        };
+      }
+      if (confirmation.status !== "composing") {
+        throw new Error(`goal design confirmation is not composing: ${prepared.confirmationId}`);
+      }
+      await transitionGoalDesignPhaseTx(tx, {
+        draftId: input.draftId,
+        expectedPackageHash: input.expectedPackageHash,
+        allowedFrom: ["composing"],
+        to: "dag_validated",
+        reason: "dag_validated",
+        confirmationId: prepared.confirmationId,
+        details: { composedDraftId: composedDraft.draftId },
+      });
+      return await createRunRequestFromValidatedDraftTx(tx, {
+        draft: {
+          ...composedDraft,
+          goalDesignPackageHash: prepared.package.packageHash,
+        },
+        resourceId: prepared.confirmationId,
+        observedStages: [...observedStages, "dag.validated"],
+      });
     });
+  } catch (error) {
+    await failGoalDesignConfirmationPg(context.db, {
+      draftId: input.draftId,
+      expectedPackageHash: input.expectedPackageHash,
+      confirmationId: prepared.confirmationId,
+      error,
+      stages: observedStages,
+    });
+    throw error;
+  }
+  context.onStage?.("dag.validated", {
+    draftId: input.draftId,
+    goalDesignPackageHash: input.expectedPackageHash,
+    composedDraftId: composedDraft.draftId,
   });
   transaction.stages.forEach((stage) => context.onStage?.(stage));
   if (!transaction.autoSchedule || !transaction.result.runId) return transaction.result;
@@ -561,6 +645,14 @@ async function prepareGoalDesignConfirmationPg(
       ],
     );
     if (inserted) {
+      await transitionGoalDesignPhaseTx(tx, {
+        draftId: input.draftId,
+        expectedPackageHash: input.expectedPackageHash,
+        allowedFrom: [undefined, "slice_review"],
+        to: "ready_to_compose",
+        reason: "goal_design_confirmed",
+        confirmationId: inserted.id,
+      });
       return {
         confirmationId: inserted.id,
         package: pkg,
@@ -597,6 +689,14 @@ async function prepareGoalDesignConfirmationPg(
           }),
         ],
       );
+      await transitionGoalDesignPhaseTx(tx, {
+        draftId: input.draftId,
+        expectedPackageHash: input.expectedPackageHash,
+        allowedFrom: [undefined, "slice_review", "ready_to_compose", "composing"],
+        to: "ready_to_compose",
+        reason: "stale_confirmation_retried",
+        confirmationId: existing.id,
+      });
       return {
         confirmationId: existing.id,
         package: pkg,
@@ -613,6 +713,48 @@ async function prepareGoalDesignConfirmationPg(
     }
     const stages = stringArray(existing.payload_json.stages);
     if (existing.status === "completed") {
+      const result = requireRunGoalResult(existing.payload_json.result);
+      if (result.draftStatus !== "validated") {
+        const { result: _result, schedulingRequest: _schedulingRequest, schedulingState: _schedulingState, ...payload } = existing.payload_json;
+        await tx.query(
+          "update southstar.runtime_resources set status = 'composing', payload_json = $2::jsonb, summary_json = $3::jsonb, updated_at = now() where id = $1",
+          [
+            existing.id,
+            JSON.stringify({ ...payload, stages: [], attempt: Number(payload.attempt ?? 1) + 1 }),
+            JSON.stringify({
+              draftId: input.draftId,
+              packageHash: input.expectedPackageHash,
+              confirmationMode: input.confirmationMode,
+            }),
+          ],
+        );
+        await transitionGoalDesignPhaseTx(tx, {
+          draftId: input.draftId,
+          expectedPackageHash: input.expectedPackageHash,
+          allowedFrom: ["ready_to_compose"],
+          to: "ready_to_compose",
+          reason: "invalid_composition_retried",
+          confirmationId: existing.id,
+        });
+        return {
+          confirmationId: existing.id,
+          package: pkg,
+          goalPrompt,
+          cwd,
+          ...(projectRef ? { projectRef } : {}),
+          ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
+          ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
+          stages: [],
+        };
+      }
+      await transitionGoalDesignPhaseTx(tx, {
+        draftId: input.draftId,
+        expectedPackageHash: input.expectedPackageHash,
+        allowedFrom: [undefined, "slice_review", "ready_to_compose", "composing", "dag_validated"],
+        to: "dag_validated",
+        reason: "completed_confirmation_replayed",
+        confirmationId: existing.id,
+      });
       return {
         confirmationId: existing.id,
         package: pkg,
@@ -622,7 +764,7 @@ async function prepareGoalDesignConfirmationPg(
         ...(goalRequirementDraftId ? { goalRequirementDraftId } : {}),
         ...(goalRequirementDraftHash ? { goalRequirementDraftHash } : {}),
         stages,
-        result: requireRunGoalResult(existing.payload_json.result),
+        result,
         ...(existing.payload_json.schedulingState === "requested"
           ? { schedulingRequest: requireRunGoalResult(existing.payload_json.schedulingRequest) }
           : {}),
@@ -642,6 +784,14 @@ async function prepareGoalDesignConfirmationPg(
           }),
         ],
       );
+      await transitionGoalDesignPhaseTx(tx, {
+        draftId: input.draftId,
+        expectedPackageHash: input.expectedPackageHash,
+        allowedFrom: [undefined, "slice_review", "ready_to_compose", "composing"],
+        to: "ready_to_compose",
+        reason: "failed_confirmation_retried",
+        confirmationId: existing.id,
+      });
       return {
         confirmationId: existing.id,
         package: pkg,
@@ -724,6 +874,7 @@ async function createRunRequestFromValidatedDraftTx(
     ...(input.draft.goalDesignPackageHash ? { goalDesignPackageHash: input.draft.goalDesignPackageHash } : {}),
     draftId: input.draft.draftId,
     draftStatus: "validated",
+    goalDesignPhase: "dag_validated",
     runId: run.runId,
     runStatus: policy.status === "approved" ? "created" : "awaiting_approval",
     approvalId: approval.id,
@@ -750,13 +901,104 @@ async function completeConfirmationPg(
   await completeSubmissionPg(db, confirmationId, result, stages);
 }
 
-async function failConfirmationPg(
+async function failGoalDesignConfirmationPg(
   db: SouthstarDb,
-  confirmationId: string,
-  error: unknown,
-  stages: string[],
+  input: {
+    draftId: string;
+    expectedPackageHash: string;
+    confirmationId: string;
+    error: unknown;
+    stages: string[];
+  },
 ): Promise<void> {
-  await failSubmissionPg(db, confirmationId, error, stages);
+  await db.tx(async (tx) => {
+    await transitionGoalDesignPhaseTx(tx, {
+      draftId: input.draftId,
+      expectedPackageHash: input.expectedPackageHash,
+      allowedFrom: [undefined, "slice_review", "ready_to_compose", "composing", "dag_validated"],
+      to: "ready_to_compose",
+      reason: "composition_failed",
+      confirmationId: input.confirmationId,
+    });
+    await failSubmissionTx(tx, input.confirmationId, input.error, input.stages);
+  });
+}
+
+async function transitionGoalDesignPhasePg(
+  db: SouthstarDb,
+  input: GoalDesignPhaseTransitionInput,
+): Promise<void> {
+  await db.tx(async (tx) => await transitionGoalDesignPhaseTx(tx, input));
+}
+
+type GoalDesignPhaseTransitionInput = {
+  draftId: string;
+  expectedPackageHash: string;
+  allowedFrom: Array<GoalDesignPhase | undefined>;
+  to: GoalDesignPhase;
+  reason: string;
+  confirmationId: string;
+  details?: Record<string, unknown>;
+};
+
+async function transitionGoalDesignPhaseTx(
+  db: SouthstarDb,
+  input: GoalDesignPhaseTransitionInput,
+): Promise<void> {
+  const row = await db.one<{
+    payload_json: Record<string, unknown>;
+    summary_json: Record<string, unknown>;
+  }>(
+    `select payload_json, summary_json
+       from southstar.runtime_resources
+      where resource_type = 'planner_draft' and resource_key = $1
+      for update`,
+    [input.draftId],
+  );
+  const current = optionalString(row.payload_json.goalDesignPhase) as GoalDesignPhase | undefined;
+  const packageHash = optionalString(row.payload_json.goalDesignPackageHash);
+  if (packageHash !== input.expectedPackageHash) {
+    throw new Error(`goal_design_package_stale: ${input.draftId}`);
+  }
+  if (current === input.to) return;
+  if (!input.allowedFrom.includes(current)) {
+    throw new Error(`invalid goal design phase transition: ${input.draftId}:${current ?? "unset"}->${input.to}`);
+  }
+  const changedAt = new Date().toISOString();
+  const revision = Number(row.payload_json.goalDesignPhaseRevision ?? 0) + 1;
+  const transition = {
+    from: current ?? "slice_review",
+    to: input.to,
+    reason: input.reason,
+    changedAt,
+    revision,
+    confirmationId: input.confirmationId,
+    goalDesignPackageHash: input.expectedPackageHash,
+  };
+  await db.query(
+    `update southstar.runtime_resources
+        set payload_json = $2::jsonb,
+            summary_json = $3::jsonb,
+            updated_at = now()
+      where resource_type = 'planner_draft' and resource_key = $1`,
+    [
+      input.draftId,
+      JSON.stringify({
+        ...row.payload_json,
+        goalDesignPhase: input.to,
+        goalDesignPhaseRevision: revision,
+        goalDesignPhaseTransition: transition,
+        ...(input.details ?? {}),
+      }),
+      JSON.stringify({
+        ...row.summary_json,
+        goalDesignPhase: input.to,
+        goalDesignPhaseRevision: revision,
+        goalDesignPhaseTransition: transition,
+        ...(input.details ?? {}),
+      }),
+    ],
+  );
 }
 
 function fixedGoalInterpreter(goalContract: GoalContractV1): GoalContractInterpreter {
@@ -959,27 +1201,34 @@ async function failSubmissionPg(
   error: unknown,
   stages: string[],
 ): Promise<void> {
-  await db.tx(async (tx) => {
-    const row = await tx.one<{ payload_json: Record<string, unknown> }>(
-      "select payload_json from southstar.runtime_resources where id = $1 for update",
-      [submissionId],
-    );
-    const { result: _result, ...payload } = row.payload_json;
-    await tx.query(
-      "update southstar.runtime_resources set status = 'failed', payload_json = $2::jsonb, summary_json = $3::jsonb, updated_at = now() where id = $1",
-      [
-        submissionId,
-        JSON.stringify({
-          ...payload,
-          stages: [...stringArray(payload.stages), ...stages, "submission.failed"],
-          retryable: true,
-          failure: error instanceof Error ? error.message : String(error),
-          failedAt: new Date().toISOString(),
-        }),
-        JSON.stringify({ retryable: true, failure: error instanceof Error ? error.message : String(error) }),
-      ],
-    );
-  });
+  await db.tx(async (tx) => await failSubmissionTx(tx, submissionId, error, stages));
+}
+
+async function failSubmissionTx(
+  db: SouthstarDb,
+  submissionId: string,
+  error: unknown,
+  stages: string[],
+): Promise<void> {
+  const row = await db.one<{ payload_json: Record<string, unknown> }>(
+    "select payload_json from southstar.runtime_resources where id = $1 for update",
+    [submissionId],
+  );
+  const { result: _result, ...payload } = row.payload_json;
+  await db.query(
+    "update southstar.runtime_resources set status = 'failed', payload_json = $2::jsonb, summary_json = $3::jsonb, updated_at = now() where id = $1",
+    [
+      submissionId,
+      JSON.stringify({
+        ...payload,
+        stages: [...stringArray(payload.stages), ...stages, "submission.failed"],
+        retryable: true,
+        failure: error instanceof Error ? error.message : String(error),
+        failedAt: new Date().toISOString(),
+      }),
+      JSON.stringify({ retryable: true, failure: error instanceof Error ? error.message : String(error) }),
+    ],
+  );
 }
 
 function validateRequest(request: RunGoalRequest): void {

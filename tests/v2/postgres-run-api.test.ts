@@ -226,6 +226,34 @@ test("Requirement revisions stale an unmaterialized generated DAG draft by sourc
   });
 });
 
+test("Requirement revisions are frozen while Goal Design is composing", async () => {
+  await withDb(async (db) => {
+    await seedGoalDesignSkill(db);
+    const cwd = process.cwd();
+    const draft = await preparePostgresGoalRequirementDraft(db, {
+      goalPrompt: "Create an offline article",
+      cwd,
+      requirementInterpreter: requirementDraftInterpreter("Create an offline article", cwd),
+    });
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json || '{"goalDesignPhase":"composing"}'::jsonb
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [draft.draftId],
+    );
+
+    await assert.rejects(
+      () => reviseGoalRequirementPg(db, {
+        draftId: draft.draftId,
+        expectedDraftHash: draft.goalRequirementDraftHash,
+        requirementId: draft.goalRequirementDraft.requirements[0]!.id,
+        patch: { statement: "Must not change during composition" },
+      }),
+      /goal_requirements_frozen/,
+    );
+  });
+});
+
 test("Requirement revision persistence preserves the first hash on duplicate revision races", async () => {
   await withDb(async (db) => {
     const cwd = process.cwd();
@@ -1464,6 +1492,33 @@ test("valid Slice edit creates one immutable package revision", async () => {
     assert.notEqual(after.packageHash, before.packageHash);
     assert.equal(after.slicePlan.slices[0]!.outcome, "deliver the accepted artifact");
     assert.equal(await countGoalDesignRevisions(db, draftId), 2);
+    assert.equal(
+      (await getPostgresPlannerDraftOrchestration(db, { draftId })).goalDesignPhase,
+      "slice_review",
+    );
+  });
+});
+
+test("Slice revisions are frozen while Goal Design is composing", async () => {
+  await withDb(async (db) => {
+    const { draftId, package: before } = await createReadyReviewGoalDesignDraft(db);
+    await db.query(
+      `update southstar.runtime_resources
+          set payload_json = payload_json || '{"goalDesignPhase":"composing"}'::jsonb
+        where resource_type = 'planner_draft' and resource_key = $1`,
+      [draftId],
+    );
+
+    await assert.rejects(
+      () => reviseGoalSlicePg(db, {
+        draftId,
+        sliceId: before.slicePlan.slices[0]!.id,
+        expectedPackageHash: before.packageHash,
+        patch: { outcome: "Must not change during composition" },
+      }),
+      /goal_design_frozen/,
+    );
+    assert.equal(await countGoalDesignRevisions(db, draftId), 1);
   });
 });
 

@@ -29,6 +29,7 @@ import { fixedGoalInterpreter, softwareGoalContract } from "./fixtures/goal-cont
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
 import { startRunSchedulingPg } from "../../src/v2/server/run-execution-controller.ts";
 import { upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
+import { getPostgresPlannerDraftOrchestration } from "../../src/v2/ui-api/postgres-run-api.ts";
 
 test("staged run-goal route persists requirement review and confirms with a hash", async () => {
   const db = await createTestPostgresDb();
@@ -475,6 +476,8 @@ test("confirmation composes the exact package hash and schedules once", async ()
       composer: {
         async compose(input) {
           composerCalls += 1;
+          const orchestration = await getPostgresPlannerDraftOrchestration(db, { draftId: prepared.draftId });
+          assert.equal(orchestration.goalDesignPhase, "composing");
           return goalDesignAwareComposition(input.goalContract);
         },
       } satisfies WorkflowComposer,
@@ -502,6 +505,105 @@ test("confirmation composes the exact package hash and schedules once", async ()
     assert.equal(composerCalls, 1);
     assert.equal(schedulingCalls, 1);
     assert.equal(await runCount(db), 1);
+    const orchestration = await getPostgresPlannerDraftOrchestration(db, { draftId: prepared.draftId });
+    assert.equal(orchestration.goalDesignPhase, "dag_validated");
+  } finally {
+    await db.close();
+  }
+});
+
+test("failed Goal Design composition returns the durable draft to ready_to_compose", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const prepared = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Deliver the requested outcome")),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async () => { throw new Error("composer unavailable"); } },
+    }, {
+      ...request("Deliver the requested outcome", "goal-confirm-phase-retry-1"),
+      cwd: "/tmp",
+    });
+
+    await assert.rejects(
+      () => confirmGoalDesignPg({
+        db,
+        goalInterpreter: fixedGoalInterpreter(goalContract("Deliver the requested outcome")),
+        goalDesigner: inlineGoalDesigner(),
+        composer: { compose: async () => { throw new Error("composer unavailable"); } },
+      }, {
+        draftId: prepared.draftId,
+        expectedPackageHash: prepared.goalDesignPackageHash!,
+      }),
+      /composer unavailable/,
+    );
+
+    const orchestration = await getPostgresPlannerDraftOrchestration(db, { draftId: prepared.draftId });
+    assert.equal(orchestration.goalDesignPhase, "ready_to_compose");
+
+    const retried = await confirmGoalDesignPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(goalContract("Deliver the requested outcome")),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    }, {
+      draftId: prepared.draftId,
+      expectedPackageHash: prepared.goalDesignPackageHash!,
+    });
+    assert.equal(retried.goalDesignPhase, "dag_validated");
+    assert.equal(
+      (await getPostgresPlannerDraftOrchestration(db, { draftId: prepared.draftId })).goalDesignPhase,
+      "dag_validated",
+    );
+  } finally {
+    await db.close();
+  }
+});
+
+test("invalid Goal Design composition can be recomposed from ready_to_compose", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDeterministicWorkflowGraph(db);
+    await seedGoalDesignSkill(db);
+    const contract = goalContract("Deliver the requested outcome");
+    const prepared = await submitGoalPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(contract),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => ({ ...goalDesignAwareComposition(input.goalContract), tasks: [] }) },
+    }, {
+      ...request("Deliver the requested outcome", "goal-confirm-invalid-retry-1"),
+      cwd: "/tmp",
+    });
+
+    const invalid = await confirmGoalDesignPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(contract),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => ({ ...goalDesignAwareComposition(input.goalContract), tasks: [] }) },
+    }, {
+      draftId: prepared.draftId,
+      expectedPackageHash: prepared.goalDesignPackageHash!,
+    });
+    assert.equal(invalid.draftStatus, "invalid");
+    assert.equal(
+      (await getPostgresPlannerDraftOrchestration(db, { draftId: prepared.draftId })).goalDesignPhase,
+      "ready_to_compose",
+    );
+
+    const retried = await confirmGoalDesignPg({
+      db,
+      goalInterpreter: fixedGoalInterpreter(contract),
+      goalDesigner: inlineGoalDesigner(),
+      composer: { compose: async (input) => goalDesignAwareComposition(input.goalContract) },
+    }, {
+      draftId: prepared.draftId,
+      expectedPackageHash: prepared.goalDesignPackageHash!,
+    });
+    assert.equal(retried.draftStatus, "validated");
+    assert.equal(retried.goalDesignPhase, "dag_validated");
   } finally {
     await db.close();
   }
@@ -567,6 +669,11 @@ test("confirmation can materialize per-slice runs under one execution set", asyn
       [result.executionSetId],
     );
     assert.deepEqual(executionSet.payload_json.entries.map((entry) => entry.sliceId).sort(), ["slice-account", "slice-billing"]);
+    assert.equal(result.goalDesignPhase, "dag_validated");
+    assert.equal(
+      (await getPostgresPlannerDraftOrchestration(db, { draftId: prepared.draftId })).goalDesignPhase,
+      "dag_validated",
+    );
   } finally {
     await rm(workspace, { recursive: true, force: true });
     await db.close();
@@ -1375,6 +1482,8 @@ test("POST /api/v2/planner/drafts/:draftId/confirm-goal-design streams the same 
     assert.equal(frames.some((frame) => frame.event === "run"), true);
     assert.equal(frames.some((frame) => frame.event === "approval"), true);
     assert.equal(frames.some((frame) => frame.event === "dag"), true);
+    const draftFrame = frames.find((frame) => frame.event === "draft")?.data as { goalDesignPhase?: string };
+    assert.equal(draftFrame.goalDesignPhase, "dag_validated");
     assert.equal(frames.at(-1)?.event, "done");
     const done = frames.at(-1)?.data as { draftStatus?: string; runStatus?: string; goalDesignPackageHash?: string };
     assert.equal(done.draftStatus, "validated");

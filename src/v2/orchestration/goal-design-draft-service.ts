@@ -492,7 +492,9 @@ export async function reviseGoalRequirementPg(
       throw new Error(`goal_requirement_draft_stale: ${input.draftId}`);
     }
     const phase = goalDesignPhaseFromPayload(payload) ?? "requirements_review";
-    if (phase === "dag_validated") throw new Error(`goal_requirements_frozen: ${input.draftId}`);
+    if (phase === "composing" || phase === "dag_validated") {
+      throw new Error(`goal_requirements_frozen: ${input.draftId}:${phase}`);
+    }
     await assertNoMaterializedGoalRequirementRunTx(tx, input.draftId);
     const operation = toRequirementRevisionOperation(input);
     const next = reviseGoalRequirementDraft(current, operation);
@@ -1173,6 +1175,10 @@ async function persistValidatedGoalDesignRevisionPg(
     if (draft.status !== "ready_for_review") {
       throw new Error(`goal design draft is not ready for review: ${input.draftId}`);
     }
+    const phase = goalDesignPhaseFromPayload(draft.payload_json) ?? "slice_review";
+    if (phase === "composing" || phase === "dag_validated") {
+      throw new Error(`goal_design_frozen: ${input.draftId}:${phase}`);
+    }
     const current = goalDesignPackageFromStored(draft.payload_json.goalDesignPackage);
     if (!current) throw new Error(`Goal Design package not found: ${input.draftId}`);
     if (current.packageHash !== input.expectedPackageHash) {
@@ -1206,6 +1212,7 @@ async function persistValidatedGoalDesignRevisionPg(
         goalContractHash: next.goalContractHash,
         goalDesignPackage: next,
         goalDesignPackageHash: next.packageHash,
+        goalDesignPhase: "slice_review" satisfies GoalDesignPhase,
       },
       summary: {
         ...draft.summary_json,
@@ -1214,6 +1221,7 @@ async function persistValidatedGoalDesignRevisionPg(
         taskSummaries: [],
         goalContractHash: next.goalContractHash,
         goalDesignPackageHash: next.packageHash,
+        goalDesignPhase: "slice_review" satisfies GoalDesignPhase,
         sliceCount: next.slicePlan.slices.length,
         templatePolicy: next.templatePolicy,
       },
@@ -1411,6 +1419,7 @@ export async function preparePostgresGoalDesignDraft(
       goalContractHash: contractHash,
       goalDesignPackage: pkg,
       goalDesignPackageHash: pkg.packageHash,
+      goalDesignPhase: "slice_review" satisfies GoalDesignPhase,
       plannerRequest: {
         goalPrompt: input.goalPrompt,
         cwd: input.cwd,
@@ -1431,6 +1440,7 @@ export async function preparePostgresGoalDesignDraft(
       taskSummaries: [],
       goalContractHash: contractHash,
       goalDesignPackageHash: pkg.packageHash,
+      goalDesignPhase: "slice_review" satisfies GoalDesignPhase,
       domain: goalContract.domain,
       intent: goalContract.intent,
       blockers: [],
@@ -1460,6 +1470,7 @@ export async function preparePostgresGoalDesignDraft(
     goalPrompt: input.goalPrompt,
     workflowId: "",
     status: "ready_for_review",
+    goalDesignPhase: "slice_review",
     goalContractHash: contractHash,
     goalDesignPackageHash: pkg.packageHash,
     goalDesignPackage: pkg,
