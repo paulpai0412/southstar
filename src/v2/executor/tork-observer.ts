@@ -1,6 +1,7 @@
 import type { SouthstarDb } from "../db/postgres.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
 import type { RuntimeExceptionKind } from "../exceptions/types.ts";
+import { settleHandExecutionPg, terminalHandExecutionStatus } from "./attempt-settlement.ts";
 import { normalizeTorkStatus, type TorkStatusCategory } from "./observability-types.ts";
 import type { RecoveryProviderActions } from "./provider-actions.ts";
 
@@ -48,11 +49,23 @@ export async function observeTorkHandExecutionExceptionsPg(
         reason: input.providerPollReason ?? "observe-tork-provider-status",
       });
       if (providerObservation?.terminal) {
-        const patched = await patchTerminalWithoutCallbackPg(db, {
+        const patched = await settleHandExecutionPg(db, {
           resourceKey: row.resource_key,
-          terminalStatus: terminalHandExecutionStatus(providerObservation.category),
-          observedAt,
-          torkObservedStatus: providerObservation.status,
+          runId,
+          ...(taskId ? { taskId } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          status: terminalHandExecutionStatus(providerObservation.category),
+          terminalAt: observedAt,
+          expectedStatuses: ["queued", "running", "cancel_requested"],
+          payloadPatch: {
+            terminalReason: "tork_terminal_without_callback",
+            terminalWithoutCallback: true,
+            torkObservedStatus: providerObservation.status,
+          },
+          summaryPatch: {
+            torkObservedStatus: providerObservation.status,
+            terminalWithoutCallback: true,
+          },
         });
         if (!patched) continue;
         await observeAndDecide({
@@ -278,38 +291,6 @@ function firstStartedAtFromExecutions(value: unknown): string | undefined {
     return startedAt;
   }
   return undefined;
-}
-
-async function patchTerminalWithoutCallbackPg(db: SouthstarDb, input: {
-  resourceKey: string;
-  terminalStatus: "failed" | "cancelled" | "lost";
-  observedAt: string;
-  torkObservedStatus: string;
-}): Promise<boolean> {
-  const patch = {
-    status: input.terminalStatus,
-    terminalAt: input.observedAt,
-    terminalReason: "tork_terminal_without_callback",
-    terminalWithoutCallback: true,
-    torkObservedStatus: input.torkObservedStatus,
-  };
-  const result = await db.query(
-    `update southstar.runtime_resources
-        set status = $2,
-            payload_json = payload_json || $3::jsonb,
-            updated_at = now()
-      where resource_type = 'hand_execution'
-        and resource_key = $1
-        and status in ('queued', 'running', 'cancel_requested')`,
-    [input.resourceKey, input.terminalStatus, JSON.stringify(patch)],
-  );
-  return (result.rowCount ?? 0) > 0;
-}
-
-function terminalHandExecutionStatus(category: TorkStatusCategory): "failed" | "cancelled" | "lost" {
-  if (category === "cancelled-like") return "cancelled";
-  if (category === "completed-like") return "lost";
-  return "failed";
 }
 
 function extractProviderStatus(value: unknown): string | undefined {

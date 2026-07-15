@@ -44,6 +44,7 @@ import {
 import type { GoalDesignPackage } from "./goal-design.ts";
 import { runtimeBindingCapabilitiesFromEnv, type RuntimeBindingCapabilities } from "./runtime-binding-capabilities.ts";
 import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
+import { acceptWorkflowComposition } from "./manifest-acceptance.ts";
 
 export type CompileWorkflowCompositionInput = {
   runId: string;
@@ -281,6 +282,15 @@ export async function compileWorkflowComposition(
     goalDesignPackage: input.goalDesignPackage,
     targetRequirementIds: input.targetRequirementIds,
   });
+
+  const acceptance = acceptWorkflowComposition({
+    composition: input.composition,
+    compositionValidation: validation,
+    workflow,
+  });
+  if (!acceptance.ok) {
+    throw new Error(`workflow manifest acceptance failed: ${JSON.stringify(acceptance.issues)}`);
+  }
 
   return {
     workflow,

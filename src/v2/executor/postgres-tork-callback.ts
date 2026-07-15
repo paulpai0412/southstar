@@ -20,6 +20,10 @@ import { maybeApplyDynamicRepairRevisionPg, type DynamicRepairRevisionResult } f
 import { assertNoRawCredentialPayloadPg } from "../tool-proxy/policy-enforcer.ts";
 import { runtimeAttemptNumber } from "./attempt-identity.ts";
 import { getExecutorBindingPg, updateExecutorBindingStatusPg } from "./postgres-bindings.ts";
+import {
+  canonicalHandExecutionId,
+  settleHandExecutionPg,
+} from "./attempt-settlement.ts";
 import { finalizeTaskWorkspacePg } from "../workspace/task-workspace.ts";
 import type { TaskRunCallbackResult } from "./tork-callback.ts";
 
@@ -349,13 +353,53 @@ export async function ingestTaskRunResultPg(
       });
     }
 
-    await patchManagedHandExecutionTerminalPg(tx, {
-      result: evaluatedResult,
-      attemptId,
-      handExecutionId,
-      artifactRefId: artifactRef.artifactRefId,
-      artifactResourceId: artifactRef.resourceId,
+    const existingHandExecution = await getResourceByKeyPg(tx, "hand_execution", handExecutionId);
+    const existingHandPayload = asRecord(existingHandExecution?.payload);
+    const handExecutionSettled = await settleHandExecutionPg(tx, {
+      resourceKey: handExecutionId,
+      runId: effectiveResult.runId,
+      taskId: effectiveResult.taskId,
+      sessionId: effectiveResult.rootSessionId,
+      status: evaluatedResult.ok ? "completed" : "failed",
+      terminalAt: effectiveResult.receivedAt ?? new Date().toISOString(),
+      payloadPatch: {
+        schemaVersion: "southstar.runtime.hand_execution.v1",
+        handExecutionId,
+        providerId: "tork",
+        runId: effectiveResult.runId,
+        taskId: effectiveResult.taskId,
+        sessionId: effectiveResult.rootSessionId,
+        attemptId,
+      },
+      summaryPatch: {
+        providerId: "tork",
+        attemptId,
+        accepted: evaluatedResult.ok,
+        artifactRefId: artifactRef.artifactRefId,
+        artifactResourceId: artifactRef.resourceId,
+      },
+      metricsPatch: effectiveResult.metrics,
     });
+    if (handExecutionSettled) {
+      const terminalAt = effectiveResult.receivedAt ?? new Date().toISOString();
+      const bindingStatus = evaluatedResult.ok ? "succeeded" : "failed";
+      await patchManagedBindingTerminalPg(tx, {
+        resourceType: "brain_binding",
+        resourceKey: nonEmptyString(existingHandPayload.brainBindingId),
+        status: bindingStatus,
+        terminalAt,
+        runId: effectiveResult.runId,
+        taskId: effectiveResult.taskId,
+      });
+      await patchManagedBindingTerminalPg(tx, {
+        resourceType: "hand_binding",
+        resourceKey: nonEmptyString(existingHandPayload.handBindingId),
+        status: bindingStatus,
+        terminalAt,
+        runId: effectiveResult.runId,
+        taskId: effectiveResult.taskId,
+      });
+    }
 
     const workspaceFinalization = await finalizeTaskWorkspacePg(tx, {
       runId: effectiveResult.runId,
@@ -687,76 +731,6 @@ async function recordCallbackExceptionDecisionPg(
   await controller.decide(await controller.classify(exception));
 }
 
-async function patchManagedHandExecutionTerminalPg(
-  db: SouthstarDb,
-  input: {
-    result: PostgresTaskRunCallbackResult;
-    attemptId: string;
-    handExecutionId: string;
-    artifactRefId: string;
-    artifactResourceId: string;
-  },
-): Promise<void> {
-  const existing = await getResourceByKeyPg(db, "hand_execution", input.handExecutionId);
-  if (!existing) return;
-  if (isHandExecutionTerminalStatus(existing.status)) return;
-  const existingPayload = asRecord(existing?.payload);
-  const terminalAt = input.result.receivedAt ?? new Date().toISOString();
-  const status = input.result.ok ? "completed" : "failed";
-  const bindingStatus = input.result.ok ? "succeeded" : "failed";
-  await upsertRuntimeResourcePg(db, {
-    id: existing?.id ?? input.handExecutionId,
-    resourceType: "hand_execution",
-    resourceKey: input.handExecutionId,
-    runId: input.result.runId,
-    taskId: input.result.taskId,
-    sessionId: input.result.rootSessionId,
-    scope: "hand",
-    status,
-    title: existing?.title ?? `Hand execution ${input.result.taskId}`,
-    payload: {
-      ...existingPayload,
-      schemaVersion: "southstar.runtime.hand_execution.v1",
-      handExecutionId: input.handExecutionId,
-      providerId: "tork",
-      runId: input.result.runId,
-      taskId: input.result.taskId,
-      sessionId: input.result.rootSessionId,
-      attemptId: input.attemptId,
-      status,
-      terminalAt,
-    },
-    summary: {
-      ...asRecord(existing?.summary),
-      providerId: "tork",
-      attemptId: input.attemptId,
-      accepted: input.result.ok,
-      artifactRefId: input.artifactRefId,
-      artifactResourceId: input.artifactResourceId,
-    },
-    metrics: {
-      ...asRecord(existing.metrics),
-      ...input.result.metrics,
-    },
-  });
-  await patchManagedBindingTerminalPg(db, {
-    resourceType: "brain_binding",
-    resourceKey: nonEmptyString(existingPayload.brainBindingId),
-    status: bindingStatus,
-    terminalAt,
-    runId: input.result.runId,
-    taskId: input.result.taskId,
-  });
-  await patchManagedBindingTerminalPg(db, {
-    resourceType: "hand_binding",
-    resourceKey: nonEmptyString(existingPayload.handBindingId),
-    status: bindingStatus,
-    terminalAt,
-    runId: input.result.runId,
-    taskId: input.result.taskId,
-  });
-}
-
 async function patchManagedBindingTerminalPg(
   db: SouthstarDb,
   input: {
@@ -866,10 +840,6 @@ function callbackReceiptToken(result: PostgresTaskRunCallbackResult, handExecuti
 
 function normalizedAttemptId(result: PostgresTaskRunCallbackResult): string {
   return result.attemptId ?? `attempt-${result.attempts}`;
-}
-
-function canonicalHandExecutionId(runId: string, taskId: string, attemptId: string): string {
-  return `hand-execution:${runId}:${taskId}:${attemptId}`;
 }
 
 async function artifactContractRefsForTaskPg(db: SouthstarDb, runId: string, taskId: string): Promise<string[]> {

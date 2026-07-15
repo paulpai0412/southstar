@@ -1,14 +1,7 @@
 import { NextRequest } from "next/server";
 import { buildWorkflowV2Url, workflowV2Capabilities } from "../../../../lib/workflow/v2-api";
-import {
-  buildWorkflowDagFromPlannerDraft,
-  unwrapV2Envelope,
-  type V2PlannerDraftOrchestrationView,
-} from "../../../../lib/workflow/v2-library-adapter";
-import type {
-  GoalMissionReadModel,
-  WorkflowCommandDescriptor,
-} from "../../../../lib/workflow/types";
+import { projectWorkflowUiReadModel, readWorkflowV2Json, type WorkflowUiTransportReadModel } from "../../../../lib/workflow/workflow-ui-transport";
+import type { V2PlannerDraftOrchestrationView } from "../../../../lib/workflow/v2-library-adapter";
 
 type RunGoalResult = {
   draftId: string;
@@ -27,11 +20,6 @@ type RunGoalResult = {
   runStatus?: string;
   executionSetId?: string;
   sliceRuns?: Array<{ sliceId: string; runId: string; runStatus: string; approvalId: string }>;
-};
-
-type WorkflowUiReadModel = {
-  mission: GoalMissionReadModel | null;
-  commands: WorkflowCommandDescriptor[];
 };
 
 type SendWorkflowGenerateEvent = (event: string, data: unknown) => void;
@@ -200,11 +188,11 @@ async function sendGoalReceipt(
     ? `runId=${encodeURIComponent(result.runId)}`
     : `draftId=${encodeURIComponent(result.draftId)}`;
   let orchestration: V2PlannerDraftOrchestrationView;
-  let workflowUi: WorkflowUiReadModel;
+  let workflowUi: WorkflowUiTransportReadModel;
   try {
     [orchestration, workflowUi] = await Promise.all([
-      fetchJson<V2PlannerDraftOrchestrationView>(`/api/v2/planner/drafts/${encodeURIComponent(result.draftId)}/orchestration`),
-      fetchJson<WorkflowUiReadModel>(`/api/v2/ui/workflow?${missionQuery}`),
+      readWorkflowV2Json<V2PlannerDraftOrchestrationView>(`/api/v2/planner/drafts/${encodeURIComponent(result.draftId)}/orchestration`),
+      readWorkflowV2Json<WorkflowUiTransportReadModel>(`/api/v2/ui/workflow?${missionQuery}`),
     ]);
   } catch (error) {
     send("recoverable", {
@@ -214,17 +202,16 @@ async function sendGoalReceipt(
     send("done", result);
     return;
   }
-  const mission = workflowUi.mission ?? undefined;
-  const approvalCommand = workflowUi.commands.find((command) => command.id === "approval.approve");
   const runStatus = result.runStatus === "awaiting_approval" || result.runStatus === "scheduling"
     ? result.runStatus
     : undefined;
-  const dag = buildWorkflowDagFromPlannerDraft(orchestration, {
+  const projection = projectWorkflowUiReadModel({
+    orchestration,
+    workflowUi,
     ...(result.runId ? { runId: result.runId } : {}),
     ...(runStatus ? { runStatus } : {}),
-    ...(mission ? { mission } : {}),
-    ...(approvalCommand ? { approvalCommand } : {}),
   });
+  const { mission, approvalCommand, dag } = projection;
   if (mission) {
     send("goal_contract", { mission });
     send("coverage", { mission });
@@ -245,13 +232,6 @@ function isTemplatePolicy(value: unknown): value is Record<string, unknown> {
   return (policy.mode === "prefer" || policy.mode === "require")
     && typeof policy.templateRef === "string"
     && typeof policy.versionRef === "string";
-}
-
-async function fetchJson<T>(path: string): Promise<T> {
-  const response = await fetch(buildWorkflowV2Url(path), { headers: { accept: "application/json" } });
-  const text = await response.text();
-  if (!response.ok) throw new Error(text || `workflow read model request failed: HTTP ${response.status}`);
-  return unwrapV2Envelope<T>(JSON.parse(text));
 }
 
 async function dispatchCompleteFrames(

@@ -1,8 +1,7 @@
 import type { SouthstarDb } from "../db/postgres.ts";
-import type { AgentProvider, PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
+import type { PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
+import { normalizeAgentProfileOverride } from "../design-library/profile-composer/profile-contract.ts";
 import { getResourceByKeyPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
-
-const allowedProviders = new Set<AgentProvider>(["pi", "codex", "claude-code", "openai", "openai-codex", "anthropic", "custom"]);
 
 export type PatchPlannerDraftTaskProfileOverrideInput = {
   draftId: string;
@@ -30,7 +29,7 @@ export async function patchPlannerDraftTaskProfileOverridePg(
   const taskIndex = tasks.findIndex((task) => task.id === input.taskId);
   if (taskIndex < 0) throw new Error(`planner draft task not found: ${input.taskId}`);
 
-  const profileOverride = normalizeProfileOverride(input.profileOverride);
+  const profileOverride = normalizeAgentProfileOverride(input.profileOverride);
   const currentTask = tasks[taskIndex] ?? {};
   const nextTask = {
     ...currentTask,
@@ -76,44 +75,6 @@ export async function patchPlannerDraftTaskProfileOverridePg(
   };
 }
 
-function normalizeProfileOverride(input: PlannerDraftTaskProfileOverride): PlannerDraftTaskProfileOverride {
-  const output: PlannerDraftTaskProfileOverride = {};
-  if (input.harnessRef !== undefined) output.harnessRef = nonEmptyString(input.harnessRef, "harnessRef");
-  if (input.provider !== undefined) {
-    if (!allowedProviders.has(input.provider)) throw new Error(`unsupported provider: ${input.provider}`);
-    output.provider = input.provider;
-  }
-  if (input.model !== undefined) output.model = nonEmptyString(input.model, "model");
-  if (input.thinkingLevel !== undefined) output.thinkingLevel = nonEmptyString(input.thinkingLevel, "thinkingLevel");
-  if (input.instruction !== undefined) output.instruction = input.instruction.trim();
-  if (input.skillRefs !== undefined) output.skillRefs = stringArray(input.skillRefs, "skillRefs");
-  if (input.mcpGrantRefs !== undefined) output.mcpGrantRefs = stringArray(input.mcpGrantRefs, "mcpGrantRefs");
-  if (input.toolGrantRefs !== undefined) output.toolGrantRefs = stringArray(input.toolGrantRefs, "toolGrantRefs");
-  if (input.vaultLeasePolicyRefs !== undefined) output.vaultLeasePolicyRefs = stringArray(input.vaultLeasePolicyRefs, "vaultLeasePolicyRefs");
-  if (input.nodePromptSpec !== undefined) output.nodePromptSpec = objectValue(input.nodePromptSpec, "nodePromptSpec");
-  return output;
-}
-
-function nonEmptyString(value: unknown, field: string): string {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw new Error(`${field} must be a non-empty string`);
-  }
-  return value.trim();
-}
-
-function stringArray(value: unknown, field: string): string[] {
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
-    throw new Error(`${field} must be an array of strings`);
-  }
-  return [...new Set(value.map((item) => item.trim()).filter(Boolean))];
-}
-
-function objectValue(value: unknown, field: string): Record<string, unknown> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${field} must be an object`);
-  }
-  return value as Record<string, unknown>;
-}
 
 function asRecord(value: unknown): Record<string, any> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};

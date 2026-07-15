@@ -7,8 +7,7 @@ import type {
   WorkflowCompositionValidationIssue,
 } from "../design-library/types.ts";
 import type { PlanBundle, SouthstarWorkflowManifest } from "../manifests/types.ts";
-import { validateWorkflowManifest } from "../manifests/validate.ts";
-import type { AgentProfile, PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
+import type { PlannerDraftTaskProfileOverride } from "../design-library/runtime-types.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { resolveWorkflowCandidates } from "../orchestration/candidate-resolver.ts";
 import { compileWorkflowComposition, type CompiledWorkflowComposition } from "../orchestration/composition-compiler.ts";
@@ -50,6 +49,14 @@ import {
   type PatchPlannerDraftTaskProfileOverrideInput,
   type PatchPlannerDraftTaskProfileOverrideResult,
 } from "./planner-draft-task-overrides.ts";
+import {
+  assertPlannerDraftLineage,
+  buildPlannerDraftLineage,
+} from "./planner-draft-lineage.ts";
+import {
+  materializeWorkflowTaskProfileOverrides,
+  validateWorkflowMaterialization,
+} from "../orchestration/manifest-acceptance.ts";
 import { assertWorkspaceMountAllowed } from "../workspace/workspace-mount-policy.ts";
 
 export type {
@@ -68,6 +75,10 @@ const PLANNER_DRAFT_STATUS_REQUIREMENTS_REVIEW = "requirements_review";
 const PLANNER_DRAFT_STATUS_VALIDATION_RESOLVING = "validation_resolving";
 const PLANNER_DRAFT_STATUS_LIBRARY_REVIEW = "library_review";
 const PLANNER_DRAFT_STATUS_VALIDATION_READY = "validation_ready";
+
+type WorkflowTaskWithProfileOverride = SouthstarWorkflowManifest["tasks"][number] & {
+  profileOverride?: PlannerDraftTaskProfileOverride;
+};
 
 export type PostgresPlannerDraftStatus =
   | typeof PLANNER_DRAFT_STATUS_NEEDS_INPUT
@@ -574,6 +585,11 @@ export async function validatePostgresPlannerDraft(
   const status = issues.length === 0 ? PLANNER_DRAFT_STATUS_VALIDATED : PLANNER_DRAFT_STATUS_INVALID;
   const taskSummaries = summarizeWorkflowTasksFromPayload(refreshed.workflow.tasks);
   const orchestrationSnapshot = refreshDraftValidationSnapshot(refreshed.orchestrationSnapshot, issues);
+  const lineage = buildPlannerDraftLineage({
+    goalContract: contract,
+    workflow: refreshed.workflow,
+    coverage: refreshed.goalRequirementCoverage,
+  });
 
   await upsertRuntimeResourcePg(db, {
     id: draft.id,
@@ -591,8 +607,8 @@ export async function validatePostgresPlannerDraft(
       validationIssues: issues,
       orchestrationSnapshot,
       goalRequirementCoverage: refreshed.goalRequirementCoverage,
-      goalRequirementCoverageHash: contentHashForPayload(refreshed.goalRequirementCoverage),
-      workflowManifestHash: contentHashForPayload(refreshed.workflow),
+      goalRequirementCoverageHash: lineage.goalRequirementCoverageHash,
+      workflowManifestHash: lineage.workflowManifestHash,
     },
     summary: {
       ...summary,
@@ -764,6 +780,11 @@ async function createPlannerDraftFromComposition(
   const validationIssues = toPlannerDraftValidationIssues(compiled.orchestrationSnapshot.validation.issues);
   const taskSummaries = summarizeWorkflowTasks(compiled.workflow);
   const status = validationIssues.length === 0 ? "validated" : "invalid";
+  const lineage = buildPlannerDraftLineage({
+    goalContract: input.goalContract,
+    workflow: compiled.workflow,
+    coverage: compiled.goalRequirementCoverage,
+  });
   const bundle: PlanBundle & {
     orchestrationSnapshot: CompiledWorkflowComposition["orchestrationSnapshot"];
     goalRequirementCoverage: CompiledWorkflowComposition["goalRequirementCoverage"];
@@ -772,11 +793,11 @@ async function createPlannerDraftFromComposition(
     goalContractHash: string;
   } = {
     workflow: compiled.workflow,
-    workflowManifestHash: contentHashForPayload(compiled.workflow),
+    workflowManifestHash: lineage.workflowManifestHash,
     goalRequirementCoverage: compiled.goalRequirementCoverage,
-    goalRequirementCoverageHash: contentHashForPayload(compiled.goalRequirementCoverage),
+    goalRequirementCoverageHash: lineage.goalRequirementCoverageHash,
     goalContract: input.goalContract,
-    goalContractHash: input.goalContractHash,
+    goalContractHash: lineage.goalContractHash,
     ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
     ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
     ...(input.goalDesignPackage
@@ -1043,6 +1064,11 @@ async function createLibraryConstrainedPlannerDraft(
     runtimeBindingCapabilities,
   });
   input.onProgress?.({ stage: "composition.compiled", message: "Workflow composition compiled." });
+  const lineage = buildPlannerDraftLineage({
+    goalContract: input.goalContract,
+    workflow: compiled.workflow,
+    coverage: compiled.goalRequirementCoverage,
+  });
   const bundle: PlanBundle & {
     orchestrationSnapshot: CompiledWorkflowComposition["orchestrationSnapshot"];
     goalRequirementCoverage: CompiledWorkflowComposition["goalRequirementCoverage"];
@@ -1052,19 +1078,19 @@ async function createLibraryConstrainedPlannerDraft(
     goalContractHash: string;
   } = {
     workflow: compiled.workflow,
-    workflowManifestHash: contentHashForPayload(compiled.workflow),
+    workflowManifestHash: lineage.workflowManifestHash,
     goalRequirementCoverage: compiled.goalRequirementCoverage,
-    goalRequirementCoverageHash: contentHashForPayload(compiled.goalRequirementCoverage),
-      goalContract: input.goalContract,
-      goalContractHash: input.goalContractHash,
-      ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
-      ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
-      ...(input.goalDesignPackage
-        ? {
-            goalDesignPackage: input.goalDesignPackage,
-            goalDesignPackageHash: input.goalDesignPackage.packageHash,
-          }
-        : {}),
+    goalRequirementCoverageHash: lineage.goalRequirementCoverageHash,
+    goalContract: input.goalContract,
+    goalContractHash: lineage.goalContractHash,
+    ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+    ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
+    ...(input.goalDesignPackage
+      ? {
+          goalDesignPackage: input.goalDesignPackage,
+          goalDesignPackageHash: input.goalDesignPackage.packageHash,
+        }
+      : {}),
       plannerTrace: {
       model: `southstar-library-constrained-${composerMode}-composer`,
       promptHash: hash(input.goalPrompt),
@@ -1192,7 +1218,6 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const sourcePlannerRequest = asRecord(draftPayload.plannerRequest);
   const contract = requiredStoredGoalContract(draftPayload.goalContract, input.draftId);
   const contractHash = goalContractHash(contract);
-  assertStoredGoalContractHashes(draftPayload, draftSummary, contractHash);
   // A Goal Design package is host-confirmed before composition.  Its original
   // Goal Contract may retain the audit note that was present before review;
   // that note must not block run materialization after the package has been
@@ -1218,14 +1243,19 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   if (!coverage) {
     throw new Error(`planner draft is missing Goal Contract coverage: ${input.draftId}`);
   }
-  const coverageHash = contentHashForPayload(coverage);
-  if (stringValue(draftPayload.goalRequirementCoverageHash) !== coverageHash) {
-    throw new Error(`planner draft Goal Requirement Coverage hash mismatch: ${input.draftId}`);
-  }
-  const storedManifestHash = contentHashForPayload(bundle.workflow);
-  if (stringValue(draftPayload.workflowManifestHash) !== storedManifestHash) {
-    throw new Error(`planner draft workflow manifest hash mismatch: ${input.draftId}`);
-  }
+  const lineage = buildPlannerDraftLineage({
+    goalContract: contract,
+    workflow: bundle.workflow,
+    coverage,
+  });
+  assertPlannerDraftLineage({
+    payload: draftPayload,
+    summary: draftSummary,
+    lineage,
+    draftId: input.draftId,
+  });
+  const coverageHash = lineage.goalRequirementCoverageHash;
+  const storedManifestHash = lineage.workflowManifestHash;
   if (draftPayload.goalDesignPackage !== undefined && !goalDesignPackage) {
     throw new Error(`planner draft Goal Design Package is invalid: ${input.draftId}`);
   }
@@ -1335,32 +1365,6 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
     }
   });
   return { runId, taskIds };
-}
-
-function assertStoredGoalContractHashes(
-  payload: Record<string, unknown>,
-  summary: Record<string, unknown>,
-  canonicalHash: string,
-): void {
-  const hashes = [
-    { label: "payload.goalContractHash", value: payload.goalContractHash },
-    { label: "summary.goalContractHash", value: summary.goalContractHash },
-    {
-      label: "goalRequirementCoverage.goalContractHash",
-      value: asRecord(payload.goalRequirementCoverage).goalContractHash,
-    },
-    {
-      label: "orchestrationSnapshot.goalContractHash",
-      value: asRecord(payload.orchestrationSnapshot).goalContractHash,
-    },
-  ];
-  for (const hash of hashes) {
-    if (hash.value === undefined) continue;
-    if (hash.value === canonicalHash) continue;
-    throw new Error(
-      `Goal Contract hash mismatch at ${hash.label}: expected ${canonicalHash}, received ${String(hash.value)}`,
-    );
-  }
 }
 
 export async function getPostgresPlannerDraftOrchestration(
@@ -1641,15 +1645,7 @@ function copyProfileOverridesToWorkflow(
 }
 
 function validatePlannerDraftWorkflow(workflow: SouthstarWorkflowManifest): PlannerDraftValidationIssue[] {
-  const validation = validateWorkflowManifest(workflow);
-  const materializedValidation = validateWorkflowManifest(materializeWorkflowTaskProfileOverrides(workflow));
-  return [
-    ...validation.issues.map((issue) => ({ path: issue.path, message: issue.message })),
-    ...materializedValidation.issues.map((issue) => ({
-      path: `materialized.${issue.path}`,
-      message: issue.message,
-    })),
-  ];
+  return validateWorkflowMaterialization(workflow);
 }
 
 function refreshDraftValidationSnapshot(snapshot: unknown, issues: PlannerDraftValidationIssue[]): unknown {
@@ -1887,78 +1883,6 @@ function maybeWorkflowCompositionPlan(value: unknown): WorkflowCompositionPlan |
     }
   }
   return record as WorkflowCompositionPlan;
-}
-
-type WorkflowTaskWithProfileOverride = SouthstarWorkflowManifest["tasks"][number] & {
-  profileOverride?: PlannerDraftTaskProfileOverride;
-};
-
-function materializeWorkflowTaskProfileOverrides(workflow: SouthstarWorkflowManifest): SouthstarWorkflowManifest {
-  const agentProfiles = required(workflow.agentProfiles, `missing workflow agentProfiles in manifest ${workflow.workflowId}`).map(cloneAgentProfile);
-  const tasks = workflow.tasks.map((task) => ({ ...task } as WorkflowTaskWithProfileOverride));
-  const profileById = new Map(agentProfiles.map((profile) => [profile.id, profile]));
-  const outputProfiles = [...agentProfiles];
-
-  for (const task of tasks) {
-    const override = task.profileOverride;
-    if (!override || Object.keys(override).length === 0) continue;
-    if (!task.agentProfileRef) continue;
-
-    const baseProfile = profileById.get(task.agentProfileRef);
-    if (!baseProfile) continue;
-
-    const overrideProfileId = `${baseProfile.id}__${task.id}__override`;
-    const overrideProfile: AgentProfile = {
-      ...cloneAgentProfile(baseProfile),
-      id: overrideProfileId,
-      name: `${baseProfile.name} (${task.name || task.id})`,
-      ...(override.harnessRef !== undefined ? { harnessRef: override.harnessRef } : {}),
-      ...(override.provider !== undefined ? { provider: override.provider } : {}),
-      ...(override.model !== undefined ? { model: override.model } : {}),
-      ...(override.thinkingLevel !== undefined ? { thinkingLevel: override.thinkingLevel } : {}),
-      ...(override.instruction !== undefined ? { instruction: override.instruction } : {}),
-      ...(override.skillRefs !== undefined ? { skillRefs: [...override.skillRefs] } : {}),
-      ...(override.mcpGrantRefs !== undefined ? { mcpGrantRefs: [...override.mcpGrantRefs] } : {}),
-      ...(override.vaultLeasePolicyRefs !== undefined ? { vaultLeasePolicyRefs: [...override.vaultLeasePolicyRefs] } : {}),
-      ...(override.toolGrantRefs !== undefined
-        ? { toolPolicy: { ...baseProfile.toolPolicy, allowedTools: [...override.toolGrantRefs] } }
-        : {}),
-    };
-
-    outputProfiles.push(overrideProfile);
-    profileById.set(overrideProfile.id, overrideProfile);
-    task.agentProfileRef = overrideProfile.id;
-    if (override.skillRefs !== undefined) task.skillRefs = [...override.skillRefs];
-    if (override.mcpGrantRefs !== undefined) task.mcpGrantRefs = [...override.mcpGrantRefs];
-    if (override.toolGrantRefs !== undefined) task.toolGrantRefs = [...override.toolGrantRefs];
-    if (override.vaultLeasePolicyRefs !== undefined) task.vaultLeasePolicyRefs = [...override.vaultLeasePolicyRefs];
-    if (override.nodePromptSpec !== undefined) {
-      task.promptInputs = { ...task.promptInputs, nodePromptSpec: { ...override.nodePromptSpec } };
-    }
-  }
-
-  return {
-    ...workflow,
-    agentProfiles: outputProfiles,
-    tasks,
-  };
-}
-
-function cloneAgentProfile(profile: AgentProfile): AgentProfile {
-  return {
-    ...profile,
-    agentsMdRefs: [...profile.agentsMdRefs],
-    skillRefs: [...profile.skillRefs],
-    mcpGrantRefs: [...profile.mcpGrantRefs],
-    ...(profile.vaultLeasePolicyRefs !== undefined ? { vaultLeasePolicyRefs: [...profile.vaultLeasePolicyRefs] } : {}),
-    memoryScopes: [...profile.memoryScopes],
-    toolPolicy: {
-      allowedTools: [...profile.toolPolicy.allowedTools],
-      deniedTools: [...profile.toolPolicy.deniedTools],
-      requiresApprovalFor: [...profile.toolPolicy.requiresApprovalFor],
-    },
-    budgetPolicy: { ...profile.budgetPolicy },
-  };
 }
 
 async function allocateRunId(db: SouthstarDb, workflowId: string): Promise<string> {

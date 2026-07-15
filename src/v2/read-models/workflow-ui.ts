@@ -14,6 +14,7 @@ import {
 } from "../orchestration/goal-requirement-coverage.ts";
 import { getResourceByKeyPg } from "../stores/postgres-runtime-store.ts";
 import { approvalCommands } from "./operator-attention.ts";
+import { effectiveAgentProfile } from "../design-library/profile-composer/profile-contract.ts";
 import {
   buildRuntimeWorkflowCanvasProjection,
   workflowTasksFromUnknown,
@@ -639,13 +640,15 @@ async function runtimeSelectedDefinition(
     vaultLeasePolicyRefs,
     ...(nodePromptSpec !== undefined ? { nodePromptSpec } : {}),
     editable: false,
-    effectiveProfile: effectiveProfileFromSources({
+    effectiveProfile: effectiveAgentProfile({
       agentProfile: envelope.agentProfile ?? libraryDetails.agentProfile,
-      skillRefs,
-      mcpGrantRefs,
-      toolGrantRefs,
-      vaultLeasePolicyRefs,
-      ...(nodePromptSpec !== undefined ? { nodePromptSpec } : {}),
+      task: {
+        skillRefs,
+        mcpGrantRefs,
+        toolGrantRefs,
+        vaultLeasePolicyRefs,
+        ...(nodePromptSpec !== undefined ? { promptInputs: { nodePromptSpec } } : {}),
+      },
     }),
     ...libraryDetails,
     ...(envelope.roleDefinition !== undefined ? { roleDefinition: envelope.roleDefinition } : {}),
@@ -864,50 +867,11 @@ function effectiveProfileForDraftTask(
   task: DraftTaskShape,
   agentProfile: unknown,
 ): NonNullable<WorkflowTaskDefinitionSummary["effectiveProfile"]> {
-  const profile = asRecord(agentProfile);
-  const override = asRecord(task.profileOverride);
-  const nodePromptSpec = override.nodePromptSpec ?? asRecord(task.promptInputs).nodePromptSpec;
-  return effectiveProfileFromSources({
+  return effectiveAgentProfile({
     agentProfile,
-    harnessRef: stringValue(override.harnessRef) ?? stringValue(profile.harnessRef),
-    provider: stringValue(override.provider) ?? stringValue(profile.provider),
-    model: stringValue(override.model) ?? stringValue(profile.model),
-    thinkingLevel: stringValue(override.thinkingLevel),
-    instruction: stringValue(override.instruction),
-    skillRefs: optionalStringArray(override.skillRefs) ?? task.skillRefs,
-    mcpGrantRefs: optionalStringArray(override.mcpGrantRefs) ?? task.mcpGrantRefs,
-    toolGrantRefs: optionalStringArray(override.toolGrantRefs) ?? task.toolGrantRefs,
-    vaultLeasePolicyRefs: optionalStringArray(override.vaultLeasePolicyRefs) ?? task.vaultLeasePolicyRefs,
-    ...(nodePromptSpec !== undefined ? { nodePromptSpec } : {}),
+    task,
+    profileOverride: task.profileOverride,
   });
-}
-
-function effectiveProfileFromSources(input: {
-  agentProfile?: unknown;
-  harnessRef?: string;
-  provider?: string;
-  model?: string;
-  thinkingLevel?: string;
-  instruction?: string;
-  skillRefs: string[];
-  mcpGrantRefs: string[];
-  toolGrantRefs: string[];
-  vaultLeasePolicyRefs: string[];
-  nodePromptSpec?: unknown;
-}): NonNullable<WorkflowTaskDefinitionSummary["effectiveProfile"]> {
-  const profile = asRecord(input.agentProfile);
-  return {
-    ...(input.harnessRef ?? stringValue(profile.harnessRef) ? { harnessRef: input.harnessRef ?? stringValue(profile.harnessRef) } : {}),
-    ...(input.provider ?? stringValue(profile.provider) ? { provider: input.provider ?? stringValue(profile.provider) } : {}),
-    ...(input.model ?? stringValue(profile.model) ? { model: input.model ?? stringValue(profile.model) } : {}),
-    ...(input.thinkingLevel ? { thinkingLevel: input.thinkingLevel } : {}),
-    ...(input.instruction ? { instruction: input.instruction } : {}),
-    skillRefs: input.skillRefs,
-    mcpGrantRefs: input.mcpGrantRefs,
-    toolGrantRefs: input.toolGrantRefs,
-    vaultLeasePolicyRefs: input.vaultLeasePolicyRefs,
-    ...(input.nodePromptSpec !== undefined ? { nodePromptSpec: input.nodePromptSpec } : {}),
-  };
 }
 
 function validationIssues(value: unknown): ValidationIssue[] {

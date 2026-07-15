@@ -196,6 +196,17 @@ export type LibraryReadiness = {
   diagnostics: LibraryFileDiagnostic[];
 };
 
+export type LibraryCatalogSyncPlan = {
+  snapshotHash: string;
+  executable: LibraryFileRecord[];
+  nonExecutable: Array<{
+    file: LibraryFileRecord;
+    status: "draft" | "deprecated" | "blocked";
+    reason?: string;
+  }>;
+  diagnostics: LibraryFileDiagnostic[];
+};
+
 export class LibraryReconcileError extends Error {
   readonly code = "library_reconcile_failed";
 
@@ -211,6 +222,33 @@ export class LibraryNotReadyError extends Error {
   constructor(readonly diagnostics: LibraryFileDiagnostic[], message = "Library reconciliation has not produced a ready snapshot") {
     super(message);
   }
+}
+
+export function buildLibraryCatalogSyncPlan(catalog: LibraryFileCatalog): LibraryCatalogSyncPlan {
+  const closed = resolveClosedApprovedLibraryFileSet(catalog.records);
+  const purposeDiagnostics = validateRequiredLibraryPurposes(closed.included);
+  const fatal = [...catalog.diagnostics, ...closed.diagnostics, ...purposeDiagnostics].filter((item) => item.fatal);
+  if (fatal.length > 0) throw new LibraryReconcileError(fatal);
+
+  const includedKeys = new Set(closed.included.map((file) => file.objectKey));
+  const excludedKeys = new Set(closed.excluded.map((file) => file.objectKey));
+  const nonExecutableStatus = (file: LibraryFileRecord): "draft" | "deprecated" | "blocked" => {
+    if (excludedKeys.has(file.objectKey)) return "blocked";
+    if (file.status === "deprecated" || file.status === "blocked") return file.status;
+    return "draft";
+  };
+  return {
+    snapshotHash: snapshotHash(catalog.records),
+    executable: closed.included,
+    nonExecutable: catalog.records
+      .filter((file) => !includedKeys.has(file.objectKey))
+      .map((file) => ({
+        file,
+        status: nonExecutableStatus(file),
+        reason: excludedKeys.has(file.objectKey) ? "reference closure incomplete" : undefined,
+      })),
+    diagnostics: [...catalog.diagnostics, ...closed.excluded],
+  };
 }
 
 function snapshotHash(records: LibraryFileRecord[]): string {
@@ -416,127 +454,104 @@ export async function reconcileLibraryCatalogLockedPg(
     rejectExistingObjectKeys?: ReadonlySet<string>;
   },
 ): Promise<{ result: LibraryReconcileResult; graphSync: Awaited<ReturnType<typeof syncLibraryFileRecordsToGraphPg>> }> {
-  const catalog = input.catalog;
-  const closed = resolveClosedApprovedLibraryFileSet(catalog.records);
-  const purposeDiagnostics = validateRequiredLibraryPurposes(closed.included);
-  const fatal = [...catalog.diagnostics, ...closed.diagnostics, ...purposeDiagnostics].filter((item) => item.fatal);
-  if (fatal.length > 0) throw new LibraryReconcileError(fatal);
-  const hash = snapshotHash(catalog.records);
-
-    const existing = await listFileBackedLibraryObjectsForUpdate(tx);
-    for (const objectKey of [...(input.rejectExistingObjectKeys ?? [])].sort()) {
-      if (await findLibraryObjectByKeyForUpdate(tx, objectKey)) {
-        throw new Error(`library import object already exists: ${objectKey}`);
-      }
+  const plan = buildLibraryCatalogSyncPlan(input.catalog);
+  const existing = await listFileBackedLibraryObjectsForUpdate(tx);
+  for (const objectKey of [...(input.rejectExistingObjectKeys ?? [])].sort()) {
+    if (await findLibraryObjectByKeyForUpdate(tx, objectKey)) {
+      throw new Error(`library import object already exists: ${objectKey}`);
     }
-    const existingByKey = new Map(existing.map((item) => [item.objectKey, item]));
-    const effectiveExecutable = closed.included;
-    const effectivePurposeDiagnostics = validateRequiredLibraryPurposes(effectiveExecutable);
-    if (effectivePurposeDiagnostics.length > 0) throw new LibraryReconcileError(effectivePurposeDiagnostics);
+  }
 
-    const includedKeys = new Set(effectiveExecutable.map((item) => item.objectKey));
-    const excludedKeys = new Set(closed.excluded.map((item) => item.objectKey));
-    const nonExecutableStatus = (file: LibraryFileRecord): "draft" | "deprecated" | "blocked" => {
-      if (excludedKeys.has(file.objectKey)) return "blocked";
-      if (file.status === "deprecated" || file.status === "blocked") return file.status;
-      return "draft";
-    };
-    const nonExecutable = catalog.records
-      .filter((file) => !includedKeys.has(file.objectKey))
-      .map((file) => ({
-        file,
-        status: nonExecutableStatus(file),
-        reason: excludedKeys.has(file.objectKey) ? "reference closure incomplete" : undefined,
-      }));
-
-    const graphSync = await syncLibraryFileRecordsToGraphPg(tx, { executable: effectiveExecutable, nonExecutable });
-    const presentKeys = new Set(catalog.records.map((item) => item.objectKey));
-    const deprecatedObjectKeys: string[] = [];
-    for (const object of existing) {
-      if (presentKeys.has(object.objectKey)) continue;
-      if (object.status === "deprecated") continue;
-      await updateLibraryObjectStatus(tx, { objectKey: object.objectKey, status: "deprecated" });
-      await deactivateOutgoingLibraryEdges(tx, object.objectKey);
-      await appendLibraryHistoryEvent(tx, {
-        objectId: object.id,
-        eventType: "file_deprecated",
-        payload: { objectKey: object.objectKey, snapshotHash: hash, trigger: input.trigger },
-      });
-      deprecatedObjectKeys.push(object.objectKey);
-    }
-
-    for (const object of graphSync.objects) {
-      const before = existing.find((item) => item.objectKey === object.objectKey);
-      if (before?.headVersionId === object.headVersionId && before.status === object.status) continue;
-      await appendLibraryHistoryEvent(tx, {
-        objectId: object.id,
-        eventType: "file_reconciled",
-        payload: {
-          objectKey: object.objectKey,
-          previousVersionRef: before?.headVersionId ?? null,
-          versionRef: object.headVersionId,
-          status: object.status,
-          snapshotHash: hash,
-          trigger: input.trigger,
-        },
-      });
-    }
-
-    const diagnostics = [...catalog.diagnostics, ...closed.excluded];
-    const result: LibraryReconcileResult = {
-      schemaVersion: "southstar.library_sync_snapshot.v1",
-      snapshotHash: hash,
-      status: diagnostics.length > 0 ? "ready_with_warnings" : "ready",
-      sourceRoot: input.root,
-      trigger: input.trigger,
-      included: effectiveExecutable.map((file) => ({
-        path: file.path,
-        objectKey: file.objectKey,
-        objectKind: file.objectKind,
-        sourceHash: file.sourceHash,
-        versionRef: `${file.objectKey}@${file.sourceHash.slice(0, 12)}`,
-      })),
-      excluded: diagnostics.map((item) => ({
-        path: item.paths[0] ?? "",
-        objectKey: item.objectKey,
-        reason: item.message,
-        missingRefs: item.missingRefs,
-      })),
-      deprecatedObjectKeys: deprecatedObjectKeys.sort(),
-      warnings: diagnostics.map((item) => item.message),
-    };
-    const reconciledAt = new Date().toISOString();
-    const readiness: LibraryReadiness = {
-      schemaVersion: "southstar.library_readiness.v1",
-      ready: true,
-      status: result.status,
-      snapshotHash: hash,
-      sourceRoot: input.root,
-      reconciledAt,
-      trigger: input.trigger,
-      includedCount: result.included.length,
-      excludedCount: result.excluded.length,
-      diagnostics,
-    };
-    await insertRuntimeResourceIfAbsentPg(tx, {
-      resourceType: "library_sync_snapshot",
-      resourceKey: `library-sync:${hash}`,
-      scope: "runtime",
-      status: result.status,
-      title: `Library sync ${hash.slice(0, 12)}`,
-      payload: result,
-      summary: result.status,
-      metrics: { included: result.included.length, excluded: result.excluded.length },
+  const graphSync = await syncLibraryFileRecordsToGraphPg(tx, {
+    executable: plan.executable,
+    nonExecutable: plan.nonExecutable,
+  });
+  const presentKeys = new Set(input.catalog.records.map((item) => item.objectKey));
+  const deprecatedObjectKeys: string[] = [];
+  for (const object of existing) {
+    if (presentKeys.has(object.objectKey)) continue;
+    if (object.status === "deprecated") continue;
+    await updateLibraryObjectStatus(tx, { objectKey: object.objectKey, status: "deprecated" });
+    await deactivateOutgoingLibraryEdges(tx, object.objectKey);
+    await appendLibraryHistoryEvent(tx, {
+      objectId: object.id,
+      eventType: "file_deprecated",
+      payload: { objectKey: object.objectKey, snapshotHash: plan.snapshotHash, trigger: input.trigger },
     });
-    await upsertRuntimeResourcePg(tx, {
-      resourceType: "library_readiness",
-      resourceKey: "library-readiness:current",
-      scope: "runtime",
-      status: result.status,
-      title: "Current Library readiness",
-      payload: readiness,
-      summary: result.status,
-      metrics: { included: result.included.length, excluded: result.excluded.length },
+    deprecatedObjectKeys.push(object.objectKey);
+  }
+
+  for (const object of graphSync.objects) {
+    const before = existing.find((item) => item.objectKey === object.objectKey);
+    if (before?.headVersionId === object.headVersionId && before.status === object.status) continue;
+    await appendLibraryHistoryEvent(tx, {
+      objectId: object.id,
+      eventType: "file_reconciled",
+      payload: {
+        objectKey: object.objectKey,
+        previousVersionRef: before?.headVersionId ?? null,
+        versionRef: object.headVersionId,
+        status: object.status,
+        snapshotHash: plan.snapshotHash,
+        trigger: input.trigger,
+      },
     });
-    return { result, graphSync };
+  }
+
+  const result: LibraryReconcileResult = {
+    schemaVersion: "southstar.library_sync_snapshot.v1",
+    snapshotHash: plan.snapshotHash,
+    status: plan.diagnostics.length > 0 ? "ready_with_warnings" : "ready",
+    sourceRoot: input.root,
+    trigger: input.trigger,
+    included: plan.executable.map((file) => ({
+      path: file.path,
+      objectKey: file.objectKey,
+      objectKind: file.objectKind,
+      sourceHash: file.sourceHash,
+      versionRef: `${file.objectKey}@${file.sourceHash.slice(0, 12)}`,
+    })),
+    excluded: plan.diagnostics.map((item) => ({
+      path: item.paths[0] ?? "",
+      objectKey: item.objectKey,
+      reason: item.message,
+      missingRefs: item.missingRefs,
+    })),
+    deprecatedObjectKeys: deprecatedObjectKeys.sort(),
+    warnings: plan.diagnostics.map((item) => item.message),
+  };
+  const reconciledAt = new Date().toISOString();
+  const readiness: LibraryReadiness = {
+    schemaVersion: "southstar.library_readiness.v1",
+    ready: true,
+    status: result.status,
+    snapshotHash: plan.snapshotHash,
+    sourceRoot: input.root,
+    reconciledAt,
+    trigger: input.trigger,
+    includedCount: result.included.length,
+    excludedCount: result.excluded.length,
+    diagnostics: plan.diagnostics,
+  };
+  await insertRuntimeResourceIfAbsentPg(tx, {
+    resourceType: "library_sync_snapshot",
+    resourceKey: `library-sync:${plan.snapshotHash}`,
+    scope: "runtime",
+    status: result.status,
+    title: `Library sync ${plan.snapshotHash.slice(0, 12)}`,
+    payload: result,
+    summary: result.status,
+    metrics: { included: result.included.length, excluded: result.excluded.length },
+  });
+  await upsertRuntimeResourcePg(tx, {
+    resourceType: "library_readiness",
+    resourceKey: "library-readiness:current",
+    scope: "runtime",
+    status: result.status,
+    title: "Current Library readiness",
+    payload: readiness,
+    summary: result.status,
+    metrics: { included: result.included.length, excluded: result.excluded.length },
+  });
+  return { result, graphSync };
 }

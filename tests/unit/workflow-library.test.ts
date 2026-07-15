@@ -537,6 +537,15 @@ test("generate route proxies backend planner draft stream and converts orchestra
   }]);
 });
 
+test("generate route delegates workflow read-model transport and DAG projection", async () => {
+  const source = await fs.readFile(new URL("../../web/app/api/workflow/generate/route.ts", import.meta.url), "utf8");
+
+  assert.match(source, /projectWorkflowUiReadModel/);
+  assert.doesNotMatch(source, /buildWorkflowDagFromPlannerDraft/);
+  assert.doesNotMatch(source, /unwrapV2Envelope/);
+  assert.doesNotMatch(source, /async function fetchJson/);
+});
+
 test("generate route forwards template policy through run-goal", async () => {
   process.env.SOUTHSTAR_V2_API_BASE_URL = "http://127.0.0.1:3000";
   const calls: Array<{ url: string; method: string; body?: unknown }> = [];

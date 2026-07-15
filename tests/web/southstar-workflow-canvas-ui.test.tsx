@@ -522,7 +522,7 @@ test("workflow generate proxy submits one prompt and adapts persisted mission tr
   assert.match(route, /goalPrompt:\s*prompt/);
   assert.match(route, /goalPrompt:\s*prompt,\s*cwd,\s*idempotencyKey,/s);
   assert.match(route, /\/api\/v2\/ui\/workflow\?/);
-  assert.match(route, /buildWorkflowDagFromPlannerDraft/);
+  assert.match(route, /projectWorkflowUiReadModel/);
   assert.match(route, /"heartbeat"/);
   assert.match(readModel, /approvalCommands\(runId, mission\.approval\.id\)/);
   assert.doesNotMatch(route, /\/api\/v2\/planner\/drafts\/stream/);

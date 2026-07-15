@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { LlmWorkflowComposer, loadWorkflowComposerSopPg } from "../orchestration/llm-composer.ts";
 import { createLlmGoalDesigner, createLlmGoalSliceDesigner } from "../orchestration/goal-design.ts";
@@ -62,6 +61,10 @@ import {
 } from "../ui-api/postgres-run-api.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import type { ApiEnvelope } from "./types.ts";
+import {
+  buildRunGoalRequestFromPlannerDraftBody,
+  plannerDraftReceiptFromGoalResult,
+} from "../orchestration/planner-intake.ts";
 
 export async function handlePlannerRoute(
   context: RuntimeServerContext,
@@ -318,7 +321,7 @@ export async function handlePlannerRoute(
         composer: resolvePlannerWorkflowComposer(context),
         libraryImportLlmProvider: context.libraryImportLlmProvider,
         libraryImportSourceFetcher: context.libraryImportSourceFetcher,
-      }, runGoalRequestFromPlannerDraftBody(body)), requiredString(body.goalPrompt, "goalPrompt")),
+      }, buildRunGoalRequestFromPlannerDraftBody(body)), requiredString(body.goalPrompt, "goalPrompt")),
     );
   }
 
@@ -732,7 +735,7 @@ function createPlannerDraftStreamResponse(
     templatePolicy?: unknown;
   },
 ): Response {
-  const request = runGoalRequestFromPlannerDraftBody(body);
+  const request = buildRunGoalRequestFromPlannerDraftBody(body);
   const encoder = new TextEncoder();
   let heartbeat: ReturnType<typeof setInterval> | undefined;
   let closed = false;
@@ -1013,51 +1016,6 @@ function startPlannerSseHeartbeat(
 
 async function readJsonBody<T>(request: Request): Promise<T> {
   return await request.json() as T;
-}
-
-function runGoalRequestFromPlannerDraftBody(body: {
-  goalPrompt?: unknown;
-  cwd?: unknown;
-  projectRef?: unknown;
-  idempotencyKey?: unknown;
-  goalDesignMode?: unknown;
-  templatePolicy?: unknown;
-}): RunGoalRequest {
-  const goalPrompt = requiredString(body.goalPrompt, "goalPrompt");
-  const cwd = optionalString(body.cwd) ?? process.cwd();
-  const projectRef = optionalString(body.projectRef);
-  return {
-    goalPrompt,
-    cwd,
-    ...(projectRef !== undefined ? { projectRef } : {}),
-    idempotencyKey: optionalString(body.idempotencyKey) ?? legacyPlannerDraftIdempotencyKey(goalPrompt, cwd, projectRef),
-    goalDesignMode: optionalGoalDesignMode(body.goalDesignMode),
-    templatePolicy: optionalWorkflowTemplatePolicy(body.templatePolicy),
-  };
-}
-
-function plannerDraftReceiptFromGoalResult(result: RunGoalResult, goalPrompt = "") {
-  return {
-    draftId: result.draftId,
-    goalPrompt,
-    workflowId: "",
-    status: result.draftStatus,
-    goalContractHash: result.goalContractHash,
-    ...(result.goalRequirementDraftId ? { goalRequirementDraftId: result.goalRequirementDraftId } : {}),
-    ...(result.goalRequirementDraftHash ? { goalRequirementDraftHash: result.goalRequirementDraftHash } : {}),
-    ...(result.goalDesignPhase ? { goalDesignPhase: result.goalDesignPhase } : {}),
-    ...(result.confirmable !== undefined ? { confirmable: result.confirmable } : {}),
-    ...(result.goalDesignPackageHash ? { goalDesignPackageHash: result.goalDesignPackageHash } : {}),
-    ...(result.vocabularyGaps ? { vocabularyGaps: result.vocabularyGaps } : {}),
-    ...(result.libraryImportDraftId ? { libraryImportDraftId: result.libraryImportDraftId } : {}),
-    blockers: result.blockers,
-    validationIssues: result.validationIssues ?? [],
-    taskSummaries: [],
-  };
-}
-
-function legacyPlannerDraftIdempotencyKey(goalPrompt: string, cwd: string, projectRef?: string): string {
-  return `planner-draft-${createHash("sha256").update(`${cwd}\n${projectRef ?? ""}\n${goalPrompt}`).digest("hex").slice(0, 24)}`;
 }
 
 function goalDesignRevisionErrorResponse(error: unknown): Response {

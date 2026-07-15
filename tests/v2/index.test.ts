@@ -1,4 +1,9 @@
 await import("./manifests.test.ts");
+await import("./planner-draft-lineage.test.ts");
+await import("./execution-attempt-settlement.test.ts");
+await import("./profile-contract.test.ts");
+await import("./library-catalog-sync.test.ts");
+await import("./manifest-acceptance.test.ts");
 await import("./end-state-evaluator.test.ts");
 await import("./workflow-revision.test.ts");
 await import("./tork-projection.test.ts");

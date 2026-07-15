@@ -69,7 +69,7 @@ test("sessions route defaults omitted kind requests to chat sessions", () => {
 test("workflow generation materializes a workflow-kind session before streaming", () => {
   const hook = source("web/hooks/useAgentSession.ts");
 
-  assert.match(hook, /if \(opts\.workflowMode && !images\?\.length && !isSlashCommandPrompt\) \{[\s\S]*const workflowSessionId = sessionIdRef\.current \?\? await ensureNewSession\(\);[\s\S]*generateWorkflowDagStream/);
+  assert.match(hook, /if \(opts\.workflowMode && !images\?\.length && !isSlashCommandPrompt\) \{[\s\S]*workflowSessionId = sessionIdRef\.current \?\? await ensureNewSession\(\);[\s\S]*generateWorkflowDagStream/);
   assert.match(hook, /if \(workflowSessionId\) promoteNewSession\(1, trimmedMessage\);/);
 });
 
