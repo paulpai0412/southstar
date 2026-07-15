@@ -36,14 +36,19 @@ export function isRuntimeProfilePrimitiveCandidate(object: LibraryObjectSummary)
       return stringArray(state.runtimeToolNames).length > 0
         && unsupportedPiRuntimeToolNames(stringArray(state.runtimeToolNames)).length === 0;
     case "mcp_tool_grant":
-      // The task runner does not currently load MCP runtime configs. Do not
-      // advertise grants to the composer until an executable adapter exists.
-      return false;
+      return isExecutableMcpGrant(state);
     case "instruction_template":
       return stringValue(state.content) !== undefined && Array.isArray(state.variables);
     default:
       return true;
   }
+}
+
+function isExecutableMcpGrant(state: Record<string, unknown>): boolean {
+  return stringValue(state.serverId) !== undefined
+    && stringValue(state.command) !== undefined
+    && Array.isArray(state.allowedTools)
+    && state.allowedTools.every((value) => typeof value === "string" && value.trim().length > 0);
 }
 
 function stringValue(value: unknown): string | undefined {

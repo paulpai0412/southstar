@@ -42,6 +42,31 @@ test("workflow composition accepts generated profiles built from approved primit
   }
 });
 
+test("workflow composition rejects a generated profile binding that the host does not advertise", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await seedDynamicPrimitives(db);
+    const packet = await resolveWorkflowCandidates(db, {
+      requirementSpec: requirementSpec(),
+      scope: "software",
+    });
+    const validation = await validateWorkflowCompositionPlan(db, packet, generatedProfilePlan(), {
+      scope: "software",
+      runtimeBindingCapabilities: {
+        providers: ["unavailable-provider"],
+        harnesses: ["unavailable-harness"],
+        executionEngines: ["tork"],
+      },
+    });
+
+    assert.equal(validation.ok, false);
+    assert.equal(validation.issues.some((issue) => issue.path.endsWith(".provider")), true);
+    assert.equal(validation.issues.some((issue) => issue.path.endsWith(".harnessRef")), true);
+  } finally {
+    await db.close();
+  }
+});
+
 test("compiler preserves generated profile and primitive refs in the manifest", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -262,7 +287,7 @@ test("workflow composition rejects generated agent profile values outside runtim
   }
 });
 
-test("workflow composition rejects Codex generated profiles on the Pi agent runtime image", async () => {
+test("workflow composition rejects generated profile bindings the host does not advertise", async () => {
   const db = await createTestPostgresDb();
   try {
     await seedDynamicPrimitives(db);
@@ -276,7 +301,16 @@ test("workflow composition rejects Codex generated profiles on the Pi agent runt
     profile.model = "gpt-5-codex";
     profile.harnessRef = "codex";
 
-    const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan, {
+      scope: "software",
+      runtimeBindingCapabilities: {
+        providers: ["pi"],
+        models: ["gpt-5"],
+        harnesses: ["pi-agent"],
+        executionEngines: ["tork"],
+        images: ["southstar/pi-agent:local"],
+      },
+    });
 
     assert.equal(validation.ok, false);
     assert.equal(
@@ -332,7 +366,12 @@ test("workflow composition rejects generated profile images unavailable in the l
     const plan = generatedProfilePlan();
     plan.generatedComponentProposals[0]!.agentProfile!.execution!.image = "southstar/codex-agent:local";
 
-    const validation = await validateWorkflowCompositionPlan(db, packet, plan, { scope: "software" });
+    const validation = await validateWorkflowCompositionPlan(db, packet, plan, {
+      scope: "software",
+      runtimeBindingCapabilities: {
+        images: ["southstar/pi-agent:local"],
+      },
+    });
 
     assert.equal(validation.ok, false);
     assert.equal(

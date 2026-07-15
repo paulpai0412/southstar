@@ -12,16 +12,7 @@ import type { ComposeWorkflowInput, WorkflowComposer } from "./composer.ts";
 import type { GoalContractV1 } from "./goal-contract.ts";
 import type { GoalDesignPackage } from "./goal-design.ts";
 import {
-  GENERATED_AGENT_PROFILE_ALLOWED_VALUES,
   GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
-  GENERATED_AGENT_PROFILE_HARNESSES,
-  GENERATED_AGENT_PROFILE_IMAGES,
-  GENERATED_AGENT_PROFILE_MODELS,
-  GENERATED_AGENT_PROFILE_PROVIDERS,
-  GENERATED_AGENT_PROFILE_THINKING_LEVELS,
-  GENERATED_AGENT_PROFILE_WORKER_KINDS,
-  isAllowedGeneratedAgentProfileValue,
-  runtimeBindingForGeneratedProfileImage,
 } from "./generated-agent-profile-policy.ts";
 
 export type LlmTextClient = {
@@ -37,6 +28,8 @@ export type LlmWorkflowComposerOptions = {
   client: LlmTextClient;
   maxOutputChars?: number;
   temperature?: number;
+  /** Optional host-selected packet budget. Omit to expose the complete packet. */
+  candidatePacketCharBudget?: number;
   composerSop?: ResolvedWorkflowComposerSopV1 | (() => Promise<ResolvedWorkflowComposerSopV1>);
 };
 
@@ -272,11 +265,11 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         "execution",
       ],
       properties: {
-        workerKind: { type: "string", enum: [...GENERATED_AGENT_PROFILE_WORKER_KINDS] },
-        provider: { type: "string", enum: [...GENERATED_AGENT_PROFILE_PROVIDERS] },
-        model: { type: "string", enum: [...GENERATED_AGENT_PROFILE_MODELS] },
-        thinkingLevel: { type: "string", enum: [...GENERATED_AGENT_PROFILE_THINKING_LEVELS] },
-        harnessRef: { type: "string", enum: [...GENERATED_AGENT_PROFILE_HARNESSES] },
+        workerKind: { type: "string", minLength: 1 },
+        provider: { type: "string", minLength: 1 },
+        model: { type: "string", minLength: 1 },
+        thinkingLevel: { type: "string", minLength: 1 },
+        harnessRef: { type: "string", minLength: 1 },
         instruction: { type: "string", minLength: 1 },
         promptTemplateRef: { type: "string", minLength: 1 },
         contextPolicyRef: { type: "string", minLength: 1 },
@@ -310,8 +303,8 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
           additionalProperties: false,
           required: ["engine", "image", "command", "env", "mounts", "timeoutSeconds", "infraRetry"],
           properties: {
-            engine: { type: "string", enum: ["tork"] },
-            image: { type: "string", enum: [...GENERATED_AGENT_PROFILE_IMAGES] },
+            engine: { type: "string", minLength: 1 },
+            image: { type: "string", minLength: 1 },
             command: {
               type: "array",
               minItems: 1,
@@ -361,7 +354,14 @@ export class LlmWorkflowComposer implements WorkflowComposer {
     const composerSop = typeof this.options.composerSop === "function"
       ? await this.options.composerSop()
       : this.options.composerSop;
-    const prompt = renderComposerPrompt(input.goalPrompt, input.goalContract, input.candidatePacket, input.goalDesignPackage, composerSop);
+    const prompt = renderComposerPrompt(
+      input.goalPrompt,
+      input.goalContract,
+      input.candidatePacket,
+      input.goalDesignPackage,
+      composerSop,
+      this.options.candidatePacketCharBudget,
+    );
     const textInput = {
       model: this.options.model,
       prompt,
@@ -440,8 +440,10 @@ export function renderComposerPrompt(
   candidatePacket: CandidatePacket,
   goalDesignPackage?: ComposeWorkflowInput["goalDesignPackage"],
   composerSop?: ResolvedWorkflowComposerSopV1,
+  candidatePacketCharBudget?: number,
 ): string {
-  const boundedPacket = boundCandidatePacket(candidatePacket);
+  const packetBinding = boundCandidatePacket(candidatePacket, candidatePacketCharBudget, pinnedRefsForGoal(goalContract, goalDesignPackage));
+  const boundedPacket = packetBinding.packet;
   const allowedRefsByField = composerAllowedRefsByField(boundedPacket);
   const evaluatorArtifactCompatibility = composerEvaluatorArtifactCompatibility(boundedPacket);
   const forbiddenGoalDesignRefs = goalDesignPackage ? goalDesignForbiddenRefs(goalDesignPackage) : [];
@@ -490,9 +492,7 @@ export function renderComposerPrompt(
     "When selecting a generated profile, include it in generatedComponentProposals with kind agent_profile, validationStatus validated, and agentProfile.",
     "Each agentProfile must define the workerKind, provider, model, thinkingLevel/effort, harnessRef host adapter, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, toolPolicy, budgetPolicy, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, and execution.",
     "agentProfile.execution must include all Docker/Tork worker input needed by the compiler: engine, image, command, env, mounts, timeoutSeconds, and infraRetry.",
-    "Use only values from GeneratedAgentProfileAllowedValues for workerKind, provider, model, thinkingLevel, harnessRef, execution.engine, execution.image, and execution.command[0].",
-    "Use harnessRef as the host adapter. For the current runtime image southstar/pi-agent:local, every generated profile must use provider=pi, harnessRef=pi, and model=pi-agent-default.",
-    "Never pair provider=codex or harnessRef=codex with southstar/pi-agent:local. Codex requires a different runtime image that is not currently in GeneratedAgentProfileAllowedValues.",
+    "Treat workerKind, provider, model, thinkingLevel, harnessRef, and execution.image as runtime binding data. Do not invent a fallback binding; the configured host validates whether the selected binding can execute.",
     "Design for harness engineering: choose workerKind per task from execution_worker, validation_worker, repair_worker, or review_worker based on the goal, risk, and required artifacts.",
     "For workflows that create or modify artifacts, include a positive validation path with validation_worker, review_worker, deterministic checks, or another graph-justified verifier.",
     "For ordinary initial workflow generation, do not pre-add repair/reverify nodes unless the user explicitly asks for a static bounded repair path in the initial DAG. Instead, make validation_worker nodePromptSpec produce repair-ready failure reports for Southstar runtime dynamic repair revision.",
@@ -582,14 +582,11 @@ export function renderComposerPrompt(
       edges: [],
     }),
     "",
-    "GeneratedAgentProfileAllowedValues:",
-    JSON.stringify(GENERATED_AGENT_PROFILE_ALLOWED_VALUES),
-    "",
     "OutputJsonSchema:",
     JSON.stringify(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA),
     "",
     "CandidatePacketSummary:",
-    JSON.stringify(candidatePacketPromptSummary(boundedPacket)),
+    JSON.stringify(candidatePacketPromptSummary(boundedPacket, packetBinding.omittedOptionalRefs)),
   ].join("\n");
 }
 
@@ -665,7 +662,7 @@ function renderDagAndAgentProfileSop(): string {
     "10. For each generated profile, output a complete agentProfile that the compiler can materialize into Docker worker input agent-profile/profile.json and task execution.",
     "11. Each agentProfile must include workerKind, provider, model, thinkingLevel, harnessRef, instruction, promptTemplateRef, contextPolicyRef, sessionPolicyRef, memoryScopes, agentsMdRefs, vaultLeasePolicyRefs, toolPolicy, budgetPolicy, and execution.",
     "12. agentProfile.execution must include engine=tork, image, command, env, mounts, timeoutSeconds, and infraRetry.maxAttempts. Use an empty mounts array for workspace access; Southstar runtime injects the real host workspace mount from the task envelope. Never output source=\"workspace\" or container paths as mount sources.",
-    "12a. When agentProfile.execution.image is southstar/pi-agent:local, set provider=pi, harnessRef=pi, and model=pi-agent-default. Do not output codex provider or codex harness for this image.",
+    "12a. Preserve the provider/model/harness binding selected for the configured runtime; never substitute a default when a binding is unsupported.",
     "13. The agentProfile.instruction must be worker-specific and must name the selected skills/tools/MCP grants, success criteria, produced artifact, and failure/error-report behavior.",
     "14. toolPolicy.allowedTools must include every task.toolGrantRefs entry. agentProfile.vaultLeasePolicyRefs must include every task.vaultLeasePolicyRefs entry. budgetPolicy must include maxInputTokens, maxOutputTokens, and maxWallTimeSeconds.",
     "15. Prefer the smallest DAG that satisfies execution, positive validation, and bounded repair. Add review or summary workers only when risk or graph evidence justifies them.",
@@ -1057,24 +1054,7 @@ function validateAgentProfile(value: unknown, path: string, issues: WorkflowComp
   for (const field of ["workerKind", "provider", "model", "thinkingLevel", "harnessRef", "instruction", "promptTemplateRef", "contextPolicyRef", "sessionPolicyRef"]) {
     if (value[field] !== undefined) requireString(value[field], `${path}.${field}`, issues);
   }
-  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_WORKER_KINDS, value.workerKind, `${path}.workerKind`, issues);
-  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_PROVIDERS, value.provider, `${path}.provider`, issues);
-  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_MODELS, value.model, `${path}.model`, issues);
-  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_THINKING_LEVELS, value.thinkingLevel, `${path}.thinkingLevel`, issues);
-  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_HARNESSES, value.harnessRef, `${path}.harnessRef`, issues);
   const image = isRecord(value.execution) ? value.execution.image : undefined;
-  const binding = runtimeBindingForGeneratedProfileImage(image);
-  if (binding) {
-    if (value.provider !== binding.provider) {
-      issues.push(issue("composer_output_schema_violation", `${path}.provider`, `must be ${binding.provider} for ${String(image)}`));
-    }
-    if (value.model !== binding.model) {
-      issues.push(issue("composer_output_schema_violation", `${path}.model`, `must be ${binding.model} for ${String(image)}`));
-    }
-    if (value.harnessRef !== binding.harnessRef) {
-      issues.push(issue("composer_output_schema_violation", `${path}.harnessRef`, `must be ${binding.harnessRef} for ${String(image)}`));
-    }
-  }
   for (const field of ["memoryScopes", "agentsMdRefs", "vaultLeasePolicyRefs"]) {
     if (value[field] !== undefined) requireStringArray(value[field], `${path}.${field}`, issues);
   }
@@ -1146,11 +1126,9 @@ function validateExecutionSpec(value: unknown, path: string, issues: WorkflowCom
   if (value.engine !== undefined && value.engine !== "tork") {
     issues.push(issue("composer_output_schema_violation", `${path}.engine`, "must be tork"));
   }
-  requireAllowedAgentProfileValue(["tork"], value.engine, `${path}.engine`, issues);
   for (const field of ["image"] as const) {
     if (value[field] !== undefined) requireString(value[field], `${path}.${field}`, issues);
   }
-  requireAllowedAgentProfileValue(GENERATED_AGENT_PROFILE_IMAGES, value.image, `${path}.image`, issues);
   if (value.command !== undefined) requireStringArray(value.command, `${path}.command`, issues);
   if (Array.isArray(value.command) && value.command[0] !== GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT) {
     issues.push(issue("composer_output_schema_violation", `${path}.command`, `must start with ${GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT}`));
@@ -1188,17 +1166,6 @@ function validateExecutionSpec(value: unknown, path: string, issues: WorkflowCom
       }
     }
   }
-}
-
-function requireAllowedAgentProfileValue(
-  allowedValues: readonly string[],
-  value: unknown,
-  path: string,
-  issues: WorkflowCompositionValidationIssue[],
-): void {
-  if (value === undefined) return;
-  if (isAllowedGeneratedAgentProfileValue(allowedValues, value)) return;
-  issues.push(issue("composer_output_schema_violation", path, `must be one of: ${allowedValues.join(", ")}`));
 }
 
 function validateObjectShape(
@@ -1249,40 +1216,65 @@ function stringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && item.length > 0);
 }
 
-function boundCandidatePacket(packet: CandidatePacket): CandidatePacket {
-  return {
-    ...packet,
-    workflowTemplateCandidates: packet.workflowTemplateCandidates.slice(0, 20),
-    agentCandidatesByCapability: boundCandidateMap(packet.agentCandidatesByCapability),
-    profileCandidatesByAgent: boundCandidateMap(packet.profileCandidatesByAgent),
-    skillCandidatesByProfile: boundCandidateMap(packet.skillCandidatesByProfile),
-    toolCandidatesByProfile: boundCandidateMap(packet.toolCandidatesByProfile),
-    mcpGrantCandidatesByProfile: boundCandidateMap(packet.mcpGrantCandidatesByProfile),
-    vaultLeaseCandidatesByProfile: boundCandidateMap(packet.vaultLeaseCandidatesByProfile),
-    instructionCandidatesByProfile: boundCandidateMap(packet.instructionCandidatesByProfile),
-    artifactContractCandidates: packet.artifactContractCandidates.slice(0, 50),
-    evaluatorCandidatesByArtifact: boundCandidateMap(packet.evaluatorCandidatesByArtifact),
-    policyConstraints: packet.policyConstraints.slice(0, 50),
-    profilePrimitiveCandidates: packet.profilePrimitiveCandidates
-      ? {
-        agents: packet.profilePrimitiveCandidates.agents.slice(0, 64),
-        skills: packet.profilePrimitiveCandidates.skills.slice(0, 48),
-        tools: packet.profilePrimitiveCandidates.tools.slice(0, 24),
-        mcpGrants: packet.profilePrimitiveCandidates.mcpGrants.slice(0, 16),
-        instructions: packet.profilePrimitiveCandidates.instructions.slice(0, 16),
-      }
-      : undefined,
-    graphMetadataCandidates: packet.graphMetadataCandidates
-      ? {
-        ...packet.graphMetadataCandidates,
-        nodes: packet.graphMetadataCandidates.nodes.slice(0, 300),
-        edges: packet.graphMetadataCandidates.edges.slice(0, 500),
-      }
-      : undefined,
-  };
+type BoundCandidatePacket = {
+  packet: CandidatePacket;
+  omittedOptionalRefs: string[];
+};
+
+function boundCandidatePacket(packet: CandidatePacket, budgetChars?: number, pinnedRefs: Set<string> = new Set()): BoundCandidatePacket {
+  if (!Number.isFinite(budgetChars) || (budgetChars ?? 0) <= 0 || JSON.stringify(packet).length <= budgetChars!) {
+    return { packet, omittedOptionalRefs: [] };
+  }
+
+  const requiredRefs = new Set([
+    ...pinnedRefs,
+    ...(packet.requirementSpec.requiredCapabilities ?? []),
+    ...(packet.requirementSpec.expectedArtifacts ?? []),
+  ]);
+  const graph = packet.graphMetadataCandidates;
+  const graphClosure = graph ? graphClosureRefs(graph, requiredRefs) : new Set<string>();
+  const requiredCandidateRefs = new Set([...requiredRefs, ...graphClosure]);
+  const reduced = structuredClone(packet) as CandidatePacket;
+  const omittedOptionalRefs = new Set<string>();
+
+  reduced.workflowTemplateCandidates = retainRequiredCandidates(packet.workflowTemplateCandidates, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.artifactContractCandidates = retainRequiredCandidates(packet.artifactContractCandidates, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.policyConstraints = retainRequiredCandidates(packet.policyConstraints, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.agentCandidatesByCapability = retainCandidateMap(packet.agentCandidatesByCapability, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.profileCandidatesByAgent = retainCandidateMap(packet.profileCandidatesByAgent, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.skillCandidatesByProfile = retainCandidateMap(packet.skillCandidatesByProfile, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.toolCandidatesByProfile = retainCandidateMap(packet.toolCandidatesByProfile, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.mcpGrantCandidatesByProfile = retainCandidateMap(packet.mcpGrantCandidatesByProfile, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.vaultLeaseCandidatesByProfile = retainCandidateMap(packet.vaultLeaseCandidatesByProfile, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.instructionCandidatesByProfile = retainCandidateMap(packet.instructionCandidatesByProfile, requiredCandidateRefs, omittedOptionalRefs);
+  reduced.evaluatorCandidatesByArtifact = retainCandidateMap(packet.evaluatorCandidatesByArtifact, requiredCandidateRefs, omittedOptionalRefs);
+  if (graph) {
+    reduced.graphMetadataCandidates = {
+      ...graph,
+      // Graph metadata is the authoritative selectable ontology. Keep its
+      // nodes and edges intact; only optional summary candidate arrays may be
+      // reduced by an explicit host budget.
+      nodes: [...graph.nodes],
+      edges: [...graph.edges],
+    };
+  }
+
+  const optionalEntries = collectOptionalCandidateEntries(packet, requiredCandidateRefs);
+  for (const entry of optionalEntries) {
+    const candidate = entry.candidate;
+    entry.add(reduced, candidate);
+    if (JSON.stringify(reduced).length > budgetChars!) {
+      entry.remove(reduced, candidate);
+      omittedOptionalRefs.add(candidate.ref);
+    }
+  }
+  if (JSON.stringify(reduced).length > budgetChars!) {
+    throw new Error(`candidate packet required closure exceeds configured character budget: ${budgetChars}`);
+  }
+  return { packet: reduced, omittedOptionalRefs: [...omittedOptionalRefs].sort() };
 }
 
-function candidatePacketPromptSummary(packet: CandidatePacket): Record<string, unknown> {
+function candidatePacketPromptSummary(packet: CandidatePacket, omittedOptionalRefs: string[] = []): Record<string, unknown> {
   return {
     requirementSpec: packet.requirementSpec,
     workflowTemplateCandidates: packet.workflowTemplateCandidates,
@@ -1306,15 +1298,97 @@ function candidatePacketPromptSummary(packet: CandidatePacket): Record<string, u
         instructions: packet.profilePrimitiveCandidates.instructions.length,
       }
       : { agents: 0, skills: 0, tools: 0, mcpGrants: 0, instructions: 0 },
+    omittedOptionalRefs,
   };
 }
 
-function boundCandidateMap<T>(candidateMap: Record<string, T[]>): Record<string, T[]> {
-  return Object.fromEntries(
-    Object.entries(candidateMap)
-      .slice(0, 50)
-      .map(([key, candidates]) => [key, candidates.slice(0, 20)]),
-  );
+function pinnedRefsForGoal(goalContract: GoalContractV1, goalDesignPackage?: ComposeWorkflowInput["goalDesignPackage"]): Set<string> {
+  const refs = new Set<string>([
+    ...goalContract.requiredCapabilities,
+    ...goalContract.expectedArtifactRefs,
+  ]);
+  const policy = goalDesignPackage?.templatePolicy;
+  if (policy && policy.mode !== "auto") refs.add(policy.templateRef);
+  for (const binding of goalDesignPackage?.schemaVersion === "southstar.goal_design_package.v2"
+    ? goalDesignPackage.validationBindings
+    : goalDesignPackage?.evaluatorContracts ?? []) {
+    if ("evaluatorProfileRef" in binding && typeof binding.evaluatorProfileRef === "string") refs.add(binding.evaluatorProfileRef);
+    for (const ref of "artifactContractRefs" in binding && Array.isArray(binding.artifactContractRefs) ? binding.artifactContractRefs : []) {
+      if (typeof ref === "string") refs.add(ref);
+    }
+  }
+  return refs;
+}
+
+function graphClosureRefs(
+  graph: NonNullable<CandidatePacket["graphMetadataCandidates"]>,
+  pinnedRefs: Set<string>,
+): Set<string> {
+  const closure = new Set(pinnedRefs);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const edge of graph.edges) {
+      if (closure.has(edge.from) && !closure.has(edge.to)) {
+        closure.add(edge.to);
+        changed = true;
+      }
+      if (closure.has(edge.to) && !closure.has(edge.from)) {
+        closure.add(edge.from);
+        changed = true;
+      }
+    }
+  }
+  return closure;
+}
+
+function retainRequiredCandidates(
+  candidates: CandidatePacket["workflowTemplateCandidates"],
+  requiredRefs: Set<string>,
+  omitted: Set<string>,
+): CandidatePacket["workflowTemplateCandidates"] {
+  return candidates.filter((candidate) => {
+    if (requiredRefs.has(candidate.ref)) return true;
+    omitted.add(candidate.ref);
+    return false;
+  });
+}
+
+function retainCandidateMap(
+  candidates: Record<string, CandidatePacket["workflowTemplateCandidates"]>,
+  requiredRefs: Set<string>,
+  omitted: Set<string>,
+): Record<string, CandidatePacket["workflowTemplateCandidates"]> {
+  const result: Record<string, CandidatePacket["workflowTemplateCandidates"]> = {};
+  for (const [key, values] of Object.entries(candidates)) {
+    const retained = retainRequiredCandidates(values, requiredRefs, omitted);
+    if (requiredRefs.has(key) || retained.length > 0) result[key] = retained;
+  }
+  return result;
+}
+
+type OptionalCandidateEntry = {
+  candidate: CandidatePacket["workflowTemplateCandidates"][number];
+  add: (packet: CandidatePacket, candidate: CandidatePacket["workflowTemplateCandidates"][number]) => void;
+  remove: (packet: CandidatePacket, candidate: CandidatePacket["workflowTemplateCandidates"][number]) => void;
+};
+
+function collectOptionalCandidateEntries(packet: CandidatePacket, requiredRefs: Set<string>): OptionalCandidateEntry[] {
+  const entries: OptionalCandidateEntry[] = [];
+  const addArray = (get: (value: CandidatePacket) => CandidatePacket["workflowTemplateCandidates"], set: (value: CandidatePacket, next: CandidatePacket["workflowTemplateCandidates"]) => void) => {
+    for (const candidate of get(packet)) {
+      if (requiredRefs.has(candidate.ref)) continue;
+      entries.push({
+        candidate,
+        add: (value, next) => set(value, [...get(value), next]),
+        remove: (value, next) => set(value, get(value).filter((item) => item.ref !== next.ref)),
+      });
+    }
+  };
+  addArray((value) => value.workflowTemplateCandidates, (value, next) => { value.workflowTemplateCandidates = next; });
+  addArray((value) => value.artifactContractCandidates, (value, next) => { value.artifactContractCandidates = next; });
+  addArray((value) => value.policyConstraints, (value, next) => { value.policyConstraints = next; });
+  return entries.sort((left, right) => left.candidate.ref.localeCompare(right.candidate.ref));
 }
 
 function issue(

@@ -302,8 +302,8 @@ test("Evolution sandbox start/evaluator routes honor callback/runRoot/harness ov
           body: JSON.stringify({
             actor: "test-operator",
             reason: "prepare experiment for start/evaluator route contract",
-            baselineAssetRefs: ["asset@baseline"],
-            candidateAssetRefs: ["asset@candidate"],
+            baselineAssetRefs: [],
+            candidateAssetRefs: [],
             regressionSuiteRefs: ["software-core-regression"],
             replayRunRefs: [replayRun.runId],
             maxCostRegressionPercent: 25,

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { BrainProvider, BrainSessionBinding, WakeBrainInput } from "./types.ts";
+import type { BrainProvider, BrainSessionBinding, WakeBrainInput } from "../../src/v2/brain/types.ts";
 
 export function createFakeBrainProvider(input: { providerId: string; failWake?: boolean }): BrainProvider {
   return {

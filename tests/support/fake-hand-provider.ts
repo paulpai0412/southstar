@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { HandBinding, HandCall, HandProvider, HandResult, HandSnapshotRef, ProvisionHandInput } from "./types.ts";
+import type { HandBinding, HandCall, HandProvider, HandResult, HandSnapshotRef, ProvisionHandInput } from "../../src/v2/hands/types.ts";
 
 export function createFakeHandProvider(input: { providerId: string; failExecute?: boolean }): HandProvider {
   return {

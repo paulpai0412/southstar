@@ -22,6 +22,11 @@ test("production evolution routes do not include test-only seed shortcuts", () =
   assert.deepEqual(matches, []);
 });
 
+test("sandbox workspace resources do not claim fixture-copy isolation", () => {
+  const sandbox = source("src/v2/evolution/sandbox.ts");
+  assert.doesNotMatch(sandbox, /temp-fixture-copy/);
+});
+
 test("canonical v2 test index and CLI tests do not import legacy SQLite-backed tests", () => {
   const index = readFileSync(join(root, "tests/v2/index.test.ts"), "utf8");
   const legacyImports = [...index.matchAll(/import\("\.\/(.+?)"\)/g)]

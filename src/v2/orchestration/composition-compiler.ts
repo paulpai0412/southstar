@@ -42,6 +42,7 @@ import {
   type GoalContractV1,
 } from "./goal-contract.ts";
 import type { GoalDesignPackage } from "./goal-design.ts";
+import { runtimeBindingCapabilitiesFromEnv, type RuntimeBindingCapabilities } from "./runtime-binding-capabilities.ts";
 import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 
 export type CompileWorkflowCompositionInput = {
@@ -54,6 +55,7 @@ export type CompileWorkflowCompositionInput = {
   targetRequirementIds?: string[];
   scope?: string;
   manifestDomain?: string;
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities;
 };
 
 export type OrchestrationSnapshotV1 = {
@@ -98,6 +100,7 @@ export async function compileWorkflowComposition(
     goalContract: input.goalContract,
     goalDesignPackage: input.goalDesignPackage,
     targetRequirementIds: input.targetRequirementIds,
+    runtimeBindingCapabilities: input.runtimeBindingCapabilities ?? runtimeBindingCapabilitiesFromEnv(),
   });
   if (!validation.ok) {
     throw new Error(`workflow composition failed validation: ${JSON.stringify(validation.issues)}`);
@@ -238,32 +241,7 @@ export async function compileWorkflowComposition(
     workspacePolicies: defaultWorkspacePolicies(),
     stopConditions: defaultStopConditions(evaluatorPipelines),
     tasks: taskDefinitions,
-    harnessDefinitions: [
-      {
-        id: "pi",
-        kind: "pi-agent",
-        entrypoint: "southstar-agent-runner",
-        image: "southstar/pi-agent:local",
-        capabilities: [manifestDomain],
-        inputProtocol: "task-envelope-v2",
-        eventProtocol: "southstar-events-v1",
-        supportsCheckpoint: true,
-        supportsSteering: true,
-        supportsProgress: true,
-      },
-      {
-        id: "codex",
-        kind: "codex",
-        entrypoint: "southstar-agent-runner",
-        image: "southstar/pi-agent:local",
-        capabilities: [manifestDomain],
-        inputProtocol: "task-envelope-v2",
-        eventProtocol: "southstar-events-v1",
-        supportsCheckpoint: true,
-        supportsSteering: true,
-        supportsProgress: true,
-      },
-    ],
+    harnessDefinitions: buildHarnessDefinitions(taskDefinitions, manifestDomain),
     evaluators: [
       {
         id: "schema-evaluator-v1",
@@ -843,38 +821,42 @@ function synthesizeGeneratedRuntimeProfile(
   agentProfile: GeneratedAgentProfile | undefined,
 ): AgentProfile {
   const firstTask = required(tasks[0], `missing task for generated profile ${profileRef}`);
-  const provider = agentProfile?.provider ?? "codex";
-  const harnessRef = agentProfile?.harnessRef ?? (provider === "pi" ? "pi" : "codex");
-  const toolPolicy = agentProfile?.toolPolicy ?? {};
-  const budgetPolicy = agentProfile?.budgetPolicy ?? {};
+  const selectedProfile = required(agentProfile, `generated profile proposal is missing agentProfile: ${profileRef}`);
+  const provider = required(selectedProfile.provider, `generated profile provider is missing: ${profileRef}`);
+  const harnessRef = required(selectedProfile.harnessRef, `generated profile harnessRef is missing: ${profileRef}`);
+  const toolPolicy = required(selectedProfile.toolPolicy, `generated profile toolPolicy is missing: ${profileRef}`);
+  const budgetPolicy = required(selectedProfile.budgetPolicy, `generated profile budgetPolicy is missing: ${profileRef}`);
   return {
     id: profileRef,
     name: titleFromRef(profileRef),
     agentRef: firstTask.agentDefinitionRef,
-    ...(agentProfile?.workerKind ? { workerKind: agentProfile.workerKind } : {}),
+    ...(selectedProfile.workerKind ? { workerKind: selectedProfile.workerKind } : {}),
     provider,
-    model: agentProfile?.model ?? "gpt-5",
-    ...(agentProfile?.thinkingLevel ? { thinkingLevel: agentProfile.thinkingLevel } : {}),
-    ...(agentProfile?.instruction ? { instruction: agentProfile.instruction } : {}),
+    model: required(selectedProfile.model, `generated profile model is missing: ${profileRef}`),
+    ...(selectedProfile.thinkingLevel ? { thinkingLevel: selectedProfile.thinkingLevel } : {}),
+    ...(selectedProfile.instruction ? { instruction: selectedProfile.instruction } : {}),
     harnessRef,
-    agentsMdRefs: uniqueSorted([firstTask.agentDefinitionRef, ...(agentProfile?.agentsMdRefs ?? [])]),
-    promptTemplateRef: agentProfile?.promptTemplateRef ?? normalizeInstructionRef(firstTask.instructionRefs[0] ?? profileRef),
+    agentsMdRefs: uniqueSorted([
+      firstTask.agentDefinitionRef,
+      ...required(selectedProfile.agentsMdRefs, `generated profile agentsMdRefs is missing: ${profileRef}`),
+    ]),
+    promptTemplateRef: required(selectedProfile.promptTemplateRef, `generated profile promptTemplateRef is missing: ${profileRef}`),
     skillRefs: uniqueSorted(tasks.flatMap((task) => task.skillRefs)),
     mcpGrantRefs: uniqueSorted(tasks.flatMap((task) => task.mcpGrantRefs)),
     vaultLeasePolicyRefs: uniqueSorted(tasks.flatMap((task) => task.vaultLeasePolicyRefs)),
-    memoryScopes: agentProfile?.memoryScopes ?? [],
-    contextPolicyRef: agentProfile?.contextPolicyRef ?? firstTask.contextPolicyRef ?? "context.generated",
-    sessionPolicyRef: agentProfile?.sessionPolicyRef ?? "session.generated",
+    memoryScopes: required(selectedProfile.memoryScopes, `generated profile memoryScopes is missing: ${profileRef}`),
+    contextPolicyRef: required(selectedProfile.contextPolicyRef, `generated profile contextPolicyRef is missing: ${profileRef}`),
+    sessionPolicyRef: required(selectedProfile.sessionPolicyRef, `generated profile sessionPolicyRef is missing: ${profileRef}`),
     toolPolicy: {
-      allowedTools: toolPolicy.allowedTools ?? uniqueSorted(tasks.flatMap((task) => task.toolGrantRefs)),
-      deniedTools: toolPolicy.deniedTools ?? [],
-      requiresApprovalFor: toolPolicy.requiresApprovalFor ?? [],
+      allowedTools: required(toolPolicy.allowedTools, `generated profile allowedTools is missing: ${profileRef}`),
+      deniedTools: required(toolPolicy.deniedTools, `generated profile deniedTools is missing: ${profileRef}`),
+      requiresApprovalFor: required(toolPolicy.requiresApprovalFor, `generated profile requiresApprovalFor is missing: ${profileRef}`),
     },
     budgetPolicy: {
-      maxInputTokens: budgetPolicy.maxInputTokens ?? 120_000,
-      maxOutputTokens: budgetPolicy.maxOutputTokens ?? 8_192,
+      maxInputTokens: required(budgetPolicy.maxInputTokens, `generated profile maxInputTokens is missing: ${profileRef}`),
+      maxOutputTokens: required(budgetPolicy.maxOutputTokens, `generated profile maxOutputTokens is missing: ${profileRef}`),
       ...(budgetPolicy.maxCostMicrosUsd !== undefined ? { maxCostMicrosUsd: budgetPolicy.maxCostMicrosUsd } : {}),
-      ...(budgetPolicy.maxWallTimeSeconds !== undefined ? { maxWallTimeSeconds: budgetPolicy.maxWallTimeSeconds } : {}),
+      maxWallTimeSeconds: required(budgetPolicy.maxWallTimeSeconds, `generated profile maxWallTimeSeconds is missing: ${profileRef}`),
     },
   };
 }
@@ -888,18 +870,50 @@ function executionForTask(task: WorkflowCompositionTask, plan: WorkflowCompositi
     throw new Error(`selected generated agent profile is missing validated execution profile: ${task.agentProfileRef}`);
   }
   return {
-    engine: execution.engine ?? "tork",
+    engine: required(execution.engine, `missing execution engine for ${task.agentProfileRef}`),
     image: required(execution.image, `missing execution image for ${task.agentProfileRef}`),
     command: required(execution.command, `missing execution command for ${task.agentProfileRef}`),
-    env: execution.env ?? {},
-    mounts: execution.mounts?.map((mount) => ({
+    env: required(execution.env, `missing execution env for ${task.agentProfileRef}`),
+    mounts: required(execution.mounts, `missing execution mounts for ${task.agentProfileRef}`).map((mount) => ({
       source: required(mount.source, `missing execution mount source for ${task.agentProfileRef}`),
       target: required(mount.target, `missing execution mount target for ${task.agentProfileRef}`),
       readonly: mount.readonly ?? false,
-    })) ?? [],
-    timeoutSeconds: execution.timeoutSeconds ?? 900,
-    infraRetry: { maxAttempts: execution.infraRetry?.maxAttempts ?? 1 },
+    })),
+    timeoutSeconds: required(execution.timeoutSeconds, `missing execution timeoutSeconds for ${task.agentProfileRef}`),
+    infraRetry: { maxAttempts: required(execution.infraRetry?.maxAttempts, `missing execution infraRetry.maxAttempts for ${task.agentProfileRef}`) },
   };
+}
+
+function buildHarnessDefinitions(
+  tasks: WorkflowTaskDefinition[],
+  capability: string,
+): SouthstarWorkflowManifest["harnessDefinitions"] {
+  const definitions = new Map<string, SouthstarWorkflowManifest["harnessDefinitions"][number]>();
+  for (const task of tasks) {
+    for (const subagent of task.subagents) {
+      if (definitions.has(subagent.harnessId)) continue;
+      definitions.set(subagent.harnessId, {
+        id: subagent.harnessId,
+        kind: harnessKindForRef(subagent.harnessId),
+        entrypoint: required(task.execution.command[0], `missing execution entrypoint for harness ${subagent.harnessId}`),
+        image: task.execution.image,
+        capabilities: [capability],
+        inputProtocol: "task-envelope-v2",
+        eventProtocol: "southstar-events-v1",
+        supportsCheckpoint: true,
+        supportsSteering: true,
+        supportsProgress: true,
+      });
+    }
+  }
+  return [...definitions.values()].sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function harnessKindForRef(ref: string): SouthstarWorkflowManifest["harnessDefinitions"][number]["kind"] {
+  if (ref === "pi") return "pi-agent";
+  if (ref === "codex") return "codex";
+  if (ref === "claude-code") return "claude-code";
+  return "custom";
 }
 
 function workflowTaskDomain(value: string): WorkflowTaskDefinition["domain"] {

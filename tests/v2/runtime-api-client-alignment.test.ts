@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createRuntimeServerClient } from "../../src/v2/server/client.ts";
 import { handleRuntimeRoute } from "../../src/v2/server/routes.ts";
+import { goalContractHash, type GoalContractV1 } from "../../src/v2/orchestration/goal-contract.ts";
 import { createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
 
@@ -77,18 +78,51 @@ test("runtime route patches planner draft task profile override", async () => {
   const db = await createTestPostgresDb();
   try {
     const draftId = "draft-profile-override-route";
+    const goalContract: GoalContractV1 = {
+      schemaVersion: "southstar.goal_contract.v1",
+      originalPrompt: "profile override route",
+      promptHash: "",
+      revision: 1,
+      workspace: { cwd: "/workspace/profile-override-route" },
+      domain: "software",
+      intent: "validate a profile override route",
+      workType: "software_feature",
+      summary: "Validate a profile override route.",
+      requirements: [{
+        id: "req-profile-override-route",
+        statement: "The route persists an explicit profile override.",
+        acceptanceCriteria: ["The override is returned by the route."],
+        blocking: true,
+        source: "explicit",
+        expectedArtifacts: [],
+      }],
+      expectedArtifactRefs: [],
+      requiredCapabilities: [],
+      nonGoals: [],
+      assumptions: [],
+      blockingInputs: [],
+      riskTags: [],
+      requestedSideEffects: [],
+    };
+    goalContract.promptHash = goalContractHash(goalContract);
     await upsertRuntimeResourcePg(db, {
       resourceType: "planner_draft",
       resourceKey: draftId,
       scope: "planner",
       status: "validated",
       payload: {
+        goalContract,
+        goalContractHash: goalContract.promptHash,
         workflow: {
           workflowId: "wf-profile-override-route",
           tasks: [{ id: "task-build", name: "Build", dependsOn: [], skillRefs: [] }],
         },
       },
-      summary: { goalPrompt: "profile override route", workflowId: "wf-profile-override-route" },
+      summary: {
+        goalPrompt: "profile override route",
+        workflowId: "wf-profile-override-route",
+        goalContractHash: goalContract.promptHash,
+      },
     });
 
     const envelope = await call<any>(db, `/api/v2/planner/drafts/${draftId}/tasks/task-build/profile-override`, {

@@ -1966,7 +1966,7 @@ test("legacy planner draft missingInputs canonicalize validation to needs_input 
   });
 });
 
-test("direct run creation rejects a legacy validated draft with stale canonical lineage without materializing rows", async () => {
+test("direct run creation rejects a legacy validated draft without explicit Goal Contract lineage", async () => {
   await withDb(async (db) => {
     const draft = await createFixturePlannerDraft(db, "implement legacy direct run compatibility");
     await stripGoalContractFromDraft(db, draft.draftId, {
@@ -1980,7 +1980,7 @@ test("direct run creation rejects a legacy validated draft with stale canonical 
 
     await assert.rejects(
       () => createPostgresRunFromDraft(db, { draftId: draft.draftId }),
-      /Goal Contract hash mismatch/,
+      /planner draft Goal Contract is missing/,
     );
 
     const after = await db.one<{ runs: string; tasks: string }>(
@@ -2650,7 +2650,6 @@ test("planner draft creates from an existing composition without calling an LLM 
       payload_json: {
         plannerTrace?: {
           composerMode?: string;
-          composerFallbackUsed?: boolean;
         };
         orchestrationSnapshot?: {
           selectedCompositionPlan?: { title?: string };
@@ -2663,7 +2662,6 @@ test("planner draft creates from an existing composition without calling an LLM 
     );
     assert.equal(draftResource.summary_json.planner, "existing-composition-compiler");
     assert.equal(draftResource.payload_json.plannerTrace?.composerMode, "existing-composition");
-    assert.equal(draftResource.payload_json.plannerTrace?.composerFallbackUsed, false);
     assert.equal(draftResource.payload_json.orchestrationSnapshot?.selectedCompositionPlan?.title, "Software Dynamic Feature Workflow");
     assert.equal(draftResource.payload_json.goalRequirementCoverage?.goalContractHash, goalContractHash(goalContract));
   });
@@ -2721,7 +2719,6 @@ test("llm-constrained planner trace records analyzer/composer and validation aud
         plannerTrace: {
           analyzerType?: string;
           composerMode?: string;
-          composerFallbackUsed?: boolean;
           validatorAttempts?: number;
           repairAttempts?: number;
           finalValidationOk?: boolean;
@@ -2740,7 +2737,6 @@ test("llm-constrained planner trace records analyzer/composer and validation aud
     const trace = draftResource.payload_json.plannerTrace;
     assert.equal(trace.analyzerType, "goal-contract-v1");
     assert.equal(trace.composerMode, "llm");
-    assert.equal(trace.composerFallbackUsed, false);
     assert.equal(trace.validatorAttempts, 1);
     assert.equal(trace.repairAttempts, 0);
     assert.equal(trace.finalValidationOk, true);
@@ -2969,6 +2965,33 @@ test("Postgres run creation rejects invalid planner drafts", async () => {
     await assert.rejects(
       () => createPostgresRunFromDraft(db, { draftId: "draft-invalid-test" }),
       /planner draft is not validated/,
+    );
+  });
+});
+
+test("Postgres run creation rejects validated drafts without an explicit Goal Contract", async () => {
+  await withDb(async (db) => {
+    await upsertRuntimeResourcePg(db, {
+      id: "draft-without-goal-contract",
+      resourceType: "planner_draft",
+      resourceKey: "draft-without-goal-contract",
+      scope: "planner",
+      status: "validated",
+      title: "Missing Goal Contract",
+      payload: {
+        workflow: {
+          workflowId: "wf-missing-contract",
+          goalPrompt: "invent a requirement",
+          domain: "general",
+          tasks: [],
+        },
+        requirementSpec: { summary: "invent a requirement", acceptanceCriteria: [] },
+      },
+      summary: { goalPrompt: "invent a requirement" },
+    });
+    await assert.rejects(
+      () => createPostgresRunFromDraft(db, { draftId: "draft-without-goal-contract" }),
+      /planner draft Goal Contract is missing/,
     );
   });
 });

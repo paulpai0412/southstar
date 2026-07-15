@@ -1,12 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { acceptOrRejectArtifactRefPg } from "../../src/v2/artifacts/artifact-ref-store.ts";
-import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
+import { createFakeBrainProvider } from "../support/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createRecoveryDecisionApplier } from "../../src/v2/exceptions/recovery-decision-applier.ts";
 import { completeRecoveryExecutionPg, recoveryExecutionResourceKey, startRecoveryExecutionPg } from "../../src/v2/exceptions/recovery-executions.ts";
 import { RECOVERY_DECISION_SCHEMA_VERSION } from "../../src/v2/exceptions/types.ts";
-import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
+import { createFakeHandProvider } from "../support/fake-hand-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import {

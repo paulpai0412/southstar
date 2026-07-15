@@ -15,6 +15,7 @@ import { compileWorkflowComposition, type CompiledWorkflowComposition } from "..
 import type { WorkflowComposer } from "../orchestration/composer.ts";
 import { createWorkflowComposerRegistry, type WorkflowComposerMode } from "../orchestration/composer-registry.ts";
 import { runCompositionRepairLoop } from "../orchestration/composition-repair-loop.ts";
+import { runtimeBindingCapabilitiesFromEnv, type RuntimeBindingCapabilities } from "../orchestration/runtime-binding-capabilities.ts";
 import { parseWorkflowCompositionPlanFromText } from "../orchestration/llm-composer.ts";
 import {
   finalizeGoalContract,
@@ -118,6 +119,7 @@ export type PlannerDraftTaskSummary = {
 
 export type PostgresPlannerDraftOrchestrationView = Omit<PostgresPlannerDraftResult, "goalContractHash"> & {
   goalContractHash?: string;
+  templateSelectionDecision?: TemplateSelectionBlock;
   orchestrationSnapshot?: unknown;
   plannerTrace?: unknown;
   repairAttempts?: unknown;
@@ -180,6 +182,7 @@ export type CreatePostgresPlannerDraftInput = PlannerDraftRequestContract & {
   onGoalContractDelta?: (text: string) => void;
   onLlmDelta?: (text: string) => void;
   persistDraft?: PlannerDraftPersistence;
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities;
 };
 
 export type RevisePostgresPlannerDraftInput = {
@@ -732,6 +735,7 @@ async function createPlannerDraftFromComposition(
   input: InterpretedPlannerDraftInput,
   composition: WorkflowCompositionPlan,
 ): Promise<PostgresPlannerDraftResult> {
+  const runtimeBindingCapabilities = input.runtimeBindingCapabilities ?? runtimeBindingCapabilitiesFromEnv();
   const draftRunId = `draft-composition-${hash(`${JSON.stringify(composition)}:${input.goalContractHash}`).slice(0, 12)}`;
   const requirementSpec = requirementSpecFromGoalContract(input.goalContract);
   input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
@@ -751,6 +755,7 @@ async function createPlannerDraftFromComposition(
     goalDesignPackage: input.goalDesignPackage,
     scope: input.goalContract.domain,
     manifestDomain: input.goalContract.domain,
+    runtimeBindingCapabilities,
   });
   input.onProgress?.({ stage: "composition.compiled", message: "Existing workflow composition compiled." });
 
@@ -786,7 +791,6 @@ async function createPlannerDraftFromComposition(
       generatedAt: new Date().toISOString(),
       analyzerType: "goal-contract-v1",
       composerMode: "existing-composition",
-      composerFallbackUsed: false,
       validatorAttempts: 1,
       repairAttempts: 0,
       finalValidationOk: status === "validated",
@@ -835,6 +839,7 @@ async function createLibraryConstrainedPlannerDraft(
   db: SouthstarDb,
   input: InterpretedPlannerDraftInput,
 ): Promise<PostgresPlannerDraftResult> {
+  const runtimeBindingCapabilities = input.runtimeBindingCapabilities ?? runtimeBindingCapabilitiesFromEnv();
   const draftRunId = `draft-library-${hash(`${input.goalPrompt}:${input.goalContractHash}`).slice(0, 12)}`;
   const requirementSpec = requirementSpecFromGoalContract(input.goalContract);
   input.onProgress?.({ stage: "candidate.resolving", message: "Resolving workflow library candidates." });
@@ -909,6 +914,7 @@ async function createLibraryConstrainedPlannerDraft(
     maxRepairAttempts: 2,
     onProgress: input.onProgress,
     onLlmDelta: input.onLlmDelta,
+    runtimeBindingCapabilities,
   });
   if (!repairResult.validation.ok) {
     const validationIssues = toPlannerDraftValidationIssues(repairResult.validation.issues);
@@ -963,12 +969,67 @@ async function createLibraryConstrainedPlannerDraft(
   if (!composition) {
     throw new Error("composition repair loop returned ok validation without composition");
   }
-  await persistTemplateFallbackIfNeeded(db, {
+  const templateSelectionBlock = templateFallbackDecision({
     draftId,
     goalDesignPackage: input.goalDesignPackage,
     attempts: repairResult.attempts,
     finalComposition: composition,
   });
+  if (templateSelectionBlock) {
+    await persistTemplateSelectionBlock(db, templateSelectionBlock);
+    const validationIssues = toPlannerDraftValidationIssues(templateSelectionBlock.rejectedAttempt.validation.issues);
+    const taskSummaries: PlannerDraftTaskSummary[] = [];
+    await persistPlannerDraft(db, {
+      id: draftId,
+      resourceType: "planner_draft",
+      resourceKey: draftId,
+      scope: "planner",
+      status: PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE,
+      title: "Workflow Template Requires Review",
+      payload: {
+        requirementSpec,
+        candidatePacket,
+        repairAttempts: repairResult.attempts,
+        validationIssues,
+        plannerRequest: plannerRequestSnapshot(input),
+        goalContract: input.goalContract,
+        goalContractHash: input.goalContractHash,
+        templateSelectionDecision: templateSelectionBlock,
+        ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+        ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
+      },
+      summary: {
+        goalPrompt: input.goalPrompt,
+        workflowId,
+        planner: "library-constrained-llm",
+        status: PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE,
+        validationIssues,
+        taskSummaries,
+        plannerRequest: plannerRequestSnapshot(input),
+        ...goalContractSummary(input.goalContract, input.goalContractHash),
+        templateSelectionDecision: templateSelectionBlock,
+      },
+    }, input.persistDraft);
+    input.onProgress?.({
+      stage: "draft.persisted",
+      ok: false,
+      issueCount: validationIssues.length,
+      draftStatus: PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE,
+      message: "Planner draft blocked because the preferred workflow template was incompatible; explicit review is required.",
+    });
+    return {
+      draftId,
+      goalPrompt: input.goalPrompt,
+      workflowId,
+      status: PLANNER_DRAFT_STATUS_TEMPLATE_INCOMPATIBLE,
+      goalContractHash: input.goalContractHash,
+      ...(input.goalRequirementDraftId ? { goalRequirementDraftId: input.goalRequirementDraftId } : {}),
+      ...(input.goalRequirementDraftHash ? { goalRequirementDraftHash: input.goalRequirementDraftHash } : {}),
+      blockers: [...input.goalContract.blockingInputs, `template:${templateSelectionBlock.policy.templateRef}`],
+      validationIssues,
+      taskSummaries,
+    };
+  }
   input.onProgress?.({ stage: "composition.compiling", message: "Compiling workflow composition." });
   const compiled = await compileWorkflowComposition(db, {
     runId: draftRunId,
@@ -979,6 +1040,7 @@ async function createLibraryConstrainedPlannerDraft(
     goalDesignPackage: input.goalDesignPackage,
     scope: input.goalContract.domain,
     manifestDomain: input.goalContract.domain,
+    runtimeBindingCapabilities,
   });
   input.onProgress?.({ stage: "composition.compiled", message: "Workflow composition compiled." });
   const bundle: PlanBundle & {
@@ -1009,7 +1071,6 @@ async function createLibraryConstrainedPlannerDraft(
       generatedAt: new Date().toISOString(),
       analyzerType: "goal-contract-v1",
       composerMode,
-      composerFallbackUsed: false,
       validatorAttempts: repairResult.attempts.length,
       repairAttempts: Math.max(0, repairResult.attempts.length - 1),
       finalValidationOk: repairResult.validation.ok,
@@ -1058,44 +1119,66 @@ async function createLibraryConstrainedPlannerDraft(
   };
 }
 
-async function persistTemplateFallbackIfNeeded(
-  db: SouthstarDb,
-  input: {
-    draftId: string;
-    goalDesignPackage?: GoalDesignPackage;
-    attempts: Array<{
-      validation: { ok: boolean; issues: WorkflowCompositionValidationIssue[] };
-      composition?: WorkflowCompositionPlan;
-    }>;
-    finalComposition: WorkflowCompositionPlan;
-  },
-): Promise<void> {
+export type TemplateSelectionBlock = {
+  draftId: string;
+  policy: { mode: "prefer"; templateRef: string; versionRef: string };
+  rejectedAttempt: {
+    validation: { ok: false; issues: WorkflowCompositionValidationIssue[] };
+    composition?: WorkflowCompositionPlan;
+  };
+  finalSelectedWorkflowTemplateRef: string | null;
+};
+
+export function templateFallbackDecision(input: {
+  draftId: string;
+  goalDesignPackage?: GoalDesignPackage;
+  attempts: Array<{
+    validation: { ok: boolean; issues: WorkflowCompositionValidationIssue[] };
+    composition?: WorkflowCompositionPlan;
+  }>;
+  finalComposition: WorkflowCompositionPlan;
+}): TemplateSelectionBlock | null {
   const policy = input.goalDesignPackage?.templatePolicy;
-  if (policy?.mode !== "prefer") return;
-  const rejectedPinnedAttempt = input.attempts.find((attempt) => (
-    attempt.composition?.selectedWorkflowTemplateRef === policy.templateRef
+  if (policy?.mode !== "prefer") return null;
+  const preferredPolicy = {
+    mode: "prefer" as const,
+    templateRef: policy.templateRef,
+    versionRef: policy.versionRef,
+  };
+  const rejectedPinnedAttempt = input.attempts.find((attempt): attempt is TemplateSelectionBlock["rejectedAttempt"] => (
+    attempt.composition?.selectedWorkflowTemplateRef === preferredPolicy.templateRef
     && !attempt.validation.ok
   ));
-  if (!rejectedPinnedAttempt) return;
-  if (input.finalComposition.selectedWorkflowTemplateRef === policy.templateRef) return;
+  if (!rejectedPinnedAttempt || input.finalComposition.selectedWorkflowTemplateRef === preferredPolicy.templateRef) return null;
+  return {
+    draftId: input.draftId,
+    policy: preferredPolicy,
+    rejectedAttempt: rejectedPinnedAttempt,
+    finalSelectedWorkflowTemplateRef: input.finalComposition.selectedWorkflowTemplateRef ?? null,
+  };
+}
+
+async function persistTemplateSelectionBlock(db: SouthstarDb, input: TemplateSelectionBlock): Promise<void> {
   await upsertRuntimeResourcePg(db, {
-    resourceType: "template_fallback",
+    resourceType: "template_selection_decision",
     resourceKey: input.draftId,
     scope: "planner",
-    status: "persisted",
-    title: "Workflow Template Fallback",
+    status: "blocked",
+    title: "Workflow Template Selection Requires Review",
     payload: {
       draftId: input.draftId,
-      templatePolicy: policy,
-      rejectedIssues: rejectedPinnedAttempt.validation.issues,
-      finalSelectedWorkflowTemplateRef: input.finalComposition.selectedWorkflowTemplateRef ?? null,
+      templatePolicy: input.policy,
+      rejectedIssues: input.rejectedAttempt.validation.issues,
+      finalSelectedWorkflowTemplateRef: input.finalSelectedWorkflowTemplateRef,
+      decision: "blocked_until_explicit_template_review",
     },
     summary: {
       draftId: input.draftId,
-      templateRef: policy.templateRef,
-      versionRef: policy.versionRef,
-      issueCount: rejectedPinnedAttempt.validation.issues.length,
-      finalSelectedWorkflowTemplateRef: input.finalComposition.selectedWorkflowTemplateRef ?? null,
+      templateRef: input.policy.templateRef,
+      versionRef: input.policy.versionRef,
+      issueCount: input.rejectedAttempt.validation.issues.length,
+      finalSelectedWorkflowTemplateRef: input.finalSelectedWorkflowTemplateRef,
+      decision: "blocked_until_explicit_template_review",
     },
   });
 }
@@ -1107,7 +1190,7 @@ export async function createPostgresRunFromDraft(db: SouthstarDb, input: { draft
   const draftPayload = asRecord(draft.payload);
   const draftSummary = asRecord(draft.summary);
   const sourcePlannerRequest = asRecord(draftPayload.plannerRequest);
-  const contract = storedOrLegacyGoalContract(draftPayload, draftSummary, input.draftId);
+  const contract = requiredStoredGoalContract(draftPayload.goalContract, input.draftId);
   const contractHash = goalContractHash(contract);
   assertStoredGoalContractHashes(draftPayload, draftSummary, contractHash);
   // A Goal Design package is host-confirmed before composition.  Its original
@@ -1335,6 +1418,7 @@ export async function getPostgresPlannerDraftOrchestration(
     taskSummaries,
     ...(vocabularyGaps.length > 0 ? { vocabularyGaps } : {}),
     ...(stringValue(payload.libraryImportDraftId) ? { libraryImportDraftId: stringValue(payload.libraryImportDraftId) } : {}),
+    ...(isRecord(payload.templateSelectionDecision) ? { templateSelectionDecision: payload.templateSelectionDecision as TemplateSelectionBlock } : {}),
     ...(payload.orchestrationSnapshot !== undefined ? { orchestrationSnapshot: payload.orchestrationSnapshot } : {}),
     ...(payload.plannerTrace !== undefined ? { plannerTrace: payload.plannerTrace } : {}),
     ...(payload.repairAttempts !== undefined ? { repairAttempts: payload.repairAttempts } : {}),
@@ -1681,7 +1765,9 @@ function legacyGoalContractFromStored(
   if (!goalPrompt) throw new Error(`planner draft goalPrompt is missing: ${draftId}`);
   const requirementSpec = legacyRequirementSpec(payload);
   const acceptanceCriteria = stringArrayValue(requirementSpec.acceptanceCriteria) ?? [];
-  const fallbackRequirement = stringValue(requirementSpec.summary) ?? goalPrompt;
+  if (acceptanceCriteria.length === 0) {
+    throw new Error(`legacy planner draft lacks explicit requirement acceptance criteria: ${draftId}`);
+  }
   return finalizeGoalContract({
     goalPrompt,
     cwd: stringValue(plannerRequest.cwd) ?? stringValue(payloadPlannerRequest.cwd) ?? "/",
@@ -1690,7 +1776,7 @@ function legacyGoalContractFromStored(
       intent: stringValue(workflow.intent) ?? "legacy_planner_draft",
       workType: workTypeValue(requirementSpec.workType) ?? "general",
       summary: stringValue(requirementSpec.summary) ?? goalPrompt,
-      requirements: (acceptanceCriteria.length > 0 ? acceptanceCriteria : [fallbackRequirement]).map((criterion) => ({
+      requirements: acceptanceCriteria.map((criterion) => ({
         statement: criterion,
         acceptanceCriteria: [criterion],
         blocking: false,

@@ -6,7 +6,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { QueryResultRow } from "pg";
-import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
+import { createFakeBrainProvider } from "../support/fake-brain-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import {
@@ -19,7 +19,7 @@ import {
   softwareFeatureQualityPipeline,
   workspacePolicy,
 } from "./fixtures/runtime-manifest-primitives.ts";
-import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
+import { createFakeHandProvider } from "../support/fake-hand-provider.ts";
 import type { ExecuteTaskInput, HandBinding, HandProvider } from "../../src/v2/hands/types.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { createRunnableTaskScheduler } from "../../src/v2/scheduler/runnable-task-scheduler.ts";

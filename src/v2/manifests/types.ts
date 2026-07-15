@@ -220,7 +220,6 @@ export type PlanBundle = {
     generatedAt: string;
     analyzerType?: "deterministic" | string;
     composerMode?: "llm" | "existing-composition" | string;
-    composerFallbackUsed?: boolean;
     validatorAttempts?: number;
     repairAttempts?: number;
     finalValidationOk?: boolean;

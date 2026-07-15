@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
-import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
+import { createFakeBrainProvider } from "../support/fake-brain-provider.ts";
+import { createFakeHandProvider } from "../support/fake-hand-provider.ts";
 import { listManagedBindingsForRunPg } from "../../src/v2/meta-harness/postgres-bindings.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { createPostgresRecoveryController } from "../../src/v2/session-recovery/postgres-controller.ts";

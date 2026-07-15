@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createBrainProviderRegistry } from "../../src/v2/brain/registry.ts";
-import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
+import { createFakeBrainProvider } from "../support/fake-brain-provider.ts";
 
 test("BrainProvider wake creates a recoverable binding", async () => {
   const provider = createFakeBrainProvider({ providerId: "fake-brain" });

@@ -24,21 +24,6 @@ const INCLUDED_KINDS: ReadonlySet<LibraryDefinitionKind> = new Set([
 ]);
 
 const BODY_PREVIEW_CHARS = 160;
-const NODE_LIMITS: Partial<Record<LibraryDefinitionKind, number>> = {
-  agent_definition: 64,
-  skill_spec: 48,
-  skill_definition: 48,
-  tool_definition: 24,
-  mcp_tool_grant: 0,
-  instruction_template: 16,
-  artifact_contract: 48,
-  evaluator_profile: 48,
-  capability_spec: 48,
-  policy_bundle: 12,
-  workflow_template: 12,
-  vault_lease_policy: 12,
-};
-
 export async function buildGraphMetadataCandidatePacket(
   db: SouthstarDb,
   input: { scope: string; requirementSpec?: RequirementSpecV2 },
@@ -86,15 +71,11 @@ function selectRankedNodes(
   }
   const selected: GraphMetadataNodeCandidate[] = [];
   for (const [kind, candidates] of byKind) {
-    const limit = NODE_LIMITS[kind] ?? 24;
-    if (limit === 0) continue;
     candidates.sort((left, right) => {
       const scoreDelta = relevanceScore(right, input) - relevanceScore(left, input);
       return scoreDelta || left.ref.localeCompare(right.ref);
     });
-    const pinned = candidates.filter((candidate) => input.pinnedRefs.has(candidate.ref));
-    const ranked = candidates.filter((candidate) => !input.pinnedRefs.has(candidate.ref)).slice(0, limit);
-    selected.push(...pinned, ...ranked);
+    selected.push(...candidates);
   }
   return [...new Map(selected.map((node) => [node.ref, node])).values()]
     .sort((left, right) => {

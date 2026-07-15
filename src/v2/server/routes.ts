@@ -14,21 +14,9 @@ import { appendHistoryEventPg, getResourceByKeyPg, listResourcesPg } from "../st
 import { intakeWorkItemPg } from "../work-items/intake-service.ts";
 import { materializeRunFromWorkItemPg } from "../work-items/run-materialization.ts";
 import type { WorkItemIntakePriority, WorkItemSourceProvider } from "../work-items/types.ts";
-import { handleEvolutionRoute } from "./evolution-routes.ts";
-import { handleExecutionRoute } from "./execution-routes.ts";
-import { handleRunLifecycleRoute } from "./run-lifecycle-routes.ts";
-import { handleMemoryRoute } from "./memory-routes.ts";
-import { handleChatRoute } from "./chat-routes.ts";
-import { handleLibraryRoute } from "./library-routes.ts";
-import { handleArtifactRoute } from "./artifact-routes.ts";
-import { handleWorkflowTemplateRoute } from "./workflow-template-routes.ts";
-import { handleSessionRoute } from "./session-routes.ts";
-import { handleTaskCommandRoute } from "./task-command-routes.ts";
-import { handlePlannerRoute } from "./planner-routes.ts";
-import { handleRunReadRoute } from "./run-read-routes.ts";
+import { dispatchRouteFamilies } from "./route-family-dispatch.ts";
 import { broadcastRuntimeLiveEvent } from "./runtime-event-stream.ts";
 import { startRunSchedulingPg } from "./run-execution-controller.ts";
-import { handleUiRoute } from "./ui-routes.ts";
 import type { RuntimeServerContext } from "./runtime-context.ts";
 import { parseRuntimeLoopId } from "./runtime-loop-registry.ts";
 import type { ApiEnvelope, ApiErrorEnvelope } from "./types.ts";
@@ -41,32 +29,8 @@ export async function handleRuntimeRoute(context: RuntimeServerContext, request:
   try {
     if (request.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders() });
 
-    const evolutionResponse = await handleEvolutionRoute(context, request, url);
-    if (evolutionResponse) return evolutionResponse;
-    const uiResponse = await handleUiRoute(context, request, url);
-    if (uiResponse) return uiResponse;
-    const runLifecycleResponse = await handleRunLifecycleRoute(context, request, url);
-    if (runLifecycleResponse) return runLifecycleResponse;
-    const sessionResponse = await handleSessionRoute(context, request, url);
-    if (sessionResponse) return sessionResponse;
-    const memoryResponse = await handleMemoryRoute(context, request, url);
-    if (memoryResponse) return memoryResponse;
-    const chatResponse = await handleChatRoute(context, request, url);
-    if (chatResponse) return chatResponse;
-    const libraryResponse = await handleLibraryRoute(context, request, url);
-    if (libraryResponse) return libraryResponse;
-    const workflowTemplateResponse = await handleWorkflowTemplateRoute(context, request, url);
-    if (workflowTemplateResponse) return workflowTemplateResponse;
-    const artifactResponse = await handleArtifactRoute(context, request, url);
-    if (artifactResponse) return artifactResponse;
-    const executionResponse = await handleExecutionRoute(context, request, url);
-    if (executionResponse) return executionResponse;
-    const taskCommandResponse = await handleTaskCommandRoute(context, request, url);
-    if (taskCommandResponse) return taskCommandResponse;
-    const plannerResponse = await handlePlannerRoute(context, request, url);
-    if (plannerResponse) return plannerResponse;
-    const runReadResponse = await handleRunReadRoute(context, request, url);
-    if (runReadResponse) return runReadResponse;
+    const familyResponse = await dispatchRouteFamilies(context, request, url);
+    if (familyResponse) return familyResponse;
 
     if (request.method === "GET" && url.pathname === "/api/v2/agent-library") {
       return json("agent-library", await buildAgentLibraryReadModelPg(context.db, {

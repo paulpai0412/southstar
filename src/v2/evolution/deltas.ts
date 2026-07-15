@@ -128,7 +128,10 @@ function buildDeltaProposal(
   input: { targetRef?: string; targetVersion?: string },
 ): DeltaProposal {
   const deltaKind = deltaKindFor(card);
-  const targetRef = input.targetRef ?? defaultTargetRef(deltaKind, card);
+  const targetRef = input.targetRef ?? targetRefForCard(deltaKind, card);
+  if (!targetRef) {
+    throw new Error(`evolution_target_ref_required: source card ${cardRef} does not identify a target for ${deltaKind}`);
+  }
   const targetVersion = input.targetVersion ?? "active";
   const id = `delta-${hash([cardRef, deltaKind, targetRef, targetVersion].join(":"))}`;
   return {
@@ -162,11 +165,11 @@ function deltaKindFor(card: KnowledgeCard): DeltaProposal["deltaKind"] {
   return "prompt_delta";
 }
 
-function defaultTargetRef(deltaKind: DeltaProposal["deltaKind"], card: KnowledgeCard): string {
-  if (deltaKind === "skill_delta") return card.appliesTo.skills?.[0] ?? "software.default-skill";
-  if (deltaKind === "agent_profile_delta") return card.appliesTo.agentProfiles?.[0] ?? "software.default-profile";
-  if (deltaKind === "flow_delta") return card.appliesTo.flowTemplates?.[0] ?? "software.default-flow";
-  return card.appliesTo.promptTemplates?.[0] ?? "prompt-software-maker";
+function targetRefForCard(deltaKind: DeltaProposal["deltaKind"], card: KnowledgeCard): string | undefined {
+  if (deltaKind === "skill_delta") return card.appliesTo.skills?.[0];
+  if (deltaKind === "agent_profile_delta") return card.appliesTo.agentProfiles?.[0];
+  if (deltaKind === "flow_delta") return card.appliesTo.flowTemplates?.[0];
+  return card.appliesTo.promptTemplates?.[0];
 }
 
 function hypothesisFor(deltaKind: DeltaProposal["deltaKind"], card: KnowledgeCard): string {

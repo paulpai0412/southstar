@@ -461,6 +461,7 @@ export type WorkflowCompositionTask = {
   evaluatorProfileRef: string;
   contextPolicyRef?: string;
   workspacePolicyRef?: string;
+  workspaceMutation?: WorkspaceMutationSpec;
   recoveryStrategyRefs: string[];
   rationale: string;
 };

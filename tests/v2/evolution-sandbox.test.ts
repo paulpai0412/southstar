@@ -119,8 +119,8 @@ test("sandbox execution materializes baseline and candidate runs with env marker
     });
     const experiment = await createSandboxExperiment(db, {
       deltaProposalId: "delta-sandbox-execution",
-      baselineAssetRefs: ["prompt@v1"],
-      candidateAssetRefs: ["prompt@v2"],
+      baselineAssetRefs: [],
+      candidateAssetRefs: [],
       regressionSuiteRefs: ["software-core-regression"],
       replayRunRefs: [replayRun.runId],
       maxCostRegressionPercent: 10,
@@ -183,6 +183,40 @@ test("sandbox execution materializes baseline and candidate runs with env marker
       evaluatorResult: { ok: true, targetedReplayFixed: true, metrics: { durationMs: 1050, costMicrosUsd: 1050, repairCount: 0, tokens: 1000, toolCalls: 4 } },
     });
     assert.equal(decision?.decision, "passed");
+  });
+});
+
+test("sandbox execution rejects asset refs that are not materializable from the source snapshot", async () => {
+  await withDb(async (db) => {
+    await seedDelta(db, "delta-sandbox-unmaterializable");
+    await seedDeterministicWorkflowGraph(db);
+    const draft = await createPostgresPlannerDraft(db, {
+      goalPrompt: "sandbox asset validation",
+      goalInterpreter: fixedGoalInterpreter(softwareGoalContract("sandbox asset validation")),
+      composer: new DeterministicFixtureComposer(),
+    });
+    const replayRun = await createPostgresRunFromDraft(db, { draftId: draft.draftId });
+    const experiment = await createSandboxExperiment(db, {
+      deltaProposalId: "delta-sandbox-unmaterializable",
+      baselineAssetRefs: ["asset.missing"],
+      candidateAssetRefs: [],
+      regressionSuiteRefs: ["software-core-regression"],
+      replayRunRefs: [replayRun.runId],
+      maxCostRegressionPercent: 10,
+      maxDurationRegressionPercent: 15,
+    });
+
+    await assert.rejects(
+      () => startSandboxExecutionPg(db, {
+        experimentId: experiment.experimentId,
+        executorProvider: {
+          executorType: "tork",
+          submit: async () => ({ executorType: "tork", externalJobId: "unused", status: "queued", executionProjection: {} }),
+        },
+        callbackUrl: "http://127.0.0.1/callback",
+      }),
+      /sandbox asset cannot be materialized/,
+    );
   });
 });
 

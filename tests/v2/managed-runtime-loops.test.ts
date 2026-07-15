@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
+import { createFakeBrainProvider } from "../support/fake-brain-provider.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { seedSoftwareLibraryGraph } from "./fixtures/software-library-graph.ts";
 import {
@@ -17,7 +17,7 @@ import {
   RECOVERY_DECISION_RESOURCE_TYPE,
   RECOVERY_DECISION_SCHEMA_VERSION,
 } from "../../src/v2/exceptions/types.ts";
-import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
+import { createFakeHandProvider } from "../support/fake-hand-provider.ts";
 import { createPostgresSessionStore } from "../../src/v2/session/postgres-session-store.ts";
 import { createDefaultManagedRuntimeLoop } from "../../src/v2/server/http-server.ts";
 import { createManagedRuntimeLoopController, createManagedRuntimeLoopPlan, createManagedRuntimeLoopRunners } from "../../src/v2/server/runtime-loops.ts";

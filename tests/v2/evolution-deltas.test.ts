@@ -81,6 +81,27 @@ test("delta classifier covers skill, profile, and flow cards without dedicated d
   });
 });
 
+test("delta synthesis refuses to invent a target when a card has no applicable asset", async () => {
+  await withDb(async (db) => {
+    const card = await seedCard(db, {
+      id: "card-without-target",
+      cardType: "success_pattern",
+      topicKey: "unbound-learning",
+      riskTier: "low",
+      appliesTo: {},
+    });
+
+    await assert.rejects(
+      synthesizeDeltaProposals(db, {
+        actor: "test-operator",
+        reason: "do not synthesize an unbound delta",
+        sourceCardRefs: [card.id],
+      }),
+      /evolution_target_ref_required/,
+    );
+  });
+});
+
 test("delta validator rejects missing source cards and flow auto-promotion", async () => {
   await withDb(async (db) => {
     const missing = await validateDeltaProposal(db, {

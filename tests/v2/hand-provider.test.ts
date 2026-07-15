@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createFakeHandProvider } from "../../src/v2/hands/fake-hand-provider.ts";
+import { createFakeHandProvider } from "../support/fake-hand-provider.ts";
 import { createHandProviderRegistry } from "../../src/v2/hands/registry.ts";
 import { createTorkHandProvider } from "../../src/v2/hands/tork-hand-provider.ts";
 import type { ExecutorSubmitRequest } from "../../src/v2/executor/provider.ts";

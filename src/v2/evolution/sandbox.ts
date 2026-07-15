@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { SouthstarDb } from "../db/postgres.ts";
 import { contentHashForPayload } from "../design-library/canonical-json.ts";
 import { materializeTaskEnvelope } from "../agent-runner/materializer.ts";
@@ -10,7 +10,7 @@ import { withMaterializationMount } from "../executor/materialization-mount.ts";
 import { piAgentConfigMount, piAgentRuntimeEnv } from "../executor/pi-agent-runtime.ts";
 import { createExecutorBindingPg } from "../executor/postgres-bindings.ts";
 import type { SouthstarWorkflowManifest } from "../manifests/types.ts";
-import { cloneRunLibrarySnapshotPg } from "../orchestration/run-library-snapshot.ts";
+import { cloneRunLibrarySnapshotPg, loadRunLibrarySnapshotPg } from "../orchestration/run-library-snapshot.ts";
 import { appendHistoryEventPg, createWorkflowRunPg, createWorkflowTaskPg, upsertRuntimeResourcePg } from "../stores/postgres-runtime-store.ts";
 import { createLearningEdge, createLearningNode } from "./learning-graph.ts";
 
@@ -102,6 +102,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
     [sourceRunId],
   );
   if (!sourceRun) throw new Error(`replay workflow run not found: ${sourceRunId}`);
+  const sourceLibrarySnapshot = await loadRunLibrarySnapshotPg(db, sourceRunId);
 
   const runs = {} as Record<"baseline" | "candidate", { runId: string; externalJobId: string; workspacePath: string }>;
   for (const variant of ["baseline", "candidate"] as const) {
@@ -110,6 +111,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
     const requestedRunRoot = input.runRoot ?? "/tmp/southstar-runs";
     const workspacePath = join(requestedRunRoot, "sandbox-workspaces", `${input.experimentId}-${variant}`);
     await mkdir(workspacePath, { recursive: true });
+    await materializeSandboxAssets(workspacePath, assetRefs, sourceLibrarySnapshot);
     const configuredWorkflow = sandboxWorkflow(sourceRun.workflow_manifest_json, {
       experimentId: input.experimentId,
       variant,
@@ -190,7 +192,7 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
       scope: "sandbox",
       status: "created",
       title: `Sandbox workspace ${variant}`,
-      payload: { experimentId: input.experimentId, variant, path: workspacePath, isolation: "temp-fixture-copy" },
+      payload: { experimentId: input.experimentId, variant, path: workspacePath, sourceRunId, assetRefs },
       summary: { variant, path: workspacePath },
     });
 
@@ -231,6 +233,31 @@ export async function startSandboxExecutionPg(db: SouthstarDb, input: {
 
   await saveExperiment(db, input.experimentId, "running", { ...experiment, status: "running", sandboxRunIds: { baseline: runs.baseline.runId, candidate: runs.candidate.runId } } as SandboxExperimentPayload);
   return { experimentId: input.experimentId, runs };
+}
+
+async function materializeSandboxAssets(
+  workspacePath: string,
+  assetRefs: string[],
+  snapshot: Awaited<ReturnType<typeof loadRunLibrarySnapshotPg>>,
+): Promise<void> {
+  for (const assetRef of assetRefs) {
+    const asset = snapshot.objects.find((candidate) => candidate.objectKey === assetRef || candidate.versionRef === assetRef);
+    if (!asset) {
+      throw new Error(`sandbox asset cannot be materialized from the source Library snapshot: ${assetRef}`);
+    }
+    if (!asset.bundleFiles || asset.bundleFiles.length === 0) {
+      throw new Error(`sandbox asset has no materializable bundle files in the source Library snapshot: ${assetRef}`);
+    }
+    for (const file of asset.bundleFiles) {
+      const relativePath = file.relativePath.replaceAll("\\", "/");
+      if (!relativePath || relativePath.startsWith("/") || relativePath.split("/").includes("..")) {
+        throw new Error(`sandbox asset contains an unsafe bundle path: ${assetRef}:${file.relativePath}`);
+      }
+      const target = join(workspacePath, relativePath);
+      await mkdir(dirname(target), { recursive: true });
+      await writeFile(target, Buffer.from(file.contentBase64, "base64"));
+    }
+  }
 }
 
 export async function recordSandboxEvaluatorOutputPg(db: SouthstarDb, input: {

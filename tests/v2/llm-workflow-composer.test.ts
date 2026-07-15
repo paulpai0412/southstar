@@ -12,7 +12,7 @@ import { softwareGoalContract } from "./fixtures/goal-contract.ts";
 
 const GOAL_CONTRACT = softwareGoalContract();
 
-test("LLM composer sends bounded candidate packet and explicit output schema contract", async () => {
+test("LLM composer sends the complete candidate packet and explicit output schema contract", async () => {
   const prompts: string[] = [];
   const composer = new LlmWorkflowComposer({
     model: "test-model",
@@ -50,8 +50,8 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /repair task must use workerKind=repair_worker/i);
   assert.match(prompts[0] ?? "", /reverify task must use workerKind=validation_worker/i);
   assert.match(prompts[0] ?? "", /agentProfile\.execution must include all Docker\/Tork worker input/);
-  assert.match(prompts[0] ?? "", /provider=pi, harnessRef=pi, and model=pi-agent-default/i);
-  assert.match(prompts[0] ?? "", /Never pair provider=codex or harnessRef=codex with southstar\/pi-agent:local/i);
+  assert.match(prompts[0] ?? "", /Treat workerKind, provider, model, thinkingLevel, harnessRef, and execution\.image as runtime binding data/i);
+  assert.doesNotMatch(prompts[0] ?? "", /Never pair provider=codex or harnessRef=codex with southstar\/pi-agent:local/i);
   assert.doesNotMatch(prompts[0] ?? "", /agentSpec/);
   assert.match(prompts[0] ?? "", /GraphMetadataCandidates:/);
   assert.match(prompts[0] ?? "", /Use GraphMetadataCandidates as the direct source of selectable refs/);
@@ -69,11 +69,12 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /A task evaluatorProfileRef must be paired with outputArtifactRefs that appear in that evaluator's compatibility list/i);
   assert.match(prompts[0] ?? "", /CandidatePacketSummary:/);
   assert.match(prompts[0] ?? "", /template.keep-19/);
-  assert.doesNotMatch(prompts[0] ?? "", /template.drop-20/);
+  assert.match(prompts[0] ?? "", /template.drop-20/);
   assert.match(prompts[0] ?? "", /artifact.keep-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /artifact.drop-50/);
+  assert.match(prompts[0] ?? "", /artifact.drop-50/);
   assert.match(prompts[0] ?? "", /policy.keep-49/);
-  assert.doesNotMatch(prompts[0] ?? "", /policy.drop-50/);
+  assert.match(prompts[0] ?? "", /policy.drop-50/);
+  assert.match(prompts[0] ?? "", /agent-map.drop-key-50/);
   assert.doesNotMatch(prompts[0] ?? "", /CandidatePacketSummary:[\s\S]*graphMetadataCandidates/);
   assert.match(prompts[0] ?? "", /"graphMetadataCandidateCounts":\{"nodes":6,"edges":5\}/);
   assert.match(prompts[0] ?? "", /\"additionalProperties\":false/);
@@ -100,6 +101,30 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
     WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.required.includes("nodePromptSpec"),
     true,
   );
+});
+
+test("LLM composer applies an explicit packet budget without dropping graph metadata", async () => {
+  const prompts: string[] = [];
+  const composer = new LlmWorkflowComposer({
+    model: "budgeted-model",
+    candidatePacketCharBudget: 20_000,
+    client: {
+      async generateText(input) {
+        prompts.push(input.prompt);
+        return JSON.stringify(validPlan());
+      },
+    },
+  });
+
+  await composer.compose({
+    goalPrompt: "implement calc sum",
+    goalContract: GOAL_CONTRACT,
+    candidatePacket: candidatePacket(),
+  });
+
+  assert.match(prompts[0] ?? "", /"omittedOptionalRefs":\[/);
+  assert.match(prompts[0] ?? "", /GraphMetadataCandidates:[\s\S]*agent\.frontend-developer/);
+  assert.match(prompts[0] ?? "", /graphMetadataCandidateCounts/);
 });
 
 
@@ -275,22 +300,17 @@ test("LLM composer parser rejects alias-based payload instead of patching it", (
   );
 });
 
-test("LLM composer parser rejects Codex profiles on the Pi agent runtime image", () => {
+test("LLM composer parser accepts runtime-specific generated profile bindings", () => {
   const plan = validPlan();
   const profile = plan.generatedComponentProposals[0]!.agentProfile!;
   profile.provider = "codex";
   profile.model = "gpt-5-codex";
   profile.harnessRef = "codex";
 
-  assert.throws(
-    () => parseWorkflowCompositionPlanFromText(JSON.stringify(plan), 20_000),
-    (error: unknown) =>
-      error instanceof LlmComposerOutputError
-      && error.issues.some((issue) =>
-        issue.code === "composer_output_schema_violation"
-        && issue.path === "generatedComponentProposals.0.agentProfile.harnessRef"
-      ),
-  );
+  const parsed = parseWorkflowCompositionPlanFromText(JSON.stringify(plan), 20_000);
+  assert.equal(parsed.generatedComponentProposals[0]?.agentProfile?.provider, "codex");
+  assert.equal(parsed.generatedComponentProposals[0]?.agentProfile?.model, "gpt-5-codex");
+  assert.equal(parsed.generatedComponentProposals[0]?.agentProfile?.harnessRef, "codex");
 });
 
 test("LLM composer parser rejects unexpected properties in task", () => {

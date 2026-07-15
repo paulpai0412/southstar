@@ -10,6 +10,7 @@ import { validateWorkflowCompositionPlan } from "./composition-validator.ts";
 import { LlmComposerOutputError } from "./llm-composer.ts";
 import type { GoalContractV1 } from "./goal-contract.ts";
 import type { GoalDesignPackage } from "./goal-design.ts";
+import type { RuntimeBindingCapabilities } from "./runtime-binding-capabilities.ts";
 
 export type CompositionRepairAttempt = {
   attempt: number;
@@ -30,6 +31,7 @@ export type RunCompositionRepairLoopInput = {
   maxRepairAttempts: number;
   onProgress?: PlannerDraftProgressListener;
   onLlmDelta?: (text: string) => void;
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities;
 };
 
 export type CompositionRepairLoopResult = {
@@ -64,6 +66,7 @@ export async function runCompositionRepairLoop(input: RunCompositionRepairLoopIn
           goalContract: input.goalContract,
           goalDesignPackage: input.goalDesignPackage,
           targetRequirementIds: input.targetRequirementIds,
+          runtimeBindingCapabilities: input.runtimeBindingCapabilities,
         },
       );
       input.onProgress?.({

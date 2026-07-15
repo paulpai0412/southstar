@@ -10,14 +10,6 @@ import type {
 } from "../design-library/types.ts";
 import {
   GENERATED_AGENT_PROFILE_COMMAND_ENTRYPOINT,
-  GENERATED_AGENT_PROFILE_HARNESSES,
-  GENERATED_AGENT_PROFILE_IMAGES,
-  GENERATED_AGENT_PROFILE_MODELS,
-  GENERATED_AGENT_PROFILE_PROVIDERS,
-  GENERATED_AGENT_PROFILE_THINKING_LEVELS,
-  GENERATED_AGENT_PROFILE_WORKER_KINDS,
-  isAllowedGeneratedAgentProfileValue,
-  runtimeBindingForGeneratedProfileImage,
 } from "./generated-agent-profile-policy.ts";
 import {
   buildGoalRequirementCoverage,
@@ -26,6 +18,7 @@ import {
 } from "./goal-requirement-coverage.ts";
 import type { GoalDesignPackage } from "./goal-design.ts";
 import type { GoalContractV1 } from "./goal-contract.ts";
+import type { RuntimeBindingCapabilities } from "./runtime-binding-capabilities.ts";
 import { classifyWorkflowCompositionTask } from "./workflow-node-classifier.ts";
 
 export type ValidateWorkflowCompositionOptions = {
@@ -33,6 +26,7 @@ export type ValidateWorkflowCompositionOptions = {
   goalContract?: GoalContractV1;
   goalDesignPackage?: GoalDesignPackage;
   targetRequirementIds?: string[];
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities;
 };
 
 export async function validateWorkflowCompositionPlan(
@@ -75,7 +69,14 @@ export async function validateWorkflowCompositionPlan(
   validateInputArtifactsAreSatisfied(plan, constraints, issues);
   if (selectedTemplateRef) validateTemplateSlotConstraints(selectedTemplateRef, constraints, plan, issues);
   const hostRefs = options.goalDesignPackage ? goalDesignHostRefs(options.goalDesignPackage) : new Set<string>();
-  validateCandidateMembership(plan, packet, candidateRefSet, hostRefs, issues);
+  validateCandidateMembership(
+    plan,
+    packet,
+    candidateRefSet,
+    hostRefs,
+    issues,
+    options.runtimeBindingCapabilities,
+  );
   const validationScope = workflowValidationScope(options);
   await validateGeneratedProfileClosure(db, plan, issues, validationScope);
   await validateEdgeConstraints(db, plan, issues, validationScope, options.goalDesignPackage);
@@ -604,6 +605,7 @@ function validateCandidateMembership(
   candidateRefSet: Set<string>,
   hostRefs: Set<string>,
   issues: WorkflowCompositionValidationIssue[],
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities,
 ): void {
   const generatedRefs = new Set(plan.generatedComponentProposals.map((proposal) => proposal.id));
   const validatedGeneratedAgentProfileRefs = validatedGeneratedAgentProfiles(plan);
@@ -619,7 +621,13 @@ function validateCandidateMembership(
       );
     }
     if (generatedProfileSelected && validatedGeneratedAgentProfileRefs.has(task.agentProfileRef)) {
-      validateSelectedGeneratedProfileSpec(plan, task.agentProfileRef, taskIndex, issues);
+      validateSelectedGeneratedProfileSpec(
+        plan,
+        task.agentProfileRef,
+        taskIndex,
+        issues,
+        runtimeBindingCapabilities,
+      );
     }
 
     const selectedRefs = generatedProfileSelected
@@ -658,6 +666,7 @@ function validateSelectedGeneratedProfileSpec(
   profileRef: string,
   taskIndex: number,
   issues: WorkflowCompositionValidationIssue[],
+  runtimeBindingCapabilities?: RuntimeBindingCapabilities,
 ): void {
   const proposalIndex = plan.generatedComponentProposals.findIndex((candidate) => candidate.id === profileRef);
   const proposal = proposalIndex >= 0 ? plan.generatedComponentProposals[proposalIndex] : undefined;
@@ -684,12 +693,6 @@ function validateSelectedGeneratedProfileSpec(
       issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.${field}`, `selected generated profile is missing ${field}: ${profileRef}`));
     }
   }
-  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_WORKER_KINDS, profile.workerKind, `${path}.workerKind`, profileRef, issues);
-  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_PROVIDERS, profile.provider, `${path}.provider`, profileRef, issues);
-  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_MODELS, profile.model, `${path}.model`, profileRef, issues);
-  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_THINKING_LEVELS, profile.thinkingLevel, `${path}.thinkingLevel`, profileRef, issues);
-  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_HARNESSES, profile.harnessRef, `${path}.harnessRef`, profileRef, issues);
-
   for (const field of ["memoryScopes", "agentsMdRefs", "vaultLeasePolicyRefs"] as const) {
     if (!Array.isArray(profile[field])) {
       issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.${field}`, `selected generated profile must include ${field}: ${profileRef}`));
@@ -726,35 +729,14 @@ function validateSelectedGeneratedProfileSpec(
   if (execution.engine !== "tork") {
     issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.engine`, `selected generated profile execution.engine must be tork: ${profileRef}`));
   }
-  requireAllowedGeneratedProfileValue(["tork"], execution.engine, `${path}.execution.engine`, profileRef, issues);
   if (typeof execution.image !== "string" || execution.image.trim().length === 0) {
     issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.image`, `selected generated profile execution must include image: ${profileRef}`));
   }
-  requireAllowedGeneratedProfileValue(GENERATED_AGENT_PROFILE_IMAGES, execution.image, `${path}.execution.image`, profileRef, issues);
-  const binding = runtimeBindingForGeneratedProfileImage(execution.image);
-  if (binding) {
-    if (profile.provider !== binding.provider) {
-      issues.push(issue(
-        "generated_profile_invalid_value",
-        `${path}.provider`,
-        `selected generated profile provider must be ${binding.provider} for ${execution.image}: ${profileRef}`,
-      ));
-    }
-    if (profile.model !== binding.model) {
-      issues.push(issue(
-        "generated_profile_invalid_value",
-        `${path}.model`,
-        `selected generated profile model must be ${binding.model} for ${execution.image}: ${profileRef}`,
-      ));
-    }
-    if (profile.harnessRef !== binding.harnessRef) {
-      issues.push(issue(
-        "generated_profile_invalid_value",
-        `${path}.harnessRef`,
-        `selected generated profile harnessRef must be ${binding.harnessRef} for ${execution.image}: ${profileRef}`,
-      ));
-    }
-  }
+  validateRuntimeBindingCapability(runtimeBindingCapabilities?.providers, profile.provider, `${path}.provider`, profileRef, issues);
+  validateRuntimeBindingCapability(runtimeBindingCapabilities?.models, profile.model, `${path}.model`, profileRef, issues);
+  validateRuntimeBindingCapability(runtimeBindingCapabilities?.harnesses, profile.harnessRef, `${path}.harnessRef`, profileRef, issues);
+  validateRuntimeBindingCapability(runtimeBindingCapabilities?.executionEngines, execution.engine, `${path}.execution.engine`, profileRef, issues);
+  validateRuntimeBindingCapability(runtimeBindingCapabilities?.images, execution.image, `${path}.execution.image`, profileRef, issues);
   if (!Array.isArray(execution.command) || execution.command.length === 0) {
     issues.push(issue("generated_profile_incomplete_agent_profile", `${path}.execution.command`, `selected generated profile execution must include command: ${profileRef}`));
   }
@@ -803,23 +785,23 @@ function validateSelectedGeneratedProfileSpec(
   }
 }
 
-function isHostMountSource(value: string): boolean {
-  return value.startsWith("/") && !value.startsWith("/workspace/");
-}
-
-function requireAllowedGeneratedProfileValue(
-  allowedValues: readonly string[],
+function validateRuntimeBindingCapability(
+  allowedValues: string[] | undefined,
   value: unknown,
   path: string,
   profileRef: string,
   issues: WorkflowCompositionValidationIssue[],
 ): void {
-  if (isAllowedGeneratedAgentProfileValue(allowedValues, value)) return;
+  if (!allowedValues || (typeof value === "string" && allowedValues.includes(value))) return;
   issues.push(issue(
     "generated_profile_invalid_value",
     path,
-    `selected generated profile value must be one of ${allowedValues.join(", ")}: ${profileRef}`,
+    `runtime host does not advertise binding ${String(value)} for ${profileRef}; configure the host capability or select an advertised binding`,
   ));
+}
+
+function isHostMountSource(value: string): boolean {
+  return value.startsWith("/") && !value.startsWith("/workspace/");
 }
 
 function validateGeneratedProfilePrimitiveMembership(
