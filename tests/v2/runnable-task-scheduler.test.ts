@@ -350,6 +350,32 @@ test("runnable scheduler queues two independent tasks when maxParallelTasks allo
   }
 });
 
+test("runnable scheduler derives an omitted parallel cap from the current ready DAG wave", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId: "run-scheduler-derived-parallel-wave",
+      tasks: [
+        { id: "task-a", status: "pending", sortOrder: 0, dependsOn: [] },
+        { id: "task-b", status: "pending", sortOrder: 1, dependsOn: [] },
+        { id: "task-c", status: "pending", sortOrder: 2, dependsOn: ["task-a"] },
+      ],
+    });
+    await seedContextPacket(db, "run-scheduler-derived-parallel-wave", "task-a");
+    await seedContextPacket(db, "run-scheduler-derived-parallel-wave", "task-b");
+    await seedContextPacket(db, "run-scheduler-derived-parallel-wave", "task-c");
+
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId: "run-scheduler-derived-parallel-wave" });
+
+    assert.deepEqual(result.dispatchedTaskIds, ["task-a", "task-b"]);
+    assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "task-c")?.reason, "dependencies-not-accepted");
+  } finally {
+    await db.close();
+  }
+});
+
 test("runnable scheduler does not terminal-fail a task after hand execution was accepted and local queued persistence fails", async () => {
   const db = await createTestPostgresDb();
   try {
@@ -837,7 +863,7 @@ async function seedRun(
   db: SouthstarDb,
   input: {
     runId: string;
-    maxParallelTasks: number;
+    maxParallelTasks?: number;
     tasks: Array<{ id: string; status: string; sortOrder: number; dependsOn: string[]; rootSessionId?: string }>;
   },
 ): Promise<void> {
@@ -908,16 +934,18 @@ async function seedRun(
       memoryPolicies: [memoryPolicy()],
       workspacePolicies: [workspacePolicy()],
       stopConditions: [],
-      effortPolicy: {
-        complexity: "standard",
-        maxBrains: 1,
-        maxHandsPerBrain: 1,
-        maxParallelTasks: input.maxParallelTasks,
-        maxToolCallsPerTask: 10,
-        maxInputTokensPerBrain: 20_000,
-        maxCostMicrosUsd: 100_000,
-        stopWhenEvidenceSufficient: true,
-      },
+      ...(input.maxParallelTasks === undefined ? {} : {
+        effortPolicy: {
+          complexity: "standard" as const,
+          maxBrains: 1,
+          maxHandsPerBrain: 1,
+          maxParallelTasks: input.maxParallelTasks,
+          maxToolCallsPerTask: 10,
+          maxInputTokensPerBrain: 20_000,
+          maxCostMicrosUsd: 100_000,
+          stopWhenEvidenceSufficient: true,
+        },
+      }),
     }),
     executionProjectionJson: "{}",
     snapshotJson: "{}",

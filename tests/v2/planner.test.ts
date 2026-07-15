@@ -122,7 +122,7 @@ test("planner canonicalizes Pi canonical-like workflow output with schema drift"
     availableHarnesses: ["codex"],
   });
 
-  assert.equal(bundle.workflow.tasks[0].domain, "software");
+  assert.equal(bundle.workflow.tasks[0].domain, "general");
   assert.equal(bundle.workflow.tasks[0].execution.image, "southstar/pi-agent:local");
   assert.deepEqual(bundle.workflow.tasks[0].execution.command, ["southstar-agent-runner", "run", "--task", "task-implement"]);
   assert.deepEqual(bundle.workflow.tasks[0].execution.mounts, [{
@@ -130,7 +130,7 @@ test("planner canonicalizes Pi canonical-like workflow output with schema drift"
     target: "/workspace",
     readonly: false,
   }]);
-  assert.deepEqual(bundle.workflow.tasks[0].skillRefs, ["software.readme", "software.calc-cli"]);
+  assert.deepEqual(bundle.workflow.tasks[0].skillRefs, ["software.readme"]);
   assert.equal(Array.isArray(bundle.workflow.harnessDefinitions), true);
 });
 

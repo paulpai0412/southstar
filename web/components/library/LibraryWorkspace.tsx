@@ -611,7 +611,7 @@ function sourcePathFromObjectDetail(detail: LibraryObjectDetail): string | undef
 function readPiLibrarySessions(payload: unknown): SessionInfo[] {
   const root = isRecord(payload) ? payload : {};
   const sessions = Array.isArray(root.sessions) ? root.sessions : [];
-  return sessions.filter(isPiLibrarySession).slice(0, 50);
+  return sessions.filter(isPiLibrarySession).filter((session) => session.visibility !== "internal").slice(0, 50);
 }
 
 function isPiLibrarySession(value: unknown): value is SessionInfo {

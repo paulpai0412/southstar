@@ -294,6 +294,17 @@ export function buildLibraryImportCandidatePrompt(
       "Coverage is validated by running the same Goal Validation resolver used after installation. A target is not proof by itself: artifactType, schemaRef, requiredFields, validationRules, evaluator inputs, and procedure instructions must be semantically capable of verifying the supplied Requirement and criteria.",
       "Do not use a generic evidence bundle as a catch-all when the confirmed Requirement explicitly requires a domain outcome or a domain-specific persisted artifact. Reuse an existing compatible contract when possible; otherwise propose the narrowest reusable domain contract that actually exposes the required outcome.",
       "Every proposed candidate must have at least one target. One reusable candidate may target multiple constraints. Do not copy these Goal-specific ids into candidate contract fields.",
+      "Before returning, perform this host-equivalent closure check for every blocking constraint: choose an artifact whose evidenceKinds contains every requiredEvidenceKinds value; choose an evaluator whose validatesArtifactRefs contains that exact artifact key and whose evidenceKinds contains the same values; include a verification procedure whose checkKind is declared in verificationModes and whose allowedEvidenceKinds contains the same values; target both candidates across all required criterionIds. If any check fails, revise the candidate contract definitions before returning the JSON.",
+      "Machine-readable closure obligations:",
+      JSON.stringify(coverageConstraints.filter((constraint) => constraint.blocking).map((constraint) => ({
+        gapRef: constraint.gapRef,
+        requirementId: constraint.requirementId,
+        criterionIds: constraint.criterionIds,
+        requiredEvidenceKinds: constraint.requiredEvidenceKinds,
+        artifactMustExpose: ["artifactType", "schemaRef", "requiredFields", "validationRules", "evidenceKinds"],
+        evaluatorMustExpose: ["validatesArtifactRefs", "evidenceKinds", "verificationModes", "verificationProcedures", "independencePolicy", "resultSchemaRef"],
+        procedureMustExpose: ["id", "checkKind", "instruction", "allowedEvidenceKinds"],
+      }))),
     ].join("\n")
     : "Do not return candidateCoverageTargets for a general Library import that has no GoalValidationCoverageConstraints.";
   return [
@@ -655,6 +666,7 @@ function buildLibraryImportRepairPrompt(basePrompt: string, previousOutput: unkn
     serialized.slice(0, MAX_PROMPT_DOCUMENT_CHARS),
     "Return a complete corrected JSON object. Preserve valid reusable candidates, repair the stated host validation issue, and cover the full blocking constraint set in one proposal.",
     "Treat the host issue as the authoritative dry-run result. Revise contract semantics, schemas, procedures, or pair relationships as needed; do not merely add candidateCoverageTargets that repeat an unsupported claim.",
+    "Re-run the complete closure check before responding: every required evidence kind must be present in the artifact, evaluator, and at least one compatible evaluator procedure; the evaluator must validate the exact artifact key; both candidates must be targeted for every criterion. Do not return a candidate pair that only has matching names or a target entry without compatible contract fields.",
   ].join("\n");
 }
 

@@ -32,16 +32,22 @@ export type ApprovedValidationCandidatesV1 = {
 
 export async function resolveApprovedValidationCandidates(
   db: SouthstarDb,
-  input: { scope?: string } = {},
+  _input: { scope?: string } = {},
 ): Promise<ApprovedValidationCandidatesV1> {
-  const artifacts = (await approvedObjectsForValidation(db, "artifact_contract", input.scope))
+  // Validation contracts are reusable graph objects, not files scoped to the
+  // Goal's display domain. An artifact can live in `product` while its
+  // evaluator lives in `testing`, with a version-pinned validation edge in a
+  // third scope. Filtering either side by one Goal scope silently drops that
+  // valid pair. Candidate ranking and the edge/version checks below remain the
+  // governing constraints, so discovery must read the full approved graph.
+  const artifacts = (await approvedObjectsForValidation(db, "artifact_contract"))
     .filter((object) => object.headVersionId !== null);
-  const evaluators = (await approvedObjectsForValidation(db, "evaluator_profile", input.scope))
+  const evaluators = (await approvedObjectsForValidation(db, "evaluator_profile"))
     .filter((object) => object.headVersionId !== null);
   const approvedEvaluators = new Map(evaluators.map((evaluator) => [evaluator.objectKey, evaluator]));
   const evaluatorProfilesByArtifact: Record<string, LibraryObjectSummary[]> = {};
   for (const artifact of artifacts) {
-    const edges = await validationEdgesTo(db, artifact.objectKey, input.scope);
+    const edges = await validationEdgesTo(db, artifact.objectKey);
     evaluatorProfilesByArtifact[artifact.objectKey] = edges
       .filter((edge) => edge.status === "active")
       .filter((edge) => {
@@ -61,28 +67,18 @@ export async function resolveApprovedValidationCandidates(
 async function approvedObjectsForValidation(
   db: SouthstarDb,
   kind: "artifact_contract" | "evaluator_profile",
-  scope: string | undefined,
 ): Promise<LibraryObjectSummary[]> {
-  const scoped = await findApprovedLibraryObjectsByKind(db, kind, scope);
-  if (!scope || scope === "all") return scoped;
-  const global = await findApprovedLibraryObjectsByKind(db, kind, "global");
-  const byKey = new Map([...scoped, ...global].map((object) => [object.objectKey, object]));
-  return [...byKey.values()].sort((left, right) => left.objectKey.localeCompare(right.objectKey));
+  return await findApprovedLibraryObjectsByKind(db, kind);
 }
 
 async function validationEdgesTo(
   db: SouthstarDb,
   artifactRef: string,
-  scope: string | undefined,
 ) {
-  const scopes = scope && scope !== "all" ? [scope, "global"] : [undefined];
-  const edges = [];
-  for (const edgeScope of scopes) {
-    edges.push(
-      ...(await findLibraryEdgesTo(db, artifactRef, "validates_artifact", { scope: edgeScope })),
-      ...(await findLibraryEdgesTo(db, artifactRef, "validates", { scope: edgeScope })),
-    );
-  }
+  const edges = [
+    ...(await findLibraryEdgesTo(db, artifactRef, "validates_artifact")),
+    ...(await findLibraryEdgesTo(db, artifactRef, "validates")),
+  ];
   const byId = new Map(edges.map((edge) => [edge.id, edge]));
   return [...byId.values()];
 }
@@ -132,8 +128,12 @@ export async function resolveWorkflowCandidates(db: SouthstarDb, input: ResolveW
   const evaluatorCandidatesByArtifact: Record<string, CandidateSummary[]> = {};
   for (const artifact of artifactContractCandidates) {
     const validatorEdges = [
-      ...(await findLibraryEdgesTo(db, artifact.ref, "validates_artifact", { scope: input.scope })),
-      ...(await findLibraryEdgesTo(db, artifact.ref, "validates", { scope: input.scope })),
+      // Validation contracts may deliberately cross domain boundaries. The
+      // artifact/evaluator object scopes and the edge scope are metadata for
+      // ranking/audit, not a hard candidate filter. The approved graph and
+      // requirement artifact reference are the authoritative relationship.
+      ...(await findLibraryEdgesTo(db, artifact.ref, "validates_artifact")),
+      ...(await findLibraryEdgesTo(db, artifact.ref, "validates")),
     ];
     evaluatorCandidatesByArtifact[artifact.ref] = await summariesForRefs(
       db,

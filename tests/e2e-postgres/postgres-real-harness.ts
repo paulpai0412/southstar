@@ -94,6 +94,9 @@ dir = "/tmp"
 
 [coordinator]
 address = "0.0.0.0:${input.port}"
+
+[worker.queues]
+default = 5
 `;
 }
 

@@ -1,0 +1,310 @@
+Southstar
+New
+.../apps/southstar-vocab
+WORKFLOW SESSIONS
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+1h ago
+2 messages
+(no messages)
+1h ago
+0 messages
+(no messages)
+1h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+1h ago
+2 messages
+(no messages)
+1h ago
+0 messages
+(no messages)
+1h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+1h ago
+2 messages
+(no messages)
+1h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+2h ago
+2 messages
+(no messages)
+2h ago
+0 messages
+(no messages)
+2h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+2h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+2h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+2h ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+3h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+3h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+3h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+11h ago
+2 messages
+(no messages)
+11h ago
+0 messages
+(no messages)
+12h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+12h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+12h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+12h ago
+2 messages
+{"schemaVersion":"southstar.workflow_composition_plan.v1","title":"Runtime dynamic repair append for req-08 startup/depcheck validation callback mismatch","rationale":"Append a bou...
+12h ago
+1 messages
+(no messages)
+12h ago
+0 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+14h ago
+2 messages
+(no messages)
+14h ago
+0 messages
+(no messages)
+14h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+14h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+15h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+15h ago
+2 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+15h ago
+2 messages
+WORKFLOW LIBRARY
+all
+workflows
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+Goal design confirmed; DAG composed.
+
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.
+
+Copy
+14:30
+workflow-generate
+
+[request.normalized] request.normalized [goal_requirements] <draft> <hash> [requirements.persisted] requirements.persisted [draft.requirements_review] draft.requirements_review [draft] <draft> requirements_review
+
+Deliver the smallest useful local vocabulary flashcard product with exactly two blocking outcomes: (R1) add/list vocabulary words with translation and example, and (R2) run a quiz that persists answers and reports session plus cumulative accuracy, each verifiable by automated tests and a browser-accessible local UI, with vocabulary-specific evidence artifacts.
+draft <draft> · ready_for_review · <hash>
+rev 1
+strategy: single-run
+template: auto
+
+Both blocking outcomes are independent and can execute in parallel within one run over the same workspace while preserving requirement-specific evidence and frozen validation bindings.
+
+slice-<hash>
+1 req · 2 artifact
+Deliver a local browser-accessible add/list vocabulary flow that persists word, translation, and example data and reads listings from persisted state.
+no slice deps
+Vocabulary entry persistence state and add/list UI/API behavior for entry records.
+slice-<hash>
+1 req · 2 artifact
+Deliver a local browser-accessible quiz flow that persists each submitted answer and reports session and cumulative accuracy derived from persisted quiz history.
+no slice deps
+Quiz answer-history persistence and session/cumulative accuracy derivation and presentation behavior.
+Confirm & Compose DAG
+Copy
+workflow-generate
+
+goal_design.ready_to_compose goal_design.composing request.normalized goal_contract.interpreted candidate.resolving candidate.resolved composer.started composer.completed validation.completed composition.compiling composition.compiled draft.persisted dag.validated goal_design.ready_to_compose goal_design.composing request.normalized goal_contract.interpreted candidate.resolving candidate.resolved composer.started composer.completed validation.completed composition.compiling composition.compiled draft.persisted dag.validated coverage.validated library_snapshot.persisted approval.persisted run.awaiting_approval
+
+DAG
+wf-composed-<hash>
+4 nodes
+GOAL CONTRACT
+Deliver the smallest useful local vocabulary flashcard product with exactly two blocking outcomes: (R1) add/list vocabulary words with translation and example, and (R2) run a quiz that persists answers and reports session plus cumulative accuracy, each verifiable by automated tests and a browser-accessible local UI, with vocabulary-specific evidence artifacts.
+2/2 covered
+WORKSPACE
+
+/home/timmypai/apps/southstar-vocab · software
+
+ACCEPTANCE
+
+Automated tests pass for adding entries, listing entries, and persistence of word, translation, and example fields. · A local URL serves the vocabulary UI where add/list behavior is accessible in a browser. · A vocabulary-domain artifact demonstrates persisted entry records containing word, translation, and example values.
+
+DELIVERABLES
+
+artifact.goal.req-<hash>.1 · artifact.goal.req-<hash>.2 · artifact.goal.req-<hash>.1 · artifact.goal.req-<hash>.2
+
+ASSUMPTIONS
+
+Local persistence may be implemented with workspace-local mechanisms as long as automated tests can verify durability for required flows. · Quiz accuracy is measured as correct answers divided by total answered for both session and cumulative scopes unless stricter domain rules are introduced within this workspace. · Automated browser tests can run against a local server for UI verification.
+
+RISK / EFFECTS
+
+scope-control · persistence-integrity · accuracy-derivation · history-continuity · Modify local application code in the workspace to implement R1 and R2 outcomes. · Add or update automated tests for both blocking requirements. · Generate vocabulary-specific persisted-answer and accuracy evidence artifacts in the workspace artifacts area.
+
+EXECUTION
+awaiting_approval
+OUTCOME
+in_progress
+HEALTH
+healthy
+Approve
+Revise goal
+View details
+Review mode
+Implement local vocabulary add/list flow with persistence
+READY
+
+taskId: task-slice-dba9-implement-r1
+
+roleRef: engineering-software-architect
+
+agentProfileRef: generated.agent_profile.task-slice-dba9-implement-r1
+
+artifactKind: implementation_report
+
+codex
+gpt-5-codex
+Deterministically verify R1 local runtime evidence
+READY
+
+taskId: task-slice-dba9-verify-r1
+
+roleRef: testing-evidence-collector
+
+agentProfileRef: generated.agent_profile.task-slice-dba9-verify-r1
+
+artifactKind: implementation_report
+
+codex
+gpt-5-codex
+Implement local quiz flow with persisted answers and accuracy metrics
+READY
+
+taskId: task-slice-7c31-implement-r2
+
+roleRef: engineering-software-architect
+
+agentProfileRef: generated.agent_profile.task-slice-7c31-implement-r2
+
+artifactKind: implementation_report
+
+codex
+gpt-5-codex
+Deterministically verify R2 offline runtime evidence
+READY
+
+taskId: task-slice-7c31-verify-r2
+
+roleRef: testing-test-results-analyzer
+
+agentProfileRef: generated.agent_profile.task-slice-7c31-verify-r2
+
+artifactKind: implementation_report
+
+codex
+gpt-5-codex
+React Flow
+Copy
+14:40
+Send
+GPT-5.3 Codex
+auto
+default
+Compact
+Requirement req-<hash>
+Requirement req-<hash>
+Slice slice-<hash>
+slice-<hash>
+Deliver the smallest useful local vocabulary flashcard product with exactly two blocking outcomes: (R1) add/list vocabulary words with translation and example, and (R2) run a quiz that persists answers and reports session plus cumulative accuracy, each verifiable by automated tests and a browser-accessible local UI, with vocabulary-specific evidence artifacts. · strategy single-run · <hash>
+Outcome
+State / artifact owner
+Mutation boundary
+Requirement IDs
+Expected artifact refs
+Evaluator contract refs
+Depends on slice IDs
+Dependency artifact refs
+Merge reason
+expected package <hash>
+Save slice

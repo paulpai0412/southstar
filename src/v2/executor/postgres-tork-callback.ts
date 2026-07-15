@@ -4,6 +4,7 @@ import { acceptOrRejectArtifactRefPg, artifactRefIdentity } from "../artifacts/a
 import { recordArtifactRepairMarkerPg } from "../artifacts/lineage.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
+import { resolveTorkTerminalWithoutCallbackForCallbackPg } from "../exceptions/postgres-runtime-exceptions.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
 import {
   assertRequirementEvaluatorExecutionIdentityPg,
@@ -45,6 +46,7 @@ type PersistedCallbackResult = Omit<PostgresCallbackIngestionResult, "dynamicRep
   pendingDynamicRepair?: PendingDynamicRepair;
   dynamicRepairHistoryKey?: string;
   rootSessionId?: string;
+  callbackPersisted?: boolean;
 };
 
 export async function ingestTaskRunResultPg(
@@ -374,6 +376,7 @@ export async function ingestTaskRunResultPg(
 
     return {
       accepted,
+      callbackPersisted: true,
       artifactResourceId: artifactRef.resourceId,
       artifactRefId: artifactRef.artifactRefId,
       ...(pendingDynamicRepair ? { pendingDynamicRepair } : {}),
@@ -384,6 +387,16 @@ export async function ingestTaskRunResultPg(
   const dynamicRepairRevision = ingested.pendingDynamicRepair
     ? await safeApplyDynamicRepairRevisionPg(db, ingested.pendingDynamicRepair)
     : undefined;
+  if (ingested.callbackPersisted && !ingested.duplicate) {
+    await resolveTorkTerminalWithoutCallbackForCallbackPg(db, {
+      runId: result.runId,
+      taskId: result.taskId,
+      attemptId,
+      handExecutionId,
+      resolvedAt: result.receivedAt ?? new Date().toISOString(),
+      reason: "callback_received_for_observed_terminal_execution",
+    });
+  }
   await finalizeCallbackLifecyclePg(db, {
     runId: result.runId,
     taskId: result.taskId,

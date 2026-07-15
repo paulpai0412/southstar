@@ -480,7 +480,13 @@ async function resolveInstalledGoalValidationPg(input: {
     throw new Error(`goal_validation_resolution_missing: ${input.draftId}`);
   }
   const importDraft = await loadLibraryImportCandidateDraft(input.db, input.importDraftId, { allowInstalled: true });
-  const candidates = await resolveApprovedValidationCandidates(input.db, { scope: source.goalContract.domain });
+  // The imported proposal is the host-validated binding for this Goal. Its
+  // artifact/evaluator objects may deliberately live in different Library
+  // scopes (for example `product` and `testing`) while their validation edge
+  // carries the relationship. The approved graph is therefore read without
+  // filtering by the Goal display domain; proposal coverage targets still
+  // constrain the result to objects the user approved.
+  const candidates = await resolveApprovedValidationCandidates(input.db);
   const unresolvedRequirementIds = new Set(priorResolution.gaps.map((gap) => gap.requirementId));
   const priorBindings = new Map(priorResolution.bindings.map((binding) => [binding.requirementId, binding]));
 

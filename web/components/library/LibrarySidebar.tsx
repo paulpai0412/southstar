@@ -404,7 +404,10 @@ function LibrarySessionRow({
   onRename?: (sessionId: string, title: string) => void;
   onDelete?: (sessionId: string) => void;
 }) {
-  const title = session.name || session.firstMessage || "Untitled Library session";
+  const title = session.name
+    || (session as SessionInfo & { title?: string }).title
+    || session.firstMessage
+    || "Untitled Library session";
   const rename = (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     const next = window.prompt("Rename Library session", title)?.trim();

@@ -61,7 +61,14 @@ export function createRunnableTaskScheduler(db: SouthstarDb, deps: RunnableTaskS
         [input.runId],
       );
       const acceptedArtifactTaskIds = await acceptedArtifactTaskIdsForRunPg(db, input.runId);
-      const maxParallelTasks = maxParallelTasksForManifest(run.workflow_manifest_json);
+      // A composer may omit effortPolicy when the DAG itself is the source of
+      // scheduling intent. In that case derive the cap from the current ready
+      // wave instead of silently serializing the whole DAG at one task.
+      const maxParallelTasks = maxParallelTasksForManifest(
+        run.workflow_manifest_json,
+        tasks.rows,
+        acceptedArtifactTaskIds,
+      );
       const result: RunnableTaskSchedulerRunResult = { runId: input.runId, dispatchedTaskIds: [], skippedTaskIds: [] };
 
       for (const task of tasks.rows) {
@@ -876,9 +883,15 @@ function dependsOn(task: TaskRow): string[] {
     : [];
 }
 
-function maxParallelTasksForManifest(manifest: SouthstarWorkflowManifest): number {
+function maxParallelTasksForManifest(
+  manifest: SouthstarWorkflowManifest,
+  tasks: TaskRow[],
+  acceptedArtifactTaskIds: Set<string>,
+): number {
   const value = manifest.effortPolicy?.maxParallelTasks;
-  return typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.floor(value) : 1;
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return Math.floor(value);
+  const readyWaveSize = tasks.filter((task) => task.status === "pending" && dependenciesReady(dependsOn(task), acceptedArtifactTaskIds)).length;
+  return Math.max(1, readyWaveSize);
 }
 
 function effortPolicyForBrain(manifest: SouthstarWorkflowManifest): {

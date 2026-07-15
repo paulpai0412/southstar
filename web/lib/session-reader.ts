@@ -14,7 +14,7 @@ import type {
 } from "./types";
 import type { SessionEntry as PiSessionEntry, SessionInfo as PiSessionInfo } from "@earendil-works/pi-coding-agent";
 import { normalizeToolCalls } from "./normalize";
-import { classifySessionKindFromEntries, type SessionKind } from "./session-kind";
+import { classifySessionKindFromEntries, sessionMetadataFromEntries, type SessionKind } from "./session-kind";
 import { buildWorkflowCompositionPlanDisplay } from "./workflow/composition-plan-dag";
 import { isWorkflowUiCheckpointMessage, restorePersistedWorkflowUiMessage } from "./workflow/session-message";
 import { slimMessageForUi, slimSessionTreeForUi } from "./session-slimming";
@@ -36,11 +36,13 @@ function toSessionInfo(piSessions: PiSessionInfo[]): SessionInfo[] {
   return piSessions.map((s) => {
     // Populate path cache so resolveSessionPath works without a full scan
     cache.set(s.id, s.path);
+    const metadata = sessionMetadataFromEntries(safeSessionKindEntries(s.path));
     return {
       path: s.path,
       id: s.id,
       cwd: s.cwd,
       kind: classifySessionKindForSession(s.cwd, safeSessionKindEntries(s.path)),
+      ...(metadata?.visibility ? { visibility: metadata.visibility } : {}),
       name: s.name,
       created: s.created instanceof Date ? s.created.toISOString() : String(s.created),
       modified: s.modified instanceof Date ? s.modified.toISOString() : String(s.modified),
@@ -126,12 +128,14 @@ async function readSessionInfoCandidate(filePath: string, modifiedMs: number): P
   const firstMessage = messages.map(messageSummaryText).find(Boolean) ?? "(no messages)";
   const name = [...entries].reverse().find(isSessionInfoEntry)?.name;
   const lastEntry = entries[entries.length - 1];
+  const metadata = sessionMetadataFromEntries(entries);
 
   return {
     path: filePath,
     id: header.id,
     cwd: header.cwd,
     kind: classifySessionKindForSession(header.cwd, entries),
+    ...(metadata?.visibility ? { visibility: metadata.visibility } : {}),
     name,
     created: header.timestamp,
     modified: lastEntry?.timestamp ?? new Date(modifiedMs).toISOString(),

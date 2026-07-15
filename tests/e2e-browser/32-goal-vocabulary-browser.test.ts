@@ -18,13 +18,15 @@ import {
 } from "../e2e-postgres/postgres-real-harness.ts";
 
 const ROOT = resolve(import.meta.dirname, "../..");
+const LIBRARY_ROOT = resolve(ROOT, "library");
 const WORKSPACE = process.env.SOUTHSTAR_E2E_PROJECT_CWD
   ?? process.env.SOUTHSTAR_CASE32_PROJECT_CWD
   ?? join(process.env.HOME ?? "/home/timmypai", "apps", "southstar-vocab");
-const GOAL = "Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted history, and see session and cumulative accuracy. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Include a browser-accessible local UI, automated tests, and verification evidence for every blocking requirement. Do not use external services or network integrations.";
+const GOAL = "Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.";
 
 test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout: 60 * 60 * 1000 }, async () => {
   const env = await createInitializedRealPostgresE2E();
+  const libraryFilesBefore = new Set(await listWorkspaceFiles(LIBRARY_ROOT));
   const materializationRoot = await mkdtemp("/tmp/case32-browser-materialization-");
   let tork: Awaited<ReturnType<typeof startIsolatedRealTork>> | undefined;
   let runtime: Awaited<ReturnType<typeof createRealRuntimeServer>> | undefined;
@@ -59,6 +61,9 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
     browser = await chromium.launch({ headless: true });
     browser.on("disconnected", () => console.info("[case32-browser] browser disconnected"));
     const page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
+    page.on("dialog", async (dialog) => {
+      await dialog.accept("Case32 browser acceptance");
+    });
     page.on("close", () => console.info("[case32-browser] page closed"));
     page.on("crash", () => console.info("[case32-browser] page crashed"));
     const workflowGenerateBodies: unknown[] = [];
@@ -226,6 +231,17 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
 
     await page.getByTestId("mode-operator").click();
     await page.getByTestId("operator-workspace").waitFor({ state: "visible" });
+    const approveRun = page.getByTestId("operator-workspace").getByRole("button", { name: "Approve", exact: true }).first();
+    await approveRun.waitFor({ state: "visible", timeout: 30_000 });
+    const approvalResponse = page.waitForResponse((response) => (
+      response.url().endsWith("/api/operator/command")
+      && response.request().method() === "POST"
+    ), { timeout: 30_000 });
+    await approveRun.click();
+    assert.equal((await approvalResponse).status(), 200);
+    const parallelExecutions = await waitForConcurrentTorkExecutions(env.db, confirmationResult.runId!, 5 * 60 * 1000);
+    assert.ok(parallelExecutions.workflowRunning >= 2, `DAG ready wave was not concurrent: ${JSON.stringify(parallelExecutions)}`);
+    assert.ok(parallelExecutions.torkRunning >= 2, `Tork did not run multiple tasks concurrently: ${JSON.stringify(parallelExecutions)}`);
     await captureSnapshot(page, snapshotRoot, "13-execution-started");
     const finalStatus = await waitForPostgresRunStatus(env.db, confirmationResult.runId, ["completed", "failed"], 40 * 60 * 1000);
     assert.equal(finalStatus, "completed");
@@ -256,6 +272,15 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
     const workspaceFiles = await listWorkspaceFiles(WORKSPACE);
     assert.ok(workspaceFiles.some((file) => /src\/.*\.(m?js|ts|html)$/.test(file)), "workspace must contain generated vocabulary source/UI");
     assert.ok(workspaceFiles.some((file) => /tests?\/.*\.(m?js|ts)$/.test(file)), "workspace must contain generated tests");
+    const workspaceSnapshots = await env.db.query<{ payload_json: Record<string, unknown> }>(
+      `select payload_json
+         from southstar.runtime_resources
+        where run_id = $1 and resource_type = 'workspace_snapshot'
+        order by created_at desc`,
+      [confirmationResult.runId],
+    );
+    assert.ok(workspaceSnapshots.rows.length > 0, "run must persist a workspace snapshot");
+    assert.equal(workspaceSnapshots.rows.every((row) => row.payload_json.provider === "git" && !row.payload_json.gitError), true, "workspace snapshots must use the Git provider");
     await captureSnapshot(page, snapshotRoot, "16-workspace-acceptance");
     console.info(`[case32-browser] runId=${confirmationResult.runId} snapshots=${snapshotRoot} files=${workspaceFiles.join(",")}`);
   } finally {
@@ -264,6 +289,7 @@ test("32 browser checklist: Library gap to completed vocabulary Goal", { timeout
     await runtime?.close();
     await tork?.close();
     await env.close();
+    await removeNewLibraryFiles(LIBRARY_ROOT, libraryFilesBefore);
     await rm(materializationRoot, { recursive: true, force: true });
   }
 });
@@ -294,6 +320,36 @@ async function waitText(page: Page, pattern: RegExp, timeout: number): Promise<v
     await page.waitForTimeout(1_000);
   }
   throw new Error(`browser did not render ${pattern} within ${timeout}ms`);
+}
+
+async function waitForConcurrentTorkExecutions(
+  db: Awaited<ReturnType<typeof createInitializedRealPostgresE2E>>["db"],
+  runId: string,
+  timeout: number,
+): Promise<{ workflowRunning: number; torkRunning: number }> {
+  const deadline = Date.now() + timeout;
+  let latest = { workflowRunning: 0, torkRunning: 0 };
+  while (Date.now() < deadline) {
+    const result = await db.query<{ workflow_running: number; tork_running: number }>(
+      `select
+         (select count(*)::int from southstar.workflow_tasks where run_id = $1 and status = 'running') as workflow_running,
+         (select count(*)::int
+            from southstar.runtime_resources
+           where run_id = $1
+             and resource_type = 'hand_execution'
+             and status = 'running'
+             and payload_json->>'providerId' = 'tork'
+             and payload_json->>'externalJobId' is not null) as tork_running`,
+      [runId],
+    );
+    latest = {
+      workflowRunning: Number(result.rows[0]?.workflow_running ?? 0),
+      torkRunning: Number(result.rows[0]?.tork_running ?? 0),
+    };
+    if (latest.workflowRunning >= 2 && latest.torkRunning >= 2) return latest;
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 1_000));
+  }
+  throw new Error(`run ${runId} did not show two concurrent workflow/Tork executions within ${timeout}ms: ${JSON.stringify(latest)}`);
 }
 
 async function captureSnapshot(page: Page, root: string, name: string): Promise<void> {
@@ -330,6 +386,11 @@ async function listWorkspaceFiles(root: string, prefix = ""): Promise<string[]> 
     else if (entry.isFile()) files.push(relative);
   }
   return files.sort();
+}
+
+async function removeNewLibraryFiles(root: string, before: Set<string>): Promise<void> {
+  const after = await listWorkspaceFiles(root);
+  await Promise.all(after.filter((file) => !before.has(file)).map((file) => rm(join(root, file), { force: true })));
 }
 
 type RunningWebApp = { url: string; stop(): Promise<void> };

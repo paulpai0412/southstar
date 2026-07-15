@@ -130,52 +130,104 @@ export async function resolveRuntimeExceptionPg(
     await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
     const current = requireRuntimeExceptionRecord(await getRuntimeExceptionByKeyForUpdatePg(tx, input.resourceKey));
     if (current.runId !== input.runId) throw new Error(`runtime exception ${input.resourceKey} does not belong to run ${input.runId}`);
-    if (current.status === "resolved") return current;
-
-    const payload: RuntimeExceptionPayload = {
-      ...current.payload,
-      status: "resolved",
-      resolvedAt: input.resolvedAt,
-      resolvedReason: input.reason,
-    };
-
-    await upsertRuntimeResourcePg(tx, {
-      id: current.id,
-      resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
-      resourceKey: current.resourceKey,
-      runId: current.runId,
-      taskId: current.taskId,
-      sessionId: current.sessionId,
-      scope: current.scope,
-      status: "resolved",
-      title: `${current.payload.kind} runtime exception`,
-      payload,
-      summary: {
-        source: current.payload.source,
-        kind: current.payload.kind,
-        severity: current.payload.severity,
-        resolvedAt: input.resolvedAt,
-        reason: input.reason,
-      },
-    });
-
-    await appendHistoryEventOncePg(tx, {
-      runId: input.runId,
-      taskId: current.taskId,
-      sessionId: current.sessionId,
-      eventType: "runtime_exception.resolved",
-      actorType: "orchestrator",
-      idempotencyKey: `${current.resourceKey}:resolved`,
-      payload: {
-        exceptionId: current.exceptionId,
-        resourceKey: current.resourceKey,
-        resolvedAt: input.resolvedAt,
-        reason: input.reason,
-      },
-    });
-
-    return requireRuntimeExceptionRecord(await getResourceByKeyPg(tx, RUNTIME_EXCEPTION_RESOURCE_TYPE, input.resourceKey));
+    return await resolveRuntimeExceptionInTx(tx, current, input);
   });
+}
+
+/**
+ * A provider observer can persist a terminal-without-callback exception just
+ * before the callback arrives. Once the callback is ingested for the same
+ * attempt/hand execution, that exception is no longer actionable and must be
+ * resolved automatically. The matching is deliberately scoped to the exact
+ * execution identity so a late callback from an older attempt cannot close a
+ * newer recovery observation.
+ */
+export async function resolveTorkTerminalWithoutCallbackForCallbackPg(
+  db: SouthstarDb,
+  input: {
+    runId: string;
+    taskId: string;
+    attemptId: string;
+    handExecutionId: string;
+    resolvedAt: string;
+    reason: string;
+  },
+): Promise<number> {
+  return await db.tx(async (tx) => {
+    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
+    const rows = await tx.query<RuntimeResourceRow>(
+      `select * from southstar.runtime_resources
+        where resource_type = $1
+          and run_id = $2
+          and task_id = $3
+          and status <> 'resolved'
+          and payload_json->>'kind' = 'tork_terminal_without_callback'
+          and payload_json->>'attemptId' = $4
+          and payload_json->>'handExecutionId' = $5
+        for update`,
+      [RUNTIME_EXCEPTION_RESOURCE_TYPE, input.runId, input.taskId, input.attemptId, input.handExecutionId],
+    );
+    let resolved = 0;
+    for (const row of rows.rows) {
+      const current = toRuntimeExceptionRecord(mapRuntimeResourceRow(row));
+      if (!current) continue;
+      await resolveRuntimeExceptionInTx(tx, current, input);
+      resolved += 1;
+    }
+    return resolved;
+  });
+}
+
+async function resolveRuntimeExceptionInTx(
+  tx: SouthstarDb,
+  current: RuntimeExceptionRecord,
+  input: { runId: string; resolvedAt: string; reason: string },
+): Promise<RuntimeExceptionRecord> {
+  if (current.status === "resolved") return current;
+
+  const payload: RuntimeExceptionPayload = {
+    ...current.payload,
+    status: "resolved",
+    resolvedAt: input.resolvedAt,
+    resolvedReason: input.reason,
+  };
+
+  await upsertRuntimeResourcePg(tx, {
+    id: current.id,
+    resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
+    resourceKey: current.resourceKey,
+    runId: current.runId,
+    taskId: current.taskId,
+    sessionId: current.sessionId,
+    scope: current.scope,
+    status: "resolved",
+    title: `${current.payload.kind} runtime exception`,
+    payload,
+    summary: {
+      source: current.payload.source,
+      kind: current.payload.kind,
+      severity: current.payload.severity,
+      resolvedAt: input.resolvedAt,
+      reason: input.reason,
+    },
+  });
+
+  await appendHistoryEventOncePg(tx, {
+    runId: input.runId,
+    taskId: current.taskId,
+    sessionId: current.sessionId,
+    eventType: "runtime_exception.resolved",
+    actorType: "orchestrator",
+    idempotencyKey: `${current.resourceKey}:resolved`,
+    payload: {
+      exceptionId: current.exceptionId,
+      resourceKey: current.resourceKey,
+      resolvedAt: input.resolvedAt,
+      reason: input.reason,
+    },
+  });
+
+  return requireRuntimeExceptionRecord(await getResourceByKeyPg(tx, RUNTIME_EXCEPTION_RESOURCE_TYPE, current.resourceKey));
 }
 
 async function getRuntimeExceptionByKeyForUpdatePg(

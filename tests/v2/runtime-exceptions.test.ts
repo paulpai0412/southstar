@@ -9,6 +9,7 @@ import {
   listUnresolvedRuntimeExceptionsPg,
   recordRuntimeExceptionPg,
   resolveRuntimeExceptionPg,
+  resolveTorkTerminalWithoutCallbackForCallbackPg,
 } from "../../src/v2/exceptions/postgres-runtime-exceptions.ts";
 import { createRuntimeExceptionController } from "../../src/v2/exceptions/runtime-exception-controller.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
@@ -142,6 +143,58 @@ test("runtime exception resolve is idempotent and preserves first resolution met
       "runtime_exception.observed",
       "runtime_exception.resolved",
     ]);
+  } finally {
+    await db.close();
+  }
+});
+
+test("callback identity resolves only the matching terminal-without-callback observation", async () => {
+  const db = await createTestPostgresDb();
+  try {
+    await createWorkflowRunPg(db, minimalRun("run-exception-callback-identity"));
+    const matching = await recordRuntimeExceptionPg(db, {
+      runId: "run-exception-callback-identity",
+      taskId: "task-a",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-a",
+      source: "tork-observer",
+      kind: "tork_terminal_without_callback",
+      severity: "recoverable",
+      observedAt: "2026-07-15T10:00:00.000Z",
+      evidenceRefs: ["hand-a"],
+    });
+    const otherAttempt = await recordRuntimeExceptionPg(db, {
+      runId: "run-exception-callback-identity",
+      taskId: "task-a",
+      attemptId: "attempt-2",
+      handExecutionId: "hand-b",
+      source: "tork-observer",
+      kind: "tork_terminal_without_callback",
+      severity: "recoverable",
+      observedAt: "2026-07-15T10:01:00.000Z",
+      evidenceRefs: ["hand-b"],
+    });
+
+    const resolved = await resolveTorkTerminalWithoutCallbackForCallbackPg(db, {
+      runId: "run-exception-callback-identity",
+      taskId: "task-a",
+      attemptId: "attempt-1",
+      handExecutionId: "hand-a",
+      resolvedAt: "2026-07-15T10:02:00.000Z",
+      reason: "callback received",
+    });
+
+    assert.equal(resolved, 1);
+    const unresolved = await listUnresolvedRuntimeExceptionsPg(db, { runId: "run-exception-callback-identity" });
+    assert.deepEqual(unresolved.map((item) => item.resourceKey), [otherAttempt.resourceKey]);
+    const history = await listHistoryForRunPg(db, "run-exception-callback-identity");
+    assert.equal(history.filter((event) => event.eventType === "runtime_exception.resolved").length, 1);
+    assert.deepEqual(history.find((event) => event.eventType === "runtime_exception.resolved")?.payload, {
+      exceptionId: matching.exceptionId,
+      resourceKey: matching.resourceKey,
+      resolvedAt: "2026-07-15T10:02:00.000Z",
+      reason: "callback received",
+    });
   } finally {
     await db.close();
   }

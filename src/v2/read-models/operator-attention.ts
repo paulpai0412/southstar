@@ -1,7 +1,7 @@
 import { isTaskRecoverableStatus } from "../task-recovery.ts";
 import type { GoalMissionReadModel } from "./workflow-ui.ts";
 
-export const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "scheduling", "running", "paused", "blocked"] as const;
+export const ACTIVE_RUN_STATUSES = ["created", "validated", "ready", "awaiting_approval", "scheduling", "running", "paused", "blocked"] as const;
 export const TERMINAL_RUN_STATUSES = ["completed", "passed", "failed", "cancelled"] as const;
 export const OPERATOR_ATTENTION_RUN_STATUSES = ["paused", "blocked", "failed", "cancelled"] as const;
 export const RECENT_RESOLVED_RUN_STATUSES = ["completed", "passed", "cancelled"] as const;

@@ -1,0 +1,89 @@
+Southstar
+New
+.../apps/southstar-vocab
+RUNNING WORKFLOW RUNS
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.
+<age>
+1
+COMPLETED WORKFLOW RUNS
+
+No completed workflows for this project.
+
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+State Dashboard
+
+Workflow lifecycle by project, newest first.
+
+active 1
+attention 1
+exception 0
+runs 1
+2 ATTENTION
+CREATED
+0
+
+No workflow runs
+
+SCHEDULING
+1
+execution scheduling
+outcome in_progress
+health healthy
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.
+southstar-vocab · software
+<run>...9c167 · <age>
+2 attention · Review and run Approve
+Pause
+Cancel
+RUNNING
+0
+
+No workflow runs
+
+VERIFYING
+0
+
+No workflow runs
+
+EXCEPTION
+0
+
+No workflow runs
+
+PAUSED
+0
+
+No workflow runs
+
+COMPLETED
+0
+
+No workflow runs
+
+CANCELLED
+0
+
+No workflow runs
+
+Requirement req-<hash>
+Requirement req-<hash>
+Slice slice-<hash>
+slice-<hash>
+Deliver the smallest useful local vocabulary flashcard product with exactly two blocking outcomes: (R1) add/list vocabulary words with translation and example, and (R2) run a quiz that persists answers and reports session plus cumulative accuracy, each verifiable by automated tests and a browser-accessible local UI, with vocabulary-specific evidence artifacts. · strategy single-run · <hash>
+Outcome
+State / artifact owner
+Mutation boundary
+Requirement IDs
+Expected artifact refs
+Evaluator contract refs
+Depends on slice IDs
+Dependency artifact refs
+Merge reason
+expected package <hash>
+Save slice

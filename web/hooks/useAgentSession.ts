@@ -1117,6 +1117,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               provider: "southstar",
               timestamp: Date.now(),
             } as AgentMessage;
+            // Commit the durable assistant message before ending the request.
+            // The SSE response can finish while the client is still persisting
+            // the message; leaving the live stream mounted during that window
+            // renders the same Goal block twice (final history + stream tail).
+            dispatch({ type: "end" });
             setMessages((prev) => [...prev, assistantMsg]);
             await persistWorkflowMessage(workflowSessionId, assistantMsg);
             addNotice({ type: "info", message: `Goal draft ${statusText}.` });
@@ -1133,6 +1138,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               provider: "southstar",
               timestamp: Date.now(),
             } as AgentMessage;
+            dispatch({ type: "end" });
             setMessages((prev) => [...prev, assistantMsg]);
             await persistWorkflowMessage(workflowSessionId, assistantMsg);
             addNotice({ type: "info", message: "Goal accepted; workflow details can be recovered from the persisted identity." });
@@ -1148,6 +1154,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
               provider: "southstar",
               timestamp: Date.now(),
             } as AgentMessage;
+            dispatch({ type: "end" });
             setMessages((prev) => [...prev, assistantMsg]);
             await persistWorkflowMessage(workflowSessionId, assistantMsg);
             addNotice({ type: "success", message: "Goal execution set created." });
@@ -1169,6 +1176,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           provider: "southstar",
           timestamp: Date.now(),
         };
+        dispatch({ type: "end" });
         setMessages((prev) => [...prev, assistantMsg]);
         await persistWorkflowMessage(workflowSessionId, assistantMsg);
       } catch (e) {
@@ -1189,6 +1197,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           errorMessage: message,
           timestamp: Date.now(),
         } as AgentMessage;
+        dispatch({ type: "end" });
         setMessages((prev) => [...prev, assistantMsg]);
         await persistWorkflowMessage(workflowSessionId, assistantMsg);
       } finally {

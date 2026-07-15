@@ -74,13 +74,9 @@ export function buildPlannerPrompt(context: PlannerContext): string {
   return [
     "Return exactly one compact JSON object. No markdown, comments, arrays at top-level, or candidate alternatives.",
     "Use this shape: {\"goalPrompt\":\"...\",\"workflows\":[{\"id\":\"...\",\"name\":\"...\",\"tasks\":[...]}]}.",
-    "Create exactly four tasks with ids: planner, implementer, root-validator, summary.",
-    "Dependencies must be: planner [], implementer [planner], root-validator [implementer], summary [root-validator].",
-    "Each task must include id, name, dependsOn, harnessId, and execution.command.",
-    "Set implementer harnessId to pi. Other tasks may use codex.",
-    "Set implementer skillRefs to [\"software.calc-cli\"].",
-    "execution.command should be a short instruction string for the subagent, not shell code.",
-    "The implementer instruction must mention editing /workspace/repo, calc sum <numbers...>, tests, README, and artifact fields summary/commandsRun/testResults/risks.",
+    "Design the smallest DAG that satisfies the supplied goal. Choose task count, ids, dependencies, worker kinds, skills, artifacts, and evaluators from the goal and the available harnesses; do not assume a fixed domain, task set, skill, artifact, or acceptance field.",
+    "Each task must include id, name, dependsOn, harnessId, execution.command, rootSession, and an explicit artifact/evaluator contract appropriate to its responsibility.",
+    "execution.command should be a short instruction string for the subagent, not shell code. Keep task prompts specific to the goal and its acceptance criteria.",
     `Schema version: ${context.schemaVersion}.`,
     `Goal prompt: ${context.goalPrompt}`,
     `Available harness ids: ${context.availableHarnesses.join(", ")}`,
@@ -264,19 +260,14 @@ function canonicalizeWorkflowLike(workflow: SouthstarWorkflowManifest): Southsta
     goalPrompt: stringValue(workflow.goalPrompt) ?? "",
     tasks,
     harnessDefinitions: buildHarnessDefinitions(tasks),
-    evaluators: [{
-      id: "schema-evaluator-v1",
-      kind: "schema",
-      artifactTypes: ["implementation-report"],
-      requiredFields: ["summary", "commandsRun", "testResults", "risks"],
-    }],
-    memoryPolicy: { retrievalLimit: 5, writeRequiresApproval: true },
-    vaultPolicy: { leaseTtlSeconds: 900, mountMode: "ephemeral-file" },
+    evaluators: Array.isArray(workflow.evaluators) ? workflow.evaluators : [],
+    memoryPolicy: workflow.memoryPolicy ?? { retrievalLimit: 5, writeRequiresApproval: true },
+    vaultPolicy: workflow.vaultPolicy ?? { leaseTtlSeconds: 900, mountMode: "ephemeral-file" },
     mcpServers: Array.isArray(workflow.mcpServers) ? workflow.mcpServers : [],
     mcpGrants: Array.isArray(workflow.mcpGrants) ? workflow.mcpGrants : [],
-    progressPolicy: { firstEventWithinSeconds: 10, minEventsPerLongTask: 3 },
-    steeringPolicy: { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
-    learningPolicy: { recordMemoryDeltas: true, recordWorkflowLearnings: true },
+    progressPolicy: workflow.progressPolicy ?? { firstEventWithinSeconds: 10, minEventsPerLongTask: 3 },
+    steeringPolicy: workflow.steeringPolicy ?? { enabled: true, acceptedSignals: ["pause", "resume", "revise-prompt", "repair"] },
+    learningPolicy: workflow.learningPolicy ?? { recordMemoryDeltas: true, recordWorkflowLearnings: true },
   };
 }
 
@@ -417,15 +408,14 @@ function repairAttempts(value: unknown): number {
 }
 
 function skillRefsForTask(value: unknown, taskId: string): string[] {
-  const refs = stringArray(value);
-  if (/implement/i.test(taskId)) refs.push("software.calc-cli");
-  return [...new Set(refs)];
+  void taskId;
+  return [...new Set(stringArray(value))];
 }
 
 function domainValue(value: unknown): WorkflowTaskDefinition["domain"] {
   return value === "software" || value === "research" || value === "data-analysis" || value === "general"
     ? value
-    : "software";
+    : "general";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -455,7 +445,7 @@ async function configurePiSdkPlannerSession(
 }
 
 function markPiSdkPlannerSessionKind(session: PiSdkPlannerSession, kind: SouthstarSessionKind): void {
-  session.sessionManager?.appendCustomEntry(SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, { kind });
+  session.sessionManager?.appendCustomEntry(SOUTHSTAR_SESSION_KIND_CUSTOM_TYPE, { kind, visibility: "internal" });
 }
 
 function plannerModelFromEnv(): { provider: string; modelId: string } | undefined {

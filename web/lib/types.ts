@@ -422,6 +422,9 @@ export interface SessionInfo {
   id: string;
   cwd: string;
   kind?: "chat" | "workflow" | "library";
+  /** Sessions created by Southstar's planner/import pipeline are internal and
+   * should not be presented as user-editable Library conversations. */
+  visibility?: "user" | "internal";
   name?: string;
   created: string;
   modified: string;

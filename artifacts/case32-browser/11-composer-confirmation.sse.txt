@@ -1,0 +1,104 @@
+event: goal_design
+data: {"draftId":"draft-goal-requirements-a74b95903cb8","expectedPackageHash":"3c636e88e4fc99a60aa7e25c66763e9647d16c3674fd1fa551e3710dbbdce8d2","status":"confirmed"}
+
+event: planner.stage
+data: {"stage":"goal_design.ready_to_compose","draftId":"draft-goal-requirements-a74b95903cb8","goalDesignPackageHash":"3c636e88e4fc99a60aa7e25c66763e9647d16c3674fd1fa551e3710dbbdce8d2"}
+
+event: planner.stage
+data: {"stage":"goal_design.composing","draftId":"draft-goal-requirements-a74b95903cb8","goalDesignPackageHash":"3c636e88e4fc99a60aa7e25c66763e9647d16c3674fd1fa551e3710dbbdce8d2"}
+
+event: planner.stage
+data: {"stage":"request.normalized"}
+
+event: planner.stage
+data: {"stage":"goal_contract.interpreted"}
+
+event: planner.stage
+data: {"stage":"candidate.resolving"}
+
+event: planner.stage
+data: {"stage":"candidate.resolved"}
+
+event: planner.stage
+data: {"stage":"composer.started"}
+
+event: planner.stage
+data: {"stage":"composer.completed"}
+
+event: planner.stage
+data: {"stage":"validation.completed"}
+
+event: planner.stage
+data: {"stage":"composition.compiling"}
+
+event: planner.stage
+data: {"stage":"composition.compiled"}
+
+event: planner.stage
+data: {"stage":"draft.persisted"}
+
+event: planner.stage
+data: {"stage":"dag.validated","draftId":"draft-goal-requirements-a74b95903cb8","goalDesignPackageHash":"3c636e88e4fc99a60aa7e25c66763e9647d16c3674fd1fa551e3710dbbdce8d2","composedDraftId":"draft-wf-composed-6532a5d9c167"}
+
+event: planner.stage
+data: {"stage":"goal_design.ready_to_compose"}
+
+event: planner.stage
+data: {"stage":"goal_design.composing"}
+
+event: planner.stage
+data: {"stage":"request.normalized"}
+
+event: planner.stage
+data: {"stage":"goal_contract.interpreted"}
+
+event: planner.stage
+data: {"stage":"candidate.resolving"}
+
+event: planner.stage
+data: {"stage":"candidate.resolved"}
+
+event: planner.stage
+data: {"stage":"composer.started"}
+
+event: planner.stage
+data: {"stage":"composer.completed"}
+
+event: planner.stage
+data: {"stage":"validation.completed"}
+
+event: planner.stage
+data: {"stage":"composition.compiling"}
+
+event: planner.stage
+data: {"stage":"composition.compiled"}
+
+event: planner.stage
+data: {"stage":"draft.persisted"}
+
+event: planner.stage
+data: {"stage":"dag.validated"}
+
+event: planner.stage
+data: {"stage":"coverage.validated"}
+
+event: planner.stage
+data: {"stage":"library_snapshot.persisted"}
+
+event: planner.stage
+data: {"stage":"approval.persisted"}
+
+event: planner.stage
+data: {"stage":"run.awaiting_approval"}
+
+event: draft
+data: {"draftId":"draft-wf-composed-6532a5d9c167","draftStatus":"validated","goalContractHash":"8ad71e2e843ef9a0e07e6752d16cfe0a9159ee79b59a5c88014d451806b6938d","goalDesignPackageHash":"3c636e88e4fc99a60aa7e25c66763e9647d16c3674fd1fa551e3710dbbdce8d2","goalDesignPhase":"dag_validated","blockers":[]}
+
+event: approval
+data: {"approvalId":"approval-04605165-06ea-48bd-a18b-fcdb9edef35f","runId":"run-wf-composed-6532a5d9c167"}
+
+event: dag
+data: {"dag":{"id":"draft-wf-composed-6532a5d9c167","draftId":"draft-wf-composed-6532a5d9c167","draftStatus":"validated","runId":"run-wf-composed-6532a5d9c167","runStatus":"awaiting_approval","mission":{"goalContract":{"domain":"software","intent":"Deliver the smallest useful local vocabulary flashcard system with exactly two blocking product outcomes: R1 add/list vocabulary entries, and R2 quiz with persisted answers plus session and cumulative accuracy evidence.","summary":"Deliver the smallest useful local vocabulary flashcard product with exactly two blocking outcomes: (R1) add/list vocabulary words with translation and example, and (R2) run a quiz that persists answers and reports session plus cumulative accuracy, each verifiable by automated tests and a browser-accessible local UI, with vocabulary-specific evidence artifacts.","nonGoals":["Do not add blocking requirements beyond R1 and R2, including cosmetic-only or infrastructure-only expansion.","Do not integrate external services, remote APIs, or network-dependent features.","Do not treat generic repository-wide implementation or verification reports as a substitute for vocabulary-specific persisted-answer and accuracy outcome evidence."],"revision":1,"riskTags":["scope-control","persistence-integrity","accuracy-derivation","history-continuity"],"workType":"software_feature","workspace":{"cwd":"/home/timmypai/apps/southstar-vocab"},"promptHash":"399bcf27a14e8d5e92e38d9f96e9fce8f81a8d161069dedb346d4f63d29d8eb2","assumptions":["Local persistence may be implemented with workspace-local mechanisms as long as automated tests can verify durability for required flows.","Quiz accuracy is measured as correct answers divided by total answered for both session and cumulative scopes unless stricter domain rules are introduced within this workspace.","Automated browser tests can run against a local server for UI verification."],"requirements":[{"id":"req-dc0233c6d505","source":"explicit","blocking":true,"statement":"Implement a local, browser-accessible vocabulary entry flow that lets the user add a word with its translation and example sentence, persists the entry in the workspace, and lists saved entries from persisted state.","expectedArtifacts":[{"mediaType":"application/json","description":"Vocabulary entry persistence artifact showing stored add/list records with word, translation, and example fields."},{"mediaType":"text/plain","description":"Automated test output proving add/list requirement behavior."}],"acceptanceCriteria":["Automated tests pass for adding entries, listing entries, and persistence of word, translation, and example fields.","A local URL serves the vocabulary UI where add/list behavior is accessible in a browser.","A vocabulary-domain artifact demonstrates persisted entry records containing word, translation, and example values."]},{"id":"req-2f0a05da9c9a","source":"explicit","blocking":true,"statement":"Implement a local, browser-accessible quiz flow that presents vocabulary prompts, records each submitted answer in persisted storage, and shows both session accuracy and cumulative accuracy computed from persisted quiz history.","expectedArtifacts":[{"mediaType":"application/json","description":"Vocabulary-specific persisted-answer and accuracy evidence artifact contract containing answer history and session/cumulative accuracy."},{"mediaType":"text/plain","description":"Automated test output proving quiz, persistence, and accuracy behavior."}],"acceptanceCriteria":["Automated tests pass for quiz execution, answer persistence, and session plus cumulative accuracy computation across runs.","A local URL serves the quiz UI where users can run the quiz and observe session and cumulative accuracy results.","A vocabulary outcome artifact contract captures persisted quiz answers and the derived session and cumulative accuracy values tied to vocabulary behavior."]}],"schemaVersion":"southstar.goal_contract.v1","blockingInputs":[],"originalPrompt":"Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.","expectedArtifactRefs":["artifact.goal.req-dc0233c6d505.1","artifact.goal.req-dc0233c6d505.2","artifact.goal.req-2f0a05da9c9a.1","artifact.goal.req-2f0a05da9c9a.2"],"requestedSideEffects":["Modify local application code in the workspace to implement R1 and R2 outcomes.","Add or update automated tests for both blocking requirements.","Generate vocabulary-specific persisted-answer and accuracy evidence artifacts in the workspace artifacts area."],"requiredCapabilities":["capability.repo-read","capability.repo-write","capability.flashcard-set-authoring","capability.flashcard-review-session","capability.learning-progress-tracking","capability.test-execution","capability.local-learning-verification"]},"goalContractHash":"8ad71e2e843ef9a0e07e6752d16cfe0a9159ee79b59a5c88014d451806b6938d","coverage":{"covered":2,"total":2,"failedRequirementIds":[],"entries":[{"requirementId":"req-dc0233c6d505","producerTaskIds":["task-slice-dba9-implement-r1"],"artifactRefs":["artifact.vocabulary-outcome-evidence"],"evaluatorTaskIds":["task-slice-dba9-verify-r1"],"evaluatorProfileRefs":["evaluator.vocabulary-entry-local-runtime-verification"],"evaluatorProfileVersionRefs":["evaluator.vocabulary-entry-local-runtime-verification@938b0e20902c"],"validationBindingId":"binding-91c9bb321b99cc62","criterionIds":["criterion-2a405a13bff3","criterion-071a1d9dfaa6","criterion-81d463332ebc"],"acceptanceCriteria":["Automated tests pass for adding entries, listing entries, and persistence of word, translation, and example fields.","A local URL serves the vocabulary UI where add/list behavior is accessible in a browser.","A vocabulary-domain artifact demonstrates persisted entry records containing word, translation, and example values."],"requiredEvidenceKinds":["artifact-ref","command-output","test-result","url","workspace-snapshot"]},{"requirementId":"req-2f0a05da9c9a","producerTaskIds":["task-slice-7c31-implement-r2"],"artifactRefs":["artifact.vocabulary-learning-verification-evidence"],"evaluatorTaskIds":["task-slice-7c31-verify-r2"],"evaluatorProfileRefs":["evaluator.vocabulary-offline-runtime-verification"],"evaluatorProfileVersionRefs":["evaluator.vocabulary-offline-runtime-verification@1830872c6cf8"],"validationBindingId":"binding-63cd6630b4deda8c","criterionIds":["criterion-b7ea6e950f36","criterion-16d2821a1f8c","criterion-13360c91e0d5"],"acceptanceCriteria":["Automated tests pass for quiz execution, answer persistence, and session plus cumulative accuracy computation across runs.","A local URL serves the quiz UI where users can run the quiz and observe session and cumulative accuracy results.","A vocabulary outcome artifact contract captures persisted quiz answers and the derived session and cumulative accuracy values tied to vocabulary behavior."],"requiredEvidenceKinds":["artifact-ref","command-output","test-result","url","workspace-snapshot"]}]},"status":{"execution":"awaiting_approval","outcome":"in_progress","health":"healthy"},"approval":{"id":"approval-04605165-06ea-48bd-a18b-fcdb9edef35f","status":"pending","goalContractHash":"8ad71e2e843ef9a0e07e6752d16cfe0a9159ee79b59a5c88014d451806b6938d","manifestHash":"7626f2d6c20353d18f1c2c57b2710262f7906e6dd2302e3dfbca6e364dabd28f","librarySnapshotHash":"53bf2aedf1e93c409c785cd085b4fb0ef8c283fbc872be5a62c03d506e4f9d3f"},"evaluatorResults":[],"blockers":[],"provenance":{"originalPrompt":"Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.","revision":1,"promptHash":"399bcf27a14e8d5e92e38d9f96e9fce8f81a8d161069dedb346d4f63d29d8eb2","manifestHash":"7626f2d6c20353d18f1c2c57b2710262f7906e6dd2302e3dfbca6e364dabd28f","librarySnapshotHash":"53bf2aedf1e93c409c785cd085b4fb0ef8c283fbc872be5a62c03d506e4f9d3f"}},"approvalCommand":{"id":"approval.approve","label":"Approve","endpoint":"/api/v2/runs/run-wf-composed-6532a5d9c167/approvals/approval-04605165-06ea-48bd-a18b-fcdb9edef35f/decision","method":"POST","enabled":true,"requiresConfirmation":true,"body":{"decision":"approved"}},"mode":"runtime","templateTitle":"wf-composed-6532a5d9c167","prompt":"Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.","expandedByDefault":true,"readiness":"ready","nodes":[{"id":"task-slice-dba9-implement-r1","taskId":"task-slice-dba9-implement-r1","draftId":"draft-wf-composed-6532a5d9c167","runId":"run-wf-composed-6532a5d9c167","mode":"runtime","label":"Implement local vocabulary add/list flow with persistence","role":"engineering-software-architect","agentRef":"agent.generated-agent-profile-task-slice-dba9-implement-r1","profileRef":"generated.agent_profile.task-slice-dba9-implement-r1","profileResourcePath":"profiles/generated.agent_profile.task-slice-dba9-implement-r1.yaml","provider":"codex","model":"gpt-5-codex","level":0,"state":"ready"},{"id":"task-slice-dba9-verify-r1","taskId":"task-slice-dba9-verify-r1","draftId":"draft-wf-composed-6532a5d9c167","runId":"run-wf-composed-6532a5d9c167","mode":"runtime","label":"Deterministically verify R1 local runtime evidence","role":"testing-evidence-collector","agentRef":"agent.generated-agent-profile-task-slice-dba9-verify-r1","profileRef":"generated.agent_profile.task-slice-dba9-verify-r1","profileResourcePath":"profiles/generated.agent_profile.task-slice-dba9-verify-r1.yaml","provider":"codex","model":"gpt-5-codex","level":1,"state":"ready"},{"id":"task-slice-7c31-implement-r2","taskId":"task-slice-7c31-implement-r2","draftId":"draft-wf-composed-6532a5d9c167","runId":"run-wf-composed-6532a5d9c167","mode":"runtime","label":"Implement local quiz flow with persisted answers and accuracy metrics","role":"engineering-software-architect","agentRef":"agent.generated-agent-profile-task-slice-7c31-implement-r2","profileRef":"generated.agent_profile.task-slice-7c31-implement-r2","profileResourcePath":"profiles/generated.agent_profile.task-slice-7c31-implement-r2.yaml","provider":"codex","model":"gpt-5-codex","level":0,"state":"ready"},{"id":"task-slice-7c31-verify-r2","taskId":"task-slice-7c31-verify-r2","draftId":"draft-wf-composed-6532a5d9c167","runId":"run-wf-composed-6532a5d9c167","mode":"runtime","label":"Deterministically verify R2 offline runtime evidence","role":"testing-test-results-analyzer","agentRef":"agent.generated-agent-profile-task-slice-7c31-verify-r2","profileRef":"generated.agent_profile.task-slice-7c31-verify-r2","profileResourcePath":"profiles/generated.agent_profile.task-slice-7c31-verify-r2.yaml","provider":"codex","model":"gpt-5-codex","level":1,"state":"ready"}],"edges":[{"from":"task-slice-dba9-implement-r1","to":"task-slice-dba9-verify-r1"},{"from":"task-slice-7c31-implement-r2","to":"task-slice-7c31-verify-r2"}],"createdAt":"2026-07-15T06:40:40.905Z"}}
+
+event: done
+data: {"goalContractHash":"8ad71e2e843ef9a0e07e6752d16cfe0a9159ee79b59a5c88014d451806b6938d","goalRequirementDraftId":"draft-goal-requirements-a74b95903cb8","goalRequirementDraftHash":"a74b95903cb83e6182ed7f7461da9d66f41203166a968753c981dbfde5799d09","goalDesignPackageHash":"3c636e88e4fc99a60aa7e25c66763e9647d16c3674fd1fa551e3710dbbdce8d2","draftId":"draft-wf-composed-6532a5d9c167","draftStatus":"validated","goalDesignPhase":"dag_validated","runId":"run-wf-composed-6532a5d9c167","runStatus":"awaiting_approval","approvalId":"approval-04605165-06ea-48bd-a18b-fcdb9edef35f","blockers":[]}

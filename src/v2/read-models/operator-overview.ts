@@ -6,6 +6,7 @@ import {
   TERMINAL_RESOURCE_STATUSES,
   TERMINAL_RUN_STATUSES,
   activeRunFromRow,
+  approvalCommands,
   buildOperatorAttentionItems,
   commandResultView,
   type AttentionResourceRow,
@@ -60,6 +61,12 @@ export async function buildOperatorOverviewReadModelPg(db: SouthstarDb, input: {
     )) ? "degraded" as const : "healthy" as const;
     return {
       ...run,
+      commands: [
+        ...run.commands,
+        ...(mission?.approval?.status === "pending"
+          ? approvalCommands(run.runId, mission.approval.id)
+          : []),
+      ],
       mission,
       executionStatus: mission?.status.execution ?? run.status,
       outcomeStatus: mission?.status.outcome ?? "in_progress",

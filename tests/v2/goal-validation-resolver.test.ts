@@ -49,6 +49,55 @@ test("resolver binds only approved artifact and evaluator versions", async () =>
   });
 });
 
+test("resolver keeps approved validation pairs when object and edge scopes cross the Goal domain", async () => {
+  await withDb(async (db) => {
+    await upsertLibraryObject(db, {
+      objectKey: "artifact.product-outcome",
+      objectKind: "artifact_contract",
+      status: "approved",
+      headVersionId: "artifact.product-outcome@1",
+      state: { ...artifactState(["screenshot"]), scope: "product" },
+    });
+    await upsertLibraryObject(db, {
+      objectKey: "evaluator.testing-outcome",
+      objectKind: "evaluator_profile",
+      status: "approved",
+      headVersionId: "evaluator.testing-outcome@1",
+      state: {
+        ...evaluatorState(["screenshot"]),
+        scope: "testing",
+        validatesArtifactRefs: ["artifact.product-outcome"],
+      },
+    });
+    await upsertLibraryEdge(db, {
+      fromObjectKey: "evaluator.testing-outcome",
+      fromVersionRef: "evaluator.testing-outcome@1",
+      edgeType: "validates_artifact",
+      toObjectKey: "artifact.product-outcome",
+      toVersionRef: "artifact.product-outcome@1",
+      scope: "testing",
+    });
+
+    const result = await resolveGoalValidationPg(db, {
+      goalContract: { ...confirmedContract(), domain: "vocabulary_flashcard_software" },
+      requirementDraft: confirmedRequirementDraft(),
+      scope: "vocabulary_flashcard_software",
+      ranker: fixedRanker({
+        artifactRef: "artifact.product-outcome",
+        evaluatorRef: "evaluator.testing-outcome",
+        verificationMode: "browser_interaction",
+        procedureRef: "procedure.offline-open",
+        expectedEvidenceKinds: ["screenshot"],
+      }),
+    });
+
+    assert.equal(result.ready, true);
+    assert.equal(result.gaps.length, 0);
+    assert.equal(result.bindings[0]?.artifactContractVersionRefs[0], "artifact.product-outcome@1");
+    assert.equal(result.bindings[0]?.evaluatorProfileVersionRef, "evaluator.testing-outcome@1");
+  });
+});
+
 test("resolver ranks independent requirements in parallel but preserves contract order", async () => {
   await withDb(async (db) => {
     await approvedArtifact(db, "artifact.article-html", "artifact.article-html@1");

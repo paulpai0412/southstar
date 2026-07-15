@@ -371,7 +371,9 @@ function completeArtifactForEnvelope(
   if (requiredFields.length === 0) return artifact;
 
   const next = { ...artifact };
-  if (!hasValue(next.summary)) next.summary = "Pi SDK returned a structured artifact without a summary.";
+  if (requiredFields.includes("summary") && !hasValue(next.summary)) {
+    next.summary = "Pi SDK returned a structured artifact without a summary.";
+  }
   if (requiredFields.includes("pass") && !hasValue(next.pass)) next.pass = false;
   if (requiredFields.includes("safeToSave") && !hasValue(next.safeToSave)) next.safeToSave = false;
   if (requiredFields.includes("filesChanged") && !hasValue(next.filesChanged)) next.filesChanged = [];
@@ -399,21 +401,13 @@ function completeArtifactForEnvelope(
 
 function primaryArtifactContract(envelope: AnyTaskEnvelope): { id: string; requiredFields: string[] } | undefined {
   if (envelope.schemaVersion === "southstar.task-envelope.v1") {
-    const artifactTypes = new Set(envelope.artifactContract.artifactTypes);
-    if (artifactTypes.has("verification_report") || artifactTypes.has("verification-report")) {
-      return { id: "verification_report", requiredFields: envelope.artifactContract.requiredFields };
-    }
-    if (artifactTypes.has("completion_report") || artifactTypes.has("completion-report")) {
-      return { id: "completion_report", requiredFields: envelope.artifactContract.requiredFields };
-    }
-    if (artifactTypes.has("implementation_report") || artifactTypes.has("implementation-report")) {
-      return { id: "implementation_report", requiredFields: envelope.artifactContract.requiredFields };
-    }
-    return undefined;
+    const id = envelope.artifactContract.artifactTypes[0];
+    return id ? { id, requiredFields: envelope.artifactContract.requiredFields } : undefined;
   }
-  const contract = envelope.artifactContracts.find((item) =>
-    item.id === "verification_report" || item.id === "completion_report" || item.id === "implementation_report"
-  );
+  const preferredRef = envelope.evaluatorPipeline.artifactContractRefs?.[0];
+  const contract = (preferredRef
+    ? envelope.artifactContracts.find((item) => item.id === preferredRef || item.libraryObjectRef === preferredRef)
+    : undefined) ?? envelope.artifactContracts[0];
   return contract ? { id: contract.id, requiredFields: contract.requiredFields } : undefined;
 }
 

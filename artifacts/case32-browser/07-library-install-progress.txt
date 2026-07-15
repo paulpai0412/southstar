@@ -1,0 +1,567 @@
+Southstar
+New
+.../apps/southstar-vocab
+WORKFLOW SESSIONS
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+58m ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+1h ago
+2 messages
+(no messages)
+1h ago
+0 messages
+(no messages)
+1h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list w...
+1h ago
+2 messages
+(no messages)
+1h ago
+0 messages
+(no messages)
+1h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+1h ago
+2 messages
+(no messages)
+1h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+1h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+1h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+1h ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+2h ago
+2 messages
+(no messages)
+2h ago
+0 messages
+(no messages)
+2h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+2h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+2h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+2h ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+3h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+3h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+Build a small local vocabulary flashcard system in this workspace. Users can add and list words with translations and examples, run flashcard quizzes, submit answers with persisted...
+3h ago
+2 messages
+Use the approved Goal Design skill to turn only the Requirement Draft's declared interactionContractRefs into reviewable UI interaction contracts. GoalDesignSkillRef: skill.southst...
+3h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+3h ago
+2 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+11h ago
+2 messages
+(no messages)
+11h ago
+0 messages
+(no messages)
+11h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+11h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+12h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+12h ago
+2 messages
+{"schemaVersion":"southstar.workflow_composition_plan.v1","title":"Runtime dynamic repair append for req-08 startup/depcheck validation callback mismatch","rationale":"Append a bou...
+12h ago
+1 messages
+(no messages)
+12h ago
+0 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+14h ago
+2 messages
+(no messages)
+14h ago
+0 messages
+(no messages)
+14h ago
+0 messages
+Use the approved Library Goal Design SOP to design outcome slices from the confirmed Goal Contract and frozen validation bindings. GoalDesignSkillRef: skill.southstar-goal-design G...
+14h ago
+2 messages
+Interpret the user's goal as a strict Southstar Goal Contract JSON object. Decompose compound outcomes into independently verifiable requirements. Requirements describe observable ...
+14h ago
+2 messages
+Use the approved Goal Design skill to interpret the user's goal into a reviewed Requirement Draft. GoalDesignSkillRef: skill.southstar-goal-design GoalDesignSkillVersionRef: skill....
+14h ago
+2 messages
+完成一個可離線運作的背單字系統：可以新增與列出單字、開始測驗並提交答案、查看本次與累積正確率，需要瀏覽器 UI、持久化資料、啟動與離線依賴檢查，以及可重現的測試與證據。請先產生 Goal Contract、requirements 與 slices，確認後再產生同一張 DAG 執行。
+15h ago
+2 messages
+WORKFLOW LIBRARY
+all
+workflows
+Models
+Skills
+MCP
+Chat
+Library
+Workflow
+Operator
+
+Build the smallest useful local vocabulary flashcard system in this workspace. Keep the confirmed requirement list concise: produce exactly two blocking requirements (R1 add/list words with translation and example, R2 run a quiz with persisted answers and session/cumulative accuracy), and do not split these into extra cosmetic or infrastructure requirements. Model the R1 and R2 implementation slices as independent where possible so they can run in parallel over the shared local workspace; each verify slice should depend only on its own implementation. Each requirement must be verifiable with automated tests and a browser-accessible local UI. The product must produce a vocabulary-specific persisted-answer and accuracy evidence artifact contract; generic repository implementation or verification reports do not represent that product outcome. Do not use external services or network integrations.
+
+Copy
+14:30
+workflow-generate
+
+[request.normalized] request.normalized [goal_requirements] <draft> <hash> [requirements.persisted] requirements.persisted [draft.requirements_review] draft.requirements_review [draft] <draft> requirements_review
+
+Deliver the smallest useful local vocabulary flashcard product with exactly two blocking outcomes: (R1) add/list vocabulary words with translation and example, and (R2) run a quiz that persists answers and reports session plus cumulative accuracy, each verifiable by automated tests and a browser-accessible local UI, with vocabulary-specific evidence artifacts.
+draft <draft> · library_review · rev 1
+2 requirements
+2 explicit
+0 inferred
+2 blocking
+clarification clear
+R1 add/list words with translation and example
+explicit
+blocking
+Implement a local, browser-accessible vocabulary entry flow that lets the user add a word with its translation and example sentence, persists the entry in the workspace, and lists saved entries from persisted state.
+3 AC
+ready
+coverage unknown
+no visual contract
+R2 run a quiz with persisted answers and session/cumulative accuracy
+explicit
+blocking
+Implement a local, browser-accessible quiz flow that presents vocabulary prompts, records each submitted answer in persisted storage, and shows both session accuracy and cumulative accuracy computed from persisted quiz history.
+3 AC
+ready
+coverage unknown
+no visual contract
+
+Non-goals: Do not add blocking requirements beyond R1 and R2, including cosmetic-only or infrastructure-only expansion. · Do not integrate external services, remote APIs, or network-dependent features. · Do not treat generic repository-wide implementation or verification reports as a substitute for vocabulary-specific persisted-answer and accuracy outcome evidence.
+
+Requirements confirmed; advancing Goal validation.
+Confirmed
+›
+Import candidates
+library-import-goal-<hash>
+0/0 selected
+Complete blocking-gap proposal · all candidates required
+Vocabulary Entry Local Runtime Evidence
+ARTIFACT
+0.96
+Already installed
+artifact.vocabulary-entry-local-runtime-evidence
+Confirmed-Goal-validation-gaps.md
+Covers req-<hash> · criterion-<hash>, criterion-<hash>, criterion-<hash>
+Vocabulary Entry Local Runtime Verification Evaluator
+EVALUATOR
+0.95
+Already installed
+evaluator.vocabulary-entry-local-runtime-verification
+Confirmed-Goal-validation-gaps.md
+Covers req-<hash> · criterion-<hash>, criterion-<hash>, criterion-<hash>
+library.import.install.requested
+{
+  "draftId": "library-import-goal-<hash>",
+  "selectedCandidateCount": 2
+}
+library.import.existing_graph.loaded
+{
+  "draftId": "library-import-goal-<hash>",
+  "nodeCount": 323,
+  "edgeCount": 0
+}
+library.import.ontology.started
+{
+  "draftId": "library-import-goal-<hash>",
+  "selectedCandidateCount": 2
+}
+library.progress.keepalive
+{
+  "phase": "library_import_install",
+  "draftId": "library-import-goal-<hash>",
+  "at": "2026-07-15T06:36:02.263Z"
+}
+library.progress.keepalive
+{
+  "phase": "library_import_install",
+  "draftId": "library-import-goal-<hash>",
+  "at": "2026-07-15T06:36:17.264Z"
+}
+library.import.ontology.completed
+{
+  "draftId": "library-import-goal-<hash>",
+  "proposedEdgeCount": 6
+}
+library.import.install.started
+{
+  "draftId": "library-import-goal-<hash>",
+  "selectedCandidateCount": 2
+}
+library.import.install.completed
+{
+  "draftId": "library-import-goal-<hash>",
+  "installedObjectCount": 2,
+  "installedEdgeCount": 6
+}
+library.db.synced
+{
+  "draftId": "library-import-goal-<hash>",
+  "objectKeys": [
+    "artifact.vocabulary-entry-local-runtime-evidence",
+    "evaluator.vocabulary-entry-local-runtime-verification"
+  ],
+  "edgeIds": [
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>",
+    "edge-<hash>"
+  ]
+}
+library.graph.snapshot
+{
+  "activeScope": "software",
+  "availableScopes": [
+    "all",
+    "academic",
+    "design",
+    "engineering",
+    "finance",
+    "game-development",
+    "general",
+    "gis",
+    "global",
+    "hr",
+    "legal",
+    "marketing",
+    "paid-media",
+    "product",
+    "project-management",
+    "sales",
+    "security",
+    "software",
+    "spatial-computing",
+    "specialized",
+    "supply-chain",
+    "support",
+    "testing"
+  ],
+  "query": {
+    "scope": "software",
+    "installedObjectKeys": [
+      "artifact.vocabulary-entry-local-runtime-evidence",
+      "evaluator.vocabulary-entry-local-runtime-verification"
+    ],
+    "installedEdgeIds": [
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>",
+      "edge-<hash>"
+    ]
+  },
+  "nodes": [
+    {
+      "id": "lib-<hash>",
+      "objectKey": "artifact.vocabulary-entry-local-runtime-evidence",
+      "objectKind": "artifact_contract",
+      "status": "approved",
+      "title": "Vocabulary Entry Local Runtime Evidence",
+      "scope": "software"
+    },
+    {
+      "id": "lib-<hash>",
+      "objectKey": "domain.software",
+      "objectKind": "domain_taxonomy",
+      "status": "approved",
+      "title": "Software",
+      "scope": "software"
+    },
+    {
+      "id": "lib-<hash>",
+      "objectKey": "evaluator.vocabulary-entry-local-runtime-verification",
+      "objectKind": "evaluator_profile",
+      "status": "approved",
+      "title": "Vocabulary Entry Local Runtime Verification Evaluator",
+      "scope": "software"
+    },
+    {
+      "id": "lib-<hash>",
+      "objectKey": "agent.testing-evidence-collector",
+      "objectKind": "agent_definition",
+      "status": "approved",
+      "title": "证据收集者",
+      "scope": "testing"
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "artifact.vocabulary-entry-local-runtime-evidence",
+      "edgeType": "belongs_to_domain",
+      "toObjectKey": "domain.software",
+      "scope": "software",
+      "status": "active",
+      "weight": 0.94,
+      "ontology": {
+        "category": "classification",
+        "confidence": 0.94,
+        "rationale": "The candidate is explicitly scoped to software and represents runtime evidence for software validation.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-goal-<hash>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "evaluator.vocabulary-entry-local-runtime-verification",
+      "edgeType": "belongs_to_domain",
+      "toObjectKey": "domain.software",
+      "scope": "software",
+      "status": "active",
+      "weight": 0.94,
+      "ontology": {
+        "category": "classification",
+        "confidence": 0.94,
+        "rationale": "The evaluator is defined to verify local runtime behavior for the software-scoped gap.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-goal-<hash>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "evaluator.vocabulary-entry-local-runtime-verification",
+      "edgeType": "consumes",
+      "toObjectKey": "artifact.vocabulary-entry-local-runtime-evidence",
+      "scope": "software",
+      "status": "active",
+      "weight": 0.96,
+      "ontology": {
+        "category": "artifact_flow",
+        "confidence": 0.96,
+        "rationale": "Verification execution requires ingesting the evidence payload defined by the artifact contract.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-goal-<hash>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "agent.testing-evidence-collector",
+      "edgeType": "produces",
+      "toObjectKey": "artifact.vocabulary-entry-local-runtime-evidence",
+      "scope": "software",
+      "status": "active",
+      "weight": 0.78,
+      "ontology": {
+        "category": "artifact_flow",
+        "confidence": 0.78,
+        "rationale": "The existing evidence-collector role is a compatible producer for the newly proposed local runtime evidence artifact.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-goal-<hash>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "artifact.vocabulary-entry-local-runtime-evidence",
+      "edgeType": "unblocks",
+      "toObjectKey": "evaluator.vocabulary-entry-local-runtime-verification",
+      "scope": "software",
+      "status": "active",
+      "weight": 0.9,
+      "ontology": {
+        "category": "workflow_order",
+        "confidence": 0.9,
+        "rationale": "Evaluator execution is gated on availability of the required runtime evidence artifact.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-goal-<hash>"
+      }
+    },
+    {
+      "id": "edge-<hash>",
+      "fromObjectKey": "evaluator.vocabulary-entry-local-runtime-verification",
+      "edgeType": "validates",
+      "toObjectKey": "artifact.vocabulary-entry-local-runtime-evidence",
+      "scope": "software",
+      "status": "active",
+      "weight": 0.99,
+      "ontology": {
+        "category": "quality_gate",
+        "confidence": 0.99,
+        "rationale": "The evaluator is specifically proposed to verify the corresponding local runtime evidence artifact contract.",
+        "source": "library-import-ontology",
+        "draftId": "library-import-goal-<hash>"
+      }
+    }
+  ]
+}
+›
+Graph snapshot
+Domain
+all
+global
+academic
+design
+engineering
+finance
+game-development
+general
+gis
+hr
+legal
+marketing
+paid-media
+product
+project-management
+sales
+security
+software
+spatial-computing
+specialized
+supply-chain
+support
+testing
+Kind
+all
+agent_definition
+agent_profile
+domain_taxonomy
+skill_spec
+tool_definition
+mcp_tool_grant
+capability_spec
+workflow_template
+Status
+all
+draft
+approved
+deprecated
+blocked
+Edge
+all
+implements
+provides_capability
+requires_capability
+uses
+requires_skill
+allows_tool
+requires_tool
+uses_instruction
+requires_secret_group
+allows_mcp_grant
+produces_artifact
+consumes_artifact
+validates_artifact
+uses_policy
+part_of_template
+supersedes
+blocked_by
+belongs_to_domain
+has_capability
+provides
+requires
+conflicts_with
+precedes
+workflow_precedes
+unblocks
+validates
+reviews
+produces
+consumes
+similar_to
+substitutes
+complements
+incompatible_with
+requires_approval
+requires_secret
+Search
+software / all / all / all / 4 matched / 4 nodes / 6 edges
+Drag on
+Reset
+−
+100%
++
+belongs_to_domain 0.94
+belongs_to_domain 0.94
+consumes 0.96
+produces 0.78
+unblocks 0.90
+validates 0.99
+Vocabulary Entry Local Runtime ...
+artifact_contract
+Software
+domain_taxonomy
+Vocabulary Entry Local Runtime ...
+evaluator_profile
+证据收集者
+agent_definition
+Vocabulary Entry Local Runtime Evidence
+Software
+Vocabulary Entry Local Runtime Verification Evaluator
+证据收集者
+Copy
+14:31
+Send
+GPT-5.3 Codex
+auto
+default
+Compact

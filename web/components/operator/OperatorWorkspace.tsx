@@ -10,7 +10,7 @@ import { OperatorWorkflowProgress } from "./OperatorWorkflowProgress";
 const DEFAULT_DAG_HEIGHT_PERCENT = 40;
 const MIN_DAG_HEIGHT_PERCENT = 30;
 const MAX_DAG_HEIGHT_PERCENT = 76;
-const ACTIVE_RUN_STATUSES = new Set(["created", "validated", "ready", "scheduling", "queued", "running", "verifying", "release_pending", "blocked", "paused"]);
+const ACTIVE_RUN_STATUSES = new Set(["created", "validated", "ready", "awaiting_approval", "scheduling", "queued", "running", "verifying", "release_pending", "blocked", "paused"]);
 
 export function OperatorWorkspace({
   overview,
@@ -262,6 +262,7 @@ function WorkflowStateCard({
   const projectLabel = formatProjectLabel(run);
   const toggleCommand = runToggleCommand(run);
   const cancelCommand = run.commands?.find((command) => command.id === "run.cancel");
+  const approvalCommand = run.commands?.find((command) => command.id === "approval.approve");
   const selectRun = () => onSelectRun(run.runId);
 
   return (
@@ -293,8 +294,21 @@ function WorkflowStateCard({
           {attentionCount} attention{highestIncident ? ` · ${highestIncident.nextAction}` : ""}
         </span>
       ) : null}
-      {(toggleCommand || cancelCommand) ? (
+      {(toggleCommand || cancelCommand || approvalCommand) ? (
         <span className="operator-run-command-row" aria-label="Workflow run actions">
+          {approvalCommand ? (
+            <button
+              type="button"
+              disabled={!approvalCommand.enabled || pendingCommandId === `${run.runId}:${approvalCommand.id}`}
+              title={approvalCommand.disabledReason || approvalCommand.label}
+              onClick={(event) => {
+                event.stopPropagation();
+                onRunCommand(run, approvalCommand);
+              }}
+            >
+              {pendingCommandId === `${run.runId}:${approvalCommand.id}` ? "..." : approvalCommand.label}
+            </button>
+          ) : null}
           {toggleCommand ? (
             <button
               type="button"

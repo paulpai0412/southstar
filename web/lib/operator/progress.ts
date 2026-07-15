@@ -4,7 +4,7 @@ export const operatorStateBuckets = ["created", "scheduling", "running", "verify
 export type OperatorStateBucket = (typeof operatorStateBuckets)[number];
 
 export function bucketForRunStatus(status: string): OperatorStateBucket {
-  if (status === "created" || status === "ready" || status === "validated") return "created";
+  if (status === "created" || status === "ready" || status === "validated" || status === "awaiting_approval") return "created";
   if (status === "scheduling" || status === "queued") return "scheduling";
   if (status === "verifying" || status === "release_pending") return "verifying";
   if (status === "failed" || status === "quarantined" || status === "blocked" || status === "exception") return "exception";
