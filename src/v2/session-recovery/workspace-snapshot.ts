@@ -11,14 +11,14 @@ const WORKSPACE_SNAPSHOT_SCHEMA_VERSION = "southstar.workspace_snapshot.v1";
 
 export async function captureWorkspaceSnapshotForTaskPg(
   db: SouthstarDb,
-  input: { runId: string; taskId: string; sessionId: string; attemptId: string },
+  input: { runId: string; taskId: string; sessionId: string; attemptId: string; projectRoot?: string },
 ): Promise<{ resourceKey: string; status: string } | null> {
   const row = await db.maybeOne<{ runtime_context_json: unknown }>(
     "select runtime_context_json from southstar.workflow_runs where id = $1",
     [input.runId],
   );
   const runtimeContext = asRecord(row?.runtime_context_json);
-  const projectRoot = stringValue(runtimeContext.projectRoot) ?? stringValue(runtimeContext.cwd);
+  const projectRoot = input.projectRoot ?? stringValue(runtimeContext.projectRoot) ?? stringValue(runtimeContext.cwd);
   if (!projectRoot) return null;
 
   const resourceKey = `workspace_snapshot:${input.runId}:${input.taskId}:${input.attemptId}`;

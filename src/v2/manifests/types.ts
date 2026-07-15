@@ -9,6 +9,7 @@ import type {
   WorkspacePolicyDefinition,
   StopConditionDefinition,
 } from "../design-library/runtime-types.ts";
+import type { WorkspaceMutationSpec } from "../workspace/types.ts";
 
 export type HarnessKind = "pi-agent" | "codex" | "claude-code" | "custom";
 
@@ -54,6 +55,7 @@ export type WorkflowTaskDefinition = {
   contextPolicyRef?: string;
   sessionPolicyRef?: string;
   workspacePolicyRef?: string;
+  workspaceMutation?: WorkspaceMutationSpec;
   execution: TaskExecutionSpec;
   rootSession: {
     validator: "schema-evaluator-v1";

@@ -18,6 +18,8 @@ await import("./session-recovery-execution-planner.test.ts");
 await import("./session-recovery-policy.test.ts");
 await import("./session-recovery-operations.test.ts");
 await import("./workspace-snapshot.test.ts");
+await import("./workspace-concurrency-policy.test.ts");
+await import("./task-workspace.test.ts");
 await import("./workspace-mount-policy.test.ts");
 await import("./planner.test.ts");
 await import("./run-goal-service.test.ts");

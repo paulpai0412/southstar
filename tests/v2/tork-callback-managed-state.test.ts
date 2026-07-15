@@ -1,5 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../../src/v2/artifacts/types.ts";
 import { createExecutorBindingPg, getExecutorBindingPg, updateExecutorBindingStatusPg } from "../../src/v2/executor/postgres-bindings.ts";
@@ -14,6 +18,7 @@ import {
   upsertRuntimeResourcePg,
 } from "../../src/v2/stores/postgres-runtime-store.ts";
 import { createTestPostgresDb } from "./postgres-test-utils.ts";
+import { createGitWorkspaceSnapshotProvider } from "../../src/v2/workspace/git-provider.ts";
 
 test("callback completes current hand execution and writes accepted artifact_ref", async () => {
   await withDb(async (db) => {
@@ -131,6 +136,99 @@ test("callback failure marks hand_execution failed and writes rejected artifact_
     assert.equal(artifactRefs[0]?.status, "rejected");
     const artifactPayload = asRecord(artifactRefs[0]?.payload);
     assert.equal(artifactPayload.handExecutionId, "hand-execution:run-callback-managed-fail:task-a:attempt-1");
+  });
+});
+
+test("callback preserves a conflicting worktree and blocks the task for operator handling", async () => {
+  await withDb(async (db) => {
+    const repo = mkdtempSync(join(tmpdir(), "southstar-callback-workspace-conflict-"));
+    execFileSync("git", ["init"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "southstar@example.local"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "Southstar"], { cwd: repo });
+    writeFileSync(join(repo, "README.md"), "base\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "initial"], { cwd: repo });
+    const provider = createGitWorkspaceSnapshotProvider();
+    const snapshot = provider.snapshot({ repoRoot: repo, reason: "parallel task" });
+    const fork = provider.fork({ repoRoot: repo, snapshotRef: snapshot, worktreeName: "callback-conflict" });
+    writeFileSync(join(fork.worktreePath, "README.md"), "task\n");
+    writeFileSync(join(repo, "README.md"), "base change\n");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["commit", "-m", "base change"], { cwd: repo });
+
+    try {
+      await seedRunTask(db, {
+        runId: "run-callback-workspace-conflict",
+        taskId: "task-a",
+        runStatus: "running",
+        taskStatus: "running",
+        runtimeContextJson: { workspaceMergeRetryLimit: 1 },
+      });
+      await seedExecutorBinding(db, { runId: "run-callback-workspace-conflict", taskId: "task-a", attemptId: "attempt-1", status: "running" });
+      await seedHandExecution(db, {
+        runId: "run-callback-workspace-conflict",
+        taskId: "task-a",
+        sessionId: "session-a",
+        attemptId: "attempt-1",
+        status: "running",
+        queuedAt: "2026-06-20T08:00:00.000Z",
+        externalJobId: "job-conflict",
+      });
+      await upsertRuntimeResourcePg(db, {
+        id: "workspace-allocation-conflict",
+        resourceType: "workspace_allocation",
+        resourceKey: "workspace-allocation-conflict",
+        runId: "run-callback-workspace-conflict",
+        taskId: "task-a",
+        sessionId: "session-a",
+        scope: "workspace",
+        status: "allocated",
+        title: "Git worktree for task-a",
+        payload: {
+          schemaVersion: "southstar.workspace_allocation.v1",
+          provider: "git_worktree",
+          repoRoot: repo,
+          worktreePath: fork.worktreePath,
+          baseSnapshot: snapshot,
+          allocatedAt: "2026-06-20T08:00:00.000Z",
+        },
+        summary: { provider: "git_worktree", repoRoot: repo, worktreePath: fork.worktreePath },
+      });
+
+      const result = await ingestTaskRunResultPg(db, {
+        runId: "run-callback-workspace-conflict",
+        taskId: "task-a",
+        rootSessionId: "session-a",
+        ok: true,
+        attempts: 1,
+        attemptId: "attempt-1",
+        artifact: { kind: "implementation_report", summary: "done" },
+        metrics: {},
+        events: [],
+        receivedAt: "2026-06-20T08:03:00.000Z",
+      });
+
+      assert.equal(result.accepted, true);
+      assert.equal(result.blocked, true);
+      assert.equal(result.workspaceConflict?.resourceKey, "workspace-allocation-conflict");
+      assert.equal(result.workspaceConflict?.worktreePath, fork.worktreePath);
+      const task = await db.one<{ status: string }>("select status from southstar.workflow_tasks where run_id = $1 and id = $2", ["run-callback-workspace-conflict", "task-a"]);
+      assert.equal(task.status, "blocked");
+      const allocation = await getResourceByKeyPg(db, "workspace_allocation", "workspace-allocation-conflict");
+      assert.equal(allocation?.status, "merge_conflict");
+      assert.equal(asRecord(allocation?.payload).worktreePreserved, true);
+      assert.equal(asRecord(allocation?.payload).mergeRetryLimit, 1);
+      assert.equal(asRecord(allocation?.payload).mergeAttempts, 2);
+      const exception = await db.one<{ status: string; payload_json: unknown }>(
+        "select status, payload_json from southstar.runtime_resources where run_id = $1 and resource_type = 'runtime_exception'",
+        ["run-callback-workspace-conflict"],
+      );
+      assert.equal(exception.status, "observed");
+      assert.equal(asRecord(exception.payload_json).kind, "workspace_merge_conflict");
+      assert.equal(readFileSync(join(repo, "README.md"), "utf8"), "base change\n");
+    } finally {
+      execFileSync("git", ["worktree", "remove", "--force", fork.worktreePath], { cwd: repo });
+    }
   });
 });
 
@@ -798,7 +896,7 @@ test("stale callback detection uses canonical hand_execution attempts without ex
 
 async function seedRunTask(
   db: SouthstarDb,
-  input: { runId: string; taskId: string; runStatus: string; taskStatus: string; sessionId?: string },
+  input: { runId: string; taskId: string; runStatus: string; taskStatus: string; sessionId?: string; runtimeContextJson?: Record<string, unknown> },
 ): Promise<void> {
   await createWorkflowRunPg(db, {
     id: input.runId,
@@ -808,7 +906,7 @@ async function seedRunTask(
     workflowManifestJson: JSON.stringify({ schemaVersion: "southstar.v2", workflowId: `wf-${input.runId}`, tasks: [{ id: input.taskId }] }),
     executionProjectionJson: JSON.stringify({ executor: "tork" }),
     snapshotJson: JSON.stringify({}),
-    runtimeContextJson: JSON.stringify({}),
+    runtimeContextJson: JSON.stringify(input.runtimeContextJson ?? {}),
     metricsJson: JSON.stringify({}),
   });
   await createWorkflowTaskPg(db, {

@@ -134,6 +134,7 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         responsibility: { type: "string", minLength: 1 },
         requirementIds: { type: "array", items: { type: "string", minLength: 1 } },
         nodePromptSpec: { $ref: "#/$defs/nodePromptSpec" },
+        workspaceMutation: { $ref: "#/$defs/workspaceMutation" },
         dependsOn: { type: "array", items: { type: "string", minLength: 1 } },
         templateSlotRef: { type: "string", minLength: 1 },
         agentDefinitionRef: { type: "string", minLength: 1 },
@@ -150,6 +151,16 @@ export const WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA = {
         workspacePolicyRef: { type: "string", minLength: 1 },
         recoveryStrategyRefs: { type: "array", items: { type: "string", minLength: 1 } },
         rationale: { type: "string", minLength: 1 },
+      },
+    },
+    workspaceMutation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["mode"],
+      properties: {
+        mode: { type: "string", enum: ["read_only", "shared_write", "append_only"] },
+        isolation: { type: "string", enum: ["shared", "git_worktree"] },
+        resourceKeys: { type: "array", items: { type: "string", minLength: 1 } },
       },
     },
     nodePromptSpec: {
@@ -492,6 +503,7 @@ export function renderComposerPrompt(
     "Every task must include sliceId. When GoalDesignPackage is provided, sliceId must come from GoalDesignPackage.slicePlan.slices.",
     "Every task must include requirementIds selected from GoalContractRequirements, except explicit coordination or summary nodes may use an empty array.",
     "Every blocking Goal Contract requirement must have an executable producer with an output artifact and a distinct independent evaluator task using verify or review that produces evidence.",
+    "For every task, classify workspaceMutation from the actual operation: read_only for observation/verification with no writes, shared_write for mutating a shared workspace/resource, and append_only only when the task writes to a declared append namespace. Include resourceKeys for the logical files, records, datasets, or namespaces touched. Set isolation=git_worktree only when the selected workspace/provider capabilities and task resource boundaries require an isolated Git worktree; otherwise set isolation=shared or omit it. Do not label a task read_only if it creates or edits any deliverable.",
     ...(goalDesignPackage ? sliceConstraints : ["Use the Goal Contract and WorkflowComposerSopSkill to choose the smallest executable DAG."]),
     ...frozenValidationConstraints,
     "nodePromptSpec.nodeType must be one of plan, implement, verify, repair, review, summary, or general. Choose it from the node's role in the DAG, not from the worker profile name alone.",
@@ -642,6 +654,7 @@ function renderDagAndAgentProfileSop(): string {
     "4. Design a DAG, not a manifest. Use explicit dependsOn edges. Choose task count and workerKind dynamically from the goal, graph evidence, risk, and deliverables.",
     "4a. Attach every task to the requirementIds it contributes to. Explicit coordination and summary nodes are the only exception. Every blocking requirement needs artifact-producing work and an independent verify/review evaluator with evidence.",
     "5. Execution workers create or modify requested artifacts. Validation, review, or deterministic-check workers positively verify artifacts when the workflow creates or modifies them.",
+    "5a. Workspace mutation is a concurrency contract, not a domain assumption: use read_only for safe parallel reads, shared_write for writes that must be serialized, append_only only for disjoint append namespaces, and git_worktree only when the task needs an isolated Git workspace. The runtime may reject an unsupported isolation request as a durable failure; never assume a worktree exists unless the task envelope says so.",
     "6. Initial workflow rule: when validation can fail, do not automatically add repair/reverify nodes. Instead, make the validation node produce a repair-ready failure artifact that conforms exactly to its selected outputArtifactRefs contract and evaluatorProfileRef. Read the declared artifact requiredFields/schemaRef/validationRules and evaluator result contract; do not invent a generic report shape or fixed field names.",
     "6a. Runtime dynamic repair rule: when the goal begins with a Runtime dynamic repair request, output a bounded appended flow: one repair node and one reverify node unless the failure evidence clearly requires more. The repair node consumes the failed artifact and prior implementation artifacts, preserves existing behavior, fixes only the reported failures, and outputs an artifact conforming to its selected contract. The reverify node depends on the repair node, reruns the failed checks plus relevant regression checks, and emits evaluator evidence using the reverify task's declared output artifact/evaluator contract.",
     "6b. Repair/reverify node prompt requirements: repair nodePromptSpec must include repairInputs, mustPreserve, implementationScope, testCases, expectedOutputs, acceptanceCriteria, and failureReportContract. Reverify nodePromptSpec must include verificationChecks, testCases, failureArtifactContract, expectedOutputs, acceptanceCriteria, and an explicit rule to set the evaluator's declared blocking/failure fields to the failing values for any blocking failure. The required fields and evidence kinds must come from the selected Library artifact/evaluator contracts.",
@@ -754,6 +767,7 @@ function validateTask(value: unknown, index: number, issues: WorkflowComposition
       "nodePromptSpec",
       "contextPolicyRef",
       "workspacePolicyRef",
+      "workspaceMutation",
     ],
     [...TASK_STRING_FIELDS, ...TASK_STRING_ARRAY_FIELDS, "nodePromptSpec"],
     path,
@@ -771,7 +785,25 @@ function validateTask(value: unknown, index: number, issues: WorkflowComposition
   if (value.workspacePolicyRef !== undefined) {
     requireString(value.workspacePolicyRef, `${path}.workspacePolicyRef`, issues);
   }
+  if (value.workspaceMutation !== undefined) {
+    validateWorkspaceMutation(value.workspaceMutation, `${path}.workspaceMutation`, issues);
+  }
   validateNodePromptSpec(value.nodePromptSpec, `${path}.nodePromptSpec`, issues);
+}
+
+function validateWorkspaceMutation(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {
+  if (!isRecord(value) || Array.isArray(value)) {
+    issues.push(issue("composer_output_schema_violation", path, "workspaceMutation must be an object"));
+    return;
+  }
+  validateObjectShape(value, ["mode", "isolation", "resourceKeys"], ["mode"], path, issues);
+  if (!["read_only", "shared_write", "append_only"].includes(typeof value.mode === "string" ? value.mode : "")) {
+    issues.push(issue("composer_output_schema_violation", `${path}.mode`, "must be read_only, shared_write, or append_only"));
+  }
+  if (value.isolation !== undefined && !["shared", "git_worktree"].includes(typeof value.isolation === "string" ? value.isolation : "")) {
+    issues.push(issue("composer_output_schema_violation", `${path}.isolation`, "must be shared or git_worktree"));
+  }
+  if (value.resourceKeys !== undefined) requireStringArray(value.resourceKeys, `${path}.resourceKeys`, issues);
 }
 
 function validateNodePromptSpec(value: unknown, path: string, issues: WorkflowCompositionValidationIssue[]): void {

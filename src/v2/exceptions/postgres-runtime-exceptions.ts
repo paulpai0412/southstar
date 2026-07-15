@@ -19,6 +19,14 @@ export async function recordRuntimeExceptionPg(
   db: SouthstarDb,
   input: RuntimeExceptionRecordInput,
 ): Promise<RuntimeExceptionRecord> {
+  return await db.tx(async (tx) => await recordRuntimeExceptionInTxPg(tx, input));
+}
+
+/** Persist an exception using the caller's transaction (for atomic callback state transitions). */
+export async function recordRuntimeExceptionInTxPg(
+  db: SouthstarDb,
+  input: RuntimeExceptionRecordInput,
+): Promise<RuntimeExceptionRecord> {
   const resourceKey = runtimeExceptionResourceKey(input);
   const exceptionId = input.exceptionId ?? runtimeExceptionId(input);
   const status = input.status ?? "observed";
@@ -51,37 +59,35 @@ export async function recordRuntimeExceptionPg(
     ...(input.recoveryDecisionRef ? { recoveryDecisionRef: input.recoveryDecisionRef } : {}),
   };
 
-  return await db.tx(async (tx) => {
-    await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
-    const existing = toRuntimeExceptionRecord(await getResourceByKeyPg(tx, RUNTIME_EXCEPTION_RESOURCE_TYPE, resourceKey));
-    if (existing) {
-      await appendObservedHistoryOncePg(tx, existing);
-      return existing;
-    }
+  await db.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
+  const existing = toRuntimeExceptionRecord(await getResourceByKeyPg(db, RUNTIME_EXCEPTION_RESOURCE_TYPE, resourceKey));
+  if (existing) {
+    await appendObservedHistoryOncePg(db, existing);
+    return existing;
+  }
 
-    await upsertRuntimeResourcePg(tx, {
-      id: exceptionId,
-      resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
-      resourceKey,
-      runId: input.runId,
-      taskId: input.taskId,
-      sessionId: input.sessionId,
-      scope: runtimeExceptionScope(input),
-      status,
-      title: `${input.kind} runtime exception`,
-      payload,
-      summary: {
-        source: input.source,
-        kind: input.kind,
-        severity: input.severity,
-        observedAt: input.observedAt,
-      },
-    });
-
-    const record = requireRuntimeExceptionRecord(await getResourceByKeyPg(tx, RUNTIME_EXCEPTION_RESOURCE_TYPE, resourceKey));
-    await appendObservedHistoryOncePg(tx, record);
-    return record;
+  await upsertRuntimeResourcePg(db, {
+    id: exceptionId,
+    resourceType: RUNTIME_EXCEPTION_RESOURCE_TYPE,
+    resourceKey,
+    runId: input.runId,
+    taskId: input.taskId,
+    sessionId: input.sessionId,
+    scope: runtimeExceptionScope(input),
+    status,
+    title: `${input.kind} runtime exception`,
+    payload,
+    summary: {
+      source: input.source,
+      kind: input.kind,
+      severity: input.severity,
+      observedAt: input.observedAt,
+    },
   });
+
+  const record = requireRuntimeExceptionRecord(await getResourceByKeyPg(db, RUNTIME_EXCEPTION_RESOURCE_TYPE, resourceKey));
+  await appendObservedHistoryOncePg(db, record);
+  return record;
 }
 
 export async function listUnresolvedRuntimeExceptionsPg(

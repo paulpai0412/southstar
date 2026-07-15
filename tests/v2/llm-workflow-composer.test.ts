@@ -83,6 +83,8 @@ test("LLM composer sends bounded candidate packet and explicit output schema con
   assert.match(prompts[0] ?? "", /GoalContractRequirements:/);
   assert.match(prompts[0] ?? "", new RegExp(GOAL_CONTRACT.requirements[0]!.id));
   assert.match(prompts[0] ?? "", /independent evaluator/i);
+  assert.match(prompts[0] ?? "", /classify workspaceMutation/i);
+  assert.match(prompts[0] ?? "", /read_only.*shared_write.*append_only/i);
   assert.equal(typeof WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.id.type, "string");
   assert.equal(WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.requirementIds.type, "array");
   assert.equal("minItems" in WORKFLOW_COMPOSITION_PLAN_JSON_SCHEMA.$defs.task.properties.requirementIds, false);

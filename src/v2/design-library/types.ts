@@ -1,3 +1,5 @@
+import type { WorkspaceMutationSpec } from "../workspace/types.ts";
+
 export type LibraryDefinitionKind =
   | "agent_spec"
   | "agent_definition"
@@ -111,6 +113,7 @@ export type WorkflowTemplateNode = {
   capabilityRefs: string[];
   mcpCapabilityRefs: string[];
   workspacePolicyRef?: string;
+  workspaceMutation?: WorkspaceMutationSpec;
 };
 
 export type WorkflowTemplateEdge = {

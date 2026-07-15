@@ -14,6 +14,8 @@ import { observeDispatchPreparationException, redactProviderErrorExcerpt } from 
 import type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
 import { captureWorkspaceSnapshotForTaskPg } from "../session-recovery/workspace-snapshot.ts";
 import { runtimeAttemptNumber } from "../executor/attempt-identity.ts";
+import { decideWorkspaceClaim } from "../workspace/concurrency-policy.ts";
+import { abandonTaskWorkspacePg, prepareTaskWorkspacePg, type PreparedTaskWorkspace } from "../workspace/task-workspace.ts";
 
 export type { RunnableTaskSchedulerRunInput, RunnableTaskSchedulerRunResult } from "./types.ts";
 
@@ -88,6 +90,7 @@ export function createRunnableTaskScheduler(db: SouthstarDb, deps: RunnableTaskS
           taskId: task.id,
           sessionId,
           maxParallelTasks,
+          manifest: run.workflow_manifest_json,
         });
         if (claim !== "claimed") {
           result.skippedTaskIds.push({ taskId: task.id, reason: claim });
@@ -127,17 +130,26 @@ async function dispatchTask(
   let handBindingId = "";
   let handAccepted = false;
   let handRejected = false;
+  let workspaceAllocation: PreparedTaskWorkspace | null = null;
 
   try {
     const checkpointRefs = await latestSessionRecoveryCheckpointRefsForTask(db, {
       runId: input.runId,
       taskId: input.taskId,
     });
+    workspaceAllocation = await prepareTaskWorkspacePg(db, {
+      runId: input.runId,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      attemptId,
+      mutation: input.manifest.tasks.find((task) => task.id === input.taskId)?.workspaceMutation,
+    });
     const workspaceSnapshot = await captureWorkspaceSnapshotForTaskPg(db, {
       runId: input.runId,
       taskId: input.taskId,
       sessionId: input.sessionId,
       attemptId,
+      ...(workspaceAllocation ? { projectRoot: workspaceAllocation.worktreePath } : {}),
     });
     const assembler = createManagedContextAssembler(db);
     const assembly = await assembler.buildForTask({
@@ -148,6 +160,7 @@ async function dispatchTask(
       handExecutionId,
       dependsOn: input.dependsOn,
       checkpointRefs,
+      ...(workspaceAllocation ? { workspaceOverride: workspaceAllocation.workspace } : {}),
     });
     contextPacketId = assembly.contextPacket.id;
     taskEnvelopeId = assembly.taskEnvelopeId;
@@ -372,6 +385,7 @@ async function dispatchTask(
       throw error;
     }
     if (handAccepted || handRejected) throw error;
+    await abandonTaskWorkspacePg(db, workspaceAllocation);
     await observeDispatchPreparationException(db, {
       runId: input.runId,
       taskId: input.taskId,
@@ -536,8 +550,8 @@ async function nextDispatchAttemptId(db: SouthstarDb, runId: string, taskId: str
 
 async function claimRunnableTask(
   db: SouthstarDb,
-  input: { runId: string; taskId: string; sessionId: string; maxParallelTasks: number },
-): Promise<"claimed" | "parallel-limit" | "status-changed"> {
+  input: { runId: string; taskId: string; sessionId: string; maxParallelTasks: number; manifest: SouthstarWorkflowManifest },
+): Promise<"claimed" | "parallel-limit" | "status-changed" | "workspace-conflict"> {
   return await db.tx(async (tx) => {
     await tx.query("select id from southstar.workflow_runs where id = $1 for update", [input.runId]);
     const task = await tx.maybeOne<{ status: string }>(
@@ -551,6 +565,26 @@ async function claimRunnableTask(
       [input.runId],
     );
     if (Number(active.running_count) >= input.maxParallelTasks) return "parallel-limit";
+
+    const activeRows = await tx.query<{ id: string; status: string }>(
+      "select id, status from southstar.workflow_tasks where run_id = $1 and status in ('claimed', 'queued', 'running')",
+      [input.runId],
+    );
+    const manifestTasks = new Map(input.manifest.tasks.map((candidate) => [candidate.id, candidate]));
+    const candidate = manifestTasks.get(input.taskId);
+    const workspaceDecision = decideWorkspaceClaim(
+      {
+        id: input.taskId,
+        status: "pending",
+        workspaceMutation: candidate?.workspaceMutation,
+      },
+      activeRows.rows.map((row) => ({
+        id: row.id,
+        status: row.status,
+        workspaceMutation: manifestTasks.get(row.id)?.workspaceMutation,
+      })),
+    );
+    if (!workspaceDecision.allowed) return "workspace-conflict";
 
     await tx.query(
       "update southstar.workflow_tasks set status = 'claimed', root_session_id = $1, updated_at = now() where run_id = $2 and id = $3",

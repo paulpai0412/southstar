@@ -1,6 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { QueryResultRow } from "pg";
 import { createFakeBrainProvider } from "../../src/v2/brain/fake-brain-provider.ts";
 import type { SouthstarDb } from "../../src/v2/db/postgres.ts";
@@ -345,6 +349,75 @@ test("runnable scheduler queues two independent tasks when maxParallelTasks allo
     assert.equal((await taskRow(db, "run-scheduler-parallel-two", "task-a")).status, "queued");
     assert.equal((await taskRow(db, "run-scheduler-parallel-two", "task-b")).status, "queued");
     assert.equal((await taskRow(db, "run-scheduler-parallel-two", "task-c")).status, "pending");
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler serializes explicitly shared workspace writers even when the DAG allows parallelism", async () => {
+  const db = await createTestPostgresDb();
+  const runId = "run-scheduler-shared-workspace-writers";
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId,
+      maxParallelTasks: 2,
+      tasks: [
+        { id: "write-a", status: "pending", sortOrder: 0, dependsOn: [], workspaceMutation: { mode: "shared_write", resourceKeys: ["workspace"] } },
+        { id: "write-b", status: "pending", sortOrder: 1, dependsOn: [], workspaceMutation: { mode: "shared_write", resourceKeys: ["workspace"] } },
+      ],
+    });
+    await seedContextPacket(db, runId, "write-a");
+    await seedContextPacket(db, runId, "write-b");
+
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId });
+
+    assert.deepEqual(result.dispatchedTaskIds, ["write-a"]);
+    assert.equal(result.skippedTaskIds.find((entry) => entry.taskId === "write-b")?.reason, "workspace-conflict");
+    assert.equal((await taskRow(db, runId, "write-a")).status, "queued");
+    assert.equal((await taskRow(db, runId, "write-b")).status, "pending");
+  } finally {
+    await db.close();
+  }
+});
+
+test("runnable scheduler allocates a Git worktree and mounts it in the task envelope", async () => {
+  const repo = mkdtempSync(join(tmpdir(), "southstar-scheduler-worktree-"));
+  execFileSync("git", ["init"], { cwd: repo });
+  execFileSync("git", ["config", "user.email", "southstar@example.local"], { cwd: repo });
+  execFileSync("git", ["config", "user.name", "Southstar"], { cwd: repo });
+  writeFileSync(join(repo, "README.md"), "base\n");
+  execFileSync("git", ["add", "."], { cwd: repo });
+  execFileSync("git", ["commit", "-m", "initial"], { cwd: repo });
+
+  const db = await createTestPostgresDb();
+  const runId = "run-scheduler-git-worktree";
+  try {
+    await initSouthstarSchema(db);
+    await seedRun(db, {
+      runId,
+      maxParallelTasks: 1,
+      runtimeContextJson: { cwd: repo },
+      tasks: [{
+        id: "write-git",
+        status: "pending",
+        sortOrder: 0,
+        dependsOn: [],
+        workspaceMutation: { mode: "shared_write", isolation: "git_worktree", resourceKeys: ["README.md"] },
+      }],
+    });
+    await seedContextPacket(db, runId, "write-git");
+
+    const fixture = scheduler(db);
+    const result = await fixture.scheduler.runOnce({ runId });
+    assert.deepEqual(result.dispatchedTaskIds, ["write-git"]);
+    const workspace = (fixture.executeTaskCalls[0]?.taskEnvelope as { workspace?: { handle?: { hostMountPath?: string } } } | undefined)?.workspace;
+    assert.match(workspace?.handle?.hostMountPath ?? "", /southstar-scheduler-worktree-.*-write-git-/);
+    const allocation = (await listResourcesPg(db, { resourceType: "workspace_allocation" })).find((resource) => resource.runId === runId);
+    assert.equal(allocation?.status, "allocated");
+    assert.equal(typeof allocation?.payload.worktreePath, "string");
+    execFileSync("git", ["worktree", "remove", "--force", String(allocation?.payload.worktreePath)], { cwd: repo });
   } finally {
     await db.close();
   }
@@ -864,7 +937,15 @@ async function seedRun(
   input: {
     runId: string;
     maxParallelTasks?: number;
-    tasks: Array<{ id: string; status: string; sortOrder: number; dependsOn: string[]; rootSessionId?: string }>;
+    runtimeContextJson?: Record<string, unknown>;
+    tasks: Array<{
+      id: string;
+      status: string;
+      sortOrder: number;
+      dependsOn: string[];
+      rootSessionId?: string;
+      workspaceMutation?: { mode: "read_only" | "shared_write" | "append_only"; isolation?: "shared" | "git_worktree"; resourceKeys?: string[] };
+    }>;
   },
 ): Promise<void> {
   await seedSoftwareLibraryGraph(db);
@@ -892,6 +973,7 @@ async function seedRun(
         roleRef: "maker",
         agentProfileRef: "software-maker-pi",
         evaluatorPipelineRef: "software-feature-quality",
+        ...(task.workspaceMutation ? { workspaceMutation: task.workspaceMutation } : {}),
         requiredArtifactRefs: ["implementation_report"],
         skillRefs: ["skill.software-implementation"],
         mcpGrantRefs: [],
@@ -949,7 +1031,7 @@ async function seedRun(
     }),
     executionProjectionJson: "{}",
     snapshotJson: "{}",
-    runtimeContextJson: "{}",
+    runtimeContextJson: JSON.stringify(input.runtimeContextJson ?? {}),
     metricsJson: "{}",
   });
   await captureRunLibrarySnapshotPg(db, {

@@ -34,6 +34,7 @@ export const RUNTIME_EXCEPTION_KINDS = [
   "provider_unreachable",
   "validation_failed",
   "context_assembly_failed",
+  "workspace_merge_conflict",
 ] as const;
 
 export type RuntimeExceptionKind = typeof RUNTIME_EXCEPTION_KINDS[number];

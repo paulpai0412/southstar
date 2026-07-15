@@ -140,6 +140,8 @@ async function classifyRecoveryPath(
       return { recoveryPath: "block-for-operator" };
     case "context_assembly_failed":
       return { recoveryPath: "fork-session" };
+    case "workspace_merge_conflict":
+      return { recoveryPath: "block-for-operator" };
   }
 }
 

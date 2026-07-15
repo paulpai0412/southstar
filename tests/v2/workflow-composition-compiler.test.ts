@@ -28,6 +28,10 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
       goalContract,
       candidatePacket,
     });
+    composition.tasks.find((task) => task.id === "implement-feature")!.workspaceMutation = {
+      mode: "shared_write",
+      resourceKeys: ["src", "tests"],
+    };
 
     const compiled = await compileWorkflowComposition(db, {
       runId: "draft-library-test-run",
@@ -61,6 +65,10 @@ test("compiler builds library-constrained workflow manifest and snapshot from ap
       /Implement Feature/,
     );
     assert.deepEqual(makerTask.promptInputs?.requirementIds, [goalContract.requirements[0]!.id]);
+    assert.deepEqual(makerTask.workspaceMutation, {
+      mode: "shared_write",
+      resourceKeys: ["src", "tests"],
+    });
     assert.deepEqual(
       (makerTask.promptInputs?.nodePromptSpec as { requirements?: string[] })?.requirements,
       [goalContract.requirements[0]!.statement],

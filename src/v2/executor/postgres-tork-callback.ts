@@ -4,7 +4,7 @@ import { acceptOrRejectArtifactRefPg, artifactRefIdentity } from "../artifacts/a
 import { recordArtifactRepairMarkerPg } from "../artifacts/lineage.ts";
 import { ARTIFACT_REF_RESOURCE_TYPE } from "../artifacts/types.ts";
 import { createRuntimeExceptionController } from "../exceptions/runtime-exception-controller.ts";
-import { resolveTorkTerminalWithoutCallbackForCallbackPg } from "../exceptions/postgres-runtime-exceptions.ts";
+import { recordRuntimeExceptionInTxPg, resolveTorkTerminalWithoutCallbackForCallbackPg } from "../exceptions/postgres-runtime-exceptions.ts";
 import { evaluateRunCompletionGatePg } from "../evaluators/completion-gate.ts";
 import {
   assertRequirementEvaluatorExecutionIdentityPg,
@@ -20,6 +20,7 @@ import { maybeApplyDynamicRepairRevisionPg, type DynamicRepairRevisionResult } f
 import { assertNoRawCredentialPayloadPg } from "../tool-proxy/policy-enforcer.ts";
 import { runtimeAttemptNumber } from "./attempt-identity.ts";
 import { getExecutorBindingPg, updateExecutorBindingStatusPg } from "./postgres-bindings.ts";
+import { finalizeTaskWorkspacePg } from "../workspace/task-workspace.ts";
 import type { TaskRunCallbackResult } from "./tork-callback.ts";
 
 export type PostgresTaskRunCallbackResult = TaskRunCallbackResult & {
@@ -28,6 +29,12 @@ export type PostgresTaskRunCallbackResult = TaskRunCallbackResult & {
 
 export type PostgresCallbackIngestionResult = {
   accepted: boolean;
+  blocked?: boolean;
+  workspaceConflict?: {
+    resourceKey: string;
+    worktreePath: string;
+    errorMessage: string;
+  };
   duplicate?: boolean;
   artifactResourceId?: string;
   artifactRefId?: string;
@@ -350,12 +357,63 @@ export async function ingestTaskRunResultPg(
       artifactResourceId: artifactRef.resourceId,
     });
 
-    await tx.query(
-      "update southstar.workflow_tasks set status = $1, updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $2 and id = $3",
-      [accepted ? "completed" : "failed", effectiveResult.runId, effectiveResult.taskId],
-    );
+    const workspaceFinalization = await finalizeTaskWorkspacePg(tx, {
+      runId: effectiveResult.runId,
+      taskId: effectiveResult.taskId,
+      accepted,
+    });
 
-    const pendingDynamicRepair: PendingDynamicRepair | undefined = accepted || !options.workflowComposer
+    if (workspaceFinalization.status === "merge_conflict") {
+      const exception = await recordRuntimeExceptionInTxPg(tx, {
+        runId: effectiveResult.runId,
+        taskId: effectiveResult.taskId,
+        sessionId: effectiveResult.rootSessionId,
+        attemptId,
+        handExecutionId,
+        source: "callback",
+        kind: "workspace_merge_conflict",
+        severity: "blocking",
+        observedAt: effectiveResult.receivedAt ?? new Date().toISOString(),
+        evidenceRefs: [workspaceFinalization.resourceKey],
+        providerEvidence: {
+          repoRoot: workspaceFinalization.repoRoot,
+          worktreePath: workspaceFinalization.worktreePath,
+          errorMessage: workspaceFinalization.errorMessage,
+          worktreePreserved: true,
+        },
+      });
+      const exceptionController = createRuntimeExceptionController({ db: tx });
+      const classification = await exceptionController.classify(exception);
+      await exceptionController.decide(classification);
+      await appendHistoryEventPg(tx, {
+        runId: effectiveResult.runId,
+        taskId: effectiveResult.taskId,
+        sessionId: effectiveResult.rootSessionId,
+        eventType: "workspace.merge_conflict_blocked",
+        actorType: "orchestrator",
+        idempotencyKey: `${workspaceFinalization.resourceKey}:merge-conflict-blocked`,
+        payload: {
+          resourceKey: workspaceFinalization.resourceKey,
+          worktreePath: workspaceFinalization.worktreePath,
+          exceptionId: exception.exceptionId,
+          recoveryPath: classification.recoveryPath,
+          operatorApprovalRequired: classification.operatorApprovalRequired,
+        },
+      });
+      await tx.query(
+        "update southstar.workflow_tasks set status = 'blocked', updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $1 and id = $2",
+        [effectiveResult.runId, effectiveResult.taskId],
+      );
+    }
+
+    if (workspaceFinalization.status !== "merge_conflict") {
+      await tx.query(
+        "update southstar.workflow_tasks set status = $1, updated_at = now(), completed_at = coalesce(completed_at, now()) where run_id = $2 and id = $3",
+        [accepted ? "completed" : "failed", effectiveResult.runId, effectiveResult.taskId],
+      );
+    }
+
+    const pendingDynamicRepair: PendingDynamicRepair | undefined = accepted || workspaceFinalization.status === "merge_conflict" || !options.workflowComposer
       ? undefined
       : {
         runId: effectiveResult.runId,
@@ -376,6 +434,16 @@ export async function ingestTaskRunResultPg(
 
     return {
       accepted,
+      ...(workspaceFinalization.status === "merge_conflict"
+        ? {
+            blocked: true,
+            workspaceConflict: {
+              resourceKey: workspaceFinalization.resourceKey,
+              worktreePath: workspaceFinalization.worktreePath,
+              errorMessage: workspaceFinalization.errorMessage,
+            },
+          }
+        : {}),
       callbackPersisted: true,
       artifactResourceId: artifactRef.resourceId,
       artifactRefId: artifactRef.artifactRefId,
@@ -409,6 +477,8 @@ export async function ingestTaskRunResultPg(
   await advanceExecutionSetForRunIfNeededPg(db, result.runId);
   return {
     accepted: ingested.accepted,
+    ...(ingested.blocked ? { blocked: true } : {}),
+    ...(ingested.workspaceConflict ? { workspaceConflict: ingested.workspaceConflict } : {}),
     ...(ingested.duplicate ? { duplicate: true } : {}),
     ...(ingested.artifactResourceId ? { artifactResourceId: ingested.artifactResourceId } : {}),
     ...(ingested.artifactRefId ? { artifactRefId: ingested.artifactRefId } : {}),

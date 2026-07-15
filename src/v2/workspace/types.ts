@@ -24,3 +24,14 @@ export type WorkspaceSnapshotProvider = {
   fork(input: { repoRoot: string; snapshotRef: WorkspaceSnapshotRef; worktreeName: string }): WorkspaceForkRef;
   rollback(input: { repoRoot: string; snapshotRef: WorkspaceSnapshotRef }): WorkspaceRollbackResult;
 };
+
+/** How a task uses a shared workspace or another mutable resource. */
+export type WorkspaceMutationMode = "read_only" | "shared_write" | "append_only";
+
+export type WorkspaceMutationSpec = {
+  mode: WorkspaceMutationMode;
+  /** Runtime isolation requested for a mutable task. git_worktree is the first executable provider. */
+  isolation?: "shared" | "git_worktree";
+  /** Logical resources touched by the task; omitted means the whole workspace. */
+  resourceKeys?: string[];
+};

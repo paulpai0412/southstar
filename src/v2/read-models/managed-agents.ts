@@ -69,6 +69,7 @@ const managedContractResourceTypes = new Set([
   "artifact_repair_marker",
   "tool_proxy_policy",
   "tool_proxy_violation",
+  "workspace_allocation",
   "recovery_decision",
   "recovery_execution",
 ]);
@@ -78,6 +79,7 @@ const managedResourceTypes = new Set([
   "session_checkpoint",
   "vault_lease",
   "tool_grant",
+  "workspace_allocation",
 ]);
 
 function mapBinding(row: ResourceRow) {

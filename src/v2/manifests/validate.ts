@@ -119,6 +119,7 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
     if (task.rootSession.maxRepairAttempts < 1) {
       issues.push({ path: `workflow.tasks.${task.id}.rootSession.maxRepairAttempts`, message: "must be >= 1" });
     }
+    validateWorkspaceMutation(task.workspaceMutation, `workflow.tasks.${task.id}.workspaceMutation`, issues);
     if (!evaluatorIds.has(task.rootSession.validator)) {
       issues.push({ path: `workflow.tasks.${task.id}.rootSession.validator`, message: "unknown evaluator id" });
     }
@@ -139,6 +140,31 @@ export function validateWorkflowManifest(workflow: SouthstarWorkflowManifest) {
   }
 
   return { ok: issues.length === 0, issues };
+}
+
+function validateWorkspaceMutation(
+  value: unknown,
+  path: string,
+  issues: ValidationIssue[],
+): void {
+  if (value === undefined) return;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    issues.push({ path, message: "must be an object" });
+    return;
+  }
+  const mutation = value as { mode?: unknown; resourceKeys?: unknown };
+  if (mutation.mode !== "read_only" && mutation.mode !== "shared_write" && mutation.mode !== "append_only") {
+    issues.push({ path: `${path}.mode`, message: "must be read_only, shared_write, or append_only" });
+  }
+  if (mutation.resourceKeys !== undefined) {
+    if (!Array.isArray(mutation.resourceKeys) || mutation.resourceKeys.some((key) => typeof key !== "string" || key.trim().length === 0)) {
+      issues.push({ path: `${path}.resourceKeys`, message: "must be an array of non-empty strings" });
+    }
+  }
+  const isolation = (value as { isolation?: unknown }).isolation;
+  if (isolation !== undefined && isolation !== "shared" && isolation !== "git_worktree") {
+    issues.push({ path: `${path}.isolation`, message: "must be shared or git_worktree" });
+  }
 }
 
 function hasCycle(workflow: SouthstarWorkflowManifest) {

@@ -34,6 +34,7 @@ export type BuildManagedTaskContextInput = {
   dependsOn: string[];
   checkpointRefs?: string[];
   failureSummary?: string;
+  workspaceOverride?: TaskEnvelopeV2["workspace"];
 };
 
 export type BuildManagedTaskContextResult = {
@@ -48,7 +49,7 @@ export function createManagedContextAssembler(db: SouthstarDb, options: ManagedC
   return {
     async buildForTask(input: BuildManagedTaskContextInput): Promise<BuildManagedTaskContextResult> {
       const workflow = await readWorkflow(db, input.runId);
-      const workspace = await readWorkspaceHandle(db, input.runId);
+      const workspace = input.workspaceOverride ?? await readWorkspaceHandle(db, input.runId);
       const task = required(workflow.tasks.find((candidate) => candidate.id === input.taskId), `unknown task: ${input.taskId}`);
       const roleRef = required(task.roleRef, `missing roleRef for task ${task.id}`);
       const agentProfileRef = required(task.agentProfileRef, `missing agentProfileRef for task ${task.id}`);
