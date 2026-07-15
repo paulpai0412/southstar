@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useMemo } from "react";
+import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { MarkdownBody } from "./MarkdownBody";
 import { WorkflowDagBlock } from "./WorkflowDagBlock";
 import { GoalSlicePlanBlock } from "./GoalSlicePlanBlock";
@@ -616,7 +616,7 @@ function BlockView({ block, toolResults, isStreaming, streamingDuration, toolCal
     const tc = block as ToolCallContent;
     const result = toolResults?.get(tc.toolCallId);
     const duration = toolCallDurations?.get(tc.toolCallId);
-    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
+    return <ToolCallBlock block={tc} result={result} duration={duration} workflowCwd={workflowCwd} onWorkflowDagNodeSelect={onWorkflowDagNodeSelect} onGoalSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} onGoalRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} onGoalValidationResume={onGoalValidationResume} onGoalContractSelect={onGoalContractSelect} onWorkflowGoalRevise={onWorkflowGoalRevise} onLibraryGraphNodeSelect={onLibraryGraphNodeSelect} onWorkspaceSurfaceChange={onWorkspaceSurfaceChange} />;
   }
   return null;
 }
@@ -683,6 +683,11 @@ function ToolCallBlock({
   duration,
   workflowCwd,
   onWorkflowDagNodeSelect,
+  onGoalSliceSelect,
+  onConfirmGoalDesign,
+  onGoalRequirementSelect,
+  onConfirmRequirements,
+  onGoalValidationResume,
   onGoalContractSelect,
   onWorkflowGoalRevise,
   onLibraryGraphNodeSelect,
@@ -693,6 +698,11 @@ function ToolCallBlock({
   duration?: number;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
+  onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
+  onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
+  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
+  onGoalValidationResume?: (value: unknown) => void;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
   onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
@@ -706,6 +716,11 @@ function ToolCallBlock({
       result={result}
       workflowCwd={workflowCwd}
       onWorkflowDagNodeSelect={onWorkflowDagNodeSelect}
+      onGoalSliceSelect={onGoalSliceSelect}
+      onConfirmGoalDesign={onConfirmGoalDesign}
+      onGoalRequirementSelect={onGoalRequirementSelect}
+      onConfirmRequirements={onConfirmRequirements}
+      onGoalValidationResume={onGoalValidationResume}
       onGoalContractSelect={onGoalContractSelect}
       onWorkflowGoalRevise={onWorkflowGoalRevise}
       onLibraryGraphNodeSelect={onLibraryGraphNodeSelect}
@@ -801,6 +816,11 @@ function SouthstarToolResultBlock({
   result,
   workflowCwd,
   onWorkflowDagNodeSelect,
+  onGoalSliceSelect,
+  onConfirmGoalDesign,
+  onGoalRequirementSelect,
+  onConfirmRequirements,
+  onGoalValidationResume,
   onGoalContractSelect,
   onWorkflowGoalRevise,
   onLibraryGraphNodeSelect,
@@ -810,6 +830,11 @@ function SouthstarToolResultBlock({
   result: ToolResultMessage;
   workflowCwd?: string | null;
   onWorkflowDagNodeSelect?: (node: WorkflowDagNode) => void;
+  onGoalSliceSelect?: (selection: GoalSliceSelection) => void;
+  onConfirmGoalDesign?: (selection: GoalSliceSelection) => void;
+  onGoalRequirementSelect?: (selection: GoalRequirementSelection) => void;
+  onConfirmRequirements?: (confirmation: GoalRequirementsConfirmation) => void | Promise<GoalRequirementsConfirmationResult | void>;
+  onGoalValidationResume?: (value: unknown) => void;
   onGoalContractSelect?: (dag: WorkflowDag) => void;
   onWorkflowGoalRevise?: (dag: WorkflowDag, choice?: string) => void;
   onLibraryGraphNodeSelect?: (node: LibraryGraphChartNode) => void;
@@ -828,32 +853,82 @@ function SouthstarToolResultBlock({
     onWorkspaceSurfaceChange?.(inferredSurface);
   }, [inferredSurface, onWorkspaceSurfaceChange]);
 
+  const structuredBlocks: ReactNode[] = [];
   if (isLibraryGraphTool(mcpToolName, piToolName) && isLibraryGraphPayload(payload)) {
-    return (
-      <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
+    structuredBlocks.push(
+      <SouthstarResultBox key="library-graph" title="Southstar · Library graph">
         <LibraryGraphBlock data={payload} defaultScope={typeof payload.activeScope === "string" ? payload.activeScope : "all"} onSelectNode={onLibraryGraphNodeSelect} />
-      </div>
+      </SouthstarResultBox>,
     );
   }
-
   if (isLibraryImportTool(mcpToolName, piToolName) && isLibraryImportCandidatePayload(payload)) {
-    return (
-      <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
-        <ChatLibraryCandidateBlock data={payload} onSelectNode={onLibraryGraphNodeSelect} />
-      </div>
+    structuredBlocks.push(
+      <SouthstarResultBox key="library-import" title="Southstar · Library candidates">
+        <ChatLibraryCandidateBlock data={payload} onSelectNode={onLibraryGraphNodeSelect} onGoalValidationResume={onGoalValidationResume} />
+      </SouthstarResultBox>,
     );
   }
-
+  const goalRequirements = goalRequirementsFromSouthstarToolResult(payload);
+  if (goalRequirements) {
+    structuredBlocks.push(
+      <SouthstarResultBox key="goal-requirements" title="Southstar · Requirements">
+        <GoalRequirementListBlock block={goalRequirements} onRequirementSelect={onGoalRequirementSelect} onConfirmRequirements={onConfirmRequirements} />
+      </SouthstarResultBox>,
+    );
+  }
+  const goalDesign = goalDesignFromSouthstarToolResult(payload);
+  if (goalDesign) {
+    structuredBlocks.push(
+      <SouthstarResultBox key="goal-design" title="Southstar · Slice plan">
+        <GoalSlicePlanBlock block={goalDesign} onSliceSelect={onGoalSliceSelect} onConfirmGoalDesign={onConfirmGoalDesign} />
+      </SouthstarResultBox>,
+    );
+  }
   const workflowDag = workflowDagFromSouthstarToolResult(mcpToolName, piToolName, payload);
   if (workflowDag) {
-    return (
-      <div style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: 10 }}>
+    structuredBlocks.push(
+      <SouthstarResultBox key="workflow-dag" title="Southstar · Workflow DAG">
         <WorkflowDagBlock dag={workflowDag} cwd={workflowCwd} onNodeSelect={onWorkflowDagNodeSelect} onGoalContractSelect={onGoalContractSelect} onReviseGoal={onWorkflowGoalRevise} />
-      </div>
+      </SouthstarResultBox>,
     );
   }
 
-  return null;
+  return structuredBlocks.length > 0 ? <>{structuredBlocks}</> : null;
+}
+
+function SouthstarResultBox({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <details open style={{ borderTop: "1px solid rgba(34,197,94,0.15)", padding: "8px 10px" }}>
+      <summary style={{ cursor: "pointer", color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)", userSelect: "none" }}>{title}</summary>
+      <div style={{ paddingTop: 8 }}>{children}</div>
+    </details>
+  );
+}
+
+function goalRequirementsFromSouthstarToolResult(payload: Record<string, unknown> | null): GoalRequirementsContent | null {
+  const value = asRecord(payload?.goalRequirements);
+  const draft = asRecord(value?.draft);
+  if (
+    value?.type !== "goalRequirements"
+    || typeof value.draftId !== "string"
+    || typeof value.status !== "string"
+    || typeof value.goalRequirementDraftHash !== "string"
+    || !draft
+    || typeof draft.draftHash !== "string"
+    || !Array.isArray(draft.requirements)
+  ) return null;
+  return value as unknown as GoalRequirementsContent;
+}
+
+function goalDesignFromSouthstarToolResult(payload: Record<string, unknown> | null): GoalDesignContent | null {
+  const value = asRecord(payload?.goalDesign);
+  if (
+    value?.type !== "goalDesign"
+    || typeof value.draftId !== "string"
+    || typeof value.status !== "string"
+    || value.package === undefined
+  ) return null;
+  return value as unknown as GoalDesignContent;
 }
 
 function ChatLibraryCandidateBlock({ data, onSelectNode, onGoalValidationResume }: { data: LibraryImportCandidatePayload; onSelectNode?: (node: LibraryGraphChartNode) => void; onGoalValidationResume?: (value: unknown) => void }) {

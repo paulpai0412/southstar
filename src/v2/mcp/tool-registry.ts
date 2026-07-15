@@ -15,6 +15,15 @@ export type SouthstarMcpRuntimeClient = {
   tickRuntimeLoop(body: { loopId: RuntimeLoopId }): Promise<ApiEnvelope<unknown>>;
   wakeRuntime(body?: { runId?: string; taskId?: string }): Promise<ApiEnvelope<unknown>>;
 
+  runGoalStream(body: {
+    goalPrompt: string;
+    cwd: string;
+    projectRef?: string;
+    idempotencyKey: string;
+    goalDesignMode?: "review_before_compose" | "auto_until_blocked";
+    templatePolicy?: { mode: "auto" | "prefer" | "require"; templateRef?: string; versionRef?: string };
+  }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
+
   getLibraryWorkspace(body?: { scope?: string }): Promise<ApiEnvelope<unknown>>;
   getLibraryGraph(body?: { scope?: string; objectKey?: string; depth?: number; kind?: string; status?: string; edgeType?: string }): Promise<ApiEnvelope<unknown>>;
   createLibraryImportDraft(body: { source: unknown; scope?: string; requestPrompt?: string }): Promise<ApiEnvelope<unknown>>;
@@ -34,6 +43,8 @@ export type SouthstarMcpRuntimeClient = {
   createPlannerDraft(body: { goalPrompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm"; scope?: string }): Promise<ApiEnvelope<unknown>>;
   createPlannerDraftStream(body: { goalPrompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm"; scope?: string; cwd?: string }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
   revisePlannerDraft(body: { draftId: string; prompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm" }): Promise<ApiEnvelope<unknown>>;
+  reviseGoalRequirement(body: { draftId: string; requirementId: string; expectedDraftHash: string; patch: unknown; actor?: string }): Promise<ApiEnvelope<unknown>>;
+  confirmGoalRequirements(body: { draftId: string; expectedDraftHash: string; actor?: string }): Promise<ApiEnvelope<unknown>>;
   revisePlannerDraftStream(body: { draftId: string; prompt: string; orchestrationMode?: "llm-constrained"; composerMode?: "llm" }, onEvent: (event: SouthstarMcpStreamEvent) => void, signal?: AbortSignal): Promise<unknown>;
   searchWorkflowTemplates(body: { prompt: string; domain?: string; limit?: number }): Promise<ApiEnvelope<unknown>>;
   getWorkflowTemplate(templateRef: string): Promise<ApiEnvelope<unknown>>;
@@ -188,6 +199,9 @@ export function createSouthstarMcpToolRegistry(input: { client: SouthstarMcpRunt
 
     tool("southstar.workflow.create_draft", "Create a planner draft from a prompt.", plannerDraftSchema(), ["goalPrompt"], async (value) => unwrap(await c.createPlannerDraft(plannerDraftBody(asRecord(value))))),
     tool("southstar.workflow.create_draft_stream", "Create a planner draft from a prompt and stream backend progress.", plannerDraftSchema(), ["goalPrompt"], async (value, context) => await c.createPlannerDraftStream(plannerDraftBody(asRecord(value)), context.onEvent ?? noopEvent, context.signal)),
+    tool("southstar.workflow.run_goal", "Execute a complete natural-language Southstar goal through Goal, Requirements, Library coverage, Slices, DAG, Executor, and persisted runtime evaluation.", runGoalSchema(), ["goalPrompt", "cwd", "idempotencyKey"], async (value, context) => runGoal(c, asRecord(value), context)),
+    tool("southstar.workflow.revise_requirement", "Revise one goal requirement with optimistic draft-hash concurrency protection.", { draftId: stringSchema("Goal requirement draft id."), requirementId: stringSchema("Requirement id."), expectedDraftHash: stringSchema("Expected draft hash."), patch: optionalObjectSchema("Requirement patch."), actor: optionalStringSchema("Actor id.") }, ["draftId", "requirementId", "expectedDraftHash", "patch"], async (value) => unwrap(await c.reviseGoalRequirement(reviseGoalRequirementBody(asRecord(value))))),
+    tool("southstar.workflow.confirm_requirements", "Confirm a goal requirement draft and continue composition.", { draftId: stringSchema("Goal requirement draft id."), expectedDraftHash: stringSchema("Expected draft hash."), actor: optionalStringSchema("Actor id.") }, ["draftId", "expectedDraftHash"], async (value) => unwrap(await c.confirmGoalRequirements({ draftId: requiredString(asRecord(value).draftId, "draftId"), expectedDraftHash: requiredString(asRecord(value).expectedDraftHash, "expectedDraftHash"), ...(optionalString(asRecord(value).actor) ? { actor: optionalString(asRecord(value).actor) } : {}) }))),
     tool("southstar.workflow.search_templates", "Search approved workflow templates.", { prompt: stringSchema("Prompt."), domain: optionalStringSchema("Domain."), limit: optionalNumberSchema("Limit.") }, ["prompt"], async (value) => {
       const body = asRecord(value);
       return unwrap(await c.searchWorkflowTemplates({ prompt: requiredString(body.prompt, "prompt"), ...(optionalString(body.domain) ? { domain: optionalString(body.domain) } : {}), ...(optionalNumber(body.limit) !== undefined ? { limit: optionalNumber(body.limit) } : {}) }));
@@ -265,6 +279,57 @@ function unwrap(envelope: ApiEnvelope<unknown>): unknown {
   return envelope.result;
 }
 
+async function runGoal(
+  client: SouthstarMcpRuntimeClient,
+  body: Record<string, unknown>,
+  context: SouthstarMcpToolCallContext,
+): Promise<Record<string, unknown>> {
+  const summary = asRecord(await client.runGoalStream(runGoalBody(body), context.onEvent ?? noopEvent, context.signal));
+  const result = asRecord(summary.result);
+  const events = Array.isArray(summary.events) ? summary.events : [];
+  const goalDesignFrame = events
+    .map((event) => asRecord(event))
+    .filter((event) => event.event === "goal_design")
+    .map((event) => asRecord(event.data))
+    .find((data) => data.package !== undefined);
+  const goalRequirementDraft = result.goalRequirementDraft;
+  const output: Record<string, unknown> = {
+    kind: "southstar.workflow.run_goal",
+    ...result,
+    ...(summary.eventCount !== undefined ? { eventCount: summary.eventCount } : {}),
+    ...(events.length > 0 ? { events } : {}),
+  };
+  if (isRecord(goalRequirementDraft)) {
+    output.goalRequirements = {
+      type: "goalRequirements",
+      draftId: typeof result.goalRequirementDraftId === "string" ? result.goalRequirementDraftId : result.draftId,
+      status: typeof result.goalDesignPhase === "string" ? result.goalDesignPhase : result.draftStatus,
+      goalRequirementDraftHash: result.goalRequirementDraftHash,
+      draft: goalRequirementDraft,
+      confirmable: result.confirmable === true,
+      blockers: Array.isArray(result.blockers) ? result.blockers : [],
+      validationIssues: Array.isArray(result.validationIssues) ? result.validationIssues : [],
+    };
+  }
+  if (goalDesignFrame && typeof result.draftId === "string") {
+    output.goalDesign = {
+      type: "goalDesign",
+      draftId: result.draftId,
+      status: typeof result.draftStatus === "string" ? result.draftStatus : undefined,
+      goalDesignPackageHash: result.goalDesignPackageHash,
+      package: goalDesignFrame.package,
+    };
+  }
+  if (typeof result.draftId === "string") {
+    try {
+      output.orchestration = unwrap(await client.getPlannerDraftOrchestration(result.draftId));
+    } catch (error) {
+      output.orchestrationError = error instanceof Error ? error.message : String(error);
+    }
+  }
+  return output;
+}
+
 function inspectRun(client: SouthstarMcpRuntimeClient, body: Record<string, unknown>): Promise<unknown> {
   const runId = requiredString(body.runId, "runId");
   const taskId = optionalString(body.taskId);
@@ -331,6 +396,33 @@ function plannerDraftBody(body: Record<string, unknown>): { goalPrompt: string; 
   };
 }
 
+function runGoalBody(body: Record<string, unknown>): Parameters<SouthstarMcpRuntimeClient["runGoalStream"]>[0] {
+  const goalDesignMode = body.goalDesignMode === undefined
+    ? "auto_until_blocked"
+    : enumValue(body.goalDesignMode, ["review_before_compose", "auto_until_blocked"], "goalDesignMode");
+  const templatePolicy = isRecord(body.templatePolicy)
+    ? workflowTemplatePolicy(body.templatePolicy)
+    : { mode: "auto" as const };
+  return {
+    goalPrompt: requiredString(body.goalPrompt, "goalPrompt"),
+    cwd: requiredString(body.cwd, "cwd"),
+    idempotencyKey: requiredString(body.idempotencyKey, "idempotencyKey"),
+    ...(optionalString(body.projectRef) ? { projectRef: optionalString(body.projectRef) } : {}),
+    goalDesignMode,
+    templatePolicy,
+  };
+}
+
+function workflowTemplatePolicy(body: Record<string, unknown>): { mode: "auto" | "prefer" | "require"; templateRef?: string; versionRef?: string } {
+  const mode = enumValue(body.mode, ["auto", "prefer", "require"], "templatePolicy.mode");
+  if (mode === "auto") return { mode };
+  return {
+    mode,
+    templateRef: requiredString(body.templateRef, "templatePolicy.templateRef"),
+    versionRef: requiredString(body.versionRef, "templatePolicy.versionRef"),
+  };
+}
+
 function instantiateTemplateBody(body: Record<string, unknown>): Parameters<SouthstarMcpRuntimeClient["instantiateWorkflowTemplate"]>[0] {
   return {
     templateRef: requiredString(body.templateRef, "templateRef"),
@@ -347,6 +439,16 @@ function reviseDraftBody(body: Record<string, unknown>): Parameters<SouthstarMcp
     prompt: requiredString(body.prompt, "prompt"),
     ...(body.orchestrationMode === "llm-constrained" ? { orchestrationMode: body.orchestrationMode } : {}),
     ...(body.composerMode === "llm" ? { composerMode: body.composerMode } : {}),
+  };
+}
+
+function reviseGoalRequirementBody(body: Record<string, unknown>): Parameters<SouthstarMcpRuntimeClient["reviseGoalRequirement"]>[0] {
+  return {
+    draftId: requiredString(body.draftId, "draftId"),
+    requirementId: requiredString(body.requirementId, "requirementId"),
+    expectedDraftHash: requiredString(body.expectedDraftHash, "expectedDraftHash"),
+    patch: requiredValue(body.patch, "patch"),
+    ...(optionalString(body.actor) ? { actor: optionalString(body.actor) } : {}),
   };
 }
 
@@ -536,6 +638,17 @@ function plannerDraftSchema(): Record<string, unknown> {
     orchestrationMode: optionalStringSchema("llm-constrained."),
     composerMode: optionalStringSchema("llm."),
     scope: optionalStringSchema("Scope."),
+  };
+}
+
+function runGoalSchema(): Record<string, unknown> {
+  return {
+    goalPrompt: stringSchema("Complete natural-language goal."),
+    cwd: stringSchema("Absolute workspace path."),
+    projectRef: optionalStringSchema("Optional project reference."),
+    idempotencyKey: stringSchema("Stable request idempotency key."),
+    goalDesignMode: optionalStringSchema("review_before_compose or auto_until_blocked."),
+    templatePolicy: optionalObjectSchema("auto, prefer, or require template policy."),
   };
 }
 

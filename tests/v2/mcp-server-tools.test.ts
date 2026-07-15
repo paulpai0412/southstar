@@ -31,6 +31,9 @@ test("createSouthstarMcpToolRegistry exposes workflow and system tools", () => {
     "southstar.library.save_profile",
     "southstar.workflow.create_draft",
     "southstar.workflow.create_draft_stream",
+    "southstar.workflow.run_goal",
+    "southstar.workflow.revise_requirement",
+    "southstar.workflow.confirm_requirements",
     "southstar.workflow.search_templates",
     "southstar.workflow.get_template",
     "southstar.workflow.instantiate_template",
@@ -83,6 +86,28 @@ test("MCP registry tools unwrap runtime client envelopes", async () => {
     limit: 2,
   });
   assert.deepEqual(search.structuredContent, { templates: [{ templateRef: "template.software" }] });
+
+  const goal = await registry.callTool("southstar.workflow.run_goal", {
+    goalPrompt: "build a vocabulary app",
+    cwd: "/workspace/project",
+    idempotencyKey: "goal-1",
+  });
+  assert.equal((goal.structuredContent as { runId?: string }).runId, "run-goal-a");
+  assert.equal((goal.structuredContent as { goalRequirements?: { type?: string } }).goalRequirements?.type, "goalRequirements");
+  assert.equal((goal.structuredContent as { goalDesign?: { type?: string } }).goalDesign?.type, "goalDesign");
+
+  await registry.callTool("southstar.workflow.revise_requirement", {
+    draftId: "draft-goal-a",
+    requirementId: "requirement-a",
+    expectedDraftHash: "req-hash-a",
+    patch: { title: "Updated requirement" },
+    actor: "pi-agent",
+  });
+  await registry.callTool("southstar.workflow.confirm_requirements", {
+    draftId: "draft-goal-a",
+    expectedDraftHash: "req-hash-a",
+    actor: "pi-agent",
+  });
 
   await registry.callTool("southstar.workflow.get_template", { templateRef: "template.software" });
   await registry.callTool("southstar.workflow.instantiate_template", {
@@ -154,6 +179,19 @@ test("MCP registry tools unwrap runtime client envelopes", async () => {
 
   assert.deepEqual(calls, [
     { method: "searchWorkflowTemplates", body: { prompt: "software workflow", domain: "software", limit: 2 } },
+    {
+      method: "runGoalStream",
+      body: {
+        goalPrompt: "build a vocabulary app",
+        cwd: "/workspace/project",
+        idempotencyKey: "goal-1",
+        goalDesignMode: "auto_until_blocked",
+        templatePolicy: { mode: "auto" },
+      },
+    },
+    { method: "getPlannerDraftOrchestration", body: "draft-goal-a" },
+    { method: "reviseGoalRequirement", body: { draftId: "draft-goal-a", requirementId: "requirement-a", expectedDraftHash: "req-hash-a", patch: { title: "Updated requirement" }, actor: "pi-agent" } },
+    { method: "confirmGoalRequirements", body: { draftId: "draft-goal-a", expectedDraftHash: "req-hash-a", actor: "pi-agent" } },
     { method: "getWorkflowTemplate", body: "template.software" },
     { method: "instantiateWorkflowTemplate", body: { templateRef: "template.software", goalPrompt: "build vocabulary app", constraints: { mode: "strict" } } },
     { method: "getPlannerDraftOrchestration", body: "draft-a" },
@@ -266,6 +304,33 @@ function fakeClient(calls: Array<{ method: string; body?: unknown }> = []) {
     validateLibraryProfile: async (body: unknown) => record("validateLibraryProfile", {}, body),
     saveLibraryProfile: async (body: unknown) => record("saveLibraryProfile", {}, body),
     createPlannerDraft: async (body: unknown) => record("createPlannerDraft", {}, body),
+    runGoalStream: async (body: unknown, onEvent: (event: unknown) => void) => {
+      calls.push({ method: "runGoalStream", body });
+      onEvent({ event: "goal_design", data: { draftId: "draft-goal-a", package: { slicePlan: { slices: [{ id: "slice-a" }] } } } });
+      onEvent({ event: "goal_requirements", data: { draftId: "draft-goal-a" } });
+      return {
+        eventCount: 2,
+        events: [
+          { event: "goal_design", data: { draftId: "draft-goal-a", package: { slicePlan: { slices: [{ id: "slice-a" }] } } } },
+          { event: "goal_requirements", data: { draftId: "draft-goal-a" } },
+        ],
+        result: {
+          draftId: "draft-goal-a",
+          draftStatus: "validated",
+          goalDesignPackageHash: "pkg-a",
+          goalRequirementDraftId: "req-a",
+          goalRequirementDraftHash: "req-hash-a",
+          goalRequirementDraft: {
+            draftHash: "req-hash-a",
+            requirements: [],
+          },
+          confirmable: true,
+          blockers: [],
+          validationIssues: [],
+          runId: "run-goal-a",
+        },
+      };
+    },
     createPlannerDraftStream: async (body: unknown, onEvent: (event: unknown) => void) => {
       calls.push({ method: "createPlannerDraftStream", body });
       onEvent({ event: "planner.stage", data: { stage: "requirement.analyzed", message: "Requirement analysis completed." } });
@@ -274,6 +339,8 @@ function fakeClient(calls: Array<{ method: string; body?: unknown }> = []) {
       return { draft: { draftId: "draft-stream" } };
     },
     revisePlannerDraft: async (body: unknown) => record("revisePlannerDraft", {}, body),
+    reviseGoalRequirement: async (body: unknown) => record("reviseGoalRequirement", {}, body),
+    confirmGoalRequirements: async (body: unknown) => record("confirmGoalRequirements", {}, body),
     revisePlannerDraftStream: async (body: unknown, onEvent: (event: unknown) => void) => {
       calls.push({ method: "revisePlannerDraftStream", body });
       onEvent({ event: "done", data: {} });

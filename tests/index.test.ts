@@ -42,6 +42,7 @@ await import("./web/southstar-web-operator-control-tower.test.tsx");
 await import("./web/southstar-operator-product-control-tower.test.tsx");
 await import("./web/southstar-product-responsive.test.tsx");
 await import("./web/workflow-node-profile-editor-ui.test.tsx");
+await import("./unit/southstar-skill.test.ts");
 await import("./unit/app-shell-stats-regression.test.ts");
 await import("./unit/file-explorer-regression.test.ts");
 await import("./unit/session-sidebar-regression.test.ts");
